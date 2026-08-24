@@ -18,7 +18,9 @@ consumers: [host]
 wait больше 7000 мс отклоняются; ошибки транспорта используют закрытые коды.
 Исчерпание 64 одновременно живых workspace actor capabilities возвращает
 закрытый retryable код `workspace_capacity`; poison actor registry возвращает
-`workspace_registry_failed`. Неподтверждаемая durable publication переводит
-daemon в controlled restart и возвращает `durability_uncertain`, но не staged
-DomainResult. Текст внутренних ошибок не классифицируется и не попадает в
-protocol.
+`workspace_registry_failed`. Исчерпание bounded Task retention возвращает
+закрытый retryable код `task_capacity`. Неподтверждаемая durable publication
+переводит daemon в `RestartRequested` и возвращает `durability_uncertain`, но
+не staged DomainResult. Старый процесс перестаёт принимать соединения и
+оставляет PID-bound endpoint до своей смерти; successor заменяет только stale
+record. Текст внутренних ошибок не классифицируется и не попадает в protocol.

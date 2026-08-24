@@ -1,10 +1,13 @@
 //! Sole-writer durable Task and Invocation store used by the versioned daemon.
 
 use crate::application::invocation_store::{
-    CommitOperation, EpochMillisClock, InvocationStore, InvocationStoreError, NewInvocationRecord,
-    SafeFailureReason, SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
-    INVOCATION_RECORD_SCHEMA_VERSION, LEGACY_INVOCATION_RECORD_SCHEMA_VERSION,
+    store_operation_checkpoint, CommitOperation, EpochMillisClock, InvocationStore,
+    InvocationStoreError, NewInvocationRecord, SafeFailureReason, SafeStatusMessage,
+    StoredInvocationRecord, TaskTransition, ToolIdentity, INVOCATION_RECORD_SCHEMA_VERSION,
+    LEGACY_INVOCATION_RECORD_SCHEMA_VERSION,
 };
+use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{
     DomainResult, InvocationId, InvocationStatus, NormalizedArgumentsHash, ResumeDescriptor,
     SafeIdentityHash, TaskId,
@@ -13,15 +16,17 @@ use crate::infrastructure::platform::filesystem::{
     create_new_regular_child, file_identity, metadata_is_link_or_reparse_point,
     open_directory_nofollow, open_directory_ownership_lock, open_regular_child_nofollow,
     read_directory_names_bounded, remove_identity_bound_regular_child,
-    replace_identity_bound_regular_child, restrict_stage_to_owner, sync_directory, FileIdentity,
+    rename_identity_bound_regular_child_no_replace, replace_identity_bound_regular_child,
+    restrict_stage_to_owner, sync_directory, FileIdentity,
 };
 use fs2::FileExt;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -50,6 +55,48 @@ pub(crate) struct RecoveryReport {
 }
 
 const STORE_LOCK_FILE: &str = ".invocation-store.lock";
+const STORE_OPERATION_BUDGET: Duration = Duration::from_secs(7);
+const STORE_WRITER_WAIT_SLICE: Duration = Duration::from_millis(10);
+const MAX_TASK_RECORDS: usize = 4_096;
+const MAX_TASK_RECORD_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RECOVERY_EXTRA_ENTRIES: usize = 64;
+
+#[derive(Debug, Clone, Copy)]
+struct StoreLimits {
+    max_records: usize,
+    max_record_bytes: usize,
+}
+
+impl StoreLimits {
+    const fn production() -> Self {
+        Self {
+            max_records: MAX_TASK_RECORDS,
+            max_record_bytes: MAX_TASK_RECORD_BYTES,
+        }
+    }
+}
+
+#[derive(Default)]
+struct StoreCatalog {
+    records: HashMap<TaskId, RetentionRecord>,
+}
+
+#[derive(Clone, Copy)]
+struct RetentionRecord {
+    terminal: bool,
+    updated_at_epoch_ms: u64,
+    ttl_ms: u64,
+}
+
+impl From<&StoredInvocationRecord> for RetentionRecord {
+    fn from(record: &StoredInvocationRecord) -> Self {
+        Self {
+            terminal: record.is_terminal(),
+            updated_at_epoch_ms: record.updated_at_epoch_ms,
+            ttl_ms: record.ttl_ms,
+        }
+    }
+}
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -133,7 +180,8 @@ pub(crate) struct FileInvocationStore {
     root_identity: FileIdentity,
     _root_lock: File,
     clock: Arc<dyn EpochMillisClock>,
-    writer: Mutex<()>,
+    writer: Mutex<StoreCatalog>,
+    limits: StoreLimits,
     #[cfg(test)]
     next_publication_failure: Mutex<Option<PublicationFailure>>,
 }
@@ -153,12 +201,20 @@ impl FileInvocationStore {
         }
         let root = open_directory_nofollow(&root)
             .map_err(|error| storage_error("open task store root", error))?;
-        Self::open_retained_directory(root, clock)
+        Self::open_retained_directory_with_limits(root, clock, StoreLimits::production())
     }
 
     pub(crate) fn open_retained_directory(
         root: File,
         clock: Arc<dyn EpochMillisClock>,
+    ) -> Result<(Self, RecoveryReport), InvocationStoreError> {
+        Self::open_retained_directory_with_limits(root, clock, StoreLimits::production())
+    }
+
+    fn open_retained_directory_with_limits(
+        root: File,
+        clock: Arc<dyn EpochMillisClock>,
+        limits: StoreLimits,
     ) -> Result<(Self, RecoveryReport), InvocationStoreError> {
         let root_identity = file_identity(&root)
             .map_err(|error| storage_error("capture task store root identity", error))?;
@@ -169,7 +225,8 @@ impl FileInvocationStore {
             root_identity,
             _root_lock: root_lock,
             clock,
-            writer: Mutex::new(()),
+            writer: Mutex::new(StoreCatalog::default()),
+            limits,
             #[cfg(test)]
             next_publication_failure: Mutex::new(None),
         };
@@ -177,14 +234,56 @@ impl FileInvocationStore {
         Ok((store, report))
     }
 
+    #[cfg(test)]
+    fn open_with_limits_for_test(
+        root: impl AsRef<Path>,
+        clock: Arc<dyn EpochMillisClock>,
+        max_records: usize,
+        max_record_bytes: usize,
+    ) -> Result<(Self, RecoveryReport), InvocationStoreError> {
+        let root = root.as_ref();
+        let retained = open_directory_nofollow(root)
+            .map_err(|error| storage_error("open task store root", error))?;
+        Self::open_retained_directory_with_limits(
+            retained,
+            clock,
+            StoreLimits {
+                max_records,
+                max_record_bytes,
+            },
+        )
+    }
+
     fn recover(&self) -> Result<RecoveryReport, InvocationStoreError> {
-        let _writer = self.lock_writer()?;
+        let deadline = ProviderDeadline::from_budget(STORE_OPERATION_BUDGET);
+        let cancellation = CancellationToken::new();
+        let mut writer = self.lock_writer_before(deadline, &cancellation)?;
         self.verify_root_identity()?;
-        let entries = read_directory_names_bounded(&self.root, usize::MAX, || Ok(()))
-            .map_err(|error| storage_error("enumerate task store", error))?;
+        let maximum_entries = self
+            .limits
+            .max_records
+            .saturating_add(MAX_RECOVERY_EXTRA_ENTRIES)
+            .saturating_add(1);
+        let entries = read_directory_names_bounded(&self.root, maximum_entries, || {
+            store_operation_checkpoint(deadline, &cancellation).map_err(store_checkpoint_io_error)
+        })
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::TimedOut {
+                InvocationStoreError::DeadlineExceeded
+            } else if error.kind() == std::io::ErrorKind::Interrupted {
+                InvocationStoreError::Cancelled
+            } else if error.kind() == std::io::ErrorKind::FileTooLarge {
+                InvocationStoreError::Capacity {
+                    max_records: self.limits.max_records,
+                }
+            } else {
+                storage_error("enumerate task store", error)
+            }
+        })?;
         let mut report = RecoveryReport::default();
 
         for entry_name in entries {
+            store_operation_checkpoint(deadline, &cancellation)?;
             let file_name = entry_name
                 .clone()
                 .into_string()
@@ -216,8 +315,19 @@ impl FileInvocationStore {
             let task_id = encoded_task_id
                 .parse::<TaskId>()
                 .map_err(|_| corrupt_error("task record file name is not a canonical TaskId"))?;
-            let decoded = Self::read_decoded_from(&self.root, task_id)?;
+            let decoded =
+                Self::read_decoded_from(&self.root, task_id, self.limits.max_record_bytes)?;
+            store_operation_checkpoint(deadline, &cancellation)?;
             let mut record = decoded.record;
+            if self.is_expired(&record) {
+                self.remove_record_file(task_id)?;
+                continue;
+            }
+            if writer.records.len() >= self.limits.max_records {
+                return Err(InvocationStoreError::Capacity {
+                    max_records: self.limits.max_records,
+                });
+            }
             if record.status == InvocationStatus::Working {
                 let (reason, status_message, classification) = if record.resume.is_some() {
                     (
@@ -241,21 +351,58 @@ impl FileInvocationStore {
                     },
                 )?;
                 self.publish_record(&recovered, CommitOperation::Recovery, || {})?;
+                store_operation_checkpoint(deadline, &cancellation)?;
+                record = recovered;
                 report.classifications.push(classification);
             } else if decoded.schema == DecodedSchema::V1 {
                 self.publish_record(&record, CommitOperation::Recovery, || {})?;
+                store_operation_checkpoint(deadline, &cancellation)?;
                 report
                     .classifications
                     .push(RecoveryClassification::MigratedV1Record { task_id });
             }
+            writer
+                .records
+                .insert(task_id, RetentionRecord::from(&record));
         }
         Ok(report)
     }
 
-    fn lock_writer(&self) -> Result<MutexGuard<'_, ()>, InvocationStoreError> {
+    fn lock_writer(&self) -> Result<MutexGuard<'_, StoreCatalog>, InvocationStoreError> {
+        self.lock_writer_before(
+            ProviderDeadline::from_budget(STORE_OPERATION_BUDGET),
+            &CancellationToken::new(),
+        )
+    }
+
+    fn lock_writer_before(
+        &self,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<MutexGuard<'_, StoreCatalog>, InvocationStoreError> {
+        loop {
+            store_operation_checkpoint(deadline, cancellation)?;
+            match self.writer.try_lock() {
+                Ok(guard) => {
+                    store_operation_checkpoint(deadline, cancellation)?;
+                    return Ok(guard);
+                }
+                Err(TryLockError::Poisoned(poisoned)) => {
+                    store_operation_checkpoint(deadline, cancellation)?;
+                    return Ok(poisoned.into_inner());
+                }
+                Err(TryLockError::WouldBlock) => {
+                    std::thread::sleep(deadline.remaining().min(STORE_WRITER_WAIT_SLICE));
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn hold_writer_for_test(&self) -> MutexGuard<'_, StoreCatalog> {
         self.writer
             .lock()
-            .map_err(|_| InvocationStoreError::Storage("task store writer lock poisoned".into()))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn verify_root_identity(&self) -> Result<(), InvocationStoreError> {
@@ -269,26 +416,49 @@ impl FileInvocationStore {
         Ok(())
     }
 
+    fn remove_record_file(&self, task_id: TaskId) -> Result<(), InvocationStoreError> {
+        let file_name = format!("{task_id}.json");
+        let name = OsStr::new(&file_name);
+        let retained = open_regular_child_nofollow(&self.root, name)
+            .map_err(|error| storage_error("retain expired task record", error))?;
+        let identity = file_identity(&retained)
+            .map_err(|error| storage_error("identify expired task record", error))?;
+        remove_identity_bound_regular_child(&self.root, name, identity, &retained)
+            .map_err(|error| storage_error("remove expired task record", error))?;
+        sync_directory(&self.root)
+            .map_err(|error| storage_error("sync expired task record removal", error))
+    }
+
     fn read_record(&self, task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError> {
         self.verify_root_identity()?;
-        Self::read_committed_from(&self.root, task_id)
+        Self::read_committed_from(&self.root, task_id, self.limits.max_record_bytes)
     }
 
     fn read_committed_from(
         root: &File,
         task_id: TaskId,
+        max_record_bytes: usize,
     ) -> Result<StoredInvocationRecord, InvocationStoreError> {
         let file_name = format!("{task_id}.json");
-        let mut file = match open_regular_child_nofollow(root, OsStr::new(&file_name)) {
+        let file = match open_regular_child_nofollow(root, OsStr::new(&file_name)) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Err(InvocationStoreError::NotFound)
             }
             Err(error) => return Err(storage_error("open committed task record", error)),
         };
+        let limit = u64::try_from(max_record_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
+        file.take(limit)
+            .read_to_end(&mut bytes)
             .map_err(|error| storage_error("read committed task record", error))?;
+        if bytes.len() > max_record_bytes {
+            return Err(InvocationStoreError::RecordTooLarge {
+                max_bytes: max_record_bytes,
+            });
+        }
         let record = Self::decode_record(&bytes)?.record;
         if record.task_id != task_id {
             return Err(corrupt_error(
@@ -301,18 +471,28 @@ impl FileInvocationStore {
     fn read_decoded_from(
         root: &File,
         task_id: TaskId,
+        max_record_bytes: usize,
     ) -> Result<DecodedRecord, InvocationStoreError> {
         let file_name = format!("{task_id}.json");
-        let mut file = match open_regular_child_nofollow(root, OsStr::new(&file_name)) {
+        let file = match open_regular_child_nofollow(root, OsStr::new(&file_name)) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Err(InvocationStoreError::NotFound)
             }
             Err(error) => return Err(storage_error("open committed task record", error)),
         };
+        let limit = u64::try_from(max_record_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
+        file.take(limit)
+            .read_to_end(&mut bytes)
             .map_err(|error| storage_error("read committed task record", error))?;
+        if bytes.len() > max_record_bytes {
+            return Err(InvocationStoreError::RecordTooLarge {
+                max_bytes: max_record_bytes,
+            });
+        }
         let decoded = Self::decode_record(&bytes)?;
         if decoded.record.task_id != task_id {
             return Err(corrupt_error(
@@ -358,7 +538,7 @@ impl FileInvocationStore {
     ) -> Result<StoredInvocationRecord, InvocationStoreError> {
         let directory = open_directory_nofollow(root)
             .map_err(|error| storage_error("open task store for test reading", error))?;
-        Self::read_committed_from(&directory, task_id)
+        Self::read_committed_from(&directory, task_id, MAX_TASK_RECORD_BYTES)
     }
 
     fn publish_record<F>(
@@ -400,6 +580,17 @@ impl FileInvocationStore {
                 return Err(corrupt_error("task record could not be serialized"));
             }
         };
+        if bytes.len() > self.limits.max_record_bytes {
+            let _ = remove_identity_bound_regular_child(
+                &self.root,
+                temporary_name,
+                temporary_identity,
+                &file,
+            );
+            return Err(InvocationStoreError::RecordTooLarge {
+                max_bytes: self.limits.max_record_bytes,
+            });
+        }
         if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
             let _ = remove_identity_bound_regular_child(
                 &self.root,
@@ -425,19 +616,39 @@ impl FileInvocationStore {
                 "atomically publish task record: injected pre-commit rename failure".to_string(),
             ));
         }
-        if let Err(error) = replace_identity_bound_regular_child(
-            &self.root,
-            temporary_name,
-            temporary_identity,
-            &file,
-            OsStr::new(&target_name),
-        ) {
+        let target_name = OsStr::new(&target_name);
+        let publication = if operation == CommitOperation::Create {
+            rename_identity_bound_regular_child_no_replace(
+                &self.root,
+                temporary_name,
+                temporary_identity,
+                &file,
+                &self.root,
+                target_name,
+            )
+        } else {
+            replace_identity_bound_regular_child(
+                &self.root,
+                temporary_name,
+                temporary_identity,
+                &file,
+                target_name,
+            )
+        };
+        if let Err(error) = publication {
             let _ = remove_identity_bound_regular_child(
                 &self.root,
                 temporary_name,
                 temporary_identity,
                 &file,
             );
+            if operation == CommitOperation::Create
+                && error.kind() == std::io::ErrorKind::AlreadyExists
+            {
+                return Err(InvocationStoreError::TaskIdCollision {
+                    task_id: record.task_id,
+                });
+            }
             return Err(storage_error("atomically publish task record", error));
         }
         #[cfg(test)]
@@ -477,11 +688,42 @@ impl FileInvocationStore {
     where
         F: FnOnce(TaskId),
     {
-        let _writer = self.lock_writer()?;
+        self.create_with_after_publish_hook_before(
+            new_record,
+            after_publish,
+            ProviderDeadline::from_budget(STORE_OPERATION_BUDGET),
+            &CancellationToken::new(),
+            false,
+        )
+    }
+
+    fn create_with_after_publish_hook_before<F>(
+        &self,
+        new_record: NewInvocationRecord,
+        after_publish: F,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        working: bool,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError>
+    where
+        F: FnOnce(TaskId),
+    {
+        let mut writer = self.lock_writer_before(deadline, cancellation)?;
+        self.ensure_create_capacity(&mut writer, deadline, cancellation)?;
         let task_id = new_record.task_id();
-        reject_existing_preallocated_task_id(&self.root, task_id)?;
-        let record = new_record.into_stored(self.clock.now_epoch_millis());
+        if writer.records.contains_key(&task_id) {
+            return Err(InvocationStoreError::TaskIdCollision { task_id });
+        }
+        let record = if working {
+            new_record.into_working_stored(self.clock.now_epoch_millis())
+        } else {
+            new_record.into_stored(self.clock.now_epoch_millis())
+        };
+        store_operation_checkpoint(deadline, cancellation)?;
         self.publish_record(&record, CommitOperation::Create, || {})?;
+        writer
+            .records
+            .insert(task_id, RetentionRecord::from(&record));
         after_publish(task_id);
         Ok(record)
     }
@@ -494,13 +736,13 @@ impl FileInvocationStore {
     where
         F: FnOnce(TaskId),
     {
-        let _writer = self.lock_writer()?;
-        let task_id = new_record.task_id();
-        reject_existing_preallocated_task_id(&self.root, task_id)?;
-        let record = new_record.into_working_stored(self.clock.now_epoch_millis());
-        self.publish_record(&record, CommitOperation::Create, || {})?;
-        after_publish(task_id);
-        Ok(record)
+        self.create_with_after_publish_hook_before(
+            new_record,
+            after_publish,
+            ProviderDeadline::from_budget(STORE_OPERATION_BUDGET),
+            &CancellationToken::new(),
+            true,
+        )
     }
 
     fn update_with_before_publish_hook<F>(
@@ -512,14 +754,72 @@ impl FileInvocationStore {
     where
         F: FnOnce(),
     {
-        let _writer = self.lock_writer()?;
+        self.update_with_before_publish_hook_before(
+            task_id,
+            transition,
+            before_publish,
+            ProviderDeadline::from_budget(STORE_OPERATION_BUDGET),
+            &CancellationToken::new(),
+        )
+    }
+
+    fn update_with_before_publish_hook_before<F>(
+        &self,
+        task_id: TaskId,
+        transition: TaskTransition,
+        before_publish: F,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError>
+    where
+        F: FnOnce(),
+    {
+        let mut writer = self.lock_writer_before(deadline, cancellation)?;
         let record = self.read_record(task_id)?;
         if self.is_expired(&record) {
             return Err(InvocationStoreError::Expired);
         }
         let updated = self.transition_record(record, transition)?;
+        store_operation_checkpoint(deadline, cancellation)?;
         self.publish_record(&updated, CommitOperation::Update, before_publish)?;
+        writer
+            .records
+            .insert(task_id, RetentionRecord::from(&updated));
         Ok(updated)
+    }
+
+    fn ensure_create_capacity(
+        &self,
+        catalog: &mut StoreCatalog,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<(), InvocationStoreError> {
+        if catalog.records.len() < self.limits.max_records {
+            return Ok(());
+        }
+        let now = self.clock.now_epoch_millis();
+        let expired = catalog
+            .records
+            .iter()
+            .filter_map(|(task_id, retained)| {
+                (retained.terminal
+                    && now
+                        .checked_sub(retained.updated_at_epoch_ms)
+                        .is_some_and(|elapsed| elapsed >= retained.ttl_ms))
+                .then_some(*task_id)
+            })
+            .collect::<Vec<_>>();
+        for task_id in expired {
+            store_operation_checkpoint(deadline, cancellation)?;
+            self.remove_record_file(task_id)?;
+            catalog.records.remove(&task_id);
+        }
+        if catalog.records.len() >= self.limits.max_records {
+            return Err(InvocationStoreError::Capacity {
+                max_records: self.limits.max_records,
+            });
+        }
+        Ok(())
     }
 
     fn transition_record(
@@ -621,7 +921,63 @@ impl InvocationStore for FileInvocationStore {
         task_id: TaskId,
         status_message: SafeStatusMessage,
     ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-        let _writer = self.lock_writer()?;
+        self.cancel_before(
+            task_id,
+            status_message,
+            ProviderDeadline::from_budget(STORE_OPERATION_BUDGET),
+            &CancellationToken::new(),
+        )
+    }
+
+    fn create_working_before(
+        &self,
+        new_record: NewInvocationRecord,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        self.create_with_after_publish_hook_before(new_record, |_| {}, deadline, cancellation, true)
+    }
+
+    fn get_before(
+        &self,
+        task_id: TaskId,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        store_operation_checkpoint(deadline, cancellation)?;
+        let record = self.read_record(task_id)?;
+        store_operation_checkpoint(deadline, cancellation)?;
+        if self.is_expired(&record) {
+            Err(InvocationStoreError::Expired)
+        } else {
+            Ok(record)
+        }
+    }
+
+    fn update_before(
+        &self,
+        task_id: TaskId,
+        transition: TaskTransition,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        self.update_with_before_publish_hook_before(
+            task_id,
+            transition,
+            || {},
+            deadline,
+            cancellation,
+        )
+    }
+
+    fn cancel_before(
+        &self,
+        task_id: TaskId,
+        status_message: SafeStatusMessage,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        let mut writer = self.lock_writer_before(deadline, cancellation)?;
         let mut record = self.read_record(task_id)?;
         if self.is_expired(&record) {
             return Err(InvocationStoreError::Expired);
@@ -637,24 +993,13 @@ impl InvocationStore for FileInvocationStore {
         record.result = None;
         record.failure_reason = None;
         record.resume = None;
+        store_operation_checkpoint(deadline, cancellation)?;
         self.publish_record(&record, CommitOperation::Cancel, || {})?;
+        writer
+            .records
+            .insert(task_id, RetentionRecord::from(&record));
         Ok(record)
     }
-}
-
-fn reject_existing_preallocated_task_id(
-    root: &File,
-    task_id: TaskId,
-) -> Result<(), InvocationStoreError> {
-    let candidate_name = format!("{task_id}.json");
-    let names = read_directory_names_bounded(root, usize::MAX, || Ok(()))
-        .map_err(|error| storage_error("inspect task identity before durable creation", error))?;
-    if names.iter().any(|name| name == OsStr::new(&candidate_name)) {
-        return Err(InvocationStoreError::Storage(
-            "preallocated task identity already exists".into(),
-        ));
-    }
-    Ok(())
 }
 
 fn acquire_root_lock(root: &File) -> Result<File, InvocationStoreError> {
@@ -726,12 +1071,21 @@ fn corrupt_error(message: &'static str) -> InvocationStoreError {
     InvocationStoreError::Corrupt(message.to_string())
 }
 
+fn store_checkpoint_io_error(error: InvocationStoreError) -> std::io::Error {
+    let kind = match error {
+        InvocationStoreError::DeadlineExceeded => std::io::ErrorKind::TimedOut,
+        InvocationStoreError::Cancelled => std::io::ErrorKind::Interrupted,
+        _ => std::io::ErrorKind::Other,
+    };
+    std::io::Error::new(kind, "task store recovery checkpoint rejected")
+}
+
 fn storage_error(operation: &'static str, error: std::io::Error) -> InvocationStoreError {
     InvocationStoreError::Storage(format!("{operation}: {error}"))
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         validate_record, FileInvocationStore, PublicationFailure, RecoveryClassification,
         STORE_LOCK_FILE,
@@ -744,12 +1098,14 @@ mod tests {
         DeliveryResume, DomainResult, InvocationId, InvocationStatus, NormalizedArgumentsHash,
         ResumeDescriptor, SafeIdentityHash,
     };
+    use crate::domain::{cancellation::CancellationToken, code_intelligence::ProviderDeadline};
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
+    use std::sync::{mpsc, Arc};
+    use std::time::{Duration, Instant};
 
     #[derive(Default)]
     struct ManualEpochClock(AtomicU64);
@@ -1619,6 +1975,182 @@ mod tests {
             "working"
         );
         assert!(fs::read_dir(&attacker_path).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn preallocated_create_collision_is_typed_and_never_replaces_the_first_record() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(14_000));
+        let (store, _) = open_store(root.path(), clock);
+        let intended = new_record(10_000, None);
+        let task_id = intended.task_id();
+        let first = store.create_working(intended.clone()).unwrap();
+
+        assert_eq!(
+            store.create_working(intended).unwrap_err(),
+            InvocationStoreError::TaskIdCollision { task_id }
+        );
+        assert_eq!(store.get(task_id).unwrap(), first);
+    }
+
+    #[test]
+    fn held_file_writer_is_bounded_by_the_same_deadline_without_releasing_guard() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(14_100));
+        let (store, _) = open_store(root.path(), clock);
+        let store = Arc::new(store);
+        let held = store.hold_writer_for_test();
+        let caller = Arc::clone(&store);
+        let (finished, finished_wait) = mpsc::channel();
+        std::thread::spawn(move || {
+            finished
+                .send(caller.create_working_before(
+                    new_record(10_000, None),
+                    ProviderDeadline::new(Instant::now() + Duration::from_millis(40)),
+                    &CancellationToken::new(),
+                ))
+                .unwrap();
+        });
+
+        let result = finished_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("writer acquisition must be bounded while the guard remains held");
+        assert_eq!(result.unwrap_err(), InvocationStoreError::DeadlineExceeded);
+        drop(held);
+    }
+
+    #[test]
+    fn expired_terminal_records_are_reclaimed_only_when_bounded_capacity_is_needed() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(14_200));
+        let (store, _) = FileInvocationStore::open_with_limits_for_test(
+            root.path(),
+            clock.clone(),
+            2,
+            1_048_576,
+        )
+        .unwrap();
+        let first = store.create_working(new_record(1, None)).unwrap();
+        let second = store.create_working(new_record(1, None)).unwrap();
+        store
+            .cancel(first.task_id, SafeStatusMessage::Cancelled)
+            .unwrap();
+        store
+            .cancel(second.task_id, SafeStatusMessage::Cancelled)
+            .unwrap();
+        clock.set(14_202);
+
+        let third = store.create_working(new_record(1, None)).unwrap();
+        assert!(matches!(
+            store.get(first.task_id),
+            Err(InvocationStoreError::NotFound)
+        ));
+        assert!(matches!(
+            store.get(second.task_id),
+            Err(InvocationStoreError::NotFound)
+        ));
+        assert_eq!(store.get(third.task_id).unwrap(), third);
+    }
+
+    #[test]
+    fn active_and_nonexpired_terminal_records_are_never_evicted_at_capacity() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(14_250));
+        let (store, _) =
+            FileInvocationStore::open_with_limits_for_test(root.path(), clock, 2, 1_048_576)
+                .unwrap();
+        let active = store.create_working(new_record(10_000, None)).unwrap();
+        let terminal = store.create_working(new_record(10_000, None)).unwrap();
+        let terminal = store
+            .cancel(terminal.task_id, SafeStatusMessage::Cancelled)
+            .unwrap();
+
+        assert_eq!(
+            store.create_working(new_record(10_000, None)).unwrap_err(),
+            InvocationStoreError::Capacity { max_records: 2 }
+        );
+        assert_eq!(store.get(active.task_id).unwrap(), active);
+        assert_eq!(store.get(terminal.task_id).unwrap(), terminal);
+    }
+
+    #[test]
+    fn create_does_not_rescan_a_directory_that_grew_beyond_the_recovery_bound() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(14_275));
+        let (store, _) =
+            FileInvocationStore::open_with_limits_for_test(root.path(), clock, 2, 1_048_576)
+                .unwrap();
+        for index in 0..70 {
+            fs::write(
+                root.path().join(format!("post-open-noise-{index}")),
+                b"noise",
+            )
+            .unwrap();
+        }
+
+        let created = store.create_working(new_record(10_000, None)).unwrap();
+        assert_eq!(store.get(created.task_id).unwrap(), created);
+    }
+
+    #[test]
+    fn recovery_excess_is_typed_capacity_not_unbounded_enumeration_or_corruption() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(14_300));
+        let (store, _) = open_store(root.path(), clock.clone());
+        for _ in 0..3 {
+            store.create_working(new_record(10_000, None)).unwrap();
+        }
+        drop(store);
+
+        let error = match FileInvocationStore::open_with_limits_for_test(
+            root.path(),
+            clock,
+            2,
+            1_048_576,
+        ) {
+            Ok(_) => panic!("recovery must reject excess retained records"),
+            Err(error) => error,
+        };
+        assert_eq!(error, InvocationStoreError::Capacity { max_records: 2 });
+    }
+
+    #[test]
+    fn oversized_valid_record_is_rejected_before_unbounded_recovery_read() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(14_400));
+        let (store, _) = open_store(root.path(), clock.clone());
+        let created = store.create_working(new_record(10_000, None)).unwrap();
+        store
+            .update(
+                created.task_id,
+                TaskTransition::Complete {
+                    status_message: SafeStatusMessage::Completed,
+                    result: Box::new(DomainResult::success("X".repeat(4_096))),
+                },
+            )
+            .unwrap();
+        drop(store);
+
+        let error = match FileInvocationStore::open_with_limits_for_test(root.path(), clock, 8, 512)
+        {
+            Ok(_) => panic!("recovery must reject an oversized record"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            InvocationStoreError::RecordTooLarge { max_bytes: 512 }
+        );
+    }
+
+    #[test]
+    pub(crate) fn file_invocation_store_bounds_and_retention_are_enforced() {
+        preallocated_create_collision_is_typed_and_never_replaces_the_first_record();
+        held_file_writer_is_bounded_by_the_same_deadline_without_releasing_guard();
+        active_and_nonexpired_terminal_records_are_never_evicted_at_capacity();
+        expired_terminal_records_are_reclaimed_only_when_bounded_capacity_is_needed();
+        create_does_not_rescan_a_directory_that_grew_beyond_the_recovery_bound();
+        recovery_excess_is_typed_capacity_not_unbounded_enumeration_or_corruption();
+        oversized_valid_record_is_rejected_before_unbounded_recovery_read();
     }
 
     fn collect_recursive_bytes(path: &Path, output: &mut Vec<u8>) {

@@ -19,7 +19,6 @@ mod tests {
         ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService, DaemonServerConfig,
         MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
     };
-    use crate::application::invocation::{InvocationExecutor, PreparedDaemonInvocation};
     use crate::application::invocation_store::{
         InvocationStore, InvocationStoreError, NewInvocationRecord, SafeFailureReason,
         SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
@@ -36,6 +35,7 @@ mod tests {
     use std::io::{BufReader, Cursor, Write};
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
     use std::path::PathBuf;
+    use std::process::{Child, Command, Stdio};
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
@@ -47,6 +47,91 @@ mod tests {
     // mistaken for the product deadline being exercised inside the daemon.
     const INTEGRATION_COORDINATION_TIMEOUT: Duration = Duration::from_secs(10);
     const INTEGRATION_TASK_WAIT_MS: u64 = 7_000;
+    const FAIL_STOP_PROCESS_FIXTURE: &str = "UNICA_FAIL_STOP_PROCESS_FIXTURE";
+
+    struct FailStopFixtureChild {
+        child: Child,
+        finished: bool,
+    }
+
+    impl Drop for FailStopFixtureChild {
+        fn drop(&mut self) {
+            if !self.finished {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+    }
+
+    struct BlockingTerminalFileStore {
+        inner: FileInvocationStore,
+    }
+
+    impl InvocationStore for BlockingTerminalFileStore {
+        fn create(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.create(record)
+        }
+
+        fn create_working(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.create_working(record)
+        }
+
+        fn get(&self, task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.get(task_id)
+        }
+
+        fn update(
+            &self,
+            _task_id: TaskId,
+            _transition: TaskTransition,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            loop {
+                thread::park();
+            }
+        }
+
+        fn cancel(
+            &self,
+            task_id: TaskId,
+            status_message: SafeStatusMessage,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.cancel(task_id, status_message)
+        }
+    }
+
+    struct ProcessCountingService {
+        executions: PathBuf,
+    }
+
+    impl CanonicalInvocationService for ProcessCountingService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
+        }
+
+        fn execute(
+            &self,
+            _invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.executions)
+                .unwrap();
+            writeln!(file, "execution").unwrap();
+            file.sync_all().unwrap();
+            Ok(DomainResult::success("staged child result"))
+        }
+    }
 
     fn alternate_identity() -> CoreIdentity {
         CoreIdentity::from_str("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
@@ -76,6 +161,113 @@ mod tests {
                 "daemon endpoint was not published"
             );
             thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_replaced_record(
+        root: &std::path::Path,
+        identity: &CoreIdentity,
+        replaced_pid: u32,
+    ) -> EndpointRecord {
+        let deadline = Instant::now() + INTEGRATION_COORDINATION_TIMEOUT;
+        loop {
+            let directory = DaemonStateDirectory::open(root, identity).unwrap();
+            if let Some(record) = directory.read_endpoint_record().unwrap() {
+                if record.pid() != replaced_pid {
+                    return record;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "successor did not replace the stale endpoint"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn spawn_fail_stop_fixture(
+        mode: &str,
+        state_root: &std::path::Path,
+        store_root: &std::path::Path,
+        workspace: &std::path::Path,
+        executions: &std::path::Path,
+    ) -> FailStopFixtureChild {
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "infrastructure::daemon::tests::durability_fail_stop_process_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(FAIL_STOP_PROCESS_FIXTURE, mode)
+            .env("UNICA_FAIL_STOP_STATE_ROOT", state_root)
+            .env("UNICA_FAIL_STOP_STORE_ROOT", store_root)
+            .env("UNICA_FAIL_STOP_WORKSPACE", workspace)
+            .env("UNICA_FAIL_STOP_EXECUTIONS", executions)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        FailStopFixtureChild {
+            child,
+            finished: false,
+        }
+    }
+
+    fn assert_child_success_with_stderr(child: &mut FailStopFixtureChild, fixture: &str) {
+        let deadline = Instant::now() + INTEGRATION_COORDINATION_TIMEOUT;
+        loop {
+            if let Some(status) = child.child.try_wait().unwrap() {
+                if !status.success() {
+                    let stderr = child
+                        .child
+                        .stderr
+                        .take()
+                        .map(|stderr| std::io::read_to_string(stderr).unwrap_or_default())
+                        .unwrap_or_default();
+                    panic!("{fixture} failed with {status}: {stderr}");
+                }
+                child.finished = true;
+                return;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.child.kill();
+                let _ = child.child.wait();
+                child.finished = true;
+                panic!("{fixture} did not exit");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn durability_fail_stop_process_fixture() {
+        let Some(mode) = std::env::var_os(FAIL_STOP_PROCESS_FIXTURE) else {
+            return;
+        };
+        let state_root = PathBuf::from(std::env::var_os("UNICA_FAIL_STOP_STATE_ROOT").unwrap());
+        let store_root = PathBuf::from(std::env::var_os("UNICA_FAIL_STOP_STORE_ROOT").unwrap());
+        let executions = PathBuf::from(std::env::var_os("UNICA_FAIL_STOP_EXECUTIONS").unwrap());
+        let (store, _) =
+            FileInvocationStore::open(&store_root, Arc::new(SystemEpochMillisClock)).unwrap();
+        let identity = CoreIdentity::production();
+        match mode.to_string_lossy().as_ref() {
+            "fault" => {
+                let config = DaemonServerConfig::new(state_root, identity, Duration::from_secs(30))
+                    .with_invocation_store_for_test(Arc::new(BlockingTerminalFileStore {
+                        inner: store,
+                    }))
+                    .with_invocation_service(Arc::new(ProcessCountingService { executions }))
+                    .with_reconciliation_budget_for_test(Duration::from_millis(100));
+                run_daemon(config).unwrap();
+            }
+            "successor" => {
+                let config = DaemonServerConfig::new(state_root, identity, Duration::from_secs(2))
+                    .with_invocation_store_for_test(Arc::new(store));
+                run_daemon(config).unwrap();
+            }
+            other => panic!("unknown fail-stop process fixture mode: {other}"),
         }
     }
 
@@ -127,94 +319,6 @@ mod tests {
         records: Mutex<HashMap<TaskId, StoredInvocationRecord>>,
         update_attempts: AtomicUsize,
         fail_updates: AtomicUsize,
-    }
-
-    struct PermanentTerminalFileStore {
-        inner: FileInvocationStore,
-    }
-
-    struct UncertainCreateFileStore {
-        inner: FileInvocationStore,
-    }
-
-    impl InvocationStore for UncertainCreateFileStore {
-        fn create(
-            &self,
-            record: NewInvocationRecord,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            self.inner.create(record)
-        }
-
-        fn create_working(
-            &self,
-            record: NewInvocationRecord,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            let stored = self.inner.create_working(record)?;
-            Err(InvocationStoreError::CommitUncertain {
-                task_id: stored.task_id,
-                operation: crate::application::invocation_store::CommitOperation::Create,
-            })
-        }
-
-        fn get(&self, _task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            Err(InvocationStoreError::Storage(
-                "permanent create readback failure".into(),
-            ))
-        }
-
-        fn update(
-            &self,
-            task_id: TaskId,
-            transition: TaskTransition,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            self.inner.update(task_id, transition)
-        }
-
-        fn cancel(
-            &self,
-            task_id: TaskId,
-            status_message: SafeStatusMessage,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            self.inner.cancel(task_id, status_message)
-        }
-    }
-
-    impl InvocationStore for PermanentTerminalFileStore {
-        fn create(
-            &self,
-            record: NewInvocationRecord,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            self.inner.create(record)
-        }
-
-        fn create_working(
-            &self,
-            record: NewInvocationRecord,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            self.inner.create_working(record)
-        }
-
-        fn get(&self, task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            self.inner.get(task_id)
-        }
-
-        fn update(
-            &self,
-            _task_id: TaskId,
-            _transition: TaskTransition,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            Err(InvocationStoreError::Storage(
-                "permanent terminal write failure".into(),
-            ))
-        }
-
-        fn cancel(
-            &self,
-            task_id: TaskId,
-            status_message: SafeStatusMessage,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            self.inner.cancel(task_id, status_message)
-        }
     }
 
     impl InvocationStore for DaemonMemoryStore {
@@ -499,6 +603,7 @@ mod tests {
             task,
             ServerResponse::error(DaemonErrorCode::WorkspaceCapacity),
             ServerResponse::error(DaemonErrorCode::WorkspaceRegistryFailed),
+            ServerResponse::error(DaemonErrorCode::TaskCapacity),
             ServerResponse::error(DaemonErrorCode::DurabilityUncertain),
         ];
         for response in responses {
@@ -511,6 +616,11 @@ mod tests {
             ))
             .unwrap()["code"],
             "workspace_registry_failed"
+        );
+        assert_eq!(
+            serde_json::to_value(ServerResponse::error(DaemonErrorCode::TaskCapacity)).unwrap()
+                ["code"],
+            "task_capacity"
         );
         assert_eq!(
             serde_json::to_value(ServerResponse::error(DaemonErrorCode::DurabilityUncertain))
@@ -613,10 +723,10 @@ mod tests {
         let config =
             DaemonServerConfig::new(physical.clone(), identity.clone(), Duration::from_secs(30))
                 .with_invocation_store_for_test(store.clone())
-                .with_reconciliation_budget_for_test(Duration::ZERO);
+                .with_reconciliation_budget_for_test(Duration::from_millis(100));
         let (done, done_wait) = mpsc::channel();
         thread::spawn(move || done.send(run_daemon(config)).unwrap());
-        let (_directory, _record) = wait_for_record(root.path(), &identity);
+        let (directory, record) = wait_for_record(root.path(), &identity);
         let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
         let mut owner = match client.connect_existing().unwrap() {
             ExistingDaemon::Connected(owner) => owner,
@@ -639,64 +749,99 @@ mod tests {
             done_wait.recv_timeout(INTEGRATION_COORDINATION_TIMEOUT),
             Ok(Ok(()))
         ));
-        assert!(store.update_attempts.load(Ordering::SeqCst) <= 2);
+        assert!(store.update_attempts.load(Ordering::SeqCst) <= 10);
         assert!(store
             .records
             .lock()
             .unwrap()
             .values()
             .all(|record| record.status == InvocationStatus::Working && record.result.is_none()));
+        assert!(
+            directory.read_endpoint_record().unwrap().is_some(),
+            "restart handoff must retain the old PID endpoint until process death"
+        );
+        assert!(
+            TcpStream::connect(record.loopback_addr().unwrap()).is_err(),
+            "restart handoff must close admission while retaining the PID-bound record"
+        );
         drop(owner);
     }
 
     #[test]
-    fn restart_after_durability_uncertainty_recovers_working_as_interrupted() {
-        let root = tempfile::tempdir().unwrap();
-        let (store, _) =
-            FileInvocationStore::open(root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let executor = Arc::new(InvocationExecutor::new_with_reconciliation_budget_for_test(
-            Arc::new(PermanentTerminalFileStore { inner: store }),
-            Arc::new(crate::application::ports::TokioClock),
-            Duration::ZERO,
+    fn process_death_owns_fail_stop_handoff_and_recovery() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state_root = physical_root(fixture.path());
+        let store_root = state_root.join("task-store");
+        let workspace = state_root.join("workspace");
+        let executions = state_root.join("executions.log");
+        std::fs::create_dir(&store_root).unwrap();
+        std::fs::create_dir(&workspace).unwrap();
+        let identity = CoreIdentity::production();
+
+        let mut faulting =
+            spawn_fail_stop_fixture("fault", &state_root, &store_root, &workspace, &executions);
+        let (_directory, first_endpoint) = wait_for_record(&state_root, &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            state_root.clone(),
+            identity.clone(),
         ));
-        let outcome = executor
-            .submit(
-                PreparedDaemonInvocation::new(
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("fault fixture must publish an endpoint"),
+        };
+        let task = owner
+            .submit_invocation(
+                InvocationRequest::new(
                     ToolIdentity::Run,
-                    crate::domain::invocation::NormalizedArgumentsHash::from_sha256([0x41; 32]),
-                    crate::domain::invocation::SafeIdentityHash::from_sha256([0x42; 32]),
-                    ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
-                    Duration::ZERO,
-                ),
-                |_| {
-                    Ok(DomainResult::success(
-                        "staged result must not survive restart",
-                    ))
-                },
+                    serde_json::json!({}),
+                    workspace.to_string_lossy(),
+                    0,
+                )
+                .unwrap(),
             )
             .unwrap();
-        let task_id = match outcome {
-            crate::domain::invocation::InvocationOutcome::Task(snapshot) => snapshot.task_id,
-            other => panic!("expected durable task: {other:?}"),
+        let task_id = match task {
+            InvocationResponse::Task(snapshot) => snapshot.task_id,
+            other => panic!("fault fixture did not materialize a task: {other:?}"),
         };
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while !executor.restart_required() && Instant::now() < deadline {
-            thread::yield_now();
-        }
-        assert!(executor.restart_required());
-        drop(executor);
+        assert!(matches!(
+            FileInvocationStore::open(&store_root, Arc::new(SystemEpochMillisClock)),
+            Err(InvocationStoreError::AlreadyOwned)
+        ));
+        drop(owner);
+        assert_child_success_with_stderr(&mut faulting, "faulting daemon fixture");
 
-        let (reopened, recovery) =
-            FileInvocationStore::open(root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        assert!(recovery
-            .classifications
-            .iter()
-            .any(|classification| matches!(
-                classification,
-                crate::infrastructure::task_store::RecoveryClassification::InterruptedNonResumable {
-                    task_id: recovered
-                } if *recovered == task_id
-            )));
+        let stale = DaemonStateDirectory::open(&state_root, &identity)
+            .unwrap()
+            .read_endpoint_record()
+            .unwrap()
+            .expect("fail-stop process must leave its PID-bound endpoint");
+        assert_eq!(stale.pid(), first_endpoint.pid());
+
+        let mut successor = spawn_fail_stop_fixture(
+            "successor",
+            &state_root,
+            &store_root,
+            &workspace,
+            &executions,
+        );
+        let successor_endpoint =
+            wait_for_replaced_record(&state_root, &identity, first_endpoint.pid());
+        assert_ne!(successor_endpoint.pid(), first_endpoint.pid());
+        let successor_client = DaemonClient::new(DaemonClientConfig::existing_only(
+            state_root.clone(),
+            identity,
+        ));
+        let mut successor_owner = match successor_client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("successor must own the endpoint"),
+        };
+        successor_owner.ping().unwrap();
+        drop(successor_owner);
+        assert_child_success_with_stderr(&mut successor, "successor daemon fixture");
+
+        let (reopened, _) =
+            FileInvocationStore::open(&store_root, Arc::new(SystemEpochMillisClock)).unwrap();
         let recovered = reopened.get(task_id).unwrap();
         assert_eq!(recovered.status, InvocationStatus::Failed);
         assert_eq!(
@@ -704,55 +849,19 @@ mod tests {
             Some(SafeFailureReason::Interrupted)
         );
         assert!(recovered.result.is_none());
+        assert_eq!(
+            std::fs::read_to_string(executions).unwrap().lines().count(),
+            1,
+            "successor recovery must not re-execute domain work"
+        );
     }
 
     #[test]
-    fn uncertain_create_never_executes_and_reopen_closes_its_working_record() {
-        let root = tempfile::tempdir().unwrap();
-        let (store, _) =
-            FileInvocationStore::open(root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let executor = Arc::new(InvocationExecutor::new_with_reconciliation_budget_for_test(
-            Arc::new(UncertainCreateFileStore { inner: store }),
-            Arc::new(crate::application::ports::TokioClock),
-            Duration::ZERO,
-        ));
-        let executions = Arc::new(AtomicUsize::new(0));
-        let run_count = Arc::clone(&executions);
-        assert!(matches!(
-            executor.submit(
-                PreparedDaemonInvocation::new(
-                    ToolIdentity::Run,
-                    crate::domain::invocation::NormalizedArgumentsHash::from_sha256([0x51; 32]),
-                    crate::domain::invocation::SafeIdentityHash::from_sha256([0x52; 32]),
-                    ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
-                    Duration::ZERO,
-                ),
-                move |_| {
-                    run_count.fetch_add(1, Ordering::SeqCst);
-                    Ok(DomainResult::success("must never execute"))
-                },
-            ),
-            Err(crate::application::invocation::InvocationExecutorError::RestartRequired)
-        ));
-        assert_eq!(executions.load(Ordering::SeqCst), 0);
-        assert!(executor.restart_required());
-        drop(executor);
-
-        let (reopened, recovery) =
-            FileInvocationStore::open(root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let task_id = match recovery.classifications.as_slice() {
-            [crate::infrastructure::task_store::RecoveryClassification::InterruptedNonResumable {
-                task_id,
-            }] => *task_id,
-            other => panic!("expected one interrupted uncertain create: {other:?}"),
-        };
-        let recovered = reopened.get(task_id).unwrap();
-        assert_eq!(recovered.status, InvocationStatus::Failed);
-        assert_eq!(
-            recovered.failure_reason,
-            Some(SafeFailureReason::Interrupted)
-        );
-        assert!(recovered.result.is_none());
+    fn daemon_store_is_bounded_and_fail_stop_is_process_owned() {
+        crate::application::invocation_store_actor::tests::daemon_store_actor_bounds_blocked_adapter_without_waiting();
+        crate::infrastructure::task_store::tests::file_invocation_store_bounds_and_retention_are_enforced();
+        crate::infrastructure::daemon::server::actor_capacity_tests::restart_request_does_not_claim_noncooperative_actor_released_in_process();
+        process_death_owns_fail_stop_handoff_and_recovery();
     }
 
     fn canonical_service_reads_only_actor_bound_roots_and_persists_the_same_identity() {

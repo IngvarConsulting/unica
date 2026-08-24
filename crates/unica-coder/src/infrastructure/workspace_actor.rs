@@ -716,7 +716,7 @@ impl WorkspaceActorRegistry {
     }
 
     #[cfg(test)]
-    fn live_len_for_test(&self) -> Result<usize, String> {
+    pub(crate) fn live_len_for_test(&self) -> Result<usize, String> {
         self.len()
     }
 

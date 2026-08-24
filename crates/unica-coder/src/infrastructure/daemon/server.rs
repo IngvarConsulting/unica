@@ -224,6 +224,9 @@ impl DaemonInvocationError {
             Self::Executor(InvocationExecutorError::Store(InvocationStoreError::Expired)) => {
                 DaemonErrorCode::TaskExpired
             }
+            Self::Executor(InvocationExecutorError::Store(InvocationStoreError::Capacity {
+                ..
+            })) => DaemonErrorCode::TaskCapacity,
             Self::Executor(InvocationExecutorError::Store(_)) => DaemonErrorCode::StoreFailed,
             Self::Executor(InvocationExecutorError::ExecutionFailed) => {
                 DaemonErrorCode::InvocationFailed
@@ -231,7 +234,7 @@ impl DaemonInvocationError {
             Self::Executor(InvocationExecutorError::StatePoisoned) => {
                 DaemonErrorCode::InvocationFailed
             }
-            Self::Executor(InvocationExecutorError::RestartRequired) => {
+            Self::Executor(InvocationExecutorError::RestartRequested) => {
                 DaemonErrorCode::DurabilityUncertain
             }
         }
@@ -523,8 +526,8 @@ impl DaemonInvocationRuntime {
         self.executor.has_active_invocations()
     }
 
-    fn restart_required(&self) -> bool {
-        self.executor.restart_required()
+    fn restart_requested(&self) -> bool {
+        self.executor.restart_requested()
     }
 }
 
@@ -660,6 +663,7 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
     let shutting_down = Arc::new(AtomicBool::new(false));
     let mut handlers = Vec::new();
     let mut idle_since = Instant::now();
+    let mut restart_requested = false;
 
     loop {
         match listener.accept() {
@@ -689,7 +693,8 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
         }
 
         handlers = reap_finished_handlers(handlers);
-        if invocation_runtime.restart_required() {
+        if invocation_runtime.restart_requested() {
+            restart_requested = true;
             break;
         }
         if active_leases.is_empty()?
@@ -706,6 +711,13 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
     }
 
     shutting_down.store(true, Ordering::Release);
+    drop(listener);
+    if restart_requested {
+        // Process death, not an in-process map or thread join, is the authority
+        // that releases a stalled store syscall or non-cooperative execution.
+        // Keep the PID-bound endpoint for stale-owner cleanup by the successor.
+        return Ok(());
+    }
     join_handlers(handlers);
     state.remove_endpoint_if_owned(&published)?;
     Ok(())
@@ -903,9 +915,12 @@ fn write_response(stream: &mut TcpStream, response: &ServerResponse) -> Result<(
 }
 
 #[cfg(test)]
-mod actor_capacity_tests {
+pub(crate) mod actor_capacity_tests {
     use super::*;
-    use crate::application::invocation_store::ToolIdentity;
+    use crate::application::invocation_store::{
+        NewInvocationRecord, SafeStatusMessage, StoredInvocationRecord, TaskTransition,
+        ToolIdentity,
+    };
     use crate::application::operation_descriptors::KnownLongReason;
     use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
     use std::sync::{mpsc, Barrier};
@@ -915,6 +930,57 @@ mod actor_capacity_tests {
     }
 
     struct RejectingAfterActorAdmissionService;
+
+    struct NonCooperativeActorService {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    struct UncertainCancelStore {
+        inner: FileInvocationStore,
+    }
+
+    impl InvocationStore for UncertainCancelStore {
+        fn create(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.create(record)
+        }
+
+        fn create_working(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.create_working(record)
+        }
+
+        fn get(
+            &self,
+            task_id: crate::domain::invocation::TaskId,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.get(task_id)
+        }
+
+        fn update(
+            &self,
+            task_id: crate::domain::invocation::TaskId,
+            transition: TaskTransition,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.update(task_id, transition)
+        }
+
+        fn cancel(
+            &self,
+            task_id: crate::domain::invocation::TaskId,
+            _status_message: SafeStatusMessage,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            Err(InvocationStoreError::CommitUncertain {
+                task_id,
+                operation: crate::application::invocation_store::CommitOperation::Cancel,
+            })
+        }
+    }
 
     impl CanonicalInvocationService for BlockingService {
         fn prepare(
@@ -957,6 +1023,27 @@ mod actor_capacity_tests {
         }
     }
 
+    impl CanonicalInvocationService for NonCooperativeActorService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
+        }
+
+        fn execute(
+            &self,
+            _invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            self.entered.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(DomainResult::success(
+                "non-cooperative staged actor result must stay hidden",
+            ))
+        }
+    }
+
     fn task_id(response: InvocationResponse) -> crate::domain::invocation::TaskId {
         match response {
             InvocationResponse::Task(snapshot) => snapshot.task_id,
@@ -976,7 +1063,7 @@ mod actor_capacity_tests {
             .collect::<Vec<_>>();
         let (store, _) =
             FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let (entered, entered_wait) = mpsc::channel();
+        let (entered, _entered_wait) = mpsc::channel();
         let runtime = DaemonInvocationRuntime {
             executor: Arc::new(InvocationExecutor::new(
                 Arc::new(store),
@@ -998,9 +1085,9 @@ mod actor_capacity_tests {
         let first = task_id(runtime.submit(request(&roots[0])).unwrap());
         let second = task_id(runtime.submit(request(&roots[1])).unwrap());
         let alias = task_id(runtime.submit(request(&roots[0].join("."))).unwrap());
-        for _ in 0..3 {
-            entered_wait.recv_timeout(Duration::from_secs(2)).unwrap();
-        }
+        // A returned task snapshot is the durable admission point. Its actor lease is already
+        // retained before the background worker is scheduled, so capacity evidence must not
+        // depend on runner scheduling.
         let rejected = runtime.submit(request(&roots[2])).unwrap_err();
         assert_eq!(rejected.protocol_code(), DaemonErrorCode::WorkspaceCapacity);
         assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 2);
@@ -1111,6 +1198,59 @@ mod actor_capacity_tests {
     }
 
     #[test]
+    pub(crate) fn restart_request_does_not_claim_noncooperative_actor_released_in_process() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let (entered, entered_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let runtime = DaemonInvocationRuntime::new_with_reconciliation_budget_for_test(
+            Arc::new(UncertainCancelStore { inner: store }),
+            Arc::new(NonCooperativeActorService {
+                entered,
+                release: Mutex::new(release_wait),
+            }),
+            Arc::new(TokioClock),
+            Duration::from_millis(100),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({}),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            0,
+        )
+        .unwrap();
+        let task_id = task_id(runtime.submit(request).unwrap());
+        entered_wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 1);
+
+        assert!(matches!(
+            runtime.cancel(task_id),
+            Err(DaemonInvocationError::Executor(
+                InvocationExecutorError::RestartRequested
+            ))
+        ));
+        assert!(runtime.restart_requested());
+        assert_eq!(
+            runtime.workspace_actors.live_len_for_test().unwrap(),
+            1,
+            "the executing ActorBoundExecution still owns the actor until process death"
+        );
+
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while runtime.workspace_actors.live_len_for_test().unwrap() != 0
+            && Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 0);
+    }
+
+    #[test]
     fn daemon_workspace_actor_admission_is_concurrent_bounded_and_fail_closed() {
         live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root();
         concurrent_same_identity_admission_creates_one_actor();
@@ -1135,6 +1275,13 @@ mod actor_capacity_tests {
         );
         assert_eq!(
             DaemonInvocationError::Executor(InvocationExecutorError::Store(
+                InvocationStoreError::Capacity { max_records: 4_096 },
+            ))
+            .protocol_code(),
+            DaemonErrorCode::TaskCapacity
+        );
+        assert_eq!(
+            DaemonInvocationError::Executor(InvocationExecutorError::Store(
                 InvocationStoreError::Expired,
             ))
             .protocol_code(),
@@ -1146,7 +1293,7 @@ mod actor_capacity_tests {
             DaemonErrorCode::InvocationFailed
         );
         assert_eq!(
-            DaemonInvocationError::Executor(InvocationExecutorError::RestartRequired)
+            DaemonInvocationError::Executor(InvocationExecutorError::RestartRequested)
                 .protocol_code(),
             DaemonErrorCode::DurabilityUncertain
         );

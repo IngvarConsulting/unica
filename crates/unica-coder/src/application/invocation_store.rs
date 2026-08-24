@@ -4,6 +4,7 @@ use crate::domain::invocation::{
     DomainResult, InvocationId, InvocationStatus, NormalizedArgumentsHash, ResumeDescriptor,
     SafeIdentityHash, TaskId,
 };
+use crate::domain::{cancellation::CancellationToken, code_intelligence::ProviderDeadline};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -233,6 +234,18 @@ pub(crate) enum CommitOperation {
 pub(crate) enum InvocationStoreError {
     NotFound,
     Expired,
+    DeadlineExceeded,
+    Cancelled,
+    ActorUnavailable,
+    Capacity {
+        max_records: usize,
+    },
+    RecordTooLarge {
+        max_bytes: usize,
+    },
+    TaskIdCollision {
+        task_id: TaskId,
+    },
     AlreadyOwned,
     CommitUncertain {
         task_id: TaskId,
@@ -251,6 +264,24 @@ impl fmt::Display for InvocationStoreError {
         match self {
             Self::NotFound => formatter.write_str("task record not found"),
             Self::Expired => formatter.write_str("task record expired"),
+            Self::DeadlineExceeded => formatter.write_str("task store deadline exceeded"),
+            Self::Cancelled => formatter.write_str("task store operation cancelled"),
+            Self::ActorUnavailable => formatter.write_str("task store actor is unavailable"),
+            Self::Capacity { max_records } => {
+                write!(
+                    formatter,
+                    "task store retained record capacity reached ({max_records})"
+                )
+            }
+            Self::RecordTooLarge { max_bytes } => {
+                write!(formatter, "task record exceeds the {max_bytes}-byte limit")
+            }
+            Self::TaskIdCollision { task_id } => {
+                write!(
+                    formatter,
+                    "preallocated task identity already exists: {task_id}"
+                )
+            }
             Self::AlreadyOwned => formatter.write_str("task store already has an active owner"),
             Self::CommitUncertain { task_id, operation } => write!(
                 formatter,
@@ -296,6 +327,61 @@ pub(crate) trait InvocationStore: Send + Sync {
         task_id: TaskId,
         status_message: SafeStatusMessage,
     ) -> Result<StoredInvocationRecord, InvocationStoreError>;
+
+    fn create_working_before(
+        &self,
+        new_record: NewInvocationRecord,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        store_operation_checkpoint(deadline, cancellation)?;
+        self.create_working(new_record)
+    }
+
+    fn get_before(
+        &self,
+        task_id: TaskId,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        store_operation_checkpoint(deadline, cancellation)?;
+        self.get(task_id)
+    }
+
+    fn update_before(
+        &self,
+        task_id: TaskId,
+        transition: TaskTransition,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        store_operation_checkpoint(deadline, cancellation)?;
+        self.update(task_id, transition)
+    }
+
+    fn cancel_before(
+        &self,
+        task_id: TaskId,
+        status_message: SafeStatusMessage,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        store_operation_checkpoint(deadline, cancellation)?;
+        self.cancel(task_id, status_message)
+    }
+}
+
+pub(crate) fn store_operation_checkpoint(
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<(), InvocationStoreError> {
+    if cancellation.is_cancelled() {
+        return Err(InvocationStoreError::Cancelled);
+    }
+    if deadline.remaining().is_zero() {
+        return Err(InvocationStoreError::DeadlineExceeded);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

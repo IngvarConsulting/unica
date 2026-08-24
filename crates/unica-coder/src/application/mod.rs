@@ -28,6 +28,7 @@ pub(crate) mod invocation;
 // Durable lifecycle ownership is connected by the daemon slice, not v0.12.
 #[allow(dead_code)]
 pub(crate) mod invocation_store;
+pub(crate) mod invocation_store_actor;
 pub(crate) mod metadata;
 pub(crate) mod operation_descriptors;
 pub(crate) mod operational_config;
