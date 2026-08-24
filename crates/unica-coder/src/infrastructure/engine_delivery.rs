@@ -5,20 +5,22 @@
 //! принадлежит серверу, а не вызову, который её застал, — она возобновляема,
 //! переживает отмену и достаётся следующему.
 
-use std::collections::HashMap;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
 
 use unica_bootstrap::{
-    DownloadObserver, HostTarget, HttpDownloader, RuntimeInstaller, RuntimeManifest,
+    BootstrapError, DeliveryForm, DownloadObserver, Failure, HostTarget, HttpDownloader,
+    RuntimeInstaller, RuntimeManifest,
 };
 
+use crate::application::shared_work::{
+    ArtifactReady, DeliveryFailure, DeliveryFailureClass, DeliveryWorkKey, EngineDeliveryState,
+    SharedWork, SharedWorkError, SharedWorkKey, SharedWorkLifetime, SharedWorkProgress,
+    SharedWorkSnapshot,
+};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::progress::{ProgressEvent, ProgressSink};
 
@@ -31,230 +33,133 @@ pub(crate) const DELIVERY_PROGRESS_META_KEY: &str = "io.unica/deliveryProgress";
 /// в секунду. Вызывающему столько не нужно, а хосту столько вредно.
 const DELIVERY_PROGRESS_STEP: Duration = Duration::from_millis(500);
 
-/// Чем кончилось ожидание доставки.
-pub(crate) enum Delivered {
-    /// Движок на месте, вызов продолжается. Путь установки здесь не нужен:
-    /// инструмент найдёт движок обычным разрешением, в кеше артефактов.
-    Ready,
-    /// Не успела за окно. Доставка идёт дальше, вызывающий получает состояние.
-    Working {
-        received: u64,
-        total: Option<u64>,
-    },
-    Failed(String),
-}
-
-/// Идущая доставка одного артефакта.
-pub(crate) struct Delivery {
-    started: Instant,
-    received: AtomicU64,
-    /// Ноль означает «сервер не сказал», а не «нисколько».
-    total: AtomicU64,
-    outcome: Mutex<Option<Result<PathBuf, String>>>,
-    settled: Condvar,
-}
-
-impl Delivery {
-    fn new() -> Self {
-        Self {
-            started: Instant::now(),
-            received: AtomicU64::new(0),
-            total: AtomicU64::new(0),
-            outcome: Mutex::new(None),
-            settled: Condvar::new(),
-        }
-    }
-
-    /// Сколько байтов уже на диске и сколько обещал сервер.
-    pub(crate) fn moved(&self, received: u64, total: Option<u64>) {
-        self.received.store(received, Ordering::Relaxed);
-        self.total.store(total.unwrap_or(0), Ordering::Relaxed);
-    }
-
-    fn seen(&self) -> (u64, Option<u64>) {
-        let total = self.total.load(Ordering::Relaxed);
-        (
-            self.received.load(Ordering::Relaxed),
-            (total > 0).then_some(total),
-        )
-    }
-
-    /// Через сколько повторять. Считается из измеренного темпа; пока считать
-    /// не из чего — `None`, потому что пустое место честнее выдуманного числа.
-    ///
-    /// Пол в секунду выведен из шага загрузчика: он обновляет счётчик раз в
-    /// 64 КБ, и опрос чаще не узнает ничего нового ни на одном канале.
-    fn poll_hint(&self) -> Option<u64> {
-        let (received, total) = self.seen();
-        let total = total?;
-        if received == 0 || received >= total {
-            return None;
-        }
-        let elapsed = self.started.elapsed().as_secs_f64();
-        if elapsed <= 0.0 {
-            return None;
-        }
-        let remaining = (total - received) as f64 / (received as f64 / elapsed);
-        Some((remaining * 1000.0).max(1000.0) as u64)
-    }
-
-    fn settle(&self, outcome: Result<PathBuf, String>) {
-        *self.outcome.lock().expect("delivery outcome") = Some(outcome);
-        self.settled.notify_all();
-    }
-}
-
 /// Кто ведёт учёт идущих доставок.
-#[derive(Default)]
 pub(crate) struct DeliveryDesk {
-    in_flight: Mutex<HashMap<String, Arc<Delivery>>>,
+    exact: SharedWork<ArtifactReady, DeliveryFailure>,
+}
+
+impl Default for DeliveryDesk {
+    fn default() -> Self {
+        Self {
+            exact: SharedWork::new(SharedWorkLifetime::ProducerBound),
+        }
+    }
 }
 
 impl DeliveryDesk {
-    /// Дождаться движка, начав доставку, если её ещё никто не начал.
-    ///
-    /// Отмена вызова прекращает ожидание, но не доставку: она доедет и достанется
-    /// следующему вызову.
-    pub(crate) fn deliver<W>(
+    #[allow(dead_code)] // Canonical daemon handlers join here after durable task handoff.
+    pub(crate) fn join<W>(
         &self,
-        artifact: &str,
+        key: DeliveryWorkKey,
+        work: W,
+    ) -> crate::application::shared_work::SharedWorkLease<ArtifactReady, DeliveryFailure>
+    where
+        W: FnOnce(
+                crate::application::shared_work::SharedWorkProducer,
+            ) -> Result<ArtifactReady, DeliveryFailure>
+            + Send
+            + 'static,
+    {
+        let expected = key.clone();
+        self.exact
+            .join_or_start(SharedWorkKey::from(&key), move |producer| {
+                let ready = work(producer)?;
+                if ready.identity() != &expected {
+                    return Err(DeliveryFailure::new(
+                        DeliveryFailureClass::Internal,
+                        "artifact-ready identity differs from exact delivery key",
+                    ));
+                }
+                Ok(ready)
+            })
+    }
+
+    pub(crate) fn request<W>(
+        &self,
+        key: DeliveryWorkKey,
         work: W,
         window: Duration,
         cancellation: &CancellationToken,
         progress: &dyn ProgressSink,
-    ) -> Delivered
+    ) -> EngineDeliveryState
     where
-        W: FnOnce(Arc<Delivery>) -> Result<PathBuf, String> + Send + 'static,
+        W: FnOnce(
+                crate::application::shared_work::SharedWorkProducer,
+            ) -> Result<ArtifactReady, DeliveryFailure>
+            + Send
+            + 'static,
     {
-        let (delivery, started_here) = self.start(artifact, work);
-        // Only the caller that created the server-owned delivery spends the
-        // synchronous window on it. Followers report the shared work state
-        // immediately, so one cold artifact can occupy at most one MCP
-        // admission slot instead of all 32.
-        let wait_window = if started_here { window } else { Duration::ZERO };
-        match self.wait(artifact, &delivery, wait_window, cancellation, progress) {
-            Some(outcome) => {
-                // Расчёт окончен: следующий вызов либо возьмёт готовое из кеша,
-                // либо начнёт заново, если доставка не удалась. Поздний waiter
-                // старой попытки не имеет права снять уже начатую замену.
-                self.retire(artifact, &delivery);
-                match outcome {
-                    Ok(_) => Delivered::Ready,
-                    Err(error) => Delivered::Failed(error),
+        let artifact = key.artifact().to_string();
+        let lease = self.join(key, work);
+        let wait_window = if lease.started_here() {
+            window
+        } else {
+            Duration::ZERO
+        };
+        let deadline = Instant::now() + wait_window;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let snapshot = lease.wait_timeout(remaining.min(DELIVERY_PROGRESS_STEP));
+            match snapshot {
+                SharedWorkSnapshot::Ready(ready) => return EngineDeliveryState::Ready(ready),
+                SharedWorkSnapshot::Failed(error) => {
+                    let failure = match &*error {
+                        SharedWorkError::Producer(failure) => Arc::clone(failure),
+                        SharedWorkError::ProducerPanicked => Arc::new(DeliveryFailure::new(
+                            DeliveryFailureClass::Internal,
+                            "engine delivery worker panicked",
+                        )),
+                    };
+                    return EngineDeliveryState::Failed {
+                        artifact: artifact.clone(),
+                        failure,
+                    };
+                }
+                SharedWorkSnapshot::Running {
+                    progress: moved,
+                    elapsed,
+                } => {
+                    publish_exact(&artifact, moved, progress);
+                    if cancellation.is_cancelled() || remaining.is_zero() {
+                        return EngineDeliveryState::Working {
+                            artifact: artifact.clone(),
+                            received: moved.completed,
+                            total: moved.total,
+                            poll_interval_ms: poll_hint(moved, elapsed),
+                        };
+                    }
                 }
             }
-            // Учёт не снимается: доставка идёт, и следующий вызов присоединится
-            // к ней, а не начнёт вторую.
-            None => {
-                let (received, total) = delivery.seen();
-                Delivered::Working { received, total }
-            }
-        }
-    }
-
-    /// Подсказка о повторе для идущей доставки.
-    pub(crate) fn poll_hint(&self, artifact: &str) -> Option<u64> {
-        self.in_flight
-            .lock()
-            .expect("in flight")
-            .get(artifact)
-            .and_then(|delivery| delivery.poll_hint())
-    }
-
-    /// Снять только ту доставку, чей результат наблюдал вызывающий.
-    ///
-    /// После отказа другой вызов может уже заменить запись новой попыткой;
-    /// удаление лишь по имени артефакта разрушило бы single-flight новой
-    /// доставки.
-    fn retire(&self, artifact: &str, settled: &Arc<Delivery>) {
-        let mut in_flight = self.in_flight.lock().expect("in flight");
-        if in_flight
-            .get(artifact)
-            .is_some_and(|current| Arc::ptr_eq(current, settled))
-        {
-            in_flight.remove(artifact);
-        }
-    }
-
-    fn start<W>(&self, artifact: &str, work: W) -> (Arc<Delivery>, bool)
-    where
-        W: FnOnce(Arc<Delivery>) -> Result<PathBuf, String> + Send + 'static,
-    {
-        let mut in_flight = self.in_flight.lock().expect("in flight");
-        if let Some(delivery) = in_flight.get(artifact) {
-            return (Arc::clone(delivery), false);
-        }
-        let delivery = Arc::new(Delivery::new());
-        in_flight.insert(artifact.to_owned(), Arc::clone(&delivery));
-        let running = Arc::clone(&delivery);
-        // Поток отцеплен намеренно: доставка переживает вызов, который её начал.
-        thread::spawn(move || {
-            let outcome = catch_unwind(AssertUnwindSafe(|| work(Arc::clone(&running))))
-                .unwrap_or_else(|_| Err("engine delivery worker panicked".to_string()));
-            running.settle(outcome);
-        });
-        (delivery, true)
-    }
-
-    /// `None` — вызов ушёл, не дождавшись: окно кончилось или его отменили.
-    fn wait(
-        &self,
-        artifact: &str,
-        delivery: &Arc<Delivery>,
-        window: Duration,
-        cancellation: &CancellationToken,
-        progress: &dyn ProgressSink,
-    ) -> Option<Result<PathBuf, String>> {
-        let deadline = Instant::now() + window;
-        let mut outcome = delivery.outcome.lock().expect("delivery outcome");
-        loop {
-            // Копия, а не изъятие: ждать могут несколько вызовов, и забравший
-            // исход первым оставил бы остальных ждать вечно.
-            if let Some(settled) = outcome.as_ref() {
-                return Some(settled.clone());
-            }
-            if cancellation.is_cancelled() {
-                return None;
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return None;
-            }
-            // Progress sinks are outside the delivery outcome contract. A
-            // blocked host notification must not keep the worker from settling.
-            drop(outcome);
-            publish(artifact, delivery, progress);
-            outcome = delivery.outcome.lock().expect("delivery outcome");
-            if outcome.is_some() {
-                continue;
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return None;
-            }
-            let (next, _) = delivery
-                .settled
-                .wait_timeout(outcome, left.min(DELIVERY_PROGRESS_STEP))
-                .expect("delivery outcome");
-            outcome = next;
         }
     }
 }
 
-fn publish(artifact: &str, delivery: &Arc<Delivery>, progress: &dyn ProgressSink) {
-    let (received, total) = delivery.seen();
+fn poll_hint(progress: SharedWorkProgress, elapsed: Duration) -> Option<u64> {
+    let total = progress.total?;
+    if progress.completed == 0 || progress.completed >= total || elapsed.is_zero() {
+        return None;
+    }
+    let remaining =
+        (total - progress.completed) as f64 / (progress.completed as f64 / elapsed.as_secs_f64());
+    Some((remaining * 1000.0).max(1000.0) as u64)
+}
+
+fn publish_exact(artifact: &str, moved: SharedWorkProgress, progress: &dyn ProgressSink) {
     progress.publish(ProgressEvent {
         meta_key: DELIVERY_PROGRESS_META_KEY,
         payload: json!({
             "artifact": artifact,
-            "receivedBytes": received,
-            "totalBytes": total,
+            "receivedBytes": moved.completed,
+            "totalBytes": moved.total,
         }),
-        progress: received as f64,
-        total: total.unwrap_or(0) as f64,
-        message: match total {
-            Some(total) => format!("delivering {artifact}: {received} of {total} bytes"),
-            None => format!("delivering {artifact}: {received} bytes"),
+        progress: moved.completed as f64,
+        total: moved.total.unwrap_or(0) as f64,
+        message: match moved.total {
+            Some(total) => format!(
+                "delivering {artifact}: {} of {total} bytes",
+                moved.completed
+            ),
+            None => format!("delivering {artifact}: {} bytes", moved.completed),
         },
     });
 }
@@ -269,6 +174,14 @@ pub(crate) struct EngineOrder {
     artifact: String,
     pub(crate) manifest_path: PathBuf,
     cache_root: PathBuf,
+}
+
+pub(crate) struct PreparedEngineOrder {
+    artifact: String,
+    manifest: RuntimeManifest,
+    host: HostTarget,
+    cache_root: PathBuf,
+    identity: DeliveryWorkKey,
 }
 
 /// Куда bootstrap ставит артефакты. Без неё рантайм запущен не загрузчиком, и
@@ -310,27 +223,93 @@ impl EngineOrder {
         &self.artifact
     }
 
+    pub(crate) fn prepare(self) -> Result<PreparedEngineOrder, DeliveryFailure> {
+        let manifest = RuntimeManifest::load(&self.manifest_path).map_err(classify_failure)?;
+        manifest
+            .validate(env!("CARGO_PKG_VERSION"))
+            .map_err(classify_failure)?;
+        let host = HostTarget::current().map_err(classify_failure)?;
+        let artifact = manifest
+            .artifact(&self.artifact)
+            .map_err(classify_failure)?;
+        let target = manifest
+            .artifact_target(&self.artifact, host)
+            .map_err(classify_failure)?;
+        let form = match DeliveryForm::of(&target.asset.media_type) {
+            Some(DeliveryForm::Archive) => {
+                crate::application::shared_work::DeliveryFormIdentity::Archive
+            }
+            Some(DeliveryForm::File) => crate::application::shared_work::DeliveryFormIdentity::File,
+            None => {
+                return Err(DeliveryFailure::new(
+                    DeliveryFailureClass::Configuration,
+                    format!(
+                        "artifact {} has unsupported delivery media type {}",
+                        self.artifact, target.asset.media_type
+                    ),
+                ))
+            }
+        };
+        let identity = DeliveryWorkKey::new(
+            self.artifact.clone(),
+            artifact.version.clone(),
+            host.as_str(),
+            target.asset.sha256.clone(),
+            form,
+        )?;
+        Ok(PreparedEngineOrder {
+            artifact: self.artifact,
+            manifest,
+            host,
+            cache_root: self.cache_root,
+            identity,
+        })
+    }
+}
+
+impl PreparedEngineOrder {
+    pub(crate) fn identity(&self) -> &DeliveryWorkKey {
+        &self.identity
+    }
+
     /// Доставить артефакт тем же установщиком, что ставит ядро.
-    pub(crate) fn acquire(self, delivery: Arc<Delivery>) -> Result<PathBuf, String> {
-        let manifest =
-            RuntimeManifest::load(&self.manifest_path).map_err(|error| error.to_string())?;
-        let host = HostTarget::current().map_err(|error| error.to_string())?;
+    pub(crate) fn acquire(
+        self,
+        delivery: crate::application::shared_work::SharedWorkProducer,
+    ) -> Result<ArtifactReady, DeliveryFailure> {
         RuntimeInstaller::new(
             self.cache_root,
             env!("CARGO_PKG_VERSION"),
             Arc::new(HttpDownloader::default()),
         )
-        .ensure_artifact(&manifest, &self.artifact, host, &Watching(delivery))
-        .map_err(|error| error.to_string())
+        .ensure_artifact(
+            &self.manifest,
+            &self.artifact,
+            self.host,
+            &WatchingExact(delivery),
+        )
+        .map_err(classify_failure)
+        .and_then(|root| ArtifactReady::new(self.identity, root))
     }
 }
 
-/// Наблюдатель загрузки, перекладывающий байты в идущую доставку.
-struct Watching(Arc<Delivery>);
+fn classify_failure(error: BootstrapError) -> DeliveryFailure {
+    let class = match error.failure() {
+        Failure::Network => DeliveryFailureClass::Network,
+        Failure::Timeout => DeliveryFailureClass::Timeout,
+        Failure::Disk => DeliveryFailureClass::Disk,
+        Failure::Checksum => DeliveryFailureClass::Checksum,
+        Failure::Configuration => DeliveryFailureClass::Configuration,
+        Failure::Internal => DeliveryFailureClass::Internal,
+    };
+    DeliveryFailure::new(class, error.to_string())
+}
 
-impl DownloadObserver for Watching {
+struct WatchingExact(crate::application::shared_work::SharedWorkProducer);
+
+impl DownloadObserver for WatchingExact {
     fn transferred(&self, received: u64, total: Option<u64>) {
-        self.0.moved(received, total);
+        self.0.report(received, total);
     }
 }
 
@@ -338,6 +317,10 @@ impl DownloadObserver for Watching {
 mod tests {
     use super::*;
 
+    use crate::application::shared_work::{
+        ArtifactReady, DeliveryFailure, DeliveryFailureClass, DeliveryFormIdentity,
+        DeliveryWorkKey, SharedWorkKey,
+    };
     use crate::domain::progress::NoopProgressSink;
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -436,340 +419,193 @@ mod tests {
 
     const WIDE: Duration = Duration::from_secs(5);
 
-    fn expect_ready(delivered: Delivered) {
-        match delivered {
-            Delivered::Ready => {}
-            Delivered::Working { received, total } => {
-                panic!("ожидали движок, получили работу: {received}/{total:?}")
-            }
-            Delivered::Failed(error) => panic!("ожидали движок, получили отказ: {error}"),
-        }
-    }
-
-    fn expect_eventually_ready(desk: &DeliveryDesk, artifact: &'static str) {
-        let deadline = Instant::now() + WIDE;
-        loop {
-            match desk.deliver(
-                artifact,
-                |_| panic!("the existing delivery must not be started twice"),
-                WIDE,
-                &CancellationToken::new(),
-                &NoopProgressSink,
-            ) {
-                Delivered::Ready => return,
-                Delivered::Working { .. } if Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(5));
-                }
-                Delivered::Working { .. } => panic!("delivery did not settle before the deadline"),
-                Delivered::Failed(error) => panic!("delivery failed: {error}"),
-            }
-        }
+    fn exact_delivery_key(sha256: char) -> DeliveryWorkKey {
+        DeliveryWorkKey::new(
+            "rlm-tools-bsl",
+            "1.33.0",
+            "darwin-arm64",
+            sha256.to_string().repeat(64),
+            DeliveryFormIdentity::Archive,
+        )
+        .expect("valid delivery key")
     }
 
     #[test]
-    fn a_delivery_inside_the_window_hands_over_the_engine() {
+    fn exact_delivery_progress_is_projected_to_the_owning_waiter() {
         let desk = desk();
-
-        let delivered = desk.deliver(
-            "rlm-tools-bsl",
-            |delivery| {
-                delivery.moved(7, Some(7));
-                Ok(PathBuf::from("/cache/rlm-tools-bsl/1.33.0/darwin-arm64"))
-            },
-            WIDE,
-            &CancellationToken::new(),
-            &Heard::default(),
-        );
-
-        expect_ready(delivered);
-    }
-
-    #[test]
-    fn a_delivery_longer_than_the_window_answers_working_and_keeps_going() {
-        // Хост режет вызов своим сроком, и его ответ уносит наш целиком.
-        // Поэтому отвечаем сами — а доставка продолжается.
-        let desk = Arc::new(desk());
+        let key = exact_delivery_key('0');
         let release = Arc::new(AtomicBool::new(false));
-        let held = Arc::clone(&release);
-
-        let delivered = desk.deliver(
-            "rlm-tools-bsl",
-            move |delivery| {
-                delivery.moved(1024, Some(4096));
-                while !held.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(5));
+        let heard = Heard::default();
+        let outcome = desk.request(
+            key.clone(),
+            {
+                let release = Arc::clone(&release);
+                move |producer| {
+                    producer.report(1024, Some(4096));
+                    while !release.load(Ordering::SeqCst) {
+                        thread::yield_now();
+                    }
+                    ArtifactReady::new(key, PathBuf::from("/cache/progress"))
                 }
-                Ok(PathBuf::from("/cache/rlm-tools-bsl"))
             },
-            Duration::from_millis(120),
+            Duration::from_millis(20),
             &CancellationToken::new(),
-            &NoopProgressSink,
+            &heard,
         );
-
-        assert!(
-            matches!(
-                delivered,
-                Delivered::Working {
-                    received: 1024,
-                    total: Some(4096)
-                }
-            ),
-            "вызов отвечает состоянием, а не ждёт до конца"
-        );
-        assert!(
-            desk.poll_hint("rlm-tools-bsl").is_some(),
-            "подсказка о повторе считается из измеренного темпа"
-        );
-
         release.store(true, Ordering::SeqCst);
-        expect_eventually_ready(&desk, "rlm-tools-bsl");
+
+        assert!(matches!(
+            outcome,
+            EngineDeliveryState::Working {
+                received: 1024,
+                total: Some(4096),
+                ..
+            }
+        ));
+        let events = heard.events.lock().expect("events");
+        assert!(events.iter().all(|event| {
+            event.meta_key == DELIVERY_PROGRESS_META_KEY
+                && event
+                    .payload
+                    .get("artifact")
+                    .and_then(|value| value.as_str())
+                    == Some("rlm-tools-bsl")
+        }));
     }
 
     #[test]
-    fn followers_of_an_in_flight_delivery_return_working_without_waiting() {
-        // Every waiting tools/call owns one MCP admission slot. If followers
-        // wait for the same 30-second delivery window, 32 identical cold calls
-        // can occupy the whole dispatcher even though only one download exists.
+    fn cancelling_one_delivery_follower_does_not_stop_the_process_owned_producer() {
         let desk = Arc::new(desk());
-        let release = Arc::new(AtomicBool::new(false));
+        let key = exact_delivery_key('9');
+        let producers = Arc::new(AtomicUsize::new(0));
         let started = Arc::new(AtomicBool::new(false));
-
-        let first_desk = Arc::clone(&desk);
-        let first_release = Arc::clone(&release);
-        let first_started = Arc::clone(&started);
-        let first = thread::spawn(move || {
-            first_desk.deliver(
-                "rlm-tools-bsl",
-                move |delivery| {
-                    delivery.moved(1024, Some(4096));
-                    first_started.store(true, Ordering::SeqCst);
-                    while !first_release.load(Ordering::SeqCst) {
-                        thread::yield_now();
-                    }
-                    Ok(PathBuf::from("/cache/rlm-tools-bsl"))
-                },
-                WIDE,
-                &CancellationToken::new(),
-                &NoopProgressSink,
-            )
-        });
-        while !started.load(Ordering::SeqCst) {
-            thread::yield_now();
-        }
-
-        let follower_desk = Arc::clone(&desk);
-        let (sent, received) = std::sync::mpsc::channel();
-        let follower = thread::spawn(move || {
-            let outcome = follower_desk.deliver(
-                "rlm-tools-bsl",
-                |_| panic!("the follower must not start a second delivery"),
-                WIDE,
-                &CancellationToken::new(),
-                &NoopProgressSink,
-            );
-            sent.send(outcome).unwrap();
-        });
-        let prompt = received.recv_timeout(Duration::from_millis(200)).ok();
-
-        release.store(true, Ordering::SeqCst);
-        let first_outcome = first.join().expect("first caller");
-        follower.join().expect("follower caller");
-        expect_ready(first_outcome);
-
-        assert!(
-            matches!(
-                prompt,
-                Some(Delivered::Working {
-                    received: 1024,
-                    total: Some(4096)
-                })
-            ),
-            "a follower held an admission slot instead of returning current work state"
-        );
-    }
-
-    #[test]
-    fn two_calls_share_one_delivery_but_only_the_owner_waits() {
-        // Один архив, две сессии. Качать его дважды значит платить дважды за то
-        // же самое и получить два писателя на один файл.
-        let desk = Arc::new(desk());
-        let started = Arc::new(AtomicUsize::new(0));
         let release = Arc::new(AtomicBool::new(false));
-        let owner_desk = Arc::clone(&desk);
-        let owner_started = Arc::clone(&started);
-        let owner_release = Arc::clone(&release);
-        let owner = thread::spawn(move || {
-            owner_desk.deliver(
-                "rlm-tools-bsl",
-                move |_| {
-                    owner_started.fetch_add(1, Ordering::SeqCst);
-                    while !owner_release.load(Ordering::SeqCst) {
-                        thread::yield_now();
-                    }
-                    Ok(PathBuf::from("/cache/rlm-tools-bsl"))
-                },
-                WIDE,
-                &CancellationToken::new(),
-                &NoopProgressSink,
-            )
-        });
-        while started.load(Ordering::SeqCst) == 0 {
-            thread::yield_now();
-        }
-        let follower = desk.deliver(
-            "rlm-tools-bsl",
-            |_| panic!("the shared delivery must not start twice"),
-            WIDE,
-            &CancellationToken::new(),
-            &NoopProgressSink,
-        );
-        assert!(matches!(follower, Delivered::Working { .. }));
-        release.store(true, Ordering::SeqCst);
-        expect_ready(owner.join().expect("owner"));
-        assert_eq!(started.load(Ordering::SeqCst), 1, "качали один раз");
-    }
-
-    #[test]
-    fn a_cancelled_call_does_not_cancel_the_delivery() {
-        // Загрузка возобновляема и полезна следующему вызову, поэтому
-        // принадлежит серверу, а не вызову, который её застал.
-        let desk = Arc::new(desk());
-        let started = Arc::new(AtomicUsize::new(0));
-        let release = Arc::new(AtomicBool::new(false));
-        let cancellation = CancellationToken::new();
-        let leaving = {
+        let owner = {
             let desk = Arc::clone(&desk);
+            let key = key.clone();
+            let producers = Arc::clone(&producers);
             let started = Arc::clone(&started);
             let release = Arc::clone(&release);
-            let cancellation = cancellation.clone();
             thread::spawn(move || {
-                desk.deliver(
-                    "rlm-tools-bsl",
-                    move |_| {
-                        started.fetch_add(1, Ordering::SeqCst);
+                desk.request(
+                    key.clone(),
+                    move |producer| {
+                        producers.fetch_add(1, Ordering::SeqCst);
+                        started.store(true, Ordering::SeqCst);
                         while !release.load(Ordering::SeqCst) {
-                            thread::sleep(Duration::from_millis(5));
+                            assert!(
+                                !producer.is_cancelled(),
+                                "process-owned delivery inherited follower cancellation"
+                            );
+                            thread::yield_now();
                         }
-                        Ok(PathBuf::from("/cache/rlm-tools-bsl"))
+                        ArtifactReady::new(key, PathBuf::from("/cache/owner"))
                     },
-                    Duration::from_secs(30),
-                    &cancellation,
+                    WIDE,
+                    &CancellationToken::new(),
                     &NoopProgressSink,
                 )
             })
         };
-        while started.load(Ordering::SeqCst) == 0 {
-            thread::sleep(Duration::from_millis(5));
+        while !started.load(Ordering::SeqCst) {
+            thread::yield_now();
+        }
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let follower = desk.request(
+            key,
+            |_| panic!("a follower must not start another producer"),
+            WIDE,
+            &cancelled,
+            &NoopProgressSink,
+        );
+        assert!(matches!(follower, EngineDeliveryState::Working { .. }));
+
+        release.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            owner.join().unwrap(),
+            EngineDeliveryState::Ready(_)
+        ));
+        assert_eq!(producers.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn two_worktrees_join_one_identical_immutable_delivery() {
+        let desk = Arc::new(desk());
+        let key = exact_delivery_key('a');
+        let producers = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
+
+        let owner = {
+            let desk = Arc::clone(&desk);
+            let key = key.clone();
+            let producers = Arc::clone(&producers);
+            let release = Arc::clone(&release);
+            let started = Arc::clone(&started);
+            thread::spawn(move || {
+                desk.request(
+                    key.clone(),
+                    move |producer| {
+                        producers.fetch_add(1, Ordering::SeqCst);
+                        producer.report(1024, Some(4096));
+                        started.store(true, Ordering::SeqCst);
+                        while !release.load(Ordering::SeqCst) {
+                            thread::yield_now();
+                        }
+                        ArtifactReady::new(key, PathBuf::from("/cache/from-worktree-a"))
+                    },
+                    WIDE,
+                    &CancellationToken::new(),
+                    &NoopProgressSink,
+                )
+            })
+        };
+        while !started.load(Ordering::SeqCst) {
+            thread::yield_now();
         }
 
-        cancellation.cancel();
-
-        assert!(
-            matches!(leaving.join().expect("waiter"), Delivered::Working { .. }),
-            "ушедший вызов перестаёт ждать, но доставку не отменяет"
+        let follower = desk.request(
+            key,
+            |_| panic!("worktree B must join worktree A's immutable delivery"),
+            WIDE,
+            &CancellationToken::new(),
+            &NoopProgressSink,
         );
+        assert!(matches!(follower, EngineDeliveryState::Working { .. }));
         release.store(true, Ordering::SeqCst);
-
-        expect_eventually_ready(&desk, "rlm-tools-bsl");
-        assert_eq!(started.load(Ordering::SeqCst), 1, "качали один раз");
+        assert!(matches!(
+            owner.join().unwrap(),
+            EngineDeliveryState::Ready(_)
+        ));
+        assert_eq!(producers.load(Ordering::SeqCst), 1);
     }
 
     #[test]
-    fn waiting_shows_that_a_delivery_is_running() {
-        // Сколько байтов успеет приехать к первому сообщению — дело гонки, а
-        // вот что сообщение уходит и несёт ключ доставки — нет.
+    fn different_delivery_sha256_values_never_share() {
         let desk = desk();
-        let heard = Heard::default();
+        let producers = Arc::new(AtomicUsize::new(0));
 
-        desk.deliver(
-            "rlm-tools-bsl",
-            |delivery| {
-                delivery.moved(1024, Some(4096));
-                thread::sleep(Duration::from_millis(60));
-                Ok(PathBuf::from("/cache/rlm-tools-bsl"))
-            },
-            WIDE,
-            &CancellationToken::new(),
-            &heard,
-        );
-
-        let events = heard.events.lock().expect("events").clone();
-        assert!(!events.is_empty(), "вызывающий видит, что доставка идёт");
-        assert!(
-            events
-                .iter()
-                .all(|event| event.meta_key == DELIVERY_PROGRESS_META_KEY),
-            "у доставки свой ключ: {events:?}"
-        );
-    }
-
-    #[test]
-    fn a_progress_event_names_the_bytes_on_disk() {
-        let delivery = Arc::new(Delivery::new());
-        delivery.moved(1024, Some(4096));
-        let heard = Heard::default();
-
-        publish("rlm-tools-bsl", &delivery, &heard);
-
-        let event = heard.events.lock().expect("events")[0].clone();
-        assert_eq!(event.progress, 1024.0);
-        assert_eq!(event.total, 4096.0);
-        assert!(
-            event.message.contains("1024") && event.message.contains("4096"),
-            "в сообщении названы байты: {}",
-            event.message
-        );
-        assert_eq!(
-            event.payload.get("artifact").and_then(|name| name.as_str()),
-            Some("rlm-tools-bsl")
-        );
-    }
-
-    #[test]
-    fn a_delivery_whose_size_is_unknown_still_reports_what_arrived() {
-        // Сервер не обязан обещать длину. Ноль в total означает «не сказал», а
-        // не «нисколько», и вызывающему всё равно видно движение.
-        let delivery = Arc::new(Delivery::new());
-        delivery.moved(1024, None);
-        let heard = Heard::default();
-
-        publish("rlm-tools-bsl", &delivery, &heard);
-
-        let event = heard.events.lock().expect("events")[0].clone();
-        assert_eq!(event.progress, 1024.0);
-        assert_eq!(event.total, 0.0);
-        assert!(event.message.contains("1024"), "{}", event.message);
-    }
-
-    #[test]
-    fn a_delivery_that_failed_is_tried_again_by_the_next_call() {
-        // Отказ доставки — не приговор артефакту: сеть вернётся, и следующий
-        // вызов должен получить движок, а не запомненную неудачу.
-        let desk = desk();
-        let attempts = Arc::new(AtomicUsize::new(0));
-
-        let first = desk.deliver(
-            "rlm-tools-bsl",
+        let first = desk.request(
+            exact_delivery_key('b'),
             {
-                let attempts = Arc::clone(&attempts);
+                let producers = Arc::clone(&producers);
                 move |_| {
-                    attempts.fetch_add(1, Ordering::SeqCst);
-                    Err("канал оборвался".to_string())
+                    producers.fetch_add(1, Ordering::SeqCst);
+                    ArtifactReady::new(exact_delivery_key('b'), PathBuf::from("/cache/b"))
                 }
             },
             WIDE,
             &CancellationToken::new(),
             &NoopProgressSink,
         );
-        assert!(matches!(first, Delivered::Failed(_)));
-
-        let second = desk.deliver(
-            "rlm-tools-bsl",
+        let second = desk.request(
+            exact_delivery_key('c'),
             {
-                let attempts = Arc::clone(&attempts);
+                let producers = Arc::clone(&producers);
                 move |_| {
-                    attempts.fetch_add(1, Ordering::SeqCst);
-                    Ok(PathBuf::from("/cache/rlm-tools-bsl"))
+                    producers.fetch_add(1, Ordering::SeqCst);
+                    ArtifactReady::new(exact_delivery_key('c'), PathBuf::from("/cache/c"))
                 }
             },
             WIDE,
@@ -777,86 +613,72 @@ mod tests {
             &NoopProgressSink,
         );
 
-        assert!(matches!(second, Delivered::Ready));
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(matches!(first, EngineDeliveryState::Ready(_)));
+        assert!(matches!(second, EngineDeliveryState::Ready(_)));
+        assert_eq!(producers.load(Ordering::SeqCst), 2);
     }
 
     #[test]
-    fn a_panicking_delivery_settles_as_a_failure_instead_of_wedging_the_artifact() {
+    fn interrupted_archive_is_a_classified_failure_and_never_artifact_ready() {
         let desk = desk();
-        let (delivery, started) =
-            desk.start("rlm-tools-bsl", |_| panic!("simulated delivery panic"));
-        assert!(started);
+        let outcome = desk.request(
+            exact_delivery_key('d'),
+            |_| {
+                Err(DeliveryFailure::new(
+                    DeliveryFailureClass::Network,
+                    "connection reset",
+                ))
+            },
+            WIDE,
+            &CancellationToken::new(),
+            &NoopProgressSink,
+        );
 
-        let outcome = desk
-            .wait(
-                "rlm-tools-bsl",
-                &delivery,
-                Duration::from_millis(500),
-                &CancellationToken::new(),
-                &NoopProgressSink,
-            )
-            .expect("panic must settle the delivery");
-
-        assert!(outcome
-            .expect_err("panic is a failed delivery")
-            .contains("panicked"));
+        let EngineDeliveryState::Failed { failure, .. } = outcome else {
+            panic!("an interrupted archive must not become ArtifactReady");
+        };
+        assert_eq!(failure.class(), DeliveryFailureClass::Network);
     }
 
     #[test]
-    fn a_settled_delivery_cannot_retire_its_replacement() {
-        // Старый waiter может проснуться после того, как другой вызов уже
-        // увидел его отказ, снял запись и начал новую попытку. Очистка только
-        // по имени артефакта тогда удалит уже новую доставку и разрешит третью.
+    fn delivery_boundary_rejects_non_delivery_key_mismatched_identity_and_relative_root() {
         let desk = desk();
-        let (old, _) = desk.start("rlm-tools-bsl", |_| Err("old failed".to_string()));
-        assert!(desk
-            .wait(
-                "rlm-tools-bsl",
-                &old,
-                WIDE,
-                &CancellationToken::new(),
-                &NoopProgressSink,
-            )
-            .is_some());
-        desk.retire("rlm-tools-bsl", &old);
+        let non_delivery = SharedWorkKey::Runtime {
+            resource_identity: "ib:main".to_string(),
+            lease_identity: "read".to_string(),
+        };
+        let wrong = exact_delivery_key('e');
+        let expected = exact_delivery_key('f');
 
-        let release = Arc::new((Mutex::new(false), Condvar::new()));
-        let (replacement, _) = desk.start("rlm-tools-bsl", {
-            let release = Arc::clone(&release);
-            move |_| {
-                let (lock, changed) = &*release;
-                let mut ready = lock.lock().expect("release");
-                while !*ready {
-                    ready = changed.wait(ready).expect("release");
-                }
-                Ok(PathBuf::from("/cache/replacement"))
-            }
-        });
+        let non_delivery_failure = DeliveryWorkKey::try_from(non_delivery)
+            .expect_err("a runtime key must not enter delivery");
+        let mismatched = desk.request(
+            expected.clone(),
+            move |_| ArtifactReady::new(wrong, PathBuf::from("/cache/wrong")),
+            WIDE,
+            &CancellationToken::new(),
+            &NoopProgressSink,
+        );
+        let relative_failure =
+            ArtifactReady::new(exact_delivery_key('7'), PathBuf::from("relative"))
+                .expect_err("an ArtifactReady root must be absolute");
 
-        desk.retire("rlm-tools-bsl", &old);
+        assert_eq!(non_delivery_failure.class(), DeliveryFailureClass::Internal);
+        assert_eq!(relative_failure.class(), DeliveryFailureClass::Internal);
+        assert!(matches!(
+            mismatched,
+            EngineDeliveryState::Failed { ref failure, .. }
+                if failure.class() == DeliveryFailureClass::Internal
+        ));
+    }
 
-        let current = desk
-            .in_flight
-            .lock()
-            .expect("in flight")
-            .get("rlm-tools-bsl")
-            .cloned()
-            .expect("replacement remains registered");
-        assert!(Arc::ptr_eq(&current, &replacement));
-
-        let (lock, changed) = &*release;
-        *lock.lock().expect("release") = true;
-        changed.notify_all();
-        assert!(desk
-            .wait(
-                "rlm-tools-bsl",
-                &replacement,
-                WIDE,
-                &CancellationToken::new(),
-                &NoopProgressSink,
-            )
-            .is_some());
-        desk.retire("rlm-tools-bsl", &replacement);
+    #[test]
+    fn exact_delivery_identity_failure_and_follower_cancellation_are_one_contract() {
+        exact_delivery_progress_is_projected_to_the_owning_waiter();
+        cancelling_one_delivery_follower_does_not_stop_the_process_owned_producer();
+        two_worktrees_join_one_identical_immutable_delivery();
+        different_delivery_sha256_values_never_share();
+        interrupted_archive_is_a_classified_failure_and_never_artifact_ready();
+        delivery_boundary_rejects_non_delivery_key_mismatched_identity_and_relative_root();
     }
 }

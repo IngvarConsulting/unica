@@ -37,6 +37,7 @@ pub(crate) mod ports;
 pub(crate) mod project_health;
 pub(crate) mod result_store;
 pub(crate) mod runtime_admission;
+pub(crate) mod shared_work;
 pub(crate) mod source_navigation;
 pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
@@ -1445,9 +1446,38 @@ fn call_tool_with_runtime_admission(
     // обработчик скажет про отсутствующий движок ровно то же, что говорил до
     // сих пор. Предпросмотр ничего не исполняет и потому ничего не качает.
     if !dry_run {
-        if let Some(state) = ports.deliver_engine_if_missing(spec, &context, cancellation, progress)
-        {
-            return Ok(long_work_result(spec, &context, mode, state));
+        match ports.deliver_engine_if_missing(spec, &context, cancellation, progress) {
+            shared_work::EngineDeliveryState::NotRequired
+            | shared_work::EngineDeliveryState::Ready(_) => {}
+            shared_work::EngineDeliveryState::Working {
+                artifact,
+                received,
+                total,
+                poll_interval_ms,
+            } => {
+                let state = crate::domain::long_work::WorkState {
+                    status: crate::domain::long_work::WorkStatus::Working,
+                    status_message: match total {
+                        Some(total) => {
+                            format!("delivering {artifact}: {received} of {total} bytes on disk")
+                        }
+                        None => format!("delivering {artifact}: {received} bytes on disk"),
+                    },
+                    poll_interval_ms,
+                };
+                return Ok(long_work_result(spec, &context, mode, state));
+            }
+            shared_work::EngineDeliveryState::Failed { artifact, failure } => {
+                let state = crate::domain::long_work::WorkState {
+                    status: crate::domain::long_work::WorkStatus::Failed,
+                    status_message: format!(
+                        "delivery of {artifact} failed: {}",
+                        failure.legacy_diagnostic()
+                    ),
+                    poll_interval_ms: None,
+                };
+                return Ok(long_work_result(spec, &context, mode, state));
+            }
         }
     }
 
@@ -4528,7 +4558,7 @@ pub(crate) mod tests {
     struct DeliveryRecordingPorts {
         steps: std::sync::Mutex<Vec<&'static str>>,
         missing: Option<crate::domain::engine::MissingEngine>,
-        working: Option<crate::domain::long_work::WorkState>,
+        delivery: shared_work::EngineDeliveryState,
     }
 
     impl ports::ApplicationPorts for DeliveryRecordingPorts {
@@ -4569,9 +4599,9 @@ pub(crate) mod tests {
             _context: &WorkspaceContext,
             _cancellation: &CancellationToken,
             _progress: &dyn ProgressSink,
-        ) -> Option<crate::domain::long_work::WorkState> {
+        ) -> shared_work::EngineDeliveryState {
             self.steps.lock().expect("steps").push("delivery");
-            self.working.clone()
+            self.delivery.clone()
         }
 
         fn invoke_handler_with_operational_config(
@@ -4759,11 +4789,12 @@ pub(crate) mod tests {
         // Срез хоста уносит наш ответ целиком, поэтому отвечаем сами: успешный
         // результат с состоянием, а обработчик не зовётся — работать нечем.
         let ports = Arc::new(DeliveryRecordingPorts {
-            working: Some(crate::domain::long_work::WorkState {
-                status: crate::domain::long_work::WorkStatus::Working,
-                status_message: "delivering bsl-analyzer: 12 of 69 bytes on disk".to_owned(),
+            delivery: shared_work::EngineDeliveryState::Working {
+                artifact: "bsl-analyzer".to_owned(),
+                received: 12,
+                total: Some(69),
                 poll_interval_ms: Some(9_000),
-            }),
+            },
             ..Default::default()
         });
         let app = UnicaApplication::with_ports(ports.clone());
@@ -4785,6 +4816,13 @@ pub(crate) mod tests {
             Some(9_000)
         );
         assert_eq!(
+            result
+                .work
+                .as_ref()
+                .map(|work| work.status_message.as_str()),
+            Some("delivering bsl-analyzer: 12 of 69 bytes on disk")
+        );
+        assert_eq!(
             *ports.steps.lock().expect("steps"),
             vec!["delivery"],
             "обработчик не зовётся: движка ещё нет"
@@ -4796,11 +4834,13 @@ pub(crate) mod tests {
         // `working` — состояние, а не неудача, и потому `ok`. Отказ доставки —
         // неудача, и притворяться идущей работой ему нечем.
         let ports = Arc::new(DeliveryRecordingPorts {
-            working: Some(crate::domain::long_work::WorkState {
-                status: crate::domain::long_work::WorkStatus::Failed,
-                status_message: "delivery of bsl-analyzer failed: connection refused".to_owned(),
-                poll_interval_ms: None,
-            }),
+            delivery: shared_work::EngineDeliveryState::Failed {
+                artifact: "bsl-analyzer".to_owned(),
+                failure: Arc::new(shared_work::DeliveryFailure::new(
+                    shared_work::DeliveryFailureClass::Network,
+                    "connection refused",
+                )),
+            },
             ..Default::default()
         });
         let app = UnicaApplication::with_ports(ports.clone());
@@ -4821,6 +4861,10 @@ pub(crate) mod tests {
             "причина названа: {:?}",
             result.errors
         );
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| { error == "delivery of bsl-analyzer failed: connection refused" }));
         assert_eq!(
             result.work.as_ref().map(|work| work.status),
             Some(crate::domain::long_work::WorkStatus::Failed)

@@ -4,6 +4,7 @@
 
 | Символ | Вид | Статус | Построено | Суть | Файл |
 | --- | --- | --- | --- | --- | --- |
+| `CTR.APP.EXACT-SHARED-DELIVERY` | контракт · product | active |  | Exact SharedWork поставки движка | [contracts/CTR.APP.EXACT-SHARED-DELIVERY.md](contracts/CTR.APP.EXACT-SHARED-DELIVERY.md) |
 | `CTR.FORMAT.PLATFORM-XML-8-3-27` | контракт · product | active |  | Чтение ресурсов сохраняет байты корпуса Platform XML 8.3.27 | [contracts/CTR.FORMAT.PLATFORM-XML-8-3-27.md](contracts/CTR.FORMAT.PLATFORM-XML-8-3-27.md) |
 | `CTR.WIRE.COMPATIBILITY-TASK-TOOLS` | контракт · product | active |  | Три compatibility-инструмента durable Task | [contracts/CTR.WIRE.COMPATIBILITY-TASK-TOOLS.md](contracts/CTR.WIRE.COMPATIBILITY-TASK-TOOLS.md) |
 | `CTR.WIRE.DAEMON-INVOCATION-PROTOCOL` | контракт · product | active |  | Внутренний daemon protocol canonical Invocation | [contracts/CTR.WIRE.DAEMON-INVOCATION-PROTOCOL.md](contracts/CTR.WIRE.DAEMON-INVOCATION-PROTOCOL.md) |
@@ -48,6 +49,7 @@
 | `DEC.2026-08-23.WORKSPACE-ACTOR-SLICE` | решение · product | active | да | Daemon изолирует рабочие пространства акторами | [decisions/2026-08-23-workspace-actor-slice.md](decisions/2026-08-23-workspace-actor-slice.md) |
 | `DEC.2026-08-24.COMPATIBILITY-TASK-TOOLS-SLICE` | решение · product | active | да | Скрытый V13 эмулирует Tasks тремя обычными инструментами | [decisions/2026-08-24-compatibility-task-tools-slice.md](decisions/2026-08-24-compatibility-task-tools-slice.md) |
 | `DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE` | решение · product | active | да | Скрытый canonical v0.13 profile исполняется только в daemon | [decisions/2026-08-24-daemon-invocation-routing-slice.md](decisions/2026-08-24-daemon-invocation-routing-slice.md) |
+| `DEC.2026-08-24.EXACT-SHARED-DELIVERY-SLICE` | решение · product | active | да | Daemon объединяет холодную поставку только по точной identity | [decisions/2026-08-24-exact-shared-delivery-slice.md](decisions/2026-08-24-exact-shared-delivery-slice.md) |
 | `DEC.2026-08-24.NATIVE-TASK-PROJECTION-SLICE` | решение · product | active | да | Скрытый V13 проецирует durable Invocation как SEP-2663 Task | [decisions/2026-08-24-native-task-projection-slice.md](decisions/2026-08-24-native-task-projection-slice.md) |
 | `INV.APP.CODE-DEFINITION-READINESS` | инвариант · product | active |  | Definition не публикует ложный типизированный успех | [invariants/INV.APP.CODE-DEFINITION-READINESS.md](invariants/INV.APP.CODE-DEFINITION-READINESS.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Оверлей конфигурации не меняет исходный снимок | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
@@ -69,6 +71,7 @@
 | `INV.APP.DOCUMENTATION-SECTIONS` | инвариант · product | active |  | Секции документации следуют порядку поставщиков | [invariants/INV.APP.DOCUMENTATION-SECTIONS.md](invariants/INV.APP.DOCUMENTATION-SECTIONS.md) |
 | `INV.APP.EVENT-BINDING` | инвариант · product | active |  | Обработчик подписки требует явный признак неглобального модуля | [invariants/INV.APP.EVENT-BINDING.md](invariants/INV.APP.EVENT-BINDING.md) |
 | `INV.APP.EVENT-SOURCE` | инвариант · product | active |  | Логический источник подписки проходит обратное чтение | [invariants/INV.APP.EVENT-SOURCE.md](invariants/INV.APP.EVENT-SOURCE.md) |
+| `INV.APP.EXACT-SHARED-WORK` | инвариант · product | active |  | SharedWork линеаризует exact-key producer и владельцев | [invariants/INV.APP.EXACT-SHARED-WORK.md](invariants/INV.APP.EXACT-SHARED-WORK.md) |
 | `INV.APP.HIDDEN-SERVICES` | инвариант · product | active |  | Служебная топология отделяет пользовательский executor от workspace helpers | [invariants/INV.APP.HIDDEN-SERVICES.md](invariants/INV.APP.HIDDEN-SERVICES.md) |
 | `INV.APP.META-FINDINGS` | инвариант · product | active |  | Находка метаданных несёт код, поле и язык | [invariants/INV.APP.META-FINDINGS.md](invariants/INV.APP.META-FINDINGS.md) |
 | `INV.APP.META-INFO-COVERAGE` | инвариант · product | active |  | Профиль чтения покрывает каждый вид метаданных | [invariants/INV.APP.META-INFO-COVERAGE.md](invariants/INV.APP.META-INFO-COVERAGE.md) |

@@ -24,7 +24,6 @@ use crate::domain::diagnostics::{
     DiagnosticProvider, DiagnosticProviderRegistry, DiagnosticRequest, DiagnosticRequestError,
 };
 use crate::domain::events::DomainEvent;
-use crate::domain::long_work::WorkState;
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::progress::ProgressSink;
 use crate::domain::source_resources::{
@@ -530,48 +529,57 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
         progress: &dyn ProgressSink,
-    ) -> Option<WorkState> {
-        let engine = engine_for(spec)?;
-        let plugin_root = find_plugin_root(&context.cwd)?;
+    ) -> crate::application::shared_work::EngineDeliveryState {
+        let Some(engine) = engine_for(spec) else {
+            return crate::application::shared_work::EngineDeliveryState::NotRequired;
+        };
+        let Some(plugin_root) = find_plugin_root(&context.cwd) else {
+            return crate::application::shared_work::EngineDeliveryState::NotRequired;
+        };
         if crate::infrastructure::bundled_tools::installed_engine_path(&plugin_root, engine)
             .is_some()
         {
-            return None;
+            return crate::application::shared_work::EngineDeliveryState::NotRequired;
         }
         // Источник неизвестен: исходный чекаут инструменты не описывает.
         // Сказать об этом — дело отказа, а не доставки.
-        let order = crate::infrastructure::engine_delivery::order_for(&plugin_root, engine)?;
+        let Some(order) = crate::infrastructure::engine_delivery::order_for(&plugin_root, engine)
+        else {
+            return crate::application::shared_work::EngineDeliveryState::NotRequired;
+        };
         let artifact = order.artifact().to_owned();
+        let prepared = match order.prepare() {
+            Ok(prepared) => prepared,
+            Err(failure) => {
+                return crate::application::shared_work::EngineDeliveryState::Failed {
+                    artifact,
+                    failure: Arc::new(failure),
+                }
+            }
+        };
+        let identity = prepared.identity().clone();
         // Срок хоста — знание фасада, а не этого места.
         let window = crate::domain::long_work::sync_window(unica_bootstrap::host_tool_deadline());
-        match self.deliveries.deliver(
-            &artifact,
-            move |delivery| order.acquire(delivery),
+        match self.deliveries.request(
+            identity.clone(),
+            move |delivery| prepared.acquire(delivery),
             window,
             cancellation,
             progress,
         ) {
             // Движок на месте — вызов идёт дальше и делает свою работу.
-            crate::infrastructure::engine_delivery::Delivered::Ready => None,
+            crate::application::shared_work::EngineDeliveryState::Ready(ready) => {
+                debug_assert_eq!(ready.identity(), &identity);
+                debug_assert!(ready.install_root().is_absolute());
+                crate::application::shared_work::EngineDeliveryState::Ready(ready)
+            }
             // Отказ доставки называет причину сам: обработчик сказал бы про
             // отсутствующий бинарь и посоветовал ждать поставку, которая только
             // что не удалась.
-            crate::infrastructure::engine_delivery::Delivered::Failed(reason) => Some(WorkState {
-                status: crate::domain::long_work::WorkStatus::Failed,
-                status_message: format!("delivery of {artifact} failed: {reason}"),
-                poll_interval_ms: None,
-            }),
-            crate::infrastructure::engine_delivery::Delivered::Working { received, total } => {
-                Some(WorkState {
-                    status: crate::domain::long_work::WorkStatus::Working,
-                    status_message: match total {
-                        Some(total) => {
-                            format!("delivering {artifact}: {received} of {total} bytes on disk")
-                        }
-                        None => format!("delivering {artifact}: {received} bytes on disk"),
-                    },
-                    poll_interval_ms: self.deliveries.poll_hint(&artifact),
-                })
+            state @ crate::application::shared_work::EngineDeliveryState::Failed { .. }
+            | state @ crate::application::shared_work::EngineDeliveryState::Working { .. } => state,
+            crate::application::shared_work::EngineDeliveryState::NotRequired => {
+                crate::application::shared_work::EngineDeliveryState::NotRequired
             }
         }
     }

@@ -17,7 +17,6 @@ use crate::domain::diagnostics::{
 };
 use crate::domain::engine::MissingEngine;
 use crate::domain::events::DomainEvent;
-use crate::domain::long_work::WorkState;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaInfoDeclarations,
     MetaInfoDetails, MetaInfoPropertyData, MetaMutationData, MetaPredefinedItemsData,
@@ -542,17 +541,16 @@ pub(crate) trait ApplicationPorts: Send + Sync {
 
     /// Дождаться движка, которого инструменту не хватает.
     ///
-    /// `None` — ждать нечего: движок на месте, не нужен вовсе или доставке
-    /// взяться неоткуда; вызов идёт дальше. `Some` — доставка не успела за
-    /// окно, и вызывающий получает её состояние вместо результата работы.
+    /// Возвращает состояние exact SharedWork. `NotRequired`/`Ready` продолжают
+    /// вызов; `Working`/`Failed` V12-адаптер проецирует в прежний `WorkState`.
     fn deliver_engine_if_missing(
         &self,
         _spec: ToolSpec,
         _context: &WorkspaceContext,
         _cancellation: &CancellationToken,
         _progress: &dyn ProgressSink,
-    ) -> Option<WorkState> {
-        None
+    ) -> crate::application::shared_work::EngineDeliveryState {
+        crate::application::shared_work::EngineDeliveryState::NotRequired
     }
 
     fn read_metadata_local(

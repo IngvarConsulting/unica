@@ -46,6 +46,7 @@ pub(crate) struct ActorBoundInvocation {
     actor: Arc<WorkspaceActor>,
     provider_root: ProviderRootBinding,
     workspace_identity_hash: SafeIdentityHash,
+    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
 }
 
 impl ActorBoundInvocation {
@@ -99,6 +100,13 @@ impl ActorBoundExecution {
     #[allow(dead_code)]
     pub(crate) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
         self.invocation.workspace_identity_hash()
+    }
+
+    /// Daemon-owned exact delivery capability. Canonical work may wait here
+    /// only after request admission has become an Invocation or durable Task.
+    #[allow(dead_code)]
+    pub(crate) fn delivery_work(&self) -> &crate::infrastructure::engine_delivery::DeliveryDesk {
+        &self.invocation.deliveries
     }
 
     #[allow(dead_code)]
@@ -167,6 +175,7 @@ impl CanonicalInvocationService for DormantCanonicalV13Service {
 fn bind_workspace_invocation(
     request: &InvocationRequest,
     actors: &WorkspaceActorRegistry,
+    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     response_deadline: InvocationResponseDeadline,
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
     let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
@@ -192,6 +201,7 @@ fn bind_workspace_invocation(
         actor,
         provider_root,
         workspace_identity_hash,
+        deliveries,
     })
 }
 
@@ -402,6 +412,7 @@ pub(crate) struct DaemonInvocationRuntime {
     executor: Arc<InvocationExecutor>,
     service: Arc<dyn CanonicalInvocationService>,
     workspace_actors: WorkspaceActorRegistry,
+    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
 }
 
 impl DaemonInvocationRuntime {
@@ -414,6 +425,7 @@ impl DaemonInvocationRuntime {
             executor: Arc::new(InvocationExecutor::new(store, clock)),
             service,
             workspace_actors: WorkspaceActorRegistry::default(),
+            deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
         }
     }
 
@@ -430,6 +442,7 @@ impl DaemonInvocationRuntime {
             )),
             service,
             workspace_actors: WorkspaceActorRegistry::default(),
+            deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
         }
     }
 
@@ -447,6 +460,7 @@ impl DaemonInvocationRuntime {
                 match bind_workspace_invocation(
                     &request,
                     &self.workspace_actors,
+                    Arc::clone(&self.deliveries),
                     response_deadline.clone(),
                 ) {
                     Ok(bound) => Ok(bound),
@@ -1148,10 +1162,11 @@ pub(crate) mod actor_capacity_tests {
         ToolIdentity,
     };
     use crate::application::operation_descriptors::KnownLongReason;
+    use crate::application::shared_work::{ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey};
     use crate::domain::invocation::InvocationStatus;
     use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{mpsc, Barrier};
+    use std::sync::{mpsc, Barrier, Condvar};
 
     struct ManualInvocationClock(Mutex<Instant>);
 
@@ -1186,6 +1201,14 @@ pub(crate) mod actor_capacity_tests {
         clock: Arc<ManualInvocationClock>,
         delay: Duration,
         executions: Arc<AtomicUsize>,
+    }
+
+    struct SharedDeliveryService {
+        key: DeliveryWorkKey,
+        producers: Arc<AtomicUsize>,
+        producer_entered: mpsc::Sender<()>,
+        joined: mpsc::Sender<usize>,
+        release: Arc<(Mutex<bool>, Condvar)>,
     }
 
     struct UncertainCancelStore {
@@ -1315,6 +1338,44 @@ pub(crate) mod actor_capacity_tests {
         }
     }
 
+    impl CanonicalInvocationService for SharedDeliveryService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            Ok(ExecutionClass::KnownLong(KnownLongReason::MissingEngine))
+        }
+
+        fn execute(
+            &self,
+            invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            let desk = invocation.delivery_work();
+            let key = self.key.clone();
+            let producers = Arc::clone(&self.producers);
+            let producer_entered = self.producer_entered.clone();
+            let release = Arc::clone(&self.release);
+            let lease = desk.join(self.key.clone(), move |_| {
+                producers.fetch_add(1, Ordering::SeqCst);
+                producer_entered.send(()).expect("producer observation");
+                let (released, wake) = &*release;
+                let mut released = released.lock().expect("delivery release");
+                while !*released {
+                    released = wake.wait(released).expect("delivery release wait");
+                }
+                ArtifactReady::new(key, std::path::PathBuf::from("/cache/shared-daemon"))
+            });
+            self.joined
+                .send(desk as *const crate::infrastructure::engine_delivery::DeliveryDesk as usize)
+                .expect("join observation");
+            lease
+                .wait()
+                .map_err(|_| InvocationFailure::new("delivery_failed", "delivery failed"))?;
+            Ok(DomainResult::success("shared daemon delivery ready"))
+        }
+    }
+
     #[test]
     pub(crate) fn daemon_receipt_deadline_is_not_replenished_after_delayed_prepare() {
         for delay in [Duration::from_millis(110), Duration::from_millis(226)] {
@@ -1412,6 +1473,97 @@ pub(crate) mod actor_capacity_tests {
         runtime.submit(request, response_deadline)
     }
 
+    #[test]
+    fn daemon_shared_delivery_releases_request_admission_before_wait_and_shares_across_worktrees() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace_parent = tempfile::tempdir().unwrap();
+        let roots = (0..2)
+            .map(|index| {
+                let root = workspace_parent
+                    .path()
+                    .join(format!("delivery-workspace-{index}"));
+                std::fs::create_dir(&root).unwrap();
+                std::fs::canonicalize(root).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let producers = Arc::new(AtomicUsize::new(0));
+        let (producer_entered, producer_wait) = mpsc::channel();
+        let (joined, joined_wait) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let service = Arc::new(SharedDeliveryService {
+            key: DeliveryWorkKey::new(
+                "rlm-tools-bsl",
+                "1.33.0",
+                "darwin-arm64",
+                "a".repeat(64),
+                DeliveryFormIdentity::Archive,
+            )
+            .unwrap(),
+            producers: Arc::clone(&producers),
+            producer_entered,
+            joined,
+            release: Arc::clone(&release),
+        });
+        let runtime = DaemonInvocationRuntime::new(Arc::new(store), service, Arc::new(TokioClock));
+        let request = |root: &std::path::Path| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({}),
+                root.to_string_lossy(),
+                0,
+            )
+            .unwrap()
+        };
+
+        let first = task_id(submit_at_receipt(&runtime, request(&roots[0])).unwrap());
+        producer_wait
+            .recv_timeout(Duration::from_secs(10))
+            .expect("first task entered delivery producer");
+        let second = task_id(submit_at_receipt(&runtime, request(&roots[1])).unwrap());
+        let first_desk = joined_wait
+            .recv_timeout(Duration::from_secs(10))
+            .expect("first task joined delivery");
+        let second_desk = joined_wait
+            .recv_timeout(Duration::from_secs(10))
+            .expect("second task joined delivery");
+
+        assert_eq!(
+            first_desk, second_desk,
+            "both actors use one daemon registry"
+        );
+        assert_eq!(
+            first_desk,
+            Arc::as_ptr(&runtime.deliveries) as usize,
+            "actor bindings retain the daemon-owned DeliveryDesk"
+        );
+        assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 2);
+        assert_eq!(producers.load(Ordering::SeqCst), 1);
+        for task_id in [first, second] {
+            assert_eq!(
+                runtime.get(task_id).unwrap().status,
+                InvocationStatus::Working
+            );
+        }
+
+        // Both request admissions have already returned durable TaskIds while the only
+        // producer is still blocked: joining/waiting consumes task ownership, not request
+        // admission, and the two actor-bound executions do not create duplicate delivery.
+        let (released, wake) = &*release;
+        *released.lock().unwrap() = true;
+        wake.notify_all();
+        for task_id in [first, second] {
+            let terminal = runtime.wait(task_id, 7_000).unwrap();
+            assert_eq!(terminal.status, InvocationStatus::Completed);
+            assert_eq!(
+                terminal.result.unwrap().summary,
+                "shared daemon delivery ready"
+            );
+        }
+        assert_eq!(producers.load(Ordering::SeqCst), 1);
+    }
+
     fn live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root() {
         let task_root = tempfile::tempdir().unwrap();
         let workspace_parent = tempfile::tempdir().unwrap();
@@ -1432,6 +1584,7 @@ pub(crate) mod actor_capacity_tests {
             )),
             service: Arc::new(BlockingService { entered }),
             workspace_actors: WorkspaceActorRegistry::with_capacity_for_test(2),
+            deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
         };
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
