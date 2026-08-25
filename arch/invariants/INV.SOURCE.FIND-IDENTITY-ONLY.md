@@ -17,7 +17,9 @@ XML roots с одной aggregate logical-read deadline, cancellation и exact r
 programmatic name, локализованные synonyms и export path. Method и region
 identities разрешено извлекать bounded-разбором декларативной оболочки BSL;
 `Body`, statements и строки исходника не являются nodes/facts и BFS их не
-читает повторно.
+читает повторно. В пределах одной операции exact module projection и owner
+inventory читаются один раз на actor identity/revision/address; новый actor или
+revision не наследует cached evidence.
 
 Два дерева с одинаковыми metadata descriptors и одинаковыми
 declarations/regions, но разными statements, дают byte-equivalent facts и

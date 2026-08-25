@@ -18,7 +18,17 @@ pub(super) fn project_typed_payload(
     let root_depth = route
         .reader_metadata_path()
         .map(|target| target.as_str().split('.').count().div_ceil(2))
-        .unwrap_or_else(|| usize::from(route.reader() == LogicalReader::Configuration));
+        .unwrap_or_else(|| {
+            usize::from(
+                route.reader() == LogicalReader::Configuration
+                    || (route.reader() == LogicalReader::Metadata
+                        && route
+                            .at()
+                            .segments()
+                            .first()
+                            .is_some_and(|segment| segment.name().is_some())),
+            )
+        });
     let suffix = &route.at().segments()[root_depth.min(route.at().segments().len())..];
     match route.reader() {
         LogicalReader::Configuration => return project_configuration(route.at(), &payload, suffix),

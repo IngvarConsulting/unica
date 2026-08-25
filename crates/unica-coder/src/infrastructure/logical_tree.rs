@@ -147,6 +147,10 @@ pub(crate) fn route_logical_address(
             .ok_or_else(|| not_found(address))?;
         return Ok(route(address, LogicalReader::Xdto, Some(target), None));
     }
+    if matches!(segments, [owner] if owner.kind() == NodeKind::WebSocketClient && owner.name().is_some())
+    {
+        return Ok(route(address, LogicalReader::Metadata, None, None));
+    }
     if accepts_logical_metadata_address(address) {
         return Ok(route(
             address,

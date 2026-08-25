@@ -11,49 +11,18 @@ design: docs/design/2026-08-23-v0-13-execution-surface-design.md
 
 # Скрытое ядро v0.13 читает логическое дерево единым контрактом
 
-**Решение.** Внутренний `view` выбирает типизированную проекцию только
-квалифицированным логическим адресом. Семь общих слотов узла не смешиваются с
-конвертом результата, а `items` принадлежат только адресуемой ветке. Данные
-строк и исходные строки адреса не получают.
+**Решение.** Внутренний `view` выбирает typed projection только qualified address. Семь слотов узла отделены от result envelope; `items` принадлежат адресуемой ветке, а data/source rows адреса не получают.
 
-Metadata, form, role/RLS, subsystem/interface, DCS, MXL, XDTO и module читаются
-через один actor-supplied retained read authority, существующие предметные
-parsers и Task 13 projector. Каждый reader получает ту же exact revision
-authority и не переопределяет source set через изменившийся workspace config.
-Неизвестный payload reader-а отклоняется; физическое состояние и raw provider
-data не становятся `props`. WebSocketClient остаётся логически допустимым, но
-source-backed чтение отвечает `provider_unavailable`, пока versioned format
-spec и реальная export fixture не докажут раскладку его модуля.
+Все readers используют одну actor-supplied retained authority, общие предметные parsers, Task 13 projector и exact revision. Raw payload отклоняется. Configuration/extension inventory доказывается `Configuration.xml`, EPF/ERF — строгими top-level artifact descriptors; `ConfigDumpInfo.xml`, malformed/ambiguous evidence, configuration runtime modules и фиктивный configuration export path во внешнем source set не принимаются. Module допустим только у доказанного owner-а, но отсутствие BSL не мешает будущему create. WebSocketClient остаётся profile identity с прямым `provider_unavailable` до доказанной раскладки.
 
-Continuation хранит уже нарезанные целые элементы или строки в ограниченном
-process-local store. Непрозрачный cursor связан с адресом, выбранной адресом
-проекцией, нормализованным filter, identity набора исходников, exact revision и
-limit. Повтор cursor-а идемпотентен; смена revision даёт `stale_cursor`, другая
-identity вопроса, подмена, неизвестность или expiry — `invalid_cursor`.
+Bounded process-local cursor связан с address-selected projection, normalized filter, source identity, exact revision и limit. Retry идемпотентен; revision change даёт `stale_cursor`, а чужая identity, tamper, unknown или expiry — `invalid_cursor`.
 
-Внутренний `find` проходит то же адресуемое дерево из actor-owned retained
-source roots и индексирует только address/name/synonym/export-path/kind facts.
-Для module/method/region identities он ограниченно разбирает декларативную
-оболочку BSL, но не индексирует `Body`, statements или строки исходника и не
-обходит Body-проекции повторно. Одинаковые declarations/regions при разных
-statements дают одинаковые facts и результаты; nearest ограничен name/address
-facts. Зарегистрированный owner публикует одну profile-derived `Module` branch со
-всеми допустимыми ролями даже без module source; отсутствующий owner не
-изобретается. WebSocketClient сохраняется из parent projection, а прямой view — gap.
+`find` обходит то же retained tree и индексирует только address/name/synonym/export-path/kind. Module/method/region берутся из bounded BSL declaration shell; `Body`, statements и source lines не индексируются. Owner inventory и module projection вычисляются один раз на `source identity + exact revision + canonical address` и не переходят между actor/revision.
 
-Один logical-read operation budget в 120 секунд ограничивает и `view`, и
-aggregate `find`, передаётся actor-owned revision/provider границе и проверяет
-cancellation. Это не семисекундный handoff: после handoff тот же callback один
-раз продолжает работу и публикует terminal Task. Injected service исполняет оба
-handler-а на actor capability; production default dormant до Task 22. Present
-malformed/wrong-root HomePage отклоняется; role rights сливаются в canonical node.
+Единый 120-секундный logical-read budget для `view`/aggregate `find` передаётся provider/revision boundary и проверяет cancellation; 7-секундный handoff callback не отменяет. Role объединяет canonical rights, а ambiguous short alias даёт `bad_value`. Injected service исполняет handlers на actor capability; production default dormant до Task 22.
 
-Широкие `DEC.2026-08-23.V0-13-EXECUTION-SURFACE` и
-`DEC.2026-08-23.MODULE-CONTRACT` остаются `planned`. Production v0.12 и
-`CTR.WIRE.TOOL-SURFACE` до Task 22 не меняются.
+Широкие `DEC.2026-08-23.V0-13-EXECUTION-SURFACE` и `DEC.2026-08-23.MODULE-CONTRACT` остаются `planned`; v0.12 и `CTR.WIRE.TOOL-SURFACE` до Task 22 не меняются.
 
-**Почему.** Tasks 15–21 должны опираться на одну форму чтения, typed-reader
-границы и одну политику продолжений до публичного cutover.
+**Почему.** Tasks 15–21 получают одну typed-reader, continuation и task policy до публичного cutover.
 
-**Цена.** До Task 22 контракт crate-private; WebSocketClient source view — gap,
-find читает bounded BSL declaration shell, cursor не переживает перезапуск.
+**Цена.** До Task 22 контракт crate-private; WebSocketClient source view — gap, find читает bounded BSL declaration shell, cursor не переживает restart.

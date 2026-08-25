@@ -1063,6 +1063,17 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
 #[test]
 fn websocket_client_source_view_is_an_explicit_provider_gap() {
     let fixture = RealReaderFixture::new();
+    let configuration_path = fixture.source.join("Configuration.xml");
+    let configuration = fs::read_to_string(&configuration_path).unwrap();
+    fs::write(
+        &configuration_path,
+        configuration.replacen(
+            "</ChildObjects>",
+            "<WebSocketClient>Телефония</WebSocketClient></ChildObjects>",
+            1,
+        ),
+    )
+    .unwrap();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
     let revisions = Arc::new(
@@ -1109,6 +1120,12 @@ fn logical_reader_parity_contract_is_complete() {
     module_method_public_filter_returns_only_export_methods();
     typed_projection_never_leaks_provider_or_physical_slots();
     typed_projection_rejects_unknown_provider_payload_instead_of_dumping_it();
+    missing_owner_module_branch_is_not_invented_but_registered_owner_without_bsl_is_kept();
+    real_external_sources_are_traversable_without_configuration_xml_and_hide_root_runtime_modules();
+    external_inventory_skips_runtime_sidecar_and_fails_closed_on_malformed_or_ambiguous_owner();
+    retained_external_inventory_is_cancellable_and_has_an_aggregate_byte_bound();
+    production_authorities_reach_all_profile_module_capabilities_from_real_parent_inventories();
+    ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work();
     websocket_client_source_view_is_an_explicit_provider_gap();
     crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
         crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
@@ -1213,6 +1230,515 @@ pub(crate) fn find_uses_each_typed_readers_real_export_path_without_publishing_i
             "missing {expected_at} for {path}: {result:?}"
         );
     }
+}
+
+#[test]
+fn missing_owner_module_branch_is_not_invented_but_registered_owner_without_bsl_is_kept() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    let missing = service.view(ViewRequest::new("main:Document.Missing.Module").unwrap());
+    assert!(
+        !missing.ok,
+        "missing owner produced a module branch: {missing:?}"
+    );
+    assert_eq!(missing.diagnostics[0]["code"], "not_found");
+
+    let registered = service.view(ViewRequest::new("main:Catalog.Items.Module").unwrap());
+    assert!(registered.ok, "{:?}", registered.diagnostics);
+    let items = registered.data.as_ref().unwrap()["items"]
+        .as_array()
+        .unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["at"], "main:Catalog.Items.Module.Object");
+    assert_eq!(items[1]["at"], "main:Catalog.Items.Module.Manager");
+}
+
+#[test]
+fn real_external_sources_are_traversable_without_configuration_xml_and_hide_root_runtime_modules() {
+    let fixture = RealExternalReaderFixture::new();
+    for (source, kind, owner) in [
+        (
+            "artifact_processor",
+            SourceSetKind::ExternalProcessor,
+            "ExternalDataProcessor.Import",
+        ),
+        (
+            "artifact_report",
+            SourceSetKind::ExternalReport,
+            "ExternalReport.Sales",
+        ),
+    ] {
+        let authority = fixture.read_authority(source, kind);
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let address = format!("{source}:Configuration");
+        let root = service.view(ViewRequest::new(&address).unwrap());
+        assert!(root.ok, "{source} root failed: {:?}", root.diagnostics);
+        let root = root.data.unwrap();
+        let owner_branch = root["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|branch| branch["at"] == format!("{source}:{}", owner.split('.').next().unwrap()))
+            .unwrap();
+        assert_eq!(owner_branch["count"], 2);
+        assert!(
+            root["branches"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|branch| branch["at"] != format!("{source}:Module")),
+            "external source root exposed configuration runtime modules: {root:?}",
+        );
+    }
+
+    let epf = fixture.read_authority("artifact_processor", SourceSetKind::ExternalProcessor);
+    let erf = fixture.read_authority("artifact_report", SourceSetKind::ExternalReport);
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[
+                ActorFindSource::new("artifact_processor", &epf),
+                ActorFindSource::new("artifact_report", &erf),
+            ],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    for expected in [
+        "artifact_processor:ExternalDataProcessor.Import",
+        "artifact_processor:ExternalDataProcessor.Import.Form.Main",
+        "artifact_processor:ExternalDataProcessor.Import.Command.Run",
+        "artifact_processor:ExternalDataProcessor.Import.Module.Object",
+        "artifact_report:ExternalReport.Sales",
+        "artifact_report:ExternalReport.Sales.Form.Main",
+        "artifact_report:ExternalReport.Sales.Command.Run",
+        "artifact_report:ExternalReport.Sales.Module.Object",
+    ] {
+        let found = index.find(FindRequest::new(expected).unwrap().with_limit(64).unwrap());
+        assert!(
+            !found.is_nearest()
+                && found
+                    .candidates()
+                    .iter()
+                    .any(|candidate| candidate.at() == expected),
+            "missing real external identity {expected}: {found:?}",
+        );
+    }
+
+    let fabricated_configuration_path = index.find(
+        FindRequest::new("Configuration.xml")
+            .unwrap()
+            .with_limit(64)
+            .unwrap(),
+    );
+    assert!(
+        fabricated_configuration_path
+            .candidates()
+            .iter()
+            .all(|candidate| candidate.reason() != "exportPath"),
+        "external source sets must not advertise a configuration export path: \
+         {fabricated_configuration_path:?}",
+    );
+}
+
+#[test]
+fn external_inventory_skips_runtime_sidecar_and_fails_closed_on_malformed_or_ambiguous_owner() {
+    let malformed_fixture = RealExternalReaderFixture::new();
+    fs::write(malformed_fixture.processor.join("Broken.xml"), "<broken>").unwrap();
+    let malformed = ViewService::new(
+        malformed_fixture.read_authority("artifact_processor", SourceSetKind::ExternalProcessor),
+        ViewCursorStore::default(),
+    )
+    .view(ViewRequest::new("artifact_processor:Configuration").unwrap());
+    assert!(!malformed.ok);
+    assert_eq!(malformed.diagnostics[0]["code"], "provider_unavailable");
+
+    let ambiguous_fixture = RealExternalReaderFixture::new();
+    fs::copy(
+        ambiguous_fixture.processor.join("Import.xml"),
+        ambiguous_fixture.processor.join("Alias.xml"),
+    )
+    .unwrap();
+    let ambiguous = ViewService::new(
+        ambiguous_fixture.read_authority("artifact_processor", SourceSetKind::ExternalProcessor),
+        ViewCursorStore::default(),
+    )
+    .view(ViewRequest::new("artifact_processor:Configuration").unwrap());
+    assert!(!ambiguous.ok);
+    assert_eq!(ambiguous.diagnostics[0]["code"], "provider_unavailable");
+    assert!(ambiguous.diagnostics[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("ambiguous"));
+}
+
+#[test]
+fn retained_external_inventory_is_cancellable_and_has_an_aggregate_byte_bound() {
+    let cancelled_fixture = RealExternalReaderFixture::new();
+    let root = Arc::new(RetainedDirectoryCapability::open(&cancelled_fixture.processor).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(
+            &cancelled_fixture.context,
+            &cancelled_fixture.processor,
+        )
+        .unwrap(),
+    );
+    let reader = ProviderReadAuthority::new(
+        "artifact_processor",
+        "actor-external-cancel",
+        SourceSetKind::ExternalProcessor,
+        root,
+        revisions,
+    );
+    let cancellation = CancellationToken::new();
+    let mut checkpoints = 0_usize;
+    let error = reader
+        .configuration_payload_with_checkpoint(&mut || {
+            checkpoints += 1;
+            if checkpoints == 8 {
+                cancellation.cancel();
+            }
+            if cancellation.is_cancelled() {
+                Err(crate::application::v13::view::ViewError::new(
+                    "cancelled",
+                    "external inventory cancelled",
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+    assert_eq!(error.code(), "cancelled");
+
+    let bounded_fixture = RealExternalReaderFixture::new();
+    for index in 0..5 {
+        let name = format!("Large{index}");
+        write_external_artifact(&bounded_fixture.processor, "ExternalDataProcessor", &name);
+        let path = bounded_fixture.processor.join(format!("{name}.xml"));
+        let descriptor = fs::read_to_string(&path).unwrap();
+        let padding = format!("<!--{}-->", "x".repeat(7 * 1024 * 1024));
+        fs::write(
+            &path,
+            descriptor.replace("</MetaDataObject>", &format!("{padding}</MetaDataObject>")),
+        )
+        .unwrap();
+    }
+    let root = Arc::new(RetainedDirectoryCapability::open(&bounded_fixture.processor).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(
+            &bounded_fixture.context,
+            &bounded_fixture.processor,
+        )
+        .unwrap(),
+    );
+    let reader = ProviderReadAuthority::new(
+        "artifact_processor",
+        "actor-external-bounded",
+        SourceSetKind::ExternalProcessor,
+        root,
+        revisions,
+    );
+    let error = reader.configuration_payload().unwrap_err();
+    assert_eq!(error.code(), "provider_unavailable");
+    assert!(error.to_string().contains("read limit"));
+}
+
+#[test]
+pub(crate) fn production_authorities_reach_all_profile_module_capabilities_from_real_parent_inventories(
+) {
+    let main_fixture = RealReaderFixture::new();
+    main_fixture.install_module_matrix_sources();
+    let external_fixture = RealExternalReaderFixture::new();
+    let main_navigation = main_fixture.view_service();
+    for address in [
+        "main:WebSocketClient",
+        "main:WebSocketClient.Телефония",
+        "main:WebSocketClient.Телефония.Module",
+    ] {
+        let viewed = main_navigation.view(ViewRequest::new(address).unwrap());
+        assert!(viewed.ok, "{address}: {:?}", viewed.diagnostics);
+    }
+    let main = main_fixture.read_authority();
+    let epf = external_fixture.read_authority("epf", SourceSetKind::ExternalProcessor);
+    let erf = external_fixture.read_authority("erf", SourceSetKind::ExternalReport);
+    let expected = serde_json::from_str::<ModuleCapabilityFixture>(include_str!(
+        "../../../../../tests/fixtures/v013/address-profile-8.3.27.json"
+    ))
+    .unwrap()
+    .module_capabilities
+    .into_iter()
+    .filter(|case| case.exists)
+    .map(|case| case.at)
+    .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(expected.len(), 25);
+
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[
+                ActorFindSource::new("main", &main),
+                ActorFindSource::new("epf", &epf),
+                ActorFindSource::new("erf", &erf),
+            ],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            &main_fixture.cancellation,
+        )
+        .unwrap();
+    for expected_at in expected {
+        let found = index.find(
+            FindRequest::new(&expected_at)
+                .unwrap()
+                .with_limit(100)
+                .unwrap(),
+        );
+        assert!(
+            !found.is_nearest()
+                && found
+                    .candidates()
+                    .iter()
+                    .any(|candidate| candidate.at() == expected_at),
+            "missing production module identity {expected_at}: {found:?}",
+        );
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModuleCapabilityFixture {
+    module_capabilities: Vec<ModuleCapabilityCase>,
+}
+
+#[derive(Deserialize)]
+struct ModuleCapabilityCase {
+    at: String,
+    exists: bool,
+}
+
+#[test]
+pub(crate) fn one_find_reads_each_module_source_once_per_actor_revision() {
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    assert_eq!(
+        authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
+        1,
+        "one actor-owned revision must parse each module source once",
+    );
+    assert_eq!(
+        authority.configuration_payload_read_count(),
+        1,
+        "one actor-owned revision must parse its source-set inventory once",
+    );
+
+    let module = fixture
+        .source
+        .join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
+    let mut changed = fs::read_to_string(&module).unwrap();
+    changed.push_str("\nProcedure AfterRevisionChange()\nEndProcedure\n");
+    fs::write(&module, changed).unwrap();
+    WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    assert_eq!(
+        authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
+        2,
+        "a changed exact revision must receive a new projection",
+    );
+    assert_eq!(authority.configuration_payload_read_count(), 2);
+
+    let second_authority = fixture.read_authority();
+    WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &second_authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    assert_eq!(
+        second_authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
+        1,
+        "a second actor must own an independent operation-local projection",
+    );
+    assert_eq!(second_authority.configuration_payload_read_count(), 1);
+}
+
+#[test]
+fn ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work() {
+    let payload = json!({
+        "name": "SalesReader",
+        "allowed": [
+            {"kind": "Catalog", "objects": [{"name": "Orders", "rights": []}]},
+            {"kind": "Document", "objects": [{"name": "Orders", "rights": []}]}
+        ],
+        "denied": []
+    });
+    let short = QualifiedAddress::parse("main:Role.SalesReader.Right.Orders").unwrap();
+    let route = route_logical_address(&short, PlatformProfile::v8_3_27()).unwrap();
+    let error = project_typed_payload(&route, payload.clone()).unwrap_err();
+    assert_eq!(error.code(), "bad_value");
+    assert!(error.to_string().contains("Catalog_Orders"));
+    assert!(error.to_string().contains("Document_Orders"));
+
+    for canonical in ["Catalog_Orders", "Document_Orders"] {
+        let at =
+            QualifiedAddress::parse(&format!("main:Role.SalesReader.Right.{canonical}")).unwrap();
+        let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+        let projected = project_typed_payload(&route, payload.clone()).unwrap();
+        assert_eq!(
+            projected.at(),
+            format!("main:Role.SalesReader.Right.{canonical}")
+        );
+    }
+}
+
+struct RealExternalReaderFixture {
+    _root: tempfile::TempDir,
+    context: WorkspaceContext,
+    processor: PathBuf,
+    report: PathBuf,
+    cancellation: CancellationToken,
+}
+
+impl RealExternalReaderFixture {
+    fn new() -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
+        let processor = root.path().join("processor");
+        let report = root.path().join("report");
+        fs::create_dir_all(&cache).unwrap();
+        fs::create_dir_all(&processor).unwrap();
+        fs::create_dir_all(&report).unwrap();
+        write_external_artifact(&processor, "ExternalDataProcessor", "Import");
+        write_external_artifact(&processor, "ExternalDataProcessor", "Импорт");
+        write_external_artifact(&report, "ExternalReport", "Sales");
+        write_external_artifact(&report, "ExternalReport", "Продажи");
+        fs::copy(
+            fixture_path("platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"),
+            processor.join("ConfigDumpInfo.xml"),
+        )
+        .unwrap();
+        fs::copy(
+            fixture_path("platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"),
+            report.join("ConfigDumpInfo.xml"),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: artifact_processor\n    type: EXTERNAL_PROCESSOR\n    path: processor\n  - name: artifact_report\n    type: EXTERNAL_REPORT\n    path: report\n",
+        )
+        .unwrap();
+        let canonical_root = fs::canonicalize(root.path()).unwrap();
+        let processor = fs::canonicalize(processor).unwrap();
+        let report = fs::canonicalize(report).unwrap();
+        let context = WorkspaceContext {
+            cwd: canonical_root.clone(),
+            workspace_root: canonical_root,
+            cache_root: cache,
+            workspace_epoch: 1,
+        };
+        Self {
+            _root: root,
+            context,
+            processor,
+            report,
+            cancellation: CancellationToken::new(),
+        }
+    }
+
+    fn read_authority(
+        &self,
+        source_set: &str,
+        kind: SourceSetKind,
+    ) -> LogicalViewReadAuthority<'_> {
+        let source = if kind == SourceSetKind::ExternalProcessor {
+            &self.processor
+        } else {
+            &self.report
+        };
+        let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
+        let revisions = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(&self.context, source).unwrap(),
+        );
+        LogicalViewReadAuthority::new(
+            &self.cancellation,
+            source_set,
+            format!("actor-{source_set}"),
+            kind,
+            revisions,
+            root,
+            PlatformProfile::v8_3_27(),
+        )
+    }
+}
+
+fn write_external_artifact(source: &Path, kind: &str, name: &str) {
+    let (form_name, command_name) = match name {
+        "Импорт" => ("Основная", "Выполнить"),
+        "Продажи" => ("Основная", "Сформировать"),
+        _ => ("Main", "Run"),
+    };
+    write(
+        &source.join(format!("{name}.xml")),
+        &format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <{kind} uuid="10000000-0000-4000-8000-000000000010">
+    <Properties><Name>{name}</Name></Properties>
+    <ChildObjects><Form>{form_name}</Form><Command>{command_name}</Command></ChildObjects>
+  </{kind}>
+</MetaDataObject>"#,
+        ),
+    );
+    write(
+        &source.join(format!("{name}/Forms/{form_name}.xml")),
+        &format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000011"><Properties><Name>{form_name}</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#
+        ),
+    );
+    write(
+        &source.join(format!("{name}/Forms/{form_name}/Ext/Form.xml")),
+        r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
+    );
+    write(
+        &source.join(format!("{name}/Commands/{command_name}.xml")),
+        &format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000012"><Properties><Name>{command_name}</Name></Properties></Command></MetaDataObject>"#
+        ),
+    );
+    write(
+        &source.join(format!("{name}/Ext/ObjectModule.bsl")),
+        "Procedure Execute()\nEndProcedure\n",
+    );
+}
+
+fn write_metadata_owner(
+    source: &Path,
+    directory: &str,
+    kind: &str,
+    name: &str,
+    child_objects: &str,
+) {
+    write(
+        &source.join(format!("{directory}/{name}.xml")),
+        &format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <{kind} uuid="10000000-0000-4000-8000-000000000020">
+    <Properties><Name>{name}</Name></Properties>
+    <ChildObjects>{child_objects}</ChildObjects>
+  </{kind}>
+</MetaDataObject>"#,
+        ),
+    );
 }
 
 struct RealReaderFixture {
@@ -1399,6 +1925,95 @@ impl RealReaderFixture {
 
     fn view_service(&self) -> ViewService<LogicalViewReadAuthority<'_>> {
         ViewService::new(self.read_authority(), ViewCursorStore::default())
+    }
+
+    fn install_module_matrix_sources(&self) {
+        let configuration_path = self.source.join("Configuration.xml");
+        let configuration = fs::read_to_string(&configuration_path).unwrap();
+        let registrations = [
+            ("Document", "Заказ"),
+            ("Document", "ЕщеНеВыгружен"),
+            ("InformationRegister", "Цены"),
+            ("Constant", "ОсновнаяВалюта"),
+            ("CommonModule", "ЗаказыСервер"),
+            ("CommonForm", "Подбор"),
+            ("CommonCommand", "ОткрытьНастройки"),
+            ("HTTPService", "API"),
+            ("WebService", "Обмен"),
+            ("IntegrationService", "Шина"),
+            ("Bot", "Помощник"),
+            ("WebSocketClient", "Телефония"),
+        ]
+        .into_iter()
+        .map(|(kind, name)| format!("\n\t\t\t<{kind}>{name}</{kind}>"))
+        .collect::<String>();
+        fs::write(
+            &configuration_path,
+            configuration.replacen(
+                "</ChildObjects>",
+                &format!("{registrations}\n\t\t</ChildObjects>"),
+                1,
+            ),
+        )
+        .unwrap();
+
+        write_metadata_owner(
+            &self.source,
+            "Documents",
+            "Document",
+            "Заказ",
+            "<Form>ФормаДокумента</Form><Command>ПровестиИЗакрыть</Command>",
+        );
+        write_metadata_owner(&self.source, "Documents", "Document", "ЕщеНеВыгружен", "");
+        write_metadata_owner(
+            &self.source,
+            "InformationRegisters",
+            "InformationRegister",
+            "Цены",
+            "",
+        );
+        write_metadata_owner(&self.source, "Constants", "Constant", "ОсновнаяВалюта", "");
+        let common = fixture_text(
+            "platform_8_3_27/support-edit-bin-only/src/CommonModules/РеактивныйСервер.xml",
+        )
+        .replace("РеактивныйСервер", "ЗаказыСервер");
+        write(&self.source.join("CommonModules/ЗаказыСервер.xml"), &common);
+        write_metadata_owner(&self.source, "CommonForms", "CommonForm", "Подбор", "");
+        write(
+            &self.source.join("CommonForms/Подбор/Ext/Form.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
+        );
+        write_metadata_owner(
+            &self.source,
+            "CommonCommands",
+            "CommonCommand",
+            "ОткрытьНастройки",
+            "",
+        );
+        for (directory, kind, name) in [
+            ("HTTPServices", "HTTPService", "API"),
+            ("WebServices", "WebService", "Обмен"),
+            ("IntegrationServices", "IntegrationService", "Шина"),
+            ("Bots", "Bot", "Помощник"),
+        ] {
+            write_metadata_owner(&self.source, directory, kind, name, "");
+        }
+        write(
+            &self.source.join("Documents/Заказ/Forms/ФормаДокумента.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000021"><Properties><Name>ФормаДокумента</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#,
+        );
+        write(
+            &self
+                .source
+                .join("Documents/Заказ/Forms/ФормаДокумента/Ext/Form.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
+        );
+        write(
+            &self
+                .source
+                .join("Documents/Заказ/Commands/ПровестиИЗакрыть.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000022"><Properties><Name>ПровестиИЗакрыть</Name></Properties></Command></MetaDataObject>"#,
+        );
     }
 
     fn install_accepted_profile_sources(&self) {

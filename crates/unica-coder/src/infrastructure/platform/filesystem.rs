@@ -418,6 +418,17 @@ impl RetainedDirectoryCapability {
         Ok(bytes)
     }
 
+    /// Enumerates the immediate members of this exact retained directory.
+    /// Names are bounded and resolved from the retained descriptor, never by
+    /// reopening the ambient path.
+    pub(crate) fn read_immediate_names_bounded(
+        &self,
+        maximum_entries: usize,
+        checkpoint: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Vec<std::ffi::OsString>> {
+        read_directory_names_bounded(&self.retained.directory, maximum_entries, checkpoint)
+    }
+
     pub(crate) fn retain_regular_child(
         &self,
         name: &std::ffi::OsStr,

@@ -56,6 +56,8 @@ pub(crate) struct PlatformXmlOwner {
 #[derive(Debug, Clone)]
 pub(crate) struct PlatformXmlSourceSetOwnerEvidence {
     version: Option<String>,
+    artifact_kind: String,
+    artifact_name: Option<String>,
     registrations: BTreeSet<(String, String)>,
 }
 
@@ -67,6 +69,20 @@ impl PlatformXmlSourceSetOwnerEvidence {
     pub(crate) fn registers(&self, kind: &str, name: &str) -> bool {
         self.registrations
             .contains(&(kind.to_string(), name.to_string()))
+    }
+
+    pub(crate) fn artifact_kind(&self) -> &str {
+        &self.artifact_kind
+    }
+
+    pub(crate) fn artifact_name(&self) -> Option<&str> {
+        self.artifact_name.as_deref()
+    }
+
+    pub(crate) fn registrations(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.registrations
+            .iter()
+            .map(|(kind, name)| (kind.as_str(), name.as_str()))
     }
 }
 
@@ -238,8 +254,74 @@ pub(crate) fn prove_already_read_source_set_owner(
     }
     Ok(PlatformXmlSourceSetOwnerEvidence {
         version: root_version_literal(source, root),
+        artifact_kind: artifact.tag_name().name().to_string(),
+        artifact_name: metadata_artifact_property(artifact, "Name"),
         registrations,
     })
+}
+
+pub(crate) fn prove_already_read_metadata_owner(
+    path: &Path,
+    raw: &[u8],
+) -> Result<PlatformXmlSourceSetOwnerEvidence, PlatformXmlOwnerError> {
+    parse_platform_xml_owner(path, raw.to_vec(), OwnerExpectation::Standalone)?;
+    let (source, document) = parse_platform_xml_document(path, raw)?;
+    let root = document.root_element();
+    if root.tag_name().namespace() != Some(MD_CLASSES_NS)
+        || root.tag_name().name() != "MetaDataObject"
+    {
+        return invalid_owner(path, "metadata owner must use the MetaDataObject root");
+    }
+    let artifact = root
+        .children()
+        .find(|node| node.is_element())
+        .expect("strict standalone metadata owner has one artifact child");
+    let mut registrations = BTreeSet::new();
+    for child_objects in artifact.children().filter(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && node.tag_name().name() == "ChildObjects"
+    }) {
+        for registration in child_objects
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
+        {
+            if let Some(name) = registration
+                .text()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                registrations
+                    .insert((registration.tag_name().name().to_string(), name.to_string()));
+            }
+        }
+    }
+    Ok(PlatformXmlSourceSetOwnerEvidence {
+        version: root_version_literal(source, root),
+        artifact_kind: artifact.tag_name().name().to_string(),
+        artifact_name: metadata_artifact_property(artifact, "Name"),
+        registrations,
+    })
+}
+
+fn metadata_artifact_property(artifact: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
+    artifact
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == "Properties"
+        })?
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == name
+        })?
+        .text()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 pub(crate) fn resolve_platform_xml_owners(

@@ -1,9 +1,12 @@
 use crate::application::ports::{MetaLocalInfo, MetadataChildProfile};
 use crate::application::v13::view::ViewError;
+use crate::domain::address::NodeKind;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::MetaSupportStatus;
-use crate::domain::project_sources::SourceSetKind;
+use crate::domain::project_sources::{
+    classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind, SourceSetKind,
+};
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::support_state::{
     ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
@@ -29,13 +32,19 @@ use crate::infrastructure::native_operations::subsystem::{
 };
 use crate::infrastructure::native_operations::xdto::parse_xdto_info_bytes;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+use crate::infrastructure::platform_xml_owner::{
+    prove_already_read_metadata_owner, prove_already_read_source_set_owner,
+    PlatformXmlSourceSetOwnerEvidence,
+};
 use crate::infrastructure::source_revision::SourceRevisionService;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
+const MAX_EXTERNAL_OWNER_ENTRIES: usize = 256;
+const MAX_EXTERNAL_INVENTORY_BYTES: usize = 32 * 1024 * 1024;
 
 /// One actor-issued read authority for one admitted source set. Hidden v0.13
 /// reads are descriptor-relative to this retained directory and revisions come
@@ -46,6 +55,10 @@ pub(crate) struct ProviderReadAuthority {
     source_set_kind: SourceSetKind,
     root: Arc<RetainedDirectoryCapability>,
     revisions: Arc<SourceRevisionService>,
+    #[cfg(test)]
+    module_source_reads: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
+    #[cfg(test)]
+    configuration_payload_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl ProviderReadAuthority {
@@ -62,6 +75,10 @@ impl ProviderReadAuthority {
             source_set_kind,
             root,
             revisions,
+            #[cfg(test)]
+            module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            #[cfg(test)]
+            configuration_payload_reads: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -71,6 +88,10 @@ impl ProviderReadAuthority {
 
     pub(crate) fn source_set_identity(&self) -> &str {
         &self.source_set_identity
+    }
+
+    pub(crate) const fn source_set_kind(&self) -> SourceSetKind {
+        self.source_set_kind
     }
 
     pub(crate) fn root_path(&self) -> &Path {
@@ -119,12 +140,36 @@ impl ProviderReadAuthority {
     }
 
     pub(crate) fn configuration_payload(&self) -> Result<Value, ViewError> {
+        self.configuration_payload_with_checkpoint(&mut || Ok(()))
+    }
+
+    pub(crate) fn configuration_payload_with_checkpoint(
+        &self,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
+        #[cfg(test)]
+        self.configuration_payload_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        checkpoint()?;
+        if matches!(
+            self.source_set_kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            return self.external_inventory_payload(checkpoint);
+        }
         let bytes = self.read_relative(Path::new("Configuration.xml"), MAX_CONFIGURATION_BYTES)?;
+        checkpoint()?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
             ViewError::new("provider_unavailable", "Configuration.xml is not UTF-8")
         })?;
         let parsed = parse_cf_info_xml(text, self.configuration_support()?, self.home_page()?)
             .map_err(|error| ViewError::new("provider_unavailable", error))?;
+        let owner = prove_already_read_source_set_owner(
+            Path::new("Configuration.xml"),
+            &bytes,
+            self.source_set_kind,
+        )
+        .map_err(|error| ViewError::new("provider_unavailable", error.message))?;
         let mut payload = serde_json::to_value(parsed.data)
             .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?
             .as_object()
@@ -137,10 +182,130 @@ impl ProviderReadAuthority {
             })?;
         payload.insert(
             "registeredObjects".to_string(),
-            serde_json::to_value(parsed.registered_objects)
-                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?,
+            Value::Array(
+                owner
+                    .registrations()
+                    .filter(|(kind, _)| NodeKind::parse(kind).is_ok_and(NodeKind::is_metadata_kind))
+                    .map(|(kind, name)| json!({"kind": kind, "name": name}))
+                    .collect(),
+            ),
         );
         Ok(Value::Object(payload))
+    }
+
+    fn external_inventory_payload(
+        &self,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
+        let expected_kind = match self.source_set_kind {
+            SourceSetKind::ExternalProcessor => "ExternalDataProcessor",
+            SourceSetKind::ExternalReport => "ExternalReport",
+            SourceSetKind::Configuration | SourceSetKind::Extension => {
+                return Err(ViewError::new(
+                    "provider_unavailable",
+                    "external inventory requested for a configuration source set",
+                ));
+            }
+        };
+        let names = self
+            .root
+            .read_immediate_names_bounded(MAX_EXTERNAL_OWNER_ENTRIES, || {
+                checkpoint().map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
+                })
+            })
+            .map_err(|error| match checkpoint() {
+                Err(checkpoint_error) => checkpoint_error,
+                Ok(()) => ViewError::new("provider_unavailable", error.to_string()),
+            })?;
+        let mut registered = std::collections::BTreeSet::new();
+        let mut owner_path_mismatches = Vec::new();
+        let mut retained_bytes = 0_usize;
+        for name in names {
+            checkpoint()?;
+            let path = Path::new(&name);
+            if path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_none_or(|extension| !extension.eq_ignore_ascii_case("xml"))
+            {
+                continue;
+            }
+            let relative = PathBuf::from(&name);
+            let remaining = MAX_EXTERNAL_INVENTORY_BYTES.saturating_sub(retained_bytes);
+            if remaining == 0 {
+                return Err(ViewError::new(
+                    "provider_unavailable",
+                    format!(
+                        "external owner inventory exceeds {MAX_EXTERNAL_INVENTORY_BYTES} bytes"
+                    ),
+                ));
+            }
+            let bytes = self.read_relative(&relative, remaining.min(MAX_CONFIGURATION_BYTES))?;
+            retained_bytes = retained_bytes.saturating_add(bytes.len());
+            checkpoint()?;
+            if path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("ConfigDumpInfo.xml"))
+                && classify_already_read_config_dump_info_xml(&bytes)
+                    == ConfigDumpInfoXmlKind::RuntimeSidecar
+            {
+                continue;
+            }
+            let evidence =
+                prove_already_read_source_set_owner(&relative, &bytes, self.source_set_kind)
+                    .map_err(|error| ViewError::new("provider_unavailable", error.message))?;
+            if evidence.artifact_kind() != expected_kind {
+                return Err(ViewError::new(
+                    "provider_unavailable",
+                    format!(
+                        "external descriptor `{}` has kind `{}`, expected `{expected_kind}`",
+                        relative.display(),
+                        evidence.artifact_kind()
+                    ),
+                ));
+            }
+            let artifact_name = evidence.artifact_name().ok_or_else(|| {
+                ViewError::new(
+                    "provider_unavailable",
+                    format!(
+                        "external descriptor `{}` has no non-empty Properties/Name",
+                        relative.display()
+                    ),
+                )
+            })?;
+            if !registered.insert((expected_kind.to_string(), artifact_name.to_string())) {
+                return Err(ViewError::new(
+                    "provider_unavailable",
+                    format!("external owner `{expected_kind}.{artifact_name}` is ambiguous"),
+                ));
+            }
+            if path.file_stem().and_then(|value| value.to_str()) != Some(artifact_name) {
+                owner_path_mismatches.push(format!(
+                    "external descriptor `{}` belongs to `{artifact_name}`",
+                    relative.display()
+                ));
+            }
+        }
+        if registered.is_empty() {
+            return Err(ViewError::new(
+                "provider_unavailable",
+                "external source set has no valid top-level owner descriptors",
+            ));
+        }
+        if let Some(message) = owner_path_mismatches.into_iter().next() {
+            return Err(ViewError::new("provider_unavailable", message));
+        }
+        checkpoint()?;
+        Ok(json!({
+            "format": "PlatformXml",
+            "name": self.source_set,
+            "registeredObjects": registered
+                .into_iter()
+                .map(|(kind, name)| json!({"kind": kind, "name": name}))
+                .collect::<Vec<_>>()
+        }))
     }
 
     pub(crate) fn form_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {
@@ -150,7 +315,7 @@ impl ProviderReadAuthority {
 
     pub(crate) fn form_data(&self, target: &MetadataAddress) -> Result<FormInfoData, ViewError> {
         self.metadata_descriptor(target)?;
-        let relative = attached_resource_relative(target, "Form.xml")?;
+        let relative = self.attached_resource_relative(target, "Form.xml")?;
         let bytes = self.read_relative(&relative, MAX_CONFIGURATION_BYTES)?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| ViewError::new("provider_unavailable", "Form.xml is not UTF-8"))?;
@@ -172,7 +337,7 @@ impl ProviderReadAuthority {
 
     pub(crate) fn dcs_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {
         self.metadata_descriptor(target)?;
-        let relative = attached_resource_relative(target, "Template.xml")?;
+        let relative = self.attached_resource_relative(target, "Template.xml")?;
         let bytes = self.read_relative(&relative, MAX_CONFIGURATION_BYTES)?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| ViewError::new("provider_unavailable", "DCS Template.xml is not UTF-8"))?;
@@ -184,7 +349,7 @@ impl ProviderReadAuthority {
 
     pub(crate) fn role_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {
         let rights = self.read_relative(
-            &attached_resource_relative(target, "Rights.xml")?,
+            &self.attached_resource_relative(target, "Rights.xml")?,
             MAX_CONFIGURATION_BYTES,
         )?;
         let rights = std::str::from_utf8(&rights)
@@ -217,10 +382,54 @@ impl ProviderReadAuthority {
         })
     }
 
+    pub(crate) fn external_metadata_payload(
+        &self,
+        target: &MetadataAddress,
+    ) -> Result<Option<Value>, ViewError> {
+        if !self.is_external_source_set() {
+            return Ok(None);
+        }
+        let parts = target.as_str().split('.').collect::<Vec<_>>();
+        let [expected_kind, expected_name] = parts.as_slice() else {
+            return Err(ViewError::new(
+                "provider_unavailable",
+                "external typed metadata target must name its root owner",
+            ));
+        };
+        let descriptor = self.metadata_descriptor(target)?;
+        let relative = self.metadata_descriptor_relative(target)?;
+        let evidence =
+            prove_already_read_source_set_owner(&relative, &descriptor, self.source_set_kind)
+                .map_err(|error| ViewError::new("provider_unavailable", error.message))?;
+        if evidence.artifact_kind() != *expected_kind
+            || evidence.artifact_name() != Some(*expected_name)
+        {
+            return Err(ViewError::new(
+                "provider_unavailable",
+                format!(
+                    "external descriptor identity does not match `{}`",
+                    target.as_str()
+                ),
+            ));
+        }
+        identity_metadata_payload_from_evidence(target, &evidence).map(Some)
+    }
+
+    pub(crate) fn identity_metadata_payload(
+        &self,
+        target: &MetadataAddress,
+    ) -> Result<Value, ViewError> {
+        let descriptor = self.metadata_descriptor(target)?;
+        let relative = self.metadata_descriptor_relative(target)?;
+        let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
+            .map_err(|error| ViewError::new("provider_unavailable", error.message))?;
+        identity_metadata_payload_from_evidence(target, &evidence)
+    }
+
     pub(crate) fn mxl_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {
         self.metadata_descriptor(target)?;
         let bytes = self.read_relative(
-            &attached_resource_relative(target, "Template.xml")?,
+            &self.attached_resource_relative(target, "Template.xml")?,
             MAX_CONFIGURATION_BYTES,
         )?;
         let name = target.as_str().rsplit('.').next().unwrap_or("Template");
@@ -237,7 +446,7 @@ impl ProviderReadAuthority {
     ) -> Result<Value, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
         let package = self.read_relative(
-            &attached_resource_relative(target, "Package.bin")?,
+            &self.attached_resource_relative(target, "Package.bin")?,
             MAX_CONFIGURATION_BYTES,
         )?;
         let data =
@@ -252,7 +461,7 @@ impl ProviderReadAuthority {
         let descriptor = std::str::from_utf8(&descriptor).map_err(|_| {
             ViewError::new("provider_unavailable", "subsystem descriptor is not UTF-8")
         })?;
-        let ci_relative = attached_resource_relative(target, "CommandInterface.xml")?;
+        let ci_relative = self.attached_resource_relative(target, "CommandInterface.xml")?;
         let command_interface = self
             .read_optional_relative(&ci_relative, MAX_CONFIGURATION_BYTES)?
             .map(|bytes| {
@@ -283,7 +492,7 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
     ) -> Result<Vec<u8>, ViewError> {
-        let relative = metadata_descriptor_relative(target)?;
+        let relative = self.metadata_descriptor_relative(target)?;
         self.read_optional_relative(&relative, MAX_CONFIGURATION_BYTES)?
             .ok_or_else(|| {
                 ViewError::new(
@@ -297,7 +506,7 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
     ) -> Result<String, ViewError> {
-        path_text(metadata_descriptor_relative(target)?)
+        path_text(self.metadata_descriptor_relative(target)?)
     }
 
     pub(crate) fn attached_resource_export_path(
@@ -305,11 +514,11 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
         resource: &str,
     ) -> Result<String, ViewError> {
-        path_text(attached_resource_relative(target, resource)?)
+        path_text(self.attached_resource_relative(target, resource)?)
     }
 
     pub(crate) fn module_export_path(&self, target: &MetadataAddress) -> Result<String, ViewError> {
-        path_text(module_relative(target)?)
+        path_text(self.module_relative(target)?)
     }
 
     pub(crate) fn metadata_child_profile(
@@ -346,7 +555,16 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
     ) -> Result<Option<String>, ViewError> {
-        let relative = module_relative(target)?;
+        #[cfg(test)]
+        {
+            *self
+                .module_source_reads
+                .lock()
+                .expect("module source read counter is not poisoned")
+                .entry(target.as_str().to_string())
+                .or_default() += 1;
+        }
+        let relative = self.module_relative(target)?;
         self.read_optional_relative(&relative, MAX_CONFIGURATION_BYTES)?
             .map(|bytes| {
                 String::from_utf8(bytes)
@@ -354,6 +572,22 @@ impl ProviderReadAuthority {
                     .map_err(|_| ViewError::new("provider_unavailable", "BSL module is not UTF-8"))
             })
             .transpose()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn module_source_read_count(&self, target: &str) -> usize {
+        self.module_source_reads
+            .lock()
+            .expect("module source read counter is not poisoned")
+            .get(target)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configuration_payload_read_count(&self) -> usize {
+        self.configuration_payload_reads
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) fn object_support(
@@ -450,6 +684,216 @@ impl ProviderReadAuthority {
             right: cf_home_page_item_data(&layout.right),
         }))
     }
+
+    fn metadata_descriptor_relative(&self, target: &MetadataAddress) -> Result<PathBuf, ViewError> {
+        if self.is_external_source_set() {
+            return external_metadata_descriptor_relative(target, self.source_set_kind);
+        }
+        metadata_descriptor_relative(target)
+    }
+
+    fn attached_resource_relative(
+        &self,
+        target: &MetadataAddress,
+        resource: &str,
+    ) -> Result<PathBuf, ViewError> {
+        if self.is_external_source_set() {
+            return external_attached_resource_relative(target, resource, self.source_set_kind);
+        }
+        attached_resource_relative(target, resource)
+    }
+
+    fn module_relative(&self, target: &MetadataAddress) -> Result<PathBuf, ViewError> {
+        if self.is_external_source_set() {
+            return external_module_relative(target, self.source_set_kind);
+        }
+        module_relative(target)
+    }
+
+    fn is_external_source_set(&self) -> bool {
+        matches!(
+            self.source_set_kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        )
+    }
+}
+
+fn external_owner_parts(
+    target: &MetadataAddress,
+    source_set_kind: SourceSetKind,
+) -> Result<(&str, &str, Vec<&str>), ViewError> {
+    let parts = target.as_str().split('.').collect::<Vec<_>>();
+    let [kind, name, rest @ ..] = parts.as_slice() else {
+        return Err(ViewError::new(
+            "provider_unavailable",
+            "external target has no canonical owner identity",
+        ));
+    };
+    let expected = match source_set_kind {
+        SourceSetKind::ExternalProcessor => "ExternalDataProcessor",
+        SourceSetKind::ExternalReport => "ExternalReport",
+        SourceSetKind::Configuration | SourceSetKind::Extension => {
+            return Err(ViewError::new(
+                "provider_unavailable",
+                "external path requested for configuration source set",
+            ));
+        }
+    };
+    if *kind != expected {
+        return Err(ViewError::new(
+            "not_found",
+            format!("external source set has no `{kind}` owner family"),
+        ));
+    }
+    Ok((kind, name, rest.to_vec()))
+}
+
+fn external_metadata_descriptor_relative(
+    target: &MetadataAddress,
+    source_set_kind: SourceSetKind,
+) -> Result<PathBuf, ViewError> {
+    let (_, owner_name, rest) = external_owner_parts(target, source_set_kind)?;
+    match rest.as_slice() {
+        [] => Ok(PathBuf::from(format!("{owner_name}.xml"))),
+        [nested_kind, nested_name] => {
+            let directory = match *nested_kind {
+                "Form" => "Forms",
+                "Template" => "Templates",
+                "Command" => "Commands",
+                _ => {
+                    return Err(ViewError::new(
+                        "provider_unavailable",
+                        format!("unsupported external nested descriptor kind `{nested_kind}`"),
+                    ));
+                }
+            };
+            Ok(PathBuf::from(owner_name)
+                .join(directory)
+                .join(format!("{nested_name}.xml")))
+        }
+        _ => Err(ViewError::new(
+            "provider_unavailable",
+            "external descriptor target has unsupported depth",
+        )),
+    }
+}
+
+fn external_attached_resource_relative(
+    target: &MetadataAddress,
+    resource: &str,
+    source_set_kind: SourceSetKind,
+) -> Result<PathBuf, ViewError> {
+    let (_, owner_name, rest) = external_owner_parts(target, source_set_kind)?;
+    let [nested_kind, nested_name] = rest.as_slice() else {
+        return Err(ViewError::new(
+            "provider_unavailable",
+            "external attached resource requires a nested owner",
+        ));
+    };
+    let directory = match *nested_kind {
+        "Form" => "Forms",
+        "Template" => "Templates",
+        "Command" => "Commands",
+        _ => {
+            return Err(ViewError::new(
+                "provider_unavailable",
+                format!("unsupported external attached resource owner `{nested_kind}`"),
+            ));
+        }
+    };
+    Ok(PathBuf::from(owner_name)
+        .join(directory)
+        .join(nested_name)
+        .join("Ext")
+        .join(resource))
+}
+
+fn external_module_relative(
+    target: &MetadataAddress,
+    source_set_kind: SourceSetKind,
+) -> Result<PathBuf, ViewError> {
+    let (_, owner_name, rest) = external_owner_parts(target, source_set_kind)?;
+    match rest.as_slice() {
+        [terminal] if *terminal == "ObjectModule" => Ok(PathBuf::from(owner_name)
+            .join("Ext")
+            .join("ObjectModule.bsl")),
+        [nested_kind, nested_name, terminal] => {
+            let (directory, file) = match (*nested_kind, *terminal) {
+                ("Form", "FormModule") => ("Forms", PathBuf::from("Form/Module.bsl")),
+                ("Command", "CommandModule") => ("Commands", PathBuf::from("CommandModule.bsl")),
+                _ => {
+                    return Err(ViewError::new(
+                        "provider_unavailable",
+                        "external nested module target has unsupported layout",
+                    ));
+                }
+            };
+            Ok(PathBuf::from(owner_name)
+                .join(directory)
+                .join(nested_name)
+                .join("Ext")
+                .join(file))
+        }
+        _ => Err(ViewError::new(
+            "provider_unavailable",
+            "external module target has unsupported layout",
+        )),
+    }
+}
+
+fn identity_metadata_payload_from_evidence(
+    target: &MetadataAddress,
+    evidence: &PlatformXmlSourceSetOwnerEvidence,
+) -> Result<Value, ViewError> {
+    let parts = target.as_str().split('.').collect::<Vec<_>>();
+    let [expected_kind, expected_name] = parts.as_slice() else {
+        return Err(ViewError::new(
+            "provider_unavailable",
+            "identity metadata target must name one owner",
+        ));
+    };
+    if evidence.artifact_kind() != *expected_kind
+        || evidence.artifact_name() != Some(*expected_name)
+    {
+        return Err(ViewError::new(
+            "provider_unavailable",
+            format!(
+                "metadata descriptor identity does not match `{}`",
+                target.as_str()
+            ),
+        ));
+    }
+    let mut forms = Vec::new();
+    let mut templates = Vec::new();
+    let mut commands = Vec::new();
+    for (kind, name) in evidence.registrations() {
+        let value = json!({"name": name});
+        match kind {
+            "Form" => forms.push(value),
+            "Template" => templates.push(value),
+            "Command" => commands.push(value),
+            _ => {}
+        }
+    }
+    Ok(json!({
+        "name": expected_name,
+        "kind": expected_kind,
+        "support": {"state": "not_supported"},
+        "properties": {},
+        "declarations": {},
+        "relations": {},
+        "collections": {
+            "attributes": [],
+            "tabularSections": [],
+            "dimensions": [],
+            "resources": [],
+            "enumValues": [],
+            "columns": [],
+            "forms": forms,
+            "templates": templates,
+            "commands": commands
+        }
+    }))
 }
 
 fn path_text(path: PathBuf) -> Result<String, ViewError> {

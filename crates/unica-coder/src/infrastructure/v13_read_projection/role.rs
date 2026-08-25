@@ -56,12 +56,7 @@ pub(super) fn project_role(
                 .collect(),
         ))),
         (NodeKind::Right, Some(name)) => {
-            let object = objects
-                .iter()
-                .find(|object| role_object_matches(object, name))
-                .ok_or_else(|| {
-                    ViewError::new("not_found", format!("role object `{name}` was not found"))
-                })?;
+            let object = resolve_role_object(&objects, name)?;
             let canonical = canonical_role_object_address(address, object)?;
             if suffix.len() == 1 {
                 return Ok(NodeViewData::Node(role_object_node(&canonical, object)));
@@ -181,8 +176,38 @@ fn role_object_logical_name(object: &RoleObject) -> Option<String> {
         .then(|| format!("{}_{}", object.kind, object.name))
 }
 
-fn role_object_matches(object: &RoleObject, requested: &str) -> bool {
-    object.name == requested || role_object_logical_name(object).as_deref() == Some(requested)
+fn resolve_role_object<'a>(
+    objects: &'a [RoleObject],
+    requested: &str,
+) -> Result<&'a RoleObject, ViewError> {
+    if let Some(object) = objects
+        .iter()
+        .find(|object| role_object_logical_name(object).as_deref() == Some(requested))
+    {
+        return Ok(object);
+    }
+    let matches = objects
+        .iter()
+        .filter(|object| object.name == requested)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [object] => Ok(*object),
+        [] => Err(ViewError::new(
+            "not_found",
+            format!("role object `{requested}` was not found"),
+        )),
+        ambiguous => {
+            let candidates = ambiguous
+                .iter()
+                .filter_map(|object| role_object_logical_name(object))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ViewError::new(
+                "bad_value",
+                format!("role object alias `{requested}` is ambiguous; use one of: {candidates}"),
+            ))
+        }
+    }
 }
 
 fn canonical_role_object_address(

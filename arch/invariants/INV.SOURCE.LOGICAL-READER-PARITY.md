@@ -21,9 +21,14 @@ filter — `bad_value`.
 
 Зарегистрированный owner имеет ровно одну profile-derived `Module` branch:
 branch count равен числу уникальных допустимых ролей, а все 25 положительных
-`moduleCapabilities` профиля покрыты parent navigation и find, включая
-зарегистрированный owner без Module.bsl. Role объединяет allowed/denied по
-canonical `(kind, name)` и размещает уникальные RLS nodes только под Right.
+`moduleCapabilities` профиля покрыты production retained authorities для
+configuration, EPF и ERF через parent navigation и find, включая
+зарегистрированный owner без Module.bsl. Отсутствующий в inventory owner не
+получает Module branch. Внешние source sets доказывают каждый top-level artifact
+строгим descriptor-ом, не публикуют configuration runtime modules и имеют
+bounded/cancellable aggregate inventory read. Role объединяет allowed/denied по
+canonical `(kind, name)`, размещает уникальные RLS nodes только под Right и
+отклоняет неоднозначный короткий alias с canonical кандидатами.
 Отсутствующий HomePage sidecar допустим, present malformed/wrong-root evidence
 даёт `provider_unavailable`; V12 legacy wrapper сохраняет старую трактовку.
 Общий 120-секундный operation budget view/find отделён от 7-секундного Task

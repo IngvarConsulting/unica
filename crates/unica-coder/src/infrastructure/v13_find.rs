@@ -860,7 +860,7 @@ mod tests {
         .unwrap();
         fs::write(
             source.join("CommonModules/IdentityModule.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>IdentityModule</Name><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>IdentityModule</Name><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
@@ -1095,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn find_reaches_every_approved_module_capability_through_parent_branches() {
+    fn profile_matrix_supplements_production_module_capability_coverage() {
         let fixture: ModuleMatrixFixture = serde_json::from_str(include_str!(
             "../../../../tests/fixtures/v013/address-profile-8.3.27.json"
         ))
@@ -1182,7 +1182,9 @@ mod tests {
         actor_owned_platform_xml_registry_builds_identity_only_find_index();
         find_reads_only_module_declarations_and_never_indexes_the_body_projection();
         find_indexes_nested_addressable_metadata_identity();
-        find_reaches_every_approved_module_capability_through_parent_branches();
+        crate::infrastructure::v13_read::tests::production_authorities_reach_all_profile_module_capabilities_from_real_parent_inventories();
+        crate::infrastructure::v13_read::tests::one_find_reads_each_module_source_once_per_actor_revision();
+        profile_matrix_supplements_production_module_capability_coverage();
         find_keeps_profile_identity_for_the_typed_unreadable_websocket_module();
         find_fails_closed_when_a_registered_descriptor_is_malformed();
         find_fails_when_the_exact_source_revision_changes_during_the_walk();

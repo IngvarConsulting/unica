@@ -4,6 +4,7 @@ use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
+use crate::domain::metadata::MetadataKind;
 use crate::domain::module_projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection,
@@ -30,7 +31,8 @@ use crate::infrastructure::platform_xml_source_targets::{
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Map, Value};
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
 const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
 const MODULE_CONTEXTS: &[&str] = &[
@@ -61,6 +63,28 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     read: ProviderReadAuthority,
     profile: PlatformProfile,
     deadline: ProviderDeadline,
+    module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
+    configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
+    verified_module_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ModuleProjectionCacheKey {
+    source_set_identity: String,
+    revision: String,
+    module_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RevisionCacheKey {
+    source_set_identity: String,
+    revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct OwnerProofCacheKey {
+    revision: RevisionCacheKey,
+    owner: String,
 }
 
 impl<'a> LogicalViewReadAuthority<'a> {
@@ -84,6 +108,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ),
             profile,
             deadline: ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),
+            module_projections: Mutex::new(BTreeMap::new()),
+            configuration_payloads: Mutex::new(BTreeMap::new()),
+            verified_module_owners: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -105,12 +132,36 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn module_source_read_count(&self, target: &str) -> usize {
+        self.read.module_source_read_count(target)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configuration_payload_read_count(&self) -> usize {
+        self.read.configuration_payload_read_count()
+    }
+
     fn typed_payload(&self, route: &LogicalTreeRoute) -> Result<Value, ViewError> {
+        let admitted = ViewSourceSnapshot {
+            source_set_identity: self.read.source_set_identity().to_string(),
+            revision: self.exact_revision()?,
+        };
+        self.typed_payload_for(route, &admitted)
+    }
+
+    fn typed_payload_for(
+        &self,
+        route: &LogicalTreeRoute,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Value, ViewError> {
         if route.reader() == LogicalReader::Configuration {
-            return self.read.configuration_payload();
+            return self
+                .configuration_payload(admitted)
+                .map(|payload| payload.as_ref().clone());
         }
         if route.reader() == LogicalReader::Metadata {
-            return self.metadata_payload(route);
+            return self.metadata_payload(route, admitted);
         }
         if route.reader() == LogicalReader::Form {
             return self
@@ -167,10 +218,67 @@ impl<'a> LogicalViewReadAuthority<'a> {
         ))
     }
 
-    fn metadata_payload(&self, route: &LogicalTreeRoute) -> Result<Value, ViewError> {
+    fn configuration_payload(
+        &self,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Arc<Value>, ViewError> {
+        if admitted.source_set_identity != self.read.source_set_identity() {
+            return Err(ViewError::new(
+                "stale_cursor",
+                "configuration payload belongs to another source identity",
+            ));
+        }
+        let key = RevisionCacheKey {
+            source_set_identity: admitted.source_set_identity.clone(),
+            revision: admitted.revision.clone(),
+        };
+        let mut cache = self.configuration_payloads.lock().map_err(|_| {
+            ViewError::new("provider_unavailable", "configuration cache is poisoned")
+        })?;
+        if let Some(payload) = cache.get(&key) {
+            return Ok(Arc::clone(payload));
+        }
+        let mut checkpoint = || self.read_checkpoint();
+        let payload = Arc::new(
+            self.read
+                .configuration_payload_with_checkpoint(&mut checkpoint)?,
+        );
+        cache.insert(key, Arc::clone(&payload));
+        Ok(payload)
+    }
+
+    fn metadata_payload(
+        &self,
+        route: &LogicalTreeRoute,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Value, ViewError> {
+        if matches!(
+            route.at().segments(),
+            [owner] if owner.kind() == NodeKind::WebSocketClient && owner.name().is_some()
+        ) {
+            let owner = &route.at().segments()[0];
+            let name = owner.name().expect("matched named WebSocketClient owner");
+            self.ensure_owner_registered_parts(NodeKind::WebSocketClient.as_str(), name, admitted)?;
+            return Ok(identity_only_metadata_payload(
+                NodeKind::WebSocketClient.as_str(),
+                name,
+            ));
+        }
         let target = route.reader_metadata_path().ok_or_else(|| {
             ViewError::new("not_found", "metadata address has no typed reader target")
         })?;
+        self.ensure_owner_registered(target, admitted)?;
+        if let Some(payload) = self.read.external_metadata_payload(target)? {
+            return Ok(payload);
+        }
+        let kind = target.as_str().split('.').next().unwrap_or_default();
+        if kind == NodeKind::WebSocketClient.as_str() {
+            let name = target.as_str().split('.').nth(1).unwrap_or_default();
+            return Ok(identity_only_metadata_payload(kind, name));
+        }
+        if MetadataKind::parse(kind).is_err() {
+            return self.read.identity_metadata_payload(target);
+        }
         let local = self.read.metadata_local(target)?;
         let template_branches = local
             .collections
@@ -253,6 +361,45 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(Value::Object(payload))
     }
 
+    fn ensure_owner_registered(
+        &self,
+        target: &MetadataAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<(), ViewError> {
+        let parts = target.as_str().split('.').collect::<Vec<_>>();
+        let [owner_kind, owner_name, ..] = parts.as_slice() else {
+            return Err(ViewError::new(
+                "not_found",
+                "metadata owner has no canonical kind and name",
+            ));
+        };
+        self.ensure_owner_registered_parts(owner_kind, owner_name, admitted)
+    }
+
+    fn ensure_owner_registered_parts(
+        &self,
+        owner_kind: &str,
+        owner_name: &str,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<(), ViewError> {
+        let payload = self.configuration_payload(admitted)?;
+        let registered = payload
+            .get("registeredObjects")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|item| {
+                item.get("kind").and_then(Value::as_str) == Some(owner_kind)
+                    && item.get("name").and_then(Value::as_str) == Some(owner_name)
+            });
+        registered.then_some(()).ok_or_else(|| {
+            ViewError::new(
+                "not_found",
+                format!("metadata owner `{owner_kind}.{owner_name}` is not registered"),
+            )
+        })
+    }
+
     fn module_view(
         &self,
         route: &LogicalTreeRoute,
@@ -260,16 +407,39 @@ impl<'a> LogicalViewReadAuthority<'a> {
         filter: &ModuleViewFilter,
     ) -> Result<NodeViewData, ViewError> {
         let Some(capability) = route.module() else {
-            return self.module_branch_view(route.at());
+            return self.module_branch_view(route.at(), admitted);
         };
+        let (module_at, prefix_len) = module_prefix(route.at(), self.profile, capability)?;
+        self.verify_module_owner(&module_at, capability, admitted)?;
         if capability.role() == ModuleRole::WebSocketClient {
             return Err(ViewError::new(
                 "provider_unavailable",
                 "WebSocketClient source layout is not specified for platform profile 8.3.27",
             ));
         }
-        let (module_at, prefix_len) = module_prefix(route.at(), self.profile, capability)?;
-        let metadata_path = module_source_address(&module_at, capability)?;
+        let projections = self.module_projection(&module_at, capability, admitted)?;
+        module_projection_view(route.at(), prefix_len, projections.as_ref(), filter)
+    }
+
+    fn module_projection(
+        &self,
+        module_at: &QualifiedAddress,
+        capability: ModuleCapability,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Arc<ModuleProjectionSet>, ViewError> {
+        let key = ModuleProjectionCacheKey {
+            source_set_identity: admitted.source_set_identity.clone(),
+            revision: admitted.revision.clone(),
+            module_at: module_at.to_string(),
+        };
+        let mut cache = self
+            .module_projections
+            .lock()
+            .map_err(|_| ViewError::new("provider_unavailable", "module cache is poisoned"))?;
+        if let Some(projection) = cache.get(&key) {
+            return Ok(Arc::clone(projection));
+        }
+        let metadata_path = module_source_address(module_at, capability)?;
         let source = self.read.module_source(&metadata_path)?;
         let common_module = if capability.role() == ModuleRole::Common {
             let owner = metadata_path
@@ -287,27 +457,142 @@ impl<'a> LogicalViewReadAuthority<'a> {
             None
         };
         let handles = if capability.role() == ModuleRole::Form {
-            self.form_bindings(&module_at)?
+            self.form_bindings(module_at)?
         } else {
             Vec::new()
         };
-        let projections = project_module(ModuleProjectionRequest {
-            at: &module_at,
-            capability,
-            title: module_title(&module_at, capability),
-            rev: &admitted.revision,
-            source: source.as_deref(),
-            common_module,
-            handles: &handles,
-            declarative_bindings: &[],
-            extension_targets: &[],
-        })
-        .map_err(|error| ViewError::new("provider_unavailable", error))?;
-        module_projection_view(route.at(), prefix_len, &projections, filter)
+        let projection = Arc::new(
+            project_module(ModuleProjectionRequest {
+                at: module_at,
+                capability,
+                title: module_title(module_at, capability),
+                rev: &admitted.revision,
+                source: source.as_deref(),
+                common_module,
+                handles: &handles,
+                declarative_bindings: &[],
+                extension_targets: &[],
+            })
+            .map_err(|error| ViewError::new("provider_unavailable", error))?,
+        );
+        cache.insert(key, Arc::clone(&projection));
+        Ok(projection)
     }
 
-    fn module_branch_view(&self, branch: &QualifiedAddress) -> Result<NodeViewData, ViewError> {
+    fn module_branch_view(
+        &self,
+        branch: &QualifiedAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<NodeViewData, ViewError> {
+        if matches!(
+            branch.segments(),
+            [root] if root.kind() == NodeKind::Module
+        ) && matches!(
+            self.read.source_set_kind(),
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            return Err(ViewError::new(
+                "not_found",
+                "external source sets have no configuration runtime module branch",
+            ));
+        }
+        if let Some(owner) = branch
+            .segments()
+            .first()
+            .filter(|owner| owner.kind() == NodeKind::WebSocketClient)
+        {
+            self.ensure_owner_registered_parts(
+                NodeKind::WebSocketClient.as_str(),
+                owner.name().ok_or_else(|| {
+                    ViewError::new("not_found", "WebSocketClient owner name is absent")
+                })?,
+                admitted,
+            )?;
+        } else if let Some(owner) = module_branch_owner(branch)? {
+            self.verify_registered_module_owner(&owner, admitted)?;
+        }
         project_module_branch(branch, self.profile)
+    }
+
+    fn verify_module_owner(
+        &self,
+        module_at: &QualifiedAddress,
+        capability: ModuleCapability,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<(), ViewError> {
+        if capability.source_layout() == ModuleSourceLayout::Root {
+            return if matches!(
+                self.read.source_set_kind(),
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            ) {
+                Ok(())
+            } else {
+                Err(ViewError::new(
+                    "not_found",
+                    "external source sets have no configuration runtime modules",
+                ))
+            };
+        }
+        if capability.role() == ModuleRole::WebSocketClient {
+            let owner = module_at
+                .segments()
+                .first()
+                .ok_or_else(|| ViewError::new("not_found", "WebSocketClient owner is absent"))?;
+            return self.ensure_owner_registered_parts(
+                NodeKind::WebSocketClient.as_str(),
+                owner.name().ok_or_else(|| {
+                    ViewError::new("not_found", "WebSocketClient owner name is absent")
+                })?,
+                admitted,
+            );
+        }
+        let owner = module_owner_address(module_at, capability)?;
+        self.verify_registered_module_owner(&owner, admitted)
+    }
+
+    fn verify_registered_module_owner(
+        &self,
+        target: &MetadataAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<(), ViewError> {
+        let key = OwnerProofCacheKey {
+            revision: RevisionCacheKey {
+                source_set_identity: admitted.source_set_identity.clone(),
+                revision: admitted.revision.clone(),
+            },
+            owner: target.as_str().to_string(),
+        };
+        if self
+            .verified_module_owners
+            .lock()
+            .map_err(|_| ViewError::new("provider_unavailable", "owner cache is poisoned"))?
+            .contains(&key)
+        {
+            return Ok(());
+        }
+        self.ensure_owner_registered(target, admitted)?;
+        let parts = target.as_str().split('.').collect::<Vec<_>>();
+        if parts.len() == 2 {
+            if self.read.external_metadata_payload(target)?.is_none() {
+                let kind = parts[0];
+                if kind == NodeKind::WebSocketClient.as_str() {
+                    // The profile intentionally has no guessed WebSocketClient
+                    // export layout. Configuration registry identity is the
+                    // retained owner evidence; its source remains unavailable.
+                } else if MetadataKind::parse(kind).is_ok() {
+                    self.read.metadata_local(target)?;
+                } else {
+                    self.read.identity_metadata_payload(target)?;
+                }
+            }
+        } else {
+            self.read.metadata_child_profile(target)?;
+        }
+        self.verified_module_owners
+            .lock()
+            .map_err(|_| ViewError::new("provider_unavailable", "owner cache is poisoned"))?
+            .insert(key);
+        Ok(())
     }
 
     fn form_bindings(
@@ -380,7 +665,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         if route.reader() != LogicalReader::Role {
             return Ok(at.clone());
         }
-        let payload = self.typed_payload(&route)?;
+        let payload = self.typed_payload_for(&route, admitted)?;
         let projected = project_typed_payload(&route, payload)?;
         QualifiedAddress::parse(projected.at())
             .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
@@ -396,7 +681,11 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new("not_found", error.to_string()))?;
         if route.reader() == LogicalReader::Configuration {
-            return Ok(Some("Configuration.xml".to_string()));
+            return Ok(matches!(
+                self.read.source_set_kind(),
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+            .then(|| "Configuration.xml".to_string()));
         }
         if route.reader() == LogicalReader::Module {
             if route.module().is_none() {
@@ -412,6 +701,9 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let Some(target) = route.reader_metadata_path() else {
             return Ok(None);
         };
+        if target.as_str().split('.').next() == Some(NodeKind::WebSocketClient.as_str()) {
+            return Ok(None);
+        }
         let target_depth = target.as_str().split('.').count().div_ceil(2);
         let is_detail = at.segments().len() > target_depth;
         let path = match route.reader() {
@@ -468,14 +760,19 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             self.module_view(&route, admitted, &module_filter)?
         } else if route.reader() == LogicalReader::Metadata
             && route.reader_metadata_path().is_none()
+            && route
+                .at()
+                .segments()
+                .last()
+                .is_some_and(|segment| segment.name().is_none())
         {
-            let payload = self.read.configuration_payload()?;
+            let payload = self.configuration_payload(admitted)?;
             crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
                 route.at(),
-                &payload,
+                payload.as_ref(),
             )?
         } else {
-            let payload = self.typed_payload(&route)?;
+            let payload = self.typed_payload_for(&route, admitted)?;
             project_typed_payload(&route, payload)?
         };
         self.read_checkpoint()?;
@@ -485,19 +782,125 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 "source revision changed during the typed read",
             ));
         }
-        Ok(with_module_branch(projected, at, self.profile))
+        self.with_module_branch(projected, at, admitted)
     }
 }
 
-fn with_module_branch(
-    projected: NodeViewData,
-    parent: &QualifiedAddress,
-    profile: PlatformProfile,
-) -> NodeViewData {
-    let Some(branch) = module_branch_for_parent(parent, profile) else {
-        return projected;
+impl LogicalViewReadAuthority<'_> {
+    fn with_module_branch(
+        &self,
+        projected: NodeViewData,
+        parent: &QualifiedAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<NodeViewData, ViewError> {
+        if matches!(
+            parent.segments(),
+            [root] if root.kind() == NodeKind::Configuration
+        ) && matches!(
+            self.read.source_set_kind(),
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            return Ok(projected);
+        }
+        let Some(branch) = module_branch_for_parent(parent, self.profile) else {
+            return Ok(projected);
+        };
+        if let Some(owner) = parent
+            .segments()
+            .first()
+            .filter(|owner| owner.kind() == NodeKind::WebSocketClient)
+        {
+            self.ensure_owner_registered_parts(
+                NodeKind::WebSocketClient.as_str(),
+                owner.name().ok_or_else(|| {
+                    ViewError::new("not_found", "WebSocketClient owner name is absent")
+                })?,
+                admitted,
+            )?;
+        } else if let Some(owner) = module_branch_owner_address(parent)? {
+            self.verify_registered_module_owner(&owner, admitted)?;
+        }
+        Ok(projected.with_branch(branch))
+    }
+}
+
+fn module_branch_owner(branch: &QualifiedAddress) -> Result<Option<MetadataAddress>, ViewError> {
+    let segments = branch.segments();
+    if matches!(segments, [root] if root.kind() == NodeKind::Module) {
+        return Ok(None);
+    }
+    let Some(last) = segments.last() else {
+        return Ok(None);
     };
-    projected.with_branch(branch)
+    if last.kind() != NodeKind::Module || last.name().is_some() {
+        return Err(ViewError::new(
+            "provider_unavailable",
+            "module branch has no canonical terminal",
+        ));
+    }
+    let logical = render_segments(&segments[..segments.len() - 1]);
+    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
+        .map(Some)
+        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
+}
+
+fn identity_only_metadata_payload(kind: &str, name: &str) -> Value {
+    json!({
+        "name": name,
+        "kind": kind,
+        "support": {"state": "not_supported"},
+        "properties": {},
+        "declarations": {},
+        "relations": {},
+        "collections": {
+            "attributes": [],
+            "tabularSections": [],
+            "dimensions": [],
+            "resources": [],
+            "enumValues": [],
+            "columns": [],
+            "forms": [],
+            "templates": [],
+            "commands": []
+        }
+    })
+}
+
+fn module_branch_owner_address(
+    parent: &QualifiedAddress,
+) -> Result<Option<MetadataAddress>, ViewError> {
+    if matches!(
+        parent.segments(),
+        [root] if root.kind() == NodeKind::Configuration
+    ) {
+        return Ok(None);
+    }
+    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parent.logical_path())
+        .map(Some)
+        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
+}
+
+fn module_owner_address(
+    module_at: &QualifiedAddress,
+    capability: ModuleCapability,
+) -> Result<MetadataAddress, ViewError> {
+    let segments = module_at.segments();
+    if capability.role() == ModuleRole::Common {
+        return MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &module_at.logical_path())
+            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()));
+    }
+    let terminal = segments
+        .last()
+        .ok_or_else(|| ViewError::new("provider_unavailable", "module address has no terminal"))?;
+    if terminal.kind() != NodeKind::Module || terminal.name().is_none() {
+        return Err(ViewError::new(
+            "provider_unavailable",
+            "module address has no named module terminal",
+        ));
+    }
+    let logical = render_segments(&segments[..segments.len() - 1]);
+    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
+        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
 }
 
 pub(crate) fn module_branch_for_parent(
