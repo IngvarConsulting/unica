@@ -335,14 +335,7 @@ fn cursor_error(error: ViewCursorError) -> ViewError {
 }
 
 fn error_result(at: Option<String>, error: ViewError) -> DomainResult {
-    let mut result = DomainResult::success(error.message.clone());
-    result.ok = false;
-    result.at = at;
-    result.diagnostics = vec![serde_json::json!({
-        "code": error.code,
-        "message": error.message,
-    })];
-    result
+    DomainResult::canonical_rejection(at, error.code, error.message)
 }
 
 fn canonical_value(value: Value) -> Value {

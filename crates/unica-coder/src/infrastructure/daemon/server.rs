@@ -95,11 +95,9 @@ struct ActorLogicalReadLease {
     route: ActorLogicalReadRoute,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum ActorLogicalReadRoute {
     Admitted,
-    MalformedViewAddress,
-    UnknownViewSource,
+    Rejected(Box<DomainResult>),
 }
 
 impl ActorBoundInvocation {
@@ -135,17 +133,46 @@ impl ActorBoundInvocation {
             | crate::application::invocation_store::ToolIdentity::Find => {
                 let (selected, route) = match self.tool {
                     crate::application::invocation_store::ToolIdentity::View => {
-                        let at = self.arguments.get("at").and_then(serde_json::Value::as_str);
-                        match at.and_then(|value| QualifiedAddress::parse(value).ok()) {
-                            Some(address) => match self
+                        match self.arguments.get("at").and_then(serde_json::Value::as_str) {
+                            Some(at) => match QualifiedAddress::parse(at) {
+                                Ok(address) => match self
                                 .read_sources
                                 .iter()
                                 .find(|source| source.name == address.source_set())
                             {
                                 Some(source) => (vec![source], ActorLogicalReadRoute::Admitted),
-                                None => (Vec::new(), ActorLogicalReadRoute::UnknownViewSource),
+                                    None => (
+                                        Vec::new(),
+                                        ActorLogicalReadRoute::Rejected(Box::new(
+                                            DomainResult::canonical_rejection(
+                                                Some(at.to_string()),
+                                                "provider_unavailable",
+                                                "view source set was not admitted by the workspace actor",
+                                            ),
+                                        )),
+                                    ),
+                                },
+                                Err(error) => (
+                                    Vec::new(),
+                                    ActorLogicalReadRoute::Rejected(Box::new(
+                                        DomainResult::canonical_rejection(
+                                            Some(at.to_string()),
+                                            "bad_value",
+                                            error.to_string(),
+                                        ),
+                                    )),
+                                ),
                             },
-                            None => (Vec::new(), ActorLogicalReadRoute::MalformedViewAddress),
+                            None => (
+                                Vec::new(),
+                                ActorLogicalReadRoute::Rejected(Box::new(
+                                    DomainResult::canonical_rejection(
+                                        None,
+                                        "bad_value",
+                                        "view requires string argument `at`",
+                                    ),
+                                )),
+                            ),
                         }
                     }
                     _ => (
@@ -153,7 +180,7 @@ impl ActorBoundInvocation {
                         ActorLogicalReadRoute::Admitted,
                     ),
                 };
-                if route == ActorLogicalReadRoute::Admitted && selected.is_empty() {
+                if matches!(route, ActorLogicalReadRoute::Admitted) && selected.is_empty() {
                     return Err(
                         "logical read admission selected no actor-owned source sets".to_string()
                     );
@@ -244,6 +271,16 @@ impl ActorBoundExecution {
                 })
             })
             .collect()
+    }
+
+    pub(crate) fn rejected_logical_read_result(&self) -> Option<DomainResult> {
+        let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
+            return None;
+        };
+        match &lease.route {
+            ActorLogicalReadRoute::Admitted => None,
+            ActorLogicalReadRoute::Rejected(result) => Some(result.as_ref().clone()),
+        }
     }
 
     /// Daemon-owned exact delivery capability. Canonical work may wait here
@@ -340,20 +377,8 @@ impl ActorBoundExecution {
                     cancellation,
                 ),
             ActorExecutionRevision::LogicalRead(lease) => {
-                if lease.route != ActorLogicalReadRoute::Admitted {
-                    let expected_code = match lease.route {
-                        ActorLogicalReadRoute::MalformedViewAddress => "bad_value",
-                        ActorLogicalReadRoute::UnknownViewSource => "provider_unavailable",
-                        ActorLogicalReadRoute::Admitted => unreachable!(),
-                    };
-                    let is_closed_typed_rejection = matches!(
-                        &staged,
-                        Ok(result)
-                            if !result.ok
-                                && result.diagnostics.first().and_then(|diagnostic| {
-                                    diagnostic.get("code").and_then(serde_json::Value::as_str)
-                                }) == Some(expected_code)
-                    );
+                if let ActorLogicalReadRoute::Rejected(expected) = lease.route {
+                    let is_closed_typed_rejection = staged.as_ref() == Ok(expected.as_ref());
                     return is_closed_typed_rejection.then_some(staged).ok_or_else(|| {
                         "logical view input rejection produced an unexpected terminal result"
                             .to_string()
@@ -1788,7 +1813,14 @@ pub(crate) mod actor_capacity_tests {
         );
     }
 
-    fn execute_rejected_hidden_v13_view_address(at: &str) -> DomainResult {
+    fn rejected_hidden_v13_view_execution(
+        at: &str,
+    ) -> (
+        tempfile::TempDir,
+        ActorBoundExecution,
+        Arc<crate::infrastructure::source_revision::SourceRevisionService>,
+        usize,
+    ) {
         let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
@@ -1846,13 +1878,44 @@ pub(crate) mod actor_capacity_tests {
             scans_before,
             "an address rejected before source selection must not scan a source corpus"
         );
+        (workspace, execution, revisions, scans_before)
+    }
+
+    fn execute_rejected_hidden_v13_view_address(at: &str) -> DomainResult {
+        let (_workspace, execution, revisions, scans_before) =
+            rejected_hidden_v13_view_execution(at);
+        let cancellation = CancellationToken::new();
         let result = crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()
             .execute(&execution, cancellation.clone())
             .expect("typed input error is a DomainResult");
-        execution
+        let result = execution
             .publish(Ok(result), &cancellation)
             .unwrap()
-            .unwrap()
+            .unwrap();
+        assert_eq!(
+            revisions.retained_scan_count(),
+            scans_before,
+            "zero-fence typed rejection publication must not scan a source corpus"
+        );
+        result
+    }
+
+    fn zero_fence_accepts_forged_result(at: &str, mutate: impl FnOnce(&mut DomainResult)) -> bool {
+        let (_workspace, execution, revisions, scans_before) =
+            rejected_hidden_v13_view_execution(at);
+        let cancellation = CancellationToken::new();
+        let mut result =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()
+                .execute(&execution, cancellation.clone())
+                .expect("typed input error is a DomainResult");
+        mutate(&mut result);
+        let accepted = execution.publish(Ok(result), &cancellation).is_ok();
+        assert_eq!(
+            revisions.retained_scan_count(),
+            scans_before,
+            "forged rejected-path result must not scan a source corpus"
+        );
+        accepted
     }
 
     #[test]
@@ -1872,11 +1935,103 @@ pub(crate) mod actor_capacity_tests {
     }
 
     #[test]
+    pub(crate) fn zero_fence_view_rejection_accepts_only_the_exact_canonical_envelope() {
+        let mut accepted = Vec::new();
+        for at in ["not-qualified", "missing:Catalog.Items"] {
+            macro_rules! expect_rejected {
+                ($label:literal, $mutate:expr) => {
+                    if zero_fence_accepts_forged_result(at, $mutate) {
+                        accepted.push(format!("{at}:{}", $label));
+                    }
+                };
+            }
+            expect_rejected!("data", |result: &mut DomainResult| {
+                result.data = Some(serde_json::json!({"unfenced": "payload"}));
+            });
+            expect_rejected!("rev", |result: &mut DomainResult| {
+                result.rev = Some("unfenced-revision".to_string());
+            });
+            expect_rejected!("cursor", |result: &mut DomainResult| {
+                result.cursor = Some("unfenced-cursor".to_string());
+            });
+            expect_rejected!("changed", |result: &mut DomainResult| {
+                result.changed.push(serde_json::json!({"path": "unfenced"}));
+            });
+            expect_rejected!("warnings", |result: &mut DomainResult| {
+                result.warnings.push(serde_json::json!({"raw": "provider"}));
+            });
+            expect_rejected!("artifacts", |result: &mut DomainResult| {
+                result
+                    .artifacts
+                    .push(serde_json::json!({"path": "unfenced"}));
+            });
+            expect_rejected!("next", |result: &mut DomainResult| {
+                result.next.push(serde_json::json!({"op": "unfenced"}));
+            });
+            expect_rejected!("extra diagnostic", |result: &mut DomainResult| {
+                result
+                    .diagnostics
+                    .push(serde_json::json!({"code": "bad_value", "message": "extra"}));
+            });
+            expect_rejected!("diagnostic key", |result: &mut DomainResult| {
+                result.diagnostics[0]["raw"] = serde_json::json!("provider");
+            });
+            expect_rejected!("at", |result: &mut DomainResult| {
+                result.at = Some("other:Catalog.Items".to_string());
+            });
+            expect_rejected!("summary", |result: &mut DomainResult| {
+                result.summary = "summary disagrees with diagnostic".to_string();
+            });
+            expect_rejected!("diagnostic message", |result: &mut DomainResult| {
+                result.diagnostics[0]["message"] =
+                    serde_json::json!("diagnostic disagrees with summary");
+            });
+            expect_rejected!(
+                "consistent alternate message",
+                |result: &mut DomainResult| {
+                    result.summary = "alternate but internally consistent".to_string();
+                    result.diagnostics[0]["message"] =
+                        serde_json::json!("alternate but internally consistent");
+                }
+            );
+
+            let (_workspace, execution, revisions, scans_before) =
+                rejected_hidden_v13_view_execution(at);
+            let cancellation = CancellationToken::new();
+            if execution
+                .publish(
+                    Err(InvocationFailure::new("cancelled", "forged failure")),
+                    &cancellation,
+                )
+                .is_ok()
+            {
+                accepted.push(format!("{at}:InvocationFailure"));
+            }
+            assert_eq!(revisions.retained_scan_count(), scans_before);
+
+            let (_workspace, execution, revisions, scans_before) =
+                rejected_hidden_v13_view_execution(at);
+            if execution
+                .publish(Ok(DomainResult::success("forged success")), &cancellation)
+                .is_ok()
+            {
+                accepted.push(format!("{at}:success"));
+            }
+            assert_eq!(revisions.retained_scan_count(), scans_before);
+        }
+        assert!(
+            accepted.is_empty(),
+            "zero-fence publication accepted forbidden envelopes: {accepted:?}"
+        );
+    }
+
+    #[test]
     pub(crate) fn hidden_v13_logical_publication_contract_is_complete() {
         crate::infrastructure::source_revision::tests::retained_final_confirmation_stabilization_contract_is_complete();
         hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once();
         review_invalid_logical_address_reaches_typed_bad_value_result();
         valid_unknown_source_reaches_typed_provider_unavailable_without_scanning();
+        zero_fence_view_rejection_accepts_only_the_exact_canonical_envelope();
         crate::infrastructure::workspace_actor::tests::logical_read_publication_lane_wait_honors_existing_cancellation_and_deadline();
     }
 

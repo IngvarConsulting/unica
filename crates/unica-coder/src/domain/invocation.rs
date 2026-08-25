@@ -195,6 +195,20 @@ impl DomainResult {
             cursor: None,
         }
     }
+
+    pub(crate) fn canonical_rejection(
+        at: Option<String>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        let code = code.into();
+        let message = message.into();
+        let mut result = Self::success(message.clone());
+        result.ok = false;
+        result.at = at;
+        result.diagnostics = vec![serde_json::json!({"code": code, "message": message})];
+        result
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

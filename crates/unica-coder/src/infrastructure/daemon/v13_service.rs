@@ -11,7 +11,7 @@ use crate::domain::platform_profile::PlatformProfile;
 use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder};
 use crate::infrastructure::v13_read::LogicalViewReadAuthority;
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::sync::Arc;
 
 /// Explicitly injected hidden v0.13 reader. `DaemonServerConfig::new` keeps the
@@ -54,7 +54,9 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure> {
         match invocation.tool() {
-            ToolIdentity::View => Ok(self.execute_view(invocation, &cancellation)),
+            ToolIdentity::View => Ok(invocation
+                .rejected_logical_read_result()
+                .unwrap_or_else(|| self.execute_view(invocation, &cancellation))),
             ToolIdentity::Find => Ok(self.execute_find(invocation, &cancellation)),
             tool => Ok(error_result(
                 None,
@@ -251,12 +253,7 @@ fn error_result(
     code: &'static str,
     message: impl Into<String>,
 ) -> DomainResult {
-    let message = message.into();
-    let mut result = DomainResult::success(message.clone());
-    result.ok = false;
-    result.at = at;
-    result.diagnostics = vec![json!({"code": code, "message": message})];
-    result
+    DomainResult::canonical_rejection(at, code, message)
 }
 
 #[cfg(test)]
