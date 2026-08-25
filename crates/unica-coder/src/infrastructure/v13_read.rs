@@ -143,9 +143,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         source_root: Arc<RetainedDirectoryCapability>,
         profile: PlatformProfile,
     ) -> Self {
-        Self {
+        Self::with_read_authority(
             cancellation,
-            read: ProviderReadAuthority::new(
+            ProviderReadAuthority::new(
                 source_set,
                 source_set_identity,
                 source_set_kind,
@@ -153,7 +153,21 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 revision_service,
             ),
             profile,
-            deadline: ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),
+            ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),
+        )
+    }
+
+    pub(crate) fn with_read_authority(
+        cancellation: &'a CancellationToken,
+        read: ProviderReadAuthority,
+        profile: PlatformProfile,
+        deadline: ProviderDeadline,
+    ) -> Self {
+        Self {
+            cancellation,
+            read,
+            profile,
+            deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
             verified_owners: Mutex::new(BTreeSet::new()),

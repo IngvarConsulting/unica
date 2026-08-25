@@ -12,7 +12,9 @@ use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::logical_tree::route_logical_address;
-use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+use crate::infrastructure::platform::filesystem::{
+    supports_retained_root_replacement_test, RetainedDirectoryCapability,
+};
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder};
 use crate::infrastructure::v13_read_port::{
@@ -1145,9 +1147,12 @@ fn logical_reader_parity_contract_is_complete() {
     external_parent_childobjects_are_the_only_nested_owner_authority();
     unregistered_top_level_descriptors_cannot_enter_any_typed_reader_family();
     review_revision_authority_cannot_be_swapped_after_named_identity_validation();
+    operation_lease_rejects_named_root_replacement_before_node_read();
     review_rejects_revision_change_during_post_fence_owner_proof();
     cursor_retry_rejects_revision_change_during_role_canonicalization();
     review_production_read_port_has_no_nocancel_inventory_entrypoint();
+    review_role_rejects_non_platform_metadata_node_kinds();
+    operation_lease_find_traversal_scans_once_then_confirms_once();
     websocket_client_source_view_is_an_explicit_provider_gap();
     crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
         crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
@@ -1196,6 +1201,119 @@ fn find_walks_every_real_addressable_reader_family_without_parallel_xml_semantic
             "missing real logical identity {expected}: {found:?}",
         );
     }
+}
+
+#[test]
+pub(crate) fn operation_lease_find_traversal_scans_once_then_confirms_once() {
+    let fixture = RealReaderFixture::new();
+    fixture.install_accepted_profile_sources();
+    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
+    );
+    let deadline = crate::domain::code_intelligence::ProviderDeadline::from_budget(
+        crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+    );
+    let lease = revisions
+        .begin_retained_operation(&root, deadline, &fixture.cancellation)
+        .unwrap();
+    assert_eq!(revisions.retained_scan_count(), 1);
+    let authority = LogicalViewReadAuthority::with_read_authority(
+        &fixture.cancellation,
+        ProviderReadAuthority::new_with_revision_lease(
+            "main",
+            "actor-fixture-main",
+            SourceSetKind::Configuration,
+            Arc::clone(&root),
+            lease.clone(),
+        ),
+        PlatformProfile::v8_3_27(),
+        deadline,
+    );
+    let built = WorkspaceFindIndexBuilder::default()
+        .build_with_revision(
+            &[ActorFindSource::new("main", &authority)],
+            deadline,
+            &fixture.cancellation,
+        )
+        .unwrap();
+    for expected in [
+        "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+        "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
+        "main:Role.SalesReader.Right.Catalog_Products.RLS.View",
+        "main:Report.ParityReport.Template.MainSchema.DataSet.MainData.Field.Code",
+        "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы",
+        "main:CommonModule.РеактивныйСервер.Method.InternalService",
+    ] {
+        let found = built.index.find(FindRequest::new(expected).unwrap());
+        assert!(
+            !found.is_nearest()
+                && found
+                    .candidates()
+                    .iter()
+                    .any(|candidate| candidate.at() == expected),
+            "the scan-count proof did not traverse {expected}: {found:?}"
+        );
+    }
+    assert_eq!(
+        revisions.retained_scan_count(),
+        1,
+        "node snapshots and reads must use the fixed operation revision"
+    );
+    revisions
+        .confirm_retained_operation(&root, &lease, deadline, &fixture.cancellation)
+        .unwrap();
+    assert_eq!(
+        revisions.retained_scan_count(),
+        2,
+        "the only second corpus scan is final operation confirmation"
+    );
+}
+
+#[test]
+fn operation_lease_rejects_named_root_replacement_before_node_read() {
+    if !supports_retained_root_replacement_test() {
+        return;
+    }
+    let fixture = RealReaderFixture::new();
+    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
+    );
+    let deadline = crate::domain::code_intelligence::ProviderDeadline::from_budget(
+        crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+    );
+    let lease = revisions
+        .begin_retained_operation(&root, deadline, &fixture.cancellation)
+        .unwrap();
+    let authority = LogicalViewReadAuthority::with_read_authority(
+        &fixture.cancellation,
+        ProviderReadAuthority::new_with_revision_lease(
+            "main",
+            "actor-fixture-main",
+            SourceSetKind::Configuration,
+            root,
+            lease,
+        ),
+        PlatformProfile::v8_3_27(),
+        deadline,
+    );
+    let saved = fixture.root.path().join("retained-a");
+    let replacement = fixture.root.path().join("replacement-b");
+    fs::create_dir_all(&replacement).unwrap();
+    fs::write(
+        replacement.join("Configuration.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Replacement</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .unwrap();
+    fs::rename(&fixture.source, &saved).unwrap();
+    fs::rename(&replacement, &fixture.source).unwrap();
+
+    let result = ViewService::new(authority, ViewCursorStore::default())
+        .view(ViewRequest::new("main:Configuration").unwrap());
+
+    assert!(!result.ok, "a replaced capability name escaped: {result:?}");
+    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
 }
 
 #[test]
@@ -2556,6 +2674,27 @@ fn review_role_canonical_encoding_cannot_collapse_distinct_kind_name_pairs() {
     assert!(result.diagnostics[0]["message"]
         .as_str()
         .is_some_and(|message| message.contains("Catalog_Orders")));
+}
+
+#[test]
+fn review_role_rejects_non_platform_metadata_node_kinds() {
+    let fixture = RealReaderFixture::new();
+    fs::write(
+        fixture.source.join("Roles/SalesReader/Ext/Rights.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20">
+  <object><name>WebSocketClient.Telephony</name><right><name>Read</name><value>true</value></right></object>
+</Rights>"#,
+    )
+    .unwrap();
+    let service = fixture.view_service();
+
+    let result = service.view(ViewRequest::new("main:Role.SalesReader.Right").unwrap());
+    assert!(
+        !result.ok,
+        "non-platform role object kind escaped: {result:?}"
+    );
+    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
 }
 
 #[test]

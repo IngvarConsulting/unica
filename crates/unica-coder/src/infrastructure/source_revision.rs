@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -30,6 +30,10 @@ use std::sync::{Arc, Mutex};
 
 const MAX_SOURCE_DEPTH: usize = 64;
 const REVISION_RECORD_SCHEMA_VERSION: u32 = 2;
+const RETAINED_HASH_CHUNK_BYTES: usize = 64 * 1024;
+const MAX_RETAINED_SOURCE_ENTRIES: usize = 1_000_000;
+const MAX_RETAINED_SOURCE_FILE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_RETAINED_SOURCE_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceStateScope {
@@ -104,6 +108,63 @@ impl SourceRevisionFence for ReconcileEverySnapshotFence {
 }
 
 type SourceManifest = BTreeMap<PathBuf, SourceEntryDigest>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManifestProvenance {
+    Ambient(FileIdentity),
+    Retained(FileIdentity),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RetainedScanLimits {
+    max_entries: usize,
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+}
+
+impl RetainedScanLimits {
+    const PRODUCTION: Self = Self::new(
+        MAX_RETAINED_SOURCE_ENTRIES,
+        MAX_RETAINED_SOURCE_FILE_BYTES,
+        MAX_RETAINED_SOURCE_TOTAL_BYTES,
+    );
+
+    const fn new(max_entries: usize, max_file_bytes: u64, max_total_bytes: u64) -> Self {
+        Self {
+            max_entries,
+            max_file_bytes,
+            max_total_bytes,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RetainedScanState {
+    entries: usize,
+    total_bytes: u64,
+}
+
+#[derive(Clone, Copy)]
+struct RetainedScanContext<'a> {
+    deadline: ProviderDeadline,
+    cancellation: &'a CancellationToken,
+    limits: RetainedScanLimits,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RetainedRevisionLease {
+    revision: SourceRevision,
+    root_identity: FileIdentity,
+}
+
+impl RetainedRevisionLease {
+    pub(crate) fn revision_identity(&self) -> String {
+        format!(
+            "{}:{}:{}",
+            self.revision.algorithm, self.revision.generation, self.revision.digest
+        )
+    }
+}
 type SourceManifestScanner =
     dyn Fn(&Path, &(dyn Fn() -> bool + Sync)) -> Result<SourceManifest, String> + Send + Sync;
 type SourceFileReader = dyn Fn(&Path) -> Result<Vec<u8>, String> + Send + Sync;
@@ -116,7 +177,7 @@ pub(crate) struct SourceRevisionService {
     state_scope: WorkspaceStateScope,
     machine: Mutex<SourceRevisionMachine>,
     manifest: Mutex<Option<SourceManifest>>,
-    retained_manifest_identity: Mutex<Option<FileIdentity>>,
+    manifest_provenance: Mutex<Option<ManifestProvenance>>,
     operation: DeadlineLock<Recover>,
     fence: Arc<dyn SourceRevisionFence>,
     scanner: Arc<SourceManifestScanner>,
@@ -242,7 +303,7 @@ impl SourceRevisionService {
             state_scope,
             machine: Mutex::new(machine),
             manifest: Mutex::new(None),
-            retained_manifest_identity: Mutex::new(None),
+            manifest_provenance: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence,
             scanner: Arc::new(scan_source_manifest),
@@ -262,6 +323,7 @@ impl SourceRevisionService {
             cancellation,
             "source revision operation wait",
         )?;
+        let ambient_identity = self.ambient_root_identity()?;
         if self.fence.capability() == FenceCapability::Unsupported {
             self.machine
                 .lock()
@@ -289,13 +351,22 @@ impl SourceRevisionService {
                         machine.trust_loss_epoch(),
                     )
                 };
+                let ambient_manifest_matches = self
+                    .manifest_provenance
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .is_some_and(|provenance| {
+                        provenance == ManifestProvenance::Ambient(ambient_identity)
+                    });
                 if changed_paths.is_empty() {
-                    !trusted
+                    !(trusted && ambient_manifest_matches)
                 } else {
                     !(trusted
+                        && ambient_manifest_matches
                         && self.apply_incremental(
                             changed_paths,
                             trust_loss_epoch,
+                            ambient_identity,
                             deadline,
                             cancellation,
                         )?)
@@ -310,9 +381,19 @@ impl SourceRevisionService {
             }
         };
         if needs_reconcile {
-            self.reconcile(deadline, cancellation)?;
+            self.reconcile(ambient_identity, deadline, cancellation)?;
+        }
+        if self.ambient_root_identity()? != ambient_identity {
+            self.lose_incremental_trust();
+            return Err("ambient source revision identity changed during snapshot".to_string());
         }
         self.trusted_snapshot()
+    }
+
+    fn ambient_root_identity(&self) -> Result<FileIdentity, String> {
+        RetainedDirectoryCapability::open(&self.source_root)
+            .map(|root| root.identity())
+            .map_err(|error| format!("ambient source revision root cannot be retained: {error}"))
     }
 
     /// Computes and publishes a revision from the same descriptor-relative
@@ -355,10 +436,12 @@ impl SourceRevisionService {
                         SourceRevisionState::Trusted(_)
                     );
                     let retained_manifest_matches = self
-                        .retained_manifest_identity
+                        .manifest_provenance
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
-                        .is_some_and(|identity| identity == root.identity());
+                        .is_some_and(|provenance| {
+                            provenance == ManifestProvenance::Retained(root.identity())
+                        });
                     !(trusted && retained_manifest_matches)
                 }
                 FenceOutcome::Proven { .. } => {
@@ -382,6 +465,36 @@ impl SourceRevisionService {
         }
         self.reconcile_retained(root, deadline, cancellation)?;
         self.trusted_snapshot()
+    }
+
+    pub(crate) fn begin_retained_operation(
+        &self,
+        root: &RetainedDirectoryCapability,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<RetainedRevisionLease, String> {
+        let revision = self.snapshot_retained(root, deadline, cancellation)?;
+        Ok(RetainedRevisionLease {
+            revision,
+            root_identity: root.identity(),
+        })
+    }
+
+    pub(crate) fn confirm_retained_operation(
+        &self,
+        root: &RetainedDirectoryCapability,
+        lease: &RetainedRevisionLease,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
+        if root.identity() != lease.root_identity {
+            return Err("retained revision lease belongs to another source identity".to_string());
+        }
+        let current = self.snapshot_retained(root, deadline, cancellation)?;
+        if current != lease.revision {
+            return Err("retained source revision changed during logical operation".to_string());
+        }
+        Ok(())
     }
 
     fn reconcile_retained(
@@ -427,7 +540,7 @@ impl SourceRevisionService {
                 &manifest,
                 digest,
                 trust_loss_epoch,
-                Some(root.identity()),
+                ManifestProvenance::Retained(root.identity()),
             )? {
                 return Ok(());
             }
@@ -467,6 +580,7 @@ impl SourceRevisionService {
         &self,
         mut changed_paths: Vec<PathBuf>,
         expected_trust_loss_epoch: u64,
+        ambient_identity: FileIdentity,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<bool, String> {
@@ -514,7 +628,12 @@ impl SourceRevisionService {
                 }
                 FenceOutcome::Proven { .. } => {
                     let digest = digest_source_manifest(&manifest)?;
-                    return self.publish_revision(&manifest, digest, expected_trust_loss_epoch);
+                    return self.publish_revision(
+                        &manifest,
+                        digest,
+                        expected_trust_loss_epoch,
+                        ambient_identity,
+                    );
                 }
                 FenceOutcome::TrustLost(reason) => {
                     self.machine
@@ -615,6 +734,7 @@ impl SourceRevisionService {
 
     fn reconcile(
         &self,
+        ambient_identity: FileIdentity,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), String> {
@@ -637,6 +757,10 @@ impl SourceRevisionService {
                     .unwrap_or_else(|error| error.into_inner())
                     .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
             })?;
+            if self.ambient_root_identity()? != ambient_identity {
+                self.lose_incremental_trust();
+                return Err("ambient source revision identity changed during reconcile".to_string());
+            }
             let fence_outcome = self.fence.flush(deadline, cancellation).inspect_err(|_| {
                 self.machine
                     .lock()
@@ -655,7 +779,7 @@ impl SourceRevisionService {
                 FenceOutcome::Proven { .. } => {}
             }
             let digest = digest_source_manifest(&manifest)?;
-            if self.publish_revision(&manifest, digest, trust_loss_epoch)? {
+            if self.publish_revision(&manifest, digest, trust_loss_epoch, ambient_identity)? {
                 return Ok(());
             }
         }
@@ -667,8 +791,14 @@ impl SourceRevisionService {
         manifest: &SourceManifest,
         digest: String,
         trust_loss_epoch: u64,
+        ambient_identity: FileIdentity,
     ) -> Result<bool, String> {
-        self.publish_revision_with_authority(manifest, digest, trust_loss_epoch, None)
+        self.publish_revision_with_authority(
+            manifest,
+            digest,
+            trust_loss_epoch,
+            ManifestProvenance::Ambient(ambient_identity),
+        )
     }
 
     fn publish_revision_with_authority(
@@ -676,7 +806,7 @@ impl SourceRevisionService {
         manifest: &SourceManifest,
         digest: String,
         trust_loss_epoch: u64,
-        retained_identity: Option<FileIdentity>,
+        provenance: ManifestProvenance,
     ) -> Result<bool, String> {
         let Some(revision) = self
             .machine
@@ -704,9 +834,9 @@ impl SourceRevisionService {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(manifest.clone());
         *self
-            .retained_manifest_identity
+            .manifest_provenance
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = retained_identity;
+            .unwrap_or_else(|error| error.into_inner()) = Some(provenance);
         Ok(true)
     }
 }
@@ -763,15 +893,28 @@ fn scan_retained_source_manifest(
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> Result<SourceManifest, String> {
-    let mut manifest = SourceManifest::new();
-    scan_retained_directory(
+    scan_retained_source_manifest_with_limits(
         root,
-        Path::new(""),
-        0,
         deadline,
         cancellation,
-        &mut manifest,
-    )?;
+        RetainedScanLimits::PRODUCTION,
+    )
+}
+
+fn scan_retained_source_manifest_with_limits(
+    root: &RetainedDirectoryCapability,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    limits: RetainedScanLimits,
+) -> Result<SourceManifest, String> {
+    let mut manifest = SourceManifest::new();
+    let mut state = RetainedScanState::default();
+    let context = RetainedScanContext {
+        deadline,
+        cancellation,
+        limits,
+    };
+    scan_retained_directory(root, Path::new(""), 0, context, &mut state, &mut manifest)?;
     Ok(manifest)
 }
 
@@ -779,21 +922,42 @@ fn scan_retained_directory(
     directory: &RetainedDirectoryCapability,
     relative_directory: &Path,
     depth: usize,
-    deadline: ProviderDeadline,
-    cancellation: &CancellationToken,
+    context: RetainedScanContext<'_>,
+    state: &mut RetainedScanState,
     manifest: &mut SourceManifest,
 ) -> Result<(), String> {
-    retained_revision_checkpoint(deadline, cancellation)?;
+    retained_revision_checkpoint(context.deadline, context.cancellation)?;
     if depth > MAX_SOURCE_DEPTH {
         return Err("source revision corpus exceeds maximum depth".to_string());
     }
+    let remaining_entries = context.limits.max_entries.saturating_sub(state.entries);
     let names = directory
-        .read_immediate_names_bounded(usize::MAX, || {
-            retained_revision_checkpoint(deadline, cancellation).map_err(std::io::Error::other)
+        .read_immediate_names_bounded(remaining_entries, || {
+            retained_revision_checkpoint(context.deadline, context.cancellation)
+                .map_err(std::io::Error::other)
         })
-        .map_err(|error| format!("retained source revision directory cannot be read: {error}"))?;
+        .map_err(|error| {
+            if error.kind() == ErrorKind::InvalidData {
+                format!(
+                    "retained source revision entry limit {} exceeded",
+                    context.limits.max_entries
+                )
+            } else {
+                format!("retained source revision directory cannot be read: {error}")
+            }
+        })?;
     for name in names {
-        retained_revision_checkpoint(deadline, cancellation)?;
+        retained_revision_checkpoint(context.deadline, context.cancellation)?;
+        state.entries = state
+            .entries
+            .checked_add(1)
+            .filter(|entries| *entries <= context.limits.max_entries)
+            .ok_or_else(|| {
+                format!(
+                    "retained source revision entry limit {} exceeded",
+                    context.limits.max_entries
+                )
+            })?;
         if name == OsStr::new(GENERATED_DIR_NAME) {
             continue;
         }
@@ -825,29 +989,11 @@ fn scan_retained_directory(
                         digest: [0; 32],
                     },
                 );
-                scan_retained_directory(
-                    &child,
-                    &relative,
-                    depth + 1,
-                    deadline,
-                    cancellation,
-                    manifest,
-                )?;
+                scan_retained_directory(&child, &relative, depth + 1, context, state, manifest)?;
             }
             RetainedChildCapability::RegularFile(file) if is_source_file(&relative) => {
-                let bytes = file.read_bounded(usize::MAX).map_err(|error| {
-                    format!(
-                        "retained source revision file cannot be read: {}: {error}",
-                        relative.display()
-                    )
-                })?;
-                manifest.insert(
-                    relative,
-                    SourceEntryDigest {
-                        kind: 2,
-                        digest: Sha256::digest(bytes).into(),
-                    },
-                );
+                let digest = hash_retained_source_file(&file, &relative, context, state)?;
+                manifest.insert(relative, SourceEntryDigest { kind: 2, digest });
             }
             RetainedChildCapability::ReparsePoint if is_source_file(&relative) => {
                 return Err(format!(
@@ -861,6 +1007,75 @@ fn scan_retained_directory(
         }
     }
     Ok(())
+}
+
+fn hash_retained_source_file(
+    file: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+    relative: &Path,
+    context: RetainedScanContext<'_>,
+    state: &mut RetainedScanState,
+) -> Result<[u8; 32], String> {
+    hash_retained_source_file_with_checkpoint(file, relative, context.limits, state, &mut || {
+        retained_revision_checkpoint(context.deadline, context.cancellation)
+    })
+}
+
+fn hash_retained_source_file_with_checkpoint(
+    file: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+    relative: &Path,
+    limits: RetainedScanLimits,
+    state: &mut RetainedScanState,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<[u8; 32], String> {
+    let mut reader = file.try_clone_file().map_err(|error| {
+        format!(
+            "retained source revision file cannot be cloned: {}: {error}",
+            relative.display()
+        )
+    })?;
+    reader.seek(SeekFrom::Start(0)).map_err(|error| {
+        format!(
+            "retained source revision file cannot be rewound: {}: {error}",
+            relative.display()
+        )
+    })?;
+    let mut digest = Sha256::new();
+    let mut file_bytes = 0_u64;
+    let mut chunk = [0_u8; RETAINED_HASH_CHUNK_BYTES];
+    loop {
+        checkpoint()?;
+        let read = reader.read(&mut chunk).map_err(|error| {
+            format!(
+                "retained source revision file cannot be read: {}: {error}",
+                relative.display()
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        let read = u64::try_from(read).expect("source revision chunk length fits u64");
+        file_bytes = file_bytes
+            .checked_add(read)
+            .ok_or_else(|| "retained source revision file byte count overflowed".to_string())?;
+        if file_bytes > limits.max_file_bytes {
+            return Err(format!(
+                "retained source revision file byte limit {} exceeded: {}",
+                limits.max_file_bytes,
+                relative.display()
+            ));
+        }
+        state.total_bytes = state.total_bytes.checked_add(read).ok_or_else(|| {
+            "retained source revision aggregate byte count overflowed".to_string()
+        })?;
+        if state.total_bytes > limits.max_total_bytes {
+            return Err(format!(
+                "retained source revision aggregate byte limit {} exceeded",
+                limits.max_total_bytes
+            ));
+        }
+        digest.update(&chunk[..usize::try_from(read).expect("chunk length fits usize")]);
+    }
+    Ok(digest.finalize().into())
 }
 
 fn retained_revision_checkpoint(
@@ -1078,7 +1293,7 @@ pub(crate) mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
-            retained_manifest_identity: Mutex::new(None),
+            manifest_provenance: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(CountingProvenFence {
                 calls: Arc::clone(&calls),
@@ -1316,7 +1531,7 @@ pub(crate) mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
-            retained_manifest_identity: Mutex::new(None),
+            manifest_provenance: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(UnsupportedFence),
             scanner: Arc::new({
@@ -1387,7 +1602,7 @@ pub(crate) mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
-            retained_manifest_identity: Mutex::new(None),
+            manifest_provenance: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(ProvenCleanFence),
             scanner: Arc::new(scan_source_manifest),
@@ -1430,7 +1645,7 @@ pub(crate) mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(machine),
             manifest: Mutex::new(None),
-            retained_manifest_identity: Mutex::new(None),
+            manifest_provenance: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(FailOnceFence {
                 calls: AtomicUsize::new(0),
@@ -1484,7 +1699,7 @@ pub(crate) mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
-            retained_manifest_identity: Mutex::new(None),
+            manifest_provenance: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(ScriptedFence {
                 outcomes: Mutex::new(VecDeque::from([
@@ -1567,7 +1782,7 @@ pub(crate) mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
-            retained_manifest_identity: Mutex::new(None),
+            manifest_provenance: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(ScriptedFence {
                 outcomes: Mutex::new(VecDeque::from([
@@ -1684,7 +1899,7 @@ pub(crate) mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
-            retained_manifest_identity: Mutex::new(None),
+            manifest_provenance: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(ScriptedFence {
                 outcomes: Mutex::new(VecDeque::from([
@@ -2173,10 +2388,226 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn review_retained_manifest_cannot_satisfy_an_ambient_fast_path_after_root_swap() {
+        if !supports_retained_root_replacement_test() {
+            return;
+        }
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("source");
+        let replacement = workspace.path().join("replacement");
+        let saved = workspace.path().join("saved");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&replacement).unwrap();
+        fs::write(
+            source.join("Configuration.xml"),
+            "<Configuration>A</Configuration>",
+        )
+        .unwrap();
+        fs::write(
+            replacement.join("Configuration.xml"),
+            "<Configuration>B</Configuration>",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.path().to_path_buf(),
+            workspace_root: workspace.path().to_path_buf(),
+            cache_root: workspace.path().join("cache"),
+            workspace_epoch: 0,
+        };
+        let service = SourceRevisionService::new_with_fence_for_test(
+            &context,
+            &source,
+            WorkspaceStateScope::LegacyPhysical,
+            Arc::new(ScriptedFence {
+                outcomes: Mutex::new(VecDeque::from([
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                ])),
+            }),
+        )
+        .unwrap();
+        let retained = RetainedDirectoryCapability::open(&fs::canonicalize(&source).unwrap())
+            .expect("retain source A");
+        let retained_a = service
+            .snapshot_retained(
+                &retained,
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        fs::rename(&source, &saved).unwrap();
+        fs::rename(&replacement, &source).unwrap();
+        let ambient_after_swap = service
+            .snapshot(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_ne!(
+            retained_a.digest,
+            scan_source_digest(&source, &|| false).unwrap()
+        );
+        assert_eq!(
+            ambient_after_swap.digest,
+            scan_source_digest(&source, &|| false).unwrap(),
+            "ambient snapshot must describe lexical source B, not retained source A"
+        );
+    }
+
+    #[test]
+    fn unsupported_fence_stable_operation_lease_scans_at_admission_and_confirmation() {
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("Configuration.xml"), "<Configuration/>").unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.path().to_path_buf(),
+            workspace_root: workspace.path().to_path_buf(),
+            cache_root: workspace.path().join("cache"),
+            workspace_epoch: 0,
+        };
+        let service = SourceRevisionService::new_with_fence_for_test(
+            &context,
+            &source,
+            WorkspaceStateScope::LegacyPhysical,
+            Arc::new(UnsupportedFence),
+        )
+        .unwrap();
+        let retained = RetainedDirectoryCapability::open(&fs::canonicalize(&source).unwrap())
+            .expect("retain source");
+        let deadline = ProviderDeadline::from_budget(std::time::Duration::from_secs(5));
+        let cancellation = CancellationToken::new();
+
+        let lease = service
+            .begin_retained_operation(&retained, deadline, &cancellation)
+            .unwrap();
+        assert_eq!(service.retained_scan_count(), 1);
+        for _ in 0..100 {
+            assert_eq!(lease.revision_identity(), lease.revision_identity());
+        }
+        assert_eq!(
+            service.retained_scan_count(),
+            1,
+            "logical node reads must not rescan the retained corpus"
+        );
+
+        service
+            .confirm_retained_operation(&retained, &lease, deadline, &cancellation)
+            .unwrap();
+        assert_eq!(
+            service.retained_scan_count(),
+            2,
+            "unsupported fence performs one admission scan and one final confirmation scan"
+        );
+    }
+
+    #[test]
+    fn retained_scan_limits_entries_files_and_aggregate_bytes() {
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("one.xml"), b"1234").unwrap();
+        fs::write(source.join("two.xml"), b"5678").unwrap();
+        let retained = RetainedDirectoryCapability::open(&fs::canonicalize(&source).unwrap())
+            .expect("retain source");
+        let deadline = ProviderDeadline::from_budget(std::time::Duration::from_secs(5));
+        let cancellation = CancellationToken::new();
+
+        let entry_error = scan_retained_source_manifest_with_limits(
+            &retained,
+            deadline,
+            &cancellation,
+            RetainedScanLimits::new(1, 16, 32),
+        )
+        .err()
+        .expect("entry limit must fail");
+        assert!(entry_error.contains("entry limit"), "{entry_error}");
+
+        let file_error = scan_retained_source_manifest_with_limits(
+            &retained,
+            deadline,
+            &cancellation,
+            RetainedScanLimits::new(4, 3, 32),
+        )
+        .err()
+        .expect("file limit must fail");
+        assert!(file_error.contains("file byte limit"), "{file_error}");
+
+        let aggregate_error = scan_retained_source_manifest_with_limits(
+            &retained,
+            deadline,
+            &cancellation,
+            RetainedScanLimits::new(4, 8, 7),
+        )
+        .err()
+        .expect("aggregate limit must fail");
+        assert!(
+            aggregate_error.contains("aggregate byte limit"),
+            "{aggregate_error}"
+        );
+    }
+
+    #[test]
+    fn retained_file_hashing_checks_cancellation_between_bounded_chunks() {
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("Module.bsl"),
+            vec![b'x'; RETAINED_HASH_CHUNK_BYTES * 3],
+        )
+        .unwrap();
+        let retained = RetainedDirectoryCapability::open(&fs::canonicalize(&source).unwrap())
+            .expect("retain source");
+        let RetainedChildCapability::RegularFile(file) = retained
+            .retain_immediate_child_nofollow(OsStr::new("Module.bsl"))
+            .unwrap()
+        else {
+            panic!("fixture file must be retained")
+        };
+        let mut state = RetainedScanState::default();
+        let mut checkpoints = 0;
+        let error = hash_retained_source_file_with_checkpoint(
+            &file,
+            Path::new("Module.bsl"),
+            RetainedScanLimits::new(4, u64::MAX, u64::MAX),
+            &mut state,
+            &mut || {
+                checkpoints += 1;
+                if checkpoints == 3 {
+                    Err("cancelled between chunks".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "cancelled between chunks");
+        assert_eq!(checkpoints, 3);
+        assert_eq!(state.total_bytes, (RETAINED_HASH_CHUNK_BYTES * 2) as u64);
+    }
+
+    #[test]
     pub(crate) fn retained_revision_authority_contract_is_complete() {
         retained_snapshot_rejects_a_capability_from_another_source_identity();
         retained_snapshot_reuses_a_clean_fence_and_reconciles_once_after_change();
         retained_manifest_uses_the_existing_source_digest_algorithm();
+        review_retained_manifest_cannot_satisfy_an_ambient_fast_path_after_root_swap();
+        unsupported_fence_stable_operation_lease_scans_at_admission_and_confirmation();
+        retained_scan_limits_entries_files_and_aggregate_bytes();
+        retained_file_hashing_checks_cancellation_between_bounded_chunks();
         if supports_retained_root_replacement_test() {
             ambient_manifest_cannot_satisfy_a_retained_fast_path();
             retained_snapshot_never_mixes_a_replaced_root_name_with_the_open_tree();

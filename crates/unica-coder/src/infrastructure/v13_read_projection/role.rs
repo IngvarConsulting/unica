@@ -2,6 +2,7 @@ use super::selected_scalar_props;
 use crate::application::v13::view::ViewError;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
+use crate::infrastructure::metadata_kinds::metadata_kind;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
@@ -132,9 +133,7 @@ fn role_objects(payload: &Value) -> Result<Vec<RoleObject>, ViewError> {
             let Some(group_kind) = group.get("kind").and_then(Value::as_str) else {
                 continue;
             };
-            if group_kind.contains('_')
-                || !NodeKind::parse(group_kind).is_ok_and(NodeKind::is_metadata_kind)
-            {
+            if metadata_kind(group_kind).is_none() {
                 return Err(ViewError::new(
                     "provider_unavailable",
                     format!("role rights contain invalid metadata kind `{group_kind}`"),
@@ -284,10 +283,14 @@ mod tests {
                 !kind.contains('_'),
                 "platform metadata kind contains `_`: {kind}"
             );
-            assert!(
-                NodeKind::parse(kind).is_ok_and(NodeKind::is_metadata_kind),
-                "platform metadata kind is not accepted by logical addressing: {kind}"
-            );
+            assert!(metadata_kind(kind).is_some());
+        }
+        for kind in [
+            NodeKind::WebSocketClient,
+            NodeKind::ExternalDataProcessor,
+            NodeKind::ExternalReport,
+        ] {
+            assert!(metadata_kind(kind.as_str()).is_none());
         }
     }
 }

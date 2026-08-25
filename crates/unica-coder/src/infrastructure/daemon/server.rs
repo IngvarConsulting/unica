@@ -14,7 +14,9 @@ use crate::application::shared_work::{
     LongWorkFailure, ProviderHostKey, ProviderHostOwner, SharedWorkLease, SharedWorkProducer,
 };
 use crate::application::tool_contracts::SurfaceRelease;
+use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::composition::open_daemon_invocation_store_from_directory;
+use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{
@@ -76,7 +78,21 @@ pub(crate) struct ActorReadSourceCapability {
     pub(crate) identity: String,
     pub(crate) retained_root:
         Arc<crate::infrastructure::platform::filesystem::RetainedDirectoryCapability>,
-    pub(crate) revisions: Arc<crate::infrastructure::source_revision::SourceRevisionService>,
+    pub(crate) revision: crate::infrastructure::source_revision::RetainedRevisionLease,
+    pub(crate) deadline: ProviderDeadline,
+}
+
+struct ActorLogicalReadSourceLease {
+    name: String,
+    kind: SourceSetKind,
+    binding: ProviderRootBinding,
+    revisions: Arc<crate::infrastructure::source_revision::SourceRevisionService>,
+    revision: crate::infrastructure::source_revision::RetainedRevisionLease,
+}
+
+struct ActorLogicalReadLease {
+    deadline: ProviderDeadline,
+    sources: Vec<ActorLogicalReadSourceLease>,
 }
 
 impl ActorBoundInvocation {
@@ -96,11 +112,68 @@ impl ActorBoundInvocation {
         self,
         cancellation: &CancellationToken,
     ) -> Result<ActorBoundExecution, String> {
-        let revision = self.actor.capture_revision(
-            &self.provider_root,
-            ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
+        self.begin_execution_with_logical_deadline(
             cancellation,
-        )?;
+            ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),
+        )
+    }
+
+    fn begin_execution_with_logical_deadline(
+        self,
+        cancellation: &CancellationToken,
+        logical_deadline: ProviderDeadline,
+    ) -> Result<ActorBoundExecution, String> {
+        let revision = match self.tool {
+            crate::application::invocation_store::ToolIdentity::View
+            | crate::application::invocation_store::ToolIdentity::Find => {
+                let selected = match self.tool {
+                    crate::application::invocation_store::ToolIdentity::View => {
+                        let at = self
+                            .arguments
+                            .get("at")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or_else(|| "logical view address is not a string".to_string())?;
+                        let address = QualifiedAddress::parse(at)
+                            .map_err(|error| format!("logical view address is invalid: {error}"))?;
+                        vec![self
+                            .read_sources
+                            .iter()
+                            .find(|source| source.name == address.source_set())
+                            .ok_or_else(|| {
+                                "logical view source set is not admitted by the actor".to_string()
+                            })?]
+                    }
+                    _ => self.read_sources.iter().collect(),
+                };
+                let mut sources = Vec::with_capacity(selected.len());
+                for source in selected {
+                    self.actor.validate_binding(&source.binding)?;
+                    let revisions = self.actor.source_revision_service(&source.binding)?;
+                    let revision = revisions.begin_retained_operation(
+                        &source.binding.retained_root(),
+                        logical_deadline,
+                        cancellation,
+                    )?;
+                    self.actor.validate_binding(&source.binding)?;
+                    sources.push(ActorLogicalReadSourceLease {
+                        name: source.name.clone(),
+                        kind: source.kind,
+                        binding: source.binding.clone(),
+                        revisions,
+                        revision,
+                    });
+                }
+                ActorExecutionRevision::LogicalRead(ActorLogicalReadLease {
+                    deadline: logical_deadline,
+                    sources,
+                })
+            }
+            _ => ActorExecutionRevision::Legacy(self.actor.capture_revision(
+                &self.provider_root,
+                ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
+                cancellation,
+            )?),
+        };
         Ok(ActorBoundExecution {
             invocation: self,
             revision,
@@ -110,7 +183,12 @@ impl ActorBoundInvocation {
 
 pub(crate) struct ActorBoundExecution {
     invocation: ActorBoundInvocation,
-    revision: WorkspaceRevisionFence,
+    revision: ActorExecutionRevision,
+}
+
+enum ActorExecutionRevision {
+    Legacy(WorkspaceRevisionFence),
+    LogicalRead(ActorLogicalReadLease),
 }
 
 impl ActorBoundExecution {
@@ -134,10 +212,14 @@ impl ActorBoundExecution {
 
     #[allow(dead_code)]
     pub(crate) fn read_sources(&self) -> Result<Vec<ActorReadSourceCapability>, String> {
-        self.invocation
-            .read_sources
+        let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
+            return Err("logical read sources are unavailable to a legacy invocation".to_string());
+        };
+        lease
+            .sources
             .iter()
             .map(|source| {
+                self.invocation.actor.validate_binding(&source.binding)?;
                 Ok(ActorReadSourceCapability {
                     name: source.name.clone(),
                     kind: source.kind,
@@ -147,10 +229,8 @@ impl ActorBoundExecution {
                         source.name
                     ),
                     retained_root: source.binding.retained_root(),
-                    revisions: self
-                        .invocation
-                        .actor
-                        .source_revision_service(&source.binding)?,
+                    revision: source.revision.clone(),
+                    deadline: lease.deadline,
                 })
             })
             .collect()
@@ -173,9 +253,12 @@ impl ActorBoundExecution {
     where
         W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
     {
+        let ActorExecutionRevision::Legacy(revision) = &self.revision else {
+            return Err("index work is unavailable to a logical read invocation".to_string());
+        };
         self.invocation.actor.join_index_work(
             &self.invocation.provider_root,
-            &self.revision,
+            revision,
             provider,
             profile,
             work,
@@ -228,18 +311,33 @@ impl ActorBoundExecution {
     }
 
     fn publish<T>(self, staged: T, cancellation: &CancellationToken) -> Result<T, String> {
-        self.invocation
-            .actor
-            .begin_publication(
-                &self.revision,
-                ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
-                cancellation,
-            )?
-            .publish(
-                staged,
-                ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
-                cancellation,
-            )
+        match self.revision {
+            ActorExecutionRevision::Legacy(revision) => self
+                .invocation
+                .actor
+                .begin_publication(
+                    &revision,
+                    ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
+                    cancellation,
+                )?
+                .publish(
+                    staged,
+                    ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
+                    cancellation,
+                ),
+            ActorExecutionRevision::LogicalRead(lease) => {
+                for source in &lease.sources {
+                    self.invocation.actor.validate_binding(&source.binding)?;
+                    source.revisions.confirm_retained_operation(
+                        &source.binding.retained_root(),
+                        &source.revision,
+                        lease.deadline,
+                        cancellation,
+                    )?;
+                }
+                Ok(staged)
+            }
+        }
     }
 }
 
@@ -1341,8 +1439,21 @@ pub(crate) mod actor_capacity_tests {
         RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
     };
     use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
+    use std::cell::RefCell;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Barrier, Condvar};
+
+    thread_local! {
+        static LOGICAL_READ_NOW: RefCell<Option<Instant>> = const { RefCell::new(None) };
+    }
+
+    fn logical_read_now() -> Instant {
+        LOGICAL_READ_NOW.with(|now| now.borrow().expect("logical read clock is initialized"))
+    }
+
+    fn set_logical_read_now(now: Instant) {
+        LOGICAL_READ_NOW.with(|current| *current.borrow_mut() = Some(now));
+    }
 
     struct ManualInvocationClock(Mutex<Instant>);
 
@@ -1360,6 +1471,183 @@ pub(crate) mod actor_capacity_tests {
         fn now(&self) -> Instant {
             *self.0.lock().unwrap()
         }
+    }
+
+    #[test]
+    pub(crate) fn hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        let sibling = workspace.path().join("dep");
+        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: dep\n    type: CONFIGURATION\n    path: dep\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sibling.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Dependency</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Items"}),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let invocation = bind_workspace_invocation(
+            &request,
+            &runtime.workspace_actors,
+            Arc::clone(&runtime.deliveries),
+            Arc::clone(&runtime.provider_hosts),
+            Arc::clone(&runtime.runtime_resources),
+            None,
+            runtime.capture_response_deadline(),
+        )
+        .unwrap();
+        let sibling_binding = invocation
+            .read_sources
+            .iter()
+            .find(|source| source.name == "dep")
+            .unwrap()
+            .binding
+            .clone();
+        let sibling_revisions = invocation
+            .actor
+            .source_revision_service(&sibling_binding)
+            .unwrap();
+        let started = Instant::now();
+        set_logical_read_now(started);
+        let deadline =
+            ProviderDeadline::with_clock(started + LOGICAL_READ_OPERATION_BUDGET, logical_read_now);
+        let cancellation = CancellationToken::new();
+        let execution = invocation
+            .begin_execution_with_logical_deadline(&cancellation, deadline)
+            .unwrap();
+        assert_eq!(
+            sibling_revisions.retained_scan_count(),
+            0,
+            "qualified view must not admit or scan an unrelated source set"
+        );
+        std::fs::write(
+            sibling.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>ChangedDependency</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        set_logical_read_now(started + Duration::from_secs(8));
+        let sources = execution.read_sources().unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(
+            sources[0].deadline.remaining(),
+            LOGICAL_READ_OPERATION_BUDGET - Duration::from_secs(8),
+            "the handoff window must not replenish or cap the logical-read deadline"
+        );
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        let result = service
+            .execute(&execution, cancellation.clone())
+            .expect("hidden V13 execution");
+        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        let published = execution.publish(result, &cancellation).unwrap();
+        assert!(published.ok);
+        assert_eq!(
+            sibling_revisions.retained_scan_count(),
+            0,
+            "an unrelated source mutation must not invalidate the qualified view"
+        );
+
+        let find_request = InvocationRequest::new(
+            ToolIdentity::Find,
+            serde_json::json!({"query": "Items"}),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let find_invocation = bind_workspace_invocation(
+            &find_request,
+            &runtime.workspace_actors,
+            Arc::clone(&runtime.deliveries),
+            Arc::clone(&runtime.provider_hosts),
+            Arc::clone(&runtime.runtime_resources),
+            None,
+            runtime.capture_response_deadline(),
+        )
+        .unwrap();
+        let find_execution = find_invocation
+            .begin_execution_with_logical_deadline(&cancellation, deadline)
+            .unwrap();
+        assert_eq!(
+            find_execution.read_sources().unwrap().len(),
+            2,
+            "aggregate find must admit every workspace source set"
+        );
+        let find_result = service
+            .execute(&find_execution, cancellation.clone())
+            .expect("hidden V13 find execution");
+        assert!(find_result.ok, "{:?}", find_result.diagnostics);
+        std::fs::write(
+            sibling.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>ChangedAgain</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        assert!(
+            find_execution.publish(find_result, &cancellation).is_err(),
+            "find must confirm every admitted source set"
+        );
+
+        let invocation = bind_workspace_invocation(
+            &request,
+            &runtime.workspace_actors,
+            Arc::clone(&runtime.deliveries),
+            Arc::clone(&runtime.provider_hosts),
+            Arc::clone(&runtime.runtime_resources),
+            None,
+            runtime.capture_response_deadline(),
+        )
+        .unwrap();
+        set_logical_read_now(started + Duration::from_secs(9));
+        let execution = invocation
+            .begin_execution_with_logical_deadline(&cancellation, deadline)
+            .unwrap();
+        let result = service
+            .execute(&execution, cancellation.clone())
+            .expect("second hidden V13 execution");
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>ItemsChanged</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        assert!(
+            execution.publish(result, &cancellation).is_err(),
+            "a selected-source mutation must fail final retained confirmation"
+        );
     }
 
     struct BlockingService {

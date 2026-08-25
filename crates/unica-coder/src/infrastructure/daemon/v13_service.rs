@@ -4,14 +4,13 @@ use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::ViewCursorStore;
 use crate::application::v13::find::FindRequest;
 use crate::application::v13::view::{ViewRequest, ViewService};
-use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{DomainResult, InvocationFailure};
 use crate::domain::platform_profile::PlatformProfile;
 use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder};
 use crate::infrastructure::v13_read::LogicalViewReadAuthority;
+use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -140,14 +139,18 @@ impl CanonicalV13ReadService {
                 "view source set was not admitted by the workspace actor",
             );
         };
-        let authority = LogicalViewReadAuthority::new(
-            cancellation,
+        let read = ProviderReadAuthority::new_with_revision_lease(
             source.name,
             source.identity,
             source.kind,
-            source.revisions,
             source.retained_root,
+            source.revision,
+        );
+        let authority = LogicalViewReadAuthority::with_read_authority(
+            cancellation,
+            read,
             PlatformProfile::v8_3_27(),
+            source.deadline,
         );
         ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors)).view(request)
     }
@@ -187,19 +190,29 @@ impl CanonicalV13ReadService {
             Ok(sources) => sources,
             Err(error) => return error_result(None, "provider_unavailable", error),
         };
+        let Some(deadline) = sources.first().map(|source| source.deadline) else {
+            return error_result(
+                None,
+                "provider_unavailable",
+                "find has no admitted logical source sets",
+            );
+        };
         let authorities = sources
             .into_iter()
             .map(|source| {
                 (
                     source.name.clone(),
-                    LogicalViewReadAuthority::new(
+                    LogicalViewReadAuthority::with_read_authority(
                         cancellation,
-                        source.name,
-                        source.identity,
-                        source.kind,
-                        source.revisions,
-                        source.retained_root,
+                        ProviderReadAuthority::new_with_revision_lease(
+                            source.name,
+                            source.identity,
+                            source.kind,
+                            source.retained_root,
+                            source.revision,
+                        ),
                         PlatformProfile::v8_3_27(),
+                        source.deadline,
                     ),
                 )
             })
@@ -208,14 +221,14 @@ impl CanonicalV13ReadService {
             .iter()
             .map(|(name, authority)| ActorFindSource::new(name, authority))
             .collect::<Vec<_>>();
-        let built = match self.find_builder.build_with_revision(
-            &find_sources,
-            ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),
-            cancellation,
-        ) {
-            Ok(built) => built,
-            Err(error) => return error_result(None, error.code(), error.to_string()),
-        };
+        let built =
+            match self
+                .find_builder
+                .build_with_revision(&find_sources, deadline, cancellation)
+            {
+                Ok(built) => built,
+                Err(error) => return error_result(None, error.code(), error.to_string()),
+            };
         let found = built.index.find(request);
         let mut result = DomainResult::success("logical address candidates resolved");
         result.data = Some(

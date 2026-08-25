@@ -1194,6 +1194,7 @@ mod tests {
         find_indexes_nested_addressable_metadata_identity();
         crate::infrastructure::v13_read::tests::production_authorities_reach_all_profile_module_capabilities_from_real_parent_inventories();
         crate::infrastructure::v13_read::tests::one_find_reads_each_module_source_once_per_actor_revision();
+        crate::infrastructure::v13_read::tests::operation_lease_find_traversal_scans_once_then_confirms_once();
         profile_matrix_supplements_production_module_capability_coverage();
         find_keeps_profile_identity_for_the_typed_unreadable_websocket_module();
         find_fails_closed_when_a_registered_descriptor_is_malformed();

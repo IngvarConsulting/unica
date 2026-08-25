@@ -19,12 +19,20 @@ admission не меняет bytes или revision authority. Reader-specific pro
 branches/items, неизвестные поля provider-а дают typed failure, а неподдержанный
 filter — `bad_value`.
 
-Exact revision строится тем же retained capability, что и bytes. Retained
-manifest помечен physical identity и только matching retained manifest может
-удовлетворить clean-fence fast path; ambient reconcile этого доказательства не
-даёт. Любой contributing read, canonical Role resolution и owner proof
-предшествует последнему exact-revision fence, поэтому replacement/mutation даёт
-coherent retained result либо typed stale/invalidation, но не mixed revision.
+Exact revision строится тем же retained capability, что и bytes. Один
+operation-scoped lease захватывает выбранный source set для qualified `view` и
+все admitted source sets для aggregate `find`; unrelated sibling не сканируется
+и не инвалидирует `view`. Retained manifest помечен physical identity и только
+matching retained provenance может удовлетворить retained fast path; ambient и
+retained provenance симметрично не взаимозаменяемы. Initial capture и final
+confirmation на стабильном corpus дают по одному scan при unsupported fence;
+concurrent invalidation допускает не более трёх bounded stabilization retries,
+а node reads не сканируют corpus. Scan потоковый, проверяет
+cancellation между chunks и ограничивает entries, file bytes и aggregate bytes.
+Любой contributing read, canonical Role resolution и owner proof предшествует
+последнему exact-revision fence, поэтому replacement/mutation даёт coherent
+retained result либо typed stale/invalidation, но не mixed revision; после
+final confirmation source I/O нет.
 
 До dispatch всех typed readers действует один recursive owner admission:
 top-level `(kind,name)` присутствует в inventory и имеет matching descriptor, а
@@ -43,13 +51,15 @@ configuration, EPF и ERF через parent navigation и find, включая
 bounded/cancellable aggregate inventory read. Role объединяет allowed/denied по
 canonical `(kind, name)`, размещает уникальные RLS nodes только под Right и
 отклоняет неоднозначный короткий alias с canonical кандидатами. V13 принимает
-в Role только platform metadata kinds без `_`, поэтому canonical `kind_name`
+в Role только kinds из точного platform registry `METADATA_KIND_TAGS` без `_`,
+поэтому canonical `kind_name`
 инъективен; произвольный type prefix даёт `provider_unavailable`, не duplicate
 `at`.
 Отсутствующий HomePage sidecar допустим, present malformed/wrong-root evidence
 даёт `provider_unavailable`; V12 legacy wrapper сохраняет старую трактовку.
-Общий 120-секундный operation budget view/find отделён от 7-секундного Task
-handoff и использует cancellation.
+Общий абсолютный 120-секундный operation budget view/find без replenishment
+отделён от 7-секундного Task handoff и использует cancellation на admission,
+reader и final confirmation.
 
 Bot использует доказанную зарегистрированную раскладку. WebSocketClient profile
 видим в логическом дереве, но его source view остаётся явным

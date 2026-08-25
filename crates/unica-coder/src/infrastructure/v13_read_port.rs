@@ -36,7 +36,7 @@ use crate::infrastructure::platform_xml_owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
     PlatformXmlSourceSetOwnerEvidence,
 };
-use crate::infrastructure::source_revision::SourceRevisionService;
+use crate::infrastructure::source_revision::{RetainedRevisionLease, SourceRevisionService};
 use serde_json::{json, Value};
 #[cfg(test)]
 use std::cell::RefCell;
@@ -77,11 +77,16 @@ pub(crate) struct ProviderReadAuthority {
     source_set_identity: String,
     source_set_kind: SourceSetKind,
     root: Arc<RetainedDirectoryCapability>,
-    revisions: Arc<SourceRevisionService>,
+    revisions: ProviderRevisionAuthority,
     #[cfg(test)]
     module_source_reads: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
     #[cfg(test)]
     configuration_payload_reads: std::sync::atomic::AtomicUsize,
+}
+
+enum ProviderRevisionAuthority {
+    Live(Arc<SourceRevisionService>),
+    Operation(RetainedRevisionLease),
 }
 
 impl ProviderReadAuthority {
@@ -97,7 +102,27 @@ impl ProviderReadAuthority {
             source_set_identity: source_set_identity.into(),
             source_set_kind,
             root,
-            revisions,
+            revisions: ProviderRevisionAuthority::Live(revisions),
+            #[cfg(test)]
+            module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            #[cfg(test)]
+            configuration_payload_reads: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    pub(crate) fn new_with_revision_lease(
+        source_set: impl Into<String>,
+        source_set_identity: impl Into<String>,
+        source_set_kind: SourceSetKind,
+        root: Arc<RetainedDirectoryCapability>,
+        revision: RetainedRevisionLease,
+    ) -> Self {
+        Self {
+            source_set: source_set.into(),
+            source_set_identity: source_set_identity.into(),
+            source_set_kind,
+            root,
+            revisions: ProviderRevisionAuthority::Operation(revision),
             #[cfg(test)]
             module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             #[cfg(test)]
@@ -141,15 +166,29 @@ impl ProviderReadAuthority {
                 hook();
             }
         });
-        self.revisions
-            .snapshot_retained(&self.root, deadline, cancellation)
-            .map(|revision| {
-                format!(
-                    "{}:{}:{}",
-                    revision.algorithm, revision.generation, revision.digest
-                )
-            })
-            .map_err(|error| ViewError::new("provider_unavailable", error))
+        match &self.revisions {
+            ProviderRevisionAuthority::Live(revisions) => revisions
+                .snapshot_retained(&self.root, deadline, cancellation)
+                .map(|revision| {
+                    format!(
+                        "{}:{}:{}",
+                        revision.algorithm, revision.generation, revision.digest
+                    )
+                })
+                .map_err(|error| ViewError::new("provider_unavailable", error)),
+            ProviderRevisionAuthority::Operation(revision) => {
+                if cancellation.is_cancelled() {
+                    Err(ViewError::new("cancelled", "logical read was cancelled"))
+                } else if deadline.remaining().is_zero() {
+                    Err(ViewError::new(
+                        "provider_deadline",
+                        "logical read operation deadline elapsed",
+                    ))
+                } else {
+                    Ok(revision.revision_identity())
+                }
+            }
+        }
     }
 
     pub(crate) fn read_relative(

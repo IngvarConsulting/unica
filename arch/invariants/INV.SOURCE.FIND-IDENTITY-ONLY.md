@@ -10,11 +10,15 @@ scope: [app, product, source]
 # Find индексирует identity facts и исключает исполняемое тело исходника
 
 Индекс проходит адресуемое typed logical tree из actor-owned retained Platform
-XML roots с одной aggregate logical-read deadline, cancellation и exact revision fence, а
+XML roots с одной absolute aggregate logical-read deadline, cancellation и
+operation-scoped retained revision lease для каждого admitted source set, а
 также с ограничениями на число source sets, документов, суммарные fact bytes и
 размер descriptor reads. Существующий malformed или wrong-owner descriptor
 даёт `provider_unavailable`. Exact revision и facts читаются одной retained
-physical authority; ambient manifest не удовлетворяет retained fast path.
+physical authority; ambient и retained manifest provenance не удовлетворяют
+fast path друг друга. На стабильном corpus initial capture и final confirmation
+дают два bounded scans при unsupported fence; concurrent invalidation допускает
+не более трёх stabilization retries, но обход logical nodes не добавляет scans.
 Top-level и каждый физический nested owner проходят тот же inventory/ChildObjects
 admission, что direct view, поэтому orphan file не становится find fact.
 Факты — qualified address, canonical kind,
@@ -31,5 +35,6 @@ declarations/regions, но разными statements, дают byte-equivalent f
 зарегистрированного owner достижимы через его единственную `Module` branch;
 отсутствующий module source не скрывает parent-projected identity. Nearest
 использует только `name` или `address`; content/body/symbol reason не существует.
-Operation budget равен 120 секундам, превышает семисекундный Task handoff и не
-отменяет callback при handoff.
+Operation budget равен 120 секундам, не пополняется между admission, walk и
+final confirm, превышает семисекундный Task handoff и не отменяет callback при
+handoff.

@@ -1616,6 +1616,7 @@ mod tests {
         canonical_service_reads_only_actor_bound_roots_and_persists_the_same_identity();
         actor_bound_publication_rejects_root_replacement_and_hides_staged_bytes();
         actor_bound_publication_rejects_revision_swap_and_hides_staged_bytes();
+        super::server::actor_capacity_tests::hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once();
     }
 
     #[test]
