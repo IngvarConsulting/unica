@@ -25,6 +25,14 @@ impl ViewFilter {
         self.0.get(name)
     }
 
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.0.iter()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     fn normalized(&self) -> String {
         serde_json::to_string(&canonical_value(Value::Object(self.0.clone())))
             .expect("a JSON filter always serializes")

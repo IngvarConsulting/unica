@@ -939,6 +939,18 @@ pub(crate) struct CfHomePageRoleData {
     pub(crate) visible: bool,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfRegisteredObject {
+    pub(crate) kind: String,
+    pub(crate) name: String,
+}
+
+pub(crate) struct ParsedCfInfo {
+    pub(crate) data: CfInfoData,
+    pub(crate) registered_objects: Vec<CfRegisteredObject>,
+}
+
 fn optional(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
@@ -962,101 +974,125 @@ fn cf_home_page_item_data(items: &[CfHomePageItem]) -> Vec<CfHomePageItemData> {
         .collect()
 }
 
+pub(crate) fn parse_cf_info_xml(
+    text: &str,
+    support: ConfigurationSupportData,
+    home_page: Option<CfHomePageData>,
+) -> Result<ParsedCfInfo, String> {
+    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("Configuration XML parse error: {err}"))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "MetaDataObject" {
+        return Err(
+            "[ERROR] Not a valid 1C metadata XML file (no MetaDataObject root)".to_string(),
+        );
+    }
+    let Some(cfg) = root
+        .children()
+        .find(|node| role_info_element(*node, "Configuration", Some(MD_NS)))
+    else {
+        return Err("[ERROR] No <Configuration> element found".to_string());
+    };
+    let Some(props) = cfg
+        .children()
+        .find(|node| role_info_element(*node, "Properties", Some(MD_NS)))
+    else {
+        return Err("[ERROR] No <Configuration>/<Properties> element found".to_string());
+    };
+
+    let version = root.attribute("version").unwrap_or("");
+    let extension_purpose = optional(cf_prop_text(props, "ConfigurationExtensionPurpose"));
+    let counts = cf_child_object_counts(cfg);
+    let total_objects = counts.iter().map(|(_, count)| *count).sum::<usize>();
+    let registered_objects = cfg
+        .children()
+        .find(|node| role_info_element(*node, "ChildObjects", Some(MD_NS)))
+        .into_iter()
+        .flat_map(|children| children.children().filter(|node| node.is_element()))
+        .filter_map(|child| {
+            child
+                .text()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(|name| CfRegisteredObject {
+                    kind: child.tag_name().name().to_string(),
+                    name: name.to_string(),
+                })
+        })
+        .collect();
+    let data = CfInfoData {
+        format: version.to_string(),
+        name: cf_prop_text(props, "Name"),
+        synonym: optional(cf_prop_ml(props, "Synonym")),
+        version: optional(cf_prop_text(props, "Version")),
+        vendor: optional(cf_prop_text(props, "Vendor")),
+        support,
+        extension_purpose,
+        properties: CfInfoProperties {
+            compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
+            default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
+            script_variant: optional(cf_prop_text(props, "ScriptVariant")),
+            default_language: optional(cf_prop_text(props, "DefaultLanguage")),
+            data_lock_control_mode: optional(cf_prop_text(props, "DataLockControlMode")),
+            modality_use_mode: optional(cf_prop_text(props, "ModalityUseMode")),
+            interface_compatibility_mode: optional(cf_prop_text(
+                props,
+                "InterfaceCompatibilityMode",
+            )),
+            extension_compatibility_mode: optional(cf_prop_text(
+                props,
+                "ConfigurationExtensionCompatibilityMode",
+            )),
+            object_autonumeration_mode: optional(cf_prop_text(props, "ObjectAutonumerationMode")),
+            synchronous_call_use_mode: optional(cf_prop_text(
+                props,
+                "SynchronousPlatformExtensionAndAddInCallUseMode",
+            )),
+            database_tablespaces_use_mode: optional(cf_prop_text(
+                props,
+                "DatabaseTablespacesUseMode",
+            )),
+            main_window_mode: optional(cf_prop_text(props, "MainClientApplicationWindowMode")),
+            comment: optional(cf_prop_text(props, "Comment")),
+            name_prefix: optional(cf_prop_text(props, "NamePrefix")),
+            update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
+        },
+        child_objects: counts
+            .into_iter()
+            .map(|(kind, count)| CfChildObjectCount { kind, count })
+            .collect(),
+        total_objects,
+        home_page,
+    };
+    Ok(ParsedCfInfo {
+        data,
+        registered_objects,
+    })
+}
+
 pub(crate) fn analyze_cf_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     support_reader: &dyn SupportStateReader,
 ) -> CfInfoExecution {
-    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-
     let result = (|| -> Result<(CfInfoData, PathBuf), String> {
         let selection = resolve_cf_info_target(args, context)?;
         let config_path = selection.resource_path;
-
         let text = fs::read_to_string(&config_path)
             .map_err(|err| format!("failed to read {}: {err}", config_path.display()))?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", config_path.display()))?;
-        let root = doc.root_element();
-        if root.tag_name().name() != "MetaDataObject" {
-            return Err(
-                "[ERROR] Not a valid 1C metadata XML file (no MetaDataObject root)".to_string(),
-            );
-        }
-        let Some(cfg) = root
-            .children()
-            .find(|node| role_info_element(*node, "Configuration", Some(MD_NS)))
-        else {
-            return Err("[ERROR] No <Configuration> element found".to_string());
-        };
-        let Some(props) = cfg
-            .children()
-            .find(|node| role_info_element(*node, "Properties", Some(MD_NS)))
-        else {
-            return Err("[ERROR] No <Configuration>/<Properties> element found".to_string());
-        };
-
-        let version = root.attribute("version").unwrap_or("");
         let config_dir = config_path.parent().unwrap_or(context.cwd.as_path());
-        let extension_purpose = optional(cf_prop_text(props, "ConfigurationExtensionPurpose"));
-        let counts = cf_child_object_counts(cfg);
-        let total_objects = counts.iter().map(|(_, count)| *count).sum::<usize>();
-        // Every mode used to trade completeness for printed size. Typed data
-        // needs no such lever: the caller keeps the fields it wants.
-        let data = CfInfoData {
-            format: version.to_string(),
-            name: cf_prop_text(props, "Name"),
-            synonym: optional(cf_prop_ml(props, "Synonym")),
-            version: optional(cf_prop_text(props, "Version")),
-            vendor: optional(cf_prop_text(props, "Vendor")),
-            support: support_reader
-                .configuration_support(&selection.target)
-                .map_err(|error| error.to_string())?,
-            extension_purpose,
-            properties: CfInfoProperties {
-                compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
-                default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
-                script_variant: optional(cf_prop_text(props, "ScriptVariant")),
-                default_language: optional(cf_prop_text(props, "DefaultLanguage")),
-                data_lock_control_mode: optional(cf_prop_text(props, "DataLockControlMode")),
-                modality_use_mode: optional(cf_prop_text(props, "ModalityUseMode")),
-                interface_compatibility_mode: optional(cf_prop_text(
-                    props,
-                    "InterfaceCompatibilityMode",
-                )),
-                extension_compatibility_mode: optional(cf_prop_text(
-                    props,
-                    "ConfigurationExtensionCompatibilityMode",
-                )),
-                object_autonumeration_mode: optional(cf_prop_text(
-                    props,
-                    "ObjectAutonumerationMode",
-                )),
-                synchronous_call_use_mode: optional(cf_prop_text(
-                    props,
-                    "SynchronousPlatformExtensionAndAddInCallUseMode",
-                )),
-                database_tablespaces_use_mode: optional(cf_prop_text(
-                    props,
-                    "DatabaseTablespacesUseMode",
-                )),
-                main_window_mode: optional(cf_prop_text(props, "MainClientApplicationWindowMode")),
-                comment: optional(cf_prop_text(props, "Comment")),
-                name_prefix: optional(cf_prop_text(props, "NamePrefix")),
-                update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
-            },
-            child_objects: counts
-                .into_iter()
-                .map(|(kind, count)| CfChildObjectCount { kind, count })
-                .collect(),
-            total_objects,
-            home_page: cf_read_home_page(config_dir).map(|layout| CfHomePageData {
-                template: layout.template,
-                left: cf_home_page_item_data(&layout.left),
-                right: cf_home_page_item_data(&layout.right),
-            }),
-        };
-        Ok((data, config_path))
+        let support = support_reader
+            .configuration_support(&selection.target)
+            .map_err(|error| error.to_string())?;
+        let home_page = cf_read_home_page(config_dir).map(|layout| CfHomePageData {
+            template: layout.template,
+            left: cf_home_page_item_data(&layout.left),
+            right: cf_home_page_item_data(&layout.right),
+        });
+        let parsed = parse_cf_info_xml(&text, support, home_page)?;
+        Ok((parsed.data, config_path))
     })();
 
     match result {

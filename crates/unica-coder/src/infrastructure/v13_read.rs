@@ -33,6 +33,7 @@ use crate::infrastructure::platform_xml_source_targets::{
 };
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::support_state::WorkspaceSupportStateReader;
+use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Map, Value};
 use std::path::Path;
 use std::sync::Arc;
@@ -41,6 +42,25 @@ use std::time::Duration;
 const READ_BUDGET: Duration = Duration::from_secs(7);
 const META_READ_LIMIT: usize = 1_000;
 const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
+const MODULE_CONTEXTS: &[&str] = &[
+    "client",
+    "server",
+    "externalConnection",
+    "thinClient",
+    "webClient",
+    "thickClientManaged",
+    "thickClientOrdinary",
+    "mobileClient",
+    "mobileAppClient",
+    "mobileAppServer",
+    "mobileStandaloneServer",
+];
+
+#[derive(Default)]
+struct ModuleViewFilter {
+    context: Option<String>,
+    public: Option<bool>,
+}
 
 /// Hidden v0.13 read adapter. Its revision service is supplied by the
 /// workspace actor that owns the source capability; the adapter never creates
@@ -48,10 +68,7 @@ const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) struct LogicalViewReadAuthority<'a> {
     context: &'a WorkspaceContext,
     cancellation: &'a CancellationToken,
-    source_set: String,
-    source_set_identity: String,
-    revision_service: Arc<SourceRevisionService>,
-    source_root: Arc<RetainedDirectoryCapability>,
+    read: ProviderReadAuthority,
     profile: PlatformProfile,
 }
 
@@ -68,52 +85,45 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Self {
             context,
             cancellation,
-            source_set: source_set.into(),
-            source_set_identity: source_set_identity.into(),
-            revision_service,
-            source_root,
+            read: ProviderReadAuthority::new(
+                source_set,
+                source_set_identity,
+                source_root,
+                revision_service,
+            ),
             profile,
         }
     }
 
     fn exact_revision(&self) -> Result<String, ViewError> {
-        self.source_root
-            .validate_named_identity()
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
-        self.revision_service
-            .snapshot(
-                ProviderDeadline::from_budget(READ_BUDGET),
-                self.cancellation,
-            )
-            .map(|revision| {
-                format!(
-                    "{}:{}:{}",
-                    revision.algorithm, revision.generation, revision.digest
-                )
-            })
-            .map_err(|error| ViewError::new("provider_unavailable", error))
+        self.read.exact_revision(
+            ProviderDeadline::from_budget(READ_BUDGET),
+            self.cancellation,
+        )
     }
 
     fn read_module_source(&self, path: &Path) -> Result<Option<String>, ViewError> {
-        let relative = path.strip_prefix(self.source_root.path()).map_err(|_| {
+        let relative = path.strip_prefix(self.read.root_path()).map_err(|_| {
             ViewError::new(
                 "provider_unavailable",
                 "module target escaped the actor-owned source root",
             )
         })?;
         match self
-            .source_root
-            .read_relative_regular_bounded(relative, MAX_MODULE_BYTES)
+            .read
+            .read_optional_relative(relative, MAX_MODULE_BYTES)?
         {
-            Ok(bytes) => String::from_utf8(bytes)
+            Some(bytes) => String::from_utf8(bytes)
                 .map(|text| Some(text.trim_start_matches('\u{feff}').to_string()))
                 .map_err(|_| ViewError::new("provider_unavailable", "BSL module is not UTF-8")),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(ViewError::new("provider_unavailable", error.to_string())),
+            None => Ok(None),
         }
     }
 
     fn typed_payload(&self, route: &LogicalTreeRoute) -> Result<Value, ViewError> {
+        if route.reader() == LogicalReader::Configuration {
+            return self.read.configuration_payload();
+        }
         if route.reader() == LogicalReader::Metadata {
             return self.metadata_payload(route);
         }
@@ -134,7 +144,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 ));
             }
         };
-        let mut args = Map::from_iter([("sourceSet".to_string(), json!(self.source_set))]);
+        let mut args = Map::from_iter([("sourceSet".to_string(), json!(self.read.source_set()))]);
         if let Some(target) = route.reader_metadata_path() {
             args.insert("metadataPath".to_string(), json!(target.as_str()));
         }
@@ -178,7 +188,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ViewError::new("not_found", "metadata address has no typed reader target")
         })?;
         let request = MetaInfoRequest {
-            source_set: self.source_set.clone(),
+            source_set: self.read.source_set().to_string(),
             metadata_path: target.clone(),
             sections: Vec::new(),
             limit: META_READ_LIMIT,
@@ -209,6 +219,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         &self,
         route: &LogicalTreeRoute,
         admitted: &ViewSourceSnapshot,
+        filter: &ModuleViewFilter,
     ) -> Result<NodeViewData, ViewError> {
         let capability = route.module().ok_or_else(|| {
             ViewError::new(
@@ -227,7 +238,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let resolution = resolve_platform_xml_target(
             self.context,
             &SourceTarget {
-                source_set: self.source_set.clone(),
+                source_set: self.read.source_set().to_string(),
                 metadata_path: Some(metadata_path),
             },
             TargetKindPolicy::ModuleOnlyAllowingAbsent,
@@ -265,7 +276,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             extension_targets: &[],
         })
         .map_err(|error| ViewError::new("provider_unavailable", error))?;
-        module_projection_view(route.at(), prefix_len, &projections)
+        module_projection_view(route.at(), prefix_len, &projections, filter)
     }
 
     fn form_bindings(
@@ -285,7 +296,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path())
                 .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
         let args = Map::from_iter([
-            ("sourceSet".to_string(), json!(self.source_set)),
+            ("sourceSet".to_string(), json!(self.read.source_set())),
             ("metadataPath".to_string(), json!(metadata_path.as_str())),
         ]);
         let support = WorkspaceSupportStateReader::new(self.context);
@@ -323,7 +334,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
 impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
-        if at.source_set() != self.source_set {
+        if at.source_set() != self.read.source_set() {
             return Err(ViewError::new(
                 "not_found",
                 "logical address belongs to another actor-owned source set",
@@ -332,7 +343,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new("not_found", error.to_string()))?;
         Ok(ViewSourceSnapshot {
-            source_set_identity: self.source_set_identity.clone(),
+            source_set_identity: self.read.source_set_identity().to_string(),
             revision: self.exact_revision()?,
         })
     }
@@ -340,10 +351,10 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
     fn read_exact(
         &self,
         at: &QualifiedAddress,
-        _filter: &ViewFilter,
+        filter: &ViewFilter,
         admitted: &ViewSourceSnapshot,
     ) -> Result<NodeViewData, ViewError> {
-        if admitted.source_set_identity != self.source_set_identity
+        if admitted.source_set_identity != self.read.source_set_identity()
             || admitted.revision != self.exact_revision()?
         {
             return Err(ViewError::new(
@@ -353,8 +364,17 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new("not_found", error.to_string()))?;
+        let module_filter = validate_view_filter(&route, filter)?;
         let projected = if route.reader() == LogicalReader::Module {
-            self.module_view(&route, admitted)?
+            self.module_view(&route, admitted, &module_filter)?
+        } else if route.reader() == LogicalReader::Metadata
+            && route.reader_metadata_path().is_none()
+        {
+            let payload = self.read.configuration_payload()?;
+            crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
+                route.at(),
+                &payload,
+            )?
         } else {
             let payload = self.typed_payload(&route)?;
             project_typed_payload(&route, payload)?
@@ -367,6 +387,80 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         Ok(projected)
     }
+}
+
+fn validate_view_filter(
+    route: &LogicalTreeRoute,
+    filter: &ViewFilter,
+) -> Result<ModuleViewFilter, ViewError> {
+    if route.reader() != LogicalReader::Module {
+        return if filter.is_empty() {
+            Ok(ModuleViewFilter::default())
+        } else {
+            Err(ViewError::new(
+                "bad_value",
+                "this logical projection does not support a filter",
+            ))
+        };
+    }
+    let mut result = ModuleViewFilter::default();
+    for (key, value) in filter.iter() {
+        match key.as_str() {
+            "context" => {
+                let context = value.as_str().ok_or_else(|| {
+                    ViewError::new("bad_value", "module filter.context must be a string")
+                })?;
+                if !MODULE_CONTEXTS.contains(&context) {
+                    return Err(ViewError::new(
+                        "bad_value",
+                        format!("unsupported module execution context `{context}`"),
+                    ));
+                }
+                result.context = Some(context.to_string());
+            }
+            "public" => {
+                result.public = Some(value.as_bool().ok_or_else(|| {
+                    ViewError::new("bad_value", "module filter.public must be boolean")
+                })?);
+            }
+            _ => {
+                return Err(ViewError::new(
+                    "bad_value",
+                    format!("unsupported module filter `{key}`"),
+                ));
+            }
+        }
+    }
+    let (_, prefix_len) = route
+        .module()
+        .and_then(|capability| {
+            module_prefix(route.at(), PlatformProfile::v8_3_27(), capability).ok()
+        })
+        .ok_or_else(|| ViewError::new("provider_unavailable", "module prefix is unavailable"))?;
+    let suffix = &route.at().segments()[prefix_len..];
+    if result.context.is_some()
+        && !matches!(
+            suffix.first().map(AddressSegment::kind),
+            Some(NodeKind::Body | NodeKind::Method)
+        )
+    {
+        return Err(ViewError::new(
+            "bad_value",
+            "module filter.context is supported only for Body and Method projections",
+        ));
+    }
+    if result.public.is_some()
+        && !matches!(
+            suffix.first().map(AddressSegment::kind),
+            Some(NodeKind::Method)
+        )
+    {
+        return Err(ViewError::new(
+            "bad_value",
+            "module filter.public is supported only for Method projections",
+        ));
+    }
+    Ok(result)
 }
 
 fn module_prefix(
@@ -565,31 +659,31 @@ fn form_event_binding(
 }
 
 fn collect_element_bindings(
-    form_at: &str,
+    parent_at: &str,
     elements: &[FormInfoElement],
     parent_is_table: bool,
     bindings: &mut Vec<FormEventBindingInput>,
 ) {
     for element in elements {
-        let Some(kind) = FormElementKind::from_xml_tag(&element.tag) else {
+        let Some(kind) = element.event_kind else {
             continue;
         };
         let is_table = kind == FormElementKind::Table;
-        let owner = if is_table {
-            FormBindingOwner::Table
-        } else if parent_is_table {
+        let owner = if parent_is_table {
             FormBindingOwner::Column(kind)
+        } else if is_table {
+            FormBindingOwner::Table
         } else {
             FormBindingOwner::Element(kind)
         };
-        let at = format!("{form_at}.Item.{}", element.name);
+        let at = format!("{parent_at}.Item.{}", element.name);
         bindings.extend(
             element
                 .events
                 .iter()
                 .map(|event| form_event_binding(owner, &at, event)),
         );
-        collect_element_bindings(form_at, &element.children, is_table, bindings);
+        collect_element_bindings(&at, &element.children, is_table, bindings);
     }
 }
 
@@ -606,6 +700,7 @@ fn module_projection_view(
     requested: &QualifiedAddress,
     prefix_len: usize,
     projections: &ModuleProjectionSet,
+    filter: &ModuleViewFilter,
 ) -> Result<NodeViewData, ViewError> {
     let suffix = &requested.segments()[prefix_len..];
     if suffix.is_empty() {
@@ -625,6 +720,17 @@ fn module_projection_view(
         ));
     }
     let branch = suffix[0].kind();
+    if (branch == NodeKind::Method && suffix.len() > 2)
+        || (matches!(
+            branch,
+            NodeKind::Interface | NodeKind::Event | NodeKind::Compilation | NodeKind::Body
+        ) && suffix.len() > 1)
+    {
+        return Err(ViewError::new(
+            "not_found",
+            "module projection did not consume the complete suffix",
+        ));
+    }
     match (branch, suffix[0].name(), suffix.get(1)) {
         (NodeKind::Method, None, None) => module_collection(
             requested,
@@ -632,13 +738,14 @@ fn module_projection_view(
             projections
                 .methods()
                 .iter()
+                .filter(|method| module_method_matches_filter(method, filter))
                 .map(method_node_value)
                 .collect(),
         ),
         (NodeKind::Method, Some(name), None) => projections
             .methods()
             .iter()
-            .find(|method| method.name == name)
+            .find(|method| method.name == name && module_method_matches_filter(method, filter))
             .map(method_node)
             .map(NodeViewData::Node)
             .ok_or_else(|| ViewError::new("not_found", format!("method `{name}` was not found"))),
@@ -646,12 +753,19 @@ fn module_projection_view(
             if detail.name().is_none() && detail.kind() == NodeKind::Body =>
         {
             let method = find_method(projections, name)?;
+            if !module_method_matches_filter(method, filter) {
+                return Err(ViewError::new(
+                    "not_found",
+                    format!("method `{name}` does not match the requested filter"),
+                ));
+            }
             let items = projections
                 .body()
                 .iter()
                 .filter(|line| {
                     line.line >= method.body_from_line && line.line <= method.body_to_line
                 })
+                .filter(|line| module_body_line_matches_filter(line.line, projections, filter))
                 .map(|line| json!({"line": line.line, "text": line.text}))
                 .collect();
             module_collection(requested, NodeKind::Body, items)
@@ -761,6 +875,7 @@ fn module_projection_view(
             projections
                 .body()
                 .iter()
+                .filter(|line| module_body_line_matches_filter(line.line, projections, filter))
                 .map(|line| json!({"line": line.line, "text": line.text}))
                 .collect(),
         ),
@@ -769,6 +884,60 @@ fn module_projection_view(
             "module projection suffix is not available",
         )),
     }
+}
+
+fn module_method_matches_filter(method: &MethodProjection, filter: &ModuleViewFilter) -> bool {
+    filter.public.is_none_or(|public| method.export == public)
+        && filter.context.as_deref().is_none_or(|context| {
+            method
+                .compile
+                .contexts
+                .iter()
+                .any(|candidate| module_context_matches(context, candidate))
+        })
+}
+
+fn module_context_matches(requested: &str, actual: &str) -> bool {
+    match requested {
+        "client" => actual.to_ascii_lowercase().contains("client"),
+        "server" => actual == "server" || actual.ends_with("Server"),
+        exact => actual == exact,
+    }
+}
+
+fn module_body_line_matches_filter(
+    line: usize,
+    projections: &ModuleProjectionSet,
+    filter: &ModuleViewFilter,
+) -> bool {
+    let Some(context) = filter.context.as_deref() else {
+        return true;
+    };
+    projections.methods().iter().any(|method| {
+        let directive_lines = usize::from(method.compile.directive.is_some());
+        let from = method.body_from_line.saturating_sub(1 + directive_lines);
+        let to = method
+            .body_to_line
+            .saturating_add(1)
+            .max(method.body_from_line);
+        line >= from
+            && line <= to
+            && method
+                .compile
+                .contexts
+                .iter()
+                .any(|candidate| module_context_matches(context, candidate))
+            && projections
+                .compilation()
+                .iter()
+                .filter(|range| line >= range.from_line && line <= range.to_line)
+                .all(|range| {
+                    range
+                        .contexts
+                        .iter()
+                        .any(|candidate| module_context_matches(context, candidate))
+                })
+    })
 }
 
 fn module_collection(

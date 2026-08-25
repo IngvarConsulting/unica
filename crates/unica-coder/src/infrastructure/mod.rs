@@ -54,6 +54,8 @@ pub(crate) mod task_store;
 // Hidden v0.13 typed read adapter remains unreachable from the v0.12 tool ledger.
 #[allow(dead_code)]
 pub(crate) mod v13_read;
+#[allow(dead_code)]
+pub(crate) mod v13_read_port;
 mod v13_read_projection;
 // Production v0.12 routing stays unchanged until the atomic v0.13 cutover.
 #[allow(dead_code)]

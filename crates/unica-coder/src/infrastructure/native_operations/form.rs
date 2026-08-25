@@ -1502,6 +1502,10 @@ pub(crate) struct FormInfoEvent {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoElement {
     pub(crate) tag: String,
+    /// Closed platform element kind retained for internal event projection.
+    /// The V12 serialized `tag` remains the human-readable tree marker.
+    #[serde(skip)]
+    pub(crate) event_kind: Option<FormElementKind>,
     pub(crate) name: String,
     /// The data path or command the element is bound to; `null` when unbound.
     pub(crate) binding: Option<FormInfoBinding>,
@@ -1620,6 +1624,7 @@ fn form_info_tree(child_items: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> 
             let name = child.attribute("name").unwrap_or("").to_string();
             FormInfoElement {
                 tag: form_element_tag(child),
+                event_kind: FormElementKind::from_xml_tag(child.tag_name().name()),
                 title: form_title_differs(child, &name),
                 name,
                 binding: form_info_binding(child),

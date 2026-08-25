@@ -18,12 +18,16 @@ pub(super) fn project_typed_payload(
         .unwrap_or_else(|| usize::from(route.reader() == LogicalReader::Configuration));
     let suffix = &route.at().segments()[root_depth.min(route.at().segments().len())..];
     match route.reader() {
+        LogicalReader::Configuration => return project_configuration(route.at(), &payload, suffix),
         LogicalReader::Metadata => return project_metadata(route.at(), &payload, suffix),
+        LogicalReader::Form => return project_form(route.at(), &payload, suffix),
         LogicalReader::Role => return project_role(route.at(), &payload, suffix),
         LogicalReader::Interface => {
             return project_subsystem_interface(route.at(), &payload, suffix)
         }
         LogicalReader::Xdto => return project_xdto(route.at(), &payload, suffix),
+        LogicalReader::Dcs => return project_dcs(route.at(), &payload, suffix),
+        LogicalReader::Mxl => return project_mxl(route.at(), &payload, suffix),
         _ => {}
     }
     if suffix.is_empty() {
@@ -40,6 +44,459 @@ pub(super) fn project_typed_payload(
         )));
     }
     project_known_suffix(route.reader(), route.at(), &payload, suffix)
+}
+
+fn project_form(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    if suffix.is_empty() {
+        let props = selected_scalar_props(
+            payload,
+            &[
+                "title",
+                "objectContext",
+                "isExtension",
+                "baseFormVersion",
+                "commandBarLocation",
+            ],
+        );
+        let branches = [
+            NodeKind::Item,
+            NodeKind::Attribute,
+            NodeKind::Parameter,
+            NodeKind::Command,
+            NodeKind::Event,
+        ]
+        .into_iter()
+        .filter_map(|kind| {
+            let values = form_child_values(payload, kind)?;
+            let count = values.as_array().map_or(0, Vec::len);
+            (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
+        })
+        .collect();
+        return Ok(NodeViewData::Node(
+            NodeView::new(
+                address.to_string(),
+                "Form",
+                payload
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .or_else(|| payload.get("name").and_then(Value::as_str))
+                    .unwrap_or("Form"),
+                props,
+            )
+            .with_branches(branches),
+        ));
+    }
+    let first = &suffix[0];
+    let mut values = form_child_values(payload, first.kind()).ok_or_else(|| {
+        ViewError::new(
+            "not_found",
+            format!("form has no {} collection", first.kind().as_str()),
+        )
+    })?;
+    if first.name().is_none() {
+        if suffix.len() != 1 {
+            return Err(ViewError::new(
+                "not_found",
+                "form collection did not consume the complete suffix",
+            ));
+        }
+        return form_collection(address, first.kind(), values);
+    }
+    let mut kind = first.kind();
+    let mut item = select_named(values, first.name().unwrap()).ok_or_else(|| {
+        ViewError::new(
+            "not_found",
+            format!(
+                "form {} `{}` was not found",
+                first.kind().as_str(),
+                first.name().unwrap()
+            ),
+        )
+    })?;
+    for (index, segment) in suffix[1..].iter().enumerate() {
+        kind = segment.kind();
+        values = form_nested_values(item, kind).ok_or_else(|| {
+            ViewError::new(
+                "not_found",
+                format!("form node has no {} collection", kind.as_str()),
+            )
+        })?;
+        let terminal = index + 2 == suffix.len();
+        let Some(name) = segment.name() else {
+            if !terminal {
+                return Err(ViewError::new(
+                    "not_found",
+                    "form collection did not consume the complete suffix",
+                ));
+            }
+            return form_collection(address, kind, values);
+        };
+        item = select_named(values, name).ok_or_else(|| {
+            ViewError::new(
+                "not_found",
+                format!("form {} `{name}` was not found", kind.as_str()),
+            )
+        })?;
+    }
+    Ok(NodeViewData::Node(form_node(address, kind, item)))
+}
+
+fn form_child_values(payload: &Value, kind: NodeKind) -> Option<&Value> {
+    match kind {
+        NodeKind::Item => payload.get("elements"),
+        NodeKind::Attribute => payload.get("attributes"),
+        NodeKind::Parameter => payload.get("parameters"),
+        NodeKind::Command => payload.get("commands"),
+        NodeKind::Event => payload.get("events"),
+        _ => None,
+    }
+}
+
+fn form_nested_values(item: &Value, kind: NodeKind) -> Option<&Value> {
+    match kind {
+        NodeKind::Item => item.get("children"),
+        NodeKind::Column => item.get("columns"),
+        NodeKind::Event => item.get("events").or_else(|| item.get("actions")),
+        _ => None,
+    }
+}
+
+fn form_collection(
+    address: &QualifiedAddress,
+    kind: NodeKind,
+    values: &Value,
+) -> Result<NodeViewData, ViewError> {
+    let items = values
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let name = item_identity(item)?;
+            let child = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
+            serde_json::to_value(form_node(&child, kind, item)).ok()
+        })
+        .collect();
+    Ok(NodeViewData::Collection(CollectionView::new(
+        NodeView::new(
+            address.to_string(),
+            kind.as_str(),
+            kind.as_str(),
+            Map::new(),
+        ),
+        items,
+    )))
+}
+
+fn form_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) -> NodeView {
+    let mut node = NodeView::new(
+        address.to_string(),
+        kind.as_str(),
+        item.get("title")
+            .and_then(Value::as_str)
+            .or_else(|| item_identity(item))
+            .unwrap_or(kind.as_str()),
+        reader_node_props(LogicalReader::Form, kind, item),
+    );
+    let branch_kinds: &[NodeKind] = match kind {
+        NodeKind::Item => &[NodeKind::Item, NodeKind::Event],
+        NodeKind::Attribute => &[NodeKind::Column],
+        NodeKind::Command => &[NodeKind::Event],
+        _ => &[],
+    };
+    node = node.with_branches(
+        branch_kinds
+            .iter()
+            .filter_map(|child_kind| {
+                let values = form_nested_values(item, *child_kind)?;
+                let count = values.as_array().map_or(0, Vec::len);
+                (count > 0)
+                    .then(|| BranchRef::new(format!("{}.{}", address, child_kind.as_str()), count))
+            })
+            .collect(),
+    );
+    node
+}
+
+fn project_dcs(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    if suffix.is_empty() {
+        return Ok(NodeViewData::Node(known_reader_node(
+            LogicalReader::Dcs,
+            address,
+            NodeKind::Template,
+            payload,
+        )));
+    }
+    let dataset_segment = &suffix[0];
+    if dataset_segment.kind() != NodeKind::DataSet {
+        return project_known_suffix(LogicalReader::Dcs, address, payload, suffix);
+    }
+    let datasets = payload
+        .get("dataSets")
+        .ok_or_else(|| ViewError::new("not_found", "DCS has no datasets"))?;
+    let Some(dataset_name) = dataset_segment.name() else {
+        if suffix.len() != 1 {
+            return Err(ViewError::new(
+                "not_found",
+                "DCS dataset collection cannot have a child suffix",
+            ));
+        }
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "DataSet", "DataSet", Map::new()),
+            collection_items(LogicalReader::Dcs, address, NodeKind::DataSet, datasets),
+        )));
+    };
+    let dataset = select_named(datasets, dataset_name).ok_or_else(|| {
+        ViewError::new(
+            "not_found",
+            format!("DCS dataset `{dataset_name}` was not found"),
+        )
+    })?;
+    if suffix.len() == 1 {
+        let node = node_from_value(LogicalReader::Dcs, address, NodeKind::DataSet, dataset);
+        let mut branches = known_reader_branches(LogicalReader::Dcs, address, dataset);
+        let parameter_count = payload
+            .get("parameters")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        if parameter_count > 0 {
+            branches.push(BranchRef::new(
+                format!("{}.Parameter", address),
+                parameter_count,
+            ));
+        }
+        return Ok(NodeViewData::Node(node.with_branches(branches)));
+    }
+    let [detail] = &suffix[1..] else {
+        return Err(ViewError::new(
+            "not_found",
+            "DCS projection did not consume the complete suffix",
+        ));
+    };
+    let selected = match detail.kind() {
+        NodeKind::Field => dataset.get("fields"),
+        NodeKind::Parameter => payload.get("parameters"),
+        NodeKind::Query => dataset.get("query"),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        ViewError::new(
+            "not_found",
+            format!("DCS dataset has no {} projection", detail.kind().as_str()),
+        )
+    })?;
+    if detail.name().is_none() {
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(
+                address.to_string(),
+                detail.kind().as_str(),
+                detail.kind().as_str(),
+                Map::new(),
+            ),
+            collection_items(LogicalReader::Dcs, address, detail.kind(), selected),
+        )));
+    }
+    let name = detail.name().unwrap();
+    let item = select_named(selected, name).ok_or_else(|| {
+        ViewError::new(
+            "not_found",
+            format!("DCS {} `{name}` was not found", detail.kind().as_str()),
+        )
+    })?;
+    Ok(NodeViewData::Node(NodeView::new(
+        address.to_string(),
+        detail.kind().as_str(),
+        name,
+        compact_props(item),
+    )))
+}
+
+fn project_mxl(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    if suffix.is_empty() {
+        return Ok(NodeViewData::Node(known_reader_node(
+            LogicalReader::Mxl,
+            address,
+            NodeKind::Template,
+            payload,
+        )));
+    }
+    let area_segment = &suffix[0];
+    if area_segment.kind() != NodeKind::Area {
+        return Err(ViewError::new("not_found", "MXL projection starts at Area"));
+    }
+    let areas = payload
+        .get("areas")
+        .ok_or_else(|| ViewError::new("not_found", "MXL has no named areas"))?;
+    let Some(area_name) = area_segment.name() else {
+        if suffix.len() != 1 {
+            return Err(ViewError::new(
+                "not_found",
+                "MXL area collection cannot have a child suffix",
+            ));
+        }
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Area", "Area", Map::new()),
+            collection_items(LogicalReader::Mxl, address, NodeKind::Area, areas),
+        )));
+    };
+    let area = select_named(areas, area_name).ok_or_else(|| {
+        ViewError::new("not_found", format!("MXL area `{area_name}` was not found"))
+    })?;
+    if suffix.len() == 1 {
+        let mut node = node_from_value(LogicalReader::Mxl, address, NodeKind::Area, area);
+        let parameter_count = area
+            .get("params")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        if parameter_count > 0 {
+            node = node.with_branches(vec![BranchRef::new(
+                format!("{}.Parameter", address),
+                parameter_count,
+            )]);
+        }
+        return Ok(NodeViewData::Node(node));
+    }
+    let [parameter] = &suffix[1..] else {
+        return Err(ViewError::new(
+            "not_found",
+            "MXL projection did not consume the complete suffix",
+        ));
+    };
+    if parameter.kind() != NodeKind::Parameter {
+        return Err(ViewError::new(
+            "not_found",
+            "MXL area has only Parameter child nodes",
+        ));
+    }
+    let params = area
+        .get("params")
+        .ok_or_else(|| ViewError::new("not_found", "MXL area has no parameters"))?;
+    let Some(name) = parameter.name() else {
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Parameter", "Parameter", Map::new()),
+            params
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|name| {
+                    json!({
+                        "at": format!("{address}.{name}"),
+                        "kind": "Parameter",
+                        "title": name,
+                    })
+                })
+                .collect(),
+        )));
+    };
+    if !params
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|value| value.as_str() == Some(name))
+    {
+        return Err(ViewError::new(
+            "not_found",
+            format!("MXL area parameter `{name}` was not found"),
+        ));
+    }
+    Ok(NodeViewData::Node(NodeView::new(
+        address.to_string(),
+        "Parameter",
+        name,
+        Map::new(),
+    )))
+}
+
+fn project_configuration(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    if !suffix.is_empty() {
+        return Err(ViewError::new(
+            "not_found",
+            "configuration projection does not accept an address suffix",
+        ));
+    }
+    let props = selected_scalar_props(payload, &["format", "name", "synonym"]);
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for item in payload
+        .get("registeredObjects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(kind) = item.get("kind").and_then(Value::as_str) {
+            *counts.entry(kind.to_string()).or_default() += 1;
+        }
+    }
+    let branches = counts
+        .into_iter()
+        .map(|(kind, count)| BranchRef::new(format!("{}:{kind}", address.source_set()), count))
+        .collect();
+    Ok(NodeViewData::Node(
+        NodeView::new(
+            address.to_string(),
+            NodeKind::Configuration.as_str(),
+            payload
+                .get("synonym")
+                .and_then(Value::as_str)
+                .or_else(|| payload.get("name").and_then(Value::as_str))
+                .unwrap_or("Configuration"),
+            props,
+        )
+        .with_branches(branches),
+    ))
+}
+
+pub(super) fn project_registered_metadata_branch(
+    address: &QualifiedAddress,
+    payload: &Value,
+) -> Result<NodeViewData, ViewError> {
+    validate_reader_payload(LogicalReader::Configuration, payload)?;
+    let kind = address
+        .segments()
+        .last()
+        .map(AddressSegment::kind)
+        .ok_or_else(|| ViewError::new("not_found", "metadata branch kind is missing"))?;
+    let items = payload
+        .get("registeredObjects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("kind").and_then(Value::as_str) == Some(kind.as_str()))
+        .filter_map(|item| item.get("name").and_then(Value::as_str))
+        .map(|name| {
+            serde_json::to_value(NodeView::new(
+                format!("{}.{name}", address),
+                kind.as_str(),
+                name,
+                Map::new(),
+            ))
+            .expect("NodeView always serializes")
+        })
+        .collect();
+    Ok(NodeViewData::Collection(CollectionView::new(
+        NodeView::new(
+            address.to_string(),
+            kind.as_str(),
+            kind.as_str(),
+            Map::new(),
+        ),
+        items,
+    )))
 }
 
 fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(), ViewError> {
@@ -60,6 +517,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "support",
             "properties",
             "childObjects",
+            "registeredObjects",
             "totalObjects",
             "homePage",
         ],
@@ -334,7 +792,7 @@ fn project_metadata(
     let mut kind = first.kind();
     for segment in &suffix[1..] {
         kind = segment.kind();
-        let next = if kind == NodeKind::Column {
+        let next = if matches!(kind, NodeKind::Attribute | NodeKind::Column) {
             item.get("attributes")
         } else {
             None
@@ -433,7 +891,12 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
         .get("attributes")
         .and_then(Value::as_array)
         .filter(|items| !items.is_empty())
-        .map(|items| vec![BranchRef::new(format!("{}.Column", address), items.len())])
+        .map(|items| {
+            vec![BranchRef::new(
+                format!("{}.Attribute", address),
+                items.len(),
+            )]
+        })
         .unwrap_or_default();
     NodeView::new(
         address.to_string(),
@@ -497,14 +960,18 @@ fn project_role(
                 .filter_map(|object| role_object_value(address, object))
                 .collect(),
         ))),
-        (NodeKind::Right, Some(name)) => objects
-            .iter()
-            .find(|object| object.get("name").and_then(Value::as_str) == Some(name))
-            .map(|object| role_object_node(address, object))
-            .map(NodeViewData::Node)
-            .ok_or_else(|| {
-                ViewError::new("not_found", format!("role object `{name}` was not found"))
-            }),
+        (NodeKind::Right, Some(name)) => {
+            let object = objects
+                .iter()
+                .find(|object| object.get("name").and_then(Value::as_str) == Some(name))
+                .ok_or_else(|| {
+                    ViewError::new("not_found", format!("role object `{name}` was not found"))
+                })?;
+            if suffix.len() == 1 {
+                return Ok(NodeViewData::Node(role_object_node(address, object)));
+            }
+            project_role_object_suffix(address, object, &suffix[1..])
+        }
         (NodeKind::Rls, None) => Ok(NodeViewData::Collection(CollectionView::new(
             NodeView::new(address.to_string(), "RLS", "RLS", Map::new()),
             restricted
@@ -528,6 +995,62 @@ fn project_role(
             )))
         }
         _ => Err(ViewError::new("not_found", "role projection was not found")),
+    }
+}
+
+fn project_role_object_suffix(
+    address: &QualifiedAddress,
+    object: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    let [rls] = suffix else {
+        return Err(ViewError::new(
+            "not_found",
+            "role right projection did not consume the complete address suffix",
+        ));
+    };
+    if rls.kind() != NodeKind::Rls {
+        return Err(ViewError::new(
+            "not_found",
+            "role right has no requested child projection",
+        ));
+    }
+    let rights = object
+        .get("rights")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|right| right.get("restricted").and_then(Value::as_bool) == Some(true))
+        .collect::<Vec<_>>();
+    match rls.name() {
+        None => Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "RLS", "RLS", Map::new()),
+            rights
+                .into_iter()
+                .filter_map(|right| {
+                    let name = right.get("name")?.as_str()?;
+                    serde_json::to_value(NodeView::new(
+                        format!("{address}.{name}"),
+                        "RLS",
+                        name,
+                        Map::new(),
+                    ))
+                    .ok()
+                })
+                .collect(),
+        ))),
+        Some(name) => rights
+            .into_iter()
+            .find(|right| right.get("name").and_then(Value::as_str) == Some(name))
+            .map(|_| {
+                NodeViewData::Node(NodeView::new(address.to_string(), "RLS", name, Map::new()))
+            })
+            .ok_or_else(|| {
+                ViewError::new(
+                    "not_found",
+                    format!("restricted role right `{name}` was not found"),
+                )
+            }),
     }
 }
 
@@ -564,6 +1087,16 @@ fn role_object_value(address: &QualifiedAddress, object: &Value) -> Option<Value
 }
 
 fn role_object_node(address: &QualifiedAddress, object: &Value) -> NodeView {
+    let restricted = object
+        .get("rights")
+        .and_then(Value::as_array)
+        .map(|rights| {
+            rights
+                .iter()
+                .filter(|right| right.get("restricted").and_then(Value::as_bool) == Some(true))
+                .count()
+        })
+        .unwrap_or_default();
     NodeView::new(
         address.to_string(),
         "Right",
@@ -580,14 +1113,13 @@ fn role_object_node(address: &QualifiedAddress, object: &Value) -> NodeView {
                 "objectKind".to_string(),
                 object.get("objectKind").cloned().unwrap_or(Value::Null),
             ),
-            (
-                "rights".to_string(),
-                Value::String(
-                    serde_json::to_string(object.get("rights").unwrap_or(&Value::Null))
-                        .unwrap_or_default(),
-                ),
-            ),
         ]),
+    )
+    .with_branches(
+        (restricted > 0)
+            .then(|| BranchRef::new(format!("{}.RLS", address), restricted))
+            .into_iter()
+            .collect(),
     )
 }
 
@@ -609,6 +1141,12 @@ fn project_subsystem_interface(
             ViewError::new("not_found", "subsystem has no command interface document")
         })?;
     let commands = interface_commands(interface);
+    if suffix.len() > 2 {
+        return Err(ViewError::new(
+            "not_found",
+            "subsystem interface projection did not consume the complete suffix",
+        ));
+    }
     if suffix.len() == 1 {
         return Ok(NodeViewData::Node(
             NodeView::new(
@@ -810,6 +1348,12 @@ fn project_xdto(
         ));
     }
     let property = &suffix[1];
+    if suffix.len() != 2 {
+        return Err(ViewError::new(
+            "not_found",
+            "XDTO property projection did not consume the complete suffix",
+        ));
+    }
     let properties = item
         .get("properties")
         .ok_or_else(|| ViewError::new("not_found", "XDTO type has no properties"))?;
@@ -915,7 +1459,12 @@ fn item_identity(value: &Value) -> Option<&str> {
         .find_map(|key| object.get(key).and_then(Value::as_str))
 }
 
-fn node_from_value(address: &QualifiedAddress, kind: NodeKind, value: &Value) -> NodeView {
+fn node_from_value(
+    reader: LogicalReader,
+    address: &QualifiedAddress,
+    kind: NodeKind,
+    value: &Value,
+) -> NodeView {
     let title = value
         .as_object()
         .and_then(|object| {
@@ -924,8 +1473,52 @@ fn node_from_value(address: &QualifiedAddress, kind: NodeKind, value: &Value) ->
                 .find_map(|key| object.get(key).and_then(Value::as_str))
         })
         .unwrap_or_else(|| kind.as_str());
-    let props = compact_props(value);
+    let props = reader_node_props(reader, kind, value);
     NodeView::new(address.to_string(), kind.as_str(), title, props)
+}
+
+fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Map<String, Value> {
+    let keys: &[&str] = match (reader, kind) {
+        (LogicalReader::Form, NodeKind::Item) => {
+            &["tag", "title", "visible", "enabled", "readOnly"]
+        }
+        (LogicalReader::Form, NodeKind::Event) => &["handler", "callType"],
+        (LogicalReader::Form, NodeKind::Attribute | NodeKind::Column) => {
+            &["type", "isMain", "mainTable"]
+        }
+        (LogicalReader::Form, NodeKind::Parameter) => &["type", "isKey"],
+        (LogicalReader::Form, NodeKind::Command) => &["shortcut"],
+        (LogicalReader::Dcs, NodeKind::DataSet) => &["kind", "objectName", "dataSource"],
+        (LogicalReader::Dcs, NodeKind::Field) => &["field", "title"],
+        (LogicalReader::Dcs, NodeKind::Parameter) => {
+            &["type", "value", "restricted", "availableAsField"]
+        }
+        (LogicalReader::Dcs, NodeKind::Setting) => &["presentation", "filters"],
+        (LogicalReader::Mxl, NodeKind::Area) => &[
+            "kind",
+            "beginRow",
+            "endRow",
+            "beginCol",
+            "endCol",
+            "columnsId",
+            "drawingId",
+        ],
+        (LogicalReader::Subsystem, _) => &[
+            "synonym",
+            "comment",
+            "explanation",
+            "picture",
+            "includeInCommandInterface",
+            "useOneCommand",
+        ],
+        (LogicalReader::Interface, NodeKind::Command) => &["visible", "group", "placement"],
+        (LogicalReader::Xdto, NodeKind::Type) => &["kind", "abstract", "mixed"],
+        (LogicalReader::Xdto, NodeKind::Property) => {
+            &["type", "minOccurs", "maxOccurs", "nillable"]
+        }
+        _ => &[],
+    };
+    selected_scalar_props(value, keys)
 }
 
 fn known_reader_node(
@@ -934,7 +1527,7 @@ fn known_reader_node(
     kind: NodeKind,
     value: &Value,
 ) -> NodeView {
-    let mut node = node_from_value(address, kind, value);
+    let mut node = node_from_value(reader, address, kind, value);
     let branches = known_reader_branches(reader, address, value);
     node = node.with_branches(branches);
     node
