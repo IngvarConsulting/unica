@@ -18,7 +18,7 @@ pub(super) fn project_role(
     payload: &Value,
     suffix: &[AddressSegment],
 ) -> Result<NodeViewData, ViewError> {
-    let objects = role_objects(payload);
+    let objects = role_objects(payload)?;
     if suffix.is_empty() {
         let mut props = selected_scalar_props(payload, &["synonym"]);
         if let Some(totals) = payload.get("totals") {
@@ -120,7 +120,7 @@ fn project_role_object_suffix(
     }
 }
 
-fn role_objects(payload: &Value) -> Vec<RoleObject> {
+fn role_objects(payload: &Value) -> Result<Vec<RoleObject>, ViewError> {
     let mut result = BTreeMap::<(String, String), RoleObject>::new();
     for key in ["allowed", "denied"] {
         for group in payload
@@ -132,6 +132,14 @@ fn role_objects(payload: &Value) -> Vec<RoleObject> {
             let Some(group_kind) = group.get("kind").and_then(Value::as_str) else {
                 continue;
             };
+            if group_kind.contains('_')
+                || !NodeKind::parse(group_kind).is_ok_and(NodeKind::is_metadata_kind)
+            {
+                return Err(ViewError::new(
+                    "provider_unavailable",
+                    format!("role rights contain invalid metadata kind `{group_kind}`"),
+                ));
+            }
             for object in group
                 .get("objects")
                 .and_then(Value::as_array)
@@ -162,7 +170,7 @@ fn role_objects(payload: &Value) -> Vec<RoleObject> {
             }
         }
     }
-    result.into_values().collect()
+    Ok(result.into_values().collect())
 }
 
 fn role_object_value(address: &QualifiedAddress, object: &RoleObject) -> Option<Value> {
@@ -262,4 +270,24 @@ fn restricted_rights(object: &RoleObject) -> BTreeMap<String, Value> {
             .or_insert_with(|| right.clone());
     }
     restricted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::metadata_kinds::METADATA_KIND_TAGS;
+
+    #[test]
+    fn accepted_platform_role_kinds_make_kind_name_encoding_injective() {
+        for kind in METADATA_KIND_TAGS {
+            assert!(
+                !kind.contains('_'),
+                "platform metadata kind contains `_`: {kind}"
+            );
+            assert!(
+                NodeKind::parse(kind).is_ok_and(NodeKind::is_metadata_kind),
+                "platform metadata kind is not accepted by logical addressing: {kind}"
+            );
+        }
+    }
 }

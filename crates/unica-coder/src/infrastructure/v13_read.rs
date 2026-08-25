@@ -24,6 +24,7 @@ use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, 
 use crate::infrastructure::native_operations::form::{FormInfoElement, FormInfoEvent};
 use crate::infrastructure::native_operations::form_event_registry::FormElementKind;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+use crate::infrastructure::platform_xml_owner::PlatformXmlSourceSetOwnerEvidence;
 #[cfg(test)]
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, TargetKindPolicy,
@@ -31,8 +32,44 @@ use crate::infrastructure::platform_xml_source_targets::{
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Map, Value};
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+
+#[cfg(test)]
+thread_local! {
+    static REVIEW_BEFORE_OWNER_PROOF: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    static REVIEW_AFTER_CANONICAL_ROLE_READ: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn review_set_before_owner_proof(hook: impl FnOnce() + 'static) {
+    REVIEW_BEFORE_OWNER_PROOF.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+pub(crate) fn review_set_after_canonical_role_read(hook: impl FnOnce() + 'static) {
+    REVIEW_AFTER_CANONICAL_ROLE_READ.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn review_run_before_owner_proof() {
+    REVIEW_BEFORE_OWNER_PROOF.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn review_run_after_canonical_role_read() {
+    REVIEW_AFTER_CANONICAL_ROLE_READ.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
 
 const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
 const MODULE_CONTEXTS: &[&str] = &[
@@ -65,7 +102,9 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
-    verified_module_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
+    verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
+    owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
+    verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -85,6 +124,13 @@ struct RevisionCacheKey {
 struct OwnerProofCacheKey {
     revision: RevisionCacheKey,
     owner: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct OwnerEdgeCacheKey {
+    revision: RevisionCacheKey,
+    parent: String,
+    child: String,
 }
 
 impl<'a> LogicalViewReadAuthority<'a> {
@@ -110,7 +156,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
             deadline: ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
-            verified_module_owners: Mutex::new(BTreeSet::new()),
+            verified_owners: Mutex::new(BTreeSet::new()),
+            owner_evidence: Mutex::new(BTreeMap::new()),
+            verified_owner_edges: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -155,10 +203,18 @@ impl<'a> LogicalViewReadAuthority<'a> {
         route: &LogicalTreeRoute,
         admitted: &ViewSourceSnapshot,
     ) -> Result<Value, ViewError> {
+        if !matches!(
+            route.reader(),
+            LogicalReader::Configuration | LogicalReader::Module
+        ) {
+            if let Some(target) = route.reader_metadata_path() {
+                self.verify_registered_owner(target, admitted)?;
+            }
+        }
         if route.reader() == LogicalReader::Configuration {
-            return self
-                .configuration_payload(admitted)
-                .map(|payload| payload.as_ref().clone());
+            let payload = self.configuration_payload(admitted)?;
+            self.verify_top_level_inventory(payload.as_ref(), admitted)?;
+            return Ok(payload.as_ref().clone());
         }
         if route.reader() == LogicalReader::Metadata {
             return self.metadata_payload(route, admitted);
@@ -269,6 +325,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         })?;
         self.ensure_owner_registered(target, admitted)?;
         if let Some(payload) = self.read.external_metadata_payload(target)? {
+            self.verify_payload_physical_children(target, &payload, admitted)?;
             return Ok(payload);
         }
         let kind = target.as_str().split('.').next().unwrap_or_default();
@@ -280,6 +337,20 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return self.read.identity_metadata_payload(target);
         }
         let local = self.read.metadata_local(target)?;
+        for (kind, children) in [
+            (NodeKind::Form, &local.collections.forms),
+            (NodeKind::Template, &local.collections.templates),
+            (NodeKind::Command, &local.collections.commands),
+        ] {
+            for child in children {
+                let child = MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("{}.{}.{}", target.as_str(), kind.as_str(), child.name),
+                )
+                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+                self.verify_registered_owner(&child, admitted)?;
+            }
+        }
         let template_branches = local
             .collections
             .templates
@@ -361,6 +432,41 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(Value::Object(payload))
     }
 
+    fn verify_payload_physical_children(
+        &self,
+        target: &MetadataAddress,
+        payload: &Value,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<(), ViewError> {
+        for (kind, field) in [
+            (NodeKind::Form, "forms"),
+            (NodeKind::Template, "templates"),
+            (NodeKind::Command, "commands"),
+        ] {
+            for child in payload
+                .get("collections")
+                .and_then(|collections| collections.get(field))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Some(name) = child.get("name").and_then(Value::as_str) else {
+                    return Err(ViewError::new(
+                        "provider_unavailable",
+                        format!("registered {field} entry has no name"),
+                    ));
+                };
+                let child = MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("{}.{}.{name}", target.as_str(), kind.as_str()),
+                )
+                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+                self.verify_registered_owner(&child, admitted)?;
+            }
+        }
+        Ok(())
+    }
+
     fn ensure_owner_registered(
         &self,
         target: &MetadataAddress,
@@ -374,6 +480,34 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ));
         };
         self.ensure_owner_registered_parts(owner_kind, owner_name, admitted)
+    }
+
+    fn verify_top_level_inventory(
+        &self,
+        payload: &Value,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<(), ViewError> {
+        for item in payload
+            .get("registeredObjects")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let kind = item.get("kind").and_then(Value::as_str).ok_or_else(|| {
+                ViewError::new("provider_unavailable", "registered owner has no kind")
+            })?;
+            let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
+                ViewError::new("provider_unavailable", "registered owner has no name")
+            })?;
+            if kind == NodeKind::WebSocketClient.as_str() {
+                continue;
+            }
+            let owner =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
+                    .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+            self.verify_registered_owner(&owner, admitted)?;
+        }
+        Ok(())
     }
 
     fn ensure_owner_registered_parts(
@@ -555,6 +689,16 @@ impl<'a> LogicalViewReadAuthority<'a> {
         target: &MetadataAddress,
         admitted: &ViewSourceSnapshot,
     ) -> Result<(), ViewError> {
+        #[cfg(test)]
+        review_run_before_owner_proof();
+        self.verify_registered_owner(target, admitted)
+    }
+
+    fn verify_registered_owner(
+        &self,
+        target: &MetadataAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<(), ViewError> {
         let key = OwnerProofCacheKey {
             revision: RevisionCacheKey {
                 source_set_identity: admitted.source_set_identity.clone(),
@@ -563,7 +707,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             owner: target.as_str().to_string(),
         };
         if self
-            .verified_module_owners
+            .verified_owners
             .lock()
             .map_err(|_| ViewError::new("provider_unavailable", "owner cache is poisoned"))?
             .contains(&key)
@@ -572,27 +716,109 @@ impl<'a> LogicalViewReadAuthority<'a> {
         }
         self.ensure_owner_registered(target, admitted)?;
         let parts = target.as_str().split('.').collect::<Vec<_>>();
-        if parts.len() == 2 {
-            if self.read.external_metadata_payload(target)?.is_none() {
-                let kind = parts[0];
-                if kind == NodeKind::WebSocketClient.as_str() {
-                    // The profile intentionally has no guessed WebSocketClient
-                    // export layout. Configuration registry identity is the
-                    // retained owner evidence; its source remains unavailable.
-                } else if MetadataKind::parse(kind).is_ok() {
-                    self.read.metadata_local(target)?;
-                } else {
-                    self.read.identity_metadata_payload(target)?;
+        if parts.len() < 2 || parts.len() % 2 != 0 {
+            return Err(ViewError::new(
+                "provider_unavailable",
+                "physical metadata owner must contain complete kind/name pairs",
+            ));
+        }
+        let revision = key.revision.clone();
+        let mut parent: Option<(MetadataAddress, Arc<PlatformXmlSourceSetOwnerEvidence>)> = None;
+        for pair_count in 1..=parts.len() / 2 {
+            let end = pair_count * 2;
+            let current_text = parts[..end].join(".");
+            let current = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &current_text)
+                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+            if let Some((parent_address, parent_evidence)) = &parent {
+                let child_kind = parts[end - 2];
+                let child_name = parts[end - 1];
+                let edge_key = OwnerEdgeCacheKey {
+                    revision: revision.clone(),
+                    parent: parent_address.as_str().to_string(),
+                    child: current_text.clone(),
+                };
+                let mut edges = self.verified_owner_edges.lock().map_err(|_| {
+                    ViewError::new("provider_unavailable", "owner edge cache is poisoned")
+                })?;
+                if !edges.contains(&edge_key) {
+                    let registered = parent_evidence
+                        .registrations()
+                        .any(|(kind, name)| kind == child_kind && name == child_name);
+                    if !registered {
+                        return Err(ViewError::new(
+                            "not_found",
+                            format!(
+                                "metadata owner `{}` does not register `{child_kind}.{child_name}`",
+                                parent_address.as_str()
+                            ),
+                        ));
+                    }
+                    edges.insert(edge_key);
                 }
             }
-        } else {
-            self.read.metadata_child_profile(target)?;
+            if pair_count == 1 && parts[0] == NodeKind::WebSocketClient.as_str() {
+                if parts.len() != 2 {
+                    return Err(ViewError::new(
+                        "not_found",
+                        "WebSocketClient has no specified nested export owners",
+                    ));
+                }
+                continue;
+            }
+            let evidence = self.owner_evidence(&current, admitted).map_err(|error| {
+                if error.code() == "not_found" {
+                    ViewError::new(
+                        "provider_unavailable",
+                        format!(
+                            "registered metadata owner `{}` has no descriptor",
+                            current.as_str()
+                        ),
+                    )
+                } else {
+                    error
+                }
+            })?;
+            if evidence.artifact_kind() != parts[end - 2]
+                || evidence.artifact_name() != Some(parts[end - 1])
+            {
+                return Err(ViewError::new(
+                    "provider_unavailable",
+                    format!(
+                        "metadata descriptor identity does not match `{}`",
+                        current.as_str()
+                    ),
+                ));
+            }
+            parent = Some((current, evidence));
         }
-        self.verified_module_owners
+        self.verified_owners
             .lock()
             .map_err(|_| ViewError::new("provider_unavailable", "owner cache is poisoned"))?
             .insert(key);
         Ok(())
+    }
+
+    fn owner_evidence(
+        &self,
+        target: &MetadataAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Arc<PlatformXmlSourceSetOwnerEvidence>, ViewError> {
+        let key = OwnerProofCacheKey {
+            revision: RevisionCacheKey {
+                source_set_identity: admitted.source_set_identity.clone(),
+                revision: admitted.revision.clone(),
+            },
+            owner: target.as_str().to_string(),
+        };
+        let mut cache = self.owner_evidence.lock().map_err(|_| {
+            ViewError::new("provider_unavailable", "owner evidence cache is poisoned")
+        })?;
+        if let Some(evidence) = cache.get(&key) {
+            return Ok(Arc::clone(evidence));
+        }
+        let evidence = Arc::new(self.read.metadata_owner_evidence(target)?);
+        cache.insert(key, Arc::clone(&evidence));
+        Ok(evidence)
     }
 
     fn form_bindings(
@@ -667,6 +893,14 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let payload = self.typed_payload_for(&route, admitted)?;
         let projected = project_typed_payload(&route, payload)?;
+        #[cfg(test)]
+        review_run_after_canonical_role_read();
+        if admitted.revision != self.exact_revision()? {
+            return Err(ViewError::new(
+                "stale_cursor",
+                "source revision changed during canonical address resolution",
+            ));
+        }
         QualifiedAddress::parse(projected.at())
             .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
     }
@@ -767,6 +1001,36 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 .is_some_and(|segment| segment.name().is_none())
         {
             let payload = self.configuration_payload(admitted)?;
+            let branch_kind = route
+                .at()
+                .segments()
+                .last()
+                .map(AddressSegment::kind)
+                .ok_or_else(|| ViewError::new("not_found", "metadata branch kind is absent"))?;
+            if branch_kind != NodeKind::WebSocketClient {
+                for item in payload
+                    .get("registeredObjects")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|item| {
+                        item.get("kind").and_then(Value::as_str) == Some(branch_kind.as_str())
+                    })
+                {
+                    let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
+                        ViewError::new(
+                            "provider_unavailable",
+                            "registered metadata owner has no name",
+                        )
+                    })?;
+                    let owner = MetadataAddress::parse(
+                        PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        &format!("{}.{name}", branch_kind.as_str()),
+                    )
+                    .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+                    self.verify_registered_owner(&owner, admitted)?;
+                }
+            }
             crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
                 route.at(),
                 payload.as_ref(),
@@ -775,6 +1039,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             let payload = self.typed_payload_for(&route, admitted)?;
             project_typed_payload(&route, payload)?
         };
+        let projected = self.with_module_branch(projected, at, admitted)?;
         self.read_checkpoint()?;
         if admitted.revision != self.exact_revision()? {
             return Err(ViewError::new(
@@ -782,7 +1047,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 "source revision changed during the typed read",
             ));
         }
-        self.with_module_branch(projected, at, admitted)
+        Ok(projected)
     }
 }
 

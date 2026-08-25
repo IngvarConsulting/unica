@@ -5,6 +5,11 @@ use crate::domain::source_revision::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::deadline_lock::{DeadlineLock, Recover};
+#[cfg(test)]
+use crate::infrastructure::platform::filesystem::supports_retained_root_replacement_test;
+use crate::infrastructure::platform::filesystem::{
+    is_nofollow_link_error, FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
+};
 use crate::infrastructure::platform::source_revision_fence::{
     platform_fence, FenceCapability, FenceOutcome, SourceRevisionFence,
 };
@@ -20,7 +25,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 const MAX_SOURCE_DEPTH: usize = 64;
@@ -106,14 +111,18 @@ type SourceFileReader = dyn Fn(&Path) -> Result<Vec<u8>, String> + Send + Sync;
 pub(crate) struct SourceRevisionService {
     workspace_root: PathBuf,
     source_root: PathBuf,
+    source_root_identity: FileIdentity,
     record_path: PathBuf,
     state_scope: WorkspaceStateScope,
     machine: Mutex<SourceRevisionMachine>,
     manifest: Mutex<Option<SourceManifest>>,
+    retained_manifest_identity: Mutex<Option<FileIdentity>>,
     operation: DeadlineLock<Recover>,
     fence: Arc<dyn SourceRevisionFence>,
     scanner: Arc<SourceManifestScanner>,
     file_reader: Arc<SourceFileReader>,
+    #[cfg(test)]
+    retained_scans: AtomicUsize,
 }
 
 impl fmt::Debug for SourceRevisionService {
@@ -200,6 +209,9 @@ impl SourceRevisionService {
             .map_err(|error| format!("workspace revision root cannot be normalized: {error}"))?;
         let source_root = fs::canonicalize(source_root)
             .map_err(|error| format!("source revision root cannot be normalized: {error}"))?;
+        let source_root_identity = RetainedDirectoryCapability::open(&source_root)
+            .map_err(|error| format!("source revision root cannot be retained: {error}"))?
+            .identity();
         let mut identity = Sha256::new();
         if let WorkspaceStateScope::Scoped(digest) = &state_scope {
             identity.update(b"unica-source-revision-state-v1\0");
@@ -225,14 +237,18 @@ impl SourceRevisionService {
         Ok(Self {
             workspace_root,
             source_root,
+            source_root_identity,
             record_path,
             state_scope,
             machine: Mutex::new(machine),
             manifest: Mutex::new(None),
+            retained_manifest_identity: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence,
             scanner: Arc::new(scan_source_manifest),
             file_reader: Arc::new(read_source_file),
+            #[cfg(test)]
+            retained_scans: AtomicUsize::new(0),
         })
     }
 
@@ -297,6 +313,131 @@ impl SourceRevisionService {
             self.reconcile(deadline, cancellation)?;
         }
         self.trusted_snapshot()
+    }
+
+    /// Computes and publishes a revision from the same descriptor-relative
+    /// authority used by the V13 reader. No lexical source path or watcher
+    /// snapshot participates in this operation.
+    pub(crate) fn snapshot_retained(
+        &self,
+        root: &RetainedDirectoryCapability,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<SourceRevision, String> {
+        let _operation = self.operation.acquire_before(
+            deadline,
+            cancellation,
+            "retained source revision operation wait",
+        )?;
+        if root.identity() != self.source_root_identity {
+            return Err(
+                "retained source revision capability has a different actor identity".to_string(),
+            );
+        }
+        root.validate_named_identity().map_err(|error| {
+            format!("retained source revision identity changed after admission: {error}")
+        })?;
+        let needs_reconcile = if self.fence.capability() == FenceCapability::Unsupported {
+            true
+        } else {
+            match self.fence.flush(deadline, cancellation).inspect_err(|_| {
+                self.machine
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+            })? {
+                FenceOutcome::Proven { changed_paths } if changed_paths.is_empty() => {
+                    let trusted = matches!(
+                        self.machine
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .state(),
+                        SourceRevisionState::Trusted(_)
+                    );
+                    let retained_manifest_matches = self
+                        .retained_manifest_identity
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .is_some_and(|identity| identity == root.identity());
+                    !(trusted && retained_manifest_matches)
+                }
+                FenceOutcome::Proven { .. } => {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(SourceRevisionTrustLoss::WatcherGap);
+                    true
+                }
+                FenceOutcome::TrustLost(reason) => {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(reason);
+                    true
+                }
+            }
+        };
+        if !needs_reconcile {
+            return self.trusted_snapshot();
+        }
+        self.reconcile_retained(root, deadline, cancellation)?;
+        self.trusted_snapshot()
+    }
+
+    fn reconcile_retained(
+        &self,
+        root: &RetainedDirectoryCapability,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
+        for _ in 0..3 {
+            let trust_loss_epoch = {
+                let mut machine = self
+                    .machine
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let trust_loss_epoch = machine.trust_loss_epoch();
+                machine.begin_reconcile();
+                trust_loss_epoch
+            };
+            #[cfg(test)]
+            self.retained_scans.fetch_add(1, Ordering::Relaxed);
+            let manifest = scan_retained_source_manifest(root, deadline, cancellation)
+                .inspect_err(|_| self.lose_incremental_trust())?;
+            if self.fence.capability() != FenceCapability::Unsupported {
+                match self.fence.flush(deadline, cancellation).inspect_err(|_| {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+                })? {
+                    FenceOutcome::Proven { changed_paths } if changed_paths.is_empty() => {}
+                    FenceOutcome::Proven { .. } => continue,
+                    FenceOutcome::TrustLost(reason) => {
+                        self.machine
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .lose_trust(reason);
+                        continue;
+                    }
+                }
+            }
+            let digest = digest_source_manifest(&manifest)?;
+            if self.publish_revision_with_authority(
+                &manifest,
+                digest,
+                trust_loss_epoch,
+                Some(root.identity()),
+            )? {
+                return Ok(());
+            }
+        }
+        Err("retained source revision did not stabilize during reconcile".to_string())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_scan_count(&self) -> usize {
+        self.retained_scans.load(Ordering::Relaxed)
     }
 
     fn trusted_snapshot(&self) -> Result<SourceRevision, String> {
@@ -527,6 +668,16 @@ impl SourceRevisionService {
         digest: String,
         trust_loss_epoch: u64,
     ) -> Result<bool, String> {
+        self.publish_revision_with_authority(manifest, digest, trust_loss_epoch, None)
+    }
+
+    fn publish_revision_with_authority(
+        &self,
+        manifest: &SourceManifest,
+        digest: String,
+        trust_loss_epoch: u64,
+        retained_identity: Option<FileIdentity>,
+    ) -> Result<bool, String> {
         let Some(revision) = self
             .machine
             .lock()
@@ -552,6 +703,10 @@ impl SourceRevisionService {
             .manifest
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(manifest.clone());
+        *self
+            .retained_manifest_identity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = retained_identity;
         Ok(true)
     }
 }
@@ -601,6 +756,124 @@ fn persist_revision_record(
     fs::write(&temporary, bytes)
         .and_then(|_| fs::rename(&temporary, path))
         .map_err(|error| format!("source revision record cannot be published: {error}"))
+}
+
+fn scan_retained_source_manifest(
+    root: &RetainedDirectoryCapability,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<SourceManifest, String> {
+    let mut manifest = SourceManifest::new();
+    scan_retained_directory(
+        root,
+        Path::new(""),
+        0,
+        deadline,
+        cancellation,
+        &mut manifest,
+    )?;
+    Ok(manifest)
+}
+
+fn scan_retained_directory(
+    directory: &RetainedDirectoryCapability,
+    relative_directory: &Path,
+    depth: usize,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    manifest: &mut SourceManifest,
+) -> Result<(), String> {
+    retained_revision_checkpoint(deadline, cancellation)?;
+    if depth > MAX_SOURCE_DEPTH {
+        return Err("source revision corpus exceeds maximum depth".to_string());
+    }
+    let names = directory
+        .read_immediate_names_bounded(usize::MAX, || {
+            retained_revision_checkpoint(deadline, cancellation).map_err(std::io::Error::other)
+        })
+        .map_err(|error| format!("retained source revision directory cannot be read: {error}"))?;
+    for name in names {
+        retained_revision_checkpoint(deadline, cancellation)?;
+        if name == OsStr::new(GENERATED_DIR_NAME) {
+            continue;
+        }
+        let relative = relative_directory.join(&name);
+        let child = match directory.retain_immediate_child_nofollow(&name) {
+            Ok(child) => child,
+            Err(error) if is_nofollow_link_error(&error) => {
+                if is_source_file(&relative) {
+                    return Err(format!(
+                        "retained source revision corpus contains an indexed symbolic link: {}",
+                        relative.display()
+                    ));
+                }
+                continue;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "retained source revision entry cannot be opened: {}: {error}",
+                    relative.display()
+                ));
+            }
+        };
+        match child {
+            RetainedChildCapability::Directory(child) => {
+                manifest.insert(
+                    relative.clone(),
+                    SourceEntryDigest {
+                        kind: 1,
+                        digest: [0; 32],
+                    },
+                );
+                scan_retained_directory(
+                    &child,
+                    &relative,
+                    depth + 1,
+                    deadline,
+                    cancellation,
+                    manifest,
+                )?;
+            }
+            RetainedChildCapability::RegularFile(file) if is_source_file(&relative) => {
+                let bytes = file.read_bounded(usize::MAX).map_err(|error| {
+                    format!(
+                        "retained source revision file cannot be read: {}: {error}",
+                        relative.display()
+                    )
+                })?;
+                manifest.insert(
+                    relative,
+                    SourceEntryDigest {
+                        kind: 2,
+                        digest: Sha256::digest(bytes).into(),
+                    },
+                );
+            }
+            RetainedChildCapability::ReparsePoint if is_source_file(&relative) => {
+                return Err(format!(
+                    "retained source revision corpus contains an indexed reparse point: {}",
+                    relative.display()
+                ));
+            }
+            RetainedChildCapability::RegularFile(_)
+            | RetainedChildCapability::ReparsePoint
+            | RetainedChildCapability::Unsupported => {}
+        }
+    }
+    Ok(())
+}
+
+fn retained_revision_checkpoint(
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
+    if cancellation.is_cancelled() {
+        Err("retained source revision reconcile cancelled".to_string())
+    } else if deadline.remaining().is_zero() {
+        Err("retained source revision deadline exceeded".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -713,8 +986,9 @@ fn is_source_file(path: &Path) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
     use crate::infrastructure::platform::testing::{
         create_dir_symlink_for_test, create_file_symlink_for_test,
     };
@@ -795,16 +1069,23 @@ mod tests {
         let service = Arc::new(SourceRevisionService {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
+            source_root_identity: RetainedDirectoryCapability::open(
+                &fs::canonicalize(&source_root).unwrap(),
+            )
+            .unwrap()
+            .identity(),
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
+            retained_manifest_identity: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(CountingProvenFence {
                 calls: Arc::clone(&calls),
             }),
             scanner: Arc::new(scan_source_manifest),
             file_reader: Arc::new(read_source_file),
+            retained_scans: AtomicUsize::new(0),
         });
         (workspace, service, calls)
     }
@@ -1026,10 +1307,16 @@ mod tests {
         let service = SourceRevisionService {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
+            source_root_identity: RetainedDirectoryCapability::open(
+                &fs::canonicalize(&source_root).unwrap(),
+            )
+            .unwrap()
+            .identity(),
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
+            retained_manifest_identity: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(UnsupportedFence),
             scanner: Arc::new({
@@ -1040,6 +1327,7 @@ mod tests {
                 }
             }),
             file_reader: Arc::new(read_source_file),
+            retained_scans: AtomicUsize::new(0),
         };
 
         let error = service
@@ -1090,14 +1378,21 @@ mod tests {
         let service = SourceRevisionService {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
+            source_root_identity: RetainedDirectoryCapability::open(
+                &fs::canonicalize(&source_root).unwrap(),
+            )
+            .unwrap()
+            .identity(),
             record_path: record_parent.join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
+            retained_manifest_identity: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(ProvenCleanFence),
             scanner: Arc::new(scan_source_manifest),
             file_reader: Arc::new(read_source_file),
+            retained_scans: AtomicUsize::new(0),
         };
         let snapshot = || {
             service.snapshot(
@@ -1126,16 +1421,23 @@ mod tests {
         let service = SourceRevisionService {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
+            source_root_identity: RetainedDirectoryCapability::open(
+                &fs::canonicalize(&source_root).unwrap(),
+            )
+            .unwrap()
+            .identity(),
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(machine),
             manifest: Mutex::new(None),
+            retained_manifest_identity: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(FailOnceFence {
                 calls: AtomicUsize::new(0),
             }),
             scanner: Arc::new(scan_source_manifest),
             file_reader: Arc::new(read_source_file),
+            retained_scans: AtomicUsize::new(0),
         };
 
         let first_error = service
@@ -1173,10 +1475,16 @@ mod tests {
         let service = SourceRevisionService {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
+            source_root_identity: RetainedDirectoryCapability::open(
+                &fs::canonicalize(&source_root).unwrap(),
+            )
+            .unwrap()
+            .identity(),
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
+            retained_manifest_identity: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(ScriptedFence {
                 outcomes: Mutex::new(VecDeque::from([
@@ -1205,6 +1513,7 @@ mod tests {
                     read_source_file(path)
                 }
             }),
+            retained_scans: AtomicUsize::new(0),
         };
         let cancellation = CancellationToken::new();
         let snapshot = || {
@@ -1249,10 +1558,16 @@ mod tests {
         let service = SourceRevisionService {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
+            source_root_identity: RetainedDirectoryCapability::open(
+                &fs::canonicalize(&source_root).unwrap(),
+            )
+            .unwrap()
+            .identity(),
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
+            retained_manifest_identity: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(ScriptedFence {
                 outcomes: Mutex::new(VecDeque::from([
@@ -1293,6 +1608,7 @@ mod tests {
                     read_source_file(path)
                 }
             }),
+            retained_scans: AtomicUsize::new(0),
         };
         let cancellation = CancellationToken::new();
         let snapshot = || {
@@ -1359,10 +1675,16 @@ mod tests {
         let service = Arc::new(SourceRevisionService {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
+            source_root_identity: RetainedDirectoryCapability::open(
+                &fs::canonicalize(&source_root).unwrap(),
+            )
+            .unwrap()
+            .identity(),
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
+            retained_manifest_identity: Mutex::new(None),
             operation: DeadlineLock::default(),
             fence: Arc::new(ScriptedFence {
                 outcomes: Mutex::new(VecDeque::from([
@@ -1395,6 +1717,7 @@ mod tests {
                 read_release_rx.lock().unwrap().recv().unwrap();
                 read_source_file(path)
             }),
+            retained_scans: AtomicUsize::new(0),
         });
         let initial = service
             .snapshot(
@@ -1558,5 +1881,305 @@ mod tests {
             baseline,
             scan_source_digest(source_root.path(), &|| false).unwrap()
         );
+    }
+
+    #[test]
+    fn retained_snapshot_rejects_a_capability_from_another_source_identity() {
+        let workspace = tempdir().unwrap();
+        let source_a = workspace.path().join("source-a");
+        let source_b = workspace.path().join("source-b");
+        fs::create_dir_all(&source_a).unwrap();
+        fs::create_dir_all(&source_b).unwrap();
+        fs::write(
+            source_a.join("Configuration.xml"),
+            "<Configuration>A</Configuration>",
+        )
+        .unwrap();
+        fs::write(
+            source_b.join("Configuration.xml"),
+            "<Configuration>B</Configuration>",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.path().to_path_buf(),
+            workspace_root: workspace.path().to_path_buf(),
+            cache_root: workspace.path().join("cache"),
+            workspace_epoch: 0,
+        };
+        let service = SourceRevisionService::new_reconciling_for_test(&context, &source_a)
+            .expect("revision service");
+        let retained_b = RetainedDirectoryCapability::open(&fs::canonicalize(&source_b).unwrap())
+            .expect("retain source B");
+
+        let error = service
+            .snapshot_retained(
+                &retained_b,
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .expect_err("an actor revision service cannot accept another retained source root");
+
+        assert!(error.contains("identity"), "{error}");
+    }
+
+    #[test]
+    fn retained_snapshot_reuses_a_clean_fence_and_reconciles_once_after_change() {
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        let descriptor = source.join("Configuration.xml");
+        fs::write(&descriptor, "<Configuration>A</Configuration>").unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.path().to_path_buf(),
+            workspace_root: workspace.path().to_path_buf(),
+            cache_root: workspace.path().join("cache"),
+            workspace_epoch: 0,
+        };
+        let service = SourceRevisionService::new_with_fence_for_test(
+            &context,
+            &source,
+            WorkspaceStateScope::LegacyPhysical,
+            Arc::new(ScriptedFence {
+                outcomes: Mutex::new(VecDeque::from([
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: vec![PathBuf::from("Configuration.xml")],
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                ])),
+            }),
+        )
+        .unwrap();
+        let retained = RetainedDirectoryCapability::open(&fs::canonicalize(&source).unwrap())
+            .expect("retain source");
+        let first = service
+            .snapshot_retained(
+                &retained,
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(service.retained_scan_count(), 1, "one cold retained scan");
+        fs::write(&descriptor, "<Configuration>B</Configuration>").unwrap();
+
+        let cached = service
+            .snapshot_retained(
+                &retained,
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            service.retained_scan_count(),
+            1,
+            "a proven-clean fence must not repeat the retained scan"
+        );
+        let changed = service
+            .snapshot_retained(
+                &retained,
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            service.retained_scan_count(),
+            2,
+            "one changed fence must trigger exactly one retained reconcile"
+        );
+
+        assert_eq!(
+            cached, first,
+            "a proven-clean fence must reuse the manifest"
+        );
+        assert!(changed.generation > first.generation);
+        assert_ne!(changed.digest, first.digest);
+    }
+
+    #[test]
+    fn retained_manifest_uses_the_existing_source_digest_algorithm() {
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("source");
+        fs::create_dir_all(source.join("Catalogs/Orders/Ext")).unwrap();
+        fs::write(source.join("Configuration.xml"), "<Configuration/>").unwrap();
+        fs::write(
+            source.join("Catalogs/Orders/Ext/Module.bsl"),
+            "Процедура A()\nКонецПроцедуры",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.path().to_path_buf(),
+            workspace_root: workspace.path().to_path_buf(),
+            cache_root: workspace.path().join("cache"),
+            workspace_epoch: 0,
+        };
+        let service = SourceRevisionService::new_reconciling_for_test(&context, &source).unwrap();
+        let retained = RetainedDirectoryCapability::open(&fs::canonicalize(&source).unwrap())
+            .expect("retain source");
+
+        let retained_revision = service
+            .snapshot_retained(
+                &retained,
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            retained_revision.digest,
+            scan_source_digest(&source, &|| false).unwrap()
+        );
+    }
+
+    #[test]
+    fn ambient_manifest_cannot_satisfy_a_retained_fast_path() {
+        if !supports_retained_root_replacement_test() {
+            return;
+        }
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("source");
+        let replacement = workspace.path().join("replacement");
+        let saved = workspace.path().join("saved");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&replacement).unwrap();
+        fs::write(
+            source.join("Configuration.xml"),
+            "<Configuration>A</Configuration>",
+        )
+        .unwrap();
+        fs::write(
+            replacement.join("Configuration.xml"),
+            "<Configuration>B</Configuration>",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.path().to_path_buf(),
+            workspace_root: workspace.path().to_path_buf(),
+            cache_root: workspace.path().join("cache"),
+            workspace_epoch: 0,
+        };
+        let service = SourceRevisionService::new_with_fence_for_test(
+            &context,
+            &source,
+            WorkspaceStateScope::LegacyPhysical,
+            Arc::new(ScriptedFence {
+                outcomes: Mutex::new(VecDeque::from([
+                    FenceOutcome::TrustLost(SourceRevisionTrustLoss::WatcherGap),
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                ])),
+            }),
+        )
+        .unwrap();
+        let retained = RetainedDirectoryCapability::open(&fs::canonicalize(&source).unwrap())
+            .expect("retain source A");
+        fs::rename(&source, &saved).unwrap();
+        fs::rename(&replacement, &source).unwrap();
+        let ambient_b = service
+            .snapshot(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        fs::rename(&source, &replacement).unwrap();
+        fs::rename(&saved, &source).unwrap();
+
+        let retained_a = service
+            .snapshot_retained(
+                &retained,
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_ne!(retained_a.digest, ambient_b.digest);
+        assert_eq!(
+            retained_a.digest,
+            scan_source_digest(&source, &|| false).unwrap()
+        );
+        assert_eq!(service.retained_scan_count(), 1);
+    }
+
+    #[test]
+    fn retained_snapshot_never_mixes_a_replaced_root_name_with_the_open_tree() {
+        if !supports_retained_root_replacement_test() {
+            return;
+        }
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("source");
+        let replacement = workspace.path().join("replacement");
+        let saved = workspace.path().join("saved");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&replacement).unwrap();
+        fs::write(
+            source.join("Configuration.xml"),
+            "<Configuration>A</Configuration>",
+        )
+        .unwrap();
+        fs::write(
+            replacement.join("Configuration.xml"),
+            "<Configuration>B</Configuration>",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.path().to_path_buf(),
+            workspace_root: workspace.path().to_path_buf(),
+            cache_root: workspace.path().join("cache"),
+            workspace_epoch: 0,
+        };
+        let service = SourceRevisionService::new_reconciling_for_test(&context, &source)
+            .expect("revision service");
+        let retained = RetainedDirectoryCapability::open(&fs::canonicalize(&source).unwrap())
+            .expect("retain source A");
+        let baseline = service
+            .snapshot_retained(
+                &retained,
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .expect("baseline retained snapshot");
+
+        fs::rename(&source, &saved).unwrap();
+        fs::rename(&replacement, &source).unwrap();
+        let after_replacement = service.snapshot_retained(
+            &retained,
+            ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+            &CancellationToken::new(),
+        );
+
+        match after_replacement {
+            Ok(revision) => assert_eq!(revision, baseline),
+            Err(error) => assert!(
+                error.contains("identity") || error.contains("changed"),
+                "typed invalidation expected, got: {error}"
+            ),
+        }
+    }
+
+    #[test]
+    pub(crate) fn retained_revision_authority_contract_is_complete() {
+        retained_snapshot_rejects_a_capability_from_another_source_identity();
+        retained_snapshot_reuses_a_clean_fence_and_reconciles_once_after_change();
+        retained_manifest_uses_the_existing_source_digest_algorithm();
+        if supports_retained_root_replacement_test() {
+            ambient_manifest_cannot_satisfy_a_retained_fast_path();
+            retained_snapshot_never_mixes_a_replaced_root_name_with_the_open_tree();
+        }
     }
 }

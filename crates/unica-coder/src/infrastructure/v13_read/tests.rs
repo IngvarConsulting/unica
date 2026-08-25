@@ -1,7 +1,7 @@
 use super::{
     project_known_suffix, project_typed_payload, resolve_platform_xml_target,
-    LogicalViewReadAuthority, MetadataAddress, SourceTarget, TargetKindPolicy,
-    PLATFORM_XML_8_3_27_FORMAT_2_20,
+    review_set_after_canonical_role_read, review_set_before_owner_proof, LogicalViewReadAuthority,
+    MetadataAddress, SourceTarget, TargetKindPolicy, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::application::result_store::ViewCursorStore;
 use crate::application::v13::find::FindRequest;
@@ -15,13 +15,21 @@ use crate::infrastructure::logical_tree::route_logical_address;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder};
-use crate::infrastructure::v13_read_port::ProviderReadAuthority;
+use crate::infrastructure::v13_read_port::{
+    review_clear_revision_identity_hooks, review_set_revision_identity_hooks, ProviderReadAuthority,
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+
+fn configuration_payload(
+    reader: &ProviderReadAuthority,
+) -> Result<serde_json::Value, crate::application::v13::view::ViewError> {
+    reader.configuration_payload_with_checkpoint(&mut || Ok(()))
+}
 
 #[test]
 fn typed_projection_keeps_summary_compact_and_content_address_selected() {
@@ -218,11 +226,11 @@ fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
     );
     let sidecar = fixture.source.join("Ext/HomePageWorkArea.xml");
 
-    let missing = reader.configuration_payload().unwrap();
+    let missing = configuration_payload(&reader).unwrap();
     assert!(missing["homePage"].is_null());
 
     fs::write(&sidecar, "<broken>").unwrap();
-    let malformed = reader.configuration_payload().unwrap_err();
+    let malformed = configuration_payload(&reader).unwrap_err();
     assert_eq!(malformed.code(), "provider_unavailable");
 
     fs::write(
@@ -230,7 +238,7 @@ fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
         r#"<NotHomePage xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
     )
     .unwrap();
-    let wrong_root = reader.configuration_payload().unwrap_err();
+    let wrong_root = configuration_payload(&reader).unwrap_err();
     assert_eq!(wrong_root.code(), "provider_unavailable");
 
     fs::copy(
@@ -238,7 +246,7 @@ fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
         &sidecar,
     )
     .unwrap();
-    let valid = reader.configuration_payload().unwrap();
+    let valid = configuration_payload(&reader).unwrap();
     assert_eq!(valid["homePage"]["template"], "TwoColumns");
 }
 
@@ -257,7 +265,7 @@ fn actor_supplied_extension_kind_preserves_extension_support_semantics() {
         revisions,
     );
 
-    let payload = reader.configuration_payload().unwrap();
+    let payload = configuration_payload(&reader).unwrap();
     assert_eq!(payload["support"]["state"], "extension");
 }
 
@@ -579,7 +587,7 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
         )
         .unwrap();
 
-    let payload = reader.configuration_payload().unwrap();
+    let payload = configuration_payload(&reader).unwrap();
     assert_eq!(
         payload["properties"]["defaultRunMode"],
         "ManagedApplication"
@@ -1099,6 +1107,8 @@ fn websocket_client_source_view_is_an_explicit_provider_gap() {
 
 #[test]
 fn logical_reader_parity_contract_is_complete() {
+    crate::infrastructure::source_revision::tests::retained_revision_authority_contract_is_complete(
+    );
     actor_owned_reader_never_follows_a_source_set_remap_after_admission();
     actor_owned_configuration_support_and_home_page_sidecars_are_retained();
     actor_owned_typed_form_reader_never_follows_a_source_set_remap();
@@ -1126,6 +1136,18 @@ fn logical_reader_parity_contract_is_complete() {
     retained_external_inventory_is_cancellable_and_has_an_aggregate_byte_bound();
     production_authorities_reach_all_profile_module_capabilities_from_real_parent_inventories();
     ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work();
+    review_role_canonical_encoding_cannot_collapse_distinct_kind_name_pairs();
+    review_rejects_direct_typed_owner_absent_from_configuration_inventory();
+    review_rejects_orphan_nested_module_owners_not_registered_by_parent();
+    registered_physical_child_with_wrong_descriptor_fails_direct_and_parent_navigation();
+    registered_top_level_owner_without_descriptor_fails_kind_branch_and_direct_view();
+    orphan_and_missing_physical_children_fail_closed_across_reader_families();
+    external_parent_childobjects_are_the_only_nested_owner_authority();
+    unregistered_top_level_descriptors_cannot_enter_any_typed_reader_family();
+    review_revision_authority_cannot_be_swapped_after_named_identity_validation();
+    review_rejects_revision_change_during_post_fence_owner_proof();
+    cursor_retry_rejects_revision_change_during_role_canonicalization();
+    review_production_read_port_has_no_nocancel_inventory_entrypoint();
     websocket_client_source_view_is_an_explicit_provider_gap();
     crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
         crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
@@ -1135,6 +1157,7 @@ fn logical_reader_parity_contract_is_complete() {
 #[test]
 fn find_walks_every_real_addressable_reader_family_without_parallel_xml_semantics() {
     let fixture = RealReaderFixture::new();
+    fixture.install_accepted_profile_sources();
     let authority = fixture.read_authority();
     let index = WorkspaceFindIndexBuilder::default()
         .build(
@@ -1438,7 +1461,7 @@ fn retained_external_inventory_is_cancellable_and_has_an_aggregate_byte_bound() 
         root,
         revisions,
     );
-    let error = reader.configuration_payload().unwrap_err();
+    let error = configuration_payload(&reader).unwrap_err();
     assert_eq!(error.code(), "provider_unavailable");
     assert!(error.to_string().contains("read limit"));
 }
@@ -1777,6 +1800,26 @@ impl RealReaderFixture {
             "<TabularSection><Properties><Name>Lines</Name></Properties><ChildObjects><Attribute><Properties><Name>Quantity</Name><Type><v8:Type>xs:decimal</v8:Type></Type></Properties></Attribute></ChildObjects></TabularSection>",
         );
         write(&source.join("Catalogs/Items.xml"), &catalog);
+        write(
+            &source.join("Catalogs/Items/Forms/ItemForm.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000031"><Properties><Name>ItemForm</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#,
+        );
+        write(
+            &source.join("Catalogs/Items/Forms/ItemForm/Ext/Form.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
+        );
+        write(
+            &source.join("Catalogs/Items/Templates/Print.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template uuid="10000000-0000-4000-8000-000000000032"><Properties><Name>Print</Name><TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>"#,
+        );
+        copy_fixture(
+            "platform_8_3_27/mxl/Template.xml",
+            &source.join("Catalogs/Items/Templates/Print/Ext/Template.xml"),
+        );
+        write(
+            &source.join("Catalogs/Items/Commands/Refresh.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000033"><Properties><Name>Refresh</Name></Properties></Command></MetaDataObject>"#,
+        );
         let report = fixture_text("unica_mcp_script_parity/form-remove/ParityReport.xml");
         fs::create_dir_all(source.join("Reports")).unwrap();
         fs::write(
@@ -2174,4 +2217,352 @@ fn with_root_version(document: &str) -> String {
         return document.to_string();
     }
     format!("{} version=\"2.20\"{}", &document[..end], &document[end..])
+}
+
+#[test]
+fn review_rejects_revision_change_during_post_fence_owner_proof() {
+    let fixture = RealReaderFixture::new();
+    let descriptor = fixture.source.join("Catalogs/Items.xml");
+    review_set_before_owner_proof(move || {
+        let mut text = fs::read_to_string(&descriptor).unwrap();
+        text.push('\n');
+        fs::write(&descriptor, text).unwrap();
+    });
+
+    let service = fixture.view_service();
+    let result = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+
+    assert!(!result.ok, "mixed-revision read escaped: {result:?}");
+    assert_eq!(result.diagnostics[0]["code"], "stale_cursor");
+}
+
+#[test]
+fn cursor_retry_rejects_revision_change_during_role_canonicalization() {
+    let fixture = RealReaderFixture::new();
+    let rights_path = fixture.source.join("Roles/SalesReader/Ext/Rights.xml");
+    let rights = fs::read_to_string(&rights_path).unwrap().replacen(
+        "</Rights>",
+        "<object><name>Document.Orders</name><right><name>Read</name><value>true</value></right></object></Rights>",
+        1,
+    );
+    fs::write(&rights_path, &rights).unwrap();
+    let service = fixture.view_service();
+    let first = service.view(
+        ViewRequest::new("main:Role.SalesReader.Right")
+            .unwrap()
+            .with_limit(1)
+            .unwrap(),
+    );
+    assert!(first.ok, "{:?}", first.diagnostics);
+    let cursor = first.cursor.expect("two role objects require a cursor");
+    let changed_path = rights_path.clone();
+    review_set_after_canonical_role_read(move || {
+        let mut changed = fs::read_to_string(&changed_path).unwrap();
+        changed.push('\n');
+        fs::write(&changed_path, changed).unwrap();
+    });
+
+    let replay = service.view(
+        ViewRequest::new("main:Role.SalesReader.Right")
+            .unwrap()
+            .with_limit(1)
+            .unwrap()
+            .with_cursor(cursor),
+    );
+
+    assert!(
+        !replay.ok,
+        "cursor page crossed a post-canonical read mutation"
+    );
+    assert_eq!(replay.diagnostics[0]["code"], "stale_cursor");
+}
+
+#[test]
+fn review_rejects_orphan_nested_module_owners_not_registered_by_parent() {
+    let fixture = RealReaderFixture::new();
+    write(
+        &fixture.source.join("Catalogs/Items/Forms/Orphan.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000077"><Properties><Name>Orphan</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#,
+    );
+    write(
+        &fixture.source.join("Catalogs/Items/Commands/Orphan.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000078"><Properties><Name>Orphan</Name></Properties></Command></MetaDataObject>"#,
+    );
+    let service = fixture.view_service();
+
+    for address in [
+        "main:Catalog.Items.Form.Orphan.Module",
+        "main:Catalog.Items.Command.Orphan.Module",
+    ] {
+        let result = service.view(ViewRequest::new(address).unwrap());
+        assert!(
+            !result.ok,
+            "orphan owner was invented for {address}: {result:?}"
+        );
+        assert_eq!(result.diagnostics[0]["code"], "not_found");
+    }
+}
+
+#[test]
+fn review_rejects_direct_typed_owner_absent_from_configuration_inventory() {
+    let fixture = RealReaderFixture::new();
+    write(
+        &fixture.source.join("Roles/Orphan.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role uuid="10000000-0000-4000-8000-000000000079"><Properties><Name>Orphan</Name></Properties></Role></MetaDataObject>"#,
+    );
+    write(
+        &fixture.source.join("Roles/Orphan/Ext/Rights.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"/>"#,
+    );
+    let service = fixture.view_service();
+
+    let result = service.view(ViewRequest::new("main:Role.Orphan").unwrap());
+    assert!(
+        !result.ok,
+        "unregistered role entered the logical tree: {result:?}"
+    );
+    assert_eq!(result.diagnostics[0]["code"], "not_found");
+}
+
+#[test]
+fn registered_physical_child_with_wrong_descriptor_fails_direct_and_parent_navigation() {
+    let fixture = RealReaderFixture::new();
+    let owner_path = fixture.source.join("Reports/ParityReport.xml");
+    let owner = fs::read_to_string(&owner_path).unwrap().replacen(
+        "</ChildObjects>",
+        "<Command>Wrong</Command></ChildObjects>",
+        1,
+    );
+    fs::write(owner_path, owner).unwrap();
+    write(
+        &fixture
+            .source
+            .join("Reports/ParityReport/Commands/Wrong.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Wrong</Name></Properties></Form></MetaDataObject>"#,
+    );
+    let service = fixture.view_service();
+
+    for at in [
+        "main:Report.ParityReport.Command.Wrong",
+        "main:Report.ParityReport",
+    ] {
+        let result = service.view(ViewRequest::new(at).unwrap());
+        assert!(!result.ok, "wrong child descriptor escaped through {at}");
+        assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+    }
+}
+
+#[test]
+fn registered_top_level_owner_without_descriptor_fails_kind_branch_and_direct_view() {
+    let fixture = RealReaderFixture::new();
+    let configuration = fixture.source.join("Configuration.xml");
+    let owner = fs::read_to_string(&configuration).unwrap().replacen(
+        "</ChildObjects>",
+        "<Role>Missing</Role></ChildObjects>",
+        1,
+    );
+    fs::write(configuration, owner).unwrap();
+    let service = fixture.view_service();
+
+    for at in ["main:Configuration", "main:Role", "main:Role.Missing"] {
+        let result = service.view(ViewRequest::new(at).unwrap());
+        assert!(
+            !result.ok,
+            "missing top-level descriptor escaped through {at}"
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "provider_unavailable",
+            "{at}"
+        );
+    }
+}
+
+#[test]
+fn orphan_and_missing_physical_children_fail_closed_across_reader_families() {
+    let orphan = RealReaderFixture::new();
+    for (directory, kind, name) in [
+        ("Forms", "Form", "OrphanForm"),
+        ("Templates", "Template", "OrphanDcs"),
+        ("Templates", "Template", "OrphanMxl"),
+        ("Commands", "Command", "OrphanCommand"),
+    ] {
+        write(
+            &orphan
+                .source
+                .join(format!("Reports/ParityReport/{directory}/{name}.xml")),
+            &format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind}><Properties><Name>{name}</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></{kind}></MetaDataObject>"#
+            ),
+        );
+    }
+    let service = orphan.view_service();
+    for at in [
+        "main:Report.ParityReport.Form.OrphanForm",
+        "main:Report.ParityReport.Template.OrphanDcs.DataSet",
+        "main:Report.ParityReport.Template.OrphanMxl.Area",
+        "main:Report.ParityReport.Command.OrphanCommand",
+    ] {
+        let result = service.view(ViewRequest::new(at).unwrap());
+        assert!(!result.ok, "orphan physical child escaped through {at}");
+        assert_eq!(result.diagnostics[0]["code"], "not_found", "{at}");
+    }
+
+    let missing = RealReaderFixture::new();
+    let owner_path = missing.source.join("Reports/ParityReport.xml");
+    let owner = fs::read_to_string(&owner_path).unwrap().replacen(
+        "</ChildObjects>",
+        "<Form>MissingForm</Form><Template>MissingDcs</Template><Template>MissingMxl</Template><Command>MissingCommand</Command></ChildObjects>",
+        1,
+    );
+    fs::write(owner_path, owner).unwrap();
+    let service = missing.view_service();
+    for at in [
+        "main:Report.ParityReport.Form.MissingForm",
+        "main:Report.ParityReport.Template.MissingDcs.DataSet",
+        "main:Report.ParityReport.Template.MissingMxl.Area",
+        "main:Report.ParityReport.Command.MissingCommand.Module",
+    ] {
+        let result = service.view(ViewRequest::new(at).unwrap());
+        assert!(
+            !result.ok,
+            "missing registered descriptor escaped through {at}"
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "provider_unavailable",
+            "{at}"
+        );
+    }
+}
+
+#[test]
+fn unregistered_top_level_descriptors_cannot_enter_any_typed_reader_family() {
+    let fixture = RealReaderFixture::new();
+    write_metadata_owner(&fixture.source, "Catalogs", "Catalog", "Orphan", "");
+    write_metadata_owner(&fixture.source, "Subsystems", "Subsystem", "Orphan", "");
+    write_metadata_owner(&fixture.source, "XDTOPackages", "XDTOPackage", "Orphan", "");
+    write_metadata_owner(&fixture.source, "CommonForms", "CommonForm", "Orphan", "");
+    write(
+        &fixture.source.join("CommonForms/Orphan/Ext/Form.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
+    );
+    let service = fixture.view_service();
+    for at in [
+        "main:Catalog.Orphan",
+        "main:Catalog.Orphan.Module",
+        "main:Subsystem.Orphan",
+        "main:Subsystem.Orphan.Interface",
+        "main:XDTOPackage.Orphan",
+        "main:CommonForm.Orphan",
+    ] {
+        let result = service.view(ViewRequest::new(at).unwrap());
+        assert!(
+            !result.ok,
+            "unregistered top-level owner escaped through {at}"
+        );
+        assert_eq!(result.diagnostics[0]["code"], "not_found", "{at}");
+    }
+}
+
+#[test]
+fn external_parent_childobjects_are_the_only_nested_owner_authority() {
+    let fixture = RealExternalReaderFixture::new();
+    write(
+        &fixture.processor.join("Импорт/Forms/Orphan.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Orphan</Name></Properties></Form></MetaDataObject>"#,
+    );
+    let authority = fixture.read_authority("artifact_processor", SourceSetKind::ExternalProcessor);
+    let service = ViewService::new(authority, ViewCursorStore::default());
+    let orphan = service.view(
+        ViewRequest::new("artifact_processor:ExternalDataProcessor.Импорт.Form.Orphan").unwrap(),
+    );
+    assert!(!orphan.ok, "orphan external form became addressable");
+    assert_eq!(orphan.diagnostics[0]["code"], "not_found");
+
+    let descriptor = fixture.processor.join("Импорт.xml");
+    let owner = fs::read_to_string(&descriptor).unwrap().replacen(
+        "</ChildObjects>",
+        "<Command>Missing</Command></ChildObjects>",
+        1,
+    );
+    fs::write(descriptor, owner).unwrap();
+    let authority = fixture.read_authority("artifact_processor", SourceSetKind::ExternalProcessor);
+    let service = ViewService::new(authority, ViewCursorStore::default());
+    let parent =
+        service.view(ViewRequest::new("artifact_processor:ExternalDataProcessor.Импорт").unwrap());
+    assert!(
+        !parent.ok,
+        "external parent published a missing registered child"
+    );
+    assert_eq!(parent.diagnostics[0]["code"], "provider_unavailable");
+}
+
+#[test]
+fn review_revision_authority_cannot_be_swapped_after_named_identity_validation() {
+    let fixture = RealReaderFixture::new();
+    let replacement = fixture.root.path().join("replacement");
+    fs::create_dir_all(&replacement).unwrap();
+    fs::write(
+        replacement.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>ReplacementConfiguration</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .unwrap();
+    let saved = fixture.root.path().join("retained-a");
+    let source_before = fixture.source.clone();
+    let replacement_before = replacement.clone();
+    let saved_before = saved.clone();
+    let source_after = fixture.source.clone();
+    let replacement_after = replacement;
+    let saved_after = saved;
+    review_set_revision_identity_hooks(
+        move || {
+            if saved_before.exists() {
+                fs::rename(&source_before, &replacement_before).unwrap();
+                fs::rename(&saved_before, &source_before).unwrap();
+            }
+        },
+        move || {
+            fs::rename(&source_after, &saved_after).unwrap();
+            fs::rename(&replacement_after, &source_after).unwrap();
+        },
+    );
+
+    let service = fixture.view_service();
+    let result = service.view(ViewRequest::new("main:Configuration").unwrap());
+    review_clear_revision_identity_hooks();
+
+    assert!(
+        !result.ok,
+        "revision came from replacement B while retained bytes came from A: {result:?}"
+    );
+}
+
+#[test]
+fn review_role_canonical_encoding_cannot_collapse_distinct_kind_name_pairs() {
+    let fixture = RealReaderFixture::new();
+    fs::write(
+        fixture.source.join("Roles/SalesReader/Ext/Rights.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20">
+  <object><name>Catalog.Orders_X</name><right><name>Read</name><value>true</value></right></object>
+  <object><name>Catalog_Orders.X</name><right><name>Read</name><value>true</value></right></object>
+</Rights>"#,
+    )
+    .unwrap();
+    let service = fixture.view_service();
+
+    let result = service.view(ViewRequest::new("main:Role.SalesReader.Right").unwrap());
+    assert!(!result.ok, "invalid platform kinds must fail closed");
+    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+    assert!(result.diagnostics[0]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("Catalog_Orders")));
+}
+
+#[test]
+fn review_production_read_port_has_no_nocancel_inventory_entrypoint() {
+    let source = include_str!("../v13_read_port.rs");
+    assert!(
+        !source.contains("configuration_payload_with_checkpoint(&mut || Ok(()))"),
+        "production-compiled read port retains a no-op cancellation bypass"
+    );
 }

@@ -19,6 +19,20 @@ admission не меняет bytes или revision authority. Reader-specific pro
 branches/items, неизвестные поля provider-а дают typed failure, а неподдержанный
 filter — `bad_value`.
 
+Exact revision строится тем же retained capability, что и bytes. Retained
+manifest помечен physical identity и только matching retained manifest может
+удовлетворить clean-fence fast path; ambient reconcile этого доказательства не
+даёт. Любой contributing read, canonical Role resolution и owner proof
+предшествует последнему exact-revision fence, поэтому replacement/mutation даёт
+coherent retained result либо typed stale/invalidation, но не mixed revision.
+
+До dispatch всех typed readers действует один recursive owner admission:
+top-level `(kind,name)` присутствует в inventory и имеет matching descriptor, а
+каждый физический Form/Template/Command зарегистрирован parent `ChildObjects` и
+имеет matching child descriptor. Orphan physical content, registered missing
+descriptor и wrong kind/name fail closed одинаково в direct view, parent
+navigation и find; evidence и edges кешируются только внутри actor/revision.
+
 Зарегистрированный owner имеет ровно одну profile-derived `Module` branch:
 branch count равен числу уникальных допустимых ролей, а все 25 положительных
 `moduleCapabilities` профиля покрыты production retained authorities для
@@ -28,7 +42,10 @@ configuration, EPF и ERF через parent navigation и find, включая
 строгим descriptor-ом, не публикуют configuration runtime modules и имеют
 bounded/cancellable aggregate inventory read. Role объединяет allowed/denied по
 canonical `(kind, name)`, размещает уникальные RLS nodes только под Right и
-отклоняет неоднозначный короткий alias с canonical кандидатами.
+отклоняет неоднозначный короткий alias с canonical кандидатами. V13 принимает
+в Role только platform metadata kinds без `_`, поэтому canonical `kind_name`
+инъективен; произвольный type prefix даёт `provider_unavailable`, не duplicate
+`at`.
 Отсутствующий HomePage sidecar допустим, present malformed/wrong-root evidence
 даёт `provider_unavailable`; V12 legacy wrapper сохраняет старую трактовку.
 Общий 120-секундный operation budget view/find отделён от 7-секундного Task

@@ -13,7 +13,11 @@ scope: [app, product, source]
 XML roots с одной aggregate logical-read deadline, cancellation и exact revision fence, а
 также с ограничениями на число source sets, документов, суммарные fact bytes и
 размер descriptor reads. Существующий malformed или wrong-owner descriptor
-даёт `provider_unavailable`. Факты — qualified address, canonical kind,
+даёт `provider_unavailable`. Exact revision и facts читаются одной retained
+physical authority; ambient manifest не удовлетворяет retained fast path.
+Top-level и каждый физический nested owner проходят тот же inventory/ChildObjects
+admission, что direct view, поэтому orphan file не становится find fact.
+Факты — qualified address, canonical kind,
 programmatic name, локализованные synonyms и export path. Method и region
 identities разрешено извлекать bounded-разбором декларативной оболочки BSL;
 `Body`, statements и строки исходника не являются nodes/facts и BFS их не

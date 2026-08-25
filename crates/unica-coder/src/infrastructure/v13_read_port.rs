@@ -38,9 +38,32 @@ use crate::infrastructure::platform_xml_owner::{
 };
 use crate::infrastructure::source_revision::SourceRevisionService;
 use serde_json::{json, Value};
+#[cfg(test)]
+use std::cell::RefCell;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+#[cfg(test)]
+thread_local! {
+    static REVIEW_BEFORE_REVISION_IDENTITY: RefCell<Option<Box<dyn FnMut()>>> = RefCell::new(None);
+    static REVIEW_AFTER_REVISION_IDENTITY: RefCell<Option<Box<dyn FnMut()>>> = RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn review_set_revision_identity_hooks(
+    before: impl FnMut() + 'static,
+    after: impl FnMut() + 'static,
+) {
+    REVIEW_BEFORE_REVISION_IDENTITY.with(|slot| *slot.borrow_mut() = Some(Box::new(before)));
+    REVIEW_AFTER_REVISION_IDENTITY.with(|slot| *slot.borrow_mut() = Some(Box::new(after)));
+}
+
+#[cfg(test)]
+pub(crate) fn review_clear_revision_identity_hooks() {
+    REVIEW_BEFORE_REVISION_IDENTITY.with(|slot| *slot.borrow_mut() = None);
+    REVIEW_AFTER_REVISION_IDENTITY.with(|slot| *slot.borrow_mut() = None);
+}
 
 const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EXTERNAL_OWNER_ENTRIES: usize = 256;
@@ -103,11 +126,23 @@ impl ProviderReadAuthority {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<String, ViewError> {
+        #[cfg(test)]
+        REVIEW_BEFORE_REVISION_IDENTITY.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().as_mut() {
+                hook();
+            }
+        });
         self.root
             .validate_named_identity()
             .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+        #[cfg(test)]
+        REVIEW_AFTER_REVISION_IDENTITY.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().as_mut() {
+                hook();
+            }
+        });
         self.revisions
-            .snapshot(deadline, cancellation)
+            .snapshot_retained(&self.root, deadline, cancellation)
             .map(|revision| {
                 format!(
                     "{}:{}:{}",
@@ -137,10 +172,6 @@ impl ProviderReadAuthority {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(ViewError::new("provider_unavailable", error.to_string())),
         }
-    }
-
-    pub(crate) fn configuration_payload(&self) -> Result<Value, ViewError> {
-        self.configuration_payload_with_checkpoint(&mut || Ok(()))
     }
 
     pub(crate) fn configuration_payload_with_checkpoint(
@@ -424,6 +455,21 @@ impl ProviderReadAuthority {
         let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
             .map_err(|error| ViewError::new("provider_unavailable", error.message))?;
         identity_metadata_payload_from_evidence(target, &evidence)
+    }
+
+    pub(crate) fn metadata_owner_evidence(
+        &self,
+        target: &MetadataAddress,
+    ) -> Result<PlatformXmlSourceSetOwnerEvidence, ViewError> {
+        let descriptor = self.metadata_descriptor(target)?;
+        let relative = self.metadata_descriptor_relative(target)?;
+        if self.is_external_source_set() && target.as_str().split('.').count() == 2 {
+            prove_already_read_source_set_owner(&relative, &descriptor, self.source_set_kind)
+                .map_err(|error| ViewError::new("provider_unavailable", error.message))
+        } else {
+            prove_already_read_metadata_owner(&relative, &descriptor)
+                .map_err(|error| ViewError::new("provider_unavailable", error.message))
+        }
     }
 
     pub(crate) fn mxl_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {

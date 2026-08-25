@@ -160,6 +160,26 @@ pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Resu
     std::os::unix::fs::symlink(target, link)
 }
 
+/// Classifies the platform error produced when a no-follow open encounters a
+/// symbolic link. Keeping the OS errno inside this facade lets retained-tree
+/// callers preserve one portable fail-closed policy.
+pub(crate) fn is_nofollow_link_error(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::ELOOP)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn supports_retained_root_replacement_test() -> bool {
+    cfg!(unix)
+}
+
 #[cfg(all(test, windows))]
 pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Result<()> {
     std::os::windows::fs::symlink_dir(target, link)
@@ -235,6 +255,18 @@ pub(crate) struct RetainedRegularFileCapability {
     name: std::ffi::OsString,
     file: fs::File,
     identity: FileIdentity,
+}
+
+/// One immediate child classified and retained relative to an exact directory
+/// capability. Directory and regular-file variants own the same physical
+/// handles used for classification; reparse and unsupported entries are never
+/// promoted into a readable tree authority.
+#[derive(Debug)]
+pub(crate) enum RetainedChildCapability {
+    Directory(RetainedDirectoryCapability),
+    RegularFile(RetainedRegularFileCapability),
+    ReparsePoint,
+    Unsupported,
 }
 
 struct RetainedDirectoryCapabilityInner {
@@ -427,6 +459,59 @@ impl RetainedDirectoryCapability {
         checkpoint: impl FnMut() -> io::Result<()>,
     ) -> io::Result<Vec<std::ffi::OsString>> {
         read_directory_names_bounded(&self.retained.directory, maximum_entries, checkpoint)
+    }
+
+    /// Classifies and retains one immediate child through this directory
+    /// descriptor. The typed reopen on Windows is identity-checked against the
+    /// classification handle; Unix keeps the original `openat(O_NOFOLLOW)`
+    /// handle. No ambient path is consulted.
+    pub(crate) fn retain_immediate_child_nofollow(
+        &self,
+        name: &std::ffi::OsStr,
+    ) -> io::Result<RetainedChildCapability> {
+        let (classification_anchor, kind) =
+            open_any_child_nofollow(&self.retained.directory, name)?;
+        match kind {
+            OpenedChildKind::Directory => {
+                let directory = open_child_for_secure_tree_use(
+                    &self.retained.directory,
+                    name,
+                    classification_anchor,
+                    kind,
+                )?;
+                let identity = file_identity(&directory)?;
+                Ok(RetainedChildCapability::Directory(Self {
+                    path: self.path.join(name),
+                    retained: Arc::new(RetainedDirectoryCapabilityInner {
+                        directory,
+                        identity,
+                    }),
+                    parent: Some(Arc::new(RetainedDirectoryParent {
+                        directory: self.clone(),
+                        name: name.to_os_string(),
+                    })),
+                }))
+            }
+            OpenedChildKind::RegularFile => {
+                let file = open_child_for_secure_tree_use(
+                    &self.retained.directory,
+                    name,
+                    classification_anchor,
+                    kind,
+                )?;
+                let identity = file_identity(&file)?;
+                Ok(RetainedChildCapability::RegularFile(
+                    RetainedRegularFileCapability {
+                        parent: self.clone(),
+                        name: name.to_os_string(),
+                        file,
+                        identity,
+                    },
+                ))
+            }
+            OpenedChildKind::ReparsePoint => Ok(RetainedChildCapability::ReparsePoint),
+            OpenedChildKind::Unsupported => Ok(RetainedChildCapability::Unsupported),
+        }
     }
 
     pub(crate) fn retain_regular_child(

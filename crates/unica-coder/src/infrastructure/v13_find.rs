@@ -1149,6 +1149,16 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>One</Catalog><Catalog>Two</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
         )
         .unwrap();
+        fs::create_dir_all(source.join("Catalogs")).unwrap();
+        for name in ["One", "Two"] {
+            fs::write(
+                source.join(format!("Catalogs/{name}.xml")),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>{name}</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
         let source = fs::canonicalize(source).unwrap();
         let cancellation = CancellationToken::new();
         let error = build_index(

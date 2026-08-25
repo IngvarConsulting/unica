@@ -1101,7 +1101,12 @@ fn is_supported_metadata_artifact(tag: &str) -> bool {
     METADATA_KIND_TAGS.contains(&tag)
         || matches!(
             tag,
-            "Configuration" | "ExternalDataProcessor" | "ExternalReport" | "Form" | "Template"
+            "Configuration"
+                | "ExternalDataProcessor"
+                | "ExternalReport"
+                | "Form"
+                | "Template"
+                | "Command"
         )
 }
 
@@ -1171,6 +1176,22 @@ pub(crate) mod tests {
             ),
         ] {
             assert!(!known_standalone_root((Some(namespace), local_name)));
+        }
+    }
+
+    #[test]
+    fn strict_metadata_owner_evidence_accepts_registered_physical_child_families() {
+        for kind in ["Form", "Template", "Command"] {
+            let xml = format!(
+                r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><{kind}><Properties><Name>Main</Name></Properties></{kind}></MetaDataObject>"#
+            );
+            let evidence = prove_already_read_metadata_owner(
+                Path::new(&format!("{kind}s/Main.xml")),
+                xml.as_bytes(),
+            )
+            .unwrap_or_else(|error| panic!("{kind}: {}", error.message));
+            assert_eq!(evidence.artifact_kind(), kind);
+            assert_eq!(evidence.artifact_name(), Some("Main"));
         }
     }
 
