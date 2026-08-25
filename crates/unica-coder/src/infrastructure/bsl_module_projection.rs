@@ -31,19 +31,19 @@ const PLATFORM_CONTEXTS: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FormBindingOwner {
     Form,
-    Element,
+    Element(FormElementKind),
     Table,
-    Column,
+    Column(FormElementKind),
     Command,
 }
 
 impl FormBindingOwner {
-    pub(crate) fn parse(raw: &str) -> Option<Self> {
+    pub(crate) fn parse(raw: &str, element_kind: Option<FormElementKind>) -> Option<Self> {
         match raw {
             "form" => Some(Self::Form),
-            "element" => Some(Self::Element),
+            "element" => element_kind.map(Self::Element),
             "table" => Some(Self::Table),
-            "column" => Some(Self::Column),
+            "column" => element_kind.map(Self::Column),
             "command" => Some(Self::Command),
             _ => None,
         }
@@ -52,9 +52,9 @@ impl FormBindingOwner {
     fn catalog_owner(self) -> FormEventOwnerKind {
         match self {
             Self::Form => FormEventOwnerKind::Form,
-            Self::Element => FormEventOwnerKind::Element(FormElementKind::InputField),
+            Self::Element(kind) => FormEventOwnerKind::Element(kind),
             Self::Table => FormEventOwnerKind::Table,
-            Self::Column => FormEventOwnerKind::Column(FormElementKind::InputField),
+            Self::Column(kind) => FormEventOwnerKind::Column(kind),
             Self::Command => FormEventOwnerKind::Command,
         }
     }
@@ -62,9 +62,9 @@ impl FormBindingOwner {
     fn as_str(self) -> &'static str {
         match self {
             Self::Form => "form",
-            Self::Element => "item",
+            Self::Element(_) => "item",
             Self::Table => "formTable",
-            Self::Column => "column",
+            Self::Column(_) => "column",
             Self::Command => "command",
         }
     }
@@ -77,6 +77,45 @@ pub(crate) struct FormEventBindingInput {
     event: String,
     handler: String,
     call_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FormEventOwnerInput {
+    owner: FormBindingOwner,
+    at: String,
+}
+
+impl FormEventOwnerInput {
+    pub(crate) fn new(owner: FormBindingOwner, at: &str) -> Self {
+        Self {
+            owner,
+            at: at.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FormMethodFact<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) method_kind: MethodKind,
+    pub(crate) signature: &'a str,
+    pub(crate) contexts: Vec<&'a str>,
+}
+
+impl<'a> FormMethodFact<'a> {
+    pub(crate) fn new(
+        name: &'a str,
+        method_kind: MethodKind,
+        signature: &'a str,
+        contexts: Vec<&'a str>,
+    ) -> Self {
+        Self {
+            name,
+            method_kind,
+            signature,
+            contexts,
+        }
+    }
 }
 
 impl FormEventBindingInput {
@@ -213,10 +252,11 @@ fn available_module_event(at: &QualifiedAddress, spec: &PlatformEventSpec) -> Ev
         at: event_at.clone(),
         event_id: spec.event_id.to_string(),
         state: EventState::Available,
-        signature: spec.signature.to_string(),
-        context: spec.context.to_string(),
+        signature: spec.signature_ru.clone(),
+        contexts: spec.contexts.clone(),
         binding: spec.binding,
-        handler: spec.handler.to_string(),
+        handler: spec.handler_ru.clone(),
+        handler_en: spec.handler_en.clone(),
         implementation_at: None,
         call_type: None,
         can: vec![OperationCapability::event_implement(event_at)],
@@ -231,19 +271,18 @@ fn project_module_events(
     specs
         .iter()
         .map(|spec| {
-            let Some(method) = methods.iter_mut().find(|method| {
-                method.name.eq_ignore_ascii_case(spec.handler)
-                    || method.name.to_lowercase() == spec.handler.to_lowercase()
-            }) else {
+            let Some(method) = methods
+                .iter_mut()
+                .find(|method| event_handler_name_matches(&method.name, spec))
+            else {
                 return available_module_event(at, spec);
             };
-            let compatible = method.method_kind == MethodKind::Procedure
-                && method_parameter_count(&method.signature) == spec.parameter_count
-                && method
-                    .compile
-                    .contexts
-                    .iter()
-                    .any(|context| context == spec.context);
+            let compatible = method_matches_event(
+                method.method_kind,
+                &method.signature,
+                &method.compile.contexts,
+                spec,
+            );
             let event_at = format!("{at}.Event.{}", spec.event_id);
             method.handles.push(HandleProjection {
                 owner: "module".to_string(),
@@ -260,10 +299,11 @@ fn project_module_events(
                 } else {
                     EventState::Invalid
                 },
-                signature: spec.signature.to_string(),
-                context: spec.context.to_string(),
+                signature: spec.signature_ru.clone(),
+                contexts: spec.contexts.clone(),
                 binding: spec.binding,
-                handler: spec.handler.to_string(),
+                handler: spec.handler_ru.clone(),
+                handler_en: spec.handler_en.clone(),
                 implementation_at: Some(method.at.clone()),
                 call_type: None,
                 can: Vec::new(),
@@ -323,11 +363,22 @@ fn method_projections(
             })
             .ok_or_else(|| format!("BSL method `{name}` has no declaration token"))?;
         let header_line = lines.line_of(u32::from(header_token.text_range().start()));
-        let signature = lines
-            .text(header_line)
-            .map(str::trim)
-            .unwrap_or_default()
+        let parameter_list = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::PARAM_LIST)
+            .ok_or_else(|| format!("BSL method `{name}` has no parser-proven parameter list"))?;
+        let declaration_end = node
+            .descendants_with_tokens()
+            .filter_map(|element| element.into_token())
+            .find(|token| token.kind() == SyntaxKind::KW_EXPORT)
+            .map_or(parameter_list.text_range().end(), |token| {
+                token.text_range().end()
+            });
+        let signature = source
+            [usize::from(header_token.text_range().start())..usize::from(declaration_end)]
+            .trim()
             .to_string();
+        let signature_end_line = lines.line_of(u32::from(declaration_end).saturating_sub(1));
         let annotations = node
             .children()
             .filter_map(Annotation::cast)
@@ -347,8 +398,23 @@ fn method_projections(
         }
         let node_from = lines.line_of(u32::from(node.text_range().start()));
         let node_to = lines.line_of(u32::from(node.text_range().end()).saturating_sub(1));
-        let body_from_line = header_line.saturating_add(1);
-        let body_to_line = node_to.saturating_sub(1).max(body_from_line);
+        let closing_line = node
+            .descendants_with_tokens()
+            .filter_map(|element| element.into_token())
+            .find(|token| {
+                matches!(
+                    token.kind(),
+                    SyntaxKind::KW_END_PROCEDURE | SyntaxKind::KW_END_FUNCTION
+                )
+            })
+            .map(|token| lines.line_of(u32::from(token.text_range().start())))
+            .unwrap_or(node_to);
+        let body_from_line = signature_end_line.saturating_add(1);
+        let body_to_line = closing_line.saturating_sub(1);
+        let compilation_count = compilation
+            .iter()
+            .filter(|range| range.from_line <= node_to && range.to_line >= node_from)
+            .count();
         let method_at = format!("{at}.Method.{name}");
         let mut method_handles = handles
             .iter()
@@ -394,6 +460,7 @@ fn method_projections(
                 },
                 handles: method_handles,
                 extension,
+                compilation_count,
                 body_from_line,
                 body_to_line,
             },
@@ -732,20 +799,11 @@ fn node_range(
 }
 
 fn accumulated_guard(line: usize, compilation: &[CompilationProjection]) -> Option<String> {
-    let guards = compilation
+    compilation
         .iter()
         .filter(|range| line >= range.from_line && line <= range.to_line)
-        .filter(|range| {
-            !compilation.iter().any(|candidate| {
-                candidate.from_line <= range.from_line
-                    && candidate.to_line >= range.to_line
-                    && candidate.guard != range.guard
-                    && candidate.guard.contains(&range.guard)
-            })
-        })
+        .min_by_key(|range| range.to_line.saturating_sub(range.from_line))
         .map(|range| range.guard.clone())
-        .collect::<Vec<_>>();
-    (!guards.is_empty()).then(|| guards.join(" And "))
 }
 
 fn normalize_guard(node: &SyntaxNode) -> String {
@@ -916,6 +974,8 @@ fn base_contexts(
             "webClient",
             "thickClientManaged",
             "thickClientOrdinary",
+            "mobileClient",
+            "mobileAppClient",
         ],
         ModuleRole::ManagedApplication => vec![
             "thinClient",
@@ -930,7 +990,13 @@ fn base_contexts(
         ModuleRole::Object
         | ModuleRole::Manager
         | ModuleRole::RecordSet
-        | ModuleRole::ValueManager => vec!["server", "externalConnection", "thickClientOrdinary"],
+        | ModuleRole::ValueManager => vec![
+            "server",
+            "externalConnection",
+            "thickClientOrdinary",
+            "mobileAppServer",
+            "mobileStandaloneServer",
+        ],
         ModuleRole::HttpService
         | ModuleRole::WebService
         | ModuleRole::IntegrationService
@@ -976,45 +1042,115 @@ fn source_slice<'a>(source: &'a str, node: &SyntaxNode) -> &'a str {
     &source[usize::from(range.start())..usize::from(range.end())]
 }
 
-fn method_parameter_count(signature: &str) -> usize {
-    let Some((_, tail)) = signature.split_once('(') else {
-        return 0;
+fn normalized_declaration(signature: &str) -> String {
+    signature
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn event_handler_name_matches(name: &str, spec: &PlatformEventSpec) -> bool {
+    let name = name.to_lowercase();
+    name == spec.handler_ru.to_lowercase() || name == spec.handler_en.to_lowercase()
+}
+
+fn method_matches_event(
+    method_kind: MethodKind,
+    signature: &str,
+    contexts: &[String],
+    spec: &PlatformEventSpec,
+) -> bool {
+    let kind = match method_kind {
+        MethodKind::Procedure => "procedure",
+        MethodKind::Function => "function",
     };
-    let Some((parameters, _)) = tail.split_once(')') else {
-        return 0;
+    let actual = normalized_declaration(signature);
+    kind == spec.method_kind
+        && (actual == normalized_declaration(&spec.signature_ru)
+            || actual == normalized_declaration(&spec.signature_en))
+        && spec
+            .contexts
+            .iter()
+            .all(|expected| contexts.contains(expected))
+}
+
+fn parameter_shape(signature: &str) -> String {
+    signature
+        .split_once('(')
+        .map(|(_, tail)| format!("({tail}"))
+        .map(|shape| normalized_declaration(&shape))
+        .unwrap_or_default()
+}
+
+fn form_method_matches_event(method: &FormMethodFact<'_>, spec: &PlatformEventSpec) -> bool {
+    let kind = match method.method_kind {
+        MethodKind::Procedure => "procedure",
+        MethodKind::Function => "function",
     };
-    if parameters.trim().is_empty() {
-        0
-    } else {
-        parameters.split(',').count()
-    }
+    let actual = parameter_shape(method.signature);
+    kind == spec.method_kind
+        && (actual == parameter_shape(&spec.signature_ru)
+            || actual == parameter_shape(&spec.signature_en))
+        && spec
+            .contexts
+            .iter()
+            .all(|expected| method.contexts.contains(&expected.as_str()))
 }
 
 pub(crate) fn project_form_events(
     bindings: &[FormEventBindingInput],
-    methods: &[(&str, usize, Vec<&str>)],
+    methods: &[FormMethodFact<'_>],
 ) -> Vec<EventProjection> {
-    let mut events = Vec::new();
+    let mut owners = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for binding in bindings {
-        let owner_prefix = binding
+        let owner_at = binding
             .at
             .split(".Event.")
             .next()
             .unwrap_or(binding.at.as_str());
-        for spec in form_event_catalog_8_3_27(binding.owner.catalog_owner()) {
+        if seen.insert((owner_at.to_string(), binding.owner.catalog_owner())) {
+            owners.push(FormEventOwnerInput::new(binding.owner, owner_at));
+        }
+    }
+    project_form_owner_events(&owners, bindings, methods)
+}
+
+pub(crate) fn project_form_owner_events(
+    owners: &[FormEventOwnerInput],
+    bindings: &[FormEventBindingInput],
+    methods: &[FormMethodFact<'_>],
+) -> Vec<EventProjection> {
+    let mut events = Vec::new();
+    let mut projected_owners = std::collections::HashSet::new();
+    for owner in owners {
+        let owner_key = (owner.at.clone(), owner.owner.catalog_owner());
+        if !projected_owners.insert(owner_key) {
+            continue;
+        }
+        for spec in form_event_catalog_8_3_27(owner.owner.catalog_owner()) {
+            let owner_prefix = owner.at.as_str();
             let at = format!("{owner_prefix}.Event.{}", spec.event_id);
-            let actual = (spec.event_id == binding.event).then_some(binding);
+            let actual = bindings.iter().find(|candidate| {
+                candidate.owner.catalog_owner() == owner.owner.catalog_owner()
+                    && candidate
+                        .at
+                        .split(".Event.")
+                        .next()
+                        .unwrap_or(candidate.at.as_str())
+                        == owner_prefix
+                    && spec.event_id == candidate.event
+            });
             let method = actual.and_then(|binding| {
                 methods
                     .iter()
-                    .find(|(name, _, _)| name.to_lowercase() == binding.handler.to_lowercase())
+                    .find(|method| method.name.to_lowercase() == binding.handler.to_lowercase())
             });
             let state = match (actual, method) {
                 (None, _) => EventState::Available,
                 (Some(_), None) => EventState::Missing,
-                (Some(_), Some((_, arity, contexts)))
-                    if *arity == spec.parameter_count && contexts.contains(&spec.context) =>
-                {
+                (Some(_), Some(method)) if form_method_matches_event(method, spec) => {
                     EventState::Implemented
                 }
                 (Some(_), Some(_)) => EventState::Invalid,
@@ -1023,14 +1159,16 @@ pub(crate) fn project_form_events(
                 at: at.clone(),
                 event_id: spec.event_id.to_string(),
                 state,
-                signature: spec.signature.to_string(),
-                context: spec.context.to_string(),
+                signature: spec.signature_ru.clone(),
+                contexts: spec.contexts.clone(),
                 binding: BindingFact::Property,
                 handler: actual
-                    .map_or(spec.handler, |binding| binding.handler.as_str())
+                    .map_or(spec.handler_ru.as_str(), |binding| binding.handler.as_str())
                     .to_string(),
-                implementation_at: method
-                    .map(|(name, _, _)| form_method_at(binding.at.as_str(), name)),
+                handler_en: spec.handler_en.clone(),
+                implementation_at: actual.and_then(|binding| {
+                    method.map(|method| form_method_at(binding.at.as_str(), method.name))
+                }),
                 call_type: actual.and_then(|binding| binding.call_type.clone()),
                 can: (state == EventState::Available)
                     .then(|| OperationCapability::event_implement(at))
@@ -1057,6 +1195,7 @@ fn form_method_at(event_at: &str, handler: &str) -> String {
 
 pub(crate) fn project_declarative_binding(
     binding: DeclarativeBinding<'_>,
+    source: &str,
 ) -> Result<ModuleProjectionSet, String> {
     let module_at = match binding.owner {
         "httpMethod" => "main:HTTPService.API.Module.HTTPService",
@@ -1068,46 +1207,17 @@ pub(crate) fn project_declarative_binding(
     let capability = PlatformProfile::v8_3_27()
         .module_capability(&at)
         .ok_or_else(|| format!("service module `{module_at}` is not in profile 8.3.27"))?;
-    let method_at = format!("{at}.Method.{}", binding.handler);
-    let method = MethodProjection {
-        at: method_at,
-        name: binding.handler.to_string(),
-        signature: format!("Процедура {}()", binding.handler),
-        doc: None,
-        method_kind: MethodKind::Procedure,
-        export: false,
-        compile: CompilationFacts {
-            directive: None,
-            guard: None,
-            contexts: vec!["server".to_string()],
-            form_context: None,
-            conditional_body: false,
-        },
-        handles: vec![HandleProjection {
-            owner: binding.owner.to_string(),
-            event: binding.event.to_string(),
-            at: binding.at.to_string(),
-            binding: BindingFact::Property,
-            call_type: None,
-        }],
-        extension: None,
-        body_from_line: 1,
-        body_to_line: 0,
-    };
-    Ok(ModuleProjectionSet::new(
-        ModuleIdentity {
-            at,
-            title: format!("{} module", capability.role().as_str()),
-            props: ModuleProperties::new(capability.owner_kind(), capability.role()),
-            rev: "fixture-rev".to_string(),
-        },
-        vec![method],
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    ))
+    project_module(ModuleProjectionRequest {
+        at: &at,
+        capability,
+        title: format!("{} module", capability.role().as_str()),
+        rev: "fixture-rev",
+        source: Some(source),
+        common_module: None,
+        handles: &[],
+        declarative_bindings: std::slice::from_ref(&binding),
+        extension_targets: &[],
+    })
 }
 
 struct LineIndex<'a> {
@@ -1149,18 +1259,29 @@ impl<'a> LineIndex<'a> {
 mod tests {
     use super::{
         evaluate_guard, normalize_guard, project_declarative_binding, project_form_events,
-        project_module, DeclarativeBinding, FormBindingOwner, FormEventBindingInput,
-        ModuleProjectionRequest,
+        project_form_owner_events, project_module, DeclarativeBinding, FormBindingOwner,
+        FormEventBindingInput, FormEventOwnerInput, FormMethodFact, ModuleProjectionRequest,
     };
     use crate::domain::address::QualifiedAddress;
     use crate::domain::module_projection::{BindingFact, EventState, ExtensionKind, InterfaceKind};
     use crate::domain::platform_profile::PlatformProfile;
     use crate::infrastructure::bsl_outline::parse_bsl_syntax;
+    use crate::infrastructure::native_operations::form_event_registry::FormElementKind;
     use bsl_syntax::ast::{AstNode, PreIfDir};
     use serde::Deserialize;
 
     const COMPLEX: &str = include_str!("../../../../tests/fixtures/v013/modules/complex.bsl");
     const EXTENSION: &str = include_str!("../../../../tests/fixtures/v013/modules/extension.bsl");
+    const SYNTAX_BOUNDARIES: &str =
+        include_str!("../../../../tests/fixtures/v013/modules/syntax-boundaries.bsl");
+    const NESTED_REGION_ADDRESSES: &str =
+        include_str!("../../../../tests/fixtures/v013/modules/nested-region-addresses.bsl");
+    const DECLARATIVE_HTTP: &str =
+        include_str!("../../../../tests/fixtures/v013/modules/declarative-http.bsl");
+    const DECLARATIVE_SOAP: &str =
+        include_str!("../../../../tests/fixtures/v013/modules/declarative-soap.bsl");
+    const DECLARATIVE_INTEGRATION: &str =
+        include_str!("../../../../tests/fixtures/v013/modules/declarative-integration.bsl");
 
     #[derive(Debug, Deserialize)]
     struct ModuleFixture {
@@ -1191,6 +1312,7 @@ mod tests {
         event: String,
         handler: String,
         call_type: Option<String>,
+        element_kind: Option<String>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -1225,6 +1347,15 @@ mod tests {
             "../../../../tests/fixtures/v013/modules/declarative-handlers.json"
         ))
         .unwrap()
+    }
+
+    fn declarative_source(owner: &str) -> &'static str {
+        match owner {
+            "httpMethod" => DECLARATIVE_HTTP,
+            "webServiceOperation" => DECLARATIVE_SOAP,
+            "integrationServiceChannel" => DECLARATIVE_INTEGRATION,
+            other => panic!("unknown declarative fixture owner `{other}`"),
+        }
     }
 
     fn project(
@@ -1265,6 +1396,116 @@ mod tests {
     fn every_approved_module_role_projects_without_a_parallel_role_registry() {
         let fixture = module_fixture();
         assert_eq!(fixture.profile, "8.3.27");
+        let actual_cases = fixture
+            .cases
+            .iter()
+            .map(|case| (case.case.as_str(), case.at.as_str(), case.role.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual_cases,
+            vec![
+                ("object", "main:Document.Заказ.Module.Object", "Object"),
+                ("manager", "main:Document.Заказ.Module.Manager", "Manager"),
+                (
+                    "record-set",
+                    "main:InformationRegister.Цены.Module.RecordSet",
+                    "RecordSet"
+                ),
+                (
+                    "value-manager",
+                    "main:Constant.ОсновнаяВалюта.Module.ValueManager",
+                    "ValueManager"
+                ),
+                ("common", "main:CommonModule.ЗаказыСервер", "Common"),
+                (
+                    "form",
+                    "main:Document.Заказ.Form.ФормаДокумента.Module.Form",
+                    "Form"
+                ),
+                (
+                    "command",
+                    "main:Document.Заказ.Command.ПровестиИЗакрыть.Module.Command",
+                    "Command"
+                ),
+                (
+                    "managed-application",
+                    "main:Module.ManagedApplication",
+                    "ManagedApplication"
+                ),
+                (
+                    "ordinary-application",
+                    "main:Module.OrdinaryApplication",
+                    "OrdinaryApplication"
+                ),
+                (
+                    "external-connection",
+                    "main:Module.ExternalConnection",
+                    "ExternalConnection"
+                ),
+                ("session", "main:Module.Session", "Session"),
+                (
+                    "http",
+                    "main:HTTPService.API.Module.HTTPService",
+                    "HTTPService"
+                ),
+                (
+                    "soap",
+                    "main:WebService.Обмен.Module.WebService",
+                    "WebService"
+                ),
+                (
+                    "integration-service",
+                    "main:IntegrationService.Шина.Module.IntegrationService",
+                    "IntegrationService"
+                ),
+                ("bot", "main:Bot.Помощник.Module.Bot", "Bot"),
+                (
+                    "websocket-client",
+                    "main:WebSocketClient.Телефония.Module.WebSocketClient",
+                    "WebSocketClient"
+                ),
+                (
+                    "epf-object",
+                    "epf:ExternalDataProcessor.Импорт.Module.Object",
+                    "Object"
+                ),
+                (
+                    "epf-form",
+                    "epf:ExternalDataProcessor.Импорт.Form.Основная.Module.Form",
+                    "Form"
+                ),
+                (
+                    "epf-command",
+                    "epf:ExternalDataProcessor.Импорт.Command.Выполнить.Module.Command",
+                    "Command"
+                ),
+                (
+                    "erf-object",
+                    "erf:ExternalReport.Продажи.Module.Object",
+                    "Object"
+                ),
+                (
+                    "erf-form",
+                    "erf:ExternalReport.Продажи.Form.Основная.Module.Form",
+                    "Form"
+                ),
+                (
+                    "erf-command",
+                    "erf:ExternalReport.Продажи.Command.Сформировать.Module.Command",
+                    "Command"
+                ),
+                (
+                    "extension-object",
+                    "sales:Document.Заказ.Module.Object",
+                    "Object"
+                ),
+                (
+                    "valid-missing-file",
+                    "main:Document.Пустой.Module.Object",
+                    "Object"
+                ),
+            ]
+        );
         for case in fixture.cases {
             let projection = project(&case.at, case.source.then_some(""));
             assert_eq!(projection.summary().props.role, case.role, "{}", case.case);
@@ -1286,6 +1527,286 @@ mod tests {
                 assert_eq!(branch.count, actual, "{} {:?}", case.case, branch.kind);
             }
         }
+    }
+
+    #[test]
+    fn multiline_signature_and_real_empty_body_boundaries_come_from_the_projector() {
+        let projection = project("main:CommonModule.ЗаказыСервер", Some(SYNTAX_BOUNDARIES));
+        let multiline = projection
+            .methods()
+            .iter()
+            .find(|method| method.name == "Многострочная")
+            .unwrap();
+        assert_eq!(
+            multiline.signature,
+            "Процедура Многострочная(\n    Первый,\n    Знач Второй = Неопределено\n) Экспорт"
+        );
+        assert_eq!(
+            multiline.doc.as_deref(),
+            Some("Exact multiline declaration.\nThe body starts after the complete signature.")
+        );
+        let body = projection
+            .method_body(&multiline.at, None, 20, None)
+            .unwrap();
+        assert_eq!(
+            body.lines
+                .iter()
+                .map(|line| (line.line, line.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(7, "    Сообщить(\"body\");")]
+        );
+
+        let empty = projection
+            .methods()
+            .iter()
+            .find(|method| method.name == "Пустая")
+            .unwrap();
+        assert!(projection
+            .method_body(&empty.at, None, 20, None)
+            .unwrap()
+            .lines
+            .is_empty());
+        let serialized = serde_json::to_value(empty).unwrap();
+        assert_eq!(serialized["branches"][1]["count"], 0);
+    }
+
+    #[test]
+    fn method_compilation_count_and_nested_guards_match_actual_ranges() {
+        let projection = project("main:CommonModule.ЗаказыСервер", Some(SYNTAX_BOUNDARIES));
+        let method = projection
+            .methods()
+            .iter()
+            .find(|method| method.name == "Контекстная")
+            .unwrap();
+        let serialized = serde_json::to_value(method).unwrap();
+        assert_eq!(serialized["branches"][0]["count"], 3);
+        assert_eq!(method.compile.guard.as_deref(), Some("Client"));
+        assert!(method.compile.conditional_body);
+        let ranges = projection
+            .compilation()
+            .iter()
+            .filter(|range| range.from_line >= 15 && range.to_line <= 22)
+            .map(|range| (range.from_line, range.to_line, range.guard.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ranges,
+            vec![
+                (15, 21, "Client"),
+                (17, 17, "Client And WebClient"),
+                (19, 19, "Client And Not (WebClient)"),
+            ]
+        );
+    }
+
+    #[test]
+    fn form_catalog_is_emitted_once_for_two_bindings_on_one_owner() {
+        let bindings = [
+            FormEventBindingInput::property(
+                FormBindingOwner::Element(FormElementKind::InputField),
+                "main:CommonForm.Тест.Item.Поле.Event.OnChange",
+                "OnChange",
+                "ПолеПриИзменении",
+                None,
+            ),
+            FormEventBindingInput::property(
+                FormBindingOwner::Element(FormElementKind::InputField),
+                "main:CommonForm.Тест.Item.Поле.Event.StartChoice",
+                "StartChoice",
+                "ПолеНачалоВыбора",
+                None,
+            ),
+        ];
+        let methods = [
+            FormMethodFact::new(
+                "ПолеПриИзменении",
+                crate::domain::module_projection::MethodKind::Procedure,
+                "Процедура ПолеПриИзменении()",
+                vec![
+                    "thinClient",
+                    "webClient",
+                    "thickClientManaged",
+                    "mobileClient",
+                    "mobileAppClient",
+                ],
+            ),
+            FormMethodFact::new(
+                "ПолеНачалоВыбора",
+                crate::domain::module_projection::MethodKind::Procedure,
+                "Процедура ПолеНачалоВыбора(ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка)",
+                vec![
+                    "thinClient",
+                    "webClient",
+                    "thickClientManaged",
+                    "mobileClient",
+                    "mobileAppClient",
+                ],
+            ),
+        ];
+        let events = project_form_events(&bindings, &methods);
+        assert_eq!(events.len(), 16);
+        let unique = events
+            .iter()
+            .map(|event| event.at.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique.len(), events.len());
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.state == EventState::Implemented)
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["OnChange", "StartChoice"]
+        );
+    }
+
+    #[test]
+    fn form_event_state_requires_exact_method_kind_and_parameter_shape() {
+        let binding = FormEventBindingInput::property(
+            FormBindingOwner::Element(FormElementKind::InputField),
+            "main:CommonForm.Тест.Item.Поле.Event.OnChange",
+            "OnChange",
+            "ПолеПриИзменении",
+            None,
+        );
+        let contexts = vec![
+            "thinClient",
+            "webClient",
+            "thickClientManaged",
+            "mobileClient",
+            "mobileAppClient",
+        ];
+        let procedure = [FormMethodFact::new(
+            "ПолеПриИзменении",
+            crate::domain::module_projection::MethodKind::Procedure,
+            "Процедура ПолеПриИзменении()",
+            contexts.clone(),
+        )];
+        assert_eq!(
+            project_form_events(std::slice::from_ref(&binding), &procedure)
+                .iter()
+                .find(|event| event.event_id == "OnChange")
+                .unwrap()
+                .state,
+            EventState::Implemented
+        );
+        let function = [FormMethodFact::new(
+            "ПолеПриИзменении",
+            crate::domain::module_projection::MethodKind::Function,
+            "Функция ПолеПриИзменении()",
+            contexts,
+        )];
+        assert_eq!(
+            project_form_events(&[binding], &function)
+                .iter()
+                .find(|event| event.event_id == "OnChange")
+                .unwrap()
+                .state,
+            EventState::Invalid
+        );
+    }
+
+    #[test]
+    fn form_binding_retains_actual_element_and_nested_column_kinds() {
+        let label = FormEventBindingInput::property(
+            FormBindingOwner::Element(FormElementKind::LabelField),
+            "main:CommonForm.Тест.Item.Метка.Event.OnChange",
+            "OnChange",
+            "МеткаПриИзменении",
+            None,
+        );
+        let events = project_form_events(&[label], &[]);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            ["Click", "OnChange", "URLProcessing"]
+        );
+
+        let column = FormEventBindingInput::property(
+            FormBindingOwner::Column(FormElementKind::CheckBoxField),
+            "main:CommonForm.Тест.Item.Таблица.Item.Пометка.Event.OnChange",
+            "OnChange",
+            "ПометкаПриИзменении",
+            None,
+        );
+        let events = project_form_events(&[column], &[]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_id, "OnChange");
+    }
+
+    #[test]
+    fn form_owner_without_bindings_still_projects_its_closed_available_catalog() {
+        let owner = FormEventOwnerInput::new(
+            FormBindingOwner::Element(FormElementKind::LabelField),
+            "main:CommonForm.Тест.Item.Метка",
+        );
+        let events = project_form_owner_events(&[owner], &[], &[]);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            ["Click", "OnChange", "URLProcessing"]
+        );
+        assert!(events
+            .iter()
+            .all(|event| event.state == EventState::Available));
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.at.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            events.len()
+        );
+    }
+
+    #[test]
+    fn equal_nested_region_names_are_resolved_by_full_logical_address() {
+        let projection = project(
+            "main:CommonModule.ЗаказыСервер",
+            Some(NESTED_REGION_ADDRESSES),
+        );
+        let first = "main:CommonModule.ЗаказыСервер.Region.Первый.Region.Общая";
+        let second = "main:CommonModule.ЗаказыСервер.Region.Второй.Region.Общая";
+        assert_eq!(projection.region(first).unwrap().at.as_deref(), Some(first));
+        assert_eq!(
+            projection.region(second).unwrap().at.as_deref(),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn declarative_service_projection_must_use_real_fixture_syntax() {
+        let case = &declarative_fixture().handlers[0];
+        let projection = project_declarative_binding(
+            DeclarativeBinding {
+                owner: &case.owner,
+                at: &case.at,
+                event: &case.event,
+                handler: &case.handler,
+            },
+            declarative_source(&case.owner),
+        )
+        .unwrap();
+        let method = projection
+            .methods()
+            .iter()
+            .find(|method| method.name == case.handler)
+            .unwrap();
+        assert_eq!(method.signature, "Процедура ОбработатьGET(Запрос, Ответ)");
+        assert_eq!(
+            projection
+                .method_body(&method.at, None, 20, None)
+                .unwrap()
+                .lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["    Ответ.КодСостояния = 200;"]
+        );
+        assert!(declarative_source(&case.owner).contains(&method.signature));
     }
 
     #[test]
@@ -1316,6 +1837,47 @@ mod tests {
     }
 
     #[test]
+    fn platform_event_state_requires_exact_kind_parameter_shape_and_effective_contexts() {
+        let exact = project(
+            "main:Document.Заказ.Module.Object",
+            Some("Процедура ПередЗаписью(Отказ, РежимЗаписи, РежимПроведения)\nКонецПроцедуры"),
+        );
+        let event = exact
+            .events()
+            .iter()
+            .find(|event| event.event_id == "BeforeWrite")
+            .unwrap();
+        assert_eq!(event.state, EventState::Implemented);
+        assert_eq!(
+            event.contexts,
+            [
+                "server",
+                "externalConnection",
+                "thickClientOrdinary",
+                "mobileAppServer",
+                "mobileStandaloneServer",
+            ]
+        );
+
+        for source in [
+            "Процедура ПередЗаписью(РежимЗаписи, Отказ, РежимПроведения)\nКонецПроцедуры",
+            "Функция ПередЗаписью(Отказ, РежимЗаписи, РежимПроведения)\nКонецФункции",
+        ] {
+            let projection = project("main:Document.Заказ.Module.Object", Some(source));
+            assert_eq!(
+                projection
+                    .events()
+                    .iter()
+                    .find(|event| event.event_id == "BeforeWrite")
+                    .unwrap()
+                    .state,
+                EventState::Invalid,
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
     fn common_module_requires_all_normalized_flags() {
         let at = QualifiedAddress::parse("main:CommonModule.ЗаказыСервер").unwrap();
         let profile = PlatformProfile::v8_3_27();
@@ -1338,14 +1900,14 @@ mod tests {
     fn method_projection_uses_ast_and_omits_body_text() {
         let handles = [
             FormEventBindingInput::property(
-                FormBindingOwner::Element,
+                FormBindingOwner::Element(FormElementKind::InputField),
                 "main:Document.Заказ.Form.ФормаДокумента.Item.Склад.Event.OnChange",
                 "OnChange",
                 "ОбщийОбработчик",
                 None,
             ),
             FormEventBindingInput::property(
-                FormBindingOwner::Column,
+                FormBindingOwner::Column(FormElementKind::InputField),
                 "main:Document.Заказ.Form.ФормаДокумента.Item.Товары.Item.Количество.Event.OnChange",
                 "OnChange",
                 "ОбщийОбработчик",
@@ -1538,6 +2100,47 @@ mod tests {
     }
 
     #[test]
+    fn epf_erf_and_extension_sources_project_end_to_end() {
+        let epf = project(
+            "epf:ExternalDataProcessor.Импорт.Module.Object",
+            Some(
+                "Процедура ОбработкаПроверкиЗаполнения(Отказ, ПроверяемыеРеквизиты)\nКонецПроцедуры",
+            ),
+        );
+        assert_eq!(
+            epf.events()
+                .iter()
+                .find(|event| event.event_id == "FillCheckProcessing")
+                .unwrap()
+                .state,
+            EventState::Implemented
+        );
+        assert_eq!(
+            epf.methods()[0].at,
+            "epf:ExternalDataProcessor.Импорт.Module.Object.Method.ОбработкаПроверкиЗаполнения"
+        );
+
+        let erf = project(
+            "erf:ExternalReport.Продажи.Module.Object",
+            Some("Процедура ПриКомпоновкеРезультата()\nКонецПроцедуры"),
+        );
+        assert_eq!(
+            erf.events()
+                .iter()
+                .find(|event| event.event_id == "OnComposeResult")
+                .unwrap()
+                .state,
+            EventState::Implemented
+        );
+        assert_eq!(
+            erf.methods()[0].at,
+            "erf:ExternalReport.Продажи.Module.Object.Method.ПриКомпоновкеРезультата"
+        );
+
+        extension_annotations_resolve_independently_from_compilation_directives();
+    }
+
+    #[test]
     fn russian_mobile_application_client_guard_normalizes_and_evaluates() {
         let parsed = parse_bsl_syntax(
             "#Если МобильноеПриложениеКлиент Тогда\nСообщить(\"mobile\");\n#КонецЕсли",
@@ -1562,7 +2165,13 @@ mod tests {
             .iter()
             .map(|case| {
                 FormEventBindingInput::property(
-                    FormBindingOwner::parse(&case.owner).unwrap(),
+                    FormBindingOwner::parse(
+                        &case.owner,
+                        case.element_kind
+                            .as_deref()
+                            .and_then(FormElementKind::from_dsl_key),
+                    )
+                    .unwrap(),
                     &format!("{}.Event.{}", case.owner_at, case.event),
                     &case.event,
                     &case.handler,
@@ -1571,8 +2180,25 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let methods = [
-            ("ОбщийОбработчик", 2usize, vec!["thinClient"]),
-            ("Неверный", 9, vec!["server"]),
+            FormMethodFact::new(
+                "ОбщийОбработчик",
+                crate::domain::module_projection::MethodKind::Procedure,
+                "Процедура ОбщийОбработчик()",
+                vec![
+                    "thinClient",
+                    "webClient",
+                    "thickClientManaged",
+                    "mobileClient",
+                    "mobileAppClient",
+                    "server",
+                ],
+            ),
+            FormMethodFact::new(
+                "Неверный",
+                crate::domain::module_projection::MethodKind::Function,
+                "Функция Неверный(Элемент)",
+                vec!["server"],
+            ),
         ];
         let events = project_form_events(&bindings, &methods);
         for case in fixture.bindings {
@@ -1593,14 +2219,14 @@ mod tests {
         assert!(states.contains(&EventState::Available));
 
         let missing = FormEventBindingInput::property(
-            FormBindingOwner::Element,
+            FormBindingOwner::Element(FormElementKind::InputField),
             "main:CommonForm.Тест.Item.Поле.Event.OnChange",
             "OnChange",
             "Отсутствует",
             None,
         );
         let invalid = FormEventBindingInput::property(
-            FormBindingOwner::Element,
+            FormBindingOwner::Element(FormElementKind::InputField),
             "main:CommonForm.Тест.Item.Другое.Event.OnChange",
             "OnChange",
             "Неверный",
@@ -1635,7 +2261,8 @@ mod tests {
                 event: &case.event,
                 handler: &case.handler,
             };
-            let projection = project_declarative_binding(binding).unwrap();
+            let projection =
+                project_declarative_binding(binding, declarative_source(&case.owner)).unwrap();
             assert!(projection.events().is_empty(), "{}", case.at);
             let method = projection
                 .methods()
@@ -1653,12 +2280,22 @@ mod tests {
         every_approved_module_role_projects_without_a_parallel_role_registry();
         valid_missing_physical_file_keeps_possible_events_but_no_source_projection();
         common_module_requires_all_normalized_flags();
+        multiline_signature_and_real_empty_body_boundaries_come_from_the_projector();
+        method_compilation_count_and_nested_guards_match_actual_ranges();
         method_projection_uses_ast_and_omits_body_text();
         explicit_body_preserves_lines_paginates_and_filters_without_method_duplication();
         nested_regions_interface_projections_and_ambiguity_are_exact();
+        equal_nested_region_names_are_resolved_by_full_logical_address();
         extension_annotations_resolve_independently_from_compilation_directives();
+        epf_erf_and_extension_sources_project_end_to_end();
         russian_mobile_application_client_guard_normalizes_and_evaluates();
+        platform_event_state_requires_exact_kind_parameter_shape_and_effective_contexts();
+        form_catalog_is_emitted_once_for_two_bindings_on_one_owner();
+        form_event_state_requires_exact_method_kind_and_parameter_shape();
+        form_binding_retains_actual_element_and_nested_column_kinds();
+        form_owner_without_bindings_still_projects_its_closed_available_catalog();
         form_binding_owners_and_all_four_event_states_are_projected();
+        declarative_service_projection_must_use_real_fixture_syntax();
         declarative_service_handlers_remain_on_exact_owners_without_synthetic_events();
     }
 }

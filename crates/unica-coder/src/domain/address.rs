@@ -192,6 +192,11 @@ const fn spelling(kind: NodeKind, aliases: &'static [&'static str]) -> V13KindSp
 }
 
 impl NodeKind {
+    #[cfg(test)]
+    pub(crate) const fn metadata_kinds() -> &'static [Self] {
+        LEGACY_METADATA_KINDS
+    }
+
     pub(crate) fn parse(raw: &str) -> Result<Self, AddressError> {
         for kind in LEGACY_METADATA_KINDS {
             let spellings = metadata_address_kind_spellings(kind.as_str())

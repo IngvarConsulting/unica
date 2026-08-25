@@ -6,10 +6,13 @@
 //! and `form.validate`.
 
 use roxmltree::Node;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::OnceLock;
 
 use crate::domain::module_projection::BindingFact;
-use crate::domain::platform_profile::{ModuleCapability, ModuleRole};
+use crate::domain::platform_profile::ModuleCapability;
 
 use super::common::is_1c_identifier;
 
@@ -132,134 +135,105 @@ const SPREADSHEET_DOCUMENT_FIELD_EVENTS: &[&str] = &[
     "OnChangeAreaContent",
 ];
 const NO_EVENTS: &[&str] = &[];
-const COMMAND_EVENTS: &[&str] = &["Execute"];
 
 /// One versioned possible-event record. The registry owns applicability and
 /// exact expected shape; module projection only evaluates source evidence
 /// against these records.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PlatformEventSpec {
-    pub(crate) event_id: &'static str,
-    pub(crate) handler: &'static str,
-    pub(crate) signature: &'static str,
-    pub(crate) parameter_count: usize,
-    pub(crate) context: &'static str,
+    pub(crate) event_id: String,
+    pub(crate) handler_ru: String,
+    pub(crate) handler_en: String,
+    pub(crate) signature_ru: String,
+    pub(crate) signature_en: String,
+    pub(crate) method_kind: String,
+    pub(crate) contexts: Vec<String>,
+    pub(crate) source_page_id: String,
+    #[serde(skip, default = "platform_binding")]
     pub(crate) binding: BindingFact,
 }
 
-const OBJECT_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
-    event_id: "BeforeWrite",
-    handler: "ПередЗаписью",
-    signature: "Процедура ПередЗаписью(Отказ, РежимЗаписи, РежимПроведения)",
-    parameter_count: 3,
-    context: "server",
-    binding: BindingFact::Platform,
-}];
-const MANAGER_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
-    event_id: "ChoiceDataGetProcessing",
-    handler: "ОбработкаПолученияДанныхВыбора",
-    signature:
-        "Процедура ОбработкаПолученияДанныхВыбора(ДанныеВыбора, Параметры, СтандартнаяОбработка)",
-    parameter_count: 3,
-    context: "server",
-    binding: BindingFact::Platform,
-}];
-const RECORD_SET_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
-    event_id: "BeforeWrite",
-    handler: "ПередЗаписью",
-    signature: "Процедура ПередЗаписью(Отказ, Замещение)",
-    parameter_count: 2,
-    context: "server",
-    binding: BindingFact::Platform,
-}];
-const VALUE_MANAGER_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
-    event_id: "BeforeWrite",
-    handler: "ПередЗаписью",
-    signature: "Процедура ПередЗаписью(Отказ)",
-    parameter_count: 1,
-    context: "server",
-    binding: BindingFact::Platform,
-}];
-const COMMAND_MODULE_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
-    event_id: "CommandProcessing",
-    handler: "ОбработкаКоманды",
-    signature: "Процедура ОбработкаКоманды(ПараметрКоманды, ПараметрыВыполненияКоманды)",
-    parameter_count: 2,
-    context: "thinClient",
-    binding: BindingFact::Platform,
-}];
-const APPLICATION_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
-    event_id: "BeforeStartSystem",
-    handler: "ПередНачаломРаботыСистемы",
-    signature: "Процедура ПередНачаломРаботыСистемы(Отказ)",
-    parameter_count: 1,
-    context: "thinClient",
-    binding: BindingFact::Platform,
-}];
-const ORDINARY_APPLICATION_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
-    event_id: "BeforeStartSystem",
-    handler: "ПередНачаломРаботыСистемы",
-    signature: "Процедура ПередНачаломРаботыСистемы(Отказ)",
-    parameter_count: 1,
-    context: "thickClientOrdinary",
-    binding: BindingFact::Platform,
-}];
-const SESSION_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
-    event_id: "SessionParametersSetting",
-    handler: "УстановкаПараметровСеанса",
-    signature: "Процедура УстановкаПараметровСеанса(ТребуемыеПараметры)",
-    parameter_count: 1,
-    context: "server",
-    binding: BindingFact::Platform,
-}];
-const EXTERNAL_CONNECTION_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
-    event_id: "BeforeStartSystem",
-    handler: "ПередНачаломРаботыСистемы",
-    signature: "Процедура ПередНачаломРаботыСистемы(Отказ)",
-    parameter_count: 1,
-    context: "externalConnection",
-    binding: BindingFact::Platform,
-}];
-const BOT_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
-    event_id: "MessageProcessing",
-    handler: "ОбработкаСообщения",
-    signature: "Процедура ОбработкаСообщения(Сообщение, Контекст)",
-    parameter_count: 2,
-    context: "server",
-    binding: BindingFact::Platform,
-}];
-const WEBSOCKET_CLIENT_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
-    event_id: "Open",
-    handler: "ПриОткрытии",
-    signature: "Процедура ПриОткрытии(Соединение)",
-    parameter_count: 1,
-    context: "server",
-    binding: BindingFact::Platform,
-}];
+const fn platform_binding() -> BindingFact {
+    BindingFact::Platform
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlatformEventCatalogSource {
+    pub(crate) installation_version: String,
+    pub(crate) container: String,
+    pub(crate) sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModuleEventCatalog {
+    pub(crate) owner_kind: String,
+    pub(crate) module_role: String,
+    pub(crate) source_owner: Option<String>,
+    pub(crate) source_path_prefix: Option<String>,
+    pub(crate) base_contexts: Vec<String>,
+    pub(crate) events: Vec<PlatformEventSpec>,
+    pub(crate) exclusion_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormPlatformEventCatalog {
+    pub(crate) owner_kinds: Vec<String>,
+    pub(crate) source_owner: Option<String>,
+    #[serde(default)]
+    pub(crate) inherited_source_owners: Vec<String>,
+    #[serde(default)]
+    pub(crate) event_id_overrides: BTreeMap<String, String>,
+    pub(crate) base_contexts: Vec<String>,
+    pub(crate) events: Vec<PlatformEventSpec>,
+    pub(crate) exclusion_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExcludedEventPage {
+    pub(crate) page_id: String,
+    pub(crate) title: String,
+    pub(crate) reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlatformEventCatalogFixture {
+    pub(crate) profile: String,
+    pub(crate) source: PlatformEventCatalogSource,
+    pub(crate) module_catalogs: Vec<ModuleEventCatalog>,
+    pub(crate) form_catalogs: Vec<FormPlatformEventCatalog>,
+    pub(crate) excluded_unmatched_pages: Vec<ExcludedEventPage>,
+    pub(crate) excluded_generic_template_pages: Vec<ExcludedEventPage>,
+}
+
+pub(crate) fn platform_event_catalog_fixture() -> &'static PlatformEventCatalogFixture {
+    static FIXTURE: OnceLock<PlatformEventCatalogFixture> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        serde_json::from_str(include_str!("../platform-event-catalog-8.3.27.2074.json"))
+            .expect("the checked 8.3.27.2074 platform event catalog must be valid")
+    })
+}
 
 /// Possible module events for the exact 8.3.27 capability. Service handlers
 /// and form events intentionally remain on their declarative logical owners.
 pub(crate) fn module_event_catalog_8_3_27(
     capability: ModuleCapability,
 ) -> &'static [PlatformEventSpec] {
-    match capability.role() {
-        ModuleRole::Object => OBJECT_EVENTS,
-        ModuleRole::Manager => MANAGER_EVENTS,
-        ModuleRole::RecordSet => RECORD_SET_EVENTS,
-        ModuleRole::ValueManager => VALUE_MANAGER_EVENTS,
-        ModuleRole::Command => COMMAND_MODULE_EVENTS,
-        ModuleRole::ManagedApplication => APPLICATION_EVENTS,
-        ModuleRole::OrdinaryApplication => ORDINARY_APPLICATION_EVENTS,
-        ModuleRole::Session => SESSION_EVENTS,
-        ModuleRole::ExternalConnection => EXTERNAL_CONNECTION_EVENTS,
-        ModuleRole::Bot => BOT_EVENTS,
-        ModuleRole::WebSocketClient => WEBSOCKET_CLIENT_EVENTS,
-        ModuleRole::Common
-        | ModuleRole::Form
-        | ModuleRole::HttpService
-        | ModuleRole::WebService
-        | ModuleRole::IntegrationService => &[],
-    }
+    let owner_kind = capability.owner_kind().as_str();
+    let role = capability.role().as_str();
+    platform_event_catalog_fixture()
+        .module_catalogs
+        .iter()
+        .find(|catalog| {
+            catalog.module_role == role
+                && (catalog.owner_kind == owner_kind || catalog.owner_kind == "*")
+        })
+        .map_or(&[], |catalog| catalog.events.as_slice())
 }
 
 const NAMED_PERSISTENT_OBJECT_TYPES: &[&str] = &[
@@ -422,6 +396,57 @@ pub(crate) enum FormElementKind {
 }
 
 impl FormElementKind {
+    #[cfg(test)]
+    const ALL: [Self; 21] = [
+        Self::InputField,
+        Self::CheckBoxField,
+        Self::RadioButtonField,
+        Self::TrackBarField,
+        Self::LabelDecoration,
+        Self::LabelField,
+        Self::Table,
+        Self::Pages,
+        Self::Page,
+        Self::Button,
+        Self::PictureField,
+        Self::CalendarField,
+        Self::PictureDecoration,
+        Self::ExtendedTooltip,
+        Self::FormattedDocumentField,
+        Self::TextDocumentField,
+        Self::GraphicalSchemaField,
+        Self::HtmlDocumentField,
+        Self::SpreadsheetDocumentField,
+        Self::CommandBar,
+        Self::Group,
+    ];
+
+    const fn catalog_key(self) -> &'static str {
+        match self {
+            Self::InputField => "InputField",
+            Self::CheckBoxField => "CheckBoxField",
+            Self::RadioButtonField => "RadioButtonField",
+            Self::TrackBarField => "TrackBarField",
+            Self::LabelDecoration => "LabelDecoration",
+            Self::LabelField => "LabelField",
+            Self::Table => "Table",
+            Self::Pages => "Pages",
+            Self::Page => "Page",
+            Self::Button => "Button",
+            Self::PictureField => "PictureField",
+            Self::CalendarField => "CalendarField",
+            Self::PictureDecoration => "PictureDecoration",
+            Self::ExtendedTooltip => "ExtendedTooltip",
+            Self::FormattedDocumentField => "FormattedDocumentField",
+            Self::TextDocumentField => "TextDocumentField",
+            Self::GraphicalSchemaField => "GraphicalSchemaField",
+            Self::HtmlDocumentField => "HtmlDocumentField",
+            Self::SpreadsheetDocumentField => "SpreadsheetDocumentField",
+            Self::CommandBar => "CommandBar",
+            Self::Group => "Group",
+        }
+    }
+
     pub(crate) fn from_xml_tag(tag: &str) -> Option<Self> {
         match tag {
             "InputField" => Some(Self::InputField),
@@ -558,7 +583,7 @@ impl fmt::Display for FormEventTarget {
 
 /// Logical form-event owner. `Table` and nested `Column` are distinct even
 /// though both reuse the existing element event matrices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum FormEventOwnerKind {
     Form,
     Element(FormElementKind),
@@ -568,50 +593,26 @@ pub(crate) enum FormEventOwnerKind {
 }
 
 impl FormEventOwnerKind {
-    fn allowed_events(self) -> &'static [&'static str] {
+    fn catalog_key(self) -> String {
         match self {
-            Self::Form => FORM_EVENTS,
-            Self::Element(kind) | Self::Column(kind) => kind.allowed_events(),
-            Self::Table => TABLE_EVENTS,
-            Self::Command => COMMAND_EVENTS,
+            Self::Form => "Form".to_string(),
+            Self::Element(kind) => format!("Element.{}", kind.catalog_key()),
+            Self::Table => "Table".to_string(),
+            Self::Column(kind) => format!("Column.{}", kind.catalog_key()),
+            Self::Command => "Command".to_string(),
         }
     }
 }
 
-/// Form possible events are projected from the same matrices used by current
-/// v0.12 validation; no second spelling list is introduced for v0.13.
-pub(crate) fn form_event_catalog_8_3_27(owner: FormEventOwnerKind) -> Vec<PlatformEventSpec> {
-    owner
-        .allowed_events()
+/// Form possible events use the v0.12 owner taxonomy and the checked vendor
+/// 8.3.27 catalog. The v0.12 validation matrices remain unchanged.
+pub(crate) fn form_event_catalog_8_3_27(owner: FormEventOwnerKind) -> &'static [PlatformEventSpec] {
+    let key = owner.catalog_key();
+    platform_event_catalog_fixture()
+        .form_catalogs
         .iter()
-        .map(|event_id| form_event_spec(event_id))
-        .collect()
-}
-
-fn form_event_spec(event_id: &'static str) -> PlatformEventSpec {
-    let (signature, parameter_count, context) = match event_id {
-        "OnOpen" => ("Процедура ПриОткрытии(Элемент, Отказ)", 2, "thinClient"),
-        "OnChange" => ("Процедура ПриИзменении(Элемент, Отказ)", 2, "thinClient"),
-        "BeforeAddRow" => (
-            "Процедура ПередДобавлениемСтроки(Элемент, Отказ)",
-            2,
-            "thinClient",
-        ),
-        "Execute" => (
-            "Процедура ОбработкаКоманды(ПараметрКоманды, ПараметрыВыполненияКоманды)",
-            2,
-            "thinClient",
-        ),
-        _ => ("Процедура Обработчик()", 0, "thinClient"),
-    };
-    PlatformEventSpec {
-        event_id,
-        handler: event_id,
-        signature,
-        parameter_count,
-        context,
-        binding: BindingFact::Property,
-    }
+        .find(|catalog| catalog.owner_kinds.contains(&key))
+        .map_or(&[], |catalog| catalog.events.as_slice())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1685,18 +1686,49 @@ mod tests {
         use crate::domain::platform_profile::PlatformProfile;
 
         let cases: [(&str, &[&str]); 16] = [
-            ("main:Document.Заказ.Module.Object", &["BeforeWrite"]),
+            (
+                "main:Document.Заказ.Module.Object",
+                &[
+                    "BeforeDelete",
+                    "BeforeWrite",
+                    "FillCheckProcessing",
+                    "Filling",
+                    "GenerateFromDataHistoryVersionProcessing",
+                    "OnCopy",
+                    "OnSetNewNumber",
+                    "OnWrite",
+                    "Posting",
+                    "UndoPosting",
+                ],
+            ),
             (
                 "main:Document.Заказ.Module.Manager",
-                &["ChoiceDataGetProcessing"],
+                &[
+                    "AfterWriteDataHistoryVersionsProcessing",
+                    "ChoiceDataGetProcessing",
+                    "FormGetProcessing",
+                    "PresentationFieldsGetProcessing",
+                    "PresentationGetProcessing",
+                ],
             ),
             (
                 "main:InformationRegister.Цены.Module.RecordSet",
-                &["BeforeWrite"],
+                &[
+                    "BeforeWrite",
+                    "FillCheckProcessing",
+                    "Filling",
+                    "GenerateFromDataHistoryVersionProcessing",
+                    "OnWrite",
+                ],
             ),
             (
                 "main:Constant.ОсновнаяВалюта.Module.ValueManager",
-                &["BeforeWrite"],
+                &[
+                    "BeforeWrite",
+                    "FillCheckProcessing",
+                    "GenerateFromDataHistoryVersionProcessing",
+                    "OnWrite",
+                ],
             ),
             ("main:CommonModule.ЗаказыСервер", &[]),
             ("main:Document.Заказ.Form.ФормаДокумента.Module.Form", &[]),
@@ -1704,20 +1736,73 @@ mod tests {
                 "main:Document.Заказ.Command.ПровестиИЗакрыть.Module.Command",
                 &["CommandProcessing"],
             ),
-            ("main:Module.ManagedApplication", &["BeforeStartSystem"]),
-            ("main:Module.OrdinaryApplication", &["BeforeStartSystem"]),
+            (
+                "main:Module.ManagedApplication",
+                &[
+                    "AddInDetachmentOnErrorProcessing",
+                    "AfterExchangeDataWithMainServer",
+                    "BeforeExit",
+                    "BeforeStart",
+                    "CollaborationSystemExternalUserInvitationProcessing",
+                    "CollaborationSystemMessageTemplateChoiceProcessing",
+                    "CollaborationSystemUsersAutoComplete",
+                    "CollaborationSystemUsersChoiceFormGetProcessing",
+                    "ErrorDisplayProcessing",
+                    "ExternEventProcessing",
+                    "IncomingShareRequestCommandGenerateProcessing",
+                    "NavigationByURLProcessing",
+                    "OnChangeDisplaySettings",
+                    "OnClientApplicationResume",
+                    "OnClientApplicationSuspend",
+                    "OnCollaborationSystemMessageActionChoice",
+                    "OnCollaborationSystemMessageButtonPanelButtonClick",
+                    "OnExit",
+                    "OnGlobalSearch",
+                    "OnGlobalSearchResultActionChoice",
+                    "OnGlobalSearchResultChoice",
+                    "OnMainServerAvailabilityChange",
+                    "OnPasteFromClipboard",
+                    "OnStart",
+                ],
+            ),
+            (
+                "main:Module.OrdinaryApplication",
+                &[
+                    "BeforeExit",
+                    "BeforeStart",
+                    "ExternEventProcessing",
+                    "OnChangeDisplaySettings",
+                    "OnExit",
+                    "OnStart",
+                ],
+            ),
             ("main:Module.Session", &["SessionParametersSetting"]),
-            ("main:Module.ExternalConnection", &["BeforeStartSystem"]),
+            ("main:Module.ExternalConnection", &["OnExit", "OnStart"]),
             ("main:HTTPService.API.Module.HTTPService", &[]),
             ("main:WebService.Обмен.Module.WebService", &[]),
             (
                 "main:IntegrationService.Шина.Module.IntegrationService",
                 &[],
             ),
-            ("main:Bot.Помощник.Module.Bot", &["MessageProcessing"]),
+            (
+                "main:Bot.Помощник.Module.Bot",
+                &[
+                    "CollaborationSystemMessageButtonPanelButtonClickProcessing",
+                    "CollaborationSystemMessageProcessing",
+                    "OnAddToCollaborationSystemConversation",
+                    "OnCreateCollaborationSystemConversation",
+                    "OnDeleteFromCollaborationSystemConversation",
+                ],
+            ),
             (
                 "main:WebSocketClient.Телефония.Module.WebSocketClient",
-                &["Open"],
+                &[
+                    "BeforeConnect",
+                    "OnCloseConnection",
+                    "OnError",
+                    "OnMessage",
+                    "OnOpenConnection",
+                ],
             ),
         ];
         let profile = PlatformProfile::v8_3_27();
@@ -1726,68 +1811,237 @@ mod tests {
             let capability = profile.module_capability(&at).unwrap();
             let actual = module_event_catalog_8_3_27(capability)
                 .iter()
-                .map(|event| event.event_id)
+                .map(|event| event.event_id.as_str())
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "{raw}");
         }
     }
 
     #[test]
-    fn form_event_applicability_preserves_every_logical_owner_family() {
-        let cases = [
-            (FormEventOwnerKind::Form, "OnOpen"),
-            (
-                FormEventOwnerKind::Element(FormElementKind::InputField),
-                "OnChange",
-            ),
-            (FormEventOwnerKind::Table, "BeforeAddRow"),
-            (
-                FormEventOwnerKind::Column(FormElementKind::InputField),
-                "OnChange",
-            ),
-            (FormEventOwnerKind::Command, "Execute"),
+    fn module_catalog_covers_the_task12_direct_owner_role_matrix_exactly() {
+        use crate::domain::address::NodeKind;
+        use crate::domain::platform_profile::{ModuleRole, PlatformProfile};
+
+        let direct_roles = [
+            ModuleRole::Object,
+            ModuleRole::Manager,
+            ModuleRole::RecordSet,
+            ModuleRole::ValueManager,
         ];
-        for (owner, expected) in cases {
-            assert!(
-                form_event_catalog_8_3_27(owner)
+        let profile = PlatformProfile::v8_3_27();
+        let expected = NodeKind::metadata_kinds()
+            .iter()
+            .flat_map(|owner| direct_roles.iter().map(move |role| (*owner, *role)))
+            .filter(|(owner, role)| profile.supports_direct_module_role(*owner, *role))
+            .map(|(owner, role)| (owner.as_str(), role.as_str()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual = platform_event_catalog_fixture()
+            .module_catalogs
+            .iter()
+            .filter(|catalog| {
+                direct_roles
                     .iter()
-                    .any(|event| event.event_id == expected),
-                "{owner:?} must own {expected}"
-            );
-        }
+                    .any(|role| role.as_str() == catalog.module_role)
+            })
+            .map(|catalog| (catalog.owner_kind.as_str(), catalog.module_role.as_str()))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, expected);
     }
 
     #[test]
-    fn event_catalog_signatures_match_their_validation_arity() {
-        let owners = [
-            FormEventOwnerKind::Form,
-            FormEventOwnerKind::Element(FormElementKind::InputField),
-            FormEventOwnerKind::Table,
-            FormEventOwnerKind::Column(FormElementKind::InputField),
-            FormEventOwnerKind::Command,
-        ];
+    fn form_event_applicability_preserves_every_logical_owner_family() {
+        let owners = std::iter::once(FormEventOwnerKind::Form)
+            .chain(std::iter::once(FormEventOwnerKind::Table))
+            .chain(std::iter::once(FormEventOwnerKind::Command))
+            .chain(
+                FormElementKind::ALL
+                    .into_iter()
+                    .filter(|kind| *kind != FormElementKind::Table)
+                    .map(FormEventOwnerKind::Element),
+            )
+            .chain(
+                FormElementKind::ALL
+                    .into_iter()
+                    .filter(|kind| *kind != FormElementKind::Table)
+                    .map(FormEventOwnerKind::Column),
+            )
+            .collect::<Vec<_>>();
+        let mut observed_keys = std::collections::BTreeSet::new();
         for owner in owners {
-            for event in form_event_catalog_8_3_27(owner) {
-                let parameters = event
-                    .signature
-                    .split_once('(')
-                    .and_then(|(_, tail)| tail.split_once(')'))
-                    .map(|(parameters, _)| parameters.trim())
-                    .unwrap();
-                let arity = if parameters.is_empty() {
-                    0
+            let key = owner.catalog_key();
+            let expected = platform_event_catalog_fixture()
+                .form_catalogs
+                .iter()
+                .find(|catalog| catalog.owner_kinds.contains(&key))
+                .unwrap_or_else(|| panic!("missing checked catalog for {key}"));
+            assert_eq!(
+                form_event_catalog_8_3_27(owner),
+                expected.events.as_slice(),
+                "{key}"
+            );
+            observed_keys.insert(key);
+        }
+        let expected_keys = platform_event_catalog_fixture()
+            .form_catalogs
+            .iter()
+            .flat_map(|catalog| catalog.owner_kinds.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(observed_keys, expected_keys);
+    }
+
+    #[test]
+    fn event_catalog_entries_have_exact_bilingual_shape_context_and_provenance() {
+        let fixture = platform_event_catalog_fixture();
+        for events in fixture
+            .module_catalogs
+            .iter()
+            .map(|catalog| catalog.events.as_slice())
+            .chain(
+                fixture
+                    .form_catalogs
+                    .iter()
+                    .map(|catalog| catalog.events.as_slice()),
+            )
+        {
+            for event in events {
+                let expected_head = if event.method_kind == "function" {
+                    ("Функция ", "Function ")
                 } else {
-                    parameters.split(',').count()
+                    ("Процедура ", "Procedure ")
                 };
-                assert_eq!(arity, event.parameter_count, "{owner:?} {}", event.event_id);
+                assert!(event.signature_ru.starts_with(expected_head.0));
+                assert!(event.signature_en.starts_with(expected_head.1));
+                assert!(event.signature_ru.contains(&event.handler_ru));
+                assert!(event.signature_en.contains(&event.handler_en));
+                assert!(!event.contexts.is_empty());
+                assert!(event
+                    .source_page_id
+                    .starts_with("platform-syntax-help:syntax-context:"));
             }
         }
     }
 
     #[test]
+    fn every_catalog_has_unique_semantic_event_ids_not_generic_storage_names() {
+        let fixture = platform_event_catalog_fixture();
+        for (catalog, events) in fixture
+            .module_catalogs
+            .iter()
+            .map(|catalog| {
+                (
+                    format!("{} × {}", catalog.owner_kind, catalog.module_role),
+                    catalog.events.as_slice(),
+                )
+            })
+            .chain(fixture.form_catalogs.iter().map(|catalog| {
+                (
+                    format!("{:?}", catalog.owner_kinds),
+                    catalog.events.as_slice(),
+                )
+            }))
+        {
+            let ids = events
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>();
+            let unique = ids
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(unique.len(), ids.len(), "{catalog}: {ids:?}");
+            assert!(
+                !ids.contains(&"event"),
+                "{catalog}: storage filename is not a semantic event id"
+            );
+        }
+    }
+
+    #[test]
+    fn form_catalog_execution_contexts_distinguish_client_and_server_callbacks() {
+        let form = form_event_catalog_8_3_27(FormEventOwnerKind::Form);
+        let on_open = form
+            .iter()
+            .find(|event| event.event_id == "OnOpen")
+            .unwrap();
+        assert_eq!(
+            on_open.contexts,
+            [
+                "thinClient",
+                "webClient",
+                "thickClientManaged",
+                "mobileClient",
+                "mobileAppClient",
+            ]
+        );
+        let create_at_server = form
+            .iter()
+            .find(|event| event.event_id == "OnCreateAtServer")
+            .unwrap();
+        assert_eq!(create_at_server.contexts, ["server"]);
+        let field =
+            form_event_catalog_8_3_27(FormEventOwnerKind::Element(FormElementKind::InputField));
+        assert_eq!(
+            field
+                .iter()
+                .find(|event| event.event_id == "OnChange")
+                .unwrap()
+                .contexts,
+            [
+                "thinClient",
+                "webClient",
+                "thickClientManaged",
+                "mobileClient",
+                "mobileAppClient",
+            ]
+        );
+    }
+
+    #[test]
+    fn checked_event_catalog_is_a_closed_immutable_8_3_27_set() {
+        use sha2::{Digest, Sha256};
+
+        let bytes = include_bytes!("../platform-event-catalog-8.3.27.2074.json");
+        let digest = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            digest,
+            "c2717fe00d21b836ef9835aa5be357fa1a35deebec652dd1c9171affaa339cf1"
+        );
+        let fixture = platform_event_catalog_fixture();
+        assert_eq!(fixture.profile, "8.3.27");
+        assert_eq!(fixture.source.installation_version, "8.3.27.2074");
+        assert_eq!(fixture.module_catalogs.len(), 48);
+        assert_eq!(fixture.form_catalogs.len(), 20);
+        assert_eq!(
+            fixture
+                .module_catalogs
+                .iter()
+                .map(|catalog| catalog.events.len())
+                .sum::<usize>(),
+            205
+        );
+        assert_eq!(
+            fixture
+                .form_catalogs
+                .iter()
+                .map(|catalog| catalog.events.len())
+                .sum::<usize>(),
+            121
+        );
+        assert_eq!(fixture.excluded_unmatched_pages.len(), 17);
+        assert_eq!(fixture.excluded_generic_template_pages.len(), 5);
+    }
+
+    #[test]
     fn platform_8_3_27_module_event_catalog_is_role_specific() {
         module_event_applicability_covers_every_approved_role_family();
+        module_catalog_covers_the_task12_direct_owner_role_matrix_exactly();
         form_event_applicability_preserves_every_logical_owner_family();
-        event_catalog_signatures_match_their_validation_arity();
+        event_catalog_entries_have_exact_bilingual_shape_context_and_provenance();
+        every_catalog_has_unique_semantic_event_ids_not_generic_storage_names();
+        form_catalog_execution_contexts_distinguish_client_and_server_callbacks();
+        checked_event_catalog_is_a_closed_immutable_8_3_27_set();
     }
 }

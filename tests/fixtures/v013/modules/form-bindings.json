@@ -11,6 +11,7 @@
     {
       "case": "element",
       "owner": "element",
+      "elementKind": "input",
       "ownerAt": "main:Document.Заказ.Form.ФормаДокумента.Item.Склад",
       "event": "OnChange",
       "handler": "ОбщийОбработчик"
@@ -25,6 +26,7 @@
     {
       "case": "nested-column",
       "owner": "column",
+      "elementKind": "input",
       "ownerAt": "main:Document.Заказ.Form.ФормаДокумента.Item.Товары.Item.Количество",
       "event": "OnChange",
       "handler": "ОбщийОбработчик"

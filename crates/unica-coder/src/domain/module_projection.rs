@@ -180,6 +180,7 @@ pub(crate) struct MethodProjection {
     pub(crate) compile: CompilationFacts,
     pub(crate) handles: Vec<HandleProjection>,
     pub(crate) extension: Option<ExtensionProjection>,
+    pub(crate) compilation_count: usize,
     pub(crate) body_from_line: usize,
     pub(crate) body_to_line: usize,
 }
@@ -225,9 +226,7 @@ impl Serialize for MethodProjection {
                 BranchSummary {
                     kind: BranchKind::Compilation,
                     at: format!("{}.Compilation", self.at),
-                    count: usize::from(
-                        self.compile.guard.is_some() || self.compile.directive.is_some(),
-                    ),
+                    count: self.compilation_count,
                 },
                 BranchSummary {
                     kind: BranchKind::Body,
@@ -318,9 +317,10 @@ pub(crate) struct EventProjection {
     pub(crate) event_id: String,
     pub(crate) state: EventState,
     pub(crate) signature: String,
-    pub(crate) context: String,
+    pub(crate) contexts: Vec<String>,
     pub(crate) binding: BindingFact,
     pub(crate) handler: String,
+    pub(crate) handler_en: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) implementation_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -480,6 +480,15 @@ impl ModuleProjectionSet {
     }
 
     pub(crate) fn region(&self, name: &str) -> Result<&RegionProjection, ProjectionError> {
+        if name.contains(".Region.") {
+            return self
+                .regions
+                .iter()
+                .find(|region| region.at.as_deref() == Some(name))
+                .ok_or_else(|| {
+                    ProjectionError::not_found(format!("region `{name}` was not found"))
+                });
+        }
         let matches = self
             .regions
             .iter()
@@ -581,9 +590,11 @@ impl ModuleProjectionSet {
 #[cfg(test)]
 mod tests {
     use super::{
-        BindingFact, BranchKind, CommonModuleProperties, CompilationFacts, EventProjection,
-        EventState, MethodKind, MethodProjection, ModuleIdentity, ModuleProjectionSet,
-        ModuleProperties, OperationCapability,
+        BindingFact, BodyLine, BranchKind, CommonModuleProperties, CompilationFacts,
+        CompilationProjection, EventProjection, EventState, ExtensionKind, ExtensionProjection,
+        HandleProjection, InterfaceKind, InterfaceProjection, MethodKind, MethodProjection,
+        ModuleIdentity, ModuleProjectionSet, ModuleProperties, OperationCapability,
+        RegionProjection,
     };
     use crate::domain::address::{NodeKind, QualifiedAddress};
     use crate::domain::platform_profile::ModuleRole;
@@ -604,9 +615,10 @@ mod tests {
             event_id: "BeforeWrite".to_string(),
             state: EventState::Available,
             signature: "Процедура ПередЗаписью(Отказ, РежимЗаписи, РежимПроведения)".to_string(),
-            context: "server".to_string(),
+            contexts: vec!["server".to_string()],
             binding: BindingFact::Platform,
             handler: "ПередЗаписью".to_string(),
+            handler_en: "BeforeWrite".to_string(),
             implementation_at: None,
             call_type: None,
             can: vec![OperationCapability::event_implement(
@@ -724,6 +736,209 @@ mod tests {
     }
 
     #[test]
+    fn serialized_module_projection_contract_is_complete() {
+        let base = "main:Document.Заказ.Module.Object";
+        let method_at = format!("{base}.Method.Проверить");
+        let method = MethodProjection {
+            at: method_at.clone(),
+            name: "Проверить".to_string(),
+            signature: "Процедура Проверить(Отказ) Экспорт".to_string(),
+            doc: Some("Проверяет заказ.".to_string()),
+            method_kind: MethodKind::Procedure,
+            export: true,
+            compile: CompilationFacts {
+                directive: Some("&НаСервере".to_string()),
+                guard: Some("Server".to_string()),
+                contexts: vec!["server".to_string()],
+                form_context: None,
+                conditional_body: true,
+            },
+            handles: vec![HandleProjection {
+                owner: "platform".to_string(),
+                event: "BeforeWrite".to_string(),
+                at: format!("{base}.Event.BeforeWrite"),
+                binding: BindingFact::Platform,
+                call_type: None,
+            }],
+            extension: Some(ExtensionProjection {
+                kind: ExtensionKind::Instead,
+                directive: "&Вместо(\"Проверить\")".to_string(),
+                target_at: Some("main:Document.Заказ.Module.Object.Method.Проверить".to_string()),
+            }),
+            compilation_count: 1,
+            body_from_line: 7,
+            body_to_line: 8,
+        };
+        let region = RegionProjection {
+            at: Some(format!("{base}.Region.ПрограммныйИнтерфейс")),
+            name: Some("ПрограммныйИнтерфейс".to_string()),
+            addressable: true,
+            line: 1,
+            end_line: Some(9),
+            methods: vec![method_at.clone()],
+            children: Vec::new(),
+            parent: None,
+        };
+        let interface = InterfaceProjection {
+            at: format!("{base}.Interface.Public"),
+            kind: "Interface",
+            interface: InterfaceKind::Public,
+            methods: vec![method_at.clone()],
+        };
+        let event = EventProjection {
+            at: format!("{base}.Event.BeforeWrite"),
+            event_id: "BeforeWrite".to_string(),
+            state: EventState::Implemented,
+            signature: "Процедура ПередЗаписью(Отказ, РежимЗаписи, РежимПроведения)".to_string(),
+            contexts: vec!["server".to_string()],
+            binding: BindingFact::Platform,
+            handler: "ПередЗаписью".to_string(),
+            handler_en: "BeforeWrite".to_string(),
+            implementation_at: Some(method_at.clone()),
+            call_type: None,
+            can: Vec::new(),
+        };
+        let compilation = CompilationProjection {
+            from_line: 7,
+            to_line: 7,
+            guard: "Server".to_string(),
+            contexts: vec!["server".to_string()],
+        };
+        let body = [
+            BodyLine {
+                line: 7,
+                text: "    Отказ = Ложь;".to_string(),
+            },
+            BodyLine {
+                line: 8,
+                text: "    Возврат;".to_string(),
+            },
+        ];
+        let mut full_identity = identity(ModuleProperties::new(
+            NodeKind::Document,
+            ModuleRole::Object,
+        ));
+        full_identity.at = QualifiedAddress::parse(base).unwrap();
+        full_identity.title = "Модуль объекта Заказ".to_string();
+        let projection = ModuleProjectionSet::new(
+            full_identity,
+            vec![method],
+            vec![region],
+            vec![interface],
+            vec![event],
+            vec![compilation],
+            body.to_vec(),
+        );
+
+        let summary = serde_json::to_value(projection.summary()).unwrap();
+        assert_eq!(
+            summary,
+            json!({
+                "at": base,
+                "kind": "Module",
+                "title": "Модуль объекта Заказ",
+                "props": {"ownerKind": "Document", "role": "Object"},
+                "branches": [
+                    {"at": format!("{base}.Method"), "count": 1},
+                    {"at": format!("{base}.Region"), "count": 1},
+                    {"at": format!("{base}.Interface"), "count": 1},
+                    {"at": format!("{base}.Event"), "count": 1},
+                    {"at": format!("{base}.Compilation"), "count": 1},
+                    {"at": format!("{base}.Body"), "count": 2}
+                ],
+                "rev": "rev-1"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&projection.methods()[0]).unwrap(),
+            json!({
+                "at": method_at,
+                "kind": "Method",
+                "props": {
+                    "signature": "Процедура Проверить(Отказ) Экспорт",
+                    "doc": "Проверяет заказ.",
+                    "methodKind": "procedure",
+                    "export": true,
+                    "compile": {
+                        "directive": "&НаСервере",
+                        "guard": "Server",
+                        "contexts": ["server"],
+                        "conditionalBody": true
+                    },
+                    "handles": [{
+                        "owner": "platform",
+                        "event": "BeforeWrite",
+                        "at": format!("{base}.Event.BeforeWrite"),
+                        "binding": "platform"
+                    }],
+                    "extension": {
+                        "kind": "instead",
+                        "directive": "&Вместо(\"Проверить\")",
+                        "targetAt": "main:Document.Заказ.Module.Object.Method.Проверить"
+                    }
+                },
+                "branches": [
+                    {"at": format!("{base}.Method.Проверить.Compilation"), "count": 1},
+                    {"at": format!("{base}.Method.Проверить.Body"), "count": 2}
+                ]
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&projection.regions()[0]).unwrap(),
+            json!({
+                "at": format!("{base}.Region.ПрограммныйИнтерфейс"),
+                "name": "ПрограммныйИнтерфейс",
+                "addressable": true,
+                "line": 1,
+                "endLine": 9,
+                "methods": [format!("{base}.Method.Проверить")],
+                "children": []
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&projection.interfaces()[0]).unwrap(),
+            json!({
+                "at": format!("{base}.Interface.Public"),
+                "kind": "Interface",
+                "interface": "Public",
+                "methods": [format!("{base}.Method.Проверить")]
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&projection.events()[0]).unwrap(),
+            json!({
+                "at": format!("{base}.Event.BeforeWrite"),
+                "eventId": "BeforeWrite",
+                "state": "implemented",
+                "signature": "Процедура ПередЗаписью(Отказ, РежимЗаписи, РежимПроведения)",
+                "contexts": ["server"],
+                "binding": "platform",
+                "handler": "ПередЗаписью",
+                "handlerEn": "BeforeWrite",
+                "implementationAt": format!("{base}.Method.Проверить")
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&projection.compilation()[0]).unwrap(),
+            json!({
+                "fromLine": 7,
+                "toLine": 7,
+                "guard": "Server",
+                "contexts": ["server"]
+            })
+        );
+        let body_page = projection.method_body(&method_at, None, 1, None).unwrap();
+        assert_eq!(
+            serde_json::to_value(body_page).unwrap(),
+            json!({
+                "lines": [{"line": 7, "text": "    Отказ = Ложь;"}],
+                "next": "1"
+            })
+        );
+        assert_forbidden_keys_are_absent(&summary);
+    }
+
+    #[test]
     fn common_module_flags_serialize_exactly_once_and_never_become_contexts() {
         let props = ModuleProperties::common(CommonModuleProperties {
             global: false,
@@ -810,6 +1025,7 @@ mod tests {
             },
             handles: Vec::new(),
             extension: None,
+            compilation_count: 0,
             body_from_line: 1,
             body_to_line: 0,
         };

@@ -17,6 +17,13 @@
     {"case": "integration-service", "at": "main:IntegrationService.Шина.Module.IntegrationService", "role": "IntegrationService", "source": true},
     {"case": "bot", "at": "main:Bot.Помощник.Module.Bot", "role": "Bot", "source": true},
     {"case": "websocket-client", "at": "main:WebSocketClient.Телефония.Module.WebSocketClient", "role": "WebSocketClient", "source": true},
+    {"case": "epf-object", "at": "epf:ExternalDataProcessor.Импорт.Module.Object", "role": "Object", "source": true},
+    {"case": "epf-form", "at": "epf:ExternalDataProcessor.Импорт.Form.Основная.Module.Form", "role": "Form", "source": true},
+    {"case": "epf-command", "at": "epf:ExternalDataProcessor.Импорт.Command.Выполнить.Module.Command", "role": "Command", "source": true},
+    {"case": "erf-object", "at": "erf:ExternalReport.Продажи.Module.Object", "role": "Object", "source": true},
+    {"case": "erf-form", "at": "erf:ExternalReport.Продажи.Form.Основная.Module.Form", "role": "Form", "source": true},
+    {"case": "erf-command", "at": "erf:ExternalReport.Продажи.Command.Сформировать.Module.Command", "role": "Command", "source": true},
+    {"case": "extension-object", "at": "sales:Document.Заказ.Module.Object", "role": "Object", "source": true},
     {"case": "valid-missing-file", "at": "main:Document.Пустой.Module.Object", "role": "Object", "source": false}
   ]
 }
