@@ -1375,8 +1375,17 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        let InvocationResponse::Direct(find) = find else {
-            panic!("hidden find should complete inline")
+        let find = match find {
+            InvocationResponse::Direct(find) => find,
+            InvocationResponse::Task(snapshot) => {
+                let terminal = owner
+                    .wait_task(snapshot.task_id, INTEGRATION_TASK_WAIT_MS)
+                    .unwrap();
+                assert_eq!(terminal.status, InvocationStatus::Completed);
+                terminal
+                    .result
+                    .expect("the one handed-off hidden find must publish its result")
+            }
         };
         assert!(find.ok, "{} {:?}", find.summary, find.diagnostics);
         assert_eq!(

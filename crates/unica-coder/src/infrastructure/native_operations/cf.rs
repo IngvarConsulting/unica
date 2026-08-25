@@ -1447,7 +1447,21 @@ pub(crate) fn cf_read_home_page(config_dir: &Path) -> Option<CfHomePageLayout> {
 
 pub(crate) fn parse_cf_home_page_xml(text: &str) -> Option<CfHomePageLayout> {
     let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    Some(cf_home_page_layout(doc.root_element()))
+}
+
+pub(crate) fn parse_cf_home_page_xml_strict(text: &str) -> Result<CfHomePageLayout, String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("HomePageWorkArea.xml is malformed: {error}"))?;
     let root = doc.root_element();
+    if root.tag_name().name() != "HomePageWorkArea" || root.tag_name().namespace() != Some(CF_HP_NS)
+    {
+        return Err("HomePageWorkArea.xml has a wrong root element".to_string());
+    }
+    Ok(cf_home_page_layout(root))
+}
+
+fn cf_home_page_layout(root: roxmltree::Node<'_, '_>) -> CfHomePageLayout {
     let template = child_text(root, "WorkingAreaTemplate", Some(CF_HP_NS))
         .trim()
         .to_string();
@@ -1468,11 +1482,11 @@ pub(crate) fn parse_cf_home_page_xml(text: &str) -> Option<CfHomePageLayout> {
             cf_home_page_items(columns.get(1).copied()),
         )
     };
-    Some(CfHomePageLayout {
+    CfHomePageLayout {
         template,
         left,
         right,
-    })
+    }
 }
 
 pub(crate) fn cf_home_page_named_column(
@@ -1795,6 +1809,19 @@ pub(crate) fn cf_type_ru_name(type_name: &str) -> &'static str {
 mod metadata_kind_consumer_tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn legacy_home_page_wrapper_keeps_well_formed_wrong_root_compatibility() {
+        let wrong_root =
+            r#"<NotHomePage xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#;
+        let legacy = parse_cf_home_page_xml(wrong_root)
+            .expect("the V12 wrapper historically treated any well-formed root as an empty layout");
+        assert!(legacy.template.is_empty());
+        assert!(legacy.left.is_empty());
+        assert!(legacy.right.is_empty());
+        assert!(parse_cf_home_page_xml_strict(wrong_root).is_err());
+        assert!(parse_cf_home_page_xml("<broken>").is_none());
+    }
 
     #[test]
     fn cf_edit_home_page_uses_active_format() {

@@ -3486,6 +3486,66 @@ pub(crate) mod tests {
         late_large_result_uses_the_same_durable_invocation_before_transport_margin();
     }
 
+    pub(crate) fn assert_operation_budget_survives_handoff_and_completes_once(
+        operation_budget: Duration,
+    ) {
+        use crate::domain::code_intelligence::ProviderDeadline;
+
+        assert!(
+            operation_budget > super::INVOCATION_HANDOFF_WINDOW,
+            "operation budget {operation_budget:?} must outlive the {:?} Task handoff window",
+            super::INVOCATION_HANDOFF_WINDOW,
+        );
+        let clock = Arc::new(ManualClock::new(Instant::now()));
+        let executor = Arc::new(InvocationExecutor::new(
+            Arc::new(MemoryStore::default()),
+            clock.clone(),
+        ));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (started, started_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let prepared = prepared_at(
+            clock.now(),
+            ExecutionClass::InlineCandidate,
+            super::INVOCATION_HANDOFF_WINDOW,
+        );
+        let run = {
+            let executor = Arc::clone(&executor);
+            let executions = Arc::clone(&executions);
+            std::thread::spawn(move || {
+                executor.submit(prepared, move |_| {
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    let operation = ProviderDeadline::from_budget(operation_budget);
+                    started.send(()).unwrap();
+                    release_wait.recv().unwrap();
+                    if operation.remaining().is_zero() {
+                        return Err(InvocationFailure::new(
+                            "provider_deadline",
+                            "operation budget elapsed at Task handoff",
+                        ));
+                    }
+                    Ok(result("find completed after handoff"))
+                })
+            })
+        };
+        started_wait.recv().unwrap();
+        clock.advance(super::INVOCATION_HANDOFF_WINDOW);
+        executor.wake_deadline_waiters_for_test();
+        let outcome = run.join().unwrap().unwrap();
+        let task_id = match outcome {
+            InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("unfinished find did not hand off as Task: {other:?}"),
+        };
+        release.send(()).unwrap();
+        let terminal = executor.wait_task(task_id, Duration::from_secs(1)).unwrap();
+        assert_eq!(terminal.status, InvocationStatus::Completed);
+        assert_eq!(
+            terminal.result.unwrap().summary,
+            "find completed after handoff"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     pub(crate) fn every_known_long_reason_materializes_before_execution_and_invalid_preparation_is_direct(
     ) {

@@ -161,6 +161,19 @@ impl WorkspaceFindIndexBuilder {
                         }
                         continue;
                     }
+                    Err(error)
+                        if error.code() == "provider_unavailable"
+                            && source.reader.permits_identity_fallback(&address) =>
+                    {
+                        let fallback = fallbacks.get(&address.to_string()).ok_or_else(|| {
+                            FindBuildError::new(
+                                "provider_unavailable",
+                                "typed identity fallback was not projected by its parent",
+                            )
+                        })?;
+                        self.push_identity_value(documents, total_fact_bytes, fallback, None)?;
+                        continue;
+                    }
                     Err(error) => {
                         let mapped = view_error(error);
                         return Err(FindBuildError::new(
@@ -180,13 +193,20 @@ impl WorkspaceFindIndexBuilder {
                 let Some(at) = child.get("at").and_then(Value::as_str) else {
                     continue;
                 };
+                let address = QualifiedAddress::parse(at).map_err(|error| {
+                    FindBuildError::new("provider_unavailable", error.to_string())
+                })?;
+                if address
+                    .segments()
+                    .last()
+                    .is_some_and(|segment| segment.kind() == NodeKind::Body)
+                {
+                    continue;
+                }
                 if child.get("kind").is_some() && child.get("title").is_some() {
                     fallbacks.insert(at.to_string(), child.clone());
                 }
                 if queued.insert(at.to_string()) {
-                    let address = QualifiedAddress::parse(at).map_err(|error| {
-                        FindBuildError::new("provider_unavailable", error.to_string())
-                    })?;
                     if address.source_set() != source.name {
                         return Err(FindBuildError::new(
                             "provider_unavailable",
@@ -392,13 +412,17 @@ mod tests {
     use crate::domain::address::QualifiedAddress;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::domain::node_view::{NodeView, NodeViewData};
+    use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
     use crate::domain::platform_profile::PlatformProfile;
     use crate::domain::project_sources::SourceSetKind;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
     use crate::infrastructure::source_revision::SourceRevisionService;
-    use crate::infrastructure::v13_read::LogicalViewReadAuthority;
+    use crate::infrastructure::v13_read::{
+        module_branch_for_parent, project_module_branch, LogicalViewReadAuthority,
+    };
+    use serde::Deserialize;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -476,6 +500,312 @@ mod tests {
         cancellation: CancellationToken,
     }
 
+    struct UnreadableWebSocketModuleReader;
+
+    impl ViewReadAuthority for UnreadableWebSocketModuleReader {
+        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
+            Ok(ViewSourceSnapshot {
+                source_set_identity: "source-a".to_string(),
+                revision: "rev-a".to_string(),
+            })
+        }
+
+        fn read_exact(
+            &self,
+            at: &QualifiedAddress,
+            _filter: &ViewFilter,
+            _admitted: &ViewSourceSnapshot,
+        ) -> Result<NodeViewData, ViewError> {
+            match at.to_string().as_str() {
+                "main:Configuration" => Ok(NodeViewData::Node(
+                    NodeView::new(
+                        at.to_string(),
+                        "Configuration",
+                        "Configuration",
+                        serde_json::Map::new(),
+                    )
+                    .with_branches(vec![BranchRef::new("main:WebSocketClient", 1)]),
+                )),
+                "main:WebSocketClient" => Ok(NodeViewData::Collection(CollectionView::new(
+                    NodeView::new(
+                        at.to_string(),
+                        "WebSocketClient",
+                        "WebSocketClient",
+                        serde_json::Map::new(),
+                    ),
+                    vec![serde_json::to_value(
+                        NodeView::new(
+                            "main:WebSocketClient.Telephony",
+                            "WebSocketClient",
+                            "Telephony",
+                            serde_json::Map::new(),
+                        )
+                        .with_branches(vec![BranchRef::new(
+                            "main:WebSocketClient.Telephony.Module",
+                            1,
+                        )]),
+                    )
+                    .unwrap()],
+                ))),
+                "main:WebSocketClient.Telephony" => Ok(NodeViewData::Node(
+                    NodeView::new(
+                        at.to_string(),
+                        "WebSocketClient",
+                        "Telephony",
+                        serde_json::Map::new(),
+                    )
+                    .with_branches(vec![BranchRef::new(
+                        "main:WebSocketClient.Telephony.Module",
+                        1,
+                    )]),
+                )),
+                "main:WebSocketClient.Telephony.Module" => {
+                    Ok(NodeViewData::Collection(CollectionView::new(
+                        NodeView::new(at.to_string(), "Module", "Module", serde_json::Map::new()),
+                        vec![serde_json::to_value(NodeView::new(
+                            "main:WebSocketClient.Telephony.Module.WebSocketClient",
+                            "Module",
+                            "WebSocketClient module Telephony",
+                            serde_json::Map::new(),
+                        ))
+                        .unwrap()],
+                    )))
+                }
+                "main:WebSocketClient.Telephony.Module.WebSocketClient" => Err(ViewError::new(
+                    "provider_unavailable",
+                    "WebSocketClient source layout is intentionally unavailable",
+                )),
+                other => Err(ViewError::new("not_found", format!("unknown {other}"))),
+            }
+        }
+
+        fn permits_identity_fallback(&self, at: &QualifiedAddress) -> bool {
+            at.to_string() == "main:WebSocketClient.Telephony.Module.WebSocketClient"
+        }
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ModuleMatrixFixture {
+        module_capabilities: Vec<ModuleMatrixCase>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ModuleMatrixCase {
+        at: String,
+        exists: bool,
+    }
+
+    struct ProfileModuleMatrixReader {
+        source: String,
+        modules: Vec<String>,
+    }
+
+    impl ProfileModuleMatrixReader {
+        fn new(source: &str, modules: &[String]) -> Self {
+            Self {
+                source: source.to_string(),
+                modules: modules
+                    .iter()
+                    .filter(|address| address.starts_with(&format!("{source}:")))
+                    .cloned()
+                    .collect(),
+            }
+        }
+
+        fn root_owners(&self) -> BTreeSet<String> {
+            self.modules
+                .iter()
+                .filter_map(|module| {
+                    let logical = module.split_once(':')?.1;
+                    if logical.starts_with("Module.") {
+                        return None;
+                    }
+                    let owner = module
+                        .split_once(".Module.")
+                        .map_or(module.as_str(), |(owner, _)| owner);
+                    let tokens = owner.split_once(':')?.1.split('.').collect::<Vec<_>>();
+                    (tokens.len() >= 2)
+                        .then(|| format!("{}:{}.{}", self.source, tokens[0], tokens[1]))
+                })
+                .collect()
+        }
+
+        fn nested_owners(&self, root: &str) -> BTreeSet<String> {
+            self.modules
+                .iter()
+                .filter_map(|module| module.split_once(".Module.").map(|(owner, _)| owner))
+                .filter(|owner| owner.starts_with(&format!("{root}.")))
+                .filter(|owner| owner.split_once(':').unwrap().1.split('.').count() == 4)
+                .map(str::to_string)
+                .collect()
+        }
+
+        fn owner_node(&self, at: &QualifiedAddress) -> NodeViewData {
+            let mut branches = Vec::new();
+            if let Some(module_branch) = module_branch_for_parent(at, PlatformProfile::v8_3_27()) {
+                branches.push(module_branch);
+            }
+            let nested = self.nested_owners(&at.to_string());
+            let mut child_counts = BTreeMap::<String, usize>::new();
+            for child in nested {
+                let logical = child
+                    .split_once(':')
+                    .unwrap()
+                    .1
+                    .split('.')
+                    .collect::<Vec<_>>();
+                *child_counts.entry(logical[2].to_string()).or_default() += 1;
+            }
+            branches.extend(
+                child_counts
+                    .into_iter()
+                    .map(|(kind, count)| BranchRef::new(format!("{at}.{kind}"), count)),
+            );
+            let segment = at.segments().last().unwrap();
+            NodeViewData::Node(
+                NodeView::new(
+                    at.to_string(),
+                    segment.kind().as_str(),
+                    segment.name().unwrap_or(segment.kind().as_str()),
+                    serde_json::Map::new(),
+                )
+                .with_branches(branches),
+            )
+        }
+
+        fn module_collection(&self, at: &QualifiedAddress) -> NodeViewData {
+            project_module_branch(at, PlatformProfile::v8_3_27()).unwrap()
+        }
+    }
+
+    impl ViewReadAuthority for ProfileModuleMatrixReader {
+        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
+            Ok(ViewSourceSnapshot {
+                source_set_identity: format!("{}-source", self.source),
+                revision: "rev-a".to_string(),
+            })
+        }
+
+        fn read_exact(
+            &self,
+            at: &QualifiedAddress,
+            _filter: &ViewFilter,
+            _admitted: &ViewSourceSnapshot,
+        ) -> Result<NodeViewData, ViewError> {
+            let text = at.to_string();
+            if text == format!("{}:Configuration", self.source) {
+                let roots = self.root_owners();
+                let mut counts = BTreeMap::<String, usize>::new();
+                for owner in &roots {
+                    let kind = owner.split_once(':').unwrap().1.split('.').next().unwrap();
+                    *counts.entry(kind.to_string()).or_default() += 1;
+                }
+                let mut branches = counts
+                    .into_iter()
+                    .map(|(kind, count)| BranchRef::new(format!("{}:{kind}", self.source), count))
+                    .collect::<Vec<_>>();
+                let root = QualifiedAddress::parse(&text).unwrap();
+                if self.source == "main" {
+                    branches.extend(module_branch_for_parent(&root, PlatformProfile::v8_3_27()));
+                }
+                return Ok(NodeViewData::Node(
+                    NodeView::new(
+                        text,
+                        "Configuration",
+                        "Configuration",
+                        serde_json::Map::new(),
+                    )
+                    .with_branches(branches),
+                ));
+            }
+            if PlatformProfile::v8_3_27().module_capability(at).is_some() {
+                if text == "main:Document.ЕщеНеВыгружен.Module.Object" {
+                    return Err(ViewError::new(
+                        "not_found",
+                        "registered owner has no retained Module.bsl source",
+                    ));
+                }
+                if at
+                    .segments()
+                    .last()
+                    .is_some_and(|segment| segment.name() == Some("WebSocketClient"))
+                {
+                    return Err(ViewError::new(
+                        "provider_unavailable",
+                        "WebSocketClient source layout is intentionally unavailable",
+                    ));
+                }
+                return Ok(NodeViewData::Node(NodeView::new(
+                    text,
+                    "Module",
+                    "Module",
+                    serde_json::Map::new(),
+                )));
+            }
+            if !PlatformProfile::v8_3_27().module_children(at).is_empty() {
+                return Ok(self.module_collection(at));
+            }
+            let logical = text
+                .split_once(':')
+                .unwrap()
+                .1
+                .split('.')
+                .collect::<Vec<_>>();
+            if logical.len() == 1 {
+                let roots = self.root_owners();
+                let items = roots
+                    .iter()
+                    .filter(|owner| owner.split_once(':').unwrap().1.starts_with(logical[0]))
+                    .map(|owner| {
+                        let owner = QualifiedAddress::parse(owner).unwrap();
+                        serde_json::to_value(self.owner_node(&owner)).unwrap()
+                    })
+                    .collect();
+                return Ok(NodeViewData::Collection(CollectionView::new(
+                    NodeView::new(text.clone(), logical[0], logical[0], serde_json::Map::new()),
+                    items,
+                )));
+            }
+            if logical.len() == 3 {
+                let root = format!("{}:{}.{}", self.source, logical[0], logical[1]);
+                let nested = self.nested_owners(&root);
+                let items = nested
+                    .iter()
+                    .filter(|owner| {
+                        owner.split_once(':').unwrap().1.split('.').nth(2) == Some(logical[2])
+                    })
+                    .map(|owner| {
+                        let owner = QualifiedAddress::parse(owner).unwrap();
+                        serde_json::to_value(self.owner_node(&owner)).unwrap()
+                    })
+                    .collect();
+                return Ok(NodeViewData::Collection(CollectionView::new(
+                    NodeView::new(text.clone(), logical[2], logical[2], serde_json::Map::new()),
+                    items,
+                )));
+            }
+            let roots = self.root_owners();
+            let nested = roots
+                .iter()
+                .flat_map(|root| self.nested_owners(root))
+                .collect::<BTreeSet<_>>();
+            if roots.contains(&text) || nested.contains(&text) {
+                return Ok(self.owner_node(at));
+            }
+            Err(ViewError::new("not_found", format!("unknown {text}")))
+        }
+
+        fn permits_identity_fallback(&self, at: &QualifiedAddress) -> bool {
+            PlatformProfile::v8_3_27()
+                .module_capability(at)
+                .is_some_and(|capability| {
+                    capability.role()
+                        == crate::domain::platform_profile::ModuleRole::WebSocketClient
+                })
+        }
+    }
+
     impl ViewReadAuthority for CancellingReader {
         fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
             Ok(ViewSourceSnapshot {
@@ -519,10 +849,35 @@ mod tests {
         (fixture, source)
     }
 
+    fn common_module_identity_source(statement: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("src");
+        fs::create_dir_all(source.join("CommonModules/IdentityModule/Ext")).unwrap();
+        fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><CommonModule>IdentityModule</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            source.join("CommonModules/IdentityModule.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>IdentityModule</Name><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            source.join("CommonModules/IdentityModule/Ext/Module.bsl"),
+            format!(
+                "#Region PublicApi\nProcedure StableMethod(Value) Export\n    {statement};\nEndProcedure\n#EndRegion\n"
+            ),
+        )
+        .unwrap();
+        let source = fs::canonicalize(source).unwrap();
+        (fixture, source)
+    }
+
     #[test]
     fn actor_owned_platform_xml_registry_builds_identity_only_find_index() {
         let (_fixture, source) =
-            identity_source("Procedure СовершенноСекретноеСлово()\nEndProcedure");
+            identity_source("Procedure StableMethod()\nСовершенноСекретноеСлово();\nEndProcedure");
         let cancellation = CancellationToken::new();
         let index = build_index(
             WorkspaceFindIndexBuilder::default(),
@@ -557,10 +912,9 @@ mod tests {
     #[test]
     fn find_identity_facts_and_results_are_independent_of_bsl_body_bytes() {
         let (_left_fixture, left_source) =
-            identity_source("Procedure ОдинСекретныйМетод()\nEndProcedure");
-        let (_right_fixture, right_source) = identity_source(
-            "Procedure СовсемДругойМетод()\nСообщить(\"другой текст\");\nEndProcedure",
-        );
+            identity_source("Procedure StableMethod()\nОдинСекретныйОператор();\nEndProcedure");
+        let (_right_fixture, right_source) =
+            identity_source("Procedure StableMethod()\nСовсемДругойОператор();\nEndProcedure");
         let builder = WorkspaceFindIndexBuilder::default();
         let cancellation = CancellationToken::new();
         let left = build_index(builder.clone(), &left_source, &cancellation, deadline()).unwrap();
@@ -578,6 +932,51 @@ mod tests {
                 !left_result.is_nearest()
                     || candidate.reason().starts_with("nearest:name")
                     || candidate.reason().starts_with("nearest:address")
+            }));
+        }
+    }
+
+    #[test]
+    fn find_reads_only_module_declarations_and_never_indexes_the_body_projection() {
+        let (_left_fixture, left_source) = common_module_identity_source("LeftBodyOnlyStatement()");
+        let (_right_fixture, right_source) =
+            common_module_identity_source("RightBodyOnlyStatement()");
+        let cancellation = CancellationToken::new();
+        let builder = WorkspaceFindIndexBuilder::default();
+        let left = build_index(builder.clone(), &left_source, &cancellation, deadline()).unwrap();
+        let right = build_index(builder, &right_source, &cancellation, deadline()).unwrap();
+
+        assert_eq!(left.fact_bytes(), right.fact_bytes());
+        for address in [
+            "main:CommonModule.IdentityModule.Method.StableMethod",
+            "main:CommonModule.IdentityModule.Region.PublicApi",
+        ] {
+            let left_result = left.find(FindRequest::new(address).unwrap());
+            let right_result = right.find(FindRequest::new(address).unwrap());
+            assert!(!left_result.is_nearest(), "{left_result:?}");
+            assert!(left_result
+                .candidates()
+                .iter()
+                .any(|candidate| candidate.at() == address));
+            assert_eq!(
+                serde_json::to_vec(&left_result).unwrap(),
+                serde_json::to_vec(&right_result).unwrap(),
+            );
+        }
+        for (index, query) in [
+            (&left, "main:CommonModule.IdentityModule.Body"),
+            (&left, "LeftBodyOnlyStatement"),
+            (&right, "RightBodyOnlyStatement"),
+        ] {
+            let result = index.find(FindRequest::new(query).unwrap());
+            assert!(
+                result.is_nearest(),
+                "body identity leaked for {query}: {result:?}"
+            );
+            assert!(result.candidates().iter().all(|candidate| {
+                candidate.at() != "main:CommonModule.IdentityModule.Body"
+                    && (candidate.reason().starts_with("nearest:name")
+                        || candidate.reason().starts_with("nearest:address"))
             }));
         }
     }
@@ -675,6 +1074,72 @@ mod tests {
     }
 
     #[test]
+    fn find_keeps_profile_identity_for_the_typed_unreadable_websocket_module() {
+        let cancellation = CancellationToken::new();
+        let built = WorkspaceFindIndexBuilder::default().build(
+            &[ActorFindSource::new(
+                "main",
+                &UnreadableWebSocketModuleReader,
+            )],
+            deadline(),
+            &cancellation,
+        );
+        let index = built.expect("the typed unreadable module must not collapse other identities");
+        let address = "main:WebSocketClient.Telephony.Module.WebSocketClient";
+        let found = index.find(FindRequest::new(address).unwrap());
+        assert!(!found.is_nearest(), "{found:?}");
+        assert!(found
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.at() == address));
+    }
+
+    #[test]
+    fn find_reaches_every_approved_module_capability_through_parent_branches() {
+        let fixture: ModuleMatrixFixture = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/v013/address-profile-8.3.27.json"
+        ))
+        .unwrap();
+        let expected = fixture
+            .module_capabilities
+            .into_iter()
+            .filter(|case| case.exists)
+            .map(|case| case.at)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected.len(), 25);
+        let main =
+            ProfileModuleMatrixReader::new("main", &expected.iter().cloned().collect::<Vec<_>>());
+        let epf =
+            ProfileModuleMatrixReader::new("epf", &expected.iter().cloned().collect::<Vec<_>>());
+        let erf =
+            ProfileModuleMatrixReader::new("erf", &expected.iter().cloned().collect::<Vec<_>>());
+        let cancellation = CancellationToken::new();
+        let index = WorkspaceFindIndexBuilder::default()
+            .build(
+                &[
+                    ActorFindSource::new("main", &main),
+                    ActorFindSource::new("epf", &epf),
+                    ActorFindSource::new("erf", &erf),
+                ],
+                deadline(),
+                &cancellation,
+            )
+            .unwrap();
+        assert!(main.root_owners().contains("main:Document.ЕщеНеВыгружен"));
+        for address in expected {
+            let found = index.find(FindRequest::new(&address).unwrap().with_limit(100).unwrap());
+            assert!(
+                !found.is_nearest()
+                    && found
+                        .candidates()
+                        .iter()
+                        .any(|candidate| candidate.at() == address),
+                "missing module identity {address}: {found:?}",
+            );
+        }
+    }
+
+    #[test]
     fn workspace_find_builder_refuses_registry_materialization_above_bound() {
         let fixture = tempfile::tempdir().unwrap();
         let source = fixture.path().join("src");
@@ -715,14 +1180,19 @@ mod tests {
     #[test]
     fn find_identity_only_contract_is_complete() {
         actor_owned_platform_xml_registry_builds_identity_only_find_index();
-        find_identity_facts_and_results_are_independent_of_bsl_body_bytes();
+        find_reads_only_module_declarations_and_never_indexes_the_body_projection();
         find_indexes_nested_addressable_metadata_identity();
+        find_reaches_every_approved_module_capability_through_parent_branches();
+        find_keeps_profile_identity_for_the_typed_unreadable_websocket_module();
         find_fails_closed_when_a_registered_descriptor_is_malformed();
         find_fails_when_the_exact_source_revision_changes_during_the_walk();
         find_observes_cancellation_inside_the_logical_tree_walk();
         find_observes_one_aggregate_provider_deadline();
         workspace_find_builder_refuses_registry_materialization_above_bound();
         workspace_find_builder_refuses_identity_facts_above_byte_budget();
+        crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
+            crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+        );
         crate::infrastructure::v13_read::tests::find_uses_each_typed_readers_real_export_path_without_publishing_it_in_view_props();
     }
 }

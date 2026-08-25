@@ -19,6 +19,16 @@ admission не меняет bytes или revision authority. Reader-specific pro
 branches/items, неизвестные поля provider-а дают typed failure, а неподдержанный
 filter — `bad_value`.
 
+Зарегистрированный owner имеет ровно одну profile-derived `Module` branch:
+branch count равен числу уникальных допустимых ролей, а все 25 положительных
+`moduleCapabilities` профиля покрыты parent navigation и find, включая
+зарегистрированный owner без Module.bsl. Role объединяет allowed/denied по
+canonical `(kind, name)` и размещает уникальные RLS nodes только под Right.
+Отсутствующий HomePage sidecar допустим, present malformed/wrong-root evidence
+даёт `provider_unavailable`; V12 legacy wrapper сохраняет старую трактовку.
+Общий 120-секундный operation budget view/find отделён от 7-секундного Task
+handoff и использует cancellation.
+
 Bot использует доказанную зарегистрированную раскладку. WebSocketClient profile
 видим в логическом дереве, но его source view остаётся явным
 `provider_unavailable`, а не fake empty node или `not_found`.

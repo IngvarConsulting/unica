@@ -4,6 +4,7 @@ use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::ViewCursorStore;
 use crate::application::v13::find::FindRequest;
 use crate::application::v13::view::{ViewRequest, ViewService};
+use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -13,9 +14,6 @@ use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder
 use crate::infrastructure::v13_read::LogicalViewReadAuthority;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use std::time::Duration;
-
-const READ_BUDGET: Duration = Duration::from_secs(7);
 
 /// Explicitly injected hidden v0.13 reader. `DaemonServerConfig::new` keeps the
 /// dormant service until the atomic Task 22 surface cutover.
@@ -212,7 +210,7 @@ impl CanonicalV13ReadService {
             .collect::<Vec<_>>();
         let built = match self.find_builder.build_with_revision(
             &find_sources,
-            ProviderDeadline::from_budget(READ_BUDGET),
+            ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),
             cancellation,
         ) {
             Ok(built) => built,
@@ -246,4 +244,14 @@ fn error_result(
     result.at = at;
     result.diagnostics = vec![json!({"code": code, "message": message})];
     result
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn logical_read_operation_budget_outlives_task_handoff_and_completes_once() {
+        crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
+            crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+        );
+    }
 }

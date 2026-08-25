@@ -1,5 +1,6 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
 use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot};
+use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -30,9 +31,7 @@ use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
-use std::time::Duration;
 
-const READ_BUDGET: Duration = Duration::from_secs(7);
 const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
 const MODULE_CONTEXTS: &[&str] = &[
     "client",
@@ -61,6 +60,7 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     cancellation: &'a CancellationToken,
     read: ProviderReadAuthority,
     profile: PlatformProfile,
+    deadline: ProviderDeadline,
 }
 
 impl<'a> LogicalViewReadAuthority<'a> {
@@ -83,14 +83,26 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 revision_service,
             ),
             profile,
+            deadline: ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),
         }
     }
 
     fn exact_revision(&self) -> Result<String, ViewError> {
-        self.read.exact_revision(
-            ProviderDeadline::from_budget(READ_BUDGET),
-            self.cancellation,
-        )
+        self.read_checkpoint()?;
+        self.read.exact_revision(self.deadline, self.cancellation)
+    }
+
+    fn read_checkpoint(&self) -> Result<(), ViewError> {
+        if self.cancellation.is_cancelled() {
+            return Err(ViewError::new("cancelled", "logical read was cancelled"));
+        }
+        if self.deadline.remaining().is_zero() {
+            return Err(ViewError::new(
+                "provider_deadline",
+                "logical read operation deadline elapsed",
+            ));
+        }
+        Ok(())
     }
 
     fn typed_payload(&self, route: &LogicalTreeRoute) -> Result<Value, ViewError> {
@@ -247,12 +259,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         admitted: &ViewSourceSnapshot,
         filter: &ModuleViewFilter,
     ) -> Result<NodeViewData, ViewError> {
-        let capability = route.module().ok_or_else(|| {
-            ViewError::new(
-                "provider_unavailable",
-                "module route has no platform capability",
-            )
-        })?;
+        let Some(capability) = route.module() else {
+            return self.module_branch_view(route.at());
+        };
         if capability.role() == ModuleRole::WebSocketClient {
             return Err(ViewError::new(
                 "provider_unavailable",
@@ -295,6 +304,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
         })
         .map_err(|error| ViewError::new("provider_unavailable", error))?;
         module_projection_view(route.at(), prefix_len, &projections, filter)
+    }
+
+    fn module_branch_view(&self, branch: &QualifiedAddress) -> Result<NodeViewData, ViewError> {
+        project_module_branch(branch, self.profile)
     }
 
     fn form_bindings(
@@ -349,6 +362,30 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         })
     }
 
+    fn canonical_address(
+        &self,
+        at: &QualifiedAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<QualifiedAddress, ViewError> {
+        if admitted.source_set_identity != self.read.source_set_identity()
+            || admitted.revision != self.exact_revision()?
+        {
+            return Err(ViewError::new(
+                "stale_cursor",
+                "source revision changed before canonical address resolution",
+            ));
+        }
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new("not_found", error.to_string()))?;
+        if route.reader() != LogicalReader::Role {
+            return Ok(at.clone());
+        }
+        let payload = self.typed_payload(&route)?;
+        let projected = project_typed_payload(&route, payload)?;
+        QualifiedAddress::parse(projected.at())
+            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
+    }
+
     fn identity_export_path(&self, at: &QualifiedAddress) -> Result<Option<String>, ViewError> {
         if at.source_set() != self.read.source_set() {
             return Err(ViewError::new(
@@ -362,6 +399,9 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             return Ok(Some("Configuration.xml".to_string()));
         }
         if route.reader() == LogicalReader::Module {
+            if route.module().is_none() {
+                return Ok(None);
+            }
             let capability = route.module().ok_or_else(|| {
                 ViewError::new("provider_unavailable", "module capability is missing")
             })?;
@@ -400,12 +440,19 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         Ok(Some(path))
     }
 
+    fn permits_identity_fallback(&self, at: &QualifiedAddress) -> bool {
+        self.profile
+            .module_capability(at)
+            .is_some_and(|capability| capability.role() == ModuleRole::WebSocketClient)
+    }
+
     fn read_exact(
         &self,
         at: &QualifiedAddress,
         filter: &ViewFilter,
         admitted: &ViewSourceSnapshot,
     ) -> Result<NodeViewData, ViewError> {
+        self.read_checkpoint()?;
         if admitted.source_set_identity != self.read.source_set_identity()
             || admitted.revision != self.exact_revision()?
         {
@@ -431,14 +478,84 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             let payload = self.typed_payload(&route)?;
             project_typed_payload(&route, payload)?
         };
+        self.read_checkpoint()?;
         if admitted.revision != self.exact_revision()? {
             return Err(ViewError::new(
                 "stale_cursor",
                 "source revision changed during the typed read",
             ));
         }
-        Ok(projected)
+        Ok(with_module_branch(projected, at, self.profile))
     }
+}
+
+fn with_module_branch(
+    projected: NodeViewData,
+    parent: &QualifiedAddress,
+    profile: PlatformProfile,
+) -> NodeViewData {
+    let Some(branch) = module_branch_for_parent(parent, profile) else {
+        return projected;
+    };
+    projected.with_branch(branch)
+}
+
+pub(crate) fn module_branch_for_parent(
+    parent: &QualifiedAddress,
+    profile: PlatformProfile,
+) -> Option<BranchRef> {
+    let branch = if matches!(parent.segments(), [root] if root.kind() == NodeKind::Configuration) {
+        QualifiedAddress::parse(&format!("{}:Module", parent.source_set())).ok()
+    } else {
+        QualifiedAddress::parse(&format!("{parent}.Module")).ok()
+    };
+    let branch = branch?;
+    let count = profile.module_children(&branch).len();
+    if count == 0 {
+        return None;
+    }
+    Some(BranchRef::new(branch.to_string(), count))
+}
+
+pub(crate) fn project_module_branch(
+    branch: &QualifiedAddress,
+    profile: PlatformProfile,
+) -> Result<NodeViewData, ViewError> {
+    let children = profile.module_children(branch);
+    if children.is_empty() {
+        return Err(ViewError::new(
+            "not_found",
+            "module branch has no platform capabilities",
+        ));
+    }
+    let items = children
+        .iter()
+        .map(|child| {
+            let capability = child.capability();
+            serde_json::to_value(NodeView::new(
+                child.at().to_string(),
+                NodeKind::Module.as_str(),
+                module_title(child.at(), capability),
+                Map::from_iter([
+                    (
+                        "ownerKind".to_string(),
+                        json!(capability.owner_kind().as_str()),
+                    ),
+                    ("role".to_string(), json!(capability.role().as_str())),
+                ]),
+            ))
+            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(NodeViewData::Collection(CollectionView::new(
+        NodeView::new(
+            branch.to_string(),
+            NodeKind::Module.as_str(),
+            NodeKind::Module.as_str(),
+            Map::new(),
+        ),
+        items,
+    )))
 }
 
 fn validate_view_filter(
@@ -452,6 +569,16 @@ fn validate_view_filter(
             Err(ViewError::new(
                 "bad_value",
                 "this logical projection does not support a filter",
+            ))
+        };
+    }
+    if route.module().is_none() {
+        return if filter.is_empty() {
+            Ok(ModuleViewFilter::default())
+        } else {
+            Err(ViewError::new(
+                "bad_value",
+                "module capability collections do not support a filter",
             ))
         };
     }
@@ -744,10 +871,19 @@ fn collect_element_bindings(
 }
 
 fn module_title(at: &QualifiedAddress, capability: ModuleCapability) -> String {
-    let owner = at
-        .segments()
-        .first()
-        .and_then(AddressSegment::name)
+    let segments = at.segments();
+    let owner_segments = if segments
+        .last()
+        .is_some_and(|segment| segment.kind() == NodeKind::Module)
+    {
+        &segments[..segments.len().saturating_sub(1)]
+    } else {
+        segments
+    };
+    let owner = owner_segments
+        .iter()
+        .rev()
+        .find_map(AddressSegment::name)
         .unwrap_or("Configuration");
     format!("{} module {owner}", capability.role().as_str())
 }

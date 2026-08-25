@@ -3,6 +3,15 @@ use crate::application::v13::view::ViewError;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone)]
+struct RoleObject {
+    kind: String,
+    name: String,
+    allowed: Vec<Value>,
+    denied: Vec<Value>,
+}
 
 pub(super) fn project_role(
     address: &QualifiedAddress,
@@ -10,11 +19,6 @@ pub(super) fn project_role(
     suffix: &[AddressSegment],
 ) -> Result<NodeViewData, ViewError> {
     let objects = role_objects(payload);
-    let restricted = payload
-        .get("restrictedObjects")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
     if suffix.is_empty() {
         let mut props = selected_scalar_props(payload, &["synonym"]);
         if let Some(totals) = payload.get("totals") {
@@ -27,9 +31,6 @@ pub(super) fn project_role(
         let mut branches = Vec::new();
         if !objects.is_empty() {
             branches.push(BranchRef::new(format!("{}.Right", address), objects.len()));
-        }
-        if !restricted.is_empty() {
-            branches.push(BranchRef::new(format!("{}.RLS", address), restricted.len()));
         }
         return Ok(NodeViewData::Node(
             NodeView::new(
@@ -61,32 +62,11 @@ pub(super) fn project_role(
                 .ok_or_else(|| {
                     ViewError::new("not_found", format!("role object `{name}` was not found"))
                 })?;
+            let canonical = canonical_role_object_address(address, object)?;
             if suffix.len() == 1 {
-                return Ok(NodeViewData::Node(role_object_node(address, object)));
+                return Ok(NodeViewData::Node(role_object_node(&canonical, object)));
             }
-            project_role_object_suffix(address, object, &suffix[1..])
-        }
-        (NodeKind::Rls, None) => Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(address.to_string(), "RLS", "RLS", Map::new()),
-            restricted
-                .iter()
-                .filter_map(Value::as_str)
-                .filter_map(|name| {
-                    let at = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
-                    serde_json::to_value(NodeView::new(at.to_string(), "RLS", name, Map::new()))
-                        .ok()
-                })
-                .collect(),
-        ))),
-        (NodeKind::Rls, Some(name))
-            if restricted.iter().any(|value| value.as_str() == Some(name)) =>
-        {
-            Ok(NodeViewData::Node(NodeView::new(
-                address.to_string(),
-                "RLS",
-                name,
-                Map::new(),
-            )))
+            project_role_object_suffix(&canonical, object, &suffix[1..])
         }
         _ => Err(ViewError::new("not_found", "role projection was not found")),
     }
@@ -94,7 +74,7 @@ pub(super) fn project_role(
 
 fn project_role_object_suffix(
     address: &QualifiedAddress,
-    object: &Value,
+    object: &RoleObject,
     suffix: &[AddressSegment],
 ) -> Result<NodeViewData, ViewError> {
     let [rls] = suffix else {
@@ -109,22 +89,15 @@ fn project_role_object_suffix(
             "role right has no requested child projection",
         ));
     }
-    let rights = object
-        .get("rights")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|right| right.get("restricted").and_then(Value::as_bool) == Some(true))
-        .collect::<Vec<_>>();
+    let rights = restricted_rights(object);
     match rls.name() {
         None => Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(address.to_string(), "RLS", "RLS", Map::new()),
+            NodeView::new(format!("{address}.RLS"), "RLS", "RLS", Map::new()),
             rights
-                .into_iter()
-                .filter_map(|right| {
-                    let name = right.get("name")?.as_str()?;
+                .keys()
+                .filter_map(|name| {
                     serde_json::to_value(NodeView::new(
-                        format!("{address}.{name}"),
+                        format!("{address}.RLS.{name}"),
                         "RLS",
                         name,
                         Map::new(),
@@ -134,10 +107,14 @@ fn project_role_object_suffix(
                 .collect(),
         ))),
         Some(name) => rights
-            .into_iter()
-            .find(|right| right.get("name").and_then(Value::as_str) == Some(name))
-            .map(|_| {
-                NodeViewData::Node(NodeView::new(address.to_string(), "RLS", name, Map::new()))
+            .contains_key(name)
+            .then(|| {
+                NodeViewData::Node(NodeView::new(
+                    format!("{address}.RLS.{name}"),
+                    "RLS",
+                    name,
+                    Map::new(),
+                ))
             })
             .ok_or_else(|| {
                 ViewError::new(
@@ -148,76 +125,94 @@ fn project_role_object_suffix(
     }
 }
 
-fn role_objects(payload: &Value) -> Vec<Value> {
-    let mut result = Vec::new();
-    for (access, key) in [("allowed", "allowed"), ("denied", "denied")] {
+fn role_objects(payload: &Value) -> Vec<RoleObject> {
+    let mut result = BTreeMap::<(String, String), RoleObject>::new();
+    for key in ["allowed", "denied"] {
         for group in payload
             .get(key)
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
         {
-            let group_kind = group.get("kind").cloned().unwrap_or(Value::Null);
+            let Some(group_kind) = group.get("kind").and_then(Value::as_str) else {
+                continue;
+            };
             for object in group
                 .get("objects")
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
             {
-                let mut object = object.as_object().cloned().unwrap_or_default();
-                object.insert("access".to_string(), json!(access));
-                object.insert("objectKind".to_string(), group_kind.clone());
-                result.push(Value::Object(object));
+                let Some(name) = object.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let entry = result
+                    .entry((group_kind.to_string(), name.to_string()))
+                    .or_insert_with(|| RoleObject {
+                        kind: group_kind.to_string(),
+                        name: name.to_string(),
+                        allowed: Vec::new(),
+                        denied: Vec::new(),
+                    });
+                let rights = object
+                    .get("rights")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if key == "allowed" {
+                    entry.allowed.extend(rights);
+                } else {
+                    entry.denied.extend(rights);
+                }
             }
         }
     }
-    result
+    result.into_values().collect()
 }
 
-fn role_object_value(address: &QualifiedAddress, object: &Value) -> Option<Value> {
+fn role_object_value(address: &QualifiedAddress, object: &RoleObject) -> Option<Value> {
     let name = role_object_logical_name(object)?;
     let at = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
     serde_json::to_value(role_object_node(&at, object)).ok()
 }
 
-fn role_object_logical_name(object: &Value) -> Option<String> {
-    let kind = object.get("objectKind")?.as_str()?;
-    let name = object.get("name")?.as_str()?;
-    Some(format!("{kind}_{name}"))
+fn role_object_logical_name(object: &RoleObject) -> Option<String> {
+    (!object.kind.is_empty() && !object.name.is_empty())
+        .then(|| format!("{}_{}", object.kind, object.name))
 }
 
-fn role_object_matches(object: &Value, requested: &str) -> bool {
-    object.get("name").and_then(Value::as_str) == Some(requested)
-        || role_object_logical_name(object).as_deref() == Some(requested)
+fn role_object_matches(object: &RoleObject, requested: &str) -> bool {
+    object.name == requested || role_object_logical_name(object).as_deref() == Some(requested)
 }
 
-fn role_object_node(address: &QualifiedAddress, object: &Value) -> NodeView {
-    let restricted = object
-        .get("rights")
-        .and_then(Value::as_array)
-        .map(|rights| {
-            rights
-                .iter()
-                .filter(|right| right.get("restricted").and_then(Value::as_bool) == Some(true))
-                .count()
-        })
-        .unwrap_or_default();
+fn canonical_role_object_address(
+    requested: &QualifiedAddress,
+    object: &RoleObject,
+) -> Result<QualifiedAddress, ViewError> {
+    let role_name = requested
+        .segments()
+        .first()
+        .and_then(AddressSegment::name)
+        .ok_or_else(|| ViewError::new("provider_unavailable", "role name is unavailable"))?;
+    let logical = role_object_logical_name(object)
+        .ok_or_else(|| ViewError::new("provider_unavailable", "role object identity is invalid"))?;
+    QualifiedAddress::parse(&format!(
+        "{}:Role.{role_name}.Right.{logical}",
+        requested.source_set()
+    ))
+    .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
+}
+
+fn role_object_node(address: &QualifiedAddress, object: &RoleObject) -> NodeView {
+    let restricted = restricted_rights(object).len();
     NodeView::new(
         address.to_string(),
         "Right",
-        object
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("Right"),
+        &object.name,
         Map::from_iter([
-            (
-                "access".to_string(),
-                object.get("access").cloned().unwrap_or(Value::Null),
-            ),
-            (
-                "objectKind".to_string(),
-                object.get("objectKind").cloned().unwrap_or(Value::Null),
-            ),
+            ("allowedCount".to_string(), json!(object.allowed.len())),
+            ("deniedCount".to_string(), json!(object.denied.len())),
+            ("objectKind".to_string(), json!(object.kind)),
         ]),
     )
     .with_branches(
@@ -226,4 +221,20 @@ fn role_object_node(address: &QualifiedAddress, object: &Value) -> NodeView {
             .into_iter()
             .collect(),
     )
+}
+
+fn restricted_rights(object: &RoleObject) -> BTreeMap<String, Value> {
+    let mut restricted = BTreeMap::new();
+    for right in object.allowed.iter().chain(object.denied.iter()) {
+        if right.get("restricted").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let Some(name) = right.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        restricted
+            .entry(name.to_string())
+            .or_insert_with(|| right.clone());
+    }
+    restricted
 }

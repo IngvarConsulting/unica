@@ -93,11 +93,14 @@ impl ViewRequest {
         self
     }
 
-    fn binding(&self, snapshot: &ViewSourceSnapshot) -> ViewCursorBinding {
+    fn binding(
+        &self,
+        canonical_at: &QualifiedAddress,
+        snapshot: &ViewSourceSnapshot,
+    ) -> ViewCursorBinding {
         ViewCursorBinding {
-            canonical_at: self.at.to_string(),
-            projection: self
-                .at
+            canonical_at: canonical_at.to_string(),
+            projection: canonical_at
                 .segments()
                 .last()
                 .map(|segment| segment.kind().as_str())
@@ -120,9 +123,24 @@ pub(crate) struct ViewSourceSnapshot {
 pub(crate) trait ViewReadAuthority: Send + Sync {
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError>;
 
+    fn canonical_address(
+        &self,
+        at: &QualifiedAddress,
+        _admitted: &ViewSourceSnapshot,
+    ) -> Result<QualifiedAddress, ViewError> {
+        Ok(at.clone())
+    }
+
     /// Internal identity fact for `find`; it is never serialized by `view`.
     fn identity_export_path(&self, _at: &QualifiedAddress) -> Result<Option<String>, ViewError> {
         Ok(None)
+    }
+
+    /// Exact typed profile gaps may retain their parent-projected identity in
+    /// `find` even though source-backed `view` fails. This is false by default;
+    /// malformed or wrong-owner provider evidence must never opt in.
+    fn permits_identity_fallback(&self, _at: &QualifiedAddress) -> bool {
+        false
     }
 
     fn read_exact(
@@ -184,7 +202,8 @@ impl<A: ViewReadAuthority> ViewService<A> {
 
     fn try_view(&self, request: &ViewRequest) -> Result<DomainResult, ViewError> {
         let snapshot = self.authority.snapshot(&request.at)?;
-        let binding = request.binding(&snapshot);
+        let canonical_at = self.authority.canonical_address(&request.at, &snapshot)?;
+        let binding = request.binding(&canonical_at, &snapshot);
         if let Some(cursor) = request.cursor.as_deref() {
             let stored = self
                 .cursors
@@ -201,8 +220,8 @@ impl<A: ViewReadAuthority> ViewService<A> {
 
         let view = self
             .authority
-            .read_exact(&request.at, &request.filter, &snapshot)?;
-        if view.at() != request.at.to_string() {
+            .read_exact(&canonical_at, &request.filter, &snapshot)?;
+        if view.at() != canonical_at.to_string() {
             return Err(ViewError::new(
                 "provider_unavailable",
                 "typed reader returned a projection for another logical address",
@@ -218,7 +237,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
         })?;
         let Some(items) = object.remove("items") else {
             let mut result = DomainResult::success("logical node resolved");
-            result.at = Some(request.at.to_string());
+            result.at = Some(canonical_at.to_string());
             result.data = Some(Value::Object(object));
             result.rev = Some(snapshot.revision);
             return Ok(result);
@@ -272,7 +291,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
             None
         };
         let mut result = DomainResult::success("logical collection page resolved");
-        result.at = Some(request.at.to_string());
+        result.at = Some(binding.canonical_at.clone());
         result.data = Some(Value::Object(page));
         result.rev = Some(binding.source_revision);
         result.cursor = cursor;
@@ -284,7 +303,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
         node: Value,
         items: Vec<Value>,
         cursor: Option<String>,
-        request: &ViewRequest,
+        _request: &ViewRequest,
         binding: ViewCursorBinding,
     ) -> Result<DomainResult, ViewError> {
         let mut page = node.as_object().cloned().ok_or_else(|| {
@@ -295,7 +314,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
         })?;
         page.insert("items".to_string(), Value::Array(items));
         let mut result = DomainResult::success("logical collection page resolved");
-        result.at = Some(request.at.to_string());
+        result.at = Some(binding.canonical_at.clone());
         result.data = Some(Value::Object(page));
         result.rev = Some(binding.source_revision);
         result.cursor = cursor;

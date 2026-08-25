@@ -28,6 +28,25 @@ pub(crate) enum ModuleRole {
 }
 
 impl ModuleRole {
+    const ALL: [Self; 16] = [
+        Self::Object,
+        Self::Manager,
+        Self::RecordSet,
+        Self::ValueManager,
+        Self::Common,
+        Self::Form,
+        Self::Command,
+        Self::ManagedApplication,
+        Self::OrdinaryApplication,
+        Self::Session,
+        Self::ExternalConnection,
+        Self::HttpService,
+        Self::WebService,
+        Self::IntegrationService,
+        Self::Bot,
+        Self::WebSocketClient,
+    ];
+
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Object => "Object",
@@ -102,6 +121,22 @@ pub(crate) struct ModuleCapability {
     source_layout: ModuleSourceLayout,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModuleAddressCapability {
+    at: QualifiedAddress,
+    capability: ModuleCapability,
+}
+
+impl ModuleAddressCapability {
+    pub(crate) const fn at(&self) -> &QualifiedAddress {
+        &self.at
+    }
+
+    pub(crate) const fn capability(&self) -> ModuleCapability {
+        self.capability
+    }
+}
+
 impl ModuleCapability {
     pub(crate) const fn role(self) -> ModuleRole {
         self.role
@@ -140,6 +175,25 @@ impl PlatformProfile {
             let capability = module_capability_for_segments(&segments[..length])?;
             module_projection_suffix_is_valid(&segments[length..]).then_some(capability)
         })
+    }
+
+    /// Enumerates the canonical module nodes owned by one addressable `Module`
+    /// branch. This is the sole profile-owned role list used by logical view
+    /// and find; projections do not restate module-role matrices.
+    pub(crate) fn module_children(self, branch: &QualifiedAddress) -> Vec<ModuleAddressCapability> {
+        let segments = branch.segments();
+        if !matches!(segments.last(), Some(module) if module.kind() == NodeKind::Module && module.name().is_none())
+        {
+            return Vec::new();
+        }
+        ModuleRole::ALL
+            .into_iter()
+            .filter_map(|role| {
+                let at = QualifiedAddress::parse(&format!("{branch}.{}", role.as_str())).ok()?;
+                let capability = self.module_capability(&at)?;
+                Some(ModuleAddressCapability { at, capability })
+            })
+            .collect()
     }
 
     pub(crate) fn supports_owner_kind(self, raw: &str) -> bool {
@@ -367,8 +421,9 @@ const fn capability(
 #[cfg(test)]
 mod tests {
     use super::{ModuleRole, PlatformProfile};
-    use crate::domain::address::QualifiedAddress;
+    use crate::domain::address::{NodeKind, QualifiedAddress};
     use serde::Deserialize;
+    use std::collections::HashSet;
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -494,5 +549,53 @@ mod tests {
     fn platform_profile_8_3_27_has_closed_module_capabilities() {
         every_approved_module_role_is_a_closed_8_3_27_capability();
         service_bot_websocket_and_absent_grpc_capabilities_are_not_conflated();
+    }
+
+    #[test]
+    fn every_module_capability_is_owned_by_one_canonical_parent_branch() {
+        let profile = PlatformProfile::v8_3_27();
+        let mut reached = HashSet::new();
+        for case in fixture().module_capabilities {
+            let address = QualifiedAddress::parse(&case.at).unwrap();
+            if !case.exists {
+                continue;
+            }
+            if matches!(address.segments(), [owner] if owner.kind() == NodeKind::CommonModule) {
+                assert!(
+                    profile.module_capability(&address).is_some(),
+                    "{}",
+                    case.case
+                );
+                assert!(reached.insert(address.to_string()), "{}", case.case);
+                continue;
+            }
+            let module_index = address
+                .segments()
+                .iter()
+                .position(|segment| segment.kind() == NodeKind::Module)
+                .expect("approved module address has a Module segment");
+            let mut branch = case
+                .at
+                .split('.')
+                .take(module_index * 2 + 1)
+                .collect::<Vec<_>>()
+                .join(".");
+            if module_index == 0 {
+                branch = format!("{}:Module", address.source_set());
+            }
+            let branch = QualifiedAddress::parse(&branch).unwrap();
+            let children = profile.module_children(&branch);
+            assert_eq!(
+                children
+                    .iter()
+                    .filter(|child| child.at() == &address)
+                    .count(),
+                1,
+                "{} must be reachable once from {branch}: {children:?}",
+                case.case,
+            );
+            assert!(reached.insert(address.to_string()), "{}", case.case);
+        }
+        assert_eq!(reached.len(), 25);
     }
 }

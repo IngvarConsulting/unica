@@ -65,7 +65,7 @@ fn project_form(
                 "commandBarLocation",
             ],
         );
-        let mut branches = [
+        let branches = [
             NodeKind::Item,
             NodeKind::Attribute,
             NodeKind::Parameter,
@@ -79,7 +79,6 @@ fn project_form(
             (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
         })
         .collect::<Vec<_>>();
-        branches.push(BranchRef::new(format!("{}.Module.Form", address), 1));
         return Ok(NodeViewData::Node(
             NodeView::new(
                 address.to_string(),

@@ -202,6 +202,47 @@ fn actor_owned_configuration_support_and_home_page_sidecars_are_retained() {
 }
 
 #[test]
+fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
+    let fixture = RealReaderFixture::new();
+    fs::create_dir_all(fixture.source.join("Ext")).unwrap();
+    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
+    );
+    let reader = ProviderReadAuthority::new(
+        "main",
+        "actor-fixture-main",
+        SourceSetKind::Configuration,
+        root,
+        revisions,
+    );
+    let sidecar = fixture.source.join("Ext/HomePageWorkArea.xml");
+
+    let missing = reader.configuration_payload().unwrap();
+    assert!(missing["homePage"].is_null());
+
+    fs::write(&sidecar, "<broken>").unwrap();
+    let malformed = reader.configuration_payload().unwrap_err();
+    assert_eq!(malformed.code(), "provider_unavailable");
+
+    fs::write(
+        &sidecar,
+        r#"<NotHomePage xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
+    )
+    .unwrap();
+    let wrong_root = reader.configuration_payload().unwrap_err();
+    assert_eq!(wrong_root.code(), "provider_unavailable");
+
+    fs::copy(
+        fixture_path("unica_mcp_script_parity/cf-info/Ext/HomePageWorkArea.xml"),
+        &sidecar,
+    )
+    .unwrap();
+    let valid = reader.configuration_payload().unwrap();
+    assert_eq!(valid["homePage"]["template"], "TwoColumns");
+}
+
+#[test]
 fn actor_supplied_extension_kind_preserves_extension_support_semantics() {
     let fixture = RealReaderFixture::new();
     let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
@@ -406,6 +447,75 @@ fn configuration_root_branch_counts_match_every_reachable_collection() {
     }
 }
 
+#[test]
+fn module_capability_parents_expose_canonical_module_collections() {
+    let fixture = RealReaderFixture::new();
+    fixture.install_accepted_profile_sources();
+    let service = fixture.view_service();
+    let cases = [
+        (
+            "main:Configuration",
+            "main:Module",
+            4,
+            vec![
+                "main:Module.ManagedApplication",
+                "main:Module.OrdinaryApplication",
+                "main:Module.Session",
+                "main:Module.ExternalConnection",
+            ],
+        ),
+        (
+            "main:Document.Заказ",
+            "main:Document.Заказ.Module",
+            2,
+            vec![
+                "main:Document.Заказ.Module.Object",
+                "main:Document.Заказ.Module.Manager",
+            ],
+        ),
+        (
+            "main:Document.Заказ.Form.ФормаДокумента",
+            "main:Document.Заказ.Form.ФормаДокумента.Module",
+            1,
+            vec!["main:Document.Заказ.Form.ФормаДокумента.Module.Form"],
+        ),
+    ];
+
+    for (parent, branch, count, expected) in cases {
+        let parent_result = service.view(ViewRequest::new(parent).unwrap());
+        assert!(parent_result.ok, "{parent}: {parent_result:?}");
+        let parent_data = parent_result.data.unwrap();
+        let parent_branches = parent_data["branches"].as_array().unwrap();
+        assert_eq!(
+            parent_branches
+                .iter()
+                .map(|item| item["at"].as_str().unwrap())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            parent_branches.len(),
+            "{parent} exposed duplicate branch addresses: {parent_data}",
+        );
+        assert!(
+            parent_branches.iter().any(|item| {
+                item["at"] == branch && item["count"].as_u64() == Some(count as u64)
+            }),
+            "{parent} did not expose {branch}: {parent_data}"
+        );
+
+        let branch_result = service.view(ViewRequest::new(branch).unwrap());
+        assert!(branch_result.ok, "{branch}: {branch_result:?}");
+        let branch_data = branch_result.data.unwrap();
+        let items = branch_data["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["at"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(items, expected, "{branch}");
+        assert_eq!(items.len(), count, "{branch}");
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AcceptedAddressProfile {
@@ -548,9 +658,81 @@ fn role_right_rls_consumes_the_complete_suffix() {
 
     assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
     let data = result.data.as_ref().unwrap();
-    assert_eq!(data["at"], "main:Role.SalesReader.Right.Products.RLS.View");
+    assert_eq!(
+        data["at"],
+        "main:Role.SalesReader.Right.Catalog_Products.RLS.View"
+    );
     assert_eq!(data["kind"], "RLS");
     assert_eq!(data["title"], "View");
+}
+
+#[test]
+fn role_merges_access_by_canonical_object_and_keeps_rls_under_that_right() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    let root = service.view(ViewRequest::new("main:Role.SalesReader").unwrap());
+    assert!(root.ok, "{root:?}");
+    let root_data = root.data.unwrap();
+    assert_eq!(
+        root_data["branches"],
+        json!([{"at": "main:Role.SalesReader.Right", "count": 2}]),
+    );
+
+    let rights = service.view(ViewRequest::new("main:Role.SalesReader.Right").unwrap());
+    assert!(rights.ok, "{rights:?}");
+    let items = rights.data.unwrap()["items"].as_array().unwrap().clone();
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item["at"].as_str().unwrap())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        2,
+    );
+
+    let alias = service.view(ViewRequest::new("main:Role.SalesReader.Right.Products").unwrap());
+    assert!(alias.ok, "{alias:?}");
+    let alias_data = alias.data.unwrap();
+    assert_eq!(
+        alias_data["at"],
+        "main:Role.SalesReader.Right.Catalog_Products"
+    );
+    assert_eq!(alias_data["props"]["allowedCount"], 2);
+    assert_eq!(alias_data["props"]["deniedCount"], 1);
+    assert_eq!(
+        alias_data["branches"],
+        json!([{
+            "at": "main:Role.SalesReader.Right.Catalog_Products.RLS",
+            "count": 1,
+        }]),
+    );
+
+    let rls_branch =
+        service.view(ViewRequest::new("main:Role.SalesReader.Right.Catalog_Products.RLS").unwrap());
+    assert!(rls_branch.ok, "{rls_branch:?}");
+    let rls_items = rls_branch.data.unwrap()["items"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(rls_items.len(), 1);
+    assert_eq!(
+        rls_items
+            .iter()
+            .map(|item| item["at"].as_str().unwrap())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        1,
+    );
+
+    let rls = service
+        .view(ViewRequest::new("main:Role.SalesReader.Right.Catalog_Products.RLS.View").unwrap());
+    assert!(rls.ok, "{rls:?}");
+    assert_eq!(
+        rls.data.unwrap()["at"],
+        "main:Role.SalesReader.Right.Catalog_Products.RLS.View"
+    );
 }
 
 #[test]
@@ -819,7 +1001,11 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
         ("configuration", "main:Configuration", "Configuration"),
         ("metadata", "main:Catalog.Items", "Catalog"),
         ("form", "main:Report.ParityReport.Form.MainForm", "Form"),
-        ("role-rls", "main:Role.SalesReader.RLS", "RLS"),
+        (
+            "role-rls",
+            "main:Role.SalesReader.Right.Catalog_Products.RLS",
+            "RLS",
+        ),
         ("subsystem", "main:Subsystem.Sales", "Subsystem"),
         ("interface", "main:Subsystem.Sales.Interface", "Interface"),
         (
@@ -909,18 +1095,24 @@ fn logical_reader_parity_contract_is_complete() {
     every_typed_reader_remains_on_the_admitted_root_after_source_set_remap();
     actor_supplied_extension_kind_preserves_extension_support_semantics();
     configuration_root_branch_counts_match_every_reachable_collection();
+    module_capability_parents_expose_canonical_module_collections();
     every_accepted_profile_address_has_a_real_non_skipping_view();
     real_typed_readers_cover_every_task14_profile_without_skipping();
     every_reader_rejects_an_extra_unconsumed_address_tail();
     form_table_column_event_consumes_arbitrary_depth_and_preserves_owner_address();
     form_projection_uses_a_positive_nested_scalar_allowlist();
+    role_merges_access_by_canonical_object_and_keeps_rls_under_that_right();
     role_right_projection_never_serializes_an_unbounded_rights_array_into_props();
+    retained_home_page_distinguishes_missing_from_malformed_and_wrong_root();
     unsupported_view_filter_is_a_typed_bad_value_instead_of_a_noop();
     module_body_context_filter_excludes_at_client_source_from_server_slice();
     module_method_public_filter_returns_only_export_methods();
     typed_projection_never_leaks_provider_or_physical_slots();
     typed_projection_rejects_unknown_provider_payload_instead_of_dumping_it();
     websocket_client_source_view_is_an_explicit_provider_gap();
+    crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
+        crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+    );
 }
 
 #[test]

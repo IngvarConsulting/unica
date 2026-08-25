@@ -68,6 +68,10 @@ pub(crate) fn route_logical_address(
         return Ok(route(address, LogicalReader::Module, None, Some(module)));
     }
 
+    if !profile.module_children(address).is_empty() {
+        return Ok(route(address, LogicalReader::Module, None, None));
+    }
+
     let segments = address.segments();
     if segments
         .iter()
@@ -343,7 +347,7 @@ mod tests {
                 LogicalReader::Form,
             ),
             (
-                "main:Role.Кладовщик.RLS.Document_Заказ",
+                "main:Role.Кладовщик.Right.Document_Заказ.RLS.View",
                 LogicalReader::Role,
             ),
             ("main:Subsystem.Продажи", LogicalReader::Subsystem),

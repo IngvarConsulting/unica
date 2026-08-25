@@ -33,16 +33,27 @@ identity вопроса, подмена, неизвестность или expir
 
 Внутренний `find` проходит то же адресуемое дерево из actor-owned retained
 source roots и индексирует только address/name/synonym/export-path/kind facts.
-BSL и body он не читает; nearest ограничен name/address facts. Явно injected
-canonical service исполняет оба handler-а на actor capability; production
-default остаётся dormant до Task 22.
+Для module/method/region identities он ограниченно разбирает декларативную
+оболочку BSL, но не индексирует `Body`, statements или строки исходника и не
+обходит Body-проекции повторно. Одинаковые declarations/regions при разных
+statements дают одинаковые facts и результаты; nearest ограничен name/address
+facts. Зарегистрированный owner публикует одну profile-derived `Module` branch со
+всеми допустимыми ролями даже без module source; отсутствующий owner не
+изобретается. WebSocketClient сохраняется из parent projection, а прямой view — gap.
+
+Один logical-read operation budget в 120 секунд ограничивает и `view`, и
+aggregate `find`, передаётся actor-owned revision/provider границе и проверяет
+cancellation. Это не семисекундный handoff: после handoff тот же callback один
+раз продолжает работу и публикует terminal Task. Injected service исполняет оба
+handler-а на actor capability; production default dormant до Task 22. Present
+malformed/wrong-root HomePage отклоняется; role rights сливаются в canonical node.
 
 Широкие `DEC.2026-08-23.V0-13-EXECUTION-SURFACE` и
 `DEC.2026-08-23.MODULE-CONTRACT` остаются `planned`. Production v0.12 и
 `CTR.WIRE.TOOL-SURFACE` до Task 22 не меняются.
 
-**Почему.** Tasks 15–21 должны опираться на одну форму чтения, один набор
-typed-reader границ и одну политику продолжений до публичного cutover.
+**Почему.** Tasks 15–21 должны опираться на одну форму чтения, typed-reader
+границы и одну политику продолжений до публичного cutover.
 
-**Цена.** До Task 22 этот контракт crate-private; WebSocketClient source view
-остаётся явным provider gap, а cursor не переживает перезапуск процесса.
+**Цена.** До Task 22 контракт crate-private; WebSocketClient source view — gap,
+find читает bounded BSL declaration shell, cursor не переживает перезапуск.

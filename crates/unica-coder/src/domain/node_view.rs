@@ -115,6 +115,14 @@ impl NodeViewData {
             Self::Collection(collection) => collection.node.at(),
         }
     }
+
+    #[must_use]
+    pub(crate) fn with_branch(mut self, branch: BranchRef) -> Self {
+        if let Self::Node(node) = &mut self {
+            node.branches.push(branch);
+        }
+        self
+    }
 }
 
 #[cfg(test)]

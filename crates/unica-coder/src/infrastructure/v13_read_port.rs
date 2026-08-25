@@ -11,7 +11,7 @@ use crate::domain::support_state::{
 };
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::native_operations::cf::{
-    cf_home_page_item_data, parse_cf_home_page_xml, parse_cf_info_xml, CfHomePageData,
+    cf_home_page_item_data, parse_cf_home_page_xml_strict, parse_cf_info_xml, CfHomePageData,
 };
 use crate::infrastructure::native_operations::common::{
     parse_subsystem_info_xml, parse_support_state_strict_bytes, support_root_uuid_from_bytes,
@@ -442,7 +442,9 @@ impl ProviderReadAuthority {
         let text = std::str::from_utf8(&bytes).map_err(|_| {
             ViewError::new("provider_unavailable", "HomePageWorkArea.xml is not UTF-8")
         })?;
-        Ok(parse_cf_home_page_xml(text).map(|layout| CfHomePageData {
+        let layout = parse_cf_home_page_xml_strict(text)
+            .map_err(|error| ViewError::new("provider_unavailable", error))?;
+        Ok(Some(CfHomePageData {
             template: layout.template,
             left: cf_home_page_item_data(&layout.left),
             right: cf_home_page_item_data(&layout.right),
