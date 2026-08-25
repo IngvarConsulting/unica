@@ -944,45 +944,81 @@ fn production_form_command_execute_has_one_semantic_identity_across_view_and_fin
 #[test]
 fn production_form_command_execute_requires_an_exact_client_directive() {
     let fixture = RealReaderFixture::new();
+    let module_bsl = concat!(
+        "&НаКлиенте\n",
+        "Процедура RussianClientAction(Команда)\n",
+        "КонецПроцедуры\n\n",
+        "&AtClient\n",
+        "Процедура EnglishClientAction(Команда)\n",
+        "КонецПроцедуры\n\n",
+        "&наклиенте\n",
+        "Процедура RussianLowerAction(Команда)\n",
+        "КонецПроцедуры\n\n",
+        "&нАкЛиЕнТе\n",
+        "Процедура RussianMixedAction(Команда)\n",
+        "КонецПроцедуры\n\n",
+        "&atclient\n",
+        "Процедура EnglishLowerAction(Команда)\n",
+        "КонецПроцедуры\n\n",
+        "&aTcLiEnT\n",
+        "Процедура EnglishMixedAction(Команда)\n",
+        "КонецПроцедуры\n\n",
+        "  &AtClient  \r\n",
+        "Процедура WhitespaceCrLfAction(Команда)\r\n",
+        "КонецПроцедуры\r\n\r\n",
+        "Процедура MissingDirectiveAction(Команда)\n",
+        "КонецПроцедуры\n\n",
+        "&наклиентенасервере\n",
+        "Процедура RussianClientServerLowerAction(Команда)\n",
+        "КонецПроцедуры\n\n",
+        "&aTcLiEnTaTsErVeR\n",
+        "Процедура EnglishClientServerMixedAction(Команда)\n",
+        "КонецПроцедуры\n\n",
+        "#Если Клиент Тогда\n",
+        "Процедура GuardOnlyAction(Команда)\n",
+        "КонецПроцедуры\n",
+        "#КонецЕсли\n",
+    );
     fixture.install_main_form_sources(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
   <Commands>
     <Command name="RussianClient" id="1"><Action>RussianClientAction</Action></Command>
     <Command name="EnglishClient" id="2"><Action>EnglishClientAction</Action></Command>
-    <Command name="MissingDirective" id="3"><Action>MissingDirectiveAction</Action></Command>
-    <Command name="ClientServer" id="4"><Action>ClientServerAction</Action></Command>
-    <Command name="GuardOnly" id="5"><Action>GuardOnlyAction</Action></Command>
+    <Command name="RussianLower" id="3"><Action>RussianLowerAction</Action></Command>
+    <Command name="RussianMixed" id="4"><Action>RussianMixedAction</Action></Command>
+    <Command name="EnglishLower" id="5"><Action>EnglishLowerAction</Action></Command>
+    <Command name="EnglishMixed" id="6"><Action>EnglishMixedAction</Action></Command>
+    <Command name="WhitespaceCrLf" id="7"><Action>WhitespaceCrLfAction</Action></Command>
+    <Command name="MissingDirective" id="8"><Action>MissingDirectiveAction</Action></Command>
+    <Command name="RussianClientServerLower" id="9"><Action>RussianClientServerLowerAction</Action></Command>
+    <Command name="EnglishClientServerMixed" id="10"><Action>EnglishClientServerMixedAction</Action></Command>
+    <Command name="GuardOnly" id="11"><Action>GuardOnlyAction</Action></Command>
   </Commands>
 </Form>"#,
-        r#"&НаКлиенте
-Процедура RussianClientAction(Команда)
-КонецПроцедуры
-
-&AtClient
-Процедура EnglishClientAction(Команда)
-КонецПроцедуры
-
-Процедура MissingDirectiveAction(Команда)
-КонецПроцедуры
-
-&НаКлиентеНаСервере
-Процедура ClientServerAction(Команда)
-КонецПроцедуры
-
-#Если Клиент Тогда
-Процедура GuardOnlyAction(Команда)
-КонецПроцедуры
-#КонецЕсли
-"#,
+        module_bsl,
     );
     let service = fixture.view_service();
     let form_at = "main:Report.ParityReport.Form.MainForm";
     for (command, handler, state) in [
         ("RussianClient", "RussianClientAction", "implemented"),
         ("EnglishClient", "EnglishClientAction", "implemented"),
+        ("RussianLower", "RussianLowerAction", "implemented"),
+        ("RussianMixed", "RussianMixedAction", "implemented"),
+        ("EnglishLower", "EnglishLowerAction", "implemented"),
+        ("EnglishMixed", "EnglishMixedAction", "implemented"),
+        ("WhitespaceCrLf", "WhitespaceCrLfAction", "implemented"),
         ("MissingDirective", "MissingDirectiveAction", "invalid"),
-        ("ClientServer", "ClientServerAction", "invalid"),
+        (
+            "RussianClientServerLower",
+            "RussianClientServerLowerAction",
+            "invalid",
+        ),
+        (
+            "EnglishClientServerMixed",
+            "EnglishClientServerMixedAction",
+            "invalid",
+        ),
         ("GuardOnly", "GuardOnlyAction", "invalid"),
     ] {
         let command_at = format!("{form_at}.Command.{command}");
@@ -1028,8 +1064,14 @@ fn production_form_command_execute_requires_an_exact_client_directive() {
     for command in [
         "RussianClient",
         "EnglishClient",
+        "RussianLower",
+        "RussianMixed",
+        "EnglishLower",
+        "EnglishMixed",
+        "WhitespaceCrLf",
         "MissingDirective",
-        "ClientServer",
+        "RussianClientServerLower",
+        "EnglishClientServerMixed",
         "GuardOnly",
     ] {
         let event_at = format!("{form_at}.Command.{command}.Event.Execute");

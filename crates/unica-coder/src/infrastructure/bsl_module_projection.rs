@@ -1153,7 +1153,14 @@ fn form_method_matches_event(
             .iter()
             .all(|expected| method.contexts.contains(&expected.as_str()))
         && (owner != FormBindingOwner::Command
-            || matches!(method.directive, Some("&НаКлиенте" | "&AtClient")))
+            || form_command_has_client_directive(method.directive))
+}
+
+fn form_command_has_client_directive(directive: Option<&str>) -> bool {
+    directive
+        .map(str::trim)
+        .map(str::to_lowercase)
+        .is_some_and(|normalized| matches!(normalized.as_str(), "&наклиенте" | "&atclient"))
 }
 
 pub(crate) fn project_form_events(
