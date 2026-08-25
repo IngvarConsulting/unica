@@ -90,6 +90,21 @@ pub(crate) struct CommitReport {
     /// Cleanup failures do not invalidate already-validated published bytes.
     /// They are surfaced so a caller can report an orphaned recovery copy explicitly.
     pub(crate) cleanup_warnings: Vec<String>,
+    /// Retained-apply cleanup has a closed diagnostic shape so the workspace
+    /// actor can surface actionable logical context without exposing a root.
+    pub(crate) retained_apply_cleanup_diagnostics: Vec<RetainedApplyCleanupDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedApplyCleanupDiagnostic {
+    logical_target: PathBuf,
+    artifact_name: OsString,
+}
+
+impl RetainedApplyCleanupDiagnostic {
+    pub(in crate::infrastructure) fn into_parts(self) -> (PathBuf, OsString) {
+        (self.logical_target, self.artifact_name)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1542,6 +1557,7 @@ impl CompileTransaction {
                 created: self.planned_created_paths(),
                 updated: self.planned_updated_paths(),
                 cleanup_warnings: Vec::new(),
+                retained_apply_cleanup_diagnostics: Vec::new(),
             })
         })();
 
@@ -1848,7 +1864,9 @@ fn validate_retained_apply_state(
 #[derive(Debug)]
 struct PublishedRetainedApplyChange {
     parent: RetainedDirectoryCapability,
+    relative_path: PathBuf,
     name: OsString,
+    recovery_name: Option<OsString>,
     kind: PlannedChangeKind,
     published: Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
     displaced: Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
@@ -1876,7 +1894,9 @@ fn publish_retained_apply_change(
             match result {
                 Ok(published) => journal.push(PublishedRetainedApplyChange {
                     parent,
+                    relative_path: entry.relative_path.clone(),
                     name,
+                    recovery_name: None,
                     kind: PlannedChangeKind::Create,
                     published: Some(published),
                     displaced: None,
@@ -1886,7 +1906,9 @@ fn publish_retained_apply_change(
                     if let Some(published) = published {
                         journal.push(PublishedRetainedApplyChange {
                             parent,
+                            relative_path: entry.relative_path.clone(),
                             name,
+                            recovery_name: None,
                             kind: PlannedChangeKind::Create,
                             published: Some(published),
                             displaced: None,
@@ -1914,7 +1936,9 @@ fn publish_retained_apply_change(
             };
             journal.push(PublishedRetainedApplyChange {
                 parent,
+                relative_path: entry.relative_path.clone(),
                 name,
+                recovery_name: Some(recovery_name),
                 kind,
                 published: None,
                 displaced: Some(displaced),
@@ -2003,6 +2027,15 @@ fn finalize_retained_apply_recovery(
                 report.cleanup_warnings.push(format!(
                     "retained apply recovery child was preserved after success: {error}"
                 ));
+                report
+                    .retained_apply_cleanup_diagnostics
+                    .push(RetainedApplyCleanupDiagnostic {
+                        logical_target: change.relative_path.clone(),
+                        artifact_name: change
+                            .recovery_name
+                            .clone()
+                            .expect("displaced retained apply change owns a recovery name"),
+                    });
             }
         }
     }

@@ -20,6 +20,7 @@ use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace_index::{IndexRunner, WorkspaceIndexService};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -387,15 +388,52 @@ impl std::fmt::Debug for PreparedApplyBatch {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApplyCleanupDiagnosticKind {
+    RetainedRecoveryCleanupIncomplete,
+}
+
+/// Bounded actor-facing cleanup context. The target stays relative to the
+/// selected source set and the artifact is only the fixed-format internal leaf;
+/// neither field exposes the retained provider root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApplyCleanupDiagnostic {
+    kind: ApplyCleanupDiagnosticKind,
+    logical_target: PathBuf,
+    last_known_artifact_name: OsString,
+}
+
+impl ApplyCleanupDiagnostic {
+    pub(crate) const fn kind(&self) -> ApplyCleanupDiagnosticKind {
+        self.kind
+    }
+
+    pub(crate) fn logical_target(&self) -> &Path {
+        &self.logical_target
+    }
+
+    /// The transaction-generated recovery leaf before cleanup began. A
+    /// concurrent namespace mutation may mean it no longer names the retained
+    /// artifact, so callers must not treat this diagnostic as delete authority.
+    pub(crate) fn last_known_artifact_name(&self) -> &OsStr {
+        &self.last_known_artifact_name
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ApplyPublicationResult {
     rev: String,
     commit_count: usize,
+    cleanup_diagnostics: Vec<ApplyCleanupDiagnostic>,
 }
 
 impl ApplyPublicationResult {
     pub(crate) fn rev(&self) -> &str {
         &self.rev
+    }
+
+    pub(crate) fn cleanup_diagnostics(&self) -> &[ApplyCleanupDiagnostic] {
+        &self.cleanup_diagnostics
     }
 
     #[cfg(test)]
@@ -796,6 +834,7 @@ impl<R> WorkspaceActor<R> {
             return Ok(ApplyPublicationResult {
                 rev: prepared.revision.revision_identity(),
                 commit_count: 0,
+                cleanup_diagnostics: Vec::new(),
             });
         }
 
@@ -804,7 +843,7 @@ impl<R> WorkspaceActor<R> {
         let root = Arc::clone(&prepared.source_root);
         let revisions = Arc::clone(&prepared.revision_service);
         let actor = self;
-        let (_, revision) = prepared.transaction.commit_retained_apply_with(
+        let (report, revision) = prepared.transaction.commit_retained_apply_with(
             prepared.writer_authority,
             || apply_checkpoint(deadline, &cancellation, "prepared apply commit"),
             || {
@@ -816,12 +855,30 @@ impl<R> WorkspaceActor<R> {
                 Ok(revision)
             },
         )?;
+        debug_assert_eq!(
+            report.cleanup_warnings.len(),
+            report.retained_apply_cleanup_diagnostics.len(),
+            "every retained apply cleanup warning must have structured actor context"
+        );
+        let cleanup_diagnostics = report
+            .retained_apply_cleanup_diagnostics
+            .into_iter()
+            .map(|diagnostic| {
+                let (logical_target, last_known_artifact_name) = diagnostic.into_parts();
+                ApplyCleanupDiagnostic {
+                    kind: ApplyCleanupDiagnosticKind::RetainedRecoveryCleanupIncomplete,
+                    logical_target,
+                    last_known_artifact_name,
+                }
+            })
+            .collect();
         Ok(ApplyPublicationResult {
             rev: format!(
                 "{}:{}:{}",
                 revision.algorithm, revision.generation, revision.digest
             ),
             commit_count: 1,
+            cleanup_diagnostics,
         })
     }
 
@@ -2748,6 +2805,7 @@ pub(crate) mod tests {
         assert_eq!(dry_result.rev(), admitted_rev);
         assert_eq!(std::fs::read(&target).unwrap(), b"original");
         assert_eq!(dry_result.commit_count_for_test(), 0);
+        assert!(dry_result.cleanup_diagnostics().is_empty());
 
         let admitted = fixture
             .actor
@@ -2770,6 +2828,81 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"published");
         assert_ne!(result.rev(), admitted_rev);
         assert_eq!(result.commit_count_for_test(), 1);
+        assert!(result.cleanup_diagnostics().is_empty());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic() {
+        if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            return;
+        }
+        let fixture = actor_fixture("prepared-cleanup-diagnostic", &["src"]);
+        let parent = fixture.roots[0].join("Nested");
+        std::fs::create_dir_all(&parent).unwrap();
+        let target = parent.join("Module.bsl");
+        let owned_recovery = parent.join("owned-recovery.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Nested/Module.bsl", b"original", b"published".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let hook_parent = parent.clone();
+        let hook_owned = owned_recovery.clone();
+        crate::infrastructure::platform::filesystem::set_before_identity_bound_cleanup_mutation_hook(
+            move || {
+                let recovery = std::fs::read_dir(&hook_parent)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.starts_with(".unica-apply-"))
+                    })
+                    .expect("retained apply recovery artifact");
+                std::fs::rename(&recovery, &hook_owned).unwrap();
+                std::fs::write(&recovery, b"concurrent-recovery").unwrap();
+            },
+        );
+
+        let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"published");
+        assert_eq!(std::fs::read(&owned_recovery).unwrap(), b"original");
+        assert!(std::fs::read_dir(&parent).unwrap().any(|entry| {
+            let path = entry.unwrap().path();
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".unica-apply-"))
+                && std::fs::read(path).unwrap() == b"concurrent-recovery"
+        }));
+        let [diagnostic] = result.cleanup_diagnostics() else {
+            panic!("successful actor result discarded the retained cleanup diagnostic: {result:?}");
+        };
+        assert_eq!(
+            diagnostic.kind(),
+            super::ApplyCleanupDiagnosticKind::RetainedRecoveryCleanupIncomplete
+        );
+        assert_eq!(diagnostic.logical_target(), Path::new("Nested/Module.bsl"));
+        let artifact_name = diagnostic.last_known_artifact_name();
+        assert!(artifact_name.to_string_lossy().starts_with(".unica-apply-"));
+        assert_eq!(Path::new(artifact_name).components().count(), 1);
+        assert!(!format!("{diagnostic:?}").contains(&fixture.root.display().to_string()));
         fixture.cleanup();
     }
 
