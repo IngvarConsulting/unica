@@ -32,6 +32,7 @@ use crate::infrastructure::platform::filesystem::{
     RetainedChildCapability, RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::workspace_actor::ApplyWriterAuthority;
 
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
@@ -261,6 +262,7 @@ pub(crate) struct CompileTransaction {
     removals: Vec<PlannedRemoval>,
     planned_path_identities: BTreeMap<PathBuf, PlannedPathKind>,
     retained_apply: Vec<PlannedRetainedApplyChange>,
+    retained_apply_authority: Option<ApplyWriterAuthority>,
 }
 
 #[derive(Debug)]
@@ -269,6 +271,8 @@ struct PlannedRetainedApplyChange {
     relative_path: PathBuf,
     original: Option<Vec<u8>>,
     current: Option<Vec<u8>>,
+    original_file:
+        Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,17 +287,41 @@ impl CompileTransaction {
         Self::default()
     }
 
-    pub(crate) fn bind_retained_apply_change(
+    pub(super) fn bind_retained_apply_authority(
+        &mut self,
+        authority: &ApplyWriterAuthority,
+    ) -> Result<(), String> {
+        match &self.retained_apply_authority {
+            Some(bound) if bound != authority => {
+                Err("retained apply plans cannot mix actor authorities".to_string())
+            }
+            Some(_) => Ok(()),
+            None => {
+                self.retained_apply_authority = Some(authority.clone());
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn bind_retained_apply_change(
         &mut self,
         root: Arc<RetainedDirectoryCapability>,
         relative_path: PathBuf,
         original: Option<Vec<u8>>,
         current: Option<Vec<u8>>,
+        original_file: Option<
+            crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+        >,
+        authority: &ApplyWriterAuthority,
     ) -> Result<(), String> {
         validate_strict_relative_file_path(&relative_path)?;
         if original == current {
             return Ok(());
         }
+        if original.is_some() != original_file.is_some() {
+            return Err("retained apply preimage bytes and file authority disagree".to_string());
+        }
+        self.bind_retained_apply_authority(authority)?;
         if self.retained_apply.iter().any(|entry| {
             entry.root.identity() == root.identity() && entry.relative_path == relative_path
         }) {
@@ -314,6 +342,7 @@ impl CompileTransaction {
             relative_path,
             original,
             current,
+            original_file,
         });
         self.retained_apply
             .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
@@ -347,18 +376,22 @@ impl CompileTransaction {
         Ok(())
     }
 
-    pub(crate) fn commit_retained_apply_with<T>(
+    pub(in crate::infrastructure) fn commit_retained_apply_with<T>(
         self,
+        authority: ApplyWriterAuthority,
         mut checkpoint: impl FnMut() -> Result<(), String>,
         post_validation: impl FnOnce() -> Result<T, String>,
     ) -> Result<(CommitReport, T), String> {
+        if self.retained_apply_authority.as_ref() != Some(&authority) {
+            return Err("retained apply commit requires its actor-issued authority".to_string());
+        }
         self.validate_retained_for_apply()?;
         checkpoint()?;
         let mut published = Vec::with_capacity(self.retained_apply.len());
         let operation = (|| {
             for entry in &self.retained_apply {
                 checkpoint()?;
-                published.push(publish_retained_apply_change(entry)?);
+                publish_retained_apply_change(entry, &mut published)?;
             }
             for entry in &self.retained_apply {
                 checkpoint()?;
@@ -368,6 +401,7 @@ impl CompileTransaction {
             run_retained_apply_before_post_validation_hook();
             let validated = post_validation()?;
             let mut report = CommitReport::default();
+            finalize_retained_apply_recovery(&mut published, &mut report);
             for entry in &self.retained_apply {
                 let path = entry.root.path().join(&entry.relative_path);
                 match (&entry.original, &entry.current) {
@@ -940,7 +974,8 @@ impl CompileTransaction {
 
     #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.creates.is_empty()
+        self.retained_apply.is_empty()
+            && self.creates.is_empty()
             && self.read_guards.is_empty()
             && self.absence_guards.is_empty()
             && self.directory_membership_guards.is_empty()
@@ -1118,6 +1153,11 @@ impl CompileTransaction {
     where
         F: FnOnce() -> Result<(), CommitFailure>,
     {
+        if self.retained_apply_authority.is_some() || !self.retained_apply.is_empty() {
+            return Err(CommitFailure::provider(
+                "retained apply plans require the actor-owned commit path",
+            ));
+        }
         let mut state = PublishState::default();
         self.recheck_planned_path_identities("before parent preparation")
             .map_err(CommitFailure::concurrent)?;
@@ -1795,9 +1835,9 @@ fn validate_retained_apply_state(
 struct PublishedRetainedApplyChange {
     parent: RetainedDirectoryCapability,
     name: OsString,
-    original: Option<Vec<u8>>,
     kind: PlannedChangeKind,
     published: Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
+    displaced: Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
 }
 
 fn retained_apply_stage_name() -> OsString {
@@ -1810,95 +1850,149 @@ fn retained_apply_stage_name() -> OsString {
 
 fn publish_retained_apply_change(
     entry: &PlannedRetainedApplyChange,
-) -> Result<PublishedRetainedApplyChange, String> {
+    journal: &mut Vec<PublishedRetainedApplyChange>,
+) -> Result<(), String> {
     validate_retained_apply_state(entry, &entry.original, false)?;
     let (parent, name) = entry
         .root
         .retain_relative_parent_nofollow(&entry.relative_path)
         .map_err(|error| format!("retained apply parent cannot be retained: {error}"))?;
-    let (kind, published) = match (&entry.original, &entry.current) {
-        (None, Some(bytes)) => (
-            PlannedChangeKind::Create,
-            Some(
-                parent
-                    .create_regular_child_atomically(&retained_apply_stage_name(), &name, bytes)
-                    .map_err(|error| format!("retained apply create failed: {error}"))?,
-            ),
-        ),
-        (Some(_), Some(bytes)) => (
-            PlannedChangeKind::Update,
-            Some(
-                parent
-                    .replace_regular_child_atomically(&retained_apply_stage_name(), &name, bytes)
-                    .map_err(|error| format!("retained apply replace failed: {error}"))?,
-            ),
-        ),
-        (Some(_), None) => {
-            let retained = parent.retain_regular_child(&name).map_err(|error| {
-                format!("retained apply removal target cannot be retained: {error}")
-            })?;
-            retained
-                .remove_named_identity_relative()
-                .map_err(|error| format!("retained apply remove failed: {error}"))?;
-            (PlannedChangeKind::Remove, None)
+    match (&entry.original, &entry.current) {
+        (None, Some(bytes)) => {
+            let result =
+                parent.create_regular_child_atomically(&retained_apply_stage_name(), &name, bytes);
+            match result {
+                Ok(published) => journal.push(PublishedRetainedApplyChange {
+                    parent,
+                    name,
+                    kind: PlannedChangeKind::Create,
+                    published: Some(published),
+                    displaced: None,
+                }),
+                Err(error) => {
+                    let (error, published) = error.into_parts();
+                    if let Some(published) = published {
+                        journal.push(PublishedRetainedApplyChange {
+                            parent,
+                            name,
+                            kind: PlannedChangeKind::Create,
+                            published: Some(published),
+                            displaced: None,
+                        });
+                    }
+                    return Err(format!("retained apply create failed: {error}"));
+                }
+            }
+        }
+        (Some(original), current) => {
+            let expected = entry
+                .original_file
+                .as_ref()
+                .ok_or_else(|| "retained apply original file authority is missing".to_string())?;
+            let recovery_name = retained_apply_stage_name();
+            let displaced = parent
+                .displace_regular_child_no_replace(&name, expected, &recovery_name)
+                .map_err(|error| {
+                    format!("retained apply destination identity/preimage changed: {error}")
+                })?;
+            let kind = if current.is_some() {
+                PlannedChangeKind::Update
+            } else {
+                PlannedChangeKind::Remove
+            };
+            journal.push(PublishedRetainedApplyChange {
+                parent,
+                name,
+                kind,
+                published: None,
+                displaced: Some(displaced),
+            });
+            validate_displaced_apply_preimage(
+                journal
+                    .last()
+                    .and_then(|change| change.displaced.as_ref())
+                    .expect("displacement journal owns the original file"),
+                original,
+            )?;
+            if let Some(bytes) = current {
+                let change = journal.last_mut().expect("displacement journal exists");
+                match change.parent.create_regular_child_atomically(
+                    &retained_apply_stage_name(),
+                    &change.name,
+                    bytes,
+                ) {
+                    Ok(published) => change.published = Some(published),
+                    Err(error) => {
+                        let (error, published) = error.into_parts();
+                        change.published = published;
+                        return Err(format!("retained apply replace failed: {error}"));
+                    }
+                }
+            }
         }
         (None, None) => return Err("retained apply no-op reached publication".to_string()),
-    };
-    Ok(PublishedRetainedApplyChange {
-        parent,
-        name,
-        original: entry.original.clone(),
-        kind,
-        published,
-    })
+    }
+    Ok(())
+}
+
+fn validate_displaced_apply_preimage(
+    displaced: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+    expected: &[u8],
+) -> Result<(), String> {
+    if displaced
+        .hard_link_count()
+        .map_err(|error| format!("retained apply displaced hard-link count failed: {error}"))?
+        != 1
+    {
+        return Err("retained apply destination gained a hard-link alias".to_string());
+    }
+    let observed = displaced
+        .read_bounded(32 * 1024 * 1024)
+        .map_err(|error| format!("retained apply displaced preimage read failed: {error}"))?;
+    if observed != expected {
+        return Err("retained apply destination preimage changed at mutation boundary".to_string());
+    }
+    Ok(())
 }
 
 fn rollback_retained_apply(published: &mut Vec<PublishedRetainedApplyChange>) -> Vec<String> {
     let mut errors = Vec::new();
     while let Some(change) = published.pop() {
-        let result = match change.kind {
-            PlannedChangeKind::Create => change
-                .published
-                .as_ref()
-                .ok_or_else(|| "published create capability is missing".to_string())
-                .and_then(|file| {
-                    file.validate_named_identity_relative()
-                        .map_err(|error| error.to_string())?;
-                    file.remove_named_identity_relative()
-                        .map_err(|error| error.to_string())
-                }),
-            PlannedChangeKind::Update => change
-                .published
-                .as_ref()
-                .ok_or_else(|| "published replace capability is missing".to_string())
-                .and_then(|file| {
-                    file.validate_named_identity_relative()
-                        .map_err(|error| error.to_string())?;
-                    change
-                        .parent
-                        .replace_regular_child_atomically(
-                            &retained_apply_stage_name(),
-                            &change.name,
-                            change.original.as_deref().expect("replace has an original"),
-                        )
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                }),
-            PlannedChangeKind::Remove => change
+        if let Some(file) = change.published.as_ref() {
+            if let Err(error) = file
+                .validate_named_identity_relative()
+                .and_then(|()| file.remove_named_identity_relative())
+            {
+                errors.push(format!("published apply child was preserved: {error}"));
+            }
+        } else if change.kind == PlannedChangeKind::Create {
+            errors.push("published create capability is missing".to_string());
+        }
+        if let Some(displaced) = change.displaced.as_ref() {
+            if let Err(error) = change
                 .parent
-                .create_regular_child_atomically(
-                    &retained_apply_stage_name(),
-                    &change.name,
-                    change.original.as_deref().expect("remove has an original"),
-                )
-                .map(|_| ())
-                .map_err(|error| error.to_string()),
-        };
-        if let Err(error) = result {
-            errors.push(error);
+                .restore_displaced_regular_child_no_replace(displaced, &change.name)
+            {
+                errors.push(format!("displaced apply preimage was preserved: {error}"));
+            }
         }
     }
     errors
+}
+
+fn finalize_retained_apply_recovery(
+    published: &mut [PublishedRetainedApplyChange],
+    report: &mut CommitReport,
+) {
+    for change in published {
+        if let Some(displaced) = change.displaced.take() {
+            if let Err(error) = displaced.remove_named_identity_relative() {
+                report.cleanup_warnings.push(format!(
+                    "retained apply recovery child was preserved after success: {error}"
+                ));
+            }
+        }
+    }
 }
 
 pub(crate) fn snapshot_directory_membership(

@@ -1631,7 +1631,7 @@ impl RuntimeJobStore {
                 std::ffi::OsStr::new("record.json"),
                 &bytes,
             )
-            .map_err(|error| io_error("publish retained runtime job record", &error))
+            .map_err(|error| io_error("publish retained runtime job record", error.io_error()))
     }
 
     fn write_record(&self, record: &RuntimeJobRecord) -> JobResult<()> {

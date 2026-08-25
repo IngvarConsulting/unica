@@ -21,6 +21,7 @@ use crate::infrastructure::workspace_index::{IndexRunner, WorkspaceIndexService}
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
@@ -68,6 +69,7 @@ fn run_apply_dry_run_after_confirmation_hook() {
 
 pub(crate) const MAX_ACTIVE_WORKSPACE_ACTORS: usize = 64;
 const INDEX_FENCE_BUDGET: Duration = Duration::from_secs(7);
+static APPLY_WRITER_AUTHORITY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct IndexWorkIdentity([u8; 32]);
@@ -244,13 +246,30 @@ impl std::fmt::Debug for ProviderRootBinding {
 }
 
 impl ProviderRootBinding {
-    pub(crate) fn source_root(&self) -> &Path {
+    pub(super) fn source_root(&self) -> &Path {
         self.source_root.path()
     }
 
-    pub(crate) fn retained_root(&self) -> Arc<RetainedDirectoryCapability> {
+    pub(super) fn retained_root(&self) -> Arc<RetainedDirectoryCapability> {
         Arc::clone(&self.source_root)
     }
+}
+
+/// Unforgeable admission token for the retained apply publisher. Low-level
+/// transaction methods require the same token that created the staged state;
+/// infrastructure callers can name the type but cannot construct a value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::infrastructure) struct ApplyWriterAuthority(u64);
+
+impl ApplyWriterAuthority {
+    fn issue() -> Self {
+        Self(APPLY_WRITER_AUTHORITY_SEQUENCE.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+#[cfg(test)]
+pub(in crate::infrastructure) fn apply_writer_authority_for_test() -> ApplyWriterAuthority {
+    ApplyWriterAuthority::issue()
 }
 
 #[derive(Clone)]
@@ -291,6 +310,7 @@ pub(crate) struct ApplyAdmission {
     dry_run: bool,
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
+    writer_authority: ApplyWriterAuthority,
 }
 
 impl std::fmt::Debug for ApplyAdmission {
@@ -314,6 +334,7 @@ impl ApplyAdmission {
             Arc::clone(&self.source_root),
             self.deadline,
             self.cancellation.clone(),
+            self.writer_authority.clone(),
         ))
     }
 
@@ -321,6 +342,9 @@ impl ApplyAdmission {
         apply_checkpoint(self.deadline, &self.cancellation, "apply preparation")?;
         if state.retained_root_identity() != self.source_root.identity() {
             return Err("apply staged state belongs to another retained source root".to_string());
+        }
+        if !state.has_writer_authority(&self.writer_authority) {
+            return Err("apply staged state belongs to another actor-issued authority".to_string());
         }
         let transaction = state.finalize()?;
         Ok(PreparedApplyBatch {
@@ -334,6 +358,7 @@ impl ApplyAdmission {
             deadline: self.deadline,
             cancellation: self.cancellation,
             transaction,
+            writer_authority: self.writer_authority,
         })
     }
 }
@@ -349,6 +374,7 @@ pub(crate) struct PreparedApplyBatch {
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
     transaction: CompileTransaction,
+    writer_authority: ApplyWriterAuthority,
 }
 
 impl std::fmt::Debug for PreparedApplyBatch {
@@ -714,6 +740,7 @@ impl<R> WorkspaceActor<R> {
             dry_run,
             deadline,
             cancellation: cancellation.clone(),
+            writer_authority: ApplyWriterAuthority::issue(),
         })
     }
 
@@ -778,6 +805,7 @@ impl<R> WorkspaceActor<R> {
         let revisions = Arc::clone(&prepared.revision_service);
         let actor = self;
         let (_, revision) = prepared.transaction.commit_retained_apply_with(
+            prepared.writer_authority,
             || apply_checkpoint(deadline, &cancellation, "prepared apply commit"),
             || {
                 apply_checkpoint(deadline, &cancellation, "apply revision reconciliation")?;
@@ -2946,6 +2974,189 @@ pub(crate) mod tests {
             std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
             b"replacement-tree"
         );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_create_post_rename_failure_rolls_back_the_published_name() {
+        let fixture = actor_fixture("prepared-create-post-rename-failure", &["src"]);
+        let target = fixture.roots[0].join("created.txt");
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state.create("created.txt", b"published".to_vec()).unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        crate::infrastructure::platform::filesystem::inject_post_rename_sync_failure_for_test();
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert!(error.contains("post-rename"), "{error}");
+        assert!(
+            !target.exists(),
+            "reported failure left created bytes published"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_admission_refuses_staged_state_from_another_actor_issued_authority() {
+        let fixture = actor_fixture("prepared-foreign-writer-authority", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let first = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let second = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let foreign_state = second.staged_state().unwrap();
+
+        let error = first.prepare(foreign_state).unwrap_err();
+        assert!(error.contains("authority"), "{error}");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_replace_post_rename_failure_restores_the_exact_preimage() {
+        let fixture = actor_fixture("prepared-replace-post-rename-failure", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"published".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        crate::infrastructure::platform::filesystem::inject_post_rename_sync_failure_for_test();
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert!(error.contains("post-rename"), "{error}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_replace_preserves_a_destination_replaced_at_the_mutation_boundary() {
+        let fixture = actor_fixture("prepared-replace-destination-race", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        let displaced = fixture.roots[0].join("concurrent-old.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"apply-bytes".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let raced_target = target.clone();
+        let raced_displaced = displaced.clone();
+        crate::infrastructure::platform::filesystem::set_before_identity_bound_no_replace_rename_hook(
+            move || {
+                std::fs::rename(&raced_target, &raced_displaced).unwrap();
+                std::fs::write(&raced_target, b"concurrent").unwrap();
+            },
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert!(
+            error.contains("preimage") || error.contains("identity"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"concurrent");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_remove_preserves_a_destination_replaced_at_the_mutation_boundary() {
+        let fixture = actor_fixture("prepared-remove-destination-race", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        let displaced = fixture.roots[0].join("concurrent-old.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state.remove("Module.bsl", b"original").unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let raced_target = target.clone();
+        let raced_displaced = displaced.clone();
+        crate::infrastructure::platform::filesystem::set_before_identity_bound_no_replace_rename_hook(
+            move || {
+                std::fs::rename(&raced_target, &raced_displaced).unwrap();
+                std::fs::write(&raced_target, b"concurrent").unwrap();
+            },
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert!(
+            error.contains("preimage") || error.contains("identity"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"concurrent");
         fixture.cleanup();
     }
 

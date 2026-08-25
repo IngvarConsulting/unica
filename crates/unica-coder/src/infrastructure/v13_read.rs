@@ -1921,17 +1921,8 @@ fn event_node(event: &EventProjection) -> NodeView {
         ),
         ("callType".to_string(), json!(event.call_type)),
     ]);
-    let can = event
-        .can
-        .iter()
-        .map(|operation| {
-            crate::domain::node_view::OperationRef::new(
-                &operation.op,
-                Map::from_iter([("at".to_string(), json!(operation.at))]),
-            )
-        })
-        .collect();
-    NodeView::new(&event.at, NodeKind::Event.as_str(), &event.event_id, props).with_can(can)
+    NodeView::new(&event.at, NodeKind::Event.as_str(), &event.event_id, props)
+        .with_can(event.can.clone())
 }
 
 fn event_node_value(event: &EventProjection) -> Value {

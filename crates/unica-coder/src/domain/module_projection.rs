@@ -1,4 +1,5 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
+use crate::domain::node_view::OperationRef;
 use crate::domain::platform_profile::ModuleRole;
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -296,22 +297,6 @@ pub(crate) enum EventState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct OperationCapability {
-    pub(crate) op: String,
-    pub(crate) at: String,
-}
-
-impl OperationCapability {
-    pub(crate) fn event_implement(at: impl Into<String>) -> Self {
-        Self {
-            op: "event.implement".to_string(),
-            at: at.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct EventProjection {
     pub(crate) at: String,
     pub(crate) event_id: String,
@@ -326,7 +311,7 @@ pub(crate) struct EventProjection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) call_type: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) can: Vec<OperationCapability>,
+    pub(crate) can: Vec<OperationRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -593,10 +578,10 @@ mod tests {
         BindingFact, BodyLine, BranchKind, CommonModuleProperties, CompilationFacts,
         CompilationProjection, EventProjection, EventState, ExtensionKind, ExtensionProjection,
         HandleProjection, InterfaceKind, InterfaceProjection, MethodKind, MethodProjection,
-        ModuleIdentity, ModuleProjectionSet, ModuleProperties, OperationCapability,
-        RegionProjection,
+        ModuleIdentity, ModuleProjectionSet, ModuleProperties, RegionProjection,
     };
     use crate::domain::address::{NodeKind, QualifiedAddress};
+    use crate::domain::apply::OperationRegistry;
     use crate::domain::platform_profile::ModuleRole;
     use serde_json::{json, Value};
 
@@ -621,7 +606,7 @@ mod tests {
             handler_en: "BeforeWrite".to_string(),
             implementation_at: None,
             call_type: None,
-            can: vec![OperationCapability::event_implement(
+            can: vec![OperationRegistry::closed().event_implementation_skeleton(
                 "main:Document.Пустой.Module.Object.Event.BeforeWrite",
             )],
         }
@@ -732,7 +717,21 @@ mod tests {
         assert_eq!(projection.events().len(), 1);
         assert_eq!(projection.events()[0].state, EventState::Available);
         assert_eq!(projection.events()[0].can.len(), 1);
-        assert_eq!(projection.events()[0].can[0].op, "event.implement");
+        assert_eq!(projection.events()[0].can[0].op(), "event.implement");
+    }
+
+    #[test]
+    fn event_capability_is_the_registry_copyable_apply_skeleton() {
+        let capability = serde_json::to_value(&available_event().can[0]).unwrap();
+        assert_eq!(
+            capability,
+            json!({
+                "op": "event.implement",
+                "args": {
+                    "at": "main:Document.Пустой.Module.Object.Event.BeforeWrite"
+                }
+            })
+        );
     }
 
     #[test]

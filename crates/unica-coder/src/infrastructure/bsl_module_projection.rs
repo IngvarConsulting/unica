@@ -1,9 +1,10 @@
 use crate::domain::address::QualifiedAddress;
+use crate::domain::apply::OperationRegistry;
 use crate::domain::module_projection::{
     BindingFact, BodyLine, CommonModuleProperties, CompilationFacts, CompilationProjection,
     EventProjection, EventState, ExtensionKind, ExtensionProjection, HandleProjection,
     InterfaceKind, InterfaceProjection, MethodKind, MethodProjection, ModuleIdentity,
-    ModuleProjectionSet, ModuleProperties, OperationCapability, RegionProjection,
+    ModuleProjectionSet, ModuleProperties, RegionProjection,
 };
 use crate::domain::platform_profile::{ModuleCapability, ModuleRole, PlatformProfile};
 use crate::infrastructure::bsl_outline::parse_bsl_syntax;
@@ -279,7 +280,7 @@ fn available_module_event(at: &QualifiedAddress, spec: &PlatformEventSpec) -> Ev
         handler_en: spec.handler_en.clone(),
         implementation_at: None,
         call_type: None,
-        can: vec![OperationCapability::event_implement(event_at)],
+        can: vec![OperationRegistry::closed().event_implementation_skeleton(event_at)],
     }
 }
 
@@ -1210,7 +1211,7 @@ pub(crate) fn project_form_owner_events(
                 }),
                 call_type: actual.and_then(|binding| binding.call_type.clone()),
                 can: (state == EventState::Available)
-                    .then(|| OperationCapability::event_implement(at))
+                    .then(|| OperationRegistry::closed().event_implementation_skeleton(at))
                     .into_iter()
                     .collect(),
             });
@@ -2083,7 +2084,7 @@ mod tests {
                 && event
                     .can
                     .iter()
-                    .any(|capability| capability.op == "event.implement")
+                    .any(|capability| capability.op() == "event.implement")
         }));
         let json = serde_json::to_string(projection.summary()).unwrap();
         for forbidden in [

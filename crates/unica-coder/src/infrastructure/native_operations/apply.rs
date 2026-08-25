@@ -41,10 +41,12 @@ pub(crate) struct StagedApplyChange {
     pub(crate) current: StagedFileState,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct StagedEntry {
     original: StagedFileState,
     current: StagedFileState,
+    original_file:
+        Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
 }
 
 #[derive(Debug)]
@@ -53,6 +55,7 @@ pub(crate) struct ApplyStagedState {
     entries: BTreeMap<PathBuf, StagedEntry>,
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
+    writer_authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
 }
 
 impl ApplyStagedState {
@@ -60,22 +63,20 @@ impl ApplyStagedState {
         root: Arc<RetainedDirectoryCapability>,
         deadline: ProviderDeadline,
         cancellation: CancellationToken,
+        writer_authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
     ) -> Self {
         Self {
             root,
             entries: BTreeMap::new(),
             deadline,
             cancellation,
+            writer_authority,
         }
     }
 
-    pub(crate) fn read(
-        &mut self,
-        relative: &Path,
-        max_bytes: usize,
-    ) -> Result<Option<Vec<u8>>, String> {
+    pub(crate) fn read(&mut self, relative: &Path) -> Result<Option<Vec<u8>>, String> {
         let relative = strict_relative(relative)?;
-        self.ensure_loaded(&relative, max_bytes)?;
+        self.ensure_loaded(&relative)?;
         Ok(self
             .entries
             .get(&relative)
@@ -90,7 +91,7 @@ impl ApplyStagedState {
         bytes: Vec<u8>,
     ) -> Result<(), String> {
         let relative = strict_relative(relative.as_ref())?;
-        self.ensure_loaded(&relative, MAX_APPLY_FILE_BYTES)?;
+        self.ensure_loaded(&relative)?;
         let entry = self.entries.get_mut(&relative).expect("loaded entry");
         if entry.current != StagedFileState::Absent {
             return Err(format!(
@@ -109,7 +110,7 @@ impl ApplyStagedState {
         bytes: Vec<u8>,
     ) -> Result<(), String> {
         let relative = strict_relative(relative.as_ref())?;
-        self.ensure_loaded(&relative, MAX_APPLY_FILE_BYTES)?;
+        self.ensure_loaded(&relative)?;
         let entry = self.entries.get_mut(&relative).expect("loaded entry");
         if entry.current != StagedFileState::Bytes(expected_current.as_ref().to_vec()) {
             return Err(format!(
@@ -127,7 +128,7 @@ impl ApplyStagedState {
         expected_current: impl AsRef<[u8]>,
     ) -> Result<(), String> {
         let relative = strict_relative(relative.as_ref())?;
-        self.ensure_loaded(&relative, MAX_APPLY_FILE_BYTES)?;
+        self.ensure_loaded(&relative)?;
         let entry = self.entries.get_mut(&relative).expect("loaded entry");
         if entry.current != StagedFileState::Bytes(expected_current.as_ref().to_vec()) {
             return Err(format!(
@@ -166,6 +167,7 @@ impl ApplyStagedState {
     pub(crate) fn finalize(self) -> Result<CompileTransaction, String> {
         self.checkpoint("apply finalization")?;
         let mut transaction = CompileTransaction::new();
+        transaction.bind_retained_apply_authority(&self.writer_authority)?;
         for (relative_path, entry) in self.entries {
             if entry.original == entry.current {
                 continue;
@@ -175,6 +177,8 @@ impl ApplyStagedState {
                 relative_path,
                 entry.original.as_option(),
                 entry.current.as_option(),
+                entry.original_file,
+                &self.writer_authority,
             )?;
         }
         transaction.validate_retained_for_apply()?;
@@ -187,7 +191,14 @@ impl ApplyStagedState {
         self.root.identity()
     }
 
-    fn ensure_loaded(&mut self, relative: &Path, max_bytes: usize) -> Result<(), String> {
+    pub(in crate::infrastructure) fn has_writer_authority(
+        &self,
+        authority: &crate::infrastructure::workspace_actor::ApplyWriterAuthority,
+    ) -> bool {
+        &self.writer_authority == authority
+    }
+
+    fn ensure_loaded(&mut self, relative: &Path) -> Result<(), String> {
         self.checkpoint("apply staged read")?;
         if self.entries.contains_key(relative) {
             return Ok(());
@@ -198,7 +209,7 @@ impl ApplyStagedState {
             .map_err(|error| {
                 format!("staged target parent rejected link/reparse traversal: {error}")
             })?;
-        let original = match parent.retain_immediate_child_nofollow(&name) {
+        let (original, original_file) = match parent.retain_immediate_child_nofollow(&name) {
             Ok(RetainedChildCapability::RegularFile(file)) => {
                 if file
                     .hard_link_count()
@@ -210,10 +221,10 @@ impl ApplyStagedState {
                         relative.display()
                     ));
                 }
-                StagedFileState::Bytes(
-                    file.read_bounded(max_bytes)
-                        .map_err(|error| format!("staged target read failed: {error}"))?,
-                )
+                let bytes = file
+                    .read_bounded(MAX_APPLY_FILE_BYTES)
+                    .map_err(|error| format!("staged target fixed read bound failed: {error}"))?;
+                (StagedFileState::Bytes(bytes), Some(file))
             }
             Ok(RetainedChildCapability::ReparsePoint) => {
                 return Err(format!(
@@ -227,7 +238,7 @@ impl ApplyStagedState {
                     relative.display()
                 ))
             }
-            Err(error) if error.kind() == ErrorKind::NotFound => StagedFileState::Absent,
+            Err(error) if error.kind() == ErrorKind::NotFound => (StagedFileState::Absent, None),
             Err(error) => return Err(format!("staged target inspection failed: {error}")),
         };
         self.entries.insert(
@@ -235,6 +246,7 @@ impl ApplyStagedState {
             StagedEntry {
                 current: original.clone(),
                 original,
+                original_file,
             },
         );
         Ok(())
@@ -267,7 +279,7 @@ fn strict_relative(relative: &Path) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApplyStagedState, StagedChangeKind, StagedFileState};
+    use super::{ApplyStagedState, StagedChangeKind, StagedFileState, MAX_APPLY_FILE_BYTES};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
@@ -284,6 +296,7 @@ mod tests {
             Arc::new(RetainedDirectoryCapability::open(&canonical).unwrap()),
             ProviderDeadline::from_budget(Duration::from_secs(5)),
             CancellationToken::new(),
+            crate::infrastructure::workspace_actor::apply_writer_authority_for_test(),
         )
     }
 
@@ -294,17 +307,17 @@ mod tests {
         std::fs::write(root.join("Ext/existing.txt"), b"original").unwrap();
         let mut state = staged(&root);
 
-        assert_eq!(state.read(Path::new("Ext/new.txt"), 128).unwrap(), None);
+        assert_eq!(state.read(Path::new("Ext/new.txt")).unwrap(), None);
         state.create("Ext/new.txt", b"created".to_vec()).unwrap();
         assert_eq!(
-            state.read(Path::new("Ext/new.txt"), 128).unwrap(),
+            state.read(Path::new("Ext/new.txt")).unwrap(),
             Some(b"created".to_vec())
         );
         state
             .replace("Ext/new.txt", b"created", b"created-then-replaced".to_vec())
             .unwrap();
         assert_eq!(
-            state.read(Path::new("Ext/new.txt"), 128).unwrap(),
+            state.read(Path::new("Ext/new.txt")).unwrap(),
             Some(b"created-then-replaced".to_vec())
         );
 
@@ -319,7 +332,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            state.read(Path::new("Ext/existing.txt"), 128).unwrap(),
+            state.read(Path::new("Ext/existing.txt")).unwrap(),
             Some(b"replacement-2".to_vec())
         );
 
@@ -417,7 +430,7 @@ mod tests {
             .unwrap_err()
             .contains("create"));
         assert!(state
-            .read(Path::new("../escape.txt"), 128)
+            .read(Path::new("../escape.txt"))
             .unwrap_err()
             .contains("normal"));
 
@@ -426,7 +439,7 @@ mod tests {
                 .unwrap();
         if link_outcome == FileLinkFixtureOutcome::Created {
             assert!(state
-                .read(Path::new("Ext/link/a.txt"), 128)
+                .read(Path::new("Ext/link/a.txt"))
                 .unwrap_err()
                 .contains("link"));
             std::fs::create_dir_all(root.join("Race")).unwrap();
@@ -436,7 +449,7 @@ mod tests {
             std::fs::write(external.join("Module.bsl"), b"external decoy").unwrap();
             let mut raced = staged(&root);
             assert_eq!(
-                raced.read(Path::new("Race/Module.bsl"), 128).unwrap(),
+                raced.read(Path::new("Race/Module.bsl")).unwrap(),
                 Some(b"original race bytes".to_vec())
             );
             let displaced = root.join("Race-displaced");
@@ -465,7 +478,7 @@ mod tests {
         }
         std::fs::hard_link(root.join("Ext/real/a.txt"), root.join("Ext/real/b.txt")).unwrap();
         assert!(state
-            .read(Path::new("Ext/real/a.txt"), 128)
+            .read(Path::new("Ext/real/a.txt"))
             .unwrap_err()
             .contains("hard-link"));
         std::fs::remove_dir_all(root).unwrap();
@@ -483,6 +496,49 @@ mod tests {
             .unwrap();
         assert!(state.finalize().unwrap_err().contains("XML"));
         assert_eq!(std::fs::read(&target).unwrap(), b"<Form/>");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_apply_plan_is_not_empty_and_generic_commit_refuses_actor_bypass() {
+        let root = temp_root("actor-bypass");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        std::fs::write(root.join("Ext/Module.bsl"), b"original").unwrap();
+        let mut state = staged(&root);
+        state
+            .replace("Ext/Module.bsl", b"original", b"bypass".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+
+        assert!(
+            !transaction.is_empty(),
+            "retained apply entries were ignored"
+        );
+        let error = transaction.commit().unwrap_err();
+        assert!(error.contains("actor"), "{error}");
+        assert_eq!(
+            std::fs::read(root.join("Ext/Module.bsl")).unwrap(),
+            b"original"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn apply_staged_read_has_one_closed_bound_that_cannot_be_caller_bypassed() {
+        let root = temp_root("closed-read-bound");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        std::fs::write(
+            root.join("Ext/oversized.bin"),
+            vec![0_u8; MAX_APPLY_FILE_BYTES + 1],
+        )
+        .unwrap();
+        let mut state = staged(&root);
+
+        let error = state.read(Path::new("Ext/oversized.bin")).unwrap_err();
+        assert!(
+            error.contains("too large") || error.contains("bound"),
+            "{error}"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -69,7 +69,7 @@ impl BranchRef {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct OperationRef {
     op: String,
     #[serde(skip_serializing_if = "Map::is_empty")]
@@ -82,6 +82,11 @@ impl OperationRef {
             op: op.into(),
             args,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn op(&self) -> &str {
+        &self.op
     }
 }
 

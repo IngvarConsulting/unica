@@ -8,11 +8,28 @@ use std::sync::Arc;
 #[cfg(test)]
 thread_local! {
     static TEST_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_BEFORE_IDENTITY_BOUND_NO_REPLACE_RENAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 pub(crate) fn inject_post_rename_sync_failure_for_test() {
     TEST_POST_RENAME_SYNC_FAILURE.with(|slot| slot.set(true));
+}
+
+#[cfg(test)]
+pub(crate) fn set_before_identity_bound_no_replace_rename_hook(hook: impl FnOnce() + 'static) {
+    TEST_BEFORE_IDENTITY_BOUND_NO_REPLACE_RENAME.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+fn run_before_identity_bound_no_replace_rename_hook() {
+    if let Some(hook) =
+        TEST_BEFORE_IDENTITY_BOUND_NO_REPLACE_RENAME.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
 }
 
 /// Returns a short, private directory suitable as a child process' Unix runtime
@@ -257,6 +274,52 @@ pub(crate) struct RetainedRegularFileCapability {
     identity: FileIdentity,
 }
 
+/// A retained publication can fail after its destination name has already
+/// changed (for example while flushing the renamed file).  The optional
+/// capability makes that namespace mutation journalable by the caller instead
+/// of reducing it to an `io::Error` that cannot be rolled back.
+#[derive(Debug)]
+pub(crate) struct RetainedPublicationError {
+    error: io::Error,
+    published: Option<RetainedRegularFileCapability>,
+}
+
+impl RetainedPublicationError {
+    fn before_rename(error: io::Error) -> Self {
+        Self {
+            error,
+            published: None,
+        }
+    }
+
+    fn after_rename(error: io::Error, published: RetainedRegularFileCapability) -> Self {
+        Self {
+            error,
+            published: Some(published),
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (io::Error, Option<RetainedRegularFileCapability>) {
+        (self.error, self.published)
+    }
+
+    pub(crate) fn io_error(&self) -> &io::Error {
+        &self.error
+    }
+}
+
+impl std::fmt::Display for RetainedPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RetainedPublicationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 /// One immediate child classified and retained relative to an exact directory
 /// capability. Directory and regular-file variants own the same physical
 /// handles used for classification; reparse and unsupported entries are never
@@ -368,12 +431,13 @@ impl RetainedDirectoryCapability {
         stage_name: &std::ffi::OsStr,
         destination_name: &std::ffi::OsStr,
         bytes: &[u8],
-    ) -> io::Result<RetainedRegularFileCapability> {
+    ) -> Result<RetainedRegularFileCapability, RetainedPublicationError> {
         use std::io::Write;
 
-        let mut stage = create_new_regular_child(&self.retained.directory, stage_name)?;
-        let identity = file_identity(&stage)?;
-        let publication = (|| {
+        let mut stage = create_new_regular_child(&self.retained.directory, stage_name)
+            .map_err(RetainedPublicationError::before_rename)?;
+        let identity = file_identity(&stage).map_err(RetainedPublicationError::before_rename)?;
+        let before_rename = (|| {
             stage.write_all(bytes)?;
             stage.sync_data()?;
             replace_identity_bound_regular_child(
@@ -382,27 +446,30 @@ impl RetainedDirectoryCapability {
                 identity,
                 &stage,
                 destination_name,
-            )?;
-            sync_renamed_regular_child(&stage)?;
-            sync_directory(&self.retained.directory)?;
-            let published = RetainedRegularFileCapability {
-                parent: self.clone(),
-                name: destination_name.to_os_string(),
-                file: stage.try_clone()?,
-                identity,
-            };
-            published.validate_named_identity()?;
-            Ok(published)
+            )
         })();
-        if publication.is_err() {
+        if let Err(error) = before_rename {
             let _ = remove_identity_bound_regular_child(
                 &self.retained.directory,
                 stage_name,
                 identity,
                 &stage,
             );
+            return Err(RetainedPublicationError::before_rename(error));
         }
-        publication
+        let published = RetainedRegularFileCapability {
+            parent: self.clone(),
+            name: destination_name.to_os_string(),
+            file: stage,
+            identity,
+        };
+        if let Err(error) = sync_renamed_regular_child(&published.file)
+            .and_then(|()| sync_directory(&self.retained.directory))
+            .and_then(|()| published.validate_named_identity())
+        {
+            return Err(RetainedPublicationError::after_rename(error, published));
+        }
+        Ok(published)
     }
 
     /// Publishes a new regular child without replacing a concurrently-created
@@ -413,12 +480,13 @@ impl RetainedDirectoryCapability {
         stage_name: &std::ffi::OsStr,
         destination_name: &std::ffi::OsStr,
         bytes: &[u8],
-    ) -> io::Result<RetainedRegularFileCapability> {
+    ) -> Result<RetainedRegularFileCapability, RetainedPublicationError> {
         use std::io::Write;
 
-        let mut stage = create_new_regular_child(&self.retained.directory, stage_name)?;
-        let identity = file_identity(&stage)?;
-        let publication = (|| {
+        let mut stage = create_new_regular_child(&self.retained.directory, stage_name)
+            .map_err(RetainedPublicationError::before_rename)?;
+        let identity = file_identity(&stage).map_err(RetainedPublicationError::before_rename)?;
+        let before_rename = (|| {
             stage.write_all(bytes)?;
             stage.sync_data()?;
             rename_identity_bound_regular_child_no_replace(
@@ -428,27 +496,108 @@ impl RetainedDirectoryCapability {
                 &stage,
                 &self.retained.directory,
                 destination_name,
-            )?;
-            sync_renamed_regular_child(&stage)?;
-            sync_directory(&self.retained.directory)?;
-            let published = RetainedRegularFileCapability {
-                parent: self.clone(),
-                name: destination_name.to_os_string(),
-                file: stage.try_clone()?,
-                identity,
-            };
-            published.validate_named_identity_relative()?;
-            Ok(published)
+            )
         })();
-        if publication.is_err() {
+        if let Err(error) = before_rename {
             let _ = remove_identity_bound_regular_child(
                 &self.retained.directory,
                 stage_name,
                 identity,
                 &stage,
             );
+            return Err(RetainedPublicationError::before_rename(error));
         }
-        publication
+        let published = RetainedRegularFileCapability {
+            parent: self.clone(),
+            name: destination_name.to_os_string(),
+            file: stage,
+            identity,
+        };
+        if let Err(error) = sync_renamed_regular_child(&published.file)
+            .and_then(|()| sync_directory(&self.retained.directory))
+            .and_then(|()| published.validate_named_identity_relative())
+        {
+            return Err(RetainedPublicationError::after_rename(error, published));
+        }
+        Ok(published)
+    }
+
+    /// Moves the exact retained destination to an unoccupied recovery name.
+    /// The destination is never overwritten: if its name no longer resolves to
+    /// `expected`, the move is refused (or a raced move is restored) and the
+    /// concurrent child remains authoritative.
+    pub(crate) fn displace_regular_child_no_replace(
+        &self,
+        destination_name: &std::ffi::OsStr,
+        expected: &RetainedRegularFileCapability,
+        recovery_name: &std::ffi::OsStr,
+    ) -> io::Result<RetainedRegularFileCapability> {
+        if expected.parent.identity() != self.identity() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "retained destination belongs to another parent",
+            ));
+        }
+        let retained = expected.file.try_clone()?;
+        rename_identity_bound_regular_child_no_replace(
+            &self.retained.directory,
+            destination_name,
+            expected.identity,
+            &expected.file,
+            &self.retained.directory,
+            recovery_name,
+        )?;
+        let displaced = RetainedRegularFileCapability {
+            parent: self.clone(),
+            name: recovery_name.to_os_string(),
+            file: retained,
+            identity: expected.identity,
+        };
+        if let Err(validation) = displaced.validate_named_identity_relative() {
+            let restore = self.retain_regular_child(recovery_name).and_then(|raced| {
+                rename_identity_bound_regular_child_no_replace(
+                    &self.retained.directory,
+                    recovery_name,
+                    raced.identity,
+                    &raced.file,
+                    &self.retained.directory,
+                    destination_name,
+                )
+            });
+            return Err(match restore {
+                Ok(()) => io::Error::other(format!(
+                    "retained destination identity changed at mutation boundary: {validation}"
+                )),
+                Err(restore) => io::Error::other(format!(
+                    "retained destination identity changed at mutation boundary: {validation}; recovery child was preserved because restore failed: {restore}"
+                )),
+            });
+        }
+        Ok(displaced)
+    }
+
+    /// Restores one previously displaced child without replacing any child
+    /// that appeared concurrently at the destination.
+    pub(crate) fn restore_displaced_regular_child_no_replace(
+        &self,
+        displaced: &RetainedRegularFileCapability,
+        destination_name: &std::ffi::OsStr,
+    ) -> io::Result<()> {
+        if displaced.parent.identity() != self.identity() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "retained recovery child belongs to another parent",
+            ));
+        }
+        rename_identity_bound_regular_child_no_replace(
+            &self.retained.directory,
+            &displaced.name,
+            displaced.identity,
+            &displaced.file,
+            &self.retained.directory,
+            destination_name,
+        )?;
+        sync_directory(&self.retained.directory)
     }
 
     pub(crate) fn read_relative_regular_bounded(
@@ -4415,6 +4564,8 @@ pub(crate) fn rename_identity_bound_regular_child_no_replace(
             "regular child identity changed; replacement left untouched",
         ));
     }
+    #[cfg(test)]
+    run_before_identity_bound_no_replace_rename_hook();
     rename_regular_child_at_no_replace(
         source_parent,
         source_name,
@@ -4533,6 +4684,8 @@ pub(crate) fn rename_identity_bound_regular_child_no_replace(
             "retained regular child identity changed; replacement left untouched",
         ));
     }
+    #[cfg(test)]
+    run_before_identity_bound_no_replace_rename_hook();
     rename_open_child_no_replace(&named, destination_parent, destination_name)
 }
 

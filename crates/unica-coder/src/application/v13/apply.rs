@@ -55,7 +55,7 @@ mod tests {
                 .iter()
                 .find(|value| value["op"] == "event.implement")
                 .cloned(),
-            Some(json!({"op": "event.implement"}))
+            Some(json!({"op": "event.implement", "args": {"at": ""}}))
         );
     }
 }

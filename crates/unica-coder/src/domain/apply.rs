@@ -1,4 +1,5 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
+use crate::domain::metadata::{metadata_kind_collections, MetaCollection, MetadataKind};
 use crate::domain::node_view::OperationRef;
 use serde_json::{Map, Value};
 use std::fmt;
@@ -235,8 +236,18 @@ pub(crate) enum OperationFamily {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OperationApplicability {
     Metadata,
-    MetadataOrForm,
     MetadataOrSubsystem,
+    MetadataAttributes,
+    MetadataTabularSections,
+    MetadataDimensions,
+    MetadataResources,
+    MetadataEnumValues,
+    MetadataColumns,
+    MetadataForms,
+    MetadataFormsOrForm,
+    MetadataTemplates,
+    MetadataCommands,
+    MetadataPredefinedItems,
     Form,
     Role,
     Dcs,
@@ -253,8 +264,30 @@ impl OperationApplicability {
         let metadata = kind.is_metadata_kind() || kind == NodeKind::Configuration;
         match self {
             Self::Metadata => metadata,
-            Self::MetadataOrForm => metadata || form_kind(kind),
             Self::MetadataOrSubsystem => metadata || kind == NodeKind::Subsystem,
+            Self::MetadataAttributes => {
+                metadata_collection_matches(kind, MetaCollection::Attributes)
+            }
+            Self::MetadataTabularSections => {
+                metadata_collection_matches(kind, MetaCollection::TabularSections)
+            }
+            Self::MetadataDimensions => {
+                metadata_collection_matches(kind, MetaCollection::Dimensions)
+            }
+            Self::MetadataResources => metadata_collection_matches(kind, MetaCollection::Resources),
+            Self::MetadataEnumValues => {
+                metadata_collection_matches(kind, MetaCollection::EnumValues)
+            }
+            Self::MetadataColumns => metadata_collection_matches(kind, MetaCollection::Columns),
+            Self::MetadataForms => metadata_collection_matches(kind, MetaCollection::Forms),
+            Self::MetadataFormsOrForm => {
+                metadata_collection_matches(kind, MetaCollection::Forms) || form_kind(kind)
+            }
+            Self::MetadataTemplates => metadata_collection_matches(kind, MetaCollection::Templates),
+            Self::MetadataCommands => metadata_collection_matches(kind, MetaCollection::Commands),
+            Self::MetadataPredefinedItems => {
+                metadata_collection_matches(kind, MetaCollection::PredefinedItems)
+            }
             Self::Form => form_kind(kind),
             Self::Role => matches!(kind, NodeKind::Role | NodeKind::Right | NodeKind::Rls),
             Self::Dcs => matches!(
@@ -282,6 +315,12 @@ impl OperationApplicability {
     }
 }
 
+fn metadata_collection_matches(kind: NodeKind, collection: MetaCollection) -> bool {
+    MetadataKind::parse(kind.as_str())
+        .ok()
+        .is_some_and(|kind| metadata_kind_collections(kind).contains(&collection))
+}
+
 fn form_kind(kind: NodeKind) -> bool {
     matches!(
         kind,
@@ -299,6 +338,27 @@ pub(crate) struct OperationDescriptor {
     name: &'static str,
     family: OperationFamily,
     applicability: OperationApplicability,
+    skeleton: OperationSkeleton,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperationSkeleton {
+    Items,
+    Values,
+    Text,
+    Target,
+}
+
+impl OperationSkeleton {
+    fn args(self) -> Map<String, Value> {
+        let (name, value) = match self {
+            Self::Items => ("items", Value::Array(Vec::new())),
+            Self::Values => ("values", Value::Object(Map::new())),
+            Self::Text => ("text", Value::String(String::new())),
+            Self::Target => ("at", Value::String(String::new())),
+        };
+        Map::from_iter([(name.to_string(), value)])
+    }
 }
 
 impl OperationDescriptor {
@@ -311,119 +371,156 @@ impl OperationDescriptor {
     }
 
     pub(crate) fn copyable_skeleton(self) -> OperationRef {
-        OperationRef::new(self.name, Map::new())
+        OperationRef::new(self.name, self.skeleton.args())
+    }
+
+    fn copyable_skeleton_at(self, at: impl Into<String>) -> OperationRef {
+        let mut args = self.skeleton.args();
+        args.insert("at".to_string(), Value::String(at.into()));
+        OperationRef::new(self.name, args)
     }
 }
 
 macro_rules! operation_descriptors {
-    ($(($name:literal, $family:ident, $applicability:ident)),+ $(,)?) => {
+    ($(($name:literal, $family:ident, $applicability:ident, $skeleton:ident)),+ $(,)?) => {
         const OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
             $(OperationDescriptor {
                 name: $name,
                 family: OperationFamily::$family,
                 applicability: OperationApplicability::$applicability,
+                skeleton: OperationSkeleton::$skeleton,
             }),+
         ];
     };
 }
 
 operation_descriptors!(
-    ("object.create", Metadata, Metadata),
-    ("object.remove", Metadata, Metadata),
-    ("props.set", Properties, MetadataOrSubsystem),
-    ("relation.add", Metadata, Metadata),
-    ("relation.remove", Metadata, Metadata),
-    ("relation.replace", Metadata, Metadata),
-    ("help.create", Metadata, Metadata),
-    ("attribute.add", Metadata, Metadata),
-    ("attribute.set", Metadata, Metadata),
-    ("attribute.remove", Metadata, Metadata),
-    ("tabularSection.add", Metadata, Metadata),
-    ("tabularSection.set", Metadata, Metadata),
-    ("tabularSection.remove", Metadata, Metadata),
-    ("dimension.add", Metadata, Metadata),
-    ("dimension.set", Metadata, Metadata),
-    ("dimension.remove", Metadata, Metadata),
-    ("resource.add", Metadata, Metadata),
-    ("resource.set", Metadata, Metadata),
-    ("resource.remove", Metadata, Metadata),
-    ("enumValue.add", Metadata, Metadata),
-    ("enumValue.set", Metadata, Metadata),
-    ("enumValue.remove", Metadata, Metadata),
-    ("column.add", Metadata, Metadata),
-    ("column.set", Metadata, Metadata),
-    ("column.remove", Metadata, Metadata),
-    ("form.add", Form, Metadata),
-    ("form.set", Form, MetadataOrForm),
-    ("form.remove", Form, MetadataOrForm),
-    ("template.add", Metadata, Metadata),
-    ("template.set", Metadata, Metadata),
-    ("template.remove", Metadata, Metadata),
-    ("command.add", Metadata, Metadata),
-    ("command.set", Metadata, Metadata),
-    ("command.remove", Metadata, Metadata),
-    ("predefinedItem.add", Metadata, Metadata),
-    ("predefinedItem.set", Metadata, Metadata),
-    ("predefinedItem.remove", Metadata, Metadata),
-    ("form.create", Form, Form),
-    ("element.add", Form, Form),
-    ("element.remove", Form, Form),
-    ("formAttribute.add", Form, Form),
-    ("formCommand.add", Form, Form),
-    ("event.bind", Form, Form),
-    ("role.create", Role, Role),
-    ("right.set", Role, Role),
-    ("dcs.set", Dcs, Dcs),
-    ("field.add", Dcs, Dcs),
-    ("field.set", Dcs, Dcs),
-    ("field.remove", Dcs, Dcs),
-    ("fieldRole.set", Dcs, Dcs),
-    ("total.add", Dcs, Dcs),
-    ("total.remove", Dcs, Dcs),
-    ("calculatedField.add", Dcs, Dcs),
-    ("calculatedField.remove", Dcs, Dcs),
-    ("parameter.add", Dcs, Dcs),
-    ("parameter.set", Dcs, Dcs),
-    ("parameter.rename", Dcs, Dcs),
-    ("parameter.reorder", Dcs, Dcs),
-    ("parameter.remove", Dcs, Dcs),
-    ("filter.add", Dcs, Dcs),
-    ("filter.set", Dcs, Dcs),
-    ("filter.remove", Dcs, Dcs),
-    ("filter.clear", Dcs, Dcs),
-    ("dataParameter.add", Dcs, Dcs),
-    ("dataParameter.set", Dcs, Dcs),
-    ("query.set", Dcs, Dcs),
-    ("query.patch", Dcs, Dcs),
-    ("selection.add", Dcs, Dcs),
-    ("selection.clear", Dcs, Dcs),
-    ("order.add", Dcs, Dcs),
-    ("order.clear", Dcs, Dcs),
-    ("conditionalAppearance.add", Dcs, Dcs),
-    ("conditionalAppearance.clear", Dcs, Dcs),
-    ("dataSetLink.add", Dcs, Dcs),
-    ("dataSet.add", Dcs, Dcs),
-    ("variant.add", Dcs, Dcs),
-    ("drilldown.add", Dcs, Dcs),
-    ("outputParameter.set", Dcs, Dcs),
-    ("structure.set", Dcs, Dcs),
-    ("structure.patch", Dcs, Dcs),
-    ("mxl.set", Mxl, Mxl),
-    ("valueType.add", Xdto, Xdto),
-    ("objectType.add", Xdto, Xdto),
-    ("property.add", Xdto, Xdto),
-    ("type.remove", Xdto, Xdto),
-    ("property.remove", Xdto, Xdto),
-    ("subsystem.create", Subsystem, Subsystem),
-    ("content.add", Subsystem, Subsystem),
-    ("content.remove", Subsystem, Subsystem),
-    ("childSubsystem.add", Subsystem, Subsystem),
-    ("childSubsystem.remove", Subsystem, Subsystem),
-    ("supportCapability.set", Support, Support),
-    ("supportRule.set", Support, Support),
-    ("code.insert", Code, Code),
-    ("code.replace", Code, Code),
-    ("event.implement", Event, Event),
+    ("object.create", Metadata, Metadata, Values),
+    ("object.remove", Metadata, Metadata, Target),
+    ("props.set", Properties, MetadataOrSubsystem, Values),
+    ("relation.add", Metadata, Metadata, Items),
+    ("relation.remove", Metadata, Metadata, Target),
+    ("relation.replace", Metadata, Metadata, Items),
+    ("help.create", Metadata, Metadata, Text),
+    ("attribute.add", Metadata, MetadataAttributes, Items),
+    ("attribute.set", Metadata, MetadataAttributes, Values),
+    ("attribute.remove", Metadata, MetadataAttributes, Target),
+    (
+        "tabularSection.add",
+        Metadata,
+        MetadataTabularSections,
+        Items
+    ),
+    (
+        "tabularSection.set",
+        Metadata,
+        MetadataTabularSections,
+        Values
+    ),
+    (
+        "tabularSection.remove",
+        Metadata,
+        MetadataTabularSections,
+        Target
+    ),
+    ("dimension.add", Metadata, MetadataDimensions, Items),
+    ("dimension.set", Metadata, MetadataDimensions, Values),
+    ("dimension.remove", Metadata, MetadataDimensions, Target),
+    ("resource.add", Metadata, MetadataResources, Items),
+    ("resource.set", Metadata, MetadataResources, Values),
+    ("resource.remove", Metadata, MetadataResources, Target),
+    ("enumValue.add", Metadata, MetadataEnumValues, Items),
+    ("enumValue.set", Metadata, MetadataEnumValues, Values),
+    ("enumValue.remove", Metadata, MetadataEnumValues, Target),
+    ("column.add", Metadata, MetadataColumns, Items),
+    ("column.set", Metadata, MetadataColumns, Values),
+    ("column.remove", Metadata, MetadataColumns, Target),
+    ("form.add", Form, MetadataForms, Items),
+    ("form.set", Form, MetadataFormsOrForm, Values),
+    ("form.remove", Form, MetadataFormsOrForm, Target),
+    ("template.add", Metadata, MetadataTemplates, Items),
+    ("template.set", Metadata, MetadataTemplates, Values),
+    ("template.remove", Metadata, MetadataTemplates, Target),
+    ("command.add", Metadata, MetadataCommands, Items),
+    ("command.set", Metadata, MetadataCommands, Values),
+    ("command.remove", Metadata, MetadataCommands, Target),
+    (
+        "predefinedItem.add",
+        Metadata,
+        MetadataPredefinedItems,
+        Items
+    ),
+    (
+        "predefinedItem.set",
+        Metadata,
+        MetadataPredefinedItems,
+        Values
+    ),
+    (
+        "predefinedItem.remove",
+        Metadata,
+        MetadataPredefinedItems,
+        Target
+    ),
+    ("form.create", Form, Form, Values),
+    ("element.add", Form, Form, Items),
+    ("element.remove", Form, Form, Target),
+    ("formAttribute.add", Form, Form, Items),
+    ("formCommand.add", Form, Form, Items),
+    ("event.bind", Form, Form, Values),
+    ("role.create", Role, Role, Values),
+    ("right.set", Role, Role, Values),
+    ("dcs.set", Dcs, Dcs, Values),
+    ("field.add", Dcs, Dcs, Items),
+    ("field.set", Dcs, Dcs, Values),
+    ("field.remove", Dcs, Dcs, Target),
+    ("fieldRole.set", Dcs, Dcs, Values),
+    ("total.add", Dcs, Dcs, Items),
+    ("total.remove", Dcs, Dcs, Target),
+    ("calculatedField.add", Dcs, Dcs, Items),
+    ("calculatedField.remove", Dcs, Dcs, Target),
+    ("parameter.add", Dcs, Dcs, Items),
+    ("parameter.set", Dcs, Dcs, Values),
+    ("parameter.rename", Dcs, Dcs, Values),
+    ("parameter.reorder", Dcs, Dcs, Items),
+    ("parameter.remove", Dcs, Dcs, Target),
+    ("filter.add", Dcs, Dcs, Items),
+    ("filter.set", Dcs, Dcs, Values),
+    ("filter.remove", Dcs, Dcs, Target),
+    ("filter.clear", Dcs, Dcs, Target),
+    ("dataParameter.add", Dcs, Dcs, Items),
+    ("dataParameter.set", Dcs, Dcs, Values),
+    ("query.set", Dcs, Dcs, Values),
+    ("query.patch", Dcs, Dcs, Values),
+    ("selection.add", Dcs, Dcs, Items),
+    ("selection.clear", Dcs, Dcs, Target),
+    ("order.add", Dcs, Dcs, Items),
+    ("order.clear", Dcs, Dcs, Target),
+    ("conditionalAppearance.add", Dcs, Dcs, Items),
+    ("conditionalAppearance.clear", Dcs, Dcs, Target),
+    ("dataSetLink.add", Dcs, Dcs, Items),
+    ("dataSet.add", Dcs, Dcs, Items),
+    ("variant.add", Dcs, Dcs, Items),
+    ("drilldown.add", Dcs, Dcs, Items),
+    ("outputParameter.set", Dcs, Dcs, Values),
+    ("structure.set", Dcs, Dcs, Values),
+    ("structure.patch", Dcs, Dcs, Values),
+    ("mxl.set", Mxl, Mxl, Values),
+    ("valueType.add", Xdto, Xdto, Items),
+    ("objectType.add", Xdto, Xdto, Items),
+    ("property.add", Xdto, Xdto, Items),
+    ("type.remove", Xdto, Xdto, Target),
+    ("property.remove", Xdto, Xdto, Target),
+    ("subsystem.create", Subsystem, Subsystem, Values),
+    ("content.add", Subsystem, Subsystem, Items),
+    ("content.remove", Subsystem, Subsystem, Target),
+    ("childSubsystem.add", Subsystem, Subsystem, Items),
+    ("childSubsystem.remove", Subsystem, Subsystem, Target),
+    ("supportCapability.set", Support, Support, Values),
+    ("supportRule.set", Support, Support, Values),
+    ("code.insert", Code, Code, Text),
+    ("code.replace", Code, Code, Text),
+    ("event.implement", Event, Event, Target),
 );
 
 #[derive(Debug, Clone, Copy)]
@@ -459,6 +556,12 @@ impl OperationRegistry {
             .filter(|descriptor| descriptor.applies_to(kind))
             .map(OperationDescriptor::copyable_skeleton)
             .collect()
+    }
+
+    pub(crate) fn event_implementation_skeleton(self, at: impl Into<String>) -> OperationRef {
+        self.lookup("event.implement")
+            .expect("the closed operation registry owns event implementation")
+            .copyable_skeleton_at(at)
     }
 }
 
@@ -659,6 +762,7 @@ mod tests {
             "event.implement",
         ];
         let registry = OperationRegistry::closed();
+        assert_eq!(expected.len(), 96);
         assert_eq!(registry.names(), expected);
         let mut unique = registry.names().to_vec();
         unique.sort_unstable();
@@ -685,7 +789,7 @@ mod tests {
             .map(|item| serde_json::to_value(item).unwrap())
             .find(|value| value["op"] == "event.implement")
             .expect("Event.can must be projected from the dispatch registry");
-        assert_eq!(event, json!({"op": "event.implement"}));
+        assert_eq!(event, json!({"op": "event.implement", "args": {"at": ""}}));
         for skeleton in registry
             .descriptors()
             .iter()
@@ -709,6 +813,78 @@ mod tests {
                     "physical/provider field leaked: {value}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn metadata_collection_operations_follow_the_exact_typed_kind_matrix() {
+        let registry = OperationRegistry::closed();
+        let cases = [
+            ("attribute.add", NodeKind::Catalog, true),
+            ("attribute.add", NodeKind::InformationRegister, true),
+            ("attribute.add", NodeKind::Enum, false),
+            ("tabularSection.add", NodeKind::Document, true),
+            ("tabularSection.add", NodeKind::InformationRegister, false),
+            ("dimension.add", NodeKind::InformationRegister, true),
+            ("dimension.add", NodeKind::Document, false),
+            ("resource.remove", NodeKind::CalculationRegister, true),
+            ("resource.remove", NodeKind::Catalog, false),
+            ("enumValue.set", NodeKind::Enum, true),
+            ("enumValue.set", NodeKind::Catalog, false),
+            ("column.remove", NodeKind::DocumentJournal, true),
+            ("column.remove", NodeKind::Document, false),
+            ("predefinedItem.add", NodeKind::Catalog, true),
+            ("predefinedItem.add", NodeKind::ChartOfAccounts, true),
+            ("predefinedItem.add", NodeKind::Document, false),
+            ("form.add", NodeKind::Constant, true),
+            ("template.add", NodeKind::Constant, false),
+            ("command.add", NodeKind::Constant, false),
+            ("attribute.add", NodeKind::CommonModule, false),
+        ];
+        for (name, kind, expected) in cases {
+            assert_eq!(
+                registry.lookup(name).unwrap().applies_to(kind),
+                expected,
+                "{name} applicability for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_skeletons_are_bounded_useful_and_copyable_operation_objects() {
+        let registry = OperationRegistry::closed();
+        let cases = [
+            (
+                "props.set",
+                json!({"op": "props.set", "args": {"values": {}}}),
+            ),
+            (
+                "attribute.add",
+                json!({"op": "attribute.add", "args": {"items": []}}),
+            ),
+            (
+                "code.replace",
+                json!({"op": "code.replace", "args": {"text": ""}}),
+            ),
+            (
+                "event.implement",
+                json!({"op": "event.implement", "args": {"at": ""}}),
+            ),
+        ];
+        for (name, expected) in cases {
+            let descriptor = registry.lookup(name).unwrap();
+            assert_eq!(
+                serde_json::to_value(descriptor.copyable_skeleton()).unwrap(),
+                expected
+            );
+            assert_eq!(descriptor.family(), registry.lookup(name).unwrap().family());
+        }
+        for descriptor in registry.descriptors() {
+            let value = serde_json::to_value(descriptor.copyable_skeleton()).unwrap();
+            assert!(value["args"]
+                .as_object()
+                .is_some_and(|args| !args.is_empty()));
+            assert!(value.to_string().len() <= 256, "{value}");
         }
     }
 }
