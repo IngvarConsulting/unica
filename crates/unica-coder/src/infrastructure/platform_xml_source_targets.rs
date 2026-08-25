@@ -2309,13 +2309,13 @@ fn external_registered_children(
     }
     let child_objects = artifact
         .children()
-        .filter(|node| {
-            node.is_element()
-                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                && node.tag_name().name() == "ChildObjects"
-        })
+        .filter(|node| node.is_element() && node.tag_name().name() == "ChildObjects")
         .collect::<Vec<_>>();
-    if child_objects.len() > 1 {
+    if child_objects
+        .iter()
+        .any(|node| node.tag_name().namespace() != Some(MD_CLASSES_NS))
+        || child_objects.len() > 1
+    {
         return Err(());
     }
     let Some(child_objects) = child_objects.first() else {
@@ -5901,6 +5901,36 @@ mod tests {
         fs::write(
             root.join("Review.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor><Properties><Name>Review</Name></Properties><Decoy><ChildObjects><Form>Main</Form></ChildObjects></Decoy></ExternalDataProcessor></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Review/Forms/Main.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Main</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let error = super::resolve_platform_xml_read_target(
+            &context,
+            &target("processors", "ExternalDataProcessor.Review.Form.Main"),
+            super::TargetKindPolicy::Any,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn external_child_registration_rejects_a_foreign_childobjects_collection() {
+        let context = fixture(
+            "external-child-registration-foreign-namespace",
+            project_yaml("processors", "EXTERNAL_DATA_PROCESSORS", "epf"),
+        );
+        let root = context.workspace_root.join("epf");
+        fs::create_dir_all(root.join("Review/Forms")).unwrap();
+        fs::write(
+            root.join("Review.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:foreign="urn:foreign" version="2.20"><ExternalDataProcessor><Properties><Name>Review</Name></Properties><ChildObjects><Form>Main</Form></ChildObjects><foreign:ChildObjects><foreign:Form>Hidden</foreign:Form></foreign:ChildObjects></ExternalDataProcessor></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(

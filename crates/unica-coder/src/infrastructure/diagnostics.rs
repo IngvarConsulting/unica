@@ -12,10 +12,12 @@ use crate::domain::diagnostics::{
 use crate::domain::metadata::{
     diagnostic_metadata_focus_route, diagnostic_metadata_property_is_canonical,
 };
-use crate::domain::project_sources::SourceFormat;
+use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::source_location::SourceLocation;
 use crate::domain::source_roots::ResolvedSourceRoot;
-use crate::domain::source_target::{SourceTarget, SourceTargetErrorCode, TargetKind};
+use crate::domain::source_target::{
+    ResolvedTarget, SourceTarget, SourceTargetErrorCode, TargetKind,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::bundled_tool_version;
 use crate::infrastructure::diagnostics_jsonl::AnalyzerDiagnosticsBatch;
@@ -93,13 +95,37 @@ pub(crate) fn resolve_diagnostic_context(
         source_set: selected.source_set.name.clone(),
         metadata_path: request.metadata_path.clone(),
     };
-    let resolution = resolve_platform_xml_read_target_in(
-        workspace,
-        &source_target,
-        TargetKindPolicy::Any,
-        selected.clone(),
-    )
-    .map_err(|error| source_target_request_error(error.code))?;
+    // Whole-set diagnostics consume the selected directory as analyzer scope,
+    // not as a readable metadata resource. External source sets deliberately
+    // have no synthetic root resource: their resources start with the EPF/ERF
+    // descriptors inside the directory. Keep that resource boundary closed
+    // while still allowing actions whose contract addresses the whole set.
+    let resolved_target = if request.metadata_path.is_none()
+        && matches!(
+            request.action,
+            DiagnosticAction::Analyze | DiagnosticAction::Status | DiagnosticAction::Catalog
+        )
+        && matches!(
+            selected.source_set.kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        )
+        && selected.source_set.source_format == SourceFormat::PlatformXml
+    {
+        ResolvedTarget {
+            source_set: selected.source_set.name.clone(),
+            metadata_path: None,
+            target_kind: TargetKind::SourceRoot,
+        }
+    } else {
+        resolve_platform_xml_read_target_in(
+            workspace,
+            &source_target,
+            TargetKindPolicy::Any,
+            selected.clone(),
+        )
+        .map_err(|error| source_target_request_error(error.code))?
+        .resolved
+    };
     Ok(DiagnosticContext::new(
         workspace.clone(),
         selected.source_set.clone(),
@@ -107,7 +133,7 @@ pub(crate) fn resolve_diagnostic_context(
             source_set: Some(selected.source_set.name),
             path: selected.path,
         },
-        resolution.resolved,
+        resolved_target,
     ))
 }
 
@@ -1740,6 +1766,51 @@ mod tests {
                 metadata_path
             );
             assert_eq!(resolved.target.target_kind, TargetKind::Module);
+        }
+    }
+
+    #[test]
+    fn diagnostics_context_accepts_external_source_root_for_whole_set_actions() {
+        for (source_type, directory) in [
+            ("EXTERNAL_DATA_PROCESSORS", "epf"),
+            ("EXTERNAL_REPORTS", "erf"),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root =
+                crate::infrastructure::source_roots::normalize_path_identity(temp.path()).unwrap();
+            fs::write(
+                root.join("v8project.yaml"),
+                format!(
+                    "format: DESIGNER\nsource-set:\n  - name: external\n    type: {source_type}\n    path: {directory}\n"
+                ),
+            )
+            .unwrap();
+            fs::create_dir_all(root.join(directory)).unwrap();
+            let context = WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            };
+
+            for action in [
+                DiagnosticAction::Analyze,
+                DiagnosticAction::Status,
+                DiagnosticAction::Catalog,
+            ] {
+                let mut request = request(None);
+                request.action = action;
+                request.source_set = "external".to_string();
+
+                let resolved =
+                    resolve_diagnostic_context(&request, &context, &CancellationToken::new())
+                        .unwrap();
+
+                assert_eq!(resolved.target.source_set, "external");
+                assert_eq!(resolved.target.metadata_path, None);
+                assert_eq!(resolved.target.target_kind, TargetKind::SourceRoot);
+                assert_eq!(resolved.source_root.path, root.join(directory));
+            }
         }
     }
 
