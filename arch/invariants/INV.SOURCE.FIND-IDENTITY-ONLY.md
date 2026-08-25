@@ -16,9 +16,11 @@ operation-scoped retained revision lease для каждого admitted source s
 размер descriptor reads. Существующий malformed или wrong-owner descriptor
 даёт `provider_unavailable`. Exact revision и facts читаются одной retained
 physical authority; ambient и retained manifest provenance не удовлетворяют
-fast path друг друга. На стабильном corpus initial capture и final confirmation
-дают два bounded scans при unsupported fence; concurrent invalidation допускает
-не более трёх stabilization retries, но обход logical nodes не добавляет scans.
+fast path друг друга. При unsupported fence каждый capture требует двух равных
+post-order retained passes, поэтому stable operation даёт четыре passes; три
+bounded attempts ограничивают capture шестью и operation двенадцатью passes под
+той же absolute deadline/cancellation. Обход logical nodes scans не добавляет.
+Final source confirmations следуют `INV.SOURCE.RETAINED-LOGICAL-PUBLICATION`.
 Top-level и каждый физический nested owner проходят тот же inventory/ChildObjects
 admission, что direct view, поэтому orphan file не становится find fact.
 Факты — qualified address, canonical kind,

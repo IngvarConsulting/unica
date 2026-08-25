@@ -28,6 +28,88 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RetainedScanTestMutationPoint {
+    ScanStart,
+    AfterDirectoryEnumeration,
+    BeforeDirectoryRecursion,
+    BeforeFileHash,
+    AfterFileHash,
+}
+
+#[cfg(test)]
+thread_local! {
+    static RETAINED_SCAN_TEST_MUTATION: std::cell::RefCell<
+        Option<RetainedScanTestMutation>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+struct RetainedScanTestMutation {
+    point: RetainedScanTestMutationPoint,
+    repeat: bool,
+    action: Box<dyn FnMut()>,
+}
+
+#[cfg(test)]
+struct RetainedScanTestMutationGuard;
+
+#[cfg(test)]
+impl Drop for RetainedScanTestMutationGuard {
+    fn drop(&mut self) {
+        RETAINED_SCAN_TEST_MUTATION.with(|slot| slot.borrow_mut().take());
+    }
+}
+
+#[cfg(test)]
+fn set_retained_scan_test_mutation(
+    point: RetainedScanTestMutationPoint,
+    mutation: impl FnOnce() + 'static,
+) -> RetainedScanTestMutationGuard {
+    let mut mutation = Some(mutation);
+    RETAINED_SCAN_TEST_MUTATION.with(|slot| {
+        *slot.borrow_mut() = Some(RetainedScanTestMutation {
+            point,
+            repeat: false,
+            action: Box::new(move || mutation.take().expect("one-shot mutation runs once")()),
+        });
+    });
+    RetainedScanTestMutationGuard
+}
+
+#[cfg(test)]
+fn set_repeating_retained_scan_test_mutation(
+    point: RetainedScanTestMutationPoint,
+    mutation: impl FnMut() + 'static,
+) -> RetainedScanTestMutationGuard {
+    RETAINED_SCAN_TEST_MUTATION.with(|slot| {
+        *slot.borrow_mut() = Some(RetainedScanTestMutation {
+            point,
+            repeat: true,
+            action: Box::new(mutation),
+        });
+    });
+    RetainedScanTestMutationGuard
+}
+
+#[cfg(test)]
+fn run_retained_scan_test_mutation(point: RetainedScanTestMutationPoint) {
+    RETAINED_SCAN_TEST_MUTATION.with(|slot| {
+        let pending = slot.borrow_mut().take();
+        match pending {
+            Some(mut pending) if pending.point == point => {
+                (pending.action)();
+                if pending.repeat {
+                    *slot.borrow_mut() = Some(pending);
+                }
+            }
+            Some(pending) => *slot.borrow_mut() = Some(pending),
+            None => {}
+        }
+    });
+}
+
 const MAX_SOURCE_DEPTH: usize = 64;
 const REVISION_RECORD_SCHEMA_VERSION: u32 = 2;
 const RETAINED_HASH_CHUNK_BYTES: usize = 64 * 1024;
@@ -74,7 +156,7 @@ impl WorkspaceStateScope {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct SourceEntryDigest {
     kind: u8,
     digest: [u8; 32],
@@ -109,6 +191,13 @@ impl SourceRevisionFence for ReconcileEverySnapshotFence {
 
 type SourceManifest = BTreeMap<PathBuf, SourceEntryDigest>;
 
+#[derive(Clone, PartialEq, Eq)]
+struct RetainedManifestCapture {
+    manifest: SourceManifest,
+    identities: BTreeMap<PathBuf, (u8, FileIdentity)>,
+    namespace_stable: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ManifestProvenance {
     Ambient(FileIdentity),
@@ -138,10 +227,23 @@ impl RetainedScanLimits {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RetainedScanState {
     entries: usize,
+    verification_entries: usize,
     total_bytes: u64,
+    namespace_stable: bool,
+}
+
+impl Default for RetainedScanState {
+    fn default() -> Self {
+        Self {
+            entries: 0,
+            verification_entries: 0,
+            total_bytes: 0,
+            namespace_stable: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -513,10 +615,26 @@ impl SourceRevisionService {
                 machine.begin_reconcile();
                 trust_loss_epoch
             };
-            #[cfg(test)]
-            self.retained_scans.fetch_add(1, Ordering::Relaxed);
-            let manifest = scan_retained_source_manifest(root, deadline, cancellation)
+            let first = self
+                .capture_retained_manifest(root, deadline, cancellation)
                 .inspect_err(|_| self.lose_incremental_trust())?;
+            if !first.namespace_stable {
+                continue;
+            }
+            let capture = if self.fence.capability() == FenceCapability::Unsupported {
+                let second = self
+                    .capture_retained_manifest(root, deadline, cancellation)
+                    .inspect_err(|_| self.lose_incremental_trust())?;
+                if !second.namespace_stable
+                    || first.manifest != second.manifest
+                    || first.identities != second.identities
+                {
+                    continue;
+                }
+                second
+            } else {
+                first
+            };
             if self.fence.capability() != FenceCapability::Unsupported {
                 match self.fence.flush(deadline, cancellation).inspect_err(|_| {
                     self.machine
@@ -535,9 +653,9 @@ impl SourceRevisionService {
                     }
                 }
             }
-            let digest = digest_source_manifest(&manifest)?;
+            let digest = digest_source_manifest(&capture.manifest)?;
             if self.publish_revision_with_authority(
-                &manifest,
+                &capture.manifest,
                 digest,
                 trust_loss_epoch,
                 ManifestProvenance::Retained(root.identity()),
@@ -546,6 +664,22 @@ impl SourceRevisionService {
             }
         }
         Err("retained source revision did not stabilize during reconcile".to_string())
+    }
+
+    fn capture_retained_manifest(
+        &self,
+        root: &RetainedDirectoryCapability,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<RetainedManifestCapture, String> {
+        #[cfg(test)]
+        self.retained_scans.fetch_add(1, Ordering::Relaxed);
+        capture_retained_source_manifest_with_limits(
+            root,
+            deadline,
+            cancellation,
+            RetainedScanLimits::PRODUCTION,
+        )
     }
 
     #[cfg(test)]
@@ -888,34 +1022,51 @@ fn persist_revision_record(
         .map_err(|error| format!("source revision record cannot be published: {error}"))
 }
 
-fn scan_retained_source_manifest(
-    root: &RetainedDirectoryCapability,
-    deadline: ProviderDeadline,
-    cancellation: &CancellationToken,
-) -> Result<SourceManifest, String> {
-    scan_retained_source_manifest_with_limits(
-        root,
-        deadline,
-        cancellation,
-        RetainedScanLimits::PRODUCTION,
-    )
-}
-
+#[cfg(test)]
 fn scan_retained_source_manifest_with_limits(
     root: &RetainedDirectoryCapability,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
     limits: RetainedScanLimits,
 ) -> Result<SourceManifest, String> {
+    capture_retained_source_manifest_with_limits(root, deadline, cancellation, limits)
+        .map(|capture| capture.manifest)
+}
+
+fn capture_retained_source_manifest_with_limits(
+    root: &RetainedDirectoryCapability,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    limits: RetainedScanLimits,
+) -> Result<RetainedManifestCapture, String> {
+    retained_revision_checkpoint(deadline, cancellation)?;
+    let root_stable_before = root.validate_named_identity().is_ok();
+    #[cfg(test)]
+    run_retained_scan_test_mutation(RetainedScanTestMutationPoint::ScanStart);
     let mut manifest = SourceManifest::new();
+    let mut identities = BTreeMap::new();
     let mut state = RetainedScanState::default();
     let context = RetainedScanContext {
         deadline,
         cancellation,
         limits,
     };
-    scan_retained_directory(root, Path::new(""), 0, context, &mut state, &mut manifest)?;
-    Ok(manifest)
+    scan_retained_directory(
+        root,
+        Path::new(""),
+        0,
+        context,
+        &mut state,
+        &mut manifest,
+        &mut identities,
+    )?;
+    retained_revision_checkpoint(deadline, cancellation)?;
+    let root_stable_after = root.validate_named_identity().is_ok();
+    Ok(RetainedManifestCapture {
+        manifest,
+        identities,
+        namespace_stable: root_stable_before && root_stable_after && state.namespace_stable,
+    })
 }
 
 fn scan_retained_directory(
@@ -925,6 +1076,7 @@ fn scan_retained_directory(
     context: RetainedScanContext<'_>,
     state: &mut RetainedScanState,
     manifest: &mut SourceManifest,
+    identities: &mut BTreeMap<PathBuf, (u8, FileIdentity)>,
 ) -> Result<(), String> {
     retained_revision_checkpoint(context.deadline, context.cancellation)?;
     if depth > MAX_SOURCE_DEPTH {
@@ -946,7 +1098,9 @@ fn scan_retained_directory(
                 format!("retained source revision directory cannot be read: {error}")
             }
         })?;
-    for name in names {
+    #[cfg(test)]
+    run_retained_scan_test_mutation(RetainedScanTestMutationPoint::AfterDirectoryEnumeration);
+    for name in &names {
         retained_revision_checkpoint(context.deadline, context.cancellation)?;
         state.entries = state
             .entries
@@ -961,8 +1115,8 @@ fn scan_retained_directory(
         if name == OsStr::new(GENERATED_DIR_NAME) {
             continue;
         }
-        let relative = relative_directory.join(&name);
-        let child = match directory.retain_immediate_child_nofollow(&name) {
+        let relative = relative_directory.join(name);
+        let child = match directory.retain_immediate_child_nofollow(name) {
             Ok(child) => child,
             Err(error) if is_nofollow_link_error(&error) => {
                 if is_source_file(&relative) {
@@ -989,11 +1143,33 @@ fn scan_retained_directory(
                         digest: [0; 32],
                     },
                 );
-                scan_retained_directory(&child, &relative, depth + 1, context, state, manifest)?;
+                identities.insert(relative.clone(), (1, child.identity()));
+                #[cfg(test)]
+                run_retained_scan_test_mutation(
+                    RetainedScanTestMutationPoint::BeforeDirectoryRecursion,
+                );
+                scan_retained_directory(
+                    &child,
+                    &relative,
+                    depth + 1,
+                    context,
+                    state,
+                    manifest,
+                    identities,
+                )?;
+                if child.validate_named_identity().is_err() {
+                    state.namespace_stable = false;
+                }
             }
             RetainedChildCapability::RegularFile(file) if is_source_file(&relative) => {
+                #[cfg(test)]
+                run_retained_scan_test_mutation(RetainedScanTestMutationPoint::BeforeFileHash);
                 let digest = hash_retained_source_file(&file, &relative, context, state)?;
+                identities.insert(relative.clone(), (2, file.identity()));
                 manifest.insert(relative, SourceEntryDigest { kind: 2, digest });
+                if file.validate_named_identity().is_err() {
+                    state.namespace_stable = false;
+                }
             }
             RetainedChildCapability::ReparsePoint if is_source_file(&relative) => {
                 return Err(format!(
@@ -1005,6 +1181,35 @@ fn scan_retained_directory(
             | RetainedChildCapability::ReparsePoint
             | RetainedChildCapability::Unsupported => {}
         }
+    }
+    retained_revision_checkpoint(context.deadline, context.cancellation)?;
+    let verification_names = directory
+        .read_immediate_names_bounded(context.limits.max_entries, || {
+            retained_revision_checkpoint(context.deadline, context.cancellation)
+                .map_err(std::io::Error::other)
+        })
+        .map_err(|error| {
+            if error.kind() == ErrorKind::InvalidData {
+                format!(
+                    "retained source revision verification entry limit {} exceeded",
+                    context.limits.max_entries
+                )
+            } else {
+                format!("retained source revision directory cannot be verified: {error}")
+            }
+        })?;
+    state.verification_entries = state
+        .verification_entries
+        .checked_add(verification_names.len())
+        .filter(|entries| *entries <= context.limits.max_entries)
+        .ok_or_else(|| {
+            format!(
+                "retained source revision verification entry limit {} exceeded",
+                context.limits.max_entries
+            )
+        })?;
+    if verification_names != names || directory.validate_named_identity().is_err() {
+        state.namespace_stable = false;
     }
     Ok(())
 }
@@ -1075,7 +1280,10 @@ fn hash_retained_source_file_with_checkpoint(
         }
         digest.update(&chunk[..usize::try_from(read).expect("chunk length fits usize")]);
     }
-    Ok(digest.finalize().into())
+    let digest = digest.finalize().into();
+    #[cfg(test)]
+    run_retained_scan_test_mutation(RetainedScanTestMutationPoint::AfterFileHash);
+    Ok(digest)
 }
 
 fn retained_revision_checkpoint(
@@ -2493,13 +2701,13 @@ pub(crate) mod tests {
         let lease = service
             .begin_retained_operation(&retained, deadline, &cancellation)
             .unwrap();
-        assert_eq!(service.retained_scan_count(), 1);
+        assert_eq!(service.retained_scan_count(), 2);
         for _ in 0..100 {
             assert_eq!(lease.revision_identity(), lease.revision_identity());
         }
         assert_eq!(
             service.retained_scan_count(),
-            1,
+            2,
             "logical node reads must not rescan the retained corpus"
         );
 
@@ -2508,8 +2716,241 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(
             service.retained_scan_count(),
-            2,
-            "unsupported fence performs one admission scan and one final confirmation scan"
+            4,
+            "unsupported fence performs two stabilized admission passes and two final passes"
+        );
+    }
+
+    #[test]
+    fn unsupported_fence_reconcile_is_bounded_to_six_passes_when_corpus_never_stabilizes() {
+        let fixture = RetainedConfirmationFixture::new(|source| {
+            fs::write(source.join("Configuration.xml"), "A").unwrap();
+        });
+        let before = fixture.service.retained_scan_count();
+        let descriptor = fixture.source.join("Configuration.xml");
+        let write_a = std::cell::Cell::new(false);
+        let _mutation = set_repeating_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::ScanStart,
+            move || {
+                let contents = if write_a.replace(!write_a.get()) {
+                    "A"
+                } else {
+                    "B"
+                };
+                fs::write(&descriptor, contents).unwrap();
+            },
+        );
+
+        assert!(fixture.confirm().is_err());
+        assert_eq!(
+            fixture.service.retained_scan_count() - before,
+            6,
+            "three bounded stabilization attempts must perform exactly two passes each"
+        );
+    }
+
+    struct RetainedConfirmationFixture {
+        workspace: tempfile::TempDir,
+        source: PathBuf,
+        service: SourceRevisionService,
+        retained: RetainedDirectoryCapability,
+        lease: RetainedRevisionLease,
+        deadline: ProviderDeadline,
+        cancellation: CancellationToken,
+    }
+
+    impl RetainedConfirmationFixture {
+        fn new(populate: impl FnOnce(&Path)) -> Self {
+            let workspace = tempdir().unwrap();
+            let source = workspace.path().join("source");
+            fs::create_dir_all(&source).unwrap();
+            populate(&source);
+            let context = WorkspaceContext {
+                cwd: workspace.path().to_path_buf(),
+                workspace_root: workspace.path().to_path_buf(),
+                cache_root: workspace.path().join("cache"),
+                workspace_epoch: 0,
+            };
+            let service = SourceRevisionService::new_with_fence_for_test(
+                &context,
+                &source,
+                WorkspaceStateScope::LegacyPhysical,
+                Arc::new(UnsupportedFence),
+            )
+            .unwrap();
+            let retained =
+                RetainedDirectoryCapability::open(&fs::canonicalize(&source).unwrap()).unwrap();
+            let deadline = ProviderDeadline::from_budget(std::time::Duration::from_secs(5));
+            let cancellation = CancellationToken::new();
+            let lease = service
+                .begin_retained_operation(&retained, deadline, &cancellation)
+                .unwrap();
+            Self {
+                workspace,
+                source,
+                service,
+                retained,
+                lease,
+                deadline,
+                cancellation,
+            }
+        }
+
+        fn confirm(&self) -> Result<(), String> {
+            self.service.confirm_retained_operation(
+                &self.retained,
+                &self.lease,
+                self.deadline,
+                &self.cancellation,
+            )
+        }
+    }
+
+    #[test]
+    fn review_final_confirmation_rejects_root_replacement_during_retained_scan() {
+        if !supports_retained_root_replacement_test() {
+            return;
+        }
+        let fixture = RetainedConfirmationFixture::new(|source| {
+            fs::write(
+                source.join("Configuration.xml"),
+                "<Configuration>A</Configuration>",
+            )
+            .unwrap();
+        });
+        let replacement = fixture.workspace.path().join("replacement");
+        let saved = fixture.workspace.path().join("saved");
+        fs::create_dir_all(&replacement).unwrap();
+        fs::write(
+            replacement.join("Configuration.xml"),
+            "<Configuration>B</Configuration>",
+        )
+        .unwrap();
+        let source = fixture.source.clone();
+        let _mutation =
+            set_retained_scan_test_mutation(RetainedScanTestMutationPoint::ScanStart, move || {
+                fs::rename(&source, &saved).unwrap();
+                fs::rename(&replacement, &source).unwrap();
+            });
+
+        assert!(
+            fixture.confirm().is_err(),
+            "root replacement during final retained scan must invalidate the operation"
+        );
+    }
+
+    #[test]
+    fn review_final_confirmation_rejects_nested_directory_replacement_after_retention() {
+        if !supports_retained_root_replacement_test() {
+            return;
+        }
+        let fixture = RetainedConfirmationFixture::new(|source| {
+            fs::create_dir_all(source.join("Catalogs")).unwrap();
+            fs::write(source.join("Configuration.xml"), "<Configuration/>").unwrap();
+            fs::write(source.join("Catalogs/Items.xml"), "<Catalog>A</Catalog>").unwrap();
+        });
+        let nested = fixture.source.join("Catalogs");
+        let replacement = fixture.workspace.path().join("replacement");
+        let saved = fixture.workspace.path().join("saved");
+        fs::create_dir_all(&replacement).unwrap();
+        fs::write(replacement.join("Items.xml"), "<Catalog>B</Catalog>").unwrap();
+        let _mutation = set_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::BeforeDirectoryRecursion,
+            move || {
+                fs::rename(&nested, &saved).unwrap();
+                fs::rename(&replacement, &nested).unwrap();
+            },
+        );
+
+        assert!(
+            fixture.confirm().is_err(),
+            "nested directory replacement during final scan must invalidate"
+        );
+    }
+
+    #[test]
+    fn review_final_confirmation_rejects_file_replacement_after_retention() {
+        if !supports_retained_root_replacement_test() {
+            return;
+        }
+        let fixture = RetainedConfirmationFixture::new(|source| {
+            fs::write(
+                source.join("Configuration.xml"),
+                "<Configuration>A</Configuration>",
+            )
+            .unwrap();
+        });
+        let descriptor = fixture.source.join("Configuration.xml");
+        let replacement = fixture.workspace.path().join("replacement.xml");
+        let saved = fixture.workspace.path().join("saved.xml");
+        fs::write(&replacement, "<Configuration>B</Configuration>").unwrap();
+        let _mutation = set_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::BeforeFileHash,
+            move || {
+                fs::rename(&descriptor, &saved).unwrap();
+                fs::rename(&replacement, &descriptor).unwrap();
+            },
+        );
+
+        assert!(
+            fixture.confirm().is_err(),
+            "file replacement during final retained scan must invalidate"
+        );
+    }
+
+    #[test]
+    fn review_final_confirmation_rejects_membership_added_after_enumeration() {
+        let fixture = RetainedConfirmationFixture::new(|source| {
+            fs::write(
+                source.join("Configuration.xml"),
+                "<Configuration>A</Configuration>",
+            )
+            .unwrap();
+        });
+        let added = fixture.source.join("Added.xml");
+        let _mutation = set_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
+            move || fs::write(&added, "<Added/>").unwrap(),
+        );
+
+        assert!(
+            fixture.confirm().is_err(),
+            "membership added after final enumeration must invalidate"
+        );
+
+        let fixture = RetainedConfirmationFixture::new(|source| {
+            fs::write(source.join("Configuration.xml"), "<Configuration/>").unwrap();
+            fs::write(source.join("Removed.xml"), "<Removed/>").unwrap();
+        });
+        let removed = fixture.source.join("Removed.xml");
+        let _mutation = set_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
+            move || fs::remove_file(&removed).unwrap(),
+        );
+        assert!(
+            fixture.confirm().is_err(),
+            "membership removed after final enumeration must invalidate"
+        );
+    }
+
+    #[test]
+    fn review_final_confirmation_rejects_in_place_change_after_hash() {
+        let fixture = RetainedConfirmationFixture::new(|source| {
+            fs::write(
+                source.join("Configuration.xml"),
+                "<Configuration>A</Configuration>",
+            )
+            .unwrap();
+        });
+        let descriptor = fixture.source.join("Configuration.xml");
+        let _mutation = set_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::AfterFileHash,
+            move || fs::write(&descriptor, "<Configuration>B</Configuration>").unwrap(),
+        );
+
+        assert!(
+            fixture.confirm().is_err(),
+            "in-place change after final hash must invalidate"
         );
     }
 
@@ -2606,11 +3047,24 @@ pub(crate) mod tests {
         retained_manifest_uses_the_existing_source_digest_algorithm();
         review_retained_manifest_cannot_satisfy_an_ambient_fast_path_after_root_swap();
         unsupported_fence_stable_operation_lease_scans_at_admission_and_confirmation();
+        unsupported_fence_reconcile_is_bounded_to_six_passes_when_corpus_never_stabilizes();
+        retained_final_confirmation_stabilization_contract_is_complete();
         retained_scan_limits_entries_files_and_aggregate_bytes();
         retained_file_hashing_checks_cancellation_between_bounded_chunks();
         if supports_retained_root_replacement_test() {
             ambient_manifest_cannot_satisfy_a_retained_fast_path();
             retained_snapshot_never_mixes_a_replaced_root_name_with_the_open_tree();
         }
+    }
+
+    #[test]
+    pub(crate) fn retained_final_confirmation_stabilization_contract_is_complete() {
+        review_final_confirmation_rejects_root_replacement_during_retained_scan();
+        review_final_confirmation_rejects_nested_directory_replacement_after_retention();
+        review_final_confirmation_rejects_file_replacement_after_retention();
+        review_final_confirmation_rejects_membership_added_after_enumeration();
+        review_final_confirmation_rejects_in_place_change_after_hash();
+        unsupported_fence_stable_operation_lease_scans_at_admission_and_confirmation();
+        unsupported_fence_reconcile_is_bounded_to_six_passes_when_corpus_never_stabilizes();
     }
 }

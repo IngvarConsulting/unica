@@ -24,11 +24,15 @@ operation-scoped lease захватывает выбранный source set дл
 все admitted source sets для aggregate `find`; unrelated sibling не сканируется
 и не инвалидирует `view`. Retained manifest помечен physical identity и только
 matching retained provenance может удовлетворить retained fast path; ambient и
-retained provenance симметрично не взаимозаменяемы. Initial capture и final
-confirmation на стабильном corpus дают по одному scan при unsupported fence;
-concurrent invalidation допускает не более трёх bounded stabilization retries,
-а node reads не сканируют corpus. Scan потоковый, проверяет
-cancellation между chunks и ограничивает entries, file bytes и aggregate bytes.
+retained provenance симметрично не взаимозаменяемы. При unsupported fence
+initial capture и final confirmation состоят из двух descriptor-relative passes
+каждый: post-order named identity и directory membership должны сохраниться, а
+semantic manifest и отдельная physical identity evidence — совпасть. Stable
+operation даёт четыре passes; три bounded attempts ограничивают один capture
+шестью, всю operation — двенадцатью passes, а node reads corpus не сканируют.
+Semantic digest остаётся byte-compatible с ambient algorithm. Каждый pass
+потоковый, проверяет cancellation между chunks и ограничивает entries, file
+bytes и aggregate bytes.
 Любой contributing read, canonical Role resolution и owner proof предшествует
 последнему exact-revision fence, поэтому replacement/mutation даёт coherent
 retained result либо typed stale/invalidation, но не mixed revision; после
@@ -59,7 +63,8 @@ canonical `(kind, name)`, размещает уникальные RLS nodes то
 даёт `provider_unavailable`; V12 legacy wrapper сохраняет старую трактовку.
 Общий абсолютный 120-секундный operation budget view/find без replenishment
 отделён от 7-секундного Task handoff и использует cancellation на admission,
-reader и final confirmation.
+reader и final confirmation. Terminal actor publication и rejected-address
+classification принадлежат `INV.SOURCE.RETAINED-LOGICAL-PUBLICATION`.
 
 Bot использует доказанную зарегистрированную раскладку. WebSocketClient profile
 видим в логическом дереве, но его source view остаётся явным

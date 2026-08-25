@@ -11,7 +11,9 @@ use crate::infrastructure::deadline_lock::{DeadlineLock, FailClosed};
 use crate::infrastructure::platform::filesystem::{
     path_starts_with_host_root, stable_path_identity_bytes, RetainedDirectoryCapability,
 };
-use crate::infrastructure::source_revision::{SourceRevisionService, WorkspaceStateScope};
+use crate::infrastructure::source_revision::{
+    RetainedRevisionLease, SourceRevisionService, WorkspaceStateScope,
+};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace_index::{IndexRunner, WorkspaceIndexService};
 use sha2::{Digest, Sha256};
@@ -19,6 +21,29 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
+
+#[cfg(test)]
+thread_local! {
+    static LOGICAL_PUBLICATION_AFTER_CONFIRMATION_HOOK: std::cell::RefCell<
+        Option<Box<dyn FnOnce()>>,
+    > = std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn set_logical_publication_after_confirmation_hook(hook: impl FnOnce() + 'static) {
+    LOGICAL_PUBLICATION_AFTER_CONFIRMATION_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_logical_publication_after_confirmation_hook() {
+    LOGICAL_PUBLICATION_AFTER_CONFIRMATION_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
 
 pub(crate) const MAX_ACTIVE_WORKSPACE_ACTORS: usize = 64;
 const INDEX_FENCE_BUDGET: Duration = Duration::from_secs(7);
@@ -213,6 +238,23 @@ pub(crate) struct WorkspaceRevisionFence {
     actor_instance: ActorInstanceId,
     source_set: WorkspaceSourceSetIdentity,
     revision: SourceRevision,
+}
+
+/// Actor-issued retained revision authority for one V13 logical source set.
+/// The caller can copy its revision identity into typed readers, but cannot
+/// substitute a root, revision service or actor identity at publication.
+#[derive(Clone)]
+pub(crate) struct WorkspaceLogicalReadFence {
+    actor_identity: WorkspaceIdentity,
+    actor_instance: ActorInstanceId,
+    source_set: WorkspaceSourceSetIdentity,
+    revision: RetainedRevisionLease,
+}
+
+impl WorkspaceLogicalReadFence {
+    pub(crate) fn revision(&self) -> RetainedRevisionLease {
+        self.revision.clone()
+    }
 }
 
 /// Exclusive, revision-fenced permission to make one staged mutation result
@@ -496,6 +538,86 @@ impl<R> WorkspaceActor<R> {
             source_set: binding.source_set.clone(),
             revision,
         })
+    }
+
+    pub(crate) fn capture_logical_read_revision(
+        &self,
+        binding: &ProviderRootBinding,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceLogicalReadFence, String> {
+        self.validate_binding(binding)?;
+        let revision = self
+            .source_revision_service(binding)?
+            .begin_retained_operation(&binding.source_root, deadline, cancellation);
+        self.validate_binding(binding)?;
+        Ok(WorkspaceLogicalReadFence {
+            actor_identity: self.identity.clone(),
+            actor_instance: self.instance_id.clone(),
+            source_set: binding.source_set.clone(),
+            revision: revision?,
+        })
+    }
+
+    /// Makes one staged logical-read result observable while holding the
+    /// actor's single mutation lane across validation of every selected source
+    /// and every retained final confirmation.
+    pub(crate) fn publish_logical_read<T>(
+        &self,
+        fences: &[WorkspaceLogicalReadFence],
+        staged_result: T,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<T, String> {
+        if fences.is_empty() {
+            return Err("logical read publication requires an admitted source fence".to_string());
+        }
+        let _publication = self.mutation_lane.acquire_before(
+            deadline,
+            cancellation,
+            "workspace actor logical read publication wait",
+        )?;
+        let mut confirmations = Vec::with_capacity(fences.len());
+        let mut source_sets = HashSet::with_capacity(fences.len());
+        for fence in fences {
+            if fence.actor_identity != self.identity
+                || fence.actor_instance != self.instance_id
+                || !source_sets.insert(fence.source_set.clone())
+            {
+                return Err(
+                    "logical read revision fence belongs to another or duplicate workspace source"
+                        .to_string(),
+                );
+            }
+            let source_root = self
+                .source_roots
+                .get(&fence.source_set)
+                .cloned()
+                .ok_or_else(|| "workspace actor retained root is unavailable".to_string())?;
+            let binding = ProviderRootBinding {
+                actor_identity: fence.actor_identity.clone(),
+                actor_instance: fence.actor_instance.clone(),
+                source_set: fence.source_set.clone(),
+                source_root,
+            };
+            self.validate_binding(&binding)?;
+            confirmations.push((
+                self.source_revision_service(&binding)?,
+                binding,
+                &fence.revision,
+            ));
+        }
+        for (revisions, binding, revision) in confirmations {
+            revisions.confirm_retained_operation(
+                &binding.source_root,
+                revision,
+                deadline,
+                cancellation,
+            )?;
+            #[cfg(test)]
+            run_logical_publication_after_confirmation_hook();
+        }
+        Ok(staged_result)
     }
 
     /// Exact actor-owned index readiness identity. The workspace component is
@@ -856,7 +978,7 @@ impl WorkspaceActorRegistry {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{WorkspaceActorRegistry, WorkspaceActorRegistryError, WorkspaceIdentity};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
@@ -1024,6 +1146,64 @@ mod tests {
             "pre-cancelled publication waited for the held mutation lane"
         );
         assert!(result.unwrap_err().starts_with("cancelled:"));
+        fixture.cleanup();
+    }
+
+    #[test]
+    pub(crate) fn logical_read_publication_lane_wait_honors_existing_cancellation_and_deadline() {
+        let fixture = actor_fixture("logical-read-lane-bounds", &["src"]);
+        std::fs::write(
+            fixture.roots[0].join("Configuration.xml"),
+            "<Configuration/>",
+        )
+        .unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let logical_fence = fixture
+            .actor
+            .capture_logical_read_revision(
+                &binding,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let legacy_fence = fixture
+            .actor
+            .capture_revision(
+                &binding,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let owner = fixture
+            .actor
+            .begin_publication(
+                &legacy_fence,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let cancelled = fixture.actor.publish_logical_read(
+            std::slice::from_ref(&logical_fence),
+            (),
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &cancellation,
+        );
+        assert!(cancelled.unwrap_err().starts_with("cancelled:"));
+
+        let deadline = fixture.actor.publish_logical_read(
+            &[logical_fence],
+            (),
+            ProviderDeadline::from_budget(Duration::ZERO),
+            &CancellationToken::new(),
+        );
+        assert!(deadline.unwrap_err().ends_with("deadline exceeded"));
+        drop(owner);
         fixture.cleanup();
     }
 

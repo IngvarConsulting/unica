@@ -29,7 +29,7 @@ use crate::infrastructure::source_roots::normalize_contained_source_root;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
     IndexWorkIdentity, ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry,
-    WorkspaceActorRegistryError, WorkspaceRevisionFence,
+    WorkspaceActorRegistryError, WorkspaceLogicalReadFence, WorkspaceRevisionFence,
 };
 use std::collections::HashSet;
 use std::io::{self, BufReader, Write};
@@ -86,13 +86,20 @@ struct ActorLogicalReadSourceLease {
     name: String,
     kind: SourceSetKind,
     binding: ProviderRootBinding,
-    revisions: Arc<crate::infrastructure::source_revision::SourceRevisionService>,
-    revision: crate::infrastructure::source_revision::RetainedRevisionLease,
+    fence: WorkspaceLogicalReadFence,
 }
 
 struct ActorLogicalReadLease {
     deadline: ProviderDeadline,
     sources: Vec<ActorLogicalReadSourceLease>,
+    route: ActorLogicalReadRoute,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActorLogicalReadRoute {
+    Admitted,
+    MalformedViewAddress,
+    UnknownViewSource,
 }
 
 impl ActorBoundInvocation {
@@ -126,46 +133,49 @@ impl ActorBoundInvocation {
         let revision = match self.tool {
             crate::application::invocation_store::ToolIdentity::View
             | crate::application::invocation_store::ToolIdentity::Find => {
-                let selected = match self.tool {
+                let (selected, route) = match self.tool {
                     crate::application::invocation_store::ToolIdentity::View => {
-                        let at = self
-                            .arguments
-                            .get("at")
-                            .and_then(serde_json::Value::as_str)
-                            .ok_or_else(|| "logical view address is not a string".to_string())?;
-                        let address = QualifiedAddress::parse(at)
-                            .map_err(|error| format!("logical view address is invalid: {error}"))?;
-                        vec![self
-                            .read_sources
-                            .iter()
-                            .find(|source| source.name == address.source_set())
-                            .ok_or_else(|| {
-                                "logical view source set is not admitted by the actor".to_string()
-                            })?]
+                        let at = self.arguments.get("at").and_then(serde_json::Value::as_str);
+                        match at.and_then(|value| QualifiedAddress::parse(value).ok()) {
+                            Some(address) => match self
+                                .read_sources
+                                .iter()
+                                .find(|source| source.name == address.source_set())
+                            {
+                                Some(source) => (vec![source], ActorLogicalReadRoute::Admitted),
+                                None => (Vec::new(), ActorLogicalReadRoute::UnknownViewSource),
+                            },
+                            None => (Vec::new(), ActorLogicalReadRoute::MalformedViewAddress),
+                        }
                     }
-                    _ => self.read_sources.iter().collect(),
+                    _ => (
+                        self.read_sources.iter().collect(),
+                        ActorLogicalReadRoute::Admitted,
+                    ),
                 };
+                if route == ActorLogicalReadRoute::Admitted && selected.is_empty() {
+                    return Err(
+                        "logical read admission selected no actor-owned source sets".to_string()
+                    );
+                }
                 let mut sources = Vec::with_capacity(selected.len());
                 for source in selected {
-                    self.actor.validate_binding(&source.binding)?;
-                    let revisions = self.actor.source_revision_service(&source.binding)?;
-                    let revision = revisions.begin_retained_operation(
-                        &source.binding.retained_root(),
+                    let fence = self.actor.capture_logical_read_revision(
+                        &source.binding,
                         logical_deadline,
                         cancellation,
                     )?;
-                    self.actor.validate_binding(&source.binding)?;
                     sources.push(ActorLogicalReadSourceLease {
                         name: source.name.clone(),
                         kind: source.kind,
                         binding: source.binding.clone(),
-                        revisions,
-                        revision,
+                        fence,
                     });
                 }
                 ActorExecutionRevision::LogicalRead(ActorLogicalReadLease {
                     deadline: logical_deadline,
                     sources,
+                    route,
                 })
             }
             _ => ActorExecutionRevision::Legacy(self.actor.capture_revision(
@@ -229,7 +239,7 @@ impl ActorBoundExecution {
                         source.name
                     ),
                     retained_root: source.binding.retained_root(),
-                    revision: source.revision.clone(),
+                    revision: source.fence.revision(),
                     deadline: lease.deadline,
                 })
             })
@@ -310,7 +320,11 @@ impl ActorBoundExecution {
         self.invocation.actor.mark_source_revisions_dirty();
     }
 
-    fn publish<T>(self, staged: T, cancellation: &CancellationToken) -> Result<T, String> {
+    fn publish(
+        self,
+        staged: Result<DomainResult, InvocationFailure>,
+        cancellation: &CancellationToken,
+    ) -> Result<Result<DomainResult, InvocationFailure>, String> {
         match self.revision {
             ActorExecutionRevision::Legacy(revision) => self
                 .invocation
@@ -326,16 +340,36 @@ impl ActorBoundExecution {
                     cancellation,
                 ),
             ActorExecutionRevision::LogicalRead(lease) => {
-                for source in &lease.sources {
-                    self.invocation.actor.validate_binding(&source.binding)?;
-                    source.revisions.confirm_retained_operation(
-                        &source.binding.retained_root(),
-                        &source.revision,
-                        lease.deadline,
-                        cancellation,
-                    )?;
+                if lease.route != ActorLogicalReadRoute::Admitted {
+                    let expected_code = match lease.route {
+                        ActorLogicalReadRoute::MalformedViewAddress => "bad_value",
+                        ActorLogicalReadRoute::UnknownViewSource => "provider_unavailable",
+                        ActorLogicalReadRoute::Admitted => unreachable!(),
+                    };
+                    let is_closed_typed_rejection = matches!(
+                        &staged,
+                        Ok(result)
+                            if !result.ok
+                                && result.diagnostics.first().and_then(|diagnostic| {
+                                    diagnostic.get("code").and_then(serde_json::Value::as_str)
+                                }) == Some(expected_code)
+                    );
+                    return is_closed_typed_rejection.then_some(staged).ok_or_else(|| {
+                        "logical view input rejection produced an unexpected terminal result"
+                            .to_string()
+                    });
                 }
-                Ok(staged)
+                let fences = lease
+                    .sources
+                    .into_iter()
+                    .map(|source| source.fence)
+                    .collect::<Vec<_>>();
+                self.invocation.actor.publish_logical_read(
+                    &fences,
+                    staged,
+                    lease.deadline,
+                    cancellation,
+                )
             }
         }
     }
@@ -1573,7 +1607,34 @@ pub(crate) mod actor_capacity_tests {
             .execute(&execution, cancellation.clone())
             .expect("hidden V13 execution");
         assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
-        let published = execution.publish(result, &cancellation).unwrap();
+        let actor = Arc::clone(&execution.invocation.actor);
+        let legacy_fence = actor
+            .capture_revision(&execution.invocation.provider_root, deadline, &cancellation)
+            .expect("capture a fence for the actor mutation lane");
+        let held_publication = actor
+            .begin_publication(&legacy_fence, deadline, &cancellation)
+            .expect("hold the actor mutation lane");
+        let (published_tx, published_rx) = mpsc::channel();
+        let publish_cancellation = cancellation.clone();
+        std::thread::spawn(move || {
+            set_logical_read_now(started + Duration::from_secs(8));
+            published_tx
+                .send(execution.publish(Ok(result), &publish_cancellation))
+                .unwrap();
+        });
+        assert!(
+            matches!(
+                published_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "logical read publication must wait on the actor mutation lane"
+        );
+        drop(held_publication);
+        let published = published_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("logical publication resumes after mutation lane release")
+            .unwrap()
+            .unwrap();
         assert!(published.ok);
         assert_eq!(
             sibling_revisions.retained_scan_count(),
@@ -1612,13 +1673,90 @@ pub(crate) mod actor_capacity_tests {
             .execute(&find_execution, cancellation.clone())
             .expect("hidden V13 find execution");
         assert!(find_result.ok, "{:?}", find_result.diagnostics);
+        let find_actor = Arc::clone(&find_execution.invocation.actor);
+        let legacy_fence = find_actor
+            .capture_revision(
+                &find_execution.invocation.provider_root,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let (first_confirmed_tx, first_confirmed_rx) = mpsc::channel();
+        let (release_confirm_tx, release_confirm_rx) = mpsc::channel();
+        let (logical_done_tx, logical_done_rx) = mpsc::channel();
+        let logical_cancellation = cancellation.clone();
+        std::thread::spawn(move || {
+            set_logical_read_now(started + Duration::from_secs(8));
+            crate::infrastructure::workspace_actor::set_logical_publication_after_confirmation_hook(
+                move || {
+                    first_confirmed_tx.send(()).unwrap();
+                    release_confirm_rx.recv().unwrap();
+                },
+            );
+            logical_done_tx
+                .send(find_execution.publish(Ok(find_result), &logical_cancellation))
+                .unwrap();
+        });
+        first_confirmed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first aggregate source was confirmed under the lane");
+        let (competitor_tx, competitor_rx) = mpsc::channel();
+        let competing_actor = Arc::clone(&find_actor);
+        let competing_cancellation = cancellation.clone();
+        std::thread::spawn(move || {
+            let acquired = competing_actor.begin_publication(
+                &legacy_fence,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &competing_cancellation,
+            );
+            competitor_tx.send(acquired.map(drop)).unwrap();
+        });
+        assert!(
+            matches!(
+                competitor_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "the mutation lane must remain held between aggregate source confirmations"
+        );
+        release_confirm_tx.send(()).unwrap();
+        assert!(
+            logical_done_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .ok
+        );
+        competitor_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("competing publication resumes after every source confirmation")
+            .unwrap();
+
+        let find_invocation = bind_workspace_invocation(
+            &find_request,
+            &runtime.workspace_actors,
+            Arc::clone(&runtime.deliveries),
+            Arc::clone(&runtime.provider_hosts),
+            Arc::clone(&runtime.runtime_resources),
+            None,
+            runtime.capture_response_deadline(),
+        )
+        .unwrap();
+        let find_execution = find_invocation
+            .begin_execution_with_logical_deadline(&cancellation, deadline)
+            .unwrap();
+        let find_result = service
+            .execute(&find_execution, cancellation.clone())
+            .expect("second hidden V13 find execution");
         std::fs::write(
             sibling.join("Configuration.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>ChangedAgain</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
         assert!(
-            find_execution.publish(find_result, &cancellation).is_err(),
+            find_execution
+                .publish(Ok(find_result), &cancellation)
+                .is_err(),
             "find must confirm every admitted source set"
         );
 
@@ -1645,9 +1783,101 @@ pub(crate) mod actor_capacity_tests {
         )
         .unwrap();
         assert!(
-            execution.publish(result, &cancellation).is_err(),
+            execution.publish(Ok(result), &cancellation).is_err(),
             "a selected-source mutation must fail final retained confirmation"
         );
+    }
+
+    fn execute_rejected_hidden_v13_view_address(at: &str) -> DomainResult {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({"at": at}),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let invocation = bind_workspace_invocation(
+            &request,
+            &runtime.workspace_actors,
+            Arc::clone(&runtime.deliveries),
+            Arc::clone(&runtime.provider_hosts),
+            Arc::clone(&runtime.runtime_resources),
+            None,
+            runtime.capture_response_deadline(),
+        )
+        .unwrap();
+        let revisions = invocation
+            .actor
+            .source_revision_service(&invocation.read_sources[0].binding)
+            .unwrap();
+        let scans_before = revisions.retained_scan_count();
+        let cancellation = CancellationToken::new();
+
+        let execution = invocation
+            .begin_execution(&cancellation)
+            .expect("ordinary rejected address must reach the typed view handler");
+        assert_eq!(
+            revisions.retained_scan_count(),
+            scans_before,
+            "an address rejected before source selection must not scan a source corpus"
+        );
+        let result = crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()
+            .execute(&execution, cancellation.clone())
+            .expect("typed input error is a DomainResult");
+        execution
+            .publish(Ok(result), &cancellation)
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    pub(crate) fn review_invalid_logical_address_reaches_typed_bad_value_result() {
+        let result = execute_rejected_hidden_v13_view_address("not-qualified");
+
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "bad_value");
+    }
+
+    #[test]
+    pub(crate) fn valid_unknown_source_reaches_typed_provider_unavailable_without_scanning() {
+        let result = execute_rejected_hidden_v13_view_address("missing:Catalog.Items");
+
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+    }
+
+    #[test]
+    pub(crate) fn hidden_v13_logical_publication_contract_is_complete() {
+        crate::infrastructure::source_revision::tests::retained_final_confirmation_stabilization_contract_is_complete();
+        hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once();
+        review_invalid_logical_address_reaches_typed_bad_value_result();
+        valid_unknown_source_reaches_typed_provider_unavailable_without_scanning();
+        crate::infrastructure::workspace_actor::tests::logical_read_publication_lane_wait_honors_existing_cancellation_and_deadline();
     }
 
     struct BlockingService {

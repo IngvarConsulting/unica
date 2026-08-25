@@ -135,7 +135,7 @@ impl CanonicalV13ReadService {
         else {
             return error_result(
                 Some(at.to_string()),
-                "not_found",
+                "provider_unavailable",
                 "view source set was not admitted by the workspace actor",
             );
         };

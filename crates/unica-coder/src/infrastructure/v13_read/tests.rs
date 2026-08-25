@@ -8,6 +8,7 @@ use crate::application::v13::find::FindRequest;
 use crate::application::v13::view::{ViewRequest, ViewService};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::workspace::WorkspaceContext;
@@ -1163,11 +1164,13 @@ fn logical_reader_parity_contract_is_complete() {
 fn find_walks_every_real_addressable_reader_family_without_parallel_xml_semantics() {
     let fixture = RealReaderFixture::new();
     fixture.install_accepted_profile_sources();
-    let authority = fixture.read_authority();
+    let authority = fixture.operation_read_authority();
     let index = WorkspaceFindIndexBuilder::default()
         .build(
             &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
             &fixture.cancellation,
         )
         .unwrap();
@@ -1599,9 +1602,9 @@ pub(crate) fn production_authorities_reach_all_profile_module_capabilities_from_
         let viewed = main_navigation.view(ViewRequest::new(address).unwrap());
         assert!(viewed.ok, "{address}: {:?}", viewed.diagnostics);
     }
-    let main = main_fixture.read_authority();
-    let epf = external_fixture.read_authority("epf", SourceSetKind::ExternalProcessor);
-    let erf = external_fixture.read_authority("erf", SourceSetKind::ExternalReport);
+    let main = main_fixture.operation_read_authority();
+    let epf = external_fixture.operation_read_authority("epf", SourceSetKind::ExternalProcessor);
+    let erf = external_fixture.operation_read_authority("erf", SourceSetKind::ExternalReport);
     let expected = serde_json::from_str::<ModuleCapabilityFixture>(include_str!(
         "../../../../../tests/fixtures/v013/address-profile-8.3.27.json"
     ))
@@ -1620,7 +1623,9 @@ pub(crate) fn production_authorities_reach_all_profile_module_capabilities_from_
                 ActorFindSource::new("epf", &epf),
                 ActorFindSource::new("erf", &erf),
             ],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
             &main_fixture.cancellation,
         )
         .unwrap();
@@ -1817,6 +1822,39 @@ impl RealExternalReaderFixture {
             revisions,
             root,
             PlatformProfile::v8_3_27(),
+        )
+    }
+
+    fn operation_read_authority(
+        &self,
+        source_set: &str,
+        kind: SourceSetKind,
+    ) -> LogicalViewReadAuthority<'_> {
+        let source = if kind == SourceSetKind::ExternalProcessor {
+            &self.processor
+        } else {
+            &self.report
+        };
+        let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
+        let revisions = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(&self.context, source).unwrap(),
+        );
+        let deadline =
+            ProviderDeadline::from_budget(crate::application::v13::LOGICAL_READ_OPERATION_BUDGET);
+        let lease = revisions
+            .begin_retained_operation(&root, deadline, &self.cancellation)
+            .unwrap();
+        LogicalViewReadAuthority::with_read_authority(
+            &self.cancellation,
+            ProviderReadAuthority::new_with_revision_lease(
+                source_set,
+                format!("actor-{source_set}"),
+                kind,
+                root,
+                lease,
+            ),
+            PlatformProfile::v8_3_27(),
+            deadline,
         )
     }
 }
@@ -2081,6 +2119,30 @@ impl RealReaderFixture {
             revisions,
             source_root,
             PlatformProfile::v8_3_27(),
+        )
+    }
+
+    fn operation_read_authority(&self) -> LogicalViewReadAuthority<'_> {
+        let root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
+        let revisions = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
+        );
+        let deadline =
+            ProviderDeadline::from_budget(crate::application::v13::LOGICAL_READ_OPERATION_BUDGET);
+        let lease = revisions
+            .begin_retained_operation(&root, deadline, &self.cancellation)
+            .unwrap();
+        LogicalViewReadAuthority::with_read_authority(
+            &self.cancellation,
+            ProviderReadAuthority::new_with_revision_lease(
+                "main",
+                "actor-fixture-main",
+                SourceSetKind::Configuration,
+                root,
+                lease,
+            ),
+            PlatformProfile::v8_3_27(),
+            deadline,
         )
     }
 
