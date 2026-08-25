@@ -8,6 +8,8 @@ use crate::domain::invocation::SafeIdentityHash;
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::deadline_lock::{DeadlineLock, FailClosed};
+use crate::infrastructure::native_operations::apply::ApplyStagedState;
+use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::platform::filesystem::{
     path_starts_with_host_root, stable_path_identity_bytes, RetainedDirectoryCapability,
 };
@@ -27,6 +29,9 @@ thread_local! {
     static LOGICAL_PUBLICATION_AFTER_CONFIRMATION_HOOK: std::cell::RefCell<
         Option<Box<dyn FnOnce()>>,
     > = std::cell::RefCell::new(None);
+    static APPLY_DRY_RUN_AFTER_CONFIRMATION_HOOK: std::cell::RefCell<
+        Option<Box<dyn FnOnce()>>,
+    > = std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -39,6 +44,22 @@ pub(crate) fn set_logical_publication_after_confirmation_hook(hook: impl FnOnce(
 #[cfg(test)]
 fn run_logical_publication_after_confirmation_hook() {
     LOGICAL_PUBLICATION_AFTER_CONFIRMATION_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn set_apply_dry_run_after_confirmation_hook(hook: impl FnOnce() + 'static) {
+    APPLY_DRY_RUN_AFTER_CONFIRMATION_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_apply_dry_run_after_confirmation_hook() {
+    APPLY_DRY_RUN_AFTER_CONFIRMATION_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
         }
@@ -254,6 +275,106 @@ pub(crate) struct WorkspaceLogicalReadFence {
 impl WorkspaceLogicalReadFence {
     pub(crate) fn revision(&self) -> RetainedRevisionLease {
         self.revision.clone()
+    }
+}
+
+/// Actor-issued authority for planning exactly one hidden-v0.13 apply batch.
+/// All identity, root, revision, deadline and cancellation fields are closed;
+/// callers can stage bytes but cannot substitute publication authority.
+pub(crate) struct ApplyAdmission {
+    actor_identity: WorkspaceIdentity,
+    actor_instance: ActorInstanceId,
+    source_set: WorkspaceSourceSetIdentity,
+    source_root: Arc<RetainedDirectoryCapability>,
+    revision_service: Arc<SourceRevisionService>,
+    revision: RetainedRevisionLease,
+    dry_run: bool,
+    deadline: ProviderDeadline,
+    cancellation: CancellationToken,
+}
+
+impl std::fmt::Debug for ApplyAdmission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ApplyAdmission")
+            .field("source_set", &self.source_set)
+            .field("dry_run", &self.dry_run)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ApplyAdmission {
+    pub(crate) fn revision_identity(&self) -> String {
+        self.revision.revision_identity()
+    }
+
+    pub(crate) fn staged_state(&self) -> Result<ApplyStagedState, String> {
+        apply_checkpoint(self.deadline, &self.cancellation, "apply planning")?;
+        Ok(ApplyStagedState::from_retained_root(
+            Arc::clone(&self.source_root),
+            self.deadline,
+            self.cancellation.clone(),
+        ))
+    }
+
+    pub(crate) fn prepare(self, state: ApplyStagedState) -> Result<PreparedApplyBatch, String> {
+        apply_checkpoint(self.deadline, &self.cancellation, "apply preparation")?;
+        if state.retained_root_identity() != self.source_root.identity() {
+            return Err("apply staged state belongs to another retained source root".to_string());
+        }
+        let transaction = state.finalize()?;
+        Ok(PreparedApplyBatch {
+            actor_identity: self.actor_identity,
+            actor_instance: self.actor_instance,
+            source_set: self.source_set,
+            source_root: self.source_root,
+            revision_service: self.revision_service,
+            revision: self.revision,
+            dry_run: self.dry_run,
+            deadline: self.deadline,
+            cancellation: self.cancellation,
+            transaction,
+        })
+    }
+}
+
+pub(crate) struct PreparedApplyBatch {
+    actor_identity: WorkspaceIdentity,
+    actor_instance: ActorInstanceId,
+    source_set: WorkspaceSourceSetIdentity,
+    source_root: Arc<RetainedDirectoryCapability>,
+    revision_service: Arc<SourceRevisionService>,
+    revision: RetainedRevisionLease,
+    dry_run: bool,
+    deadline: ProviderDeadline,
+    cancellation: CancellationToken,
+    transaction: CompileTransaction,
+}
+
+impl std::fmt::Debug for PreparedApplyBatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedApplyBatch")
+            .field("source_set", &self.source_set)
+            .field("dry_run", &self.dry_run)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ApplyPublicationResult {
+    rev: String,
+    commit_count: usize,
+}
+
+impl ApplyPublicationResult {
+    pub(crate) fn rev(&self) -> &str {
+        &self.rev
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn commit_count_for_test(&self) -> usize {
+        self.commit_count
     }
 }
 
@@ -559,6 +680,123 @@ impl<R> WorkspaceActor<R> {
         })
     }
 
+    pub(crate) fn admit_apply(
+        &self,
+        binding: &ProviderRootBinding,
+        if_rev: Option<&str>,
+        dry_run: bool,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<ApplyAdmission, String> {
+        apply_checkpoint(deadline, cancellation, "apply admission")?;
+        self.validate_binding(binding)?;
+        let revision_service = self.source_revision_service(binding)?;
+        let revision = revision_service.begin_retained_operation(
+            &binding.source_root,
+            deadline,
+            cancellation,
+        )?;
+        self.validate_binding(binding)?;
+        let revision_identity = revision.revision_identity();
+        if if_rev.is_some_and(|expected| expected != revision_identity) {
+            return Err(format!(
+                "apply ifRev is stale: expected {}, admitted {revision_identity}",
+                if_rev.unwrap_or_default()
+            ));
+        }
+        Ok(ApplyAdmission {
+            actor_identity: self.identity.clone(),
+            actor_instance: self.instance_id.clone(),
+            source_set: binding.source_set.clone(),
+            source_root: Arc::clone(&binding.source_root),
+            revision_service,
+            revision,
+            dry_run,
+            deadline,
+            cancellation: cancellation.clone(),
+        })
+    }
+
+    pub(crate) fn publish_prepared_apply(
+        &self,
+        prepared: PreparedApplyBatch,
+    ) -> Result<ApplyPublicationResult, String> {
+        if prepared.actor_identity != self.identity
+            || prepared.actor_instance != self.instance_id
+            || !self.identity.source_sets.contains(&prepared.source_set)
+        {
+            return Err("prepared apply batch belongs to another workspace actor".to_string());
+        }
+        apply_checkpoint(
+            prepared.deadline,
+            &prepared.cancellation,
+            "prepared apply publication",
+        )?;
+        let _lane = self.mutation_lane.acquire_before(
+            prepared.deadline,
+            &prepared.cancellation,
+            "workspace actor prepared apply wait",
+        )?;
+        let binding = ProviderRootBinding {
+            actor_identity: prepared.actor_identity.clone(),
+            actor_instance: prepared.actor_instance.clone(),
+            source_set: prepared.source_set.clone(),
+            source_root: Arc::clone(&prepared.source_root),
+        };
+        self.validate_binding(&binding)?;
+        prepared.revision_service.confirm_retained_operation(
+            &prepared.source_root,
+            &prepared.revision,
+            prepared.deadline,
+            &prepared.cancellation,
+        )?;
+        if prepared.dry_run {
+            prepared.transaction.validate_retained_for_apply()?;
+            prepared.revision_service.confirm_retained_operation(
+                &prepared.source_root,
+                &prepared.revision,
+                prepared.deadline,
+                &prepared.cancellation,
+            )?;
+            #[cfg(test)]
+            run_apply_dry_run_after_confirmation_hook();
+            self.validate_binding(&binding)?;
+            apply_checkpoint(
+                prepared.deadline,
+                &prepared.cancellation,
+                "prepared apply result",
+            )?;
+            return Ok(ApplyPublicationResult {
+                rev: prepared.revision.revision_identity(),
+                commit_count: 0,
+            });
+        }
+
+        let deadline = prepared.deadline;
+        let cancellation = prepared.cancellation.clone();
+        let root = Arc::clone(&prepared.source_root);
+        let revisions = Arc::clone(&prepared.revision_service);
+        let actor = self;
+        let (_, revision) = prepared.transaction.commit_retained_apply_with(
+            || apply_checkpoint(deadline, &cancellation, "prepared apply commit"),
+            || {
+                apply_checkpoint(deadline, &cancellation, "apply revision reconciliation")?;
+                revisions.mark_dirty();
+                let revision = revisions.snapshot_retained(&root, deadline, &cancellation)?;
+                actor.validate_binding(&binding)?;
+                apply_checkpoint(deadline, &cancellation, "prepared apply result")?;
+                Ok(revision)
+            },
+        )?;
+        Ok(ApplyPublicationResult {
+            rev: format!(
+                "{}:{}:{}",
+                revision.algorithm, revision.generation, revision.digest
+            ),
+            commit_count: 1,
+        })
+    }
+
     /// Makes one staged logical-read result observable while holding the
     /// actor's single mutation lane across validation of every selected source
     /// and every retained final confirmation.
@@ -813,6 +1051,20 @@ impl<R> WorkspaceActor<R> {
     }
 }
 
+fn apply_checkpoint(
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    phase: &str,
+) -> Result<(), String> {
+    if cancellation.is_cancelled() {
+        Err(format!("{phase} cancelled"))
+    } else if deadline.remaining().is_zero() {
+        Err(format!("{phase} deadline exceeded"))
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_physical_root(root: &RetainedDirectoryCapability) -> Result<(), String> {
     root.validate_named_identity().map_err(|error| {
         format!(
@@ -979,7 +1231,10 @@ impl WorkspaceActorRegistry {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{WorkspaceActorRegistry, WorkspaceActorRegistryError, WorkspaceIdentity};
+    use super::{
+        set_apply_dry_run_after_confirmation_hook, WorkspaceActorRegistry,
+        WorkspaceActorRegistryError, WorkspaceIdentity,
+    };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::workspace::WorkspaceContext;
@@ -2429,6 +2684,313 @@ pub(crate) mod tests {
                     if message.contains("escaped its actor-bound source root")
             ),
             "{readiness:?}"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_dry_run_is_byte_identical_and_real_apply_commits_once_with_new_revision() {
+        let fixture = actor_fixture("prepared-apply", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let admitted_rev = admitted.revision_identity().to_string();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"dry-run".to_vec())
+            .unwrap();
+        let dry_result = fixture
+            .actor
+            .publish_prepared_apply(admitted.prepare(state).unwrap())
+            .unwrap();
+        assert_eq!(dry_result.rev(), admitted_rev);
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        assert_eq!(dry_result.commit_count_for_test(), 0);
+
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                Some(&admitted_rev),
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"published".to_vec())
+            .unwrap();
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admitted.prepare(state).unwrap())
+            .unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"published");
+        assert_ne!(result.rev(), admitted_rev);
+        assert_eq!(result.commit_count_for_test(), 1);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_rejects_stale_revision_source_change_cancellation_and_deadline_before_publication(
+    ) {
+        let fixture = actor_fixture("prepared-apply-fences", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        assert!(fixture
+            .actor
+            .admit_apply(
+                &binding,
+                Some("stale-revision"),
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap_err()
+            .contains("ifRev"));
+
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"must-not-publish".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        std::fs::write(&target, b"concurrent").unwrap();
+        assert!(fixture
+            .actor
+            .publish_prepared_apply(prepared)
+            .unwrap_err()
+            .contains("revision"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"concurrent");
+
+        let cancelled = CancellationToken::new();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancelled,
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"concurrent", b"cancelled".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        cancelled.cancel();
+        assert!(fixture
+            .actor
+            .publish_prepared_apply(prepared)
+            .unwrap_err()
+            .contains("cancel"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"concurrent");
+
+        assert!(fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::ZERO),
+                &CancellationToken::new(),
+            )
+            .unwrap_err()
+            .contains("deadline"));
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_root_and_actor_capabilities_cannot_be_redirected_or_replayed() {
+        let first = actor_fixture("prepared-capability-a", &["src"]);
+        let second = actor_fixture("prepared-capability-b", &["src"]);
+        let target = first.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = first
+            .actor
+            .bind_provider_root("src", &first.roots[0])
+            .unwrap();
+        let admitted = first
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"must-not-publish".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        assert!(second
+            .actor
+            .publish_prepared_apply(prepared)
+            .unwrap_err()
+            .contains("another workspace actor"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+
+        let admitted = first
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"redirected".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let displaced = first.root.join("src-displaced");
+        std::fs::rename(&first.roots[0], &displaced).unwrap();
+        std::fs::create_dir_all(&first.roots[0]).unwrap();
+        std::fs::write(first.roots[0].join("Module.bsl"), b"replacement-tree").unwrap();
+        assert!(first
+            .actor
+            .publish_prepared_apply(prepared)
+            .unwrap_err()
+            .contains("physical identity"));
+        assert_eq!(
+            std::fs::read(displaced.join("Module.bsl")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(first.roots[0].join("Module.bsl")).unwrap(),
+            b"replacement-tree"
+        );
+        first.cleanup();
+        second.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_root_replacement_during_commit_rolls_back_before_result() {
+        let fixture = actor_fixture("prepared-root-race", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"published-postimage".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let named_root = fixture.roots[0].clone();
+        let displaced = fixture.root.join("src-race-displaced");
+        let hook_displaced = displaced.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || {
+                std::fs::rename(&named_root, &hook_displaced).unwrap();
+                std::fs::create_dir_all(&named_root).unwrap();
+                std::fs::write(named_root.join("Module.bsl"), b"replacement-tree").unwrap();
+            },
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert!(
+            error.contains("physical identity")
+                || error.contains("identity changed after admission"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(displaced.join("Module.bsl")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+            b"replacement-tree"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_dry_run_rejects_root_replacement_before_result() {
+        let fixture = actor_fixture("prepared-dry-root-race", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"dry-postimage".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let named_root = fixture.roots[0].clone();
+        let displaced = fixture.root.join("src-dry-race-displaced");
+        let hook_displaced = displaced.clone();
+        set_apply_dry_run_after_confirmation_hook(move || {
+            std::fs::rename(&named_root, &hook_displaced).unwrap();
+            std::fs::create_dir_all(&named_root).unwrap();
+            std::fs::write(named_root.join("Module.bsl"), b"replacement-tree").unwrap();
+        });
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert!(error.contains("physical identity"), "{error}");
+        assert_eq!(
+            std::fs::read(displaced.join("Module.bsl")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+            b"replacement-tree"
         );
         fixture.cleanup();
     }

@@ -1,4 +1,6 @@
 //! Thin facade over family-owned native XML/DSL operations.
+#[allow(dead_code)]
+pub(crate) mod apply;
 pub(crate) mod cf;
 pub(crate) mod cfe;
 pub(crate) mod code;

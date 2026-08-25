@@ -1,6 +1,9 @@
 // Hidden v0.13 address policy remains unreachable from the package-selected v0.12 surface.
 #[allow(dead_code)]
 pub(crate) mod address;
+// Hidden v0.13 apply foundation remains unreachable from the package-selected v0.12 surface.
+#[allow(dead_code)]
+pub(crate) mod apply;
 pub mod cache;
 pub mod cancellation;
 pub mod code_intelligence;

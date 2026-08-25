@@ -29,6 +29,7 @@ use crate::infrastructure::platform::filesystem::{
     prepare_file_for_removal, remove_identity_bound_empty_directory_child,
     remove_identity_bound_regular_child, rename_identity_bound_regular_child_no_replace,
     rename_no_replace, retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
+    RetainedChildCapability, RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 
@@ -58,6 +59,7 @@ use super::single_file_publisher::{
 
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 static RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static RETAINED_APPLY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Result of asking the canonical registrar to add one child object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,6 +260,15 @@ pub(crate) struct CompileTransaction {
     directory_membership_guards: BTreeMap<PathBuf, DirectoryMembershipGuard>,
     removals: Vec<PlannedRemoval>,
     planned_path_identities: BTreeMap<PathBuf, PlannedPathKind>,
+    retained_apply: Vec<PlannedRetainedApplyChange>,
+}
+
+#[derive(Debug)]
+struct PlannedRetainedApplyChange {
+    root: Arc<RetainedDirectoryCapability>,
+    relative_path: PathBuf,
+    original: Option<Vec<u8>>,
+    current: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,6 +281,122 @@ pub(crate) enum PlannedChangeKind {
 impl CompileTransaction {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn bind_retained_apply_change(
+        &mut self,
+        root: Arc<RetainedDirectoryCapability>,
+        relative_path: PathBuf,
+        original: Option<Vec<u8>>,
+        current: Option<Vec<u8>>,
+    ) -> Result<(), String> {
+        validate_strict_relative_file_path(&relative_path)?;
+        if original == current {
+            return Ok(());
+        }
+        if self.retained_apply.iter().any(|entry| {
+            entry.root.identity() == root.identity() && entry.relative_path == relative_path
+        }) {
+            return Err(format!(
+                "duplicate retained apply target: {}",
+                relative_path.display()
+            ));
+        }
+        if self
+            .retained_apply
+            .iter()
+            .any(|entry| entry.root.identity() != root.identity())
+        {
+            return Err("one retained apply transaction cannot mix source roots".to_string());
+        }
+        self.retained_apply.push(PlannedRetainedApplyChange {
+            root,
+            relative_path,
+            original,
+            current,
+        });
+        self.retained_apply
+            .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        Ok(())
+    }
+
+    pub(crate) fn validate_retained_for_apply(&self) -> Result<(), String> {
+        if self.retained_apply.is_empty() {
+            return Ok(());
+        }
+        if !self.creates.is_empty()
+            || !self.registrations.is_empty()
+            || !self.read_guards.is_empty()
+            || !self.absence_guards.is_empty()
+            || !self.directory_membership_guards.is_empty()
+            || !self.removals.is_empty()
+        {
+            return Err(
+                "retained apply entries cannot mix with ambient transaction entries".to_string(),
+            );
+        }
+        for entry in &self.retained_apply {
+            entry.root.validate_named_identity().map_err(|error| {
+                format!("retained apply source-root physical identity changed: {error}")
+            })?;
+            validate_retained_apply_preimage(entry)?;
+            if let Some(bytes) = &entry.current {
+                validate_xml_when_applicable(&entry.root.path().join(&entry.relative_path), bytes)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn commit_retained_apply_with<T>(
+        self,
+        mut checkpoint: impl FnMut() -> Result<(), String>,
+        post_validation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<(CommitReport, T), String> {
+        self.validate_retained_for_apply()?;
+        checkpoint()?;
+        let mut published = Vec::with_capacity(self.retained_apply.len());
+        let operation = (|| {
+            for entry in &self.retained_apply {
+                checkpoint()?;
+                published.push(publish_retained_apply_change(entry)?);
+            }
+            for entry in &self.retained_apply {
+                checkpoint()?;
+                validate_retained_apply_state(entry, &entry.current, true)?;
+            }
+            #[cfg(test)]
+            run_retained_apply_before_post_validation_hook();
+            let validated = post_validation()?;
+            let mut report = CommitReport::default();
+            for entry in &self.retained_apply {
+                let path = entry.root.path().join(&entry.relative_path);
+                match (&entry.original, &entry.current) {
+                    (None, Some(_)) => report.created.push(path),
+                    (Some(_), Some(_)) => report.updated.push(path),
+                    (Some(_), None) | (None, None) => {}
+                }
+            }
+            Ok((report, validated))
+        })();
+        match operation {
+            Ok(result) => Ok(result),
+            Err(primary) => {
+                let rollback_errors = rollback_retained_apply(&mut published);
+                if rollback_errors.is_empty() {
+                    Err(primary)
+                } else {
+                    Err(format!(
+                        "{primary}; retained apply rollback encountered: {}",
+                        rollback_errors.join("; ")
+                    ))
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_planned_change_count_for_test(&self) -> usize {
+        self.retained_apply.len()
     }
 
     /// Whether an existing exact plan already protects this path with the
@@ -1578,6 +1705,200 @@ impl CompileTransaction {
         }
         Ok(())
     }
+}
+
+fn validate_strict_relative_file_path(relative: &Path) -> Result<(), String> {
+    use std::path::Component;
+
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "retained apply target must contain only normal relative components: {}",
+            relative.display()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_retained_apply_preimage(entry: &PlannedRetainedApplyChange) -> Result<(), String> {
+    validate_retained_apply_state(entry, &entry.original, true)
+}
+
+fn validate_retained_apply_state(
+    entry: &PlannedRetainedApplyChange,
+    expected: &Option<Vec<u8>>,
+    validate_root_name: bool,
+) -> Result<(), String> {
+    if validate_root_name {
+        entry.root.validate_named_identity().map_err(|error| {
+            format!("retained apply source-root physical identity changed: {error}")
+        })?;
+    }
+    let (parent, name) = entry
+        .root
+        .retain_relative_parent_nofollow(&entry.relative_path)
+        .map_err(|error| {
+            format!(
+                "retained apply target parent cannot be resolved {}: {error}",
+                entry.relative_path.display()
+            )
+        })?;
+    let observed = match parent.retain_immediate_child_nofollow(&name) {
+        Ok(RetainedChildCapability::RegularFile(file)) => {
+            if file.hard_link_count().map_err(|error| {
+                format!("retained apply hard-link count cannot be read: {error}")
+            })? != 1
+            {
+                return Err(format!(
+                    "retained apply target has a hard-link alias: {}",
+                    entry.relative_path.display()
+                ));
+            }
+            Some(
+                file.read_bounded(32 * 1024 * 1024)
+                    .map_err(|error| format!("retained apply preimage cannot be read: {error}"))?,
+            )
+        }
+        Ok(RetainedChildCapability::ReparsePoint) => {
+            return Err(format!(
+                "retained apply target is a link/reparse point: {}",
+                entry.relative_path.display()
+            ))
+        }
+        Ok(RetainedChildCapability::Directory(_) | RetainedChildCapability::Unsupported) => {
+            return Err(format!(
+                "retained apply target is not a regular file: {}",
+                entry.relative_path.display()
+            ))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "retained apply target cannot be inspected {}: {error}",
+                entry.relative_path.display()
+            ))
+        }
+    };
+    if observed != *expected {
+        return Err(format!(
+            "retained apply preimage changed: {}",
+            entry.relative_path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct PublishedRetainedApplyChange {
+    parent: RetainedDirectoryCapability,
+    name: OsString,
+    original: Option<Vec<u8>>,
+    kind: PlannedChangeKind,
+    published: Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
+}
+
+fn retained_apply_stage_name() -> OsString {
+    OsString::from(format!(
+        ".unica-apply-{}-{}",
+        std::process::id(),
+        RETAINED_APPLY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn publish_retained_apply_change(
+    entry: &PlannedRetainedApplyChange,
+) -> Result<PublishedRetainedApplyChange, String> {
+    validate_retained_apply_state(entry, &entry.original, false)?;
+    let (parent, name) = entry
+        .root
+        .retain_relative_parent_nofollow(&entry.relative_path)
+        .map_err(|error| format!("retained apply parent cannot be retained: {error}"))?;
+    let (kind, published) = match (&entry.original, &entry.current) {
+        (None, Some(bytes)) => (
+            PlannedChangeKind::Create,
+            Some(
+                parent
+                    .create_regular_child_atomically(&retained_apply_stage_name(), &name, bytes)
+                    .map_err(|error| format!("retained apply create failed: {error}"))?,
+            ),
+        ),
+        (Some(_), Some(bytes)) => (
+            PlannedChangeKind::Update,
+            Some(
+                parent
+                    .replace_regular_child_atomically(&retained_apply_stage_name(), &name, bytes)
+                    .map_err(|error| format!("retained apply replace failed: {error}"))?,
+            ),
+        ),
+        (Some(_), None) => {
+            let retained = parent.retain_regular_child(&name).map_err(|error| {
+                format!("retained apply removal target cannot be retained: {error}")
+            })?;
+            retained
+                .remove_named_identity_relative()
+                .map_err(|error| format!("retained apply remove failed: {error}"))?;
+            (PlannedChangeKind::Remove, None)
+        }
+        (None, None) => return Err("retained apply no-op reached publication".to_string()),
+    };
+    Ok(PublishedRetainedApplyChange {
+        parent,
+        name,
+        original: entry.original.clone(),
+        kind,
+        published,
+    })
+}
+
+fn rollback_retained_apply(published: &mut Vec<PublishedRetainedApplyChange>) -> Vec<String> {
+    let mut errors = Vec::new();
+    while let Some(change) = published.pop() {
+        let result = match change.kind {
+            PlannedChangeKind::Create => change
+                .published
+                .as_ref()
+                .ok_or_else(|| "published create capability is missing".to_string())
+                .and_then(|file| {
+                    file.validate_named_identity_relative()
+                        .map_err(|error| error.to_string())?;
+                    file.remove_named_identity_relative()
+                        .map_err(|error| error.to_string())
+                }),
+            PlannedChangeKind::Update => change
+                .published
+                .as_ref()
+                .ok_or_else(|| "published replace capability is missing".to_string())
+                .and_then(|file| {
+                    file.validate_named_identity_relative()
+                        .map_err(|error| error.to_string())?;
+                    change
+                        .parent
+                        .replace_regular_child_atomically(
+                            &retained_apply_stage_name(),
+                            &change.name,
+                            change.original.as_deref().expect("replace has an original"),
+                        )
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                }),
+            PlannedChangeKind::Remove => change
+                .parent
+                .create_regular_child_atomically(
+                    &retained_apply_stage_name(),
+                    &change.name,
+                    change.original.as_deref().expect("remove has an original"),
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+        };
+        if let Err(error) = result {
+            errors.push(error);
+        }
+    }
+    errors
 }
 
 pub(crate) fn snapshot_directory_membership(
@@ -4121,6 +4442,9 @@ type BeforeRollbackQuarantineRestoreRenameHook = Box<dyn FnOnce(&Path, &Path)>;
 type AfterRegistrationRollbackRestoreHook = Box<dyn FnOnce(&Path, &Path)>;
 
 #[cfg(test)]
+type RetainedApplyBeforePostValidationHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
 thread_local! {
     static TEST_FAILPOINT: Cell<Option<CommitFailpoint>> = const { Cell::new(None) };
     static TEST_REGISTRATION_RECOVERY_PAUSE: RefCell<Option<RegistrationRecoveryPause>> = const { RefCell::new(None) };
@@ -4131,6 +4455,23 @@ thread_local! {
     static TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK: RefCell<Option<BeforeRollbackQuarantineCleanupHook>> = const { RefCell::new(None) };
     static TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK: RefCell<Option<BeforeRollbackQuarantineRestoreRenameHook>> = const { RefCell::new(None) };
     static TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK: RefCell<Option<AfterRegistrationRollbackRestoreHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_BEFORE_POST_VALIDATION_HOOK: RefCell<Option<RetainedApplyBeforePostValidationHook>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_apply_before_post_validation_hook(hook: impl FnOnce() + 'static) {
+    TEST_RETAINED_APPLY_BEFORE_POST_VALIDATION_HOOK.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+fn run_retained_apply_before_post_validation_hook() {
+    if let Some(hook) =
+        TEST_RETAINED_APPLY_BEFORE_POST_VALIDATION_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
 }
 
 #[cfg(test)]

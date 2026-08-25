@@ -405,6 +405,52 @@ impl RetainedDirectoryCapability {
         publication
     }
 
+    /// Publishes a new regular child without replacing a concurrently-created
+    /// destination. Staging and the final no-replace rename are both relative
+    /// to this retained directory descriptor.
+    pub(crate) fn create_regular_child_atomically(
+        &self,
+        stage_name: &std::ffi::OsStr,
+        destination_name: &std::ffi::OsStr,
+        bytes: &[u8],
+    ) -> io::Result<RetainedRegularFileCapability> {
+        use std::io::Write;
+
+        let mut stage = create_new_regular_child(&self.retained.directory, stage_name)?;
+        let identity = file_identity(&stage)?;
+        let publication = (|| {
+            stage.write_all(bytes)?;
+            stage.sync_data()?;
+            rename_identity_bound_regular_child_no_replace(
+                &self.retained.directory,
+                stage_name,
+                identity,
+                &stage,
+                &self.retained.directory,
+                destination_name,
+            )?;
+            sync_renamed_regular_child(&stage)?;
+            sync_directory(&self.retained.directory)?;
+            let published = RetainedRegularFileCapability {
+                parent: self.clone(),
+                name: destination_name.to_os_string(),
+                file: stage.try_clone()?,
+                identity,
+            };
+            published.validate_named_identity_relative()?;
+            Ok(published)
+        })();
+        if publication.is_err() {
+            let _ = remove_identity_bound_regular_child(
+                &self.retained.directory,
+                stage_name,
+                identity,
+                &stage,
+            );
+        }
+        publication
+    }
+
     pub(crate) fn read_relative_regular_bounded(
         &self,
         relative: &Path,
@@ -528,6 +574,47 @@ impl RetainedDirectoryCapability {
         })
     }
 
+    /// Resolves the parent and terminal name of one strictly-normal relative
+    /// file path through retained directory descriptors. Every intermediate
+    /// component is opened no-follow, so a nested link/reparse point never
+    /// becomes writer authority.
+    pub(crate) fn retain_relative_parent_nofollow(
+        &self,
+        relative: &Path,
+    ) -> io::Result<(Self, std::ffi::OsString)> {
+        use std::path::Component;
+
+        let components = relative.components().collect::<Vec<_>>();
+        if components.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relative file path must not be empty",
+            ));
+        }
+        let mut parent = self.clone();
+        for component in &components[..components.len() - 1] {
+            let Component::Normal(name) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "relative file path contains a non-normal component",
+                ));
+            };
+            parent = parent.retain_directory_child(name).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("nested directory link/reparse traversal rejected: {error}"),
+                )
+            })?;
+        }
+        let Component::Normal(name) = components[components.len() - 1] else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relative file path contains a non-normal component",
+            ));
+        };
+        Ok((parent, name.to_os_string()))
+    }
+
     pub(crate) fn retain_or_create_regular_child(
         &self,
         name: &std::ffi::OsStr,
@@ -582,8 +669,16 @@ impl RetainedRegularFileCapability {
         self.file.try_clone()
     }
 
+    pub(crate) fn hard_link_count(&self) -> io::Result<u64> {
+        hard_link_count(&self.file)
+    }
+
     pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
         self.parent.validate_named_identity()?;
+        self.validate_named_identity_relative()
+    }
+
+    pub(crate) fn validate_named_identity_relative(&self) -> io::Result<()> {
         let rebound = open_regular_child_nofollow(&self.parent.retained.directory, &self.name)?;
         if file_identity(&rebound)? != self.identity {
             return Err(io::Error::new(
@@ -596,6 +691,10 @@ impl RetainedRegularFileCapability {
 
     pub(crate) fn remove_named_identity(&self) -> io::Result<()> {
         self.parent.validate_named_identity()?;
+        self.remove_named_identity_relative()
+    }
+
+    pub(crate) fn remove_named_identity_relative(&self) -> io::Result<()> {
         remove_identity_bound_regular_child(
             &self.parent.retained.directory,
             &self.name,
