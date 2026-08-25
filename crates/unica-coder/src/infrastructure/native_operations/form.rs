@@ -7510,6 +7510,8 @@ pub(crate) fn form_compile_xml(
             main_attribute: MainAttributeKind::Unknown,
             main_attribute_type: None,
             main_attribute_provenance: MainAttributeProvenance::Missing,
+            main_attribute_name: None,
+            metadata_owner: None,
         },
         0,
         defn,

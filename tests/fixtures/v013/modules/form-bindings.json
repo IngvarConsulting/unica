@@ -5,8 +5,7 @@
       "owner": "form",
       "ownerAt": "main:Document.Заказ.Form.ФормаДокумента",
       "event": "OnOpen",
-      "handler": "ОбщийОбработчик",
-      "callType": "After"
+      "handler": "ОбщийОбработчик"
     },
     {
       "case": "element",

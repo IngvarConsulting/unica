@@ -8,7 +8,8 @@ use crate::domain::module_projection::{
 use crate::domain::platform_profile::{ModuleCapability, ModuleRole, PlatformProfile};
 use crate::infrastructure::bsl_outline::parse_bsl_syntax;
 use crate::infrastructure::native_operations::form_event_registry::{
-    form_event_catalog_8_3_27, module_event_catalog_8_3_27, FormElementKind, FormEventOwnerKind,
+    form_event_catalog_8_3_27, module_event_catalog_8_3_27, validate_event_call_type,
+    FormElementKind, FormEventBinding, FormEventContext, FormEventOwnerKind, FormEventTarget,
     PlatformEventSpec,
 };
 use bsl_syntax::ast::{Annotation, AstNode, FunctionDef, PreIfDir, PreRegionDir, ProcedureDef};
@@ -68,6 +69,17 @@ impl FormBindingOwner {
             Self::Command => "command",
         }
     }
+
+    fn validation_target(self) -> FormEventTarget {
+        match self {
+            Self::Form => FormEventTarget::Form,
+            Self::Element(kind) | Self::Column(kind) => FormEventTarget::Element(kind),
+            Self::Table => FormEventTarget::Element(FormElementKind::Table),
+            // Command bindings share the extension call-type rule. The target
+            // is diagnostic-only for this validation seam.
+            Self::Command => FormEventTarget::Form,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +95,7 @@ pub(crate) struct FormEventBindingInput {
 pub(crate) struct FormEventOwnerInput {
     owner: FormBindingOwner,
     at: String,
+    data_path: Option<String>,
 }
 
 impl FormEventOwnerInput {
@@ -90,7 +103,14 @@ impl FormEventOwnerInput {
         Self {
             owner,
             at: at.to_string(),
+            data_path: None,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_data_path(mut self, data_path: &str) -> Self {
+        self.data_path = Some(data_path.to_string());
+        self
     }
 }
 
@@ -1099,6 +1119,7 @@ fn form_method_matches_event(method: &FormMethodFact<'_>, spec: &PlatformEventSp
 }
 
 pub(crate) fn project_form_events(
+    context: &FormEventContext,
     bindings: &[FormEventBindingInput],
     methods: &[FormMethodFact<'_>],
 ) -> Vec<EventProjection> {
@@ -1114,10 +1135,11 @@ pub(crate) fn project_form_events(
             owners.push(FormEventOwnerInput::new(binding.owner, owner_at));
         }
     }
-    project_form_owner_events(&owners, bindings, methods)
+    project_form_owner_events(context, &owners, bindings, methods)
 }
 
 pub(crate) fn project_form_owner_events(
+    context: &FormEventContext,
     owners: &[FormEventOwnerInput],
     bindings: &[FormEventBindingInput],
     methods: &[FormMethodFact<'_>],
@@ -1129,7 +1151,11 @@ pub(crate) fn project_form_owner_events(
         if !projected_owners.insert(owner_key) {
             continue;
         }
-        for spec in form_event_catalog_8_3_27(owner.owner.catalog_owner()) {
+        for spec in form_event_catalog_8_3_27(
+            context,
+            owner.owner.catalog_owner(),
+            owner.data_path.as_deref(),
+        ) {
             let owner_prefix = owner.at.as_str();
             let at = format!("{owner_prefix}.Event.{}", spec.event_id);
             let actual = bindings.iter().find(|candidate| {
@@ -1147,13 +1173,26 @@ pub(crate) fn project_form_owner_events(
                     .iter()
                     .find(|method| method.name.to_lowercase() == binding.handler.to_lowercase())
             });
-            let state = match (actual, method) {
-                (None, _) => EventState::Available,
-                (Some(_), None) => EventState::Missing,
-                (Some(_), Some(method)) if form_method_matches_event(method, spec) => {
+            let binding_is_valid = actual.is_none_or(|binding| {
+                validate_event_call_type(
+                    context,
+                    binding.owner.validation_target(),
+                    &FormEventBinding {
+                        name: binding.event.as_str(),
+                        handler: binding.handler.as_str(),
+                        call_type: binding.call_type.as_deref(),
+                    },
+                )
+                .is_ok()
+            });
+            let state = match (actual, method, binding_is_valid) {
+                (None, _, _) => EventState::Available,
+                (Some(_), _, false) => EventState::Invalid,
+                (Some(_), None, true) => EventState::Missing,
+                (Some(_), Some(method), true) if form_method_matches_event(method, spec) => {
                     EventState::Implemented
                 }
-                (Some(_), Some(_)) => EventState::Invalid,
+                (Some(_), Some(_), true) => EventState::Invalid,
             };
             events.push(EventProjection {
                 at: at.clone(),
@@ -1258,15 +1297,19 @@ impl<'a> LineIndex<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate_guard, normalize_guard, project_declarative_binding, project_form_events,
-        project_form_owner_events, project_module, DeclarativeBinding, FormBindingOwner,
-        FormEventBindingInput, FormEventOwnerInput, FormMethodFact, ModuleProjectionRequest,
+        evaluate_guard, normalize_guard, project_declarative_binding,
+        project_form_events as project_form_events_with_context,
+        project_form_owner_events as project_form_owner_events_with_context, project_module,
+        DeclarativeBinding, FormBindingOwner, FormEventBindingInput, FormEventOwnerInput,
+        FormMethodFact, ModuleProjectionRequest,
     };
-    use crate::domain::address::QualifiedAddress;
+    use crate::domain::address::{NodeKind, QualifiedAddress};
     use crate::domain::module_projection::{BindingFact, EventState, ExtensionKind, InterfaceKind};
     use crate::domain::platform_profile::PlatformProfile;
     use crate::infrastructure::bsl_outline::parse_bsl_syntax;
-    use crate::infrastructure::native_operations::form_event_registry::FormElementKind;
+    use crate::infrastructure::native_operations::form_event_registry::{
+        context_from_root, FormDefinitionKind, FormElementKind,
+    };
     use bsl_syntax::ast::{AstNode, PreIfDir};
     use serde::Deserialize;
 
@@ -1356,6 +1399,39 @@ mod tests {
             "integrationServiceChannel" => DECLARATIVE_INTEGRATION,
             other => panic!("unknown declarative fixture owner `{other}`"),
         }
+    }
+
+    fn form_context(
+        xml: &str,
+        owner_kind: NodeKind,
+    ) -> crate::infrastructure::native_operations::form_event_registry::FormEventContext {
+        let document = roxmltree::Document::parse(xml).unwrap();
+        let mut context = context_from_root(document.root_element());
+        context.metadata_owner = Some(owner_kind);
+        context
+    }
+
+    fn default_form_context(
+    ) -> crate::infrastructure::native_operations::form_event_registry::FormEventContext {
+        form_context(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"/>"#,
+            NodeKind::CommonForm,
+        )
+    }
+
+    fn project_form_events(
+        bindings: &[FormEventBindingInput],
+        methods: &[FormMethodFact<'_>],
+    ) -> Vec<crate::domain::module_projection::EventProjection> {
+        project_form_events_with_context(&default_form_context(), bindings, methods)
+    }
+
+    fn project_form_owner_events(
+        owners: &[FormEventOwnerInput],
+        bindings: &[FormEventBindingInput],
+        methods: &[FormMethodFact<'_>],
+    ) -> Vec<crate::domain::module_projection::EventProjection> {
+        project_form_owner_events_with_context(&default_form_context(), owners, bindings, methods)
     }
 
     fn project(
@@ -1759,6 +1835,190 @@ mod tests {
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             events.len()
+        );
+    }
+
+    #[test]
+    fn form_possible_events_are_exact_for_document_and_dynamic_list_sources_without_bsl() {
+        let document_context = form_context(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"
+                    xmlns:v8="http://v8.1c.ru/8.1/data/core">
+                <Attributes><Attribute name="Object" id="1">
+                    <Type><v8:Type>cfg:DocumentObject.Order</v8:Type></Type>
+                    <MainAttribute>true</MainAttribute>
+                </Attribute></Attributes>
+            </Form>"#,
+            NodeKind::Document,
+        );
+        assert_eq!(document_context.definition, FormDefinitionKind::Regular);
+        let form =
+            FormEventOwnerInput::new(FormBindingOwner::Form, "main:Document.Order.Form.Main");
+        let document_events =
+            project_form_owner_events_with_context(&document_context, &[form], &[], &[]);
+        assert_eq!(
+            document_events
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "ActivationProcessing",
+                "AddInDetachmentOnError",
+                "AfterWrite",
+                "AfterWriteAtServer",
+                "BeforeClose",
+                "BeforeLoadDataFromSettingsAtServer",
+                "BeforeReopenFromOtherServer",
+                "BeforeWrite",
+                "BeforeWriteAtServer",
+                "ChoiceProcessing",
+                "CollaborationSystemUsersAutoComplete",
+                "CollaborationSystemUsersChoiceFormGetProcessing",
+                "ExternalEvent",
+                "FillCheckProcessingAtServer",
+                "NavigationProcessing",
+                "NewWriteProcessing",
+                "NotificationProcessing",
+                "OnChangeDisplaySettings",
+                "OnClose",
+                "OnCreateAtServer",
+                "OnLoadDataFromSettingsAtServer",
+                "OnMainServerAvailabilityChange",
+                "OnOpen",
+                "OnPasteFromClipboard",
+                "OnReadAtServer",
+                "OnReopen",
+                "OnReopenFromOtherServer",
+                "OnSaveDataInSettingsAtServer",
+                "OnWriteAtServer",
+                "URLGetProcessing",
+                "URLListGetProcessing",
+                "URLProcessing",
+                "ValueChoice",
+            ]
+        );
+        assert!(document_events
+            .iter()
+            .all(|event| event.state == EventState::Available));
+
+        let dynamic_context = form_context(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"
+                    xmlns:v8="http://v8.1c.ru/8.1/data/core">
+                <Attributes><Attribute name="List" id="1">
+                    <Type><v8:Type>cfg:DynamicList</v8:Type></Type>
+                    <MainAttribute>true</MainAttribute>
+                </Attribute></Attributes>
+            </Form>"#,
+            NodeKind::Catalog,
+        );
+        let table = FormEventOwnerInput::new(
+            FormBindingOwner::Table,
+            "main:Catalog.Items.Form.List.Item.List",
+        )
+        .with_data_path("List");
+        let table_events =
+            project_form_owner_events_with_context(&dynamic_context, &[table], &[], &[]);
+        assert_eq!(
+            table_events
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "AfterDeleteRow",
+                "BeforeAddRow",
+                "BeforeCollapse",
+                "BeforeDeleteRow",
+                "BeforeEditEnd",
+                "BeforeExpand",
+                "BeforeLoadUserSettingsAtServer",
+                "BeforeRowChange",
+                "ChoiceProcessing",
+                "Drag",
+                "DragCheck",
+                "DragEnd",
+                "DragStart",
+                "NewWriteProcessing",
+                "OnActivateCell",
+                "OnActivateField",
+                "OnActivateRow",
+                "OnChange",
+                "OnCurrentParentChange",
+                "OnEditEnd",
+                "OnGetDataAtServer",
+                "OnLoadUserSettingsAtServer",
+                "OnSaveUserSettingsAtServer",
+                "OnStartEdit",
+                "OnUpdateUserSettingSetAtServer",
+                "RefreshRequestProcessing",
+                "Selection",
+                "URLGetProcessing",
+                "URLListGetProcessing",
+                "ValueChoice",
+            ]
+        );
+    }
+
+    #[test]
+    fn form_event_implementation_requires_call_type_valid_for_the_form_definition() {
+        let regular = form_context(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"/>"#,
+            NodeKind::CommonForm,
+        );
+        let binding = FormEventBindingInput::property(
+            FormBindingOwner::Form,
+            "main:CommonForm.Test.Event.OnOpen",
+            "OnOpen",
+            "FormOnOpen",
+            Some("After"),
+        );
+        let methods = [FormMethodFact::new(
+            "FormOnOpen",
+            crate::domain::module_projection::MethodKind::Procedure,
+            "Procedure FormOnOpen(Cancel)",
+            vec![
+                "thinClient",
+                "webClient",
+                "thickClientManaged",
+                "mobileClient",
+                "mobileAppClient",
+            ],
+        )];
+        assert_eq!(
+            project_form_events_with_context(&regular, std::slice::from_ref(&binding), &methods)
+                .iter()
+                .find(|event| event.event_id == "OnOpen")
+                .unwrap()
+                .state,
+            EventState::Invalid
+        );
+
+        let extension = form_context(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><BaseForm/></Form>"#,
+            NodeKind::CommonForm,
+        );
+        assert_eq!(extension.definition, FormDefinitionKind::Extension);
+        assert_eq!(
+            project_form_events_with_context(&extension, std::slice::from_ref(&binding), &methods,)
+                .iter()
+                .find(|event| event.event_id == "OnOpen")
+                .unwrap()
+                .state,
+            EventState::Implemented
+        );
+
+        let unknown = FormEventBindingInput::property(
+            FormBindingOwner::Form,
+            "main:CommonForm.Test.Event.OnOpen",
+            "OnOpen",
+            "FormOnOpen",
+            Some("Instead"),
+        );
+        assert_eq!(
+            project_form_events_with_context(&extension, &[unknown], &methods)
+                .iter()
+                .find(|event| event.event_id == "OnOpen")
+                .unwrap()
+                .state,
+            EventState::Invalid
         );
     }
 
@@ -2211,7 +2471,7 @@ mod tests {
                 case.case
             );
             if case.case == "form" {
-                assert_eq!(event.call_type.as_deref(), Some("After"));
+                assert_eq!(event.call_type, None);
             }
         }
         let states = events.iter().map(|event| event.state).collect::<Vec<_>>();
@@ -2294,8 +2554,11 @@ mod tests {
         form_event_state_requires_exact_method_kind_and_parameter_shape();
         form_binding_retains_actual_element_and_nested_column_kinds();
         form_owner_without_bindings_still_projects_its_closed_available_catalog();
+        form_possible_events_are_exact_for_document_and_dynamic_list_sources_without_bsl();
+        form_event_implementation_requires_call_type_valid_for_the_form_definition();
         form_binding_owners_and_all_four_event_states_are_projected();
         declarative_service_projection_must_use_real_fixture_syntax();
         declarative_service_handlers_remain_on_exact_owners_without_synthetic_events();
+        crate::infrastructure::native_operations::form_event_registry::tests::platform_8_3_27_module_event_catalog_is_role_specific();
     }
 }

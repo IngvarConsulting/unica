@@ -12,9 +12,16 @@ scope: [platform, product, source]
 Каталог различает применимость для всех семантических ролей Task 12; HTTP,
 SOAP и IntegrationService не получают синтетические события поверх своих
 декларативных владельцев, Bot и WebSocketClient сохраняют отдельные события.
-События формы остаются на форме, элементе, таблице, вложенной колонке или
-команде. Для каждого event leaf каталог фиксирует русское и английское имя
-обработчика, точную декларацию, method kind, effective contexts и vendor page
-ID; checked fixture фиксируется digest и полной сверкой с Syntax Assistant
-8.3.27.2074. Generic templates без именованного события и недоступный текущему
-адресному профилю `ExternalDataSource` перечислены как закрытые исключения.
+команде; применимость зависит от единого типизированного контекста Form.xml и
+metadata owner, а допустимость `callType` входит в состояние binding. Для
+каждого event leaf каталог фиксирует русское и английское имя обработчика,
+точную декларацию, method kind, effective contexts и vendor page ID.
+
+Именованный contract test фиксирует все 693 page ID, оба digest,
+402 уникальные выбранные страницы, ровно два повторных источника проекций и
+закрытые классы исключений с точными количествами. Environment-gated
+`event_catalog_oracle::checked_platform_event_catalog_matches_complete_8_3_27_vendor_oracle`
+дополнительно выводит версию из installation root через штатный discovery,
+перечисляет полный corpus и сравнивает frozen fixture с установленным Syntax
+Assistant 8.3.27.2074. Generic templates и недоступный текущему адресному
+профилю `ExternalDataSource` не превращаются в события.

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::OnceLock;
 
+use crate::domain::address::NodeKind;
 use crate::domain::module_projection::BindingFact;
 use crate::domain::platform_profile::ModuleCapability;
 
@@ -164,6 +165,14 @@ pub(crate) struct PlatformEventCatalogSource {
     pub(crate) installation_version: String,
     pub(crate) container: String,
     pub(crate) sha256: String,
+    pub(crate) english_container: String,
+    pub(crate) english_sha256: String,
+    #[serde(default)]
+    pub(crate) event_markup_page_count: usize,
+    #[serde(default)]
+    pub(crate) signature_event_leaf_count: usize,
+    #[serde(default)]
+    pub(crate) event_page_ids_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -188,6 +197,14 @@ pub(crate) struct FormPlatformEventCatalog {
     #[serde(default)]
     pub(crate) event_id_overrides: BTreeMap<String, String>,
     pub(crate) base_contexts: Vec<String>,
+    #[serde(default)]
+    pub(crate) metadata_owner_kinds: Vec<String>,
+    #[serde(default)]
+    pub(crate) main_attribute_kinds: Vec<String>,
+    #[serde(default)]
+    pub(crate) main_attribute_type_prefixes: Vec<String>,
+    #[serde(default)]
+    pub(crate) dynamic_list_source: bool,
     pub(crate) events: Vec<PlatformEventSpec>,
     pub(crate) exclusion_reason: Option<String>,
 }
@@ -207,8 +224,14 @@ pub(crate) struct PlatformEventCatalogFixture {
     pub(crate) source: PlatformEventCatalogSource,
     pub(crate) module_catalogs: Vec<ModuleEventCatalog>,
     pub(crate) form_catalogs: Vec<FormPlatformEventCatalog>,
-    pub(crate) excluded_unmatched_pages: Vec<ExcludedEventPage>,
+    #[serde(default, alias = "excludedUnmatchedPages")]
+    pub(crate) excluded_structural_pages: Vec<ExcludedEventPage>,
+    #[serde(default)]
+    pub(crate) excluded_external_data_source_pages: Vec<ExcludedEventPage>,
+    #[serde(default)]
     pub(crate) excluded_generic_template_pages: Vec<ExcludedEventPage>,
+    #[serde(default)]
+    pub(crate) excluded_out_of_profile_pages: Vec<ExcludedEventPage>,
 }
 
 pub(crate) fn platform_event_catalog_fixture() -> &'static PlatformEventCatalogFixture {
@@ -311,6 +334,16 @@ impl MainAttributeKind {
             }
         }
     }
+
+    const fn catalog_key(self) -> &'static str {
+        match self {
+            Self::PersistentObject => "PersistentObject",
+            Self::PersistentRecord => "PersistentRecord",
+            Self::DynamicList => "DynamicList",
+            Self::Other => "Other",
+            Self::Unknown => "Unknown",
+        }
+    }
 }
 
 /// Form-level information needed by context-sensitive event rules.
@@ -320,6 +353,8 @@ pub(crate) struct FormEventContext {
     pub(crate) main_attribute: MainAttributeKind,
     pub(crate) main_attribute_type: Option<String>,
     pub(crate) main_attribute_provenance: MainAttributeProvenance,
+    pub(crate) main_attribute_name: Option<String>,
+    pub(crate) metadata_owner: Option<NodeKind>,
 }
 
 impl FormEventContext {
@@ -335,21 +370,27 @@ impl FormEventContext {
         };
         let form_main_attribute = direct_main_attribute(root);
         let base_main_attribute = base_form.and_then(direct_main_attribute);
-        let (main_attribute_type, main_attribute_provenance) =
+        let (main_attribute_type, main_attribute_name, main_attribute_provenance) =
             if let Some(main_attribute) = form_main_attribute {
                 (
                     main_attribute_type(main_attribute),
+                    main_attribute.attribute("name").map(str::to_string),
                     MainAttributeProvenance::DirectForm,
                 )
             } else if let Some(main_attribute) = base_main_attribute {
                 (
                     main_attribute_type(main_attribute),
+                    main_attribute.attribute("name").map(str::to_string),
                     MainAttributeProvenance::DirectBaseForm,
                 )
             } else if definition == FormDefinitionKind::Extension {
-                (None, MainAttributeProvenance::InheritedBaseFormUnavailable)
+                (
+                    None,
+                    None,
+                    MainAttributeProvenance::InheritedBaseFormUnavailable,
+                )
             } else {
-                (None, MainAttributeProvenance::Missing)
+                (None, None, MainAttributeProvenance::Missing)
             };
         let main_attribute = main_attribute_type
             .as_deref()
@@ -361,6 +402,8 @@ impl FormEventContext {
             main_attribute,
             main_attribute_type,
             main_attribute_provenance,
+            main_attribute_name,
+            metadata_owner: None,
         }
     }
 }
@@ -606,13 +649,61 @@ impl FormEventOwnerKind {
 
 /// Form possible events use the v0.12 owner taxonomy and the checked vendor
 /// 8.3.27 catalog. The v0.12 validation matrices remain unchanged.
-pub(crate) fn form_event_catalog_8_3_27(owner: FormEventOwnerKind) -> &'static [PlatformEventSpec] {
+pub(crate) fn form_event_catalog_8_3_27(
+    context: &FormEventContext,
+    owner: FormEventOwnerKind,
+    data_path: Option<&str>,
+) -> Vec<&'static PlatformEventSpec> {
     let key = owner.catalog_key();
-    platform_event_catalog_fixture()
+    let normalized_type = context
+        .main_attribute_type
+        .as_deref()
+        .map(|value| value.strip_prefix("cfg:").unwrap_or(value));
+    let is_dynamic_list_source = owner == FormEventOwnerKind::Table
+        && context.main_attribute == MainAttributeKind::DynamicList
+        && context.main_attribute_name.as_deref().is_some_and(|name| {
+            data_path
+                .map(str::trim)
+                .map(|path| path.trim_start_matches('~'))
+                .and_then(|path| path.split('.').next())
+                .is_some_and(|root| root == name)
+        });
+    let mut selected = platform_event_catalog_fixture()
         .form_catalogs
         .iter()
-        .find(|catalog| catalog.owner_kinds.contains(&key))
-        .map_or(&[], |catalog| catalog.events.as_slice())
+        .filter(|catalog| catalog.owner_kinds.contains(&key))
+        .filter(|catalog| {
+            (catalog.metadata_owner_kinds.is_empty()
+                || context.metadata_owner.is_some_and(|owner| {
+                    catalog
+                        .metadata_owner_kinds
+                        .iter()
+                        .any(|expected| expected == owner.as_str())
+                }))
+                && (catalog.main_attribute_kinds.is_empty()
+                    || catalog
+                        .main_attribute_kinds
+                        .iter()
+                        .any(|expected| expected == context.main_attribute.catalog_key()))
+                && (catalog.main_attribute_type_prefixes.is_empty()
+                    || normalized_type.is_some_and(|actual| {
+                        catalog
+                            .main_attribute_type_prefixes
+                            .iter()
+                            .any(|prefix| actual.starts_with(prefix))
+                    }))
+                && (!catalog.dynamic_list_source || is_dynamic_list_source)
+        })
+        .flat_map(|catalog| catalog.events.iter())
+        .collect::<Vec<_>>();
+    // More specific catalogs follow base catalogs in the checked fixture.
+    // Keep the last exact event ID so owner-specific signatures replace a
+    // generic object/record signature rather than producing two Event nodes.
+    let mut by_id = BTreeMap::new();
+    for event in selected.drain(..) {
+        by_id.insert(event.event_id.as_str(), event);
+    }
+    by_id.into_values().collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -772,6 +863,23 @@ pub(crate) fn validate_event(
         .with_detail("event is not present in the target event matrix"));
     }
 
+    validate_event_call_type(context, target, binding)?;
+
+    if target == FormEventTarget::Form && OBJECT_RECORD_FORM_EVENTS.contains(&binding.name) {
+        validate_object_event_context(context, target, binding.name)?;
+    }
+
+    Ok(())
+}
+
+/// Validates the extension-only XML binding fact independently from the
+/// legacy v0.12 event-name matrix. Hidden v0.13 projection uses the vendor
+/// catalog for applicability, while sharing this exact context rule.
+pub(crate) fn validate_event_call_type(
+    context: &FormEventContext,
+    target: FormEventTarget,
+    binding: &FormEventBinding<'_>,
+) -> Result<(), FormEventDiagnostic> {
     if let Some(call_type) = binding.call_type {
         let parsed = FormCallType::from_xml(call_type).ok_or_else(|| {
             FormEventDiagnostic::new(
@@ -799,11 +907,6 @@ pub(crate) fn validate_event(
             FormDefinitionKind::Extension => {}
         }
     }
-
-    if target == FormEventTarget::Form && OBJECT_RECORD_FORM_EVENTS.contains(&binding.name) {
-        validate_object_event_context(context, target, binding.name)?;
-    }
-
     Ok(())
 }
 
@@ -907,7 +1010,7 @@ fn trimmed_text(node: Node<'_, '_>) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use roxmltree::Document;
 
@@ -925,6 +1028,8 @@ mod tests {
             main_attribute,
             main_attribute_type: None,
             main_attribute_provenance: MainAttributeProvenance::Missing,
+            main_attribute_name: None,
+            metadata_owner: None,
         }
     }
 
@@ -934,6 +1039,28 @@ mod tests {
             main_attribute,
             main_attribute_type: None,
             main_attribute_provenance: MainAttributeProvenance::InheritedBaseFormUnavailable,
+            main_attribute_name: None,
+            metadata_owner: None,
+        }
+    }
+
+    fn form_event_catalog_8_3_27(owner: FormEventOwnerKind) -> Vec<&'static PlatformEventSpec> {
+        super::form_event_catalog_8_3_27(&regular_context(MainAttributeKind::Other), owner, None)
+    }
+
+    fn projection_context(
+        definition: FormDefinitionKind,
+        main_attribute: MainAttributeKind,
+        main_attribute_type: Option<&str>,
+        metadata_owner: NodeKind,
+    ) -> FormEventContext {
+        FormEventContext {
+            definition,
+            main_attribute,
+            main_attribute_type: main_attribute_type.map(str::to_string),
+            main_attribute_provenance: MainAttributeProvenance::DirectForm,
+            main_attribute_name: Some("Object".to_string()),
+            metadata_owner: Some(metadata_owner),
         }
     }
 
@@ -1875,8 +2002,15 @@ mod tests {
                 .find(|catalog| catalog.owner_kinds.contains(&key))
                 .unwrap_or_else(|| panic!("missing checked catalog for {key}"));
             assert_eq!(
-                form_event_catalog_8_3_27(owner),
-                expected.events.as_slice(),
+                form_event_catalog_8_3_27(owner)
+                    .into_iter()
+                    .map(|event| event.event_id.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+                    .events
+                    .iter()
+                    .map(|event| event.event_id.as_str())
+                    .collect::<Vec<_>>(),
                 "{key}"
             );
             observed_keys.insert(key);
@@ -1887,6 +2021,251 @@ mod tests {
             .flat_map(|catalog| catalog.owner_kinds.iter().cloned())
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(observed_keys, expected_keys);
+    }
+
+    #[test]
+    fn form_applicability_variants_have_exact_closed_event_additions_and_counts() {
+        let base_context = projection_context(
+            FormDefinitionKind::Regular,
+            MainAttributeKind::Other,
+            None,
+            NodeKind::CommonForm,
+        );
+        let base = super::form_event_catalog_8_3_27(&base_context, FormEventOwnerKind::Form, None)
+            .into_iter()
+            .map(|event| event.event_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(base.len(), 26);
+
+        let cases = [
+            (
+                "catalog-object",
+                projection_context(
+                    FormDefinitionKind::Regular,
+                    MainAttributeKind::PersistentObject,
+                    Some("cfg:CatalogObject.Items"),
+                    NodeKind::Catalog,
+                ),
+                &[
+                    "AfterWrite",
+                    "AfterWriteAtServer",
+                    "BeforeWrite",
+                    "BeforeWriteAtServer",
+                    "OnReadAtServer",
+                    "OnWriteAtServer",
+                    "ValueChoice",
+                ][..],
+            ),
+            (
+                "document-object",
+                projection_context(
+                    FormDefinitionKind::Regular,
+                    MainAttributeKind::PersistentObject,
+                    Some("cfg:DocumentObject.Order"),
+                    NodeKind::Document,
+                ),
+                &[
+                    "AfterWrite",
+                    "AfterWriteAtServer",
+                    "BeforeWrite",
+                    "BeforeWriteAtServer",
+                    "OnReadAtServer",
+                    "OnWriteAtServer",
+                    "ValueChoice",
+                ][..],
+            ),
+            (
+                "business-process-object",
+                projection_context(
+                    FormDefinitionKind::Regular,
+                    MainAttributeKind::PersistentObject,
+                    Some("cfg:BusinessProcessObject.Route"),
+                    NodeKind::BusinessProcess,
+                ),
+                &[
+                    "AfterWrite",
+                    "AfterWriteAtServer",
+                    "BeforeStart",
+                    "BeforeWrite",
+                    "BeforeWriteAtServer",
+                    "OnReadAtServer",
+                    "OnWriteAtServer",
+                    "ValueChoice",
+                ][..],
+            ),
+            (
+                "task-object",
+                projection_context(
+                    FormDefinitionKind::Regular,
+                    MainAttributeKind::PersistentObject,
+                    Some("cfg:TaskObject.Task"),
+                    NodeKind::Task,
+                ),
+                &[
+                    "AfterWrite",
+                    "AfterWriteAtServer",
+                    "BeforeExecute",
+                    "BeforeWrite",
+                    "BeforeWriteAtServer",
+                    "OnReadAtServer",
+                    "OnWriteAtServer",
+                    "ValueChoice",
+                ][..],
+            ),
+            (
+                "characteristic-object",
+                projection_context(
+                    FormDefinitionKind::Regular,
+                    MainAttributeKind::PersistentObject,
+                    Some("cfg:ChartOfCharacteristicTypesObject.Kinds"),
+                    NodeKind::ChartOfCharacteristicTypes,
+                ),
+                &[
+                    "AfterWrite",
+                    "AfterWriteAtServer",
+                    "BeforeWrite",
+                    "BeforeWriteAtServer",
+                    "OnReadAtServer",
+                    "OnWriteAtServer",
+                    "ValueChoice",
+                ][..],
+            ),
+            (
+                "constant-set",
+                projection_context(
+                    FormDefinitionKind::Regular,
+                    MainAttributeKind::PersistentObject,
+                    Some("cfg:ConstantsSet"),
+                    NodeKind::Constant,
+                ),
+                &[
+                    "AfterWrite",
+                    "AfterWriteAtServer",
+                    "BeforeWrite",
+                    "BeforeWriteAtServer",
+                    "OnReadAtServer",
+                    "OnWriteAtServer",
+                ][..],
+            ),
+            (
+                "information-register-record",
+                projection_context(
+                    FormDefinitionKind::Regular,
+                    MainAttributeKind::PersistentRecord,
+                    Some("cfg:InformationRegisterRecordManager.Prices"),
+                    NodeKind::InformationRegister,
+                ),
+                &[
+                    "AfterWrite",
+                    "AfterWriteAtServer",
+                    "BeforeWrite",
+                    "BeforeWriteAtServer",
+                    "OnReadAtServer",
+                    "OnWriteAtServer",
+                ][..],
+            ),
+            (
+                "record-set",
+                projection_context(
+                    FormDefinitionKind::Regular,
+                    MainAttributeKind::PersistentRecord,
+                    Some("cfg:AccumulationRegisterRecordSet.Stock"),
+                    NodeKind::AccumulationRegister,
+                ),
+                &[
+                    "AfterWrite",
+                    "AfterWriteAtServer",
+                    "BeforeWrite",
+                    "BeforeWriteAtServer",
+                    "OnReadAtServer",
+                    "OnWriteAtServer",
+                ][..],
+            ),
+            (
+                "report",
+                projection_context(
+                    FormDefinitionKind::Regular,
+                    MainAttributeKind::Other,
+                    Some("cfg:ReportObject.Sales"),
+                    NodeKind::Report,
+                ),
+                &[
+                    "BeforeLoadUserSettingsAtServer",
+                    "BeforeLoadVariantAtServer",
+                    "OnLoadUserSettingsAtServer",
+                    "OnLoadVariantAtServer",
+                    "OnSaveUserSettingsAtServer",
+                    "OnSaveVariantAtServer",
+                    "OnUpdateUserSettingSetAtServer",
+                ][..],
+            ),
+        ];
+        for (case, context, expected_additions) in cases {
+            let actual = super::form_event_catalog_8_3_27(&context, FormEventOwnerKind::Form, None)
+                .into_iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let additions = actual.difference(&base).copied().collect::<Vec<_>>();
+            assert_eq!(additions, expected_additions, "{case}");
+            assert_eq!(
+                actual.len(),
+                base.len() + expected_additions.len(),
+                "{case}"
+            );
+        }
+
+        let extension_document = projection_context(
+            FormDefinitionKind::Extension,
+            MainAttributeKind::PersistentObject,
+            Some("cfg:DocumentObject.Order"),
+            NodeKind::Document,
+        );
+        let extension_ids =
+            super::form_event_catalog_8_3_27(&extension_document, FormEventOwnerKind::Form, None)
+                .into_iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(extension_ids.len(), 33);
+
+        let mut dynamic = projection_context(
+            FormDefinitionKind::Regular,
+            MainAttributeKind::DynamicList,
+            Some("cfg:DynamicList"),
+            NodeKind::Catalog,
+        );
+        dynamic.main_attribute_name = Some("List".to_string());
+        let ordinary_table = super::form_event_catalog_8_3_27(
+            &dynamic,
+            FormEventOwnerKind::Table,
+            Some("OtherRows"),
+        );
+        let dynamic_table =
+            super::form_event_catalog_8_3_27(&dynamic, FormEventOwnerKind::Table, Some("List"));
+        let inherited_dynamic_table =
+            super::form_event_catalog_8_3_27(&dynamic, FormEventOwnerKind::Table, Some("~List"));
+        assert_eq!(ordinary_table.len(), 23);
+        assert_eq!(dynamic_table.len(), 30);
+        assert_eq!(inherited_dynamic_table.len(), 30);
+        let ordinary_ids = ordinary_table
+            .into_iter()
+            .map(|event| event.event_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            dynamic_table
+                .into_iter()
+                .map(|event| event.event_id.as_str())
+                .filter(|event| !ordinary_ids.contains(event))
+                .collect::<Vec<_>>(),
+            [
+                "BeforeLoadUserSettingsAtServer",
+                "OnGetDataAtServer",
+                "OnLoadUserSettingsAtServer",
+                "OnSaveUserSettingsAtServer",
+                "OnUpdateUserSettingSetAtServer",
+                "URLGetProcessing",
+                "URLListGetProcessing",
+            ]
+        );
     }
 
     #[test]
@@ -2007,13 +2386,13 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             digest,
-            "c2717fe00d21b836ef9835aa5be357fa1a35deebec652dd1c9171affaa339cf1"
+            "4f3b22f55276e7146f77db717e56684f950df11cadccbce2df66da39aa33bf74"
         );
         let fixture = platform_event_catalog_fixture();
         assert_eq!(fixture.profile, "8.3.27");
         assert_eq!(fixture.source.installation_version, "8.3.27.2074");
         assert_eq!(fixture.module_catalogs.len(), 48);
-        assert_eq!(fixture.form_catalogs.len(), 20);
+        assert_eq!(fixture.form_catalogs.len(), 31);
         assert_eq!(
             fixture
                 .module_catalogs
@@ -2028,20 +2407,154 @@ mod tests {
                 .iter()
                 .map(|catalog| catalog.events.len())
                 .sum::<usize>(),
-            121
+            199
         );
-        assert_eq!(fixture.excluded_unmatched_pages.len(), 17);
+        assert_eq!(fixture.excluded_structural_pages.len(), 4);
+        assert_eq!(fixture.excluded_external_data_source_pages.len(), 13);
         assert_eq!(fixture.excluded_generic_template_pages.len(), 5);
+        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 269);
+        assert_eq!(fixture.source.english_container, "shcntx_root.hbk");
+        assert_eq!(
+            fixture.source.english_sha256,
+            "0113af559ef2001dedbbd9e6bbfcf8bc02e3241ca715f95c8a34c4f24c962421"
+        );
     }
 
     #[test]
-    fn platform_8_3_27_module_event_catalog_is_role_specific() {
+    fn checked_event_fixture_is_non_skipping_closed_partition_evidence() {
+        let fixture = platform_event_catalog_fixture();
+        let mut memberships = std::collections::BTreeMap::<&str, Vec<&str>>::new();
+        let mut selected_records = std::collections::BTreeMap::<&str, usize>::new();
+        for event in fixture
+            .module_catalogs
+            .iter()
+            .flat_map(|catalog| catalog.events.iter())
+            .chain(
+                fixture
+                    .form_catalogs
+                    .iter()
+                    .flat_map(|catalog| catalog.events.iter()),
+            )
+        {
+            *selected_records
+                .entry(event.source_page_id.as_str())
+                .or_default() += 1;
+            memberships
+                .entry(event.source_page_id.as_str())
+                .or_default()
+                .push("selected");
+        }
+        for (category, pages) in [
+            ("structural", fixture.excluded_structural_pages.as_slice()),
+            (
+                "externalDataSourceDeferred",
+                fixture.excluded_external_data_source_pages.as_slice(),
+            ),
+            (
+                "genericTemplate",
+                fixture.excluded_generic_template_pages.as_slice(),
+            ),
+            (
+                "reviewedOutOfProfile",
+                fixture.excluded_out_of_profile_pages.as_slice(),
+            ),
+        ] {
+            for page in pages {
+                memberships
+                    .entry(page.page_id.as_str())
+                    .or_default()
+                    .push(category);
+            }
+        }
+        let duplicate_categories = memberships
+            .iter()
+            .filter(|(_, categories)| {
+                categories
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != 1
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            duplicate_categories.is_empty(),
+            "page IDs must belong to exactly one partition category: {duplicate_categories:#?}"
+        );
+        assert_eq!(memberships.len(), fixture.source.event_markup_page_count);
+        assert_eq!(fixture.source.event_markup_page_count, 693);
+        assert_eq!(fixture.source.signature_event_leaf_count, 689);
+        assert_eq!(fixture.excluded_structural_pages.len(), 4);
+        assert_eq!(fixture.excluded_external_data_source_pages.len(), 13);
+        assert_eq!(fixture.excluded_generic_template_pages.len(), 5);
+        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 269);
+        assert_eq!(
+            fixture.source.event_page_ids_sha256,
+            "19ad908ce8af0ba191dc642545d70ec163d402f129c34cd9f3c2d68318a09a31"
+        );
+        assert_eq!(selected_records.len(), 402, "unique selected vendor pages");
+        assert_eq!(
+            selected_records.values().sum::<usize>(),
+            404,
+            "selected projection records"
+        );
+        let repeated = selected_records
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            repeated,
+            std::collections::BTreeMap::from([
+                (
+                    "platform-syntax-help:syntax-context:objects/catalog1649/Command module/events/CommandProcessing563.html",
+                    2,
+                ),
+                (
+                    "platform-syntax-help:syntax-context:objects/catalog1649/catalog1676/FormField/events/OnChange326.html",
+                    2,
+                ),
+            ])
+        );
+        let approved_reasons = [
+            "out-of-profile/ordinary-form: ordinary-form runtime owners are outside the approved managed-form projection",
+            "out-of-profile/managed-form-element: the element kind is absent from the approved v0.13 form owner taxonomy",
+            "out-of-profile/external-data-source-module: ExternalDataSource has no approved v0.13 address/profile owner",
+            "out-of-profile/non-module-owner: the platform event owner is not an approved module or managed-form owner",
+            "out-of-profile/settings-composer: no approved source-derived form applicability fact identifies this owner",
+        ];
+        assert!(fixture
+            .excluded_out_of_profile_pages
+            .iter()
+            .all(|page| approved_reasons.contains(&page.reason.as_str())));
+        let reason_counts = fixture.excluded_out_of_profile_pages.iter().fold(
+            std::collections::BTreeMap::<&str, usize>::new(),
+            |mut counts, page| {
+                *counts.entry(page.reason.as_str()).or_default() += 1;
+                counts
+            },
+        );
+        assert_eq!(
+            reason_counts,
+            std::collections::BTreeMap::from([
+                (approved_reasons[0], 189),
+                (approved_reasons[1], 40),
+                (approved_reasons[2], 19),
+                (approved_reasons[3], 20),
+                (approved_reasons[4], 1),
+            ])
+        );
+    }
+
+    #[test]
+    pub(crate) fn platform_8_3_27_module_event_catalog_is_role_specific() {
         module_event_applicability_covers_every_approved_role_family();
         module_catalog_covers_the_task12_direct_owner_role_matrix_exactly();
         form_event_applicability_preserves_every_logical_owner_family();
+        form_applicability_variants_have_exact_closed_event_additions_and_counts();
         event_catalog_entries_have_exact_bilingual_shape_context_and_provenance();
         every_catalog_has_unique_semantic_event_ids_not_generic_storage_names();
         form_catalog_execution_contexts_distinguish_client_and_server_callbacks();
         checked_event_catalog_is_a_closed_immutable_8_3_27_set();
+        checked_event_fixture_is_non_skipping_closed_partition_evidence();
     }
 }
