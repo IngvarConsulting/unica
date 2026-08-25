@@ -825,6 +825,284 @@ fn form_table_column_event_consumes_arbitrary_depth_and_preserves_owner_address(
 }
 
 #[test]
+fn pure_event_source_resolver_returns_relative_platform_and_nested_form_identities() {
+    use crate::infrastructure::logical_event_source::{
+        resolve_event_source, LogicalEventSource, PropertyEventOwnerKind,
+    };
+
+    let platform = resolve_event_source(
+        "main",
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+        &QualifiedAddress::parse("main:Document.Заказ.Module.Object.Event.BeforeWrite").unwrap(),
+    )
+    .unwrap();
+    let LogicalEventSource::Platform(platform) = platform else {
+        panic!("platform event must resolve to a platform module")
+    };
+    assert_eq!(
+        platform.module_at.to_string(),
+        "main:Document.Заказ.Module.Object"
+    );
+    assert_eq!(
+        platform.module_target.as_str(),
+        "Document.Заказ.ObjectModule"
+    );
+    assert_eq!(
+        platform.module_relative,
+        PathBuf::from("Documents/Заказ/Ext/ObjectModule.bsl")
+    );
+    assert_eq!(
+        platform.descriptor_requirements,
+        vec![PathBuf::from("Documents/Заказ.xml")]
+    );
+
+    let property = resolve_event_source(
+        "main",
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+        &QualifiedAddress::parse(
+            "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let LogicalEventSource::Property(property) = property else {
+        panic!("form event must resolve to property evidence")
+    };
+    assert_eq!(
+        property.form_xml_relative,
+        PathBuf::from("Reports/ParityReport/Forms/MainForm/Ext/Form.xml")
+    );
+    assert_eq!(
+        property.module_relative,
+        PathBuf::from("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl")
+    );
+    assert_eq!(
+        property
+            .owner_chain
+            .iter()
+            .map(|owner| owner.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            PropertyEventOwnerKind::Form,
+            PropertyEventOwnerKind::Table,
+            PropertyEventOwnerKind::Column,
+        ]
+    );
+    assert_eq!(
+        property.descriptor_requirements,
+        vec![
+            PathBuf::from("Reports/ParityReport.xml"),
+            PathBuf::from("Reports/ParityReport/Forms/MainForm.xml"),
+        ]
+    );
+
+    let external = resolve_event_source(
+        "epf",
+        SourceSetKind::ExternalProcessor,
+        PlatformProfile::v8_3_27(),
+        &QualifiedAddress::parse(
+            "epf:ExternalDataProcessor.Import.Module.Object.Event.BeforeWrite",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let LogicalEventSource::Platform(external) = external else {
+        panic!("external object event must resolve to its object module")
+    };
+    assert_eq!(
+        external.module_relative,
+        PathBuf::from("Import/Ext/ObjectModule.bsl")
+    );
+    assert_eq!(
+        external.descriptor_requirements,
+        vec![PathBuf::from("Import.xml")]
+    );
+}
+
+#[test]
+fn pure_event_source_resolver_fails_closed_for_unproved_event_layouts() {
+    use crate::infrastructure::logical_event_source::resolve_event_source;
+
+    for (kind, raw) in [
+        (
+            SourceSetKind::Extension,
+            "main:Document.Заказ.Module.Object.Event.BeforeWrite",
+        ),
+        (
+            SourceSetKind::Configuration,
+            "main:WebSocketClient.Телефония.Module.WebSocketClient.Event.OnMessage",
+        ),
+        (
+            SourceSetKind::Configuration,
+            "main:CommonModule.ЗаказыСервер.Event.BeforeStart",
+        ),
+        (
+            SourceSetKind::Configuration,
+            "main:EventSubscription.Изменение.Event.Change",
+        ),
+        (
+            SourceSetKind::Configuration,
+            "main:Report.ParityReport.Form.MainForm.Item.Rows.Event.Selection",
+        ),
+    ] {
+        let error = resolve_event_source(
+            "main",
+            kind,
+            PlatformProfile::v8_3_27(),
+            &QualifiedAddress::parse(raw).unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "provider_unavailable", "{raw}: {error}");
+    }
+}
+
+#[test]
+fn pure_event_projectors_match_physical_view_service_event_nodes() {
+    use crate::infrastructure::event_projection::{project_platform_event, project_property_event};
+    use crate::infrastructure::logical_event_source::{resolve_event_source, LogicalEventSource};
+    use crate::infrastructure::v13_read::event_node_value;
+
+    let profile = PlatformProfile::v8_3_27();
+    let platform_at =
+        QualifiedAddress::parse("main:Document.Заказ.Module.Object.Event.BeforeWrite").unwrap();
+    for source in [
+        None,
+        Some("Процедура ПередЗаписью(Отказ, РежимЗаписи, РежимПроведения)\nКонецПроцедуры"),
+        Some("Функция ПередЗаписью(Отказ, РежимЗаписи, РежимПроведения)\nКонецФункции"),
+    ] {
+        let fixture = RealReaderFixture::new();
+        fixture.install_accepted_profile_sources();
+        if let Some(source) = source {
+            write(
+                &fixture.source.join("Documents/Заказ/Ext/ObjectModule.bsl"),
+                source,
+            );
+        }
+        let LogicalEventSource::Platform(resolved) =
+            resolve_event_source("main", SourceSetKind::Configuration, profile, &platform_at)
+                .unwrap()
+        else {
+            panic!("platform event must resolve to a module source")
+        };
+        let capability = profile.module_prefix_capability(&platform_at).unwrap();
+        let pure = project_platform_event(&resolved, capability, source).unwrap();
+        let physical = fixture
+            .view_service()
+            .view(ViewRequest::new(&platform_at.to_string()).unwrap());
+        assert!(
+            physical.ok,
+            "{} {:?}",
+            physical.summary, physical.diagnostics
+        );
+        assert_eq!(physical.data.unwrap(), event_node_value(&pure));
+    }
+
+    let fixture = RealReaderFixture::new();
+    let property_at = QualifiedAddress::parse(
+        "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
+    )
+    .unwrap();
+    let LogicalEventSource::Property(resolved) =
+        resolve_event_source("main", SourceSetKind::Configuration, profile, &property_at).unwrap()
+    else {
+        panic!("property event must resolve to form sources")
+    };
+    let form_xml = fs::read_to_string(fixture.source.join(&resolved.form_xml_relative)).unwrap();
+    let module_bsl = fs::read_to_string(fixture.source.join(&resolved.module_relative)).unwrap();
+    let pure = project_property_event(&resolved, &form_xml, Some(&module_bsl)).unwrap();
+    let physical = fixture
+        .view_service()
+        .view(ViewRequest::new(&property_at.to_string()).unwrap());
+    assert!(
+        physical.ok,
+        "{} {:?}",
+        physical.summary, physical.diagnostics
+    );
+    assert_eq!(physical.data.unwrap(), event_node_value(&pure));
+}
+
+#[test]
+fn pure_form_projector_matches_every_physical_owner_and_all_event_states() {
+    use crate::infrastructure::event_projection::{
+        project_property_event, resolve_property_event_source,
+    };
+    use crate::infrastructure::v13_read::event_node_value;
+
+    let fixture = RealReaderFixture::new();
+    fixture.install_main_form_sources(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+  <ChildItems>
+    <InputField name="Field"/>
+    <Table name="Rows"><DataPath>Rows</DataPath>
+      <Events><Event name="Selection">MissingSelection</Event></Events>
+      <ChildItems><InputField name="Column"><Events><Event name="OnChange">WrongColumn</Event></Events></InputField></ChildItems>
+    </Table>
+  </ChildItems>
+  <Events><Event name="OnOpen">FormOpen</Event></Events>
+  <Commands><Command name="Run" id="1"><Action>RunAction</Action></Command></Commands>
+</Form>"#,
+        concat!(
+            "&AtClient\nProcedure FormOpen(Cancel)\nEndProcedure\n\n",
+            "Procedure WrongColumn()\nEndProcedure\n\n",
+            "&AtClient\nProcedure RunAction(Command)\nEndProcedure\n",
+        ),
+    );
+    let form_path = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml");
+    let module_path = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let form_xml = fs::read_to_string(form_path).unwrap();
+    let module_bsl = fs::read_to_string(module_path).unwrap();
+    let service = fixture.view_service();
+    for (event_at, state) in [
+        (
+            "main:Report.ParityReport.Form.MainForm.Event.OnOpen",
+            "implemented",
+        ),
+        (
+            "main:Report.ParityReport.Form.MainForm.Item.Field.Event.OnChange",
+            "available",
+        ),
+        (
+            "main:Report.ParityReport.Form.MainForm.Item.Rows.Event.Selection",
+            "missing",
+        ),
+        (
+            "main:Report.ParityReport.Form.MainForm.Item.Rows.Item.Column.Event.OnChange",
+            "invalid",
+        ),
+        (
+            "main:Report.ParityReport.Form.MainForm.Command.Run.Event.Execute",
+            "implemented",
+        ),
+    ] {
+        let at = QualifiedAddress::parse(event_at).unwrap();
+        let source = resolve_property_event_source(
+            "main",
+            SourceSetKind::Configuration,
+            PlatformProfile::v8_3_27(),
+            &at,
+            &form_xml,
+        )
+        .unwrap();
+        let pure = project_property_event(&source, &form_xml, Some(&module_bsl)).unwrap();
+        let physical = service.view(ViewRequest::new(event_at).unwrap());
+        assert!(
+            physical.ok,
+            "{} {:?}",
+            physical.summary, physical.diagnostics
+        );
+        assert_eq!(physical.data.as_ref().unwrap()["props"]["state"], state);
+        assert_eq!(physical.data.unwrap(), event_node_value(&pure));
+    }
+}
+
+#[test]
 fn production_form_command_execute_has_one_semantic_identity_across_view_and_find() {
     let fixture = RealReaderFixture::new();
     fixture.install_main_form_sources(

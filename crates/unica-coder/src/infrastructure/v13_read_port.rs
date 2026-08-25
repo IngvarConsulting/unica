@@ -12,7 +12,11 @@ use crate::domain::support_state::{
     ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
     SupportCounts,
 };
-use crate::infrastructure::metadata_kinds::metadata_kind;
+use crate::infrastructure::logical_event_source::{
+    attached_resource_relative as shared_attached_resource_relative,
+    metadata_descriptor_relative as shared_metadata_descriptor_relative,
+    module_relative as shared_module_relative,
+};
 use crate::infrastructure::native_operations::cf::{
     cf_home_page_item_data, parse_cf_home_page_xml_strict, parse_cf_info_xml, CfHomePageData,
 };
@@ -36,7 +40,6 @@ use crate::infrastructure::platform_xml_owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
     PlatformXmlSourceSetOwnerEvidence,
 };
-use crate::infrastructure::platform_xml_source_targets::platform_xml_module_relative;
 use crate::infrastructure::source_revision::{RetainedRevisionLease, SourceRevisionService};
 use serde_json::{json, Value};
 #[cfg(test)]
@@ -772,10 +775,8 @@ impl ProviderReadAuthority {
     }
 
     fn metadata_descriptor_relative(&self, target: &MetadataAddress) -> Result<PathBuf, ViewError> {
-        if self.is_external_source_set() {
-            return external_metadata_descriptor_relative(target, self.source_set_kind);
-        }
-        metadata_descriptor_relative(target)
+        shared_metadata_descriptor_relative(target, self.source_set_kind)
+            .map_err(|error| ViewError::new("provider_unavailable", error))
     }
 
     fn attached_resource_relative(
@@ -783,17 +784,12 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
         resource: &str,
     ) -> Result<PathBuf, ViewError> {
-        if self.is_external_source_set() {
-            return external_attached_resource_relative(target, resource, self.source_set_kind);
-        }
-        attached_resource_relative(target, resource)
+        shared_attached_resource_relative(target, resource, self.source_set_kind)
+            .map_err(|error| ViewError::new("provider_unavailable", error))
     }
 
     fn module_relative(&self, target: &MetadataAddress) -> Result<PathBuf, ViewError> {
-        if self.is_external_source_set() {
-            return external_module_relative(target, self.source_set_kind);
-        }
-        platform_xml_module_relative(target)
+        shared_module_relative(target, self.source_set_kind)
             .map_err(|error| ViewError::new("provider_unavailable", error))
     }
 
@@ -802,129 +798,6 @@ impl ProviderReadAuthority {
             self.source_set_kind,
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
         )
-    }
-}
-
-fn external_owner_parts(
-    target: &MetadataAddress,
-    source_set_kind: SourceSetKind,
-) -> Result<(&str, &str, Vec<&str>), ViewError> {
-    let parts = target.as_str().split('.').collect::<Vec<_>>();
-    let [kind, name, rest @ ..] = parts.as_slice() else {
-        return Err(ViewError::new(
-            "provider_unavailable",
-            "external target has no canonical owner identity",
-        ));
-    };
-    let expected = match source_set_kind {
-        SourceSetKind::ExternalProcessor => "ExternalDataProcessor",
-        SourceSetKind::ExternalReport => "ExternalReport",
-        SourceSetKind::Configuration | SourceSetKind::Extension => {
-            return Err(ViewError::new(
-                "provider_unavailable",
-                "external path requested for configuration source set",
-            ));
-        }
-    };
-    if *kind != expected {
-        return Err(ViewError::new(
-            "not_found",
-            format!("external source set has no `{kind}` owner family"),
-        ));
-    }
-    Ok((kind, name, rest.to_vec()))
-}
-
-fn external_metadata_descriptor_relative(
-    target: &MetadataAddress,
-    source_set_kind: SourceSetKind,
-) -> Result<PathBuf, ViewError> {
-    let (_, owner_name, rest) = external_owner_parts(target, source_set_kind)?;
-    match rest.as_slice() {
-        [] => Ok(PathBuf::from(format!("{owner_name}.xml"))),
-        [nested_kind, nested_name] => {
-            let directory = match *nested_kind {
-                "Form" => "Forms",
-                "Template" => "Templates",
-                "Command" => "Commands",
-                _ => {
-                    return Err(ViewError::new(
-                        "provider_unavailable",
-                        format!("unsupported external nested descriptor kind `{nested_kind}`"),
-                    ));
-                }
-            };
-            Ok(PathBuf::from(owner_name)
-                .join(directory)
-                .join(format!("{nested_name}.xml")))
-        }
-        _ => Err(ViewError::new(
-            "provider_unavailable",
-            "external descriptor target has unsupported depth",
-        )),
-    }
-}
-
-fn external_attached_resource_relative(
-    target: &MetadataAddress,
-    resource: &str,
-    source_set_kind: SourceSetKind,
-) -> Result<PathBuf, ViewError> {
-    let (_, owner_name, rest) = external_owner_parts(target, source_set_kind)?;
-    let [nested_kind, nested_name] = rest.as_slice() else {
-        return Err(ViewError::new(
-            "provider_unavailable",
-            "external attached resource requires a nested owner",
-        ));
-    };
-    let directory = match *nested_kind {
-        "Form" => "Forms",
-        "Template" => "Templates",
-        "Command" => "Commands",
-        _ => {
-            return Err(ViewError::new(
-                "provider_unavailable",
-                format!("unsupported external attached resource owner `{nested_kind}`"),
-            ));
-        }
-    };
-    Ok(PathBuf::from(owner_name)
-        .join(directory)
-        .join(nested_name)
-        .join("Ext")
-        .join(resource))
-}
-
-fn external_module_relative(
-    target: &MetadataAddress,
-    source_set_kind: SourceSetKind,
-) -> Result<PathBuf, ViewError> {
-    let (_, owner_name, rest) = external_owner_parts(target, source_set_kind)?;
-    match rest.as_slice() {
-        [terminal] if *terminal == "ObjectModule" => Ok(PathBuf::from(owner_name)
-            .join("Ext")
-            .join("ObjectModule.bsl")),
-        [nested_kind, nested_name, terminal] => {
-            let (directory, file) = match (*nested_kind, *terminal) {
-                ("Form", "FormModule") => ("Forms", PathBuf::from("Form/Module.bsl")),
-                ("Command", "CommandModule") => ("Commands", PathBuf::from("CommandModule.bsl")),
-                _ => {
-                    return Err(ViewError::new(
-                        "provider_unavailable",
-                        "external nested module target has unsupported layout",
-                    ));
-                }
-            };
-            Ok(PathBuf::from(owner_name)
-                .join(directory)
-                .join(nested_name)
-                .join("Ext")
-                .join(file))
-        }
-        _ => Err(ViewError::new(
-            "provider_unavailable",
-            "external module target has unsupported layout",
-        )),
     }
 }
 
@@ -1009,101 +882,4 @@ fn metadata_support_status(support: ObjectSupportData) -> MetaSupportStatus {
             MetaSupportStatus::Supported
         }
     }
-}
-
-fn attached_resource_relative(
-    target: &MetadataAddress,
-    resource: &str,
-) -> Result<PathBuf, ViewError> {
-    let parts = target.as_str().split('.').collect::<Vec<_>>();
-    let [owner_kind, owner_name, rest @ ..] = parts.as_slice() else {
-        return Err(ViewError::new(
-            "provider_unavailable",
-            "typed reader target has no owner identity",
-        ));
-    };
-    let owner = metadata_kind(owner_kind).ok_or_else(|| {
-        ViewError::new(
-            "provider_unavailable",
-            format!("typed reader owner kind `{owner_kind}` has no platform layout"),
-        )
-    })?;
-    let mut relative = PathBuf::from(owner.directory);
-    relative.push(owner_name);
-    match rest {
-        [] if (*owner_kind == "CommonForm" && resource == "Form.xml")
-            || (*owner_kind == "Role" && resource == "Rights.xml")
-            || (*owner_kind == "Subsystem" && resource == "CommandInterface.xml")
-            || (*owner_kind == "XDTOPackage" && resource == "Package.bin") =>
-        {
-            relative.push("Ext");
-            relative.push(resource);
-        }
-        [nested_kind, nested_name] => {
-            let directory = match *nested_kind {
-                "Form" => "Forms",
-                "Template" => "Templates",
-                "Command" => "Commands",
-                _ => {
-                    return Err(ViewError::new(
-                        "provider_unavailable",
-                        format!("unsupported attached resource owner `{nested_kind}`"),
-                    ));
-                }
-            };
-            relative.push(directory);
-            relative.push(nested_name);
-            relative.push("Ext");
-            relative.push(resource);
-        }
-        _ => {
-            return Err(ViewError::new(
-                "provider_unavailable",
-                "typed reader target has an unsupported attached-resource depth",
-            ));
-        }
-    }
-    Ok(relative)
-}
-
-fn metadata_descriptor_relative(target: &MetadataAddress) -> Result<PathBuf, ViewError> {
-    let parts = target.as_str().split('.').collect::<Vec<_>>();
-    let [owner_kind, owner_name, rest @ ..] = parts.as_slice() else {
-        return Err(ViewError::new(
-            "provider_unavailable",
-            "metadata descriptor target has no owner identity",
-        ));
-    };
-    let owner = metadata_kind(owner_kind).ok_or_else(|| {
-        ViewError::new(
-            "provider_unavailable",
-            format!("metadata kind `{owner_kind}` has no platform layout"),
-        )
-    })?;
-    let mut relative = PathBuf::from(owner.directory);
-    match rest {
-        [] => relative.push(format!("{owner_name}.xml")),
-        [nested_kind, nested_name] => {
-            relative.push(owner_name);
-            relative.push(match *nested_kind {
-                "Form" => "Forms",
-                "Template" => "Templates",
-                "Command" => "Commands",
-                _ => {
-                    return Err(ViewError::new(
-                        "provider_unavailable",
-                        format!("unsupported nested descriptor kind `{nested_kind}`"),
-                    ));
-                }
-            });
-            relative.push(format!("{nested_name}.xml"));
-        }
-        _ => {
-            return Err(ViewError::new(
-                "provider_unavailable",
-                "metadata descriptor target has unsupported depth",
-            ));
-        }
-    }
-    Ok(relative)
 }

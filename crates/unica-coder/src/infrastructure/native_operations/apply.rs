@@ -13,6 +13,54 @@ use std::sync::Arc;
 
 const MAX_APPLY_FILE_BYTES: usize = 32 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApplyStagingErrorKind {
+    Cancelled,
+    Deadline,
+    ContainmentIdentity,
+    AbsentChainOccupied,
+    UnsupportedProvider,
+    Invariant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApplyStagingError {
+    kind: ApplyStagingErrorKind,
+    message: String,
+}
+
+impl ApplyStagingError {
+    fn new(kind: ApplyStagingErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> ApplyStagingErrorKind {
+        self.kind
+    }
+
+    #[cfg(test)]
+    fn contains(&self, pattern: &str) -> bool {
+        self.message.contains(pattern)
+    }
+}
+
+impl std::fmt::Display for ApplyStagingError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for ApplyStagingError {}
+
+impl From<String> for ApplyStagingError {
+    fn from(message: String) -> Self {
+        Self::new(ApplyStagingErrorKind::Invariant, message)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StagedFileState {
     Bytes(Vec<u8>),
@@ -46,7 +94,8 @@ pub(crate) struct StagedApplyChange {
 #[derive(Debug)]
 struct StagedEntry {
     relative_path: PathBuf,
-    parent: RetainedDirectoryCapability,
+    ancestor: RetainedDirectoryCapability,
+    missing_parent_chain: Vec<OsString>,
     name: OsString,
     target_identity: StagedTargetIdentity,
     original: StagedFileState,
@@ -59,8 +108,8 @@ struct StagedEntry {
 enum StagedTargetIdentity {
     Existing(FileIdentity),
     Absent {
-        parent: FileIdentity,
-        name: OsString,
+        ancestor: FileIdentity,
+        suffix: Vec<OsString>,
     },
 }
 
@@ -93,7 +142,7 @@ impl ApplyStagedState {
         }
     }
 
-    pub(crate) fn read(&mut self, relative: &Path) -> Result<Option<Vec<u8>>, String> {
+    pub(crate) fn read(&mut self, relative: &Path) -> Result<Option<Vec<u8>>, ApplyStagingError> {
         let relative = strict_relative(relative)?;
         let index = self.ensure_loaded(&relative)?;
         Ok(self.entries[index].current.as_option())
@@ -103,14 +152,17 @@ impl ApplyStagedState {
         &mut self,
         relative: impl AsRef<Path>,
         bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApplyStagingError> {
         let relative = strict_relative(relative.as_ref())?;
         let index = self.ensure_loaded(&relative)?;
         let entry = &mut self.entries[index];
         if entry.current != StagedFileState::Absent {
-            return Err(format!(
-                "staged create target already exists: {}",
-                relative.display()
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Invariant,
+                format!(
+                    "staged create target already exists: {}",
+                    relative.display()
+                ),
             ));
         }
         entry.current = StagedFileState::Bytes(bytes);
@@ -122,14 +174,14 @@ impl ApplyStagedState {
         relative: impl AsRef<Path>,
         expected_current: impl AsRef<[u8]>,
         bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApplyStagingError> {
         let relative = strict_relative(relative.as_ref())?;
         let index = self.ensure_loaded(&relative)?;
         let entry = &mut self.entries[index];
         if entry.current != StagedFileState::Bytes(expected_current.as_ref().to_vec()) {
-            return Err(format!(
-                "staged replace preimage changed: {}",
-                relative.display()
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Invariant,
+                format!("staged replace preimage changed: {}", relative.display()),
             ));
         }
         entry.current = StagedFileState::Bytes(bytes);
@@ -140,14 +192,14 @@ impl ApplyStagedState {
         &mut self,
         relative: impl AsRef<Path>,
         expected_current: impl AsRef<[u8]>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApplyStagingError> {
         let relative = strict_relative(relative.as_ref())?;
         let index = self.ensure_loaded(&relative)?;
         let entry = &mut self.entries[index];
         if entry.current != StagedFileState::Bytes(expected_current.as_ref().to_vec()) {
-            return Err(format!(
-                "staged remove preimage changed: {}",
-                relative.display()
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Invariant,
+                format!("staged remove preimage changed: {}", relative.display()),
             ));
         }
         entry.current = StagedFileState::Absent;
@@ -181,30 +233,37 @@ impl ApplyStagedState {
         changes
     }
 
-    pub(crate) fn finalize(self) -> Result<CompileTransaction, String> {
+    pub(crate) fn finalize(self) -> Result<CompileTransaction, ApplyStagingError> {
         self.checkpoint("apply finalization")?;
         let mut transaction = CompileTransaction::new();
-        transaction.bind_retained_apply_authority(&self.writer_authority)?;
+        transaction
+            .bind_retained_apply_authority(&self.writer_authority)
+            .map_err(|error| ApplyStagingError::new(ApplyStagingErrorKind::Invariant, error))?;
         let mut entries = self.entries;
         entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         for entry in entries {
             if entry.original == entry.current {
                 continue;
             }
-            transaction.bind_retained_apply_change(
-                RetainedApplyChangeBinding {
-                    root: Arc::clone(&self.root),
-                    relative_path: entry.relative_path,
-                    parent: entry.parent,
-                    name: entry.name,
-                    original: entry.original.as_option(),
-                    current: entry.current.as_option(),
-                    original_file: entry.original_file,
-                },
-                &self.writer_authority,
-            )?;
+            transaction
+                .bind_retained_apply_change(
+                    RetainedApplyChangeBinding {
+                        root: Arc::clone(&self.root),
+                        relative_path: entry.relative_path,
+                        ancestor: entry.ancestor,
+                        missing_parent_chain: entry.missing_parent_chain,
+                        name: entry.name,
+                        original: entry.original.as_option(),
+                        current: entry.current.as_option(),
+                        original_file: entry.original_file,
+                    },
+                    &self.writer_authority,
+                )
+                .map_err(|error| ApplyStagingError::new(ApplyStagingErrorKind::Invariant, error))?;
         }
-        transaction.validate_retained_for_apply()?;
+        transaction.validate_retained_for_apply().map_err(|error| {
+            ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
+        })?;
         Ok(transaction)
     }
 
@@ -229,7 +288,7 @@ impl ApplyStagedState {
         self.absent_name_identity_for_test = Some(comparator);
     }
 
-    fn ensure_loaded(&mut self, relative: &Path) -> Result<usize, String> {
+    fn ensure_loaded(&mut self, relative: &Path) -> Result<usize, ApplyStagingError> {
         self.checkpoint("apply staged read")?;
         if let Some(index) = self
             .entries
@@ -238,54 +297,121 @@ impl ApplyStagedState {
         {
             return Ok(index);
         }
-        let (parent, name) = self
-            .root
-            .retain_relative_parent_nofollow(relative)
-            .map_err(|error| {
-                format!("staged target parent rejected link/reparse traversal: {error}")
-            })?;
-        let retained_child = parent.retain_immediate_child_nofollow(&name);
-        if let Ok(RetainedChildCapability::RegularFile(file)) = retained_child.as_ref() {
+        let components = relative
+            .components()
+            .map(|component| match component {
+                Component::Normal(name) => Ok(name.to_os_string()),
+                _ => Err(format!(
+                    "staged target must contain only normal relative components: {}",
+                    relative.display()
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let name = components
+            .last()
+            .expect("strict non-empty relative path has a terminal name")
+            .clone();
+        let mut ancestor = self.root.as_ref().clone();
+        let mut missing_parent_chain = Vec::new();
+        for (index, component) in components[..components.len() - 1].iter().enumerate() {
+            match ancestor.retain_immediate_child_nofollow(component) {
+                Ok(RetainedChildCapability::Directory(directory)) => ancestor = directory,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    missing_parent_chain
+                        .extend(components[index..components.len() - 1].iter().cloned());
+                    break;
+                }
+                Ok(RetainedChildCapability::ReparsePoint) => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::ContainmentIdentity,
+                        format!(
+                            "staged target parent is a link/reparse point: {}",
+                            relative.display()
+                        ),
+                    ))
+                }
+                Ok(
+                    RetainedChildCapability::RegularFile(_) | RetainedChildCapability::Unsupported,
+                ) => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::AbsentChainOccupied,
+                        format!(
+                            "staged target parent is not a directory: {}",
+                            relative.display()
+                        ),
+                    ))
+                }
+                Err(error) => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::UnsupportedProvider,
+                        format!("staged target parent rejected link/reparse traversal: {error}"),
+                    ))
+                }
+            }
+        }
+        let retained_child = if missing_parent_chain.is_empty() {
+            Some(ancestor.retain_immediate_child_nofollow(&name))
+        } else {
+            None
+        };
+        if let Some(Ok(RetainedChildCapability::RegularFile(file))) = retained_child.as_ref() {
             if file
                 .hard_link_count()
                 .map_err(|error| format!("hard-link count failed: {error}"))?
                 != 1
             {
-                return Err(format!(
-                    "staged target has a hard-link alias: {}",
-                    relative.display()
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::ContainmentIdentity,
+                    format!(
+                        "staged target has a hard-link alias: {}",
+                        relative.display()
+                    ),
                 ));
             }
         }
         let target_identity = match retained_child.as_ref() {
-            Ok(RetainedChildCapability::RegularFile(file)) => {
-                Some(StagedTargetIdentity::Existing(file.identity()))
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => {
+            None => {
+                let mut suffix = missing_parent_chain.clone();
+                suffix.push(name.clone());
                 Some(StagedTargetIdentity::Absent {
-                    parent: parent.identity(),
-                    name: name.clone(),
+                    ancestor: ancestor.identity(),
+                    suffix,
                 })
             }
-            _ => None,
+            Some(child) => match child {
+                Ok(RetainedChildCapability::RegularFile(file)) => {
+                    Some(StagedTargetIdentity::Existing(file.identity()))
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    Some(StagedTargetIdentity::Absent {
+                        ancestor: ancestor.identity(),
+                        suffix: vec![name.clone()],
+                    })
+                }
+                _ => None,
+            },
         };
         if let Some(target_identity) = target_identity.as_ref() {
             for (index, entry) in self.entries.iter().enumerate() {
-                if self.same_target(&entry.target_identity, target_identity, &parent)? {
+                if self.same_target(&entry.target_identity, target_identity, &ancestor)? {
                     return Ok(index);
                 }
             }
         }
         let (original, original_file) = match retained_child {
-            Ok(RetainedChildCapability::RegularFile(file)) => {
+            None => (StagedFileState::Absent, None),
+            Some(Ok(RetainedChildCapability::RegularFile(file))) => {
                 if file
                     .hard_link_count()
                     .map_err(|error| format!("hard-link count failed: {error}"))?
                     != 1
                 {
-                    return Err(format!(
-                        "staged target has a hard-link alias: {}",
-                        relative.display()
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::ContainmentIdentity,
+                        format!(
+                            "staged target has a hard-link alias: {}",
+                            relative.display()
+                        ),
                     ));
                 }
                 let bytes = file
@@ -293,24 +419,40 @@ impl ApplyStagedState {
                     .map_err(|error| format!("staged target fixed read bound failed: {error}"))?;
                 (StagedFileState::Bytes(bytes), Some(file))
             }
-            Ok(RetainedChildCapability::ReparsePoint) => {
-                return Err(format!(
-                    "staged target is a link/reparse point: {}",
-                    relative.display()
+            Some(Ok(RetainedChildCapability::ReparsePoint)) => {
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::ContainmentIdentity,
+                    format!(
+                        "staged target is a link/reparse point: {}",
+                        relative.display()
+                    ),
                 ))
             }
-            Ok(RetainedChildCapability::Directory(_) | RetainedChildCapability::Unsupported) => {
-                return Err(format!(
-                    "staged target is not a regular file: {}",
-                    relative.display()
+            Some(Ok(
+                RetainedChildCapability::Directory(_) | RetainedChildCapability::Unsupported,
+            )) => {
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::ContainmentIdentity,
+                    format!(
+                        "staged target is not a regular file: {}",
+                        relative.display()
+                    ),
                 ))
             }
-            Err(error) if error.kind() == ErrorKind::NotFound => (StagedFileState::Absent, None),
-            Err(error) => return Err(format!("staged target inspection failed: {error}")),
+            Some(Err(error)) if error.kind() == ErrorKind::NotFound => {
+                (StagedFileState::Absent, None)
+            }
+            Some(Err(error)) => {
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::UnsupportedProvider,
+                    format!("staged target inspection failed: {error}"),
+                ))
+            }
         };
         self.entries.push(StagedEntry {
             relative_path: relative.to_path_buf(),
-            parent,
+            ancestor,
+            missing_parent_chain,
             name,
             target_identity: target_identity.expect("regular or absent target has an identity"),
             current: original.clone(),
@@ -325,55 +467,73 @@ impl ApplyStagedState {
         left: &StagedTargetIdentity,
         right: &StagedTargetIdentity,
         right_parent: &RetainedDirectoryCapability,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, ApplyStagingError> {
         match (left, right) {
             (StagedTargetIdentity::Existing(left), StagedTargetIdentity::Existing(right)) => {
                 Ok(left == right)
             }
             (
                 StagedTargetIdentity::Absent {
-                    parent: left_parent,
-                    name: left_name,
+                    ancestor: left_ancestor,
+                    suffix: left_suffix,
                 },
                 StagedTargetIdentity::Absent {
-                    parent: right_parent_identity,
-                    name: right_name,
+                    ancestor: right_ancestor,
+                    suffix: right_suffix,
                 },
-            ) if left_parent == right_parent_identity => {
-                #[cfg(test)]
-                if let Some(comparator) = self.absent_name_identity_for_test {
-                    return Ok(comparator(left_name, right_name));
+            ) if left_ancestor == right_ancestor && left_suffix.len() == right_suffix.len() => {
+                for (left_name, right_name) in left_suffix.iter().zip(right_suffix) {
+                    #[cfg(test)]
+                    if let Some(comparator) = self.absent_name_identity_for_test {
+                        if !comparator(left_name, right_name) {
+                            return Ok(false);
+                        }
+                        continue;
+                    }
+                    if !right_parent
+                        .child_names_equivalent(left_name, right_name)
+                        .map_err(|error| {
+                            format!("staged child-name identity cannot be proven: {error}")
+                        })?
+                    {
+                        return Ok(false);
+                    }
                 }
-                right_parent
-                    .child_names_equivalent(left_name, right_name)
-                    .map_err(|error| {
-                        format!("staged child-name identity cannot be proven: {error}")
-                    })
+                Ok(true)
             }
             _ => Ok(false),
         }
     }
 
-    fn checkpoint(&self, phase: &str) -> Result<(), String> {
+    fn checkpoint(&self, phase: &str) -> Result<(), ApplyStagingError> {
         if self.cancellation.is_cancelled() {
-            Err(format!("{phase} cancelled"))
+            Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Cancelled,
+                format!("{phase} cancelled"),
+            ))
         } else if self.deadline.remaining().is_zero() {
-            Err(format!("{phase} deadline exceeded"))
+            Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Deadline,
+                format!("{phase} deadline exceeded"),
+            ))
         } else {
             Ok(())
         }
     }
 }
 
-fn strict_relative(relative: &Path) -> Result<PathBuf, String> {
+fn strict_relative(relative: &Path) -> Result<PathBuf, ApplyStagingError> {
     if relative.as_os_str().is_empty()
         || relative
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return Err(format!(
-            "staged target must contain only normal relative components: {}",
-            relative.display()
+        return Err(ApplyStagingError::new(
+            ApplyStagingErrorKind::ContainmentIdentity,
+            format!(
+                "staged target must contain only normal relative components: {}",
+                relative.display()
+            ),
         ));
     }
     Ok(relative.to_path_buf())
@@ -381,13 +541,20 @@ fn strict_relative(relative: &Path) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApplyStagedState, StagedChangeKind, StagedFileState, MAX_APPLY_FILE_BYTES};
+    use super::{
+        ApplyStagedState, ApplyStagingErrorKind, StagedChangeKind, StagedFileState,
+        MAX_APPLY_FILE_BYTES,
+    };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+    use crate::infrastructure::platform::filesystem::{
+        inject_post_rename_sync_failure_for_test, set_before_identity_bound_no_replace_rename_hook,
+        RetainedChildCapability, RetainedDirectoryCapability,
+    };
     use crate::infrastructure::platform::testing::{
         create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
     };
+    use std::cell::Cell;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -907,6 +1074,465 @@ mod tests {
             "{error}"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_missing_parent_is_staged_without_disk_mutation_and_published_once() {
+        let root = temp_root("missing-parent-publish");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let target = std::fs::canonicalize(&root)
+            .unwrap()
+            .join("Ext/Form/Module.bsl");
+        let mut state = staged(&root);
+
+        assert_eq!(state.read(Path::new("Ext/Form/Module.bsl")).unwrap(), None);
+        state
+            .create("Ext/Form/Module.bsl", b"planned module".to_vec())
+            .unwrap();
+        assert_eq!(
+            state.read(Path::new("Ext/Form/Module.bsl")).unwrap(),
+            Some(b"planned module".to_vec())
+        );
+        assert!(
+            !root.join("Ext/Form").exists(),
+            "planning and overlay reads must not create the absent parent"
+        );
+
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        assert!(
+            !root.join("Ext/Form").exists(),
+            "finalization/preparation must not create the absent parent"
+        );
+        let (report, ()) = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"planned module");
+        assert_eq!(report.created, vec![target]);
+        assert!(report.cleanup_warnings.is_empty(), "{report:?}");
+        assert_eq!(apply_directory_artifacts(&root.join("Ext")), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_two_files_share_one_absent_parent_in_one_transaction() {
+        let root = temp_root("missing-shared-parent");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+
+        state
+            .create("Ext/Form/Module.bsl", b"module".to_vec())
+            .unwrap();
+        state
+            .create("Ext/Form/Helper.bsl", b"helper".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        assert!(!root.join("Ext/Form").exists());
+
+        let (report, ()) = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(root.join("Ext/Form/Module.bsl")).unwrap(),
+            b"module"
+        );
+        assert_eq!(
+            std::fs::read(root.join("Ext/Form/Helper.bsl")).unwrap(),
+            b"helper"
+        );
+        assert_eq!(report.created.len(), 2);
+        assert!(report.cleanup_warnings.is_empty(), "{report:?}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_missing_parent_race_preserves_an_external_directory_and_file() {
+        let root = temp_root("missing-parent-race");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+        assert_eq!(state.read(Path::new("Ext/Form/Module.bsl")).unwrap(), None);
+        state
+            .create("Ext/Form/Module.bsl", b"must not publish".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+
+        std::fs::create_dir(root.join("Ext/Form")).unwrap();
+        std::fs::write(root.join("Ext/Form/Module.bsl"), b"external").unwrap();
+
+        let error = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap_err();
+
+        assert!(
+            error.contains("absent") || error.contains("occupied"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("Ext/Form/Module.bsl")).unwrap(),
+            b"external"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_missing_parent_race_preserves_a_non_directory_component() {
+        let root = temp_root("missing-parent-file-race");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+        state
+            .create("Ext/Form/Module.bsl", b"must not publish".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+
+        std::fs::write(root.join("Ext/Form"), b"external file").unwrap();
+
+        let error = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap_err();
+
+        assert!(
+            error.contains("directory") || error.contains("occupied"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("Ext/Form")).unwrap(),
+            b"external file"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_missing_parent_failure_has_a_typed_absent_chain_category() {
+        let root = temp_root("missing-parent-typed-error");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        std::fs::write(root.join("Ext/Form"), b"occupied").unwrap();
+        let mut state = staged(&root);
+
+        let error = state.read(Path::new("Ext/Form/Module.bsl")).unwrap_err();
+
+        assert_eq!(error.kind(), ApplyStagingErrorKind::AbsentChainOccupied);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_missing_parent_publication_refuses_final_name_occupation_after_private_capture() {
+        let root = temp_root("missing-parent-final-race");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+        state
+            .create("Ext/Form/Module.bsl", b"must not publish".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        let raced_root = root.clone();
+        set_before_identity_bound_no_replace_rename_hook(move || {
+            std::fs::create_dir(raced_root.join("Ext/Form")).unwrap();
+            std::fs::write(raced_root.join("Ext/Form/foreign.txt"), b"foreign").unwrap();
+        });
+
+        let error = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap_err();
+
+        assert!(error.contains("parent publication failed"), "{error}");
+        assert_eq!(
+            std::fs::read(root.join("Ext/Form/foreign.txt")).unwrap(),
+            b"foreign"
+        );
+        assert!(!root.join("Ext/Form/Module.bsl").exists());
+        assert_eq!(
+            std::fs::read_dir(root.join("Ext"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".unica-apply-dir-"))
+                .count(),
+            0,
+            "a normal failed no-replace publication must clean its private directory"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_private_directory_cleanup_failure_is_explicit_and_preserves_foreign_content() {
+        let root = temp_root("missing-parent-private-cleanup");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+        state
+            .create("Ext/Form/Module.bsl", b"must not publish".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        let raced_root = root.clone();
+        set_before_identity_bound_no_replace_rename_hook(move || {
+            let private = std::fs::read_dir(raced_root.join("Ext"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".unica-apply-dir-")
+                })
+                .expect("private directory must be retained before the rename boundary")
+                .path();
+            std::fs::write(private.join("foreign.txt"), b"foreign").unwrap();
+            std::fs::create_dir(raced_root.join("Ext/Form")).unwrap();
+        });
+
+        let error = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap_err();
+
+        assert!(error.contains("preserved"), "{error}");
+        assert!(error.contains("rollback"), "{error}");
+        let private = std::fs::read_dir(root.join("Ext"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".unica-apply-dir-")
+            })
+            .expect("non-empty owned private directory must be preserved");
+        assert_eq!(
+            std::fs::read(private.path().join("foreign.txt")).unwrap(),
+            b"foreign"
+        );
+        assert!(!root.join("Ext/Form/Module.bsl").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_private_directory_capture_failure_has_no_artifact_or_public_mutation() {
+        let root = temp_root("missing-parent-private-capture");
+        std::fs::create_dir_all(root.join("Ext/occupied-private")).unwrap();
+        std::fs::write(root.join("Ext/occupied-private/foreign.txt"), b"foreign").unwrap();
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        let root_capability = RetainedDirectoryCapability::open(&canonical_root).unwrap();
+        let RetainedChildCapability::Directory(ext) = root_capability
+            .retain_immediate_child_nofollow(std::ffi::OsStr::new("Ext"))
+            .unwrap()
+        else {
+            panic!("Ext must be a retained directory")
+        };
+
+        let error = ext
+            .create_directory_child_atomically(
+                std::ffi::OsStr::new("occupied-private"),
+                std::ffi::OsStr::new("Form"),
+            )
+            .unwrap_err();
+        let (error, artifact) = error.into_parts();
+
+        assert!(
+            artifact.is_none(),
+            "capture never owned an artifact: {error}"
+        );
+        assert!(!root.join("Ext/Form").exists());
+        assert_eq!(
+            std::fs::read(root.join("Ext/occupied-private/foreign.txt")).unwrap(),
+            b"foreign"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_private_directory_source_swap_never_publishes_or_deletes_the_foreign_directory() {
+        if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            return;
+        }
+        let root = temp_root("missing-parent-private-source-swap");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+        state
+            .create("Ext/Form/Module.bsl", b"must not publish".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        let raced_root = root.clone();
+        let owned = root.join("Ext/owned-private");
+        set_before_identity_bound_no_replace_rename_hook(move || {
+            let private = std::fs::read_dir(raced_root.join("Ext"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".unica-apply-dir-")
+                })
+                .expect("private directory must exist at the rename boundary")
+                .path();
+            std::fs::rename(&private, raced_root.join("Ext/owned-private")).unwrap();
+            std::fs::create_dir(&private).unwrap();
+            std::fs::write(private.join("foreign.txt"), b"foreign").unwrap();
+        });
+
+        let error = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap_err();
+
+        assert!(error.contains("identity changed"), "{error}");
+        assert!(!root.join("Ext/Form").exists());
+        assert!(
+            owned.is_dir(),
+            "the exact created directory must remain retained by the test"
+        );
+        let restored_foreign = std::fs::read_dir(root.join("Ext"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".unica-apply-dir-")
+            })
+            .expect("foreign directory must be restored to the private name");
+        assert_eq!(
+            std::fs::read(restored_foreign.path().join("foreign.txt")).unwrap(),
+            b"foreign"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_missing_parent_file_create_failure_removes_owned_file_and_directories() {
+        let root = temp_root("missing-parent-file-create-failure");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+        state
+            .create("Ext/Form/Module.bsl", b"must roll back".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        inject_post_rename_sync_failure_for_test();
+
+        let error = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap_err();
+
+        assert!(error.contains("create failed"), "{error}");
+        assert!(!root.join("Ext/Form").exists());
+        assert_eq!(apply_directory_artifacts(&root.join("Ext")), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_second_file_failure_removes_shared_owned_parent() {
+        let root = temp_root("missing-parent-second-file-failure");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+        state.create("Ext/Form/A.bsl", b"first".to_vec()).unwrap();
+        state.create("Ext/Form/B.bsl", b"second".to_vec()).unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        let checkpoints = Cell::new(0_u8);
+
+        let error = transaction
+            .commit_retained_apply_with(
+                authority,
+                || {
+                    let next = checkpoints.get() + 1;
+                    checkpoints.set(next);
+                    if next == 3 {
+                        Err("injected second-file checkpoint failure".to_string())
+                    } else {
+                        Ok(())
+                    }
+                },
+                || Ok(()),
+            )
+            .unwrap_err();
+
+        assert!(error.contains("second-file"), "{error}");
+        assert!(!root.join("Ext/Form").exists());
+        assert_eq!(apply_directory_artifacts(&root.join("Ext")), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_post_validation_failure_removes_owned_file_and_directories() {
+        let root = temp_root("missing-parent-validation-failure");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+        state
+            .create("Ext/Form/Module.bsl", b"must roll back".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+
+        let error = transaction
+            .commit_retained_apply_with(
+                authority,
+                || Ok(()),
+                || Err::<(), _>("injected validation failure".to_string()),
+            )
+            .unwrap_err();
+
+        assert!(error.contains("validation failure"), "{error}");
+        assert!(!root.join("Ext/Form").exists());
+        assert_eq!(apply_directory_artifacts(&root.join("Ext")), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_missing_parent_rollback_preserves_foreign_content_with_diagnostic() {
+        let root = temp_root("missing-parent-foreign-rollback");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+        state
+            .create("Ext/Form/Module.bsl", b"must roll back".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        let raced_root = root.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || {
+                std::fs::write(raced_root.join("Ext/Form/foreign.txt"), b"foreign").unwrap();
+            },
+        );
+
+        let error = transaction
+            .commit_retained_apply_with(
+                authority,
+                || Ok(()),
+                || Err::<(), _>("injected validation failure".to_string()),
+            )
+            .unwrap_err();
+
+        assert!(error.contains("rollback"), "{error}");
+        assert!(
+            error.contains("batch-created directory was preserved"),
+            "{error}"
+        );
+        assert!(!root.join("Ext/Form/Module.bsl").exists());
+        assert_eq!(
+            std::fs::read(root.join("Ext/Form/foreign.txt")).unwrap(),
+            b"foreign"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn apply_directory_artifacts(parent: &Path) -> usize {
+        std::fs::read_dir(parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".unica-apply-dir-")
+            })
+            .count()
     }
 
     fn temp_root(name: &str) -> PathBuf {

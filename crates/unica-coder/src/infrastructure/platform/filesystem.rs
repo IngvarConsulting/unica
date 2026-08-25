@@ -301,6 +301,57 @@ pub(crate) struct RetainedPublicationError {
     published: Option<RetainedRegularFileCapability>,
 }
 
+/// Directory publication mirrors regular-file publication: a reported error
+/// may still own an exact private or already-published directory that the
+/// caller must put in its rollback journal.
+#[derive(Debug)]
+pub(crate) struct RetainedDirectoryPublicationError {
+    error: io::Error,
+    artifact: Option<(RetainedDirectoryCapability, std::ffi::OsString, bool)>,
+}
+
+impl RetainedDirectoryPublicationError {
+    fn without_artifact(error: io::Error) -> Self {
+        Self {
+            error,
+            artifact: None,
+        }
+    }
+
+    fn with_artifact(
+        error: io::Error,
+        directory: RetainedDirectoryCapability,
+        name: std::ffi::OsString,
+        published: bool,
+    ) -> Self {
+        Self {
+            error,
+            artifact: Some((directory, name, published)),
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        io::Error,
+        Option<(RetainedDirectoryCapability, std::ffi::OsString, bool)>,
+    ) {
+        (self.error, self.artifact)
+    }
+}
+
+impl std::fmt::Display for RetainedDirectoryPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RetainedDirectoryPublicationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 #[derive(Debug)]
 enum RetainedMoveOutcome {
     Expected(RetainedRegularFileCapability),
@@ -484,6 +535,127 @@ impl RetainedDirectoryCapability {
                 name: name.to_os_string(),
             })),
         })
+    }
+
+    /// Creates one new immediate directory through this retained parent and
+    /// returns authority over the exact directory handle created by the
+    /// platform primitive. Existing children are never opened or adopted.
+    pub(crate) fn create_directory_child(&self, name: &std::ffi::OsStr) -> io::Result<Self> {
+        let directory = create_new_directory_child(&self.retained.directory, name)?;
+        let identity = file_identity(&directory)?;
+        Ok(Self {
+            path: self.path.join(name),
+            retained: Arc::new(RetainedDirectoryCapabilityInner {
+                directory,
+                identity,
+            }),
+            parent: Some(Arc::new(RetainedDirectoryParent {
+                directory: self.clone(),
+                name: name.to_os_string(),
+            })),
+        })
+    }
+
+    /// Creates a transaction-private directory, retains its exact handle, and
+    /// publishes that handle to an absent public name with a no-replace move.
+    /// A concurrent public child is never opened as authority.
+    pub(crate) fn create_directory_child_atomically(
+        &self,
+        private_name: &std::ffi::OsStr,
+        destination_name: &std::ffi::OsStr,
+    ) -> Result<Self, RetainedDirectoryPublicationError> {
+        let private = self
+            .create_directory_child(private_name)
+            .map_err(RetainedDirectoryPublicationError::without_artifact)?;
+        if let Err(error) = rename_identity_bound_directory_child_no_replace(
+            &self.retained.directory,
+            private_name,
+            private.identity(),
+            &private.retained.directory,
+            &self.retained.directory,
+            destination_name,
+        ) {
+            return match private.remove_empty_named_identity_relative() {
+                Ok(()) => Err(RetainedDirectoryPublicationError::without_artifact(error)),
+                Err(cleanup) => Err(RetainedDirectoryPublicationError::with_artifact(
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "{error}; transaction-private directory was preserved after cleanup failed: {cleanup}"
+                        ),
+                    ),
+                    private,
+                    private_name.to_os_string(),
+                    false,
+                )),
+            };
+        }
+        let published = match self.retain_directory_child(destination_name) {
+            Ok(published) if published.identity() == private.identity() => published,
+            Ok(different) => {
+                let restoration = rename_identity_bound_directory_child_no_replace(
+                    &self.retained.directory,
+                    destination_name,
+                    different.identity(),
+                    &different.retained.directory,
+                    &self.retained.directory,
+                    private_name,
+                );
+                let message = match restoration {
+                    Ok(()) => "published directory identity changed at observation boundary; unexpected directory was restored to the private name and preserved".to_string(),
+                    Err(error) => format!(
+                        "published directory identity changed at observation boundary; unexpected directory was preserved because restoration failed: {error}"
+                    ),
+                };
+                return Err(RetainedDirectoryPublicationError::without_artifact(
+                    io::Error::other(message),
+                ));
+            }
+            Err(error) => {
+                let published = Self {
+                    path: self.path.join(destination_name),
+                    retained: Arc::clone(&private.retained),
+                    parent: Some(Arc::new(RetainedDirectoryParent {
+                        directory: self.clone(),
+                        name: destination_name.to_os_string(),
+                    })),
+                };
+                return Err(RetainedDirectoryPublicationError::with_artifact(
+                    error,
+                    published,
+                    destination_name.to_os_string(),
+                    true,
+                ));
+            }
+        };
+        if let Err(error) = sync_directory(&self.retained.directory)
+            .and_then(|()| published.validate_named_identity())
+        {
+            return Err(RetainedDirectoryPublicationError::with_artifact(
+                error,
+                published,
+                destination_name.to_os_string(),
+                true,
+            ));
+        }
+        Ok(published)
+    }
+
+    /// Removes this retained directory only while its admitted parent/name
+    /// still resolves to the retained identity and the directory is empty.
+    pub(crate) fn remove_empty_named_identity_relative(&self) -> io::Result<()> {
+        let parent = self.parent.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "source-root directory cannot be removed as a created child",
+            )
+        })?;
+        remove_identity_bound_empty_directory_child(
+            &parent.directory.retained.directory,
+            &parent.name,
+            self.retained.identity,
+            &self.retained.directory,
+        )
     }
 
     /// Publishes bytes atomically inside this retained directory. Both the
@@ -875,47 +1047,6 @@ impl RetainedDirectoryCapability {
             file,
             identity,
         })
-    }
-
-    /// Resolves the parent and terminal name of one strictly-normal relative
-    /// file path through retained directory descriptors. Every intermediate
-    /// component is opened no-follow, so a nested link/reparse point never
-    /// becomes writer authority.
-    pub(crate) fn retain_relative_parent_nofollow(
-        &self,
-        relative: &Path,
-    ) -> io::Result<(Self, std::ffi::OsString)> {
-        use std::path::Component;
-
-        let components = relative.components().collect::<Vec<_>>();
-        if components.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "relative file path must not be empty",
-            ));
-        }
-        let mut parent = self.clone();
-        for component in &components[..components.len() - 1] {
-            let Component::Normal(name) = component else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "relative file path contains a non-normal component",
-                ));
-            };
-            parent = parent.retain_directory_child(name).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!("nested directory link/reparse traversal rejected: {error}"),
-                )
-            })?;
-        }
-        let Component::Normal(name) = components[components.len() - 1] else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "relative file path contains a non-normal component",
-            ));
-        };
-        Ok((parent, name.to_os_string()))
     }
 
     pub(crate) fn retain_or_create_regular_child(
@@ -4816,6 +4947,76 @@ pub(crate) fn rename_identity_bound_regular_child_no_replace(
         destination_parent,
         destination_name,
     )
+}
+
+/// Moves one exact retained directory child without replacing an occupied
+/// destination. Unix binds the source name to the retained inode before its
+/// descriptor-relative rename; Windows performs the move through a verified
+/// delete-capable directory handle.
+#[cfg(unix)]
+pub(crate) fn rename_identity_bound_directory_child_no_replace(
+    source_parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "retained directory child identity changed; destination left untouched",
+        ));
+    }
+    let named = open_directory_child_nofollow(source_parent, source_name)?;
+    if file_identity(&named)? != expected_identity {
+        return Err(io::Error::other(
+            "directory child identity changed; destination left untouched",
+        ));
+    }
+    #[cfg(test)]
+    run_before_identity_bound_no_replace_rename_hook();
+    rename_regular_child_at_no_replace(
+        source_parent,
+        source_name,
+        destination_parent,
+        destination_name,
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn rename_identity_bound_directory_child_no_replace(
+    source_parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    let named = open_directory_child_for_rename(source_parent, source_name)?;
+    if file_identity(&named)? != expected_identity || file_identity(retained)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "directory child identity changed; destination left untouched",
+        ));
+    }
+    #[cfg(test)]
+    run_before_identity_bound_no_replace_rename_hook();
+    rename_directory_handle_child_no_replace(&named, destination_parent, destination_name)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn rename_identity_bound_directory_child_no_replace(
+    _source_parent: &fs::File,
+    _source_name: &std::ffi::OsStr,
+    _expected_identity: FileIdentity,
+    _retained: &fs::File,
+    _destination_parent: &fs::File,
+    _destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "identity-bound directory rename is unavailable on this host",
+    ))
 }
 
 /// Cleanup has its own deterministic mutation-boundary hook. Keeping the

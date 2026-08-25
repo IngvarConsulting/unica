@@ -113,6 +113,14 @@ impl FormEventOwnerInput {
         self.data_path = Some(data_path.to_string());
         self
     }
+
+    pub(crate) const fn owner(&self) -> FormBindingOwner {
+        self.owner
+    }
+
+    pub(crate) fn at(&self) -> &str {
+        &self.at
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +203,48 @@ pub(crate) enum PlatformEventWriteCapability {
     Unproved,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequiredEventDirective {
+    None,
+    Client,
+    Server,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DirectiveRuleError {
+    message: String,
+}
+
+impl DirectiveRuleError {
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    pub(crate) const fn code(&self) -> &'static str {
+        "provider_unavailable"
+    }
+}
+
+impl std::fmt::Display for DirectiveRuleError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for DirectiveRuleError {}
+
+impl RequiredEventDirective {
+    pub(crate) const fn canonical(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Client => Some("&НаКлиенте"),
+            Self::Server => Some("&НаСервере"),
+        }
+    }
+}
+
 pub(crate) fn project_module(
     request: ModuleProjectionRequest<'_>,
 ) -> Result<ModuleProjectionSet, String> {
@@ -266,6 +316,7 @@ pub(crate) fn project_module(
     let interfaces = interface_projections(request.at, &methods, &regions);
     let events = project_module_events(
         request.at,
+        request.capability,
         possible_events,
         &mut methods,
         request.platform_event_write,
@@ -316,6 +367,7 @@ fn available_module_event(
 
 fn project_module_events(
     at: &QualifiedAddress,
+    capability: ModuleCapability,
     specs: &[PlatformEventSpec],
     methods: &mut [MethodProjection],
     write: PlatformEventWriteCapability,
@@ -333,6 +385,8 @@ fn project_module_events(
                 method.method_kind,
                 &method.signature,
                 &method.compile.contexts,
+                method.compile.directive.as_deref(),
+                capability,
                 spec,
             );
             let event_at = format!("{at}.Event.{}", spec.event_id);
@@ -1111,6 +1165,8 @@ fn method_matches_event(
     method_kind: MethodKind,
     signature: &str,
     contexts: &[String],
+    directive: Option<&str>,
+    capability: ModuleCapability,
     spec: &PlatformEventSpec,
 ) -> bool {
     let kind = match method_kind {
@@ -1125,6 +1181,8 @@ fn method_matches_event(
             .contexts
             .iter()
             .all(|expected| contexts.contains(expected))
+        && required_event_directive(EventDirectiveOwner::Platform(capability), spec)
+            .is_ok_and(|required| event_directive_matches(directive, required))
 }
 
 fn parameter_shape(signature: &str) -> String {
@@ -1152,15 +1210,75 @@ fn form_method_matches_event(
             .contexts
             .iter()
             .all(|expected| method.contexts.contains(&expected.as_str()))
-        && (owner != FormBindingOwner::Command
-            || form_command_has_client_directive(method.directive))
+        && required_event_directive(EventDirectiveOwner::Property(owner), spec)
+            .is_ok_and(|required| event_directive_matches(method.directive, required))
 }
 
-fn form_command_has_client_directive(directive: Option<&str>) -> bool {
-    directive
-        .map(str::trim)
-        .map(str::to_lowercase)
-        .is_some_and(|normalized| matches!(normalized.as_str(), "&наклиенте" | "&atclient"))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EventDirectiveOwner {
+    Platform(ModuleCapability),
+    Property(FormBindingOwner),
+}
+
+pub(crate) fn required_event_directive(
+    owner: EventDirectiveOwner,
+    spec: &PlatformEventSpec,
+) -> Result<RequiredEventDirective, DirectiveRuleError> {
+    match owner {
+        EventDirectiveOwner::Platform(capability) => {
+            return Ok(if capability.role() == ModuleRole::Command {
+                RequiredEventDirective::Client
+            } else {
+                RequiredEventDirective::None
+            });
+        }
+        EventDirectiveOwner::Property(FormBindingOwner::Command) if spec.event_id == "Execute" => {
+            return Ok(RequiredEventDirective::Client);
+        }
+        EventDirectiveOwner::Property(_) => {}
+    }
+    const CLIENT_CONTEXTS: &[&str] = &[
+        "client",
+        "thinClient",
+        "webClient",
+        "thickClientManaged",
+        "thickClientOrdinary",
+        "mobileClient",
+        "mobileAppClient",
+    ];
+    if spec.contexts.is_empty() {
+        return Err(DirectiveRuleError::unavailable(format!(
+            "event `{}` has no classified directive contexts",
+            spec.event_id
+        )));
+    }
+    if spec.contexts.iter().all(|context| context == "server") {
+        return Ok(RequiredEventDirective::Server);
+    }
+    if spec
+        .contexts
+        .iter()
+        .all(|context| CLIENT_CONTEXTS.contains(&context.as_str()))
+    {
+        return Ok(RequiredEventDirective::Client);
+    }
+    Err(DirectiveRuleError::unavailable(format!(
+        "event `{}` mixes or uses unclassified directive contexts",
+        spec.event_id
+    )))
+}
+
+fn event_directive_matches(directive: Option<&str>, required: RequiredEventDirective) -> bool {
+    let normalized = directive.map(str::trim).map(str::to_lowercase);
+    match required {
+        RequiredEventDirective::None => normalized.is_none(),
+        RequiredEventDirective::Client => normalized
+            .as_deref()
+            .is_some_and(|value| matches!(value, "&наклиенте" | "&atclient")),
+        RequiredEventDirective::Server => normalized
+            .as_deref()
+            .is_some_and(|value| matches!(value, "&насервере" | "&atserver")),
+    }
 }
 
 pub(crate) fn project_form_events(
@@ -1820,7 +1938,8 @@ mod tests {
                     "mobileClient",
                     "mobileAppClient",
                 ],
-            ),
+            )
+            .with_directive(Some("&НаКлиенте")),
             FormMethodFact::new(
                 "ПолеНачалоВыбора",
                 crate::domain::module_projection::MethodKind::Procedure,
@@ -1832,7 +1951,8 @@ mod tests {
                     "mobileClient",
                     "mobileAppClient",
                 ],
-            ),
+            )
+            .with_directive(Some("&НаКлиенте")),
         ];
         let events = project_form_events(&bindings, &methods);
         assert_eq!(events.len(), 16);
@@ -1872,7 +1992,8 @@ mod tests {
             crate::domain::module_projection::MethodKind::Procedure,
             "Процедура ПолеПриИзменении()",
             contexts.clone(),
-        )];
+        )
+        .with_directive(Some("&НаКлиенте"))];
         assert_eq!(
             project_form_events(std::slice::from_ref(&binding), &procedure)
                 .iter()
@@ -2154,6 +2275,118 @@ mod tests {
     }
 
     #[test]
+    fn every_form_owner_requires_the_exact_versioned_directive() {
+        let owner = FormEventOwnerInput::new(FormBindingOwner::Form, "main:CommonForm.Test");
+        let binding = FormEventBindingInput::property(
+            FormBindingOwner::Form,
+            "main:CommonForm.Test.Event.OnOpen",
+            "OnOpen",
+            "FormOnOpen",
+            None,
+        );
+        let client_contexts = vec![
+            "thinClient",
+            "webClient",
+            "thickClientManaged",
+            "mobileClient",
+            "mobileAppClient",
+        ];
+        for directive in [None, Some("&НаСервере"), Some("&AtClientAtServer")] {
+            let methods = [FormMethodFact::new(
+                "FormOnOpen",
+                crate::domain::module_projection::MethodKind::Procedure,
+                "Procedure FormOnOpen(Cancel)",
+                client_contexts.clone(),
+            )
+            .with_directive(directive)];
+            let event = project_form_owner_events(
+                std::slice::from_ref(&owner),
+                std::slice::from_ref(&binding),
+                &methods,
+            )
+            .into_iter()
+            .find(|event| event.event_id == "OnOpen")
+            .unwrap();
+            assert_eq!(event.state, EventState::Invalid, "{directive:?}");
+            assert!(event.can.is_empty());
+            assert!(event.implementation_at.is_some());
+        }
+        for directive in ["&НаКлИеНтЕ", "  &aTcLiEnT\r\n"] {
+            let methods = [FormMethodFact::new(
+                "FormOnOpen",
+                crate::domain::module_projection::MethodKind::Procedure,
+                "Procedure FormOnOpen(Cancel)",
+                client_contexts.clone(),
+            )
+            .with_directive(Some(directive))];
+            let event = project_form_owner_events(
+                std::slice::from_ref(&owner),
+                std::slice::from_ref(&binding),
+                &methods,
+            )
+            .into_iter()
+            .find(|event| event.event_id == "OnOpen")
+            .unwrap();
+            assert_eq!(event.state, EventState::Implemented, "{directive:?}");
+        }
+
+        let server_binding = FormEventBindingInput::property(
+            FormBindingOwner::Form,
+            "main:CommonForm.Test.Event.OnCreateAtServer",
+            "OnCreateAtServer",
+            "OnCreateAtServer",
+            None,
+        );
+        let server = [FormMethodFact::new(
+            "OnCreateAtServer",
+            crate::domain::module_projection::MethodKind::Procedure,
+            "Procedure OnCreateAtServer(Cancel, StandardProcessing)",
+            vec!["server"],
+        )
+        .with_directive(Some(" &AtServer "))];
+        let event = project_form_owner_events(&[owner], &[server_binding], &server)
+            .into_iter()
+            .find(|event| event.event_id == "OnCreateAtServer")
+            .unwrap();
+        assert_eq!(event.state, EventState::Implemented);
+    }
+
+    #[test]
+    fn metadata_command_platform_event_requires_the_client_directive() {
+        let at = "main:Document.Заказ.Command.Провести.Module.Command";
+        let no_directive = project(
+            at,
+            Some(
+                "Процедура ОбработкаКоманды(ПараметрКоманды, ПараметрыВыполненияКоманды)\nКонецПроцедуры",
+            ),
+        );
+        assert_eq!(
+            no_directive
+                .events()
+                .iter()
+                .find(|event| event.event_id == "CommandProcessing")
+                .unwrap()
+                .state,
+            EventState::Invalid
+        );
+        let client = project(
+            at,
+            Some(
+                "&AtClient\r\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure",
+            ),
+        );
+        assert_eq!(
+            client
+                .events()
+                .iter()
+                .find(|event| event.event_id == "CommandProcessing")
+                .unwrap()
+                .state,
+            EventState::Implemented
+        );
+    }
+
+    #[test]
     fn borrowed_form_command_with_multiple_call_type_actions_fails_closed() {
         let context = form_context(
             r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><Commands/><BaseForm/></Form>"#,
@@ -2333,7 +2566,8 @@ mod tests {
                 "mobileClient",
                 "mobileAppClient",
             ],
-        )];
+        )
+        .with_directive(Some("&AtClient"))];
         assert_eq!(
             project_form_events_with_context(&regular, std::slice::from_ref(&binding), &methods)
                 .iter()
@@ -2807,7 +3041,8 @@ mod tests {
                     "mobileAppClient",
                     "server",
                 ],
-            ),
+            )
+            .with_directive(Some("&НаКлиенте")),
             FormMethodFact::new(
                 "Неверный",
                 crate::domain::module_projection::MethodKind::Function,

@@ -1493,7 +1493,7 @@ pub(crate) struct FormInfoProperty {
     pub(crate) value: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoEvent {
     pub(crate) name: String,
@@ -1502,7 +1502,7 @@ pub(crate) struct FormInfoEvent {
     pub(crate) call_type: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoElement {
     pub(crate) tag: String,
@@ -1522,7 +1522,7 @@ pub(crate) struct FormInfoElement {
     pub(crate) children: Vec<FormInfoElement>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoBinding {
     /// `dataPath`, `standardCommand`, `command` or `other`.
@@ -1560,13 +1560,35 @@ pub(crate) struct FormInfoParameter {
     pub(crate) is_key: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoCommand {
     pub(crate) name: String,
     pub(crate) actions: Vec<FormInfoEvent>,
     /// The keyboard shortcut; `null` when the command declares none.
     pub(crate) shortcut: Option<String>,
+}
+
+/// Minimal, provider-neutral form evidence consumed by the hidden event
+/// projector. It deliberately excludes support state, report properties and
+/// every other V12 `form.info` concern.
+#[derive(Debug, Clone)]
+pub(crate) struct FormEventEvidence {
+    pub(crate) context: FormEventContext,
+    pub(crate) events: Vec<FormInfoEvent>,
+    pub(crate) elements: Vec<FormInfoElement>,
+    pub(crate) commands: Vec<FormInfoCommand>,
+}
+
+impl FormEventEvidence {
+    pub(crate) fn from_info(data: &FormInfoData) -> Self {
+        Self {
+            context: data.event_context.clone(),
+            events: data.events.clone(),
+            elements: data.elements.clone(),
+            commands: data.commands.clone(),
+        }
+    }
 }
 
 pub(crate) struct FormInfoExecution {
@@ -1716,6 +1738,29 @@ fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand>
         .collect()
 }
 
+fn form_event_evidence_from_root(root: roxmltree::Node<'_, '_>) -> FormEventEvidence {
+    FormEventEvidence {
+        context: context_from_root(root),
+        events: form_child(root, "Events")
+            .map(form_info_events_section)
+            .unwrap_or_default(),
+        elements: form_child(root, "ChildItems")
+            .map(form_info_tree)
+            .unwrap_or_default(),
+        commands: form_child(root, "Commands")
+            .map(form_info_commands)
+            .unwrap_or_default(),
+    }
+}
+
+pub(crate) fn parse_form_event_evidence_xml(text: &str) -> Result<FormEventEvidence, String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("Form XML parse error: {err}"))?;
+    let root = doc.root_element();
+    require_form_root(root)?;
+    Ok(form_event_evidence_from_root(root))
+}
+
 pub(crate) fn analyze_form_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -1821,6 +1866,7 @@ pub(crate) fn parse_form_info_xml(
     } else {
         Vec::new()
     };
+    let event_evidence = form_event_evidence_from_root(root);
     Ok(FormInfoData {
         name: form_name,
         title: form_title,
@@ -1830,24 +1876,18 @@ pub(crate) fn parse_form_info_xml(
             .map(|node| node.attribute("version").unwrap_or("").to_string()),
         support,
         properties,
-        events: form_child(root, "Events")
-            .map(form_info_events_section)
-            .unwrap_or_default(),
+        events: event_evidence.events,
         auto_command_bar,
         command_bar_location,
-        elements: form_child(root, "ChildItems")
-            .map(form_info_tree)
-            .unwrap_or_default(),
+        elements: event_evidence.elements,
         attributes: form_child(root, "Attributes")
             .map(form_info_attributes)
             .unwrap_or_default(),
         parameters: form_child(root, "Parameters")
             .map(form_info_parameters)
             .unwrap_or_default(),
-        commands: form_child(root, "Commands")
-            .map(form_info_commands)
-            .unwrap_or_default(),
-        event_context: context_from_root(root),
+        commands: event_evidence.commands,
+        event_context: event_evidence.context,
     })
 }
 

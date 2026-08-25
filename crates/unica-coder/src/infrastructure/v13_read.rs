@@ -18,14 +18,18 @@ use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::SourceTarget;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::bsl_module_projection::{
-    project_form_owner_events, project_module, FormBindingOwner, FormEventBindingInput,
-    FormEventOwnerInput, FormMethodFact, ModuleProjectionRequest, PlatformEventWriteCapability,
+    project_module, FormEventBindingInput, ModuleProjectionRequest, PlatformEventWriteCapability,
 };
+use crate::infrastructure::event_projection::{
+    form_semantic_inputs, project_platform_event_from_projection,
+    project_property_events_from_projection,
+};
+use crate::infrastructure::logical_event_source::{
+    module_prefix as shared_module_prefix, module_source_address as shared_module_source_address,
+};
+use crate::infrastructure::logical_event_source::{resolve_event_source, LogicalEventSource};
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
-use crate::infrastructure::native_operations::form::{
-    FormInfoData, FormInfoElement, FormInfoEvent,
-};
-use crate::infrastructure::native_operations::form_event_registry::FormElementKind;
+use crate::infrastructure::native_operations::form::FormEventEvidence;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::platform_xml_owner::PlatformXmlSourceSetOwnerEvidence;
 #[cfg(test)]
@@ -568,6 +572,29 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 "WebSocketClient source layout is not specified for platform profile 8.3.27",
             ));
         }
+        if self.read.source_set_kind() == SourceSetKind::Configuration
+            && route.at().segments().last().is_some_and(|segment| {
+                segment.kind() == NodeKind::Event && segment.name().is_some()
+            })
+        {
+            let LogicalEventSource::Platform(source) = resolve_event_source(
+                self.read.source_set(),
+                self.read.source_set_kind(),
+                self.profile,
+                route.at(),
+            )
+            .map_err(|error| ViewError::new(error.code(), error.to_string()))?
+            else {
+                return Err(ViewError::new(
+                    "provider_unavailable",
+                    "module event did not resolve to a Platform source",
+                ));
+            };
+            let projection = self.module_projection(&source.module_at, capability, admitted)?;
+            let event = project_platform_event_from_projection(&source, &projection)
+                .map_err(|error| ViewError::new(error.code(), error.to_string()))?;
+            return Ok(NodeViewData::Node(event_node(&event)));
+        }
         let projections = self.module_projection(&module_at, capability, admitted)?;
         module_projection_view(route.at(), prefix_len, projections.as_ref(), filter)
     }
@@ -861,7 +888,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path())
                 .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
         let data = self.read.form_data(&metadata_path)?;
-        Ok(form_semantic_inputs(form_at, &data).bindings)
+        Ok(form_semantic_inputs(form_at, &FormEventEvidence::from_info(&data)).bindings)
     }
 
     fn form_view(
@@ -887,27 +914,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
             )
         })?;
         self.verify_module_owner(&module_at, capability, admitted)?;
+        let evidence = FormEventEvidence::from_info(&data);
+        let inputs = form_semantic_inputs(&form_at.to_string(), &evidence);
         let module = self.module_projection(&module_at, capability, admitted)?;
-        let methods = module
-            .methods()
-            .iter()
-            .map(|method| {
-                FormMethodFact::new(
-                    &method.name,
-                    method.method_kind,
-                    &method.signature,
-                    method.compile.contexts.iter().map(String::as_str).collect(),
-                )
-                .with_directive(method.compile.directive.as_deref())
-            })
-            .collect::<Vec<_>>();
-        let inputs = form_semantic_inputs(&form_at.to_string(), &data);
-        let events = project_form_owner_events(
-            &data.event_context,
-            &inputs.owners,
-            &inputs.bindings,
-            &methods,
-        );
+        let events = project_property_events_from_projection(&evidence, &inputs, &module)
+            .map_err(|error| ViewError::new(error.code(), error.to_string()))?;
         let payload = serde_json::to_value(data).map_err(|error| {
             ViewError::new(
                 "provider_unavailable",
@@ -1380,18 +1391,8 @@ fn module_prefix(
     profile: PlatformProfile,
     capability: ModuleCapability,
 ) -> Result<(QualifiedAddress, usize), ViewError> {
-    for length in 1..=address.segments().len() {
-        let logical = render_segments(&address.segments()[..length]);
-        let prefix = QualifiedAddress::parse(&format!("{}:{logical}", address.source_set()))
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
-        if profile.module_capability(&prefix) == Some(capability) {
-            return Ok((prefix, length));
-        }
-    }
-    Err(ViewError::new(
-        "provider_unavailable",
-        "module prefix could not be reconstructed from the platform profile",
-    ))
+    shared_module_prefix(address, profile, capability)
+        .map_err(|error| ViewError::new("provider_unavailable", error))
 }
 
 fn render_segments(segments: &[AddressSegment]) -> String {
@@ -1409,103 +1410,8 @@ fn module_source_address(
     module_at: &QualifiedAddress,
     capability: ModuleCapability,
 ) -> Result<MetadataAddress, ViewError> {
-    let segments = module_at.segments();
-    let logical = match capability.source_layout() {
-        ModuleSourceLayout::Root => match capability.role() {
-            ModuleRole::ManagedApplication => "ManagedApplicationModule".to_string(),
-            ModuleRole::OrdinaryApplication => "OrdinaryApplicationModule".to_string(),
-            ModuleRole::Session => "SessionModule".to_string(),
-            ModuleRole::ExternalConnection => "ExternalConnectionModule".to_string(),
-            _ => return Err(unsupported_module_layout(capability)),
-        },
-        ModuleSourceLayout::Common => format!(
-            "CommonModule.{}.Module",
-            required_segment_name(segments.first(), capability)?
-        ),
-        ModuleSourceLayout::Direct => {
-            let owner = segments
-                .first()
-                .ok_or_else(|| unsupported_module_layout(capability))?;
-            let role = match capability.role() {
-                ModuleRole::Object => "ObjectModule",
-                ModuleRole::Manager => "ManagerModule",
-                ModuleRole::RecordSet => "RecordSetModule",
-                ModuleRole::ValueManager => "ValueManagerModule",
-                _ => return Err(unsupported_module_layout(capability)),
-            };
-            format!(
-                "{}.{}.{role}",
-                owner.kind().as_str(),
-                required_segment_name(Some(owner), capability)?
-            )
-        }
-        ModuleSourceLayout::CommonForm => format!(
-            "CommonForm.{}.FormModule",
-            required_segment_name(segments.first(), capability)?
-        ),
-        ModuleSourceLayout::CommonCommand => format!(
-            "CommonCommand.{}.CommandModule",
-            required_segment_name(segments.first(), capability)?
-        ),
-        ModuleSourceLayout::NestedForm | ModuleSourceLayout::NestedCommand => {
-            let owner = segments
-                .first()
-                .ok_or_else(|| unsupported_module_layout(capability))?;
-            let child = segments
-                .get(1)
-                .ok_or_else(|| unsupported_module_layout(capability))?;
-            let terminal = if capability.source_layout() == ModuleSourceLayout::NestedForm {
-                "FormModule"
-            } else {
-                "CommandModule"
-            };
-            format!(
-                "{}.{}.{}.{}.{terminal}",
-                owner.kind().as_str(),
-                required_segment_name(Some(owner), capability)?,
-                child.kind().as_str(),
-                required_segment_name(Some(child), capability)?,
-            )
-        }
-        ModuleSourceLayout::Service | ModuleSourceLayout::Bot => {
-            let owner = segments
-                .first()
-                .ok_or_else(|| unsupported_module_layout(capability))?;
-            format!(
-                "{}.{}.Module",
-                owner.kind().as_str(),
-                required_segment_name(Some(owner), capability)?
-            )
-        }
-        ModuleSourceLayout::WebSocketClient => {
-            return Err(ViewError::new(
-                "provider_unavailable",
-                "WebSocketClient source layout is not specified for platform profile 8.3.27",
-            ))
-        }
-    };
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
-        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
-}
-
-fn required_segment_name(
-    segment: Option<&AddressSegment>,
-    capability: ModuleCapability,
-) -> Result<&str, ViewError> {
-    segment
-        .and_then(AddressSegment::name)
-        .ok_or_else(|| unsupported_module_layout(capability))
-}
-
-fn unsupported_module_layout(capability: ModuleCapability) -> ViewError {
-    ViewError::new(
-        "provider_unavailable",
-        format!(
-            "module source layout is unavailable for {}.{}",
-            capability.owner_kind().as_str(),
-            capability.role().as_str()
-        ),
-    )
+    shared_module_source_address(module_at, capability)
+        .map_err(|error| ViewError::new("provider_unavailable", error))
 }
 
 fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, ViewError> {
@@ -1558,90 +1464,6 @@ fn xml_descendant_text<'a>(root: roxmltree::Node<'a, 'a>, name: &str) -> Option<
         .find(|node| node.is_element() && node.tag_name().name() == name)
         .and_then(|node| node.text())
         .map(str::trim)
-}
-
-fn form_event_binding(
-    owner: FormBindingOwner,
-    at: &str,
-    event: &FormInfoEvent,
-) -> FormEventBindingInput {
-    FormEventBindingInput::property(
-        owner,
-        at,
-        &event.name,
-        &event.handler,
-        event.call_type.as_deref(),
-    )
-}
-
-struct FormSemanticInputs {
-    owners: Vec<FormEventOwnerInput>,
-    bindings: Vec<FormEventBindingInput>,
-}
-
-fn form_semantic_inputs(form_at: &str, data: &FormInfoData) -> FormSemanticInputs {
-    let mut inputs = FormSemanticInputs {
-        owners: vec![FormEventOwnerInput::new(FormBindingOwner::Form, form_at)],
-        bindings: data
-            .events
-            .iter()
-            .map(|event| form_event_binding(FormBindingOwner::Form, form_at, event))
-            .collect(),
-    };
-    collect_element_semantics(form_at, &data.elements, false, &mut inputs);
-    for command in &data.commands {
-        let at = format!("{form_at}.Command.{}", command.name);
-        inputs
-            .owners
-            .push(FormEventOwnerInput::new(FormBindingOwner::Command, &at));
-        inputs.bindings.extend(
-            command
-                .actions
-                .iter()
-                .map(|event| form_event_binding(FormBindingOwner::Command, &at, event)),
-        );
-    }
-    inputs
-}
-
-fn collect_element_semantics(
-    parent_at: &str,
-    elements: &[FormInfoElement],
-    parent_is_table: bool,
-    inputs: &mut FormSemanticInputs,
-) {
-    for element in elements {
-        let at = format!("{parent_at}.Item.{}", element.name);
-        let is_table = element.event_kind == Some(FormElementKind::Table);
-        if let Some(kind) = element.event_kind {
-            let owner = if parent_is_table {
-                FormBindingOwner::Column(kind)
-            } else if is_table {
-                FormBindingOwner::Table
-            } else {
-                FormBindingOwner::Element(kind)
-            };
-            let mut semantic_owner = FormEventOwnerInput::new(owner, &at);
-            if is_table {
-                if let Some(data_path) = element
-                    .binding
-                    .as_ref()
-                    .filter(|binding| binding.kind == "dataPath")
-                    .map(|binding| binding.target.as_str())
-                {
-                    semantic_owner = semantic_owner.with_data_path(data_path);
-                }
-            }
-            inputs.owners.push(semantic_owner);
-            inputs.bindings.extend(
-                element
-                    .events
-                    .iter()
-                    .map(|event| form_event_binding(owner, &at, event)),
-            );
-        }
-        collect_element_semantics(&at, &element.children, is_table, inputs);
-    }
 }
 
 fn module_title(at: &QualifiedAddress, capability: ModuleCapability) -> String {

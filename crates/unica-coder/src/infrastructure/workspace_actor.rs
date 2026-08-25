@@ -347,7 +347,7 @@ impl ApplyAdmission {
         if !state.has_writer_authority(&self.writer_authority) {
             return Err("apply staged state belongs to another actor-issued authority".to_string());
         }
-        let transaction = state.finalize()?;
+        let transaction = state.finalize().map_err(|error| error.to_string())?;
         Ok(PreparedApplyBatch {
             actor_identity: self.actor_identity,
             actor_instance: self.actor_instance,
@@ -2798,12 +2798,16 @@ pub(crate) mod tests {
         state
             .replace("Module.bsl", b"original", b"dry-run".to_vec())
             .unwrap();
+        state
+            .create("Ext/Form/Module.bsl", b"dry-run-create".to_vec())
+            .unwrap();
         let dry_result = fixture
             .actor
             .publish_prepared_apply(admitted.prepare(state).unwrap())
             .unwrap();
         assert_eq!(dry_result.rev(), admitted_rev);
         assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        assert!(!fixture.roots[0].join("Ext").exists());
         assert_eq!(dry_result.commit_count_for_test(), 0);
         assert!(dry_result.cleanup_diagnostics().is_empty());
 
@@ -2821,11 +2825,18 @@ pub(crate) mod tests {
         state
             .replace("Module.bsl", b"original", b"published".to_vec())
             .unwrap();
+        state
+            .create("Ext/Form/Module.bsl", b"published-create".to_vec())
+            .unwrap();
         let result = fixture
             .actor
             .publish_prepared_apply(admitted.prepare(state).unwrap())
             .unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"published");
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Ext/Form/Module.bsl")).unwrap(),
+            b"published-create"
+        );
         assert_ne!(result.rev(), admitted_rev);
         assert_eq!(result.commit_count_for_test(), 1);
         assert!(result.cleanup_diagnostics().is_empty());

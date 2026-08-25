@@ -13,10 +13,14 @@ pub(crate) mod diagnostics_jsonl;
 pub(crate) mod documentation_policy;
 pub(crate) mod documentation_retrieval;
 pub(crate) mod engine_delivery;
+#[allow(dead_code)]
+pub(crate) mod event_projection;
 pub(crate) mod format_guard;
 pub mod internal_adapters;
 pub(crate) mod kb_1ci;
 // Hidden v0.13 routing remains unreachable from the package-selected v0.12 surface.
+#[allow(dead_code)]
+pub(crate) mod logical_event_source;
 #[allow(dead_code)]
 pub(crate) mod logical_tree;
 pub(crate) mod metadata_kinds;

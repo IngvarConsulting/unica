@@ -283,7 +283,8 @@ pub(crate) struct CompileTransaction {
 struct PlannedRetainedApplyChange {
     root: Arc<RetainedDirectoryCapability>,
     relative_path: PathBuf,
-    parent: RetainedDirectoryCapability,
+    ancestor: RetainedDirectoryCapability,
+    missing_parent_chain: Vec<OsString>,
     name: OsString,
     original: Option<Vec<u8>>,
     current: Option<Vec<u8>>,
@@ -294,7 +295,8 @@ struct PlannedRetainedApplyChange {
 pub(super) struct RetainedApplyChangeBinding {
     pub(super) root: Arc<RetainedDirectoryCapability>,
     pub(super) relative_path: PathBuf,
-    pub(super) parent: RetainedDirectoryCapability,
+    pub(super) ancestor: RetainedDirectoryCapability,
+    pub(super) missing_parent_chain: Vec<OsString>,
     pub(super) name: OsString,
     pub(super) original: Option<Vec<u8>>,
     pub(super) current: Option<Vec<u8>>,
@@ -338,7 +340,8 @@ impl CompileTransaction {
         let RetainedApplyChangeBinding {
             root,
             relative_path,
-            parent,
+            ancestor,
+            missing_parent_chain,
             name,
             original,
             current,
@@ -370,7 +373,8 @@ impl CompileTransaction {
         self.retained_apply.push(PlannedRetainedApplyChange {
             root,
             relative_path,
-            parent,
+            ancestor,
+            missing_parent_chain,
             name,
             original,
             current,
@@ -420,14 +424,15 @@ impl CompileTransaction {
         self.validate_retained_for_apply()?;
         checkpoint()?;
         let mut published = Vec::with_capacity(self.retained_apply.len());
+        let mut created_directories = Vec::new();
         let operation = (|| {
             for entry in &self.retained_apply {
                 checkpoint()?;
-                publish_retained_apply_change(entry, &mut published)?;
+                publish_retained_apply_change(entry, &mut published, &mut created_directories)?;
             }
             for entry in &self.retained_apply {
                 checkpoint()?;
-                validate_retained_apply_state(entry, &entry.current, true)?;
+                validate_retained_apply_postimage(entry, &entry.current, &created_directories)?;
             }
             #[cfg(test)]
             run_retained_apply_before_post_validation_hook();
@@ -447,7 +452,8 @@ impl CompileTransaction {
         match operation {
             Ok(result) => Ok(result),
             Err(primary) => {
-                let rollback_errors = rollback_retained_apply(&mut published);
+                let rollback_errors =
+                    rollback_retained_apply(&mut published, &mut created_directories);
                 if rollback_errors.is_empty() {
                     Err(primary)
                 } else {
@@ -1810,13 +1816,49 @@ fn validate_retained_apply_state(
             format!("retained apply source-root physical identity changed: {error}")
         })?;
     }
-    entry.parent.validate_named_identity().map_err(|error| {
+    if !entry.missing_parent_chain.is_empty() {
+        entry.ancestor.validate_named_identity().map_err(|error| {
+            format!(
+                "retained apply nearest ancestor link/reparse route or physical identity changed {}: {error}",
+                entry.relative_path.display()
+            )
+        })?;
+        if expected.is_some() {
+            return Err(format!(
+                "retained apply staging invariant requires an absent file below an absent parent: {}",
+                entry.relative_path.display()
+            ));
+        }
+        return match entry
+            .ancestor
+            .retain_immediate_child_nofollow(&entry.missing_parent_chain[0])
+        {
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Ok(_) => Err(format!(
+                "retained apply absent parent chain is occupied: {}",
+                entry.relative_path.display()
+            )),
+            Err(error) => Err(format!(
+                "retained apply absent parent chain cannot be inspected {}: {error}",
+                entry.relative_path.display()
+            )),
+        };
+    }
+    validate_retained_apply_state_at_parent(entry, &entry.ancestor, expected)
+}
+
+fn validate_retained_apply_state_at_parent(
+    entry: &PlannedRetainedApplyChange,
+    parent: &RetainedDirectoryCapability,
+    expected: &Option<Vec<u8>>,
+) -> Result<(), String> {
+    parent.validate_named_identity().map_err(|error| {
         format!(
             "retained apply target parent link/reparse route or physical identity changed {}: {error}",
             entry.relative_path.display()
         )
     })?;
-    let observed = match entry.parent.retain_immediate_child_nofollow(&entry.name) {
+    let observed = match parent.retain_immediate_child_nofollow(&entry.name) {
         Ok(RetainedChildCapability::RegularFile(file)) => {
             if file.hard_link_count().map_err(|error| {
                 format!("retained apply hard-link count cannot be read: {error}")
@@ -1872,20 +1914,176 @@ struct PublishedRetainedApplyChange {
     displaced: Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
 }
 
+#[derive(Debug)]
+struct CreatedRetainedApplyDirectory {
+    parent: RetainedDirectoryCapability,
+    name: OsString,
+    directory: RetainedDirectoryCapability,
+    logical_path: PathBuf,
+    published: bool,
+}
+
 fn retained_apply_stage_name() -> OsString {
     OsString::from(format!(".unica-apply-{}", uuid::Uuid::new_v4()))
+}
+
+fn retained_apply_directory_stage_name() -> OsString {
+    OsString::from(format!(".unica-apply-dir-{}", uuid::Uuid::new_v4()))
+}
+
+fn create_retained_apply_parent_chain(
+    entry: &PlannedRetainedApplyChange,
+    created: &mut Vec<CreatedRetainedApplyDirectory>,
+) -> Result<RetainedDirectoryCapability, String> {
+    entry.root.validate_named_identity().map_err(|error| {
+        format!("retained apply source-root physical identity changed: {error}")
+    })?;
+    entry.ancestor.validate_named_identity().map_err(|error| {
+        format!(
+            "retained apply nearest ancestor physical identity changed {}: {error}",
+            entry.relative_path.display()
+        )
+    })?;
+    let parent_path = entry
+        .relative_path
+        .parent()
+        .expect("retained file path has a parent");
+    let parent_components = parent_path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name.to_os_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let retained_prefix_len = parent_components
+        .len()
+        .checked_sub(entry.missing_parent_chain.len())
+        .ok_or_else(|| {
+            "retained apply missing-parent chain exceeds its logical path".to_string()
+        })?;
+    let mut logical_path = parent_components[..retained_prefix_len]
+        .iter()
+        .collect::<PathBuf>();
+    let mut parent = entry.ancestor.clone();
+    for name in &entry.missing_parent_chain {
+        logical_path.push(name);
+        if let Some(directory) = owned_retained_apply_directory_child(&parent, name, created)? {
+            parent = directory;
+            continue;
+        }
+        match parent.retain_immediate_child_nofollow(name) {
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(format!(
+                    "retained apply absent parent chain is occupied: {}",
+                    logical_path.display()
+                ))
+            }
+            Err(error) => {
+                return Err(format!(
+                    "retained apply absent parent chain cannot be inspected {}: {error}",
+                    logical_path.display()
+                ))
+            }
+        }
+        let private_name = retained_apply_directory_stage_name();
+        let directory = match parent.create_directory_child_atomically(&private_name, name) {
+            Ok(directory) => directory,
+            Err(error) => {
+                let (error, artifact) = error.into_parts();
+                if let Some((directory, artifact_name, published)) = artifact {
+                    created.push(CreatedRetainedApplyDirectory {
+                        parent: parent.clone(),
+                        name: artifact_name,
+                        directory,
+                        logical_path: logical_path.clone(),
+                        published,
+                    });
+                }
+                return Err(format!(
+                    "retained apply absent parent publication failed {}: {error}",
+                    logical_path.display()
+                ));
+            }
+        };
+        created.push(CreatedRetainedApplyDirectory {
+            parent: parent.clone(),
+            name: name.clone(),
+            directory: directory.clone(),
+            logical_path: logical_path.clone(),
+            published: true,
+        });
+        parent = directory;
+    }
+    Ok(parent)
+}
+
+fn owned_retained_apply_directory_child(
+    parent: &RetainedDirectoryCapability,
+    name: &OsStr,
+    created: &[CreatedRetainedApplyDirectory],
+) -> Result<Option<RetainedDirectoryCapability>, String> {
+    for owned in created {
+        if !owned.published || owned.parent.identity() != parent.identity() {
+            continue;
+        }
+        if !parent
+            .child_names_equivalent(&owned.name, name)
+            .map_err(|error| format!("retained apply child identity cannot be proven: {error}"))?
+        {
+            continue;
+        }
+        owned.directory.validate_named_identity().map_err(|error| {
+            format!(
+                "batch-created retained directory identity changed {}: {error}",
+                owned.logical_path.display()
+            )
+        })?;
+        return Ok(Some(owned.directory.clone()));
+    }
+    Ok(None)
+}
+
+fn validate_retained_apply_postimage(
+    entry: &PlannedRetainedApplyChange,
+    expected: &Option<Vec<u8>>,
+    created: &[CreatedRetainedApplyDirectory],
+) -> Result<(), String> {
+    if entry.missing_parent_chain.is_empty() {
+        return validate_retained_apply_state(entry, expected, true);
+    }
+    entry.root.validate_named_identity().map_err(|error| {
+        format!("retained apply source-root physical identity changed: {error}")
+    })?;
+    let mut parent = entry.ancestor.clone();
+    for name in &entry.missing_parent_chain {
+        parent =
+            owned_retained_apply_directory_child(&parent, name, created)?.ok_or_else(|| {
+                format!(
+                    "retained apply postimage parent is not transaction-owned: {}",
+                    entry.relative_path.display()
+                )
+            })?;
+    }
+    validate_retained_apply_state_at_parent(entry, &parent, expected)
 }
 
 fn publish_retained_apply_change(
     entry: &PlannedRetainedApplyChange,
     journal: &mut Vec<PublishedRetainedApplyChange>,
+    created_directories: &mut Vec<CreatedRetainedApplyDirectory>,
 ) -> Result<(), String> {
-    validate_retained_apply_state(entry, &entry.original, false)?;
-    entry
-        .parent
+    let parent = if entry.missing_parent_chain.is_empty() {
+        validate_retained_apply_state(entry, &entry.original, false)?;
+        entry.ancestor.clone()
+    } else {
+        let parent = create_retained_apply_parent_chain(entry, created_directories)?;
+        validate_retained_apply_state_at_parent(entry, &parent, &entry.original)?;
+        parent
+    };
+    parent
         .validate_named_identity()
         .map_err(|error| format!("retained apply parent identity cannot be validated: {error}"))?;
-    let parent = entry.parent.clone();
     let name = entry.name.clone();
     match (&entry.original, &entry.current) {
         (None, Some(bytes)) => {
@@ -1991,7 +2189,10 @@ fn validate_displaced_apply_preimage(
     Ok(())
 }
 
-fn rollback_retained_apply(published: &mut Vec<PublishedRetainedApplyChange>) -> Vec<String> {
+fn rollback_retained_apply(
+    published: &mut Vec<PublishedRetainedApplyChange>,
+    created_directories: &mut Vec<CreatedRetainedApplyDirectory>,
+) -> Vec<String> {
     let mut errors = Vec::new();
     while let Some(change) = published.pop() {
         if let Some(file) = change.published.as_ref() {
@@ -2010,6 +2211,14 @@ fn rollback_retained_apply(published: &mut Vec<PublishedRetainedApplyChange>) ->
             {
                 errors.push(format!("displaced apply preimage was preserved: {error}"));
             }
+        }
+    }
+    while let Some(created) = created_directories.pop() {
+        if let Err(error) = created.directory.remove_empty_named_identity_relative() {
+            errors.push(format!(
+                "batch-created directory was preserved {}: {error}",
+                created.logical_path.display()
+            ));
         }
     }
     errors
