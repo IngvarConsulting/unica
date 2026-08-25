@@ -10,6 +10,7 @@ thread_local! {
     static TEST_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_BEFORE_IDENTITY_BOUND_NO_REPLACE_RENAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static TEST_BEFORE_IDENTITY_BOUND_CLEANUP_MUTATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static TEST_BEFORE_IDENTITY_BOUND_DIRECTORY_CLEANUP_MUTATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -44,6 +45,24 @@ pub(crate) fn set_before_identity_bound_cleanup_mutation_hook(hook: impl FnOnce(
 fn run_before_identity_bound_cleanup_mutation_hook() {
     if let Some(hook) =
         TEST_BEFORE_IDENTITY_BOUND_CLEANUP_MUTATION.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_before_identity_bound_directory_cleanup_mutation_hook(
+    hook: impl FnOnce() + 'static,
+) {
+    TEST_BEFORE_IDENTITY_BOUND_DIRECTORY_CLEANUP_MUTATION.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+fn run_before_identity_bound_directory_cleanup_mutation_hook() {
+    if let Some(hook) =
+        TEST_BEFORE_IDENTITY_BOUND_DIRECTORY_CLEANUP_MUTATION.with(|slot| slot.borrow_mut().take())
     {
         hook();
     }
@@ -656,6 +675,95 @@ impl RetainedDirectoryCapability {
             self.retained.identity,
             &self.retained.directory,
         )
+    }
+
+    /// Removes one batch-created retained-apply directory without unlinking
+    /// its admitted public name on Unix. The public entry is first moved to a
+    /// fresh transaction-private quarantine with no replacement, then the
+    /// moved identity is observed. If a concurrent directory was moved, it is
+    /// restored to the public name when possible and never deleted here.
+    /// Windows keeps its handle-based directory deletion.
+    pub(crate) fn remove_empty_named_identity_relative_for_retained_apply(
+        &self,
+        quarantine_name: &std::ffi::OsStr,
+    ) -> io::Result<()> {
+        let parent = self.parent.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "source-root directory cannot be removed as a created child",
+            )
+        })?;
+        #[cfg(unix)]
+        {
+            rename_identity_bound_directory_child_no_replace_after_cleanup_hook(
+                &parent.directory.retained.directory,
+                &parent.name,
+                self.retained.identity,
+                &self.retained.directory,
+                &parent.directory.retained.directory,
+                quarantine_name,
+            )?;
+            let moved = parent.directory.retain_directory_child(quarantine_name)?;
+            if moved.identity() != self.identity() {
+                let restoration = rename_identity_bound_directory_child_no_replace(
+                    &parent.directory.retained.directory,
+                    quarantine_name,
+                    moved.identity(),
+                    &moved.retained.directory,
+                    &parent.directory.retained.directory,
+                    &parent.name,
+                );
+                return Err(match restoration {
+                    Ok(()) => io::Error::other(
+                        "directory cleanup target identity changed at quarantine boundary; concurrent public directory was restored and batch-owned directory left untouched",
+                    ),
+                    Err(error) => io::Error::other(format!(
+                        "directory cleanup target identity changed at quarantine boundary; unexpected directory was preserved in quarantine because restoration failed: {error}"
+                    )),
+                });
+            }
+            let cleanup = moved
+                .validate_named_identity()
+                .and_then(|()| moved.remove_empty_named_identity_relative());
+            if let Err(error) = cleanup {
+                let restoration = rename_identity_bound_directory_child_no_replace(
+                    &parent.directory.retained.directory,
+                    quarantine_name,
+                    moved.identity(),
+                    &moved.retained.directory,
+                    &parent.directory.retained.directory,
+                    &parent.name,
+                );
+                return Err(match restoration {
+                    Ok(()) => io::Error::new(
+                        error.kind(),
+                        format!(
+                            "verified directory cleanup quarantine {} could not be deleted and was restored to its public name: {error}",
+                            Path::new(quarantine_name).display()
+                        ),
+                    ),
+                    Err(restoration) => io::Error::new(
+                        error.kind(),
+                        format!(
+                            "verified directory cleanup quarantine {} in retained parent {:?} could not be deleted and was preserved because public-name restoration failed: {error}; restoration: {restoration}",
+                            Path::new(quarantine_name).display(),
+                            parent.directory.identity()
+                        ),
+                    ),
+                });
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = quarantine_name;
+            remove_identity_bound_empty_directory_child(
+                &parent.directory.retained.directory,
+                &parent.name,
+                self.retained.identity,
+                &self.retained.directory,
+            )
+        }
     }
 
     /// Publishes bytes atomically inside this retained directory. Both the
@@ -4975,6 +5083,36 @@ pub(crate) fn rename_identity_bound_directory_child_no_replace(
     }
     #[cfg(test)]
     run_before_identity_bound_no_replace_rename_hook();
+    rename_regular_child_at_no_replace(
+        source_parent,
+        source_name,
+        destination_parent,
+        destination_name,
+    )
+}
+
+#[cfg(unix)]
+fn rename_identity_bound_directory_child_no_replace_after_cleanup_hook(
+    source_parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "retained directory child identity changed; destination left untouched",
+        ));
+    }
+    let named = open_directory_child_nofollow(source_parent, source_name)?;
+    if file_identity(&named)? != expected_identity {
+        return Err(io::Error::other(
+            "directory child identity changed; destination left untouched",
+        ));
+    }
+    #[cfg(test)]
+    run_before_identity_bound_directory_cleanup_mutation_hook();
     rename_regular_child_at_no_replace(
         source_parent,
         source_name,

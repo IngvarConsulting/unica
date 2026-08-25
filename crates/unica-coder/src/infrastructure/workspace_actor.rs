@@ -8,7 +8,9 @@ use crate::domain::invocation::SafeIdentityHash;
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::deadline_lock::{DeadlineLock, FailClosed};
-use crate::infrastructure::native_operations::apply::ApplyStagedState;
+use crate::infrastructure::native_operations::apply::{
+    ApplyStagedState, ApplyStagingError, ApplyStagingErrorKind,
+};
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::platform::filesystem::{
     path_starts_with_host_root, stable_path_identity_bytes, RetainedDirectoryCapability,
@@ -329,8 +331,8 @@ impl ApplyAdmission {
         self.revision.revision_identity()
     }
 
-    pub(crate) fn staged_state(&self) -> Result<ApplyStagedState, String> {
-        apply_checkpoint(self.deadline, &self.cancellation, "apply planning")?;
+    pub(crate) fn staged_state(&self) -> Result<ApplyStagedState, ApplyStagingError> {
+        apply_staging_checkpoint(self.deadline, &self.cancellation, "apply planning")?;
         Ok(ApplyStagedState::from_retained_root(
             Arc::clone(&self.source_root),
             self.deadline,
@@ -339,15 +341,24 @@ impl ApplyAdmission {
         ))
     }
 
-    pub(crate) fn prepare(self, state: ApplyStagedState) -> Result<PreparedApplyBatch, String> {
-        apply_checkpoint(self.deadline, &self.cancellation, "apply preparation")?;
+    pub(crate) fn prepare(
+        self,
+        state: ApplyStagedState,
+    ) -> Result<PreparedApplyBatch, ApplyStagingError> {
+        apply_staging_checkpoint(self.deadline, &self.cancellation, "apply preparation")?;
         if state.retained_root_identity() != self.source_root.identity() {
-            return Err("apply staged state belongs to another retained source root".to_string());
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::ContainmentIdentity,
+                "apply staged state belongs to another retained source root",
+            ));
         }
         if !state.has_writer_authority(&self.writer_authority) {
-            return Err("apply staged state belongs to another actor-issued authority".to_string());
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Invariant,
+                "apply staged state belongs to another actor-issued authority",
+            ));
         }
-        let transaction = state.finalize().map_err(|error| error.to_string())?;
+        let transaction = state.finalize()?;
         Ok(PreparedApplyBatch {
             actor_identity: self.actor_identity,
             actor_instance: self.actor_instance,
@@ -1150,6 +1161,26 @@ fn apply_checkpoint(
     }
 }
 
+fn apply_staging_checkpoint(
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    phase: &str,
+) -> Result<(), ApplyStagingError> {
+    if cancellation.is_cancelled() {
+        Err(ApplyStagingError::new(
+            ApplyStagingErrorKind::Cancelled,
+            format!("{phase} cancelled"),
+        ))
+    } else if deadline.remaining().is_zero() {
+        Err(ApplyStagingError::new(
+            ApplyStagingErrorKind::Deadline,
+            format!("{phase} deadline exceeded"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_physical_root(root: &RetainedDirectoryCapability) -> Result<(), String> {
     root.validate_named_identity().map_err(|error| {
         format!(
@@ -1323,6 +1354,7 @@ pub(crate) mod tests {
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::native_operations::apply::ApplyStagingErrorKind;
     use crate::infrastructure::platform::source_revision_fence::{
         FenceCapability, FenceOutcome, SourceRevisionFence,
     };
@@ -2844,6 +2876,166 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn apply_preparation_preserves_all_six_typed_staging_error_kinds() {
+        let mut observed = Vec::new();
+
+        let fixture = actor_fixture("prepare-kind-cancelled", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let state = admitted.staged_state().unwrap();
+        cancellation.cancel();
+        observed.push((
+            ApplyStagingErrorKind::Cancelled,
+            admitted.prepare(state).unwrap_err().kind(),
+        ));
+        fixture.cleanup();
+
+        let fixture = actor_fixture("prepare-kind-deadline", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let mut admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let state = admitted.staged_state().unwrap();
+        admitted.deadline = ProviderDeadline::from_budget(Duration::ZERO);
+        observed.push((
+            ApplyStagingErrorKind::Deadline,
+            admitted.prepare(state).unwrap_err().kind(),
+        ));
+        fixture.cleanup();
+
+        let fixture = actor_fixture("prepare-kind-containment", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"replacement".to_vec())
+            .unwrap();
+        std::fs::rename(&fixture.roots[0], fixture.root.join("src-displaced")).unwrap();
+        std::fs::create_dir(&fixture.roots[0]).unwrap();
+        observed.push((
+            ApplyStagingErrorKind::ContainmentIdentity,
+            admitted.prepare(state).unwrap_err().kind(),
+        ));
+        fixture.cleanup();
+
+        let fixture = actor_fixture("prepare-kind-occupied", &["src"]);
+        std::fs::create_dir(fixture.roots[0].join("Ext")).unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .create("Ext/Form/Module.bsl", b"created".to_vec())
+            .unwrap();
+        std::fs::create_dir(fixture.roots[0].join("Ext/Form")).unwrap();
+        observed.push((
+            ApplyStagingErrorKind::AbsentChainOccupied,
+            admitted.prepare(state).unwrap_err().kind(),
+        ));
+        fixture.cleanup();
+
+        let fixture = actor_fixture("prepare-kind-provider", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state.create("Module.bsl", b"created".to_vec()).unwrap();
+        crate::infrastructure::native_operations::compile_transaction::inject_retained_apply_validation_provider_failure_for_test();
+        observed.push((
+            ApplyStagingErrorKind::UnsupportedProvider,
+            admitted.prepare(state).unwrap_err().kind(),
+        ));
+        fixture.cleanup();
+
+        let fixture = actor_fixture("prepare-kind-invariant", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .create("Malformed.xml", b"<not-closed".to_vec())
+            .unwrap();
+        observed.push((
+            ApplyStagingErrorKind::Invariant,
+            admitted.prepare(state).unwrap_err().kind(),
+        ));
+        fixture.cleanup();
+
+        for (expected, actual) in observed {
+            assert_eq!(actual, expected, "actor preparation erased {expected:?}");
+        }
+    }
+
+    #[test]
     fn prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic() {
         if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
             return;
@@ -3184,7 +3376,7 @@ pub(crate) mod tests {
         let foreign_state = second.staged_state().unwrap();
 
         let error = first.prepare(foreign_state).unwrap_err();
-        assert!(error.contains("authority"), "{error}");
+        assert_eq!(error.kind(), ApplyStagingErrorKind::Invariant);
         fixture.cleanup();
     }
 

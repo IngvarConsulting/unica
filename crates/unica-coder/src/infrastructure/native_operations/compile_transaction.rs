@@ -101,6 +101,41 @@ pub(crate) struct RetainedApplyCleanupDiagnostic {
     artifact_name: OsString,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetainedApplyValidationErrorKind {
+    ContainmentIdentity,
+    AbsentChainOccupied,
+    UnsupportedProvider,
+    Invariant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedApplyValidationError {
+    kind: RetainedApplyValidationErrorKind,
+    message: String,
+}
+
+impl RetainedApplyValidationError {
+    fn new(kind: RetainedApplyValidationErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> RetainedApplyValidationErrorKind {
+        self.kind
+    }
+}
+
+impl std::fmt::Display for RetainedApplyValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RetainedApplyValidationError {}
+
 impl RetainedApplyCleanupDiagnostic {
     pub(in crate::infrastructure) fn into_parts(self) -> (PathBuf, OsString) {
         (self.logical_target, self.artifact_name)
@@ -386,6 +421,20 @@ impl CompileTransaction {
     }
 
     pub(crate) fn validate_retained_for_apply(&self) -> Result<(), String> {
+        self.validate_retained_for_apply_typed()
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn validate_retained_for_apply_typed(
+        &self,
+    ) -> Result<(), RetainedApplyValidationError> {
+        #[cfg(test)]
+        if TEST_RETAINED_APPLY_VALIDATION_PROVIDER_FAILURE.with(|slot| slot.replace(false)) {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::UnsupportedProvider,
+                "injected retained apply provider validation failure",
+            ));
+        }
         if self.retained_apply.is_empty() {
             return Ok(());
         }
@@ -396,17 +445,27 @@ impl CompileTransaction {
             || !self.directory_membership_guards.is_empty()
             || !self.removals.is_empty()
         {
-            return Err(
-                "retained apply entries cannot mix with ambient transaction entries".to_string(),
-            );
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::Invariant,
+                "retained apply entries cannot mix with ambient transaction entries",
+            ));
         }
         for entry in &self.retained_apply {
             entry.root.validate_named_identity().map_err(|error| {
-                format!("retained apply source-root physical identity changed: {error}")
+                RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::ContainmentIdentity,
+                    format!("retained apply source-root physical identity changed: {error}"),
+                )
             })?;
-            validate_retained_apply_preimage(entry)?;
+            validate_retained_apply_preimage_typed(entry)?;
             if let Some(bytes) = &entry.current {
-                validate_xml_when_applicable(&entry.root.path().join(&entry.relative_path), bytes)?;
+                validate_xml_when_applicable(&entry.root.path().join(&entry.relative_path), bytes)
+                    .map_err(|error| {
+                        RetainedApplyValidationError::new(
+                            RetainedApplyValidationErrorKind::Invariant,
+                            error,
+                        )
+                    })?;
             }
         }
         Ok(())
@@ -1802,8 +1861,10 @@ fn validate_strict_relative_file_path(relative: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_retained_apply_preimage(entry: &PlannedRetainedApplyChange) -> Result<(), String> {
-    validate_retained_apply_state(entry, &entry.original, true)
+fn validate_retained_apply_preimage_typed(
+    entry: &PlannedRetainedApplyChange,
+) -> Result<(), RetainedApplyValidationError> {
+    validate_retained_apply_state_typed(entry, &entry.original, true)
 }
 
 fn validate_retained_apply_state(
@@ -1811,22 +1872,40 @@ fn validate_retained_apply_state(
     expected: &Option<Vec<u8>>,
     validate_root_name: bool,
 ) -> Result<(), String> {
+    validate_retained_apply_state_typed(entry, expected, validate_root_name)
+        .map_err(|error| error.to_string())
+}
+
+fn validate_retained_apply_state_typed(
+    entry: &PlannedRetainedApplyChange,
+    expected: &Option<Vec<u8>>,
+    validate_root_name: bool,
+) -> Result<(), RetainedApplyValidationError> {
     if validate_root_name {
         entry.root.validate_named_identity().map_err(|error| {
-            format!("retained apply source-root physical identity changed: {error}")
+            RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ContainmentIdentity,
+                format!("retained apply source-root physical identity changed: {error}"),
+            )
         })?;
     }
     if !entry.missing_parent_chain.is_empty() {
         entry.ancestor.validate_named_identity().map_err(|error| {
-            format!(
-                "retained apply nearest ancestor link/reparse route or physical identity changed {}: {error}",
-                entry.relative_path.display()
+            RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ContainmentIdentity,
+                format!(
+                    "retained apply nearest ancestor link/reparse route or physical identity changed {}: {error}",
+                    entry.relative_path.display()
+                ),
             )
         })?;
         if expected.is_some() {
-            return Err(format!(
-                "retained apply staging invariant requires an absent file below an absent parent: {}",
-                entry.relative_path.display()
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::Invariant,
+                format!(
+                    "retained apply staging invariant requires an absent file below an absent parent: {}",
+                    entry.relative_path.display()
+                ),
             ));
         }
         return match entry
@@ -1834,17 +1913,30 @@ fn validate_retained_apply_state(
             .retain_immediate_child_nofollow(&entry.missing_parent_chain[0])
         {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            Ok(_) => Err(format!(
-                "retained apply absent parent chain is occupied: {}",
-                entry.relative_path.display()
+            Ok(RetainedChildCapability::ReparsePoint) => Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ContainmentIdentity,
+                format!(
+                    "retained apply absent parent chain became a link/reparse point: {}",
+                    entry.relative_path.display()
+                ),
             )),
-            Err(error) => Err(format!(
-                "retained apply absent parent chain cannot be inspected {}: {error}",
-                entry.relative_path.display()
+            Ok(_) => Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::AbsentChainOccupied,
+                format!(
+                    "retained apply absent parent chain is occupied: {}",
+                    entry.relative_path.display()
+                ),
+            )),
+            Err(error) => Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::UnsupportedProvider,
+                format!(
+                    "retained apply absent parent chain cannot be inspected {}: {error}",
+                    entry.relative_path.display()
+                ),
             )),
         };
     }
-    validate_retained_apply_state_at_parent(entry, &entry.ancestor, expected)
+    validate_retained_apply_state_at_parent_typed(entry, &entry.ancestor, expected)
 }
 
 fn validate_retained_apply_state_at_parent(
@@ -1852,52 +1944,89 @@ fn validate_retained_apply_state_at_parent(
     parent: &RetainedDirectoryCapability,
     expected: &Option<Vec<u8>>,
 ) -> Result<(), String> {
+    validate_retained_apply_state_at_parent_typed(entry, parent, expected)
+        .map_err(|error| error.to_string())
+}
+
+fn validate_retained_apply_state_at_parent_typed(
+    entry: &PlannedRetainedApplyChange,
+    parent: &RetainedDirectoryCapability,
+    expected: &Option<Vec<u8>>,
+) -> Result<(), RetainedApplyValidationError> {
     parent.validate_named_identity().map_err(|error| {
-        format!(
-            "retained apply target parent link/reparse route or physical identity changed {}: {error}",
-            entry.relative_path.display()
+        RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ContainmentIdentity,
+            format!(
+                "retained apply target parent link/reparse route or physical identity changed {}: {error}",
+                entry.relative_path.display()
+            ),
         )
     })?;
     let observed = match parent.retain_immediate_child_nofollow(&entry.name) {
         Ok(RetainedChildCapability::RegularFile(file)) => {
             if file.hard_link_count().map_err(|error| {
-                format!("retained apply hard-link count cannot be read: {error}")
+                RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::UnsupportedProvider,
+                    format!("retained apply hard-link count cannot be read: {error}"),
+                )
             })? != 1
             {
-                return Err(format!(
-                    "retained apply target has a hard-link alias: {}",
-                    entry.relative_path.display()
+                return Err(RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::ContainmentIdentity,
+                    format!(
+                        "retained apply target has a hard-link alias: {}",
+                        entry.relative_path.display()
+                    ),
                 ));
             }
-            Some(
-                file.read_bounded(32 * 1024 * 1024)
-                    .map_err(|error| format!("retained apply preimage cannot be read: {error}"))?,
-            )
+            Some(file.read_bounded(32 * 1024 * 1024).map_err(|error| {
+                RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::UnsupportedProvider,
+                    format!("retained apply preimage cannot be read: {error}"),
+                )
+            })?)
         }
         Ok(RetainedChildCapability::ReparsePoint) => {
-            return Err(format!(
-                "retained apply target is a link/reparse point: {}",
-                entry.relative_path.display()
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ContainmentIdentity,
+                format!(
+                    "retained apply target is a link/reparse point: {}",
+                    entry.relative_path.display()
+                ),
             ))
         }
         Ok(RetainedChildCapability::Directory(_) | RetainedChildCapability::Unsupported) => {
-            return Err(format!(
-                "retained apply target is not a regular file: {}",
-                entry.relative_path.display()
-            ))
+            let kind = if expected.is_none() {
+                RetainedApplyValidationErrorKind::AbsentChainOccupied
+            } else {
+                RetainedApplyValidationErrorKind::ContainmentIdentity
+            };
+            return Err(RetainedApplyValidationError::new(
+                kind,
+                format!(
+                    "retained apply target is not a regular file: {}",
+                    entry.relative_path.display()
+                ),
+            ));
         }
         Err(error) if error.kind() == ErrorKind::NotFound => None,
         Err(error) => {
-            return Err(format!(
-                "retained apply target cannot be inspected {}: {error}",
-                entry.relative_path.display()
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::UnsupportedProvider,
+                format!(
+                    "retained apply target cannot be inspected {}: {error}",
+                    entry.relative_path.display()
+                ),
             ))
         }
     };
     if observed != *expected {
-        return Err(format!(
-            "retained apply preimage changed: {}",
-            entry.relative_path.display()
+        return Err(RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ContainmentIdentity,
+            format!(
+                "retained apply preimage changed: {}",
+                entry.relative_path.display()
+            ),
         ));
     }
     Ok(())
@@ -1929,6 +2058,10 @@ fn retained_apply_stage_name() -> OsString {
 
 fn retained_apply_directory_stage_name() -> OsString {
     OsString::from(format!(".unica-apply-dir-{}", uuid::Uuid::new_v4()))
+}
+
+fn retained_apply_directory_cleanup_name() -> OsString {
+    OsString::from(format!(".unica-apply-dir-cleanup-{}", uuid::Uuid::new_v4()))
 }
 
 fn create_retained_apply_parent_chain(
@@ -2214,7 +2347,12 @@ fn rollback_retained_apply(
         }
     }
     while let Some(created) = created_directories.pop() {
-        if let Err(error) = created.directory.remove_empty_named_identity_relative() {
+        if let Err(error) = created
+            .directory
+            .remove_empty_named_identity_relative_for_retained_apply(
+                &retained_apply_directory_cleanup_name(),
+            )
+        {
             errors.push(format!(
                 "batch-created directory was preserved {}: {error}",
                 created.logical_path.display()
@@ -4805,6 +4943,12 @@ thread_local! {
     static TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK: RefCell<Option<BeforeRollbackQuarantineRestoreRenameHook>> = const { RefCell::new(None) };
     static TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK: RefCell<Option<AfterRegistrationRollbackRestoreHook>> = const { RefCell::new(None) };
     static TEST_RETAINED_APPLY_BEFORE_POST_VALIDATION_HOOK: RefCell<Option<RetainedApplyBeforePostValidationHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_VALIDATION_PROVIDER_FAILURE: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn inject_retained_apply_validation_provider_failure_for_test() {
+    TEST_RETAINED_APPLY_VALIDATION_PROVIDER_FAILURE.with(|slot| slot.set(true));
 }
 
 #[cfg(test)]

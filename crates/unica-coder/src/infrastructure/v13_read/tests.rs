@@ -826,6 +826,7 @@ fn form_table_column_event_consumes_arbitrary_depth_and_preserves_owner_address(
 
 #[test]
 fn pure_event_source_resolver_returns_relative_platform_and_nested_form_identities() {
+    use crate::infrastructure::event_projection::resolve_property_event_source;
     use crate::infrastructure::logical_event_source::{
         resolve_event_source, LogicalEventSource, PropertyEventOwnerKind,
     };
@@ -857,19 +858,25 @@ fn pure_event_source_resolver_returns_relative_platform_and_nested_form_identiti
         vec![PathBuf::from("Documents/Заказ.xml")]
     );
 
-    let property = resolve_event_source(
+    let fixture = RealReaderFixture::new();
+    let property_at = QualifiedAddress::parse(
+        "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
+    )
+    .unwrap();
+    let form_xml = fs::read_to_string(
+        fixture
+            .source
+            .join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml"),
+    )
+    .unwrap();
+    let property = resolve_property_event_source(
         "main",
         SourceSetKind::Configuration,
         PlatformProfile::v8_3_27(),
-        &QualifiedAddress::parse(
-            "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
-        )
-        .unwrap(),
+        &property_at,
+        &form_xml,
     )
     .unwrap();
-    let LogicalEventSource::Property(property) = property else {
-        panic!("form event must resolve to property evidence")
-    };
     assert_eq!(
         property.form_xml_relative,
         PathBuf::from("Reports/ParityReport/Forms/MainForm/Ext/Form.xml")
@@ -922,6 +929,165 @@ fn pure_event_source_resolver_returns_relative_platform_and_nested_form_identiti
 }
 
 #[test]
+fn pure_event_source_resolver_requires_form_evidence_for_every_item_depth() {
+    use crate::infrastructure::logical_event_source::resolve_event_source;
+
+    for raw in [
+        "main:Report.ParityReport.Form.MainForm.Item.Field.Event.OnChange",
+        "main:Report.ParityReport.Form.MainForm.Item.Rows.Item.Column.Event.OnChange",
+        "main:Report.ParityReport.Form.MainForm.Item.Tabs.Item.Page.Item.Field.Event.OnChange",
+    ] {
+        let error = resolve_event_source(
+            "main",
+            SourceSetKind::Configuration,
+            PlatformProfile::v8_3_27(),
+            &QualifiedAddress::parse(raw).unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "provider_unavailable", "{raw}: {error}");
+    }
+}
+
+#[test]
+fn form_evidence_resolver_returns_complete_typed_owner_chains_at_arbitrary_depth() {
+    use crate::infrastructure::event_projection::{
+        project_property_event, resolve_property_event_source,
+    };
+    use crate::infrastructure::logical_event_source::PropertyEventOwnerKind;
+    use crate::infrastructure::v13_read::event_node_value;
+
+    let fixture = RealReaderFixture::new();
+    fixture.install_main_form_sources(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+  <ChildItems>
+    <InputField name="Field"><Events><Event name="OnChange">FieldChanged</Event></Events></InputField>
+    <Table name="Rows"><Events><Event name="Selection">RowsSelected</Event></Events><ChildItems>
+      <InputField name="Column"><Events><Event name="OnChange">ColumnChanged</Event></Events></InputField>
+    </ChildItems></Table>
+    <UsualGroup name="Group"><ChildItems>
+      <InputField name="GroupedField"><Events><Event name="OnChange">GroupedFieldChanged</Event></Events></InputField>
+    </ChildItems></UsualGroup>
+    <Pages name="Tabs"><ChildItems><Page name="FirstPage"><ChildItems>
+      <InputField name="PageField"><Events><Event name="OnChange">PageFieldChanged</Event></Events></InputField>
+    </ChildItems></Page></ChildItems></Pages>
+  </ChildItems>
+</Form>"#,
+        "",
+    );
+    let form_xml = fs::read_to_string(
+        fixture
+            .source
+            .join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml"),
+    )
+    .unwrap();
+    let cases = [
+        (
+            "main:Report.ParityReport.Form.MainForm.Item.Field.Event.OnChange",
+            vec![
+                PropertyEventOwnerKind::Form,
+                PropertyEventOwnerKind::Element,
+            ],
+            vec![
+                "main:Report.ParityReport.Form.MainForm",
+                "main:Report.ParityReport.Form.MainForm.Item.Field",
+            ],
+        ),
+        (
+            "main:Report.ParityReport.Form.MainForm.Item.Rows.Event.Selection",
+            vec![
+                PropertyEventOwnerKind::Form,
+                PropertyEventOwnerKind::Table,
+            ],
+            vec![
+                "main:Report.ParityReport.Form.MainForm",
+                "main:Report.ParityReport.Form.MainForm.Item.Rows",
+            ],
+        ),
+        (
+            "main:Report.ParityReport.Form.MainForm.Item.Rows.Item.Column.Event.OnChange",
+            vec![
+                PropertyEventOwnerKind::Form,
+                PropertyEventOwnerKind::Table,
+                PropertyEventOwnerKind::Column,
+            ],
+            vec![
+                "main:Report.ParityReport.Form.MainForm",
+                "main:Report.ParityReport.Form.MainForm.Item.Rows",
+                "main:Report.ParityReport.Form.MainForm.Item.Rows.Item.Column",
+            ],
+        ),
+        (
+            "main:Report.ParityReport.Form.MainForm.Item.Group.Item.GroupedField.Event.OnChange",
+            vec![
+                PropertyEventOwnerKind::Form,
+                PropertyEventOwnerKind::Element,
+                PropertyEventOwnerKind::Element,
+            ],
+            vec![
+                "main:Report.ParityReport.Form.MainForm",
+                "main:Report.ParityReport.Form.MainForm.Item.Group",
+                "main:Report.ParityReport.Form.MainForm.Item.Group.Item.GroupedField",
+            ],
+        ),
+        (
+            "main:Report.ParityReport.Form.MainForm.Item.Tabs.Item.FirstPage.Item.PageField.Event.OnChange",
+            vec![
+                PropertyEventOwnerKind::Form,
+                PropertyEventOwnerKind::Element,
+                PropertyEventOwnerKind::Element,
+                PropertyEventOwnerKind::Element,
+            ],
+            vec![
+                "main:Report.ParityReport.Form.MainForm",
+                "main:Report.ParityReport.Form.MainForm.Item.Tabs",
+                "main:Report.ParityReport.Form.MainForm.Item.Tabs.Item.FirstPage",
+                "main:Report.ParityReport.Form.MainForm.Item.Tabs.Item.FirstPage.Item.PageField",
+            ],
+        ),
+    ];
+    let service = fixture.view_service();
+    for (raw, expected_kinds, expected_addresses) in cases {
+        let at = QualifiedAddress::parse(raw).unwrap();
+        let source = resolve_property_event_source(
+            "main",
+            SourceSetKind::Configuration,
+            PlatformProfile::v8_3_27(),
+            &at,
+            &form_xml,
+        )
+        .unwrap();
+        assert_eq!(
+            source
+                .owner_chain
+                .iter()
+                .map(|owner| owner.kind)
+                .collect::<Vec<_>>(),
+            expected_kinds,
+            "{raw}"
+        );
+        assert_eq!(
+            source
+                .owner_chain
+                .iter()
+                .map(|owner| owner.at.to_string())
+                .collect::<Vec<_>>(),
+            expected_addresses,
+            "{raw}"
+        );
+        let pure = project_property_event(&source, &form_xml, Some("")).unwrap();
+        let physical = service.view(ViewRequest::new(raw).unwrap());
+        assert!(
+            physical.ok,
+            "{raw}: {} {:?}",
+            physical.summary, physical.diagnostics
+        );
+        assert_eq!(physical.data.as_ref().unwrap()["props"]["state"], "missing");
+        assert_eq!(physical.data.unwrap(), event_node_value(&pure));
+    }
+}
+
+#[test]
 fn pure_event_source_resolver_fails_closed_for_unproved_event_layouts() {
     use crate::infrastructure::logical_event_source::resolve_event_source;
 
@@ -960,7 +1126,9 @@ fn pure_event_source_resolver_fails_closed_for_unproved_event_layouts() {
 
 #[test]
 fn pure_event_projectors_match_physical_view_service_event_nodes() {
-    use crate::infrastructure::event_projection::{project_platform_event, project_property_event};
+    use crate::infrastructure::event_projection::{
+        project_platform_event, project_property_event, resolve_property_event_source,
+    };
     use crate::infrastructure::logical_event_source::{resolve_event_source, LogicalEventSource};
     use crate::infrastructure::v13_read::event_node_value;
 
@@ -1004,12 +1172,20 @@ fn pure_event_projectors_match_physical_view_service_event_nodes() {
         "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
     )
     .unwrap();
-    let LogicalEventSource::Property(resolved) =
-        resolve_event_source("main", SourceSetKind::Configuration, profile, &property_at).unwrap()
-    else {
-        panic!("property event must resolve to form sources")
-    };
-    let form_xml = fs::read_to_string(fixture.source.join(&resolved.form_xml_relative)).unwrap();
+    let form_xml = fs::read_to_string(
+        fixture
+            .source
+            .join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml"),
+    )
+    .unwrap();
+    let resolved = resolve_property_event_source(
+        "main",
+        SourceSetKind::Configuration,
+        profile,
+        &property_at,
+        &form_xml,
+    )
+    .unwrap();
     let module_bsl = fs::read_to_string(fixture.source.join(&resolved.module_relative)).unwrap();
     let pure = project_property_event(&resolved, &form_xml, Some(&module_bsl)).unwrap();
     let physical = fixture

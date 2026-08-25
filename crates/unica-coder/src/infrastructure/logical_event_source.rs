@@ -194,29 +194,18 @@ fn resolve_property_event_source(
     }];
     match tail {
         [] => {}
-        [item] if item.kind() == NodeKind::Item && item.name().is_some() => {
-            owner_chain.push(PropertyEventOwner {
-                kind: PropertyEventOwnerKind::UnresolvedItem,
-                at: qualified_prefix(event_at, form_index + 2)
-                    .map_err(EventSourceError::unavailable)?,
-            });
-        }
-        [table, column]
-            if table.kind() == NodeKind::Item
-                && table.name().is_some()
-                && column.kind() == NodeKind::Item
-                && column.name().is_some() =>
+        items
+            if items
+                .iter()
+                .all(|item| item.kind() == NodeKind::Item && item.name().is_some()) =>
         {
-            owner_chain.push(PropertyEventOwner {
-                kind: PropertyEventOwnerKind::Table,
-                at: qualified_prefix(event_at, form_index + 2)
-                    .map_err(EventSourceError::unavailable)?,
-            });
-            owner_chain.push(PropertyEventOwner {
-                kind: PropertyEventOwnerKind::Column,
-                at: qualified_prefix(event_at, form_index + 3)
-                    .map_err(EventSourceError::unavailable)?,
-            });
+            for index in 0..items.len() {
+                owner_chain.push(PropertyEventOwner {
+                    kind: PropertyEventOwnerKind::UnresolvedItem,
+                    at: qualified_prefix(event_at, form_index + index + 2)
+                        .map_err(EventSourceError::unavailable)?,
+                });
+            }
         }
         [command] if command.kind() == NodeKind::Command && command.name().is_some() => {
             owner_chain.push(PropertyEventOwner {
@@ -227,7 +216,7 @@ fn resolve_property_event_source(
         }
         _ => {
             return Err(EventSourceError::unavailable(
-                "form event owner chain is ambiguous or unsupported",
+                "form event owner chain mixes unsupported logical owner kinds",
             ))
         }
     }

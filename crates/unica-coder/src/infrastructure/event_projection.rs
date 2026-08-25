@@ -144,9 +144,10 @@ pub(crate) fn resolve_property_event_source(
         expected.kind = match actual.owner() {
             FormBindingOwner::Element(_) => PropertyEventOwnerKind::Element,
             FormBindingOwner::Table => PropertyEventOwnerKind::Table,
+            FormBindingOwner::Column(_) => PropertyEventOwnerKind::Column,
             _ => {
                 return Err(EventProjectionError::unavailable(format!(
-                    "direct Item `{}` is neither an element nor a table",
+                    "Item `{}` has no exact form element evidence",
                     expected.at
                 )))
             }
@@ -295,34 +296,39 @@ fn validate_owner_chain(
     source: &PropertyEventSource,
     inputs: &FormSemanticInputs,
 ) -> Result<(), EventProjectionError> {
-    let expected = source.owner_chain.last().ok_or_else(|| {
-        EventProjectionError::unavailable("property event source has no owner chain")
-    })?;
-    let actual = inputs
-        .owners
-        .iter()
-        .find(|owner| owner.at() == expected.at.to_string())
-        .ok_or_else(|| {
-            EventProjectionError::unavailable(format!(
-                "form evidence does not contain owner `{}`",
+    if source.owner_chain.is_empty() {
+        return Err(EventProjectionError::unavailable(
+            "property event source has no owner chain",
+        ));
+    }
+    for expected in &source.owner_chain {
+        let actual = inputs
+            .owners
+            .iter()
+            .find(|owner| owner.at() == expected.at.to_string())
+            .ok_or_else(|| {
+                EventProjectionError::unavailable(format!(
+                    "form evidence does not contain owner `{}`",
+                    expected.at
+                ))
+            })?;
+        let matches = match (expected.kind, actual.owner()) {
+            (PropertyEventOwnerKind::Form, FormBindingOwner::Form)
+            | (PropertyEventOwnerKind::Element, FormBindingOwner::Element(_))
+            | (PropertyEventOwnerKind::Table, FormBindingOwner::Table)
+            | (PropertyEventOwnerKind::Column, FormBindingOwner::Column(_))
+            | (PropertyEventOwnerKind::Command, FormBindingOwner::Command) => true,
+            (PropertyEventOwnerKind::UnresolvedItem, _) => false,
+            _ => false,
+        };
+        if !matches {
+            return Err(EventProjectionError::unavailable(format!(
+                "form evidence disagrees with the typed owner `{}`",
                 expected.at
-            ))
-        })?;
-    let matches = match (expected.kind, actual.owner()) {
-        (PropertyEventOwnerKind::Form, FormBindingOwner::Form)
-        | (PropertyEventOwnerKind::Element, FormBindingOwner::Element(_))
-        | (PropertyEventOwnerKind::Table, FormBindingOwner::Table)
-        | (PropertyEventOwnerKind::Column, FormBindingOwner::Column(_))
-        | (PropertyEventOwnerKind::Command, FormBindingOwner::Command) => true,
-        (PropertyEventOwnerKind::UnresolvedItem, _) => false,
-        _ => false,
-    };
-    matches.then_some(()).ok_or_else(|| {
-        EventProjectionError::unavailable(format!(
-            "form evidence disagrees with the typed owner `{}`",
-            expected.at
-        ))
-    })
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

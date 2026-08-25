@@ -1,7 +1,8 @@
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::infrastructure::native_operations::compile_transaction::{
-    CompileTransaction, RetainedApplyChangeBinding,
+    CompileTransaction, RetainedApplyChangeBinding, RetainedApplyValidationError,
+    RetainedApplyValidationErrorKind,
 };
 use crate::infrastructure::platform::filesystem::{
     FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
@@ -30,7 +31,10 @@ pub(crate) struct ApplyStagingError {
 }
 
 impl ApplyStagingError {
-    fn new(kind: ApplyStagingErrorKind, message: impl Into<String>) -> Self {
+    pub(in crate::infrastructure) fn new(
+        kind: ApplyStagingErrorKind,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             kind,
             message: message.into(),
@@ -44,6 +48,24 @@ impl ApplyStagingError {
     #[cfg(test)]
     fn contains(&self, pattern: &str) -> bool {
         self.message.contains(pattern)
+    }
+}
+
+impl From<RetainedApplyValidationError> for ApplyStagingError {
+    fn from(error: RetainedApplyValidationError) -> Self {
+        let kind = match error.kind() {
+            RetainedApplyValidationErrorKind::ContainmentIdentity => {
+                ApplyStagingErrorKind::ContainmentIdentity
+            }
+            RetainedApplyValidationErrorKind::AbsentChainOccupied => {
+                ApplyStagingErrorKind::AbsentChainOccupied
+            }
+            RetainedApplyValidationErrorKind::UnsupportedProvider => {
+                ApplyStagingErrorKind::UnsupportedProvider
+            }
+            RetainedApplyValidationErrorKind::Invariant => ApplyStagingErrorKind::Invariant,
+        };
+        Self::new(kind, error.to_string())
     }
 }
 
@@ -261,9 +283,9 @@ impl ApplyStagedState {
                 )
                 .map_err(|error| ApplyStagingError::new(ApplyStagingErrorKind::Invariant, error))?;
         }
-        transaction.validate_retained_for_apply().map_err(|error| {
-            ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
-        })?;
+        transaction
+            .validate_retained_for_apply_typed()
+            .map_err(ApplyStagingError::from)?;
         Ok(transaction)
     }
 
@@ -548,8 +570,10 @@ mod tests {
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::infrastructure::platform::filesystem::{
-        inject_post_rename_sync_failure_for_test, set_before_identity_bound_no_replace_rename_hook,
-        RetainedChildCapability, RetainedDirectoryCapability,
+        inject_post_rename_sync_failure_for_test,
+        set_before_identity_bound_directory_cleanup_mutation_hook,
+        set_before_identity_bound_no_replace_rename_hook, RetainedChildCapability,
+        RetainedDirectoryCapability,
     };
     use crate::infrastructure::platform::testing::{
         create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
@@ -1481,6 +1505,48 @@ mod tests {
         assert!(error.contains("validation failure"), "{error}");
         assert!(!root.join("Ext/Form").exists());
         assert_eq!(apply_directory_artifacts(&root.join("Ext")), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_directory_rollback_never_unlinks_a_public_name_swapped_after_validation() {
+        if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            return;
+        }
+        let root = temp_root("missing-parent-public-cleanup-swap");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+        state
+            .create("Ext/Form/Module.bsl", b"must roll back".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        let public = root.join("Ext/Form");
+        let owned = root.join("Ext/owned-form");
+        let hook_public = public.clone();
+        let hook_owned = owned.clone();
+        set_before_identity_bound_directory_cleanup_mutation_hook(move || {
+            std::fs::rename(&hook_public, &hook_owned).unwrap();
+            std::fs::create_dir(&hook_public).unwrap();
+        });
+
+        let error = transaction
+            .commit_retained_apply_with(
+                authority,
+                || Ok(()),
+                || Err::<(), _>("injected validation failure".to_string()),
+            )
+            .unwrap_err();
+
+        assert!(
+            public.is_dir(),
+            "the concurrent public directory was deleted"
+        );
+        assert!(owned.is_dir(), "the exact batch-created directory was lost");
+        assert!(
+            error.contains("batch-created directory was preserved"),
+            "cleanup contention was not diagnosed: {error}"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
