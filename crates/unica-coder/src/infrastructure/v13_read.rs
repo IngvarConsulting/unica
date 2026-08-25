@@ -18,11 +18,13 @@ use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::SourceTarget;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::bsl_module_projection::{
-    project_module, FormBindingOwner, FormEventBindingInput, ModuleProjectionRequest,
-    PlatformEventWriteCapability,
+    project_form_owner_events, project_module, FormBindingOwner, FormEventBindingInput,
+    FormEventOwnerInput, FormMethodFact, ModuleProjectionRequest, PlatformEventWriteCapability,
 };
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
-use crate::infrastructure::native_operations::form::{FormInfoElement, FormInfoEvent};
+use crate::infrastructure::native_operations::form::{
+    FormInfoData, FormInfoElement, FormInfoEvent,
+};
 use crate::infrastructure::native_operations::form_event_registry::FormElementKind;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::platform_xml_owner::PlatformXmlSourceSetOwnerEvidence;
@@ -859,22 +861,61 @@ impl<'a> LogicalViewReadAuthority<'a> {
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path())
                 .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
         let data = self.read.form_data(&metadata_path)?;
-        let mut bindings = data
-            .events
+        Ok(form_semantic_inputs(form_at, &data).bindings)
+    }
+
+    fn form_view(
+        &self,
+        route: &LogicalTreeRoute,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<NodeViewData, ViewError> {
+        let target = route.reader_metadata_path().ok_or_else(|| {
+            ViewError::new("provider_unavailable", "form route has no typed target")
+        })?;
+        self.verify_registered_owner(target, admitted)?;
+        let mut data = self.read.form_data(target)?;
+        data.event_context.metadata_owner = route.at().segments().first().map(AddressSegment::kind);
+        let form_at =
+            QualifiedAddress::parse(&format!("{}:{}", route.at().source_set(), target.as_str()))
+                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+        let module_at = QualifiedAddress::parse(&format!("{form_at}.Module.Form"))
+            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+        let capability = self.profile.module_capability(&module_at).ok_or_else(|| {
+            ViewError::new(
+                "provider_unavailable",
+                "form module capability is absent from the platform profile",
+            )
+        })?;
+        self.verify_module_owner(&module_at, capability, admitted)?;
+        let module = self.module_projection(&module_at, capability, admitted)?;
+        let methods = module
+            .methods()
             .iter()
-            .map(|event| form_event_binding(FormBindingOwner::Form, form_at, event))
+            .map(|method| {
+                FormMethodFact::new(
+                    &method.name,
+                    method.method_kind,
+                    &method.signature,
+                    method.compile.contexts.iter().map(String::as_str).collect(),
+                )
+            })
             .collect::<Vec<_>>();
-        collect_element_bindings(form_at, &data.elements, false, &mut bindings);
-        for command in &data.commands {
-            let at = format!("{form_at}.Command.{}", command.name);
-            bindings.extend(
-                command
-                    .actions
-                    .iter()
-                    .map(|event| form_event_binding(FormBindingOwner::Command, &at, event)),
-            );
-        }
-        Ok(bindings)
+        let inputs = form_semantic_inputs(&form_at.to_string(), &data);
+        let events = project_form_owner_events(
+            &data.event_context,
+            &inputs.owners,
+            &inputs.bindings,
+            &methods,
+        );
+        let payload = serde_json::to_value(data).map_err(|error| {
+            ViewError::new(
+                "provider_unavailable",
+                format!("form payload serialization failed: {error}"),
+            )
+        })?;
+        crate::infrastructure::v13_read_projection::project_typed_payload_with_form_events(
+            route, payload, &events,
+        )
     }
 }
 
@@ -1056,6 +1097,8 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 route.at(),
                 payload.as_ref(),
             )?
+        } else if route.reader() == LogicalReader::Form {
+            self.form_view(&route, admitted)?
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
             project_typed_payload(&route, payload)?
@@ -1530,32 +1573,73 @@ fn form_event_binding(
     )
 }
 
-fn collect_element_bindings(
+struct FormSemanticInputs {
+    owners: Vec<FormEventOwnerInput>,
+    bindings: Vec<FormEventBindingInput>,
+}
+
+fn form_semantic_inputs(form_at: &str, data: &FormInfoData) -> FormSemanticInputs {
+    let mut inputs = FormSemanticInputs {
+        owners: vec![FormEventOwnerInput::new(FormBindingOwner::Form, form_at)],
+        bindings: data
+            .events
+            .iter()
+            .map(|event| form_event_binding(FormBindingOwner::Form, form_at, event))
+            .collect(),
+    };
+    collect_element_semantics(form_at, &data.elements, false, &mut inputs);
+    for command in &data.commands {
+        let at = format!("{form_at}.Command.{}", command.name);
+        inputs
+            .owners
+            .push(FormEventOwnerInput::new(FormBindingOwner::Command, &at));
+        inputs.bindings.extend(
+            command
+                .actions
+                .iter()
+                .map(|event| form_event_binding(FormBindingOwner::Command, &at, event)),
+        );
+    }
+    inputs
+}
+
+fn collect_element_semantics(
     parent_at: &str,
     elements: &[FormInfoElement],
     parent_is_table: bool,
-    bindings: &mut Vec<FormEventBindingInput>,
+    inputs: &mut FormSemanticInputs,
 ) {
     for element in elements {
-        let Some(kind) = element.event_kind else {
-            continue;
-        };
-        let is_table = kind == FormElementKind::Table;
-        let owner = if parent_is_table {
-            FormBindingOwner::Column(kind)
-        } else if is_table {
-            FormBindingOwner::Table
-        } else {
-            FormBindingOwner::Element(kind)
-        };
         let at = format!("{parent_at}.Item.{}", element.name);
-        bindings.extend(
-            element
-                .events
-                .iter()
-                .map(|event| form_event_binding(owner, &at, event)),
-        );
-        collect_element_bindings(&at, &element.children, is_table, bindings);
+        let is_table = element.event_kind == Some(FormElementKind::Table);
+        if let Some(kind) = element.event_kind {
+            let owner = if parent_is_table {
+                FormBindingOwner::Column(kind)
+            } else if is_table {
+                FormBindingOwner::Table
+            } else {
+                FormBindingOwner::Element(kind)
+            };
+            let mut semantic_owner = FormEventOwnerInput::new(owner, &at);
+            if is_table {
+                if let Some(data_path) = element
+                    .binding
+                    .as_ref()
+                    .filter(|binding| binding.kind == "dataPath")
+                    .map(|binding| binding.target.as_str())
+                {
+                    semantic_owner = semantic_owner.with_data_path(data_path);
+                }
+            }
+            inputs.owners.push(semantic_owner);
+            inputs.bindings.extend(
+                element
+                    .events
+                    .iter()
+                    .map(|event| form_event_binding(owner, &at, event)),
+            );
+        }
+        collect_element_semantics(&at, &element.children, is_table, inputs);
     }
 }
 
@@ -1913,7 +1997,7 @@ fn region_item_value(region: &RegionProjection) -> Value {
     serde_json::to_value(region_node(&at, region)).unwrap_or(Value::Null)
 }
 
-fn event_node(event: &EventProjection) -> NodeView {
+pub(super) fn event_node(event: &EventProjection) -> NodeView {
     let props = Map::from_iter([
         ("eventId".to_string(), json!(event.event_id)),
         ("state".to_string(), json!(event.state)),
@@ -1932,7 +2016,7 @@ fn event_node(event: &EventProjection) -> NodeView {
         .with_can(event.can.clone())
 }
 
-fn event_node_value(event: &EventProjection) -> Value {
+pub(super) fn event_node_value(event: &EventProjection) -> Value {
     serde_json::to_value(event_node(event)).unwrap_or(Value::Null)
 }
 

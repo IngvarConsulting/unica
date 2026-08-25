@@ -1,5 +1,6 @@
 use crate::application::v13::view::ViewError;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
+use crate::domain::module_projection::EventProjection;
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use crate::infrastructure::logical_tree::{LogicalReader, LogicalTreeRoute};
 use serde_json::{json, Map, Value};
@@ -13,6 +14,22 @@ const MAX_COMPACT_PROP_BYTES: usize = 2_048;
 pub(super) fn project_typed_payload(
     route: &LogicalTreeRoute,
     payload: Value,
+) -> Result<NodeViewData, ViewError> {
+    project_typed_payload_inner(route, payload, None)
+}
+
+pub(super) fn project_typed_payload_with_form_events(
+    route: &LogicalTreeRoute,
+    payload: Value,
+    events: &[EventProjection],
+) -> Result<NodeViewData, ViewError> {
+    project_typed_payload_inner(route, payload, Some(events))
+}
+
+fn project_typed_payload_inner(
+    route: &LogicalTreeRoute,
+    payload: Value,
+    form_events: Option<&[EventProjection]>,
 ) -> Result<NodeViewData, ViewError> {
     validate_reader_payload(route.reader(), &payload)?;
     let root_depth = route
@@ -33,7 +50,7 @@ pub(super) fn project_typed_payload(
     match route.reader() {
         LogicalReader::Configuration => return project_configuration(route.at(), &payload, suffix),
         LogicalReader::Metadata => return project_metadata(route.at(), &payload, suffix),
-        LogicalReader::Form => return project_form(route.at(), &payload, suffix),
+        LogicalReader::Form => return project_form(route.at(), &payload, suffix, form_events),
         LogicalReader::Role => return project_role(route.at(), &payload, suffix),
         LogicalReader::Interface => {
             return project_subsystem_interface(route.at(), &payload, suffix)
@@ -63,7 +80,15 @@ fn project_form(
     address: &QualifiedAddress,
     payload: &Value,
     suffix: &[AddressSegment],
+    semantic_events: Option<&[EventProjection]>,
 ) -> Result<NodeViewData, ViewError> {
+    if let Some(events) = semantic_events.filter(|_| {
+        suffix
+            .last()
+            .is_some_and(|part| part.kind() == NodeKind::Event)
+    }) {
+        return project_semantic_form_event(address, suffix, events);
+    }
     if suffix.is_empty() {
         let props = selected_scalar_props(
             payload,
@@ -84,6 +109,13 @@ fn project_form(
         ]
         .into_iter()
         .filter_map(|kind| {
+            if kind == NodeKind::Event {
+                if let Some(events) = semantic_events {
+                    let count = form_owner_events(&address.to_string(), events).count();
+                    return (count > 0)
+                        .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count));
+                }
+            }
             let values = form_child_values(payload, kind)?;
             let count = values.as_array().map_or(0, Vec::len);
             (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
@@ -117,7 +149,7 @@ fn project_form(
                 "form collection did not consume the complete suffix",
             ));
         }
-        return form_collection(address, first.kind(), values);
+        return form_collection(address, first.kind(), values, semantic_events);
     }
     let mut kind = first.kind();
     let mut item = select_named(values, first.name().unwrap()).ok_or_else(|| {
@@ -146,7 +178,7 @@ fn project_form(
                     "form collection did not consume the complete suffix",
                 ));
             }
-            return form_collection(address, kind, values);
+            return form_collection(address, kind, values, semantic_events);
         };
         item = select_named(values, name).ok_or_else(|| {
             ViewError::new(
@@ -155,7 +187,72 @@ fn project_form(
             )
         })?;
     }
-    Ok(NodeViewData::Node(form_node(address, kind, item)))
+    Ok(NodeViewData::Node(form_node(
+        address,
+        kind,
+        item,
+        semantic_events,
+    )))
+}
+
+fn project_semantic_form_event(
+    address: &QualifiedAddress,
+    suffix: &[AddressSegment],
+    events: &[EventProjection],
+) -> Result<NodeViewData, ViewError> {
+    let event = suffix
+        .last()
+        .expect("the semantic event route has an Event suffix");
+    if event.name().is_none() {
+        let address_text = address.to_string();
+        let owner_at = address_text
+            .strip_suffix(".Event")
+            .ok_or_else(|| ViewError::new("not_found", "event collection owner is invalid"))?;
+        let items = form_owner_events(owner_at, events)
+            .map(crate::infrastructure::v13_read::event_node_value)
+            .collect::<Vec<_>>();
+        if items.is_empty() {
+            return Err(ViewError::new(
+                "not_found",
+                "form owner has no applicable events",
+            ));
+        }
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(
+                address.to_string(),
+                NodeKind::Event.as_str(),
+                "Event",
+                Map::new(),
+            ),
+            items,
+        )));
+    }
+    events
+        .iter()
+        .find(|candidate| candidate.at == address.to_string())
+        .map(crate::infrastructure::v13_read::event_node)
+        .map(NodeViewData::Node)
+        .ok_or_else(|| {
+            ViewError::new(
+                "not_found",
+                format!(
+                    "form Event `{}` was not found",
+                    event.name().unwrap_or_default()
+                ),
+            )
+        })
+}
+
+fn form_owner_events<'a>(
+    owner_at: &'a str,
+    events: &'a [EventProjection],
+) -> impl Iterator<Item = &'a EventProjection> + 'a {
+    events.iter().filter(move |event| {
+        event
+            .at
+            .rsplit_once(".Event.")
+            .is_some_and(|(candidate, _)| candidate == owner_at)
+    })
 }
 
 fn form_child_values(payload: &Value, kind: NodeKind) -> Option<&Value> {
@@ -182,6 +279,7 @@ fn form_collection(
     address: &QualifiedAddress,
     kind: NodeKind,
     values: &Value,
+    semantic_events: Option<&[EventProjection]>,
 ) -> Result<NodeViewData, ViewError> {
     let items = values
         .as_array()
@@ -190,7 +288,7 @@ fn form_collection(
         .filter_map(|item| {
             let name = item_identity(item)?;
             let child = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
-            serde_json::to_value(form_node(&child, kind, item)).ok()
+            serde_json::to_value(form_node(&child, kind, item, semantic_events)).ok()
         })
         .collect();
     Ok(NodeViewData::Collection(CollectionView::new(
@@ -204,7 +302,12 @@ fn form_collection(
     )))
 }
 
-fn form_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) -> NodeView {
+fn form_node(
+    address: &QualifiedAddress,
+    kind: NodeKind,
+    item: &Value,
+    semantic_events: Option<&[EventProjection]>,
+) -> NodeView {
     let mut node = NodeView::new(
         address.to_string(),
         kind.as_str(),
@@ -224,6 +327,14 @@ fn form_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) -> NodeVi
         branch_kinds
             .iter()
             .filter_map(|child_kind| {
+                if *child_kind == NodeKind::Event {
+                    if let Some(events) = semantic_events {
+                        let count = form_owner_events(&address.to_string(), events).count();
+                        return (count > 0).then(|| {
+                            BranchRef::new(format!("{}.{}", address, child_kind.as_str()), count)
+                        });
+                    }
+                }
                 let values = form_nested_values(item, *child_kind)?;
                 let count = values.as_array().map_or(0, Vec::len);
                 (count > 0)

@@ -9,7 +9,7 @@ use crate::domain::module_projection::{
 use crate::domain::platform_profile::{ModuleCapability, ModuleRole, PlatformProfile};
 use crate::infrastructure::bsl_outline::parse_bsl_syntax;
 use crate::infrastructure::native_operations::form_event_registry::{
-    form_event_catalog_8_3_27, module_event_catalog_8_3_27, validate_event_call_type,
+    form_event_catalog_8_3_27, module_event_catalog_8_3_27, validate_property_event_binding,
     FormElementKind, FormEventBinding, FormEventContext, FormEventOwnerKind, FormEventTarget,
     PlatformEventSpec,
 };
@@ -1175,11 +1175,12 @@ pub(crate) fn project_form_owner_events(
         if !projected_owners.insert(owner_key) {
             continue;
         }
-        for spec in form_event_catalog_8_3_27(
+        let catalog = form_event_catalog_8_3_27(
             context,
             owner.owner.catalog_owner(),
             owner.data_path.as_deref(),
-        ) {
+        );
+        for spec in &catalog {
             let owner_prefix = owner.at.as_str();
             let at = format!("{owner_prefix}.Event.{}", spec.event_id);
             let actuals = bindings
@@ -1203,7 +1204,7 @@ pub(crate) fn project_form_owner_events(
                     .find(|method| method.name.to_lowercase() == binding.handler.to_lowercase())
             });
             let binding_is_valid = actual.is_none_or(|binding| {
-                validate_event_call_type(
+                validate_property_event_binding(
                     context,
                     binding.owner.validation_target(),
                     &FormEventBinding {
@@ -1261,6 +1262,47 @@ pub(crate) fn project_form_owner_events(
                 }),
                 call_type: actual.and_then(|binding| binding.call_type.clone()),
                 can,
+            });
+        }
+        let known = catalog
+            .iter()
+            .map(|spec| spec.event_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let mut unknown = std::collections::BTreeMap::<&str, Vec<&FormEventBindingInput>>::new();
+        for binding in bindings.iter().filter(|candidate| {
+            candidate.owner.catalog_owner() == owner.owner.catalog_owner()
+                && candidate
+                    .at
+                    .split(".Event.")
+                    .next()
+                    .unwrap_or(candidate.at.as_str())
+                    == owner.at.as_str()
+                && !known.contains(candidate.event.as_str())
+        }) {
+            unknown
+                .entry(binding.event.as_str())
+                .or_default()
+                .push(binding);
+        }
+        for (event_id, actuals) in unknown {
+            let actual = actuals[0];
+            let method = methods
+                .iter()
+                .find(|method| method.name.to_lowercase() == actual.handler.to_lowercase());
+            let at = format!("{}.Event.{event_id}", owner.at);
+            events.push(EventProjection {
+                at,
+                event_id: event_id.to_string(),
+                state: EventState::Invalid,
+                signature: String::new(),
+                contexts: Vec::new(),
+                binding: BindingFact::Property,
+                handler: actual.handler.clone(),
+                handler_en: String::new(),
+                implementation_at: method
+                    .map(|method| form_method_at(actual.at.as_str(), method.name)),
+                call_type: actual.call_type.clone(),
+                can: Vec::new(),
             });
         }
     }

@@ -1480,6 +1480,10 @@ pub(crate) struct FormInfoData {
     pub(crate) attributes: Vec<FormInfoAttribute>,
     pub(crate) parameters: Vec<FormInfoParameter>,
     pub(crate) commands: Vec<FormInfoCommand>,
+    /// Parsed semantic context retained for the hidden V13 event projector.
+    /// V12 `form.info` keeps its established public JSON shape.
+    #[serde(skip)]
+    pub(crate) event_context: FormEventContext,
 }
 
 #[derive(Debug, Serialize)]
@@ -1843,6 +1847,7 @@ pub(crate) fn parse_form_info_xml(
         commands: form_child(root, "Commands")
             .map(form_info_commands)
             .unwrap_or_default(),
+        event_context: context_from_root(root),
     })
 }
 

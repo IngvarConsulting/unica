@@ -888,14 +888,7 @@ pub(crate) fn validate_event(
 ) -> Result<(), FormEventDiagnostic> {
     let target_text = target.to_string();
 
-    if binding.handler.trim().is_empty() {
-        return Err(FormEventDiagnostic::new(
-            FormEventDiagnosticCode::EmptyHandler,
-            target_text,
-            binding.name,
-        )
-        .with_detail("handler must not be empty"));
-    }
+    validate_property_event_binding(context, target, binding)?;
 
     if !target.allowed_events().contains(&binding.name) {
         return Err(FormEventDiagnostic::new(
@@ -906,13 +899,31 @@ pub(crate) fn validate_event(
         .with_detail("event is not present in the target event matrix"));
     }
 
-    validate_event_call_type(context, target, binding)?;
-
     if target == FormEventTarget::Form && OBJECT_RECORD_FORM_EVENTS.contains(&binding.name) {
         validate_object_event_context(context, target, binding.name)?;
     }
 
     Ok(())
+}
+
+/// Shared shape validation for a property-bound event. V12 event validation
+/// adds its exact target matrix after this seam; hidden V13 projection uses
+/// its versioned registry for applicability and reuses the same handler and
+/// extension call-type rules here.
+pub(crate) fn validate_property_event_binding(
+    context: &FormEventContext,
+    target: FormEventTarget,
+    binding: &FormEventBinding<'_>,
+) -> Result<(), FormEventDiagnostic> {
+    if binding.handler.trim().is_empty() {
+        return Err(FormEventDiagnostic::new(
+            FormEventDiagnosticCode::EmptyHandler,
+            target.to_string(),
+            binding.name,
+        )
+        .with_detail("handler must not be empty"));
+    }
+    validate_event_call_type(context, target, binding)
 }
 
 /// Validates the extension-only XML binding fact independently from the

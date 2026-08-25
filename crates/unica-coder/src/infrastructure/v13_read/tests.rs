@@ -825,6 +825,235 @@ fn form_table_column_event_consumes_arbitrary_depth_and_preserves_owner_address(
 }
 
 #[test]
+fn production_form_command_execute_has_one_semantic_identity_across_view_and_find() {
+    let fixture = RealReaderFixture::new();
+    fixture.install_main_form_sources(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+  <Commands>
+    <Command name="Zero" id="1"/>
+    <Command name="Missing" id="2"><Action>MissingAction</Action></Command>
+    <Command name="Implemented" id="3"><Action>ImplementedAction</Action></Command>
+    <Command name="Duplicate" id="4"><Action>FirstAction</Action><Action>SecondAction</Action></Command>
+  </Commands>
+</Form>"#,
+        "&НаКлиенте\nПроцедура ImplementedAction(Команда)\nКонецПроцедуры\n",
+    );
+    let service = fixture.view_service();
+    let form_at = "main:Report.ParityReport.Form.MainForm";
+    let expected_contexts = json!([
+        "thinClient",
+        "webClient",
+        "thickClientManaged",
+        "mobileClient",
+        "mobileAppClient"
+    ]);
+    for (command, state, handler, has_can) in [
+        ("Zero", "available", Some("ОбработкаКоманды"), true),
+        ("Missing", "missing", Some("MissingAction"), true),
+        (
+            "Implemented",
+            "implemented",
+            Some("ImplementedAction"),
+            false,
+        ),
+        ("Duplicate", "invalid", None, false),
+    ] {
+        let command_at = format!("{form_at}.Command.{command}");
+        let event_at = format!("{command_at}.Event.Execute");
+        let collection = service.view(ViewRequest::new(&format!("{command_at}.Event")).unwrap());
+        assert!(
+            collection.ok,
+            "{command}: {} {:?}",
+            collection.summary, collection.diagnostics
+        );
+        let items = collection.data.as_ref().unwrap()["items"]
+            .as_array()
+            .unwrap();
+        assert_eq!(items.len(), 1, "{command}: {items:?}");
+        assert_eq!(items[0]["at"], event_at);
+        assert_eq!(items[0]["props"]["eventId"], "Execute");
+        assert_eq!(items[0]["props"]["state"], state);
+        assert_eq!(items[0]["props"]["contexts"], expected_contexts);
+        if let Some(handler) = handler {
+            assert_eq!(items[0]["props"]["handler"], handler);
+            let expected_signature = format!("Процедура {handler}(Команда)");
+            assert_eq!(items[0]["props"]["signature"], expected_signature);
+        }
+        assert_eq!(
+            items[0].get("can").is_some(),
+            has_can,
+            "{command}: {}",
+            items[0]
+        );
+        if has_can {
+            assert_eq!(items[0]["can"].as_array().unwrap().len(), 1);
+            assert_eq!(items[0]["can"][0]["op"], "event.implement");
+            assert_eq!(items[0]["can"][0]["args"], json!({"at": event_at}));
+        }
+        if state == "missing" {
+            assert!(items[0]["props"]["implementationAt"].is_null());
+        }
+        if state == "implemented" {
+            assert_eq!(
+                items[0]["props"]["implementationAt"],
+                format!("{form_at}.Module.Form.Method.ImplementedAction")
+            );
+        }
+
+        let direct = service.view(ViewRequest::new(&event_at).unwrap());
+        assert!(
+            direct.ok,
+            "{command}: {} {:?}",
+            direct.summary, direct.diagnostics
+        );
+        assert_eq!(direct.data.as_ref().unwrap(), &items[0]);
+    }
+
+    let authority = fixture.operation_read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    for command in ["Zero", "Missing", "Implemented", "Duplicate"] {
+        let event_at = format!("{form_at}.Command.{command}.Event.Execute");
+        let found = index.find(
+            FindRequest::new(&event_at)
+                .unwrap()
+                .with_limit(100)
+                .unwrap(),
+        );
+        assert!(!found.is_nearest(), "{event_at}: {found:?}");
+        assert_eq!(
+            found
+                .candidates()
+                .iter()
+                .filter(|candidate| candidate.at() == event_at)
+                .count(),
+            1,
+            "{event_at}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn production_borrowed_command_defaults_after_and_base_form_only_has_no_can() {
+    let borrowed = RealReaderFixture::new();
+    borrowed.install_main_form_sources(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+  <Commands><Command name="Borrowed" id="1"/></Commands>
+  <BaseForm version="2.20"/>
+</Form>"#,
+        "",
+    );
+    let event_at = "main:Report.ParityReport.Form.MainForm.Command.Borrowed.Event.Execute";
+    let event = borrowed
+        .view_service()
+        .view(ViewRequest::new(event_at).unwrap());
+    assert!(event.ok, "{} {:?}", event.summary, event.diagnostics);
+    let event = event.data.as_ref().unwrap();
+    assert_eq!(event["props"]["state"], "available");
+    assert_eq!(event["can"][0]["op"], "event.implement");
+    assert_eq!(
+        event["can"][0]["args"],
+        json!({"at": event_at, "callType": "After"})
+    );
+
+    let base_only = RealReaderFixture::new();
+    base_only.install_main_form_sources(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+  <BaseForm version="2.20"/>
+</Form>"#,
+        "",
+    );
+    let event = base_only
+        .view_service()
+        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Event.OnOpen").unwrap());
+    assert!(event.ok, "{} {:?}", event.summary, event.diagnostics);
+    let event = event.data.as_ref().unwrap();
+    assert_eq!(event["props"]["state"], "available");
+    assert!(event.get("can").is_none(), "{event}");
+}
+
+#[test]
+fn production_form_empty_handlers_are_invalid_for_every_property_owner() {
+    let regular = RealReaderFixture::new();
+    regular.install_main_form_sources(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+  <ChildItems>
+    <InputField name="Field"><Events><Event name="OnChange">   </Event></Events></InputField>
+    <Table name="Rows">
+      <DataPath>Rows</DataPath>
+      <Events><Event name="Selection"></Event></Events>
+      <ChildItems>
+        <InputField name="Column"><Events><Event name="OnChange">
+        </Event></Events></InputField>
+      </ChildItems>
+    </Table>
+  </ChildItems>
+  <Events><Event name="OnOpen"> </Event></Events>
+  <Commands><Command name="Regular" id="1"><Action>   </Action></Command></Commands>
+</Form>"#,
+        "",
+    );
+    let service = regular.view_service();
+    for event_at in [
+        "main:Report.ParityReport.Form.MainForm.Event.OnOpen",
+        "main:Report.ParityReport.Form.MainForm.Item.Field.Event.OnChange",
+        "main:Report.ParityReport.Form.MainForm.Item.Rows.Event.Selection",
+        "main:Report.ParityReport.Form.MainForm.Item.Rows.Item.Column.Event.OnChange",
+        "main:Report.ParityReport.Form.MainForm.Command.Regular.Event.Execute",
+    ] {
+        let event = service.view(ViewRequest::new(event_at).unwrap());
+        assert!(
+            event.ok,
+            "{event_at}: {} {:?}",
+            event.summary, event.diagnostics
+        );
+        let event = event.data.as_ref().unwrap();
+        assert_eq!(event["props"]["state"], "invalid", "{event_at}: {event}");
+        assert!(event.get("can").is_none(), "{event_at}: {event}");
+        assert!(
+            event["props"]
+                .as_object()
+                .unwrap()
+                .contains_key("implementationAt"),
+            "{event_at}: {event}"
+        );
+    }
+
+    let borrowed = RealReaderFixture::new();
+    borrowed.install_main_form_sources(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+  <Commands><Command name="Borrowed" id="1"><Action callType="After">   </Action></Command></Commands>
+  <BaseForm version="2.20"/>
+</Form>"#,
+        "",
+    );
+    let event_at = "main:Report.ParityReport.Form.MainForm.Command.Borrowed.Event.Execute";
+    let event = borrowed
+        .view_service()
+        .view(ViewRequest::new(event_at).unwrap());
+    assert!(event.ok, "{} {:?}", event.summary, event.diagnostics);
+    let event = event.data.as_ref().unwrap();
+    assert_eq!(event["props"]["state"], "invalid", "{event}");
+    assert!(event.get("can").is_none(), "{event}");
+    assert!(event["props"]
+        .as_object()
+        .unwrap()
+        .contains_key("implementationAt"));
+}
+
+#[test]
 fn dcs_dataset_field_and_parameter_consume_the_complete_suffix() {
     let fixture = RealReaderFixture::new();
     let service = fixture.view_service();
@@ -2249,6 +2478,21 @@ impl RealReaderFixture {
 
     fn view_service(&self) -> ViewService<LogicalViewReadAuthority<'_>> {
         ViewService::new(self.read_authority(), ViewCursorStore::default())
+    }
+
+    fn install_main_form_sources(&self, form_xml: &str, module_bsl: &str) {
+        write(
+            &self
+                .source
+                .join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml"),
+            form_xml,
+        );
+        write(
+            &self
+                .source
+                .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl"),
+            module_bsl,
+        );
     }
 
     fn install_module_matrix_sources(&self) {
