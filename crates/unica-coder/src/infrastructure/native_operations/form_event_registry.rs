@@ -350,6 +350,10 @@ impl MainAttributeKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FormEventContext {
     pub(crate) definition: FormDefinitionKind,
+    /// Whether Part 1 contains any direct form node besides `BaseForm`.
+    /// A literal BaseForm-only projection proves no directly owned insertion
+    /// surface and must therefore fail closed for Available events.
+    pub(crate) direct_part_writable: bool,
     pub(crate) main_attribute: MainAttributeKind,
     pub(crate) main_attribute_type: Option<String>,
     pub(crate) main_attribute_provenance: MainAttributeProvenance,
@@ -368,6 +372,12 @@ impl FormEventContext {
         } else {
             FormDefinitionKind::Regular
         };
+        let direct_part_writable = definition == FormDefinitionKind::Regular
+            || root.children().any(|child| {
+                child.is_element()
+                    && child.tag_name().namespace() == Some(FORM_LOGFORM_NS)
+                    && child.tag_name().name() != "BaseForm"
+            });
         let form_main_attribute = direct_main_attribute(root);
         let base_main_attribute = base_form.and_then(direct_main_attribute);
         let (main_attribute_type, main_attribute_name, main_attribute_provenance) =
@@ -399,6 +409,7 @@ impl FormEventContext {
 
         Self {
             definition,
+            direct_part_writable,
             main_attribute,
             main_attribute_type,
             main_attribute_provenance,
@@ -654,6 +665,9 @@ pub(crate) fn form_event_catalog_8_3_27(
     owner: FormEventOwnerKind,
     data_path: Option<&str>,
 ) -> Vec<&'static PlatformEventSpec> {
+    if owner == FormEventOwnerKind::Command {
+        return vec![form_command_execute_event_8_3_27()];
+    }
     let key = owner.catalog_key();
     let normalized_type = context
         .main_attribute_type
@@ -704,6 +718,33 @@ pub(crate) fn form_event_catalog_8_3_27(
         by_id.insert(event.event_id.as_str(), event);
     }
     by_id.into_values().collect()
+}
+
+/// A managed-form command's direct `Action` is a form property binding, not
+/// the metadata Command-module `CommandProcessing` event. Keep this record
+/// outside the checked vendor module catalog so that catalog stays byte-exact.
+fn form_command_execute_event_8_3_27() -> &'static PlatformEventSpec {
+    static EVENT: OnceLock<PlatformEventSpec> = OnceLock::new();
+    EVENT.get_or_init(|| PlatformEventSpec {
+        event_id: "Execute".to_string(),
+        handler_ru: "ОбработкаКоманды".to_string(),
+        handler_en: "CommandProcessing".to_string(),
+        signature_ru: "Процедура ОбработкаКоманды(Команда)".to_string(),
+        signature_en: "Procedure CommandProcessing(Command)".to_string(),
+        method_kind: "procedure".to_string(),
+        contexts: [
+            "thinClient",
+            "webClient",
+            "thickClientManaged",
+            "mobileClient",
+            "mobileAppClient",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        source_page_id: "platform-format:managed-form-command-action:8.3.27".to_string(),
+        binding: BindingFact::Property,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -765,6 +806,7 @@ pub(crate) enum FormEventDiagnosticCode {
     BindingConflict,
     TargetNotFound,
     InvalidCallType,
+    CallTypeRequired,
     CallTypeNotAllowed,
 }
 
@@ -778,6 +820,7 @@ impl FormEventDiagnosticCode {
             Self::BindingConflict => "FORM_EVENT_BINDING_CONFLICT",
             Self::TargetNotFound => "FORM_EVENT_TARGET_NOT_FOUND",
             Self::InvalidCallType => "FORM_EVENT_INVALID_CALL_TYPE",
+            Self::CallTypeRequired => "FORM_EVENT_CALL_TYPE_REQUIRED",
             Self::CallTypeNotAllowed => "FORM_EVENT_CALL_TYPE_NOT_ALLOWED",
         }
     }
@@ -880,6 +923,14 @@ pub(crate) fn validate_event_call_type(
     target: FormEventTarget,
     binding: &FormEventBinding<'_>,
 ) -> Result<(), FormEventDiagnostic> {
+    if context.definition == FormDefinitionKind::Extension && binding.call_type.is_none() {
+        return Err(FormEventDiagnostic::new(
+            FormEventDiagnosticCode::CallTypeRequired,
+            target.to_string(),
+            binding.name,
+        )
+        .with_detail("borrowed form bindings require Before, After, or Override callType"));
+    }
     if let Some(call_type) = binding.call_type {
         let parsed = FormCallType::from_xml(call_type).ok_or_else(|| {
             FormEventDiagnostic::new(
@@ -1025,6 +1076,7 @@ pub(crate) mod tests {
     fn regular_context(main_attribute: MainAttributeKind) -> FormEventContext {
         FormEventContext {
             definition: FormDefinitionKind::Regular,
+            direct_part_writable: true,
             main_attribute,
             main_attribute_type: None,
             main_attribute_provenance: MainAttributeProvenance::Missing,
@@ -1036,6 +1088,7 @@ pub(crate) mod tests {
     fn extension_context(main_attribute: MainAttributeKind) -> FormEventContext {
         FormEventContext {
             definition: FormDefinitionKind::Extension,
+            direct_part_writable: true,
             main_attribute,
             main_attribute_type: None,
             main_attribute_provenance: MainAttributeProvenance::InheritedBaseFormUnavailable,
@@ -1056,6 +1109,7 @@ pub(crate) mod tests {
     ) -> FormEventContext {
         FormEventContext {
             definition,
+            direct_part_writable: true,
             main_attribute,
             main_attribute_type: main_attribute_type.map(str::to_string),
             main_attribute_provenance: MainAttributeProvenance::DirectForm,
@@ -1735,6 +1789,18 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn extension_form_binding_requires_an_explicit_call_type() {
+        let error = validate_event_call_type(
+            &extension_context(MainAttributeKind::Other),
+            FormEventTarget::Form,
+            &FormEventBinding::new("OnOpen", "FormOnOpen"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code.as_str(), "FORM_EVENT_CALL_TYPE_REQUIRED");
+    }
+
+    #[test]
     fn rejects_invalid_call_type_in_extension_form() {
         for invalid in ["Instead", "after", ""] {
             let error = validate_event(
@@ -1787,6 +1853,10 @@ pub(crate) mod tests {
             (
                 FormEventDiagnosticCode::InvalidCallType,
                 "FORM_EVENT_INVALID_CALL_TYPE",
+            ),
+            (
+                FormEventDiagnosticCode::CallTypeRequired,
+                "FORM_EVENT_CALL_TYPE_REQUIRED",
             ),
             (
                 FormEventDiagnosticCode::CallTypeNotAllowed,

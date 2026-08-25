@@ -527,6 +527,51 @@ fn module_capability_parents_expose_canonical_module_collections() {
     }
 }
 
+#[test]
+fn configuration_runtime_modules_are_read_from_the_shared_ext_layout() {
+    let fixture = RealReaderFixture::new();
+    let cases = [
+        (
+            "ManagedApplication",
+            "ManagedApplicationModule",
+            "ManagedFromExt",
+        ),
+        (
+            "OrdinaryApplication",
+            "OrdinaryApplicationModule",
+            "OrdinaryFromExt",
+        ),
+        ("Session", "SessionModule", "SessionFromExt"),
+        (
+            "ExternalConnection",
+            "ExternalConnectionModule",
+            "ExternalFromExt",
+        ),
+    ];
+    for (_, file, method) in cases {
+        write(
+            &fixture.source.join(format!("Ext/{file}.bsl")),
+            &format!("Procedure {method}()\nEndProcedure\n"),
+        );
+        write(
+            &fixture.source.join(format!("{file}.bsl")),
+            "Procedure WrongRootLayout()\nEndProcedure\n",
+        );
+    }
+    let service = fixture.view_service();
+
+    for (role, _, method) in cases {
+        let at = format!("main:Module.{role}.Method.{method}");
+        let result = service.view(ViewRequest::new(&at).unwrap());
+        assert!(
+            result.ok,
+            "{at}: {} {:?}",
+            result.summary, result.diagnostics
+        );
+        assert_eq!(result.data.as_ref().unwrap()["at"], at);
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AcceptedAddressProfile {
@@ -1109,6 +1154,59 @@ fn websocket_client_source_view_is_an_explicit_provider_gap() {
 }
 
 #[test]
+fn extension_platform_event_does_not_advertise_unproved_interception() {
+    let fixture = RealReaderFixture::new();
+    fixture.install_accepted_profile_sources();
+    let cancellation = CancellationToken::new();
+    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
+    );
+    let authority = LogicalViewReadAuthority::new(
+        &cancellation,
+        "main",
+        "actor-fixture-extension",
+        SourceSetKind::Extension,
+        revisions,
+        source_root,
+        PlatformProfile::v8_3_27(),
+    );
+
+    let result = ViewService::new(authority, ViewCursorStore::default())
+        .view(ViewRequest::new("main:Document.Заказ.Module.Object.Event.BeforeWrite").unwrap());
+
+    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+    let data = result.data.as_ref().unwrap();
+    assert_eq!(data["props"]["state"], "available");
+    assert!(data.get("can").is_none(), "{data}");
+}
+
+#[test]
+fn extension_root_platform_module_remains_provider_unavailable() {
+    let fixture = RealReaderFixture::new();
+    let cancellation = CancellationToken::new();
+    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
+    );
+    let authority = LogicalViewReadAuthority::new(
+        &cancellation,
+        "main",
+        "actor-fixture-extension-root",
+        SourceSetKind::Extension,
+        revisions,
+        source_root,
+        PlatformProfile::v8_3_27(),
+    );
+
+    let result = ViewService::new(authority, ViewCursorStore::default())
+        .view(ViewRequest::new("main:Module.ManagedApplication.Event.BeforeStart").unwrap());
+
+    assert!(!result.ok, "{result:?}");
+    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+}
+
+#[test]
 fn logical_reader_parity_contract_is_complete() {
     crate::infrastructure::source_revision::tests::retained_revision_authority_contract_is_complete(
     );
@@ -1120,6 +1218,7 @@ fn logical_reader_parity_contract_is_complete() {
     actor_supplied_extension_kind_preserves_extension_support_semantics();
     configuration_root_branch_counts_match_every_reachable_collection();
     module_capability_parents_expose_canonical_module_collections();
+    configuration_runtime_modules_are_read_from_the_shared_ext_layout();
     every_accepted_profile_address_has_a_real_non_skipping_view();
     real_typed_readers_cover_every_task14_profile_without_skipping();
     every_reader_rejects_an_extra_unconsumed_address_tail();
@@ -1155,6 +1254,8 @@ fn logical_reader_parity_contract_is_complete() {
     review_role_rejects_non_platform_metadata_node_kinds();
     operation_lease_find_traversal_scans_once_then_confirms_once();
     websocket_client_source_view_is_an_explicit_provider_gap();
+    extension_platform_event_does_not_advertise_unproved_interception();
+    extension_root_platform_module_remains_provider_unavailable();
     crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
         crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
     );

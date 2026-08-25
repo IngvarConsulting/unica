@@ -608,6 +608,7 @@ mod tests {
             call_type: None,
             can: vec![OperationRegistry::closed().event_implementation_skeleton(
                 "main:Document.Пустой.Module.Object.Event.BeforeWrite",
+                None,
             )],
         }
     }

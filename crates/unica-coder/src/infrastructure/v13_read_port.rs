@@ -36,6 +36,7 @@ use crate::infrastructure::platform_xml_owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
     PlatformXmlSourceSetOwnerEvidence,
 };
+use crate::infrastructure::platform_xml_source_targets::platform_xml_module_relative;
 use crate::infrastructure::source_revision::{RetainedRevisionLease, SourceRevisionService};
 use serde_json::{json, Value};
 #[cfg(test)]
@@ -792,7 +793,8 @@ impl ProviderReadAuthority {
         if self.is_external_source_set() {
             return external_module_relative(target, self.source_set_kind);
         }
-        module_relative(target)
+        platform_xml_module_relative(target)
+            .map_err(|error| ViewError::new("provider_unavailable", error))
     }
 
     fn is_external_source_set(&self) -> bool {
@@ -1104,56 +1106,4 @@ fn metadata_descriptor_relative(target: &MetadataAddress) -> Result<PathBuf, Vie
         }
     }
     Ok(relative)
-}
-
-fn module_relative(target: &MetadataAddress) -> Result<PathBuf, ViewError> {
-    let parts = target.as_str().split('.').collect::<Vec<_>>();
-    match parts.as_slice() {
-        [terminal] => Ok(PathBuf::from(format!("{terminal}.bsl"))),
-        [owner_kind, owner_name, terminal] => {
-            let owner = metadata_kind(owner_kind).ok_or_else(|| {
-                ViewError::new(
-                    "provider_unavailable",
-                    format!("module owner kind `{owner_kind}` has no platform layout"),
-                )
-            })?;
-            let file = if *owner_kind == "CommonForm" && *terminal == "FormModule" {
-                PathBuf::from("Form/Module.bsl")
-            } else {
-                PathBuf::from(format!("{terminal}.bsl"))
-            };
-            Ok(PathBuf::from(owner.directory)
-                .join(owner_name)
-                .join("Ext")
-                .join(file))
-        }
-        [owner_kind, owner_name, nested_kind, nested_name, terminal] => {
-            let owner = metadata_kind(owner_kind).ok_or_else(|| {
-                ViewError::new(
-                    "provider_unavailable",
-                    format!("module owner kind `{owner_kind}` has no platform layout"),
-                )
-            })?;
-            let (directory, file) = match (*nested_kind, *terminal) {
-                ("Form", "FormModule") => ("Forms", PathBuf::from("Form/Module.bsl")),
-                ("Command", "CommandModule") => ("Commands", PathBuf::from("CommandModule.bsl")),
-                _ => {
-                    return Err(ViewError::new(
-                        "provider_unavailable",
-                        "nested module target has unsupported layout",
-                    ));
-                }
-            };
-            Ok(PathBuf::from(owner.directory)
-                .join(owner_name)
-                .join(directory)
-                .join(nested_name)
-                .join("Ext")
-                .join(file))
-        }
-        _ => Err(ViewError::new(
-            "provider_unavailable",
-            "module target has unsupported platform layout",
-        )),
-    }
 }

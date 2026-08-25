@@ -1080,7 +1080,7 @@ fn rendered_module_node(
     };
     // Most probed roles do not exist for a given owner. One stat rules them out
     // before paying for the full containment and descriptor proof.
-    let Ok(relative) = module_path_for_address(&address) else {
+    let Ok(relative) = platform_xml_module_relative(&address) else {
         return Ok(None);
     };
     if fs::symlink_metadata(selected.path.join(&relative)).is_err() {
@@ -1164,7 +1164,7 @@ fn exact_module_outcome(
             Err(error.to_string())
         }
         Err(_) => {
-            let occupied = module_path_for_address(address)
+            let occupied = platform_xml_module_relative(address)
                 .ok()
                 .map(|relative| selected.path.join(relative))
                 .is_some_and(|path| fs::symlink_metadata(path).is_ok());
@@ -2401,7 +2401,7 @@ fn resolve_platform_xml_module(
     address: &MetadataAddress,
     policy: TargetKindPolicy,
 ) -> Result<PlatformXmlResolution, SourceTargetError> {
-    let relative_path = module_path_for_address(address).map_err(|error| {
+    let relative_path = platform_xml_module_relative(address).map_err(|error| {
         SourceTargetError::new(SourceTargetErrorCode::MetadataAddressNotFound, error)
     })?;
     let identity = platform_xml_module_identity(&relative_path).map_err(|error| {
@@ -2820,7 +2820,7 @@ fn object_module_paths(
         ) else {
             continue;
         };
-        let Ok(relative) = module_path_for_address(&candidate) else {
+        let Ok(relative) = platform_xml_module_relative(&candidate) else {
             continue;
         };
         let Ok(identity) = platform_xml_module_identity(&relative) else {
@@ -3451,7 +3451,10 @@ fn module_identity(
     })
 }
 
-fn module_path_for_address(address: &MetadataAddress) -> Result<PathBuf, String> {
+/// Pure configuration Platform XML module layout shared by logical readers and
+/// the future staged event writer. External EPF/ERF roots remain a separate
+/// source-set layout and are resolved before this mapper is called.
+pub(crate) fn platform_xml_module_relative(address: &MetadataAddress) -> Result<PathBuf, String> {
     let parts = address.segments().collect::<Vec<_>>();
     for family in PLATFORM_XML_MODULE_LAYOUT_FAMILIES {
         if let Some(path) = family.path_from_address(&parts) {

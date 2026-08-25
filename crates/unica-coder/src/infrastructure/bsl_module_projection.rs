@@ -175,6 +175,16 @@ pub(crate) struct ModuleProjectionRequest<'a> {
     pub(crate) handles: &'a [FormEventBindingInput],
     pub(crate) declarative_bindings: &'a [DeclarativeBinding<'a>],
     pub(crate) extension_targets: &'a [(&'a str, &'a str)],
+    pub(crate) platform_event_write: PlatformEventWriteCapability,
+}
+
+/// Typed proof status for generating a Platform-bound event capability. An
+/// extension source set currently has no retained `PropertyState` evidence to
+/// distinguish a New owner from an adopted/extended owner, so it is unproved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlatformEventWriteCapability {
+    Proven,
+    Unproved,
 }
 
 pub(crate) fn project_module(
@@ -200,7 +210,7 @@ pub(crate) fn project_module(
     let Some(source) = request.source else {
         let events = possible_events
             .iter()
-            .map(|spec| available_module_event(request.at, spec))
+            .map(|spec| available_module_event(request.at, spec, request.platform_event_write))
             .collect();
         return Ok(ModuleProjectionSet::new(
             identity,
@@ -246,7 +256,12 @@ pub(crate) fn project_module(
     )?;
     let regions = region_projections(&root, &lines, request.at, &methods);
     let interfaces = interface_projections(request.at, &methods, &regions);
-    let events = project_module_events(request.at, possible_events, &mut methods);
+    let events = project_module_events(
+        request.at,
+        possible_events,
+        &mut methods,
+        request.platform_event_write,
+    );
     let body = source
         .split_terminator('\n')
         .enumerate()
@@ -267,7 +282,11 @@ pub(crate) fn project_module(
     ))
 }
 
-fn available_module_event(at: &QualifiedAddress, spec: &PlatformEventSpec) -> EventProjection {
+fn available_module_event(
+    at: &QualifiedAddress,
+    spec: &PlatformEventSpec,
+    write: PlatformEventWriteCapability,
+) -> EventProjection {
     let event_at = format!("{at}.Event.{}", spec.event_id);
     EventProjection {
         at: event_at.clone(),
@@ -280,7 +299,10 @@ fn available_module_event(at: &QualifiedAddress, spec: &PlatformEventSpec) -> Ev
         handler_en: spec.handler_en.clone(),
         implementation_at: None,
         call_type: None,
-        can: vec![OperationRegistry::closed().event_implementation_skeleton(event_at)],
+        can: (write == PlatformEventWriteCapability::Proven)
+            .then(|| OperationRegistry::closed().event_implementation_skeleton(event_at, None))
+            .into_iter()
+            .collect(),
     }
 }
 
@@ -288,6 +310,7 @@ fn project_module_events(
     at: &QualifiedAddress,
     specs: &[PlatformEventSpec],
     methods: &mut [MethodProjection],
+    write: PlatformEventWriteCapability,
 ) -> Vec<EventProjection> {
     specs
         .iter()
@@ -296,7 +319,7 @@ fn project_module_events(
                 .iter_mut()
                 .find(|method| event_handler_name_matches(&method.name, spec))
             else {
-                return available_module_event(at, spec);
+                return available_module_event(at, spec, write);
             };
             let compatible = method_matches_event(
                 method.method_kind,
@@ -1159,16 +1182,21 @@ pub(crate) fn project_form_owner_events(
         ) {
             let owner_prefix = owner.at.as_str();
             let at = format!("{owner_prefix}.Event.{}", spec.event_id);
-            let actual = bindings.iter().find(|candidate| {
-                candidate.owner.catalog_owner() == owner.owner.catalog_owner()
-                    && candidate
-                        .at
-                        .split(".Event.")
-                        .next()
-                        .unwrap_or(candidate.at.as_str())
-                        == owner_prefix
-                    && spec.event_id == candidate.event
-            });
+            let actuals = bindings
+                .iter()
+                .filter(|candidate| {
+                    candidate.owner.catalog_owner() == owner.owner.catalog_owner()
+                        && candidate
+                            .at
+                            .split(".Event.")
+                            .next()
+                            .unwrap_or(candidate.at.as_str())
+                            == owner_prefix
+                        && spec.event_id == candidate.event
+                })
+                .collect::<Vec<_>>();
+            let duplicate = actuals.len() > 1;
+            let actual = (actuals.len() == 1).then(|| actuals[0]);
             let method = actual.and_then(|binding| {
                 methods
                     .iter()
@@ -1186,20 +1214,42 @@ pub(crate) fn project_form_owner_events(
                 )
                 .is_ok()
             });
-            let state = match (actual, method, binding_is_valid) {
-                (None, _, _) => EventState::Available,
-                (Some(_), _, false) => EventState::Invalid,
-                (Some(_), None, true) => EventState::Missing,
-                (Some(_), Some(method), true) if form_method_matches_event(method, spec) => {
+            let state = match (duplicate, actual, method, binding_is_valid) {
+                (true, _, _, _) => EventState::Invalid,
+                (false, None, _, _) => EventState::Available,
+                (false, Some(_), _, false) => EventState::Invalid,
+                (false, Some(_), None, true) => EventState::Missing,
+                (false, Some(_), Some(method), true) if form_method_matches_event(method, spec) => {
                     EventState::Implemented
                 }
-                (Some(_), Some(_), true) => EventState::Invalid,
+                (false, Some(_), Some(_), true) => EventState::Invalid,
+            };
+            let signature = if owner.owner == FormBindingOwner::Command {
+                actual.map_or_else(
+                    || spec.signature_ru.clone(),
+                    |binding| format!("Процедура {}(Команда)", binding.handler),
+                )
+            } else {
+                spec.signature_ru.clone()
+            };
+            let can = match state {
+                EventState::Available if context.direct_part_writable => {
+                    vec![OperationRegistry::closed().event_implementation_skeleton(
+                        at.clone(),
+                        (context.definition == crate::infrastructure::native_operations::form_event_registry::FormDefinitionKind::Extension)
+                            .then_some("After"),
+                    )]
+                }
+                EventState::Missing => {
+                    vec![OperationRegistry::closed().event_implementation_skeleton(at.clone(), None)]
+                }
+                EventState::Available | EventState::Implemented | EventState::Invalid => Vec::new(),
             };
             events.push(EventProjection {
                 at: at.clone(),
                 event_id: spec.event_id.to_string(),
                 state,
-                signature: spec.signature_ru.clone(),
+                signature,
                 contexts: spec.contexts.clone(),
                 binding: BindingFact::Property,
                 handler: actual
@@ -1210,10 +1260,7 @@ pub(crate) fn project_form_owner_events(
                     method.map(|method| form_method_at(binding.at.as_str(), method.name))
                 }),
                 call_type: actual.and_then(|binding| binding.call_type.clone()),
-                can: (state == EventState::Available)
-                    .then(|| OperationRegistry::closed().event_implementation_skeleton(at))
-                    .into_iter()
-                    .collect(),
+                can,
             });
         }
     }
@@ -1257,6 +1304,7 @@ pub(crate) fn project_declarative_binding(
         handles: &[],
         declarative_bindings: std::slice::from_ref(&binding),
         extension_targets: &[],
+        platform_event_write: PlatformEventWriteCapability::Proven,
     })
 }
 
@@ -1302,7 +1350,7 @@ mod tests {
         project_form_events as project_form_events_with_context,
         project_form_owner_events as project_form_owner_events_with_context, project_module,
         DeclarativeBinding, FormBindingOwner, FormEventBindingInput, FormEventOwnerInput,
-        FormMethodFact, ModuleProjectionRequest,
+        FormMethodFact, ModuleProjectionRequest, PlatformEventWriteCapability,
     };
     use crate::domain::address::{NodeKind, QualifiedAddress};
     use crate::domain::module_projection::{BindingFact, EventState, ExtensionKind, InterfaceKind};
@@ -1313,6 +1361,7 @@ mod tests {
     };
     use bsl_syntax::ast::{AstNode, PreIfDir};
     use serde::Deserialize;
+    use serde_json::json;
 
     const COMPLEX: &str = include_str!("../../../../tests/fixtures/v013/modules/complex.bsl");
     const EXTENSION: &str = include_str!("../../../../tests/fixtures/v013/modules/extension.bsl");
@@ -1465,6 +1514,7 @@ mod tests {
             handles: &[],
             declarative_bindings: &[],
             extension_targets: &[],
+            platform_event_write: PlatformEventWriteCapability::Proven,
         })
         .unwrap()
     }
@@ -1840,6 +1890,241 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_available_form_event_skeleton_defaults_call_type_after() {
+        let context = form_context(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><Events/><BaseForm/></Form>"#,
+            NodeKind::CommonForm,
+        );
+        let owner = FormEventOwnerInput::new(FormBindingOwner::Form, "main:CommonForm.Test");
+
+        let event = project_form_owner_events_with_context(&context, &[owner], &[], &[])
+            .into_iter()
+            .find(|event| event.event_id == "OnOpen")
+            .unwrap();
+
+        assert_eq!(event.state, EventState::Available);
+        assert_eq!(
+            serde_json::to_value(&event.can[0]).unwrap(),
+            json!({
+                "op": "event.implement",
+                "args": {
+                    "at": "main:CommonForm.Test.Event.OnOpen",
+                    "callType": "After"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn base_form_only_available_event_is_not_advertised_as_directly_writable() {
+        let context = form_context(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><BaseForm/></Form>"#,
+            NodeKind::CommonForm,
+        );
+        let owner = FormEventOwnerInput::new(FormBindingOwner::Form, "main:CommonForm.Test");
+
+        let event = project_form_owner_events_with_context(&context, &[owner], &[], &[])
+            .into_iter()
+            .find(|event| event.event_id == "OnOpen")
+            .unwrap();
+
+        assert_eq!(event.state, EventState::Available);
+        assert!(event.can.is_empty(), "{event:?}");
+    }
+
+    #[test]
+    fn borrowed_missing_event_preserves_binding_and_offers_no_new_call_type() {
+        let context = form_context(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><Events/><BaseForm/></Form>"#,
+            NodeKind::CommonForm,
+        );
+        let owner = FormEventOwnerInput::new(FormBindingOwner::Form, "main:CommonForm.Test");
+        let binding = FormEventBindingInput::property(
+            FormBindingOwner::Form,
+            "main:CommonForm.Test.Event.OnOpen",
+            "OnOpen",
+            "FormOnOpen",
+            Some("Before"),
+        );
+
+        let event = project_form_owner_events_with_context(
+            &context,
+            &[owner],
+            std::slice::from_ref(&binding),
+            &[],
+        )
+        .into_iter()
+        .find(|event| event.event_id == "OnOpen")
+        .unwrap();
+
+        assert_eq!(event.state, EventState::Missing);
+        assert_eq!(event.call_type.as_deref(), Some("Before"));
+        assert_eq!(
+            serde_json::to_value(&event.can[0]).unwrap(),
+            json!({
+                "op": "event.implement",
+                "args": {"at": "main:CommonForm.Test.Event.OnOpen"}
+            })
+        );
+    }
+
+    #[test]
+    fn valid_missing_form_event_keeps_its_direct_implementation_capability() {
+        let binding = FormEventBindingInput::property(
+            FormBindingOwner::Element(FormElementKind::InputField),
+            "main:CommonForm.Test.Item.Value.Event.OnChange",
+            "OnChange",
+            "ValueOnChange",
+            None,
+        );
+
+        let event = project_form_events(std::slice::from_ref(&binding), &[])
+            .into_iter()
+            .find(|event| event.event_id == "OnChange")
+            .unwrap();
+
+        assert_eq!(event.state, EventState::Missing);
+        assert_eq!(
+            serde_json::to_value(&event.can[0]).unwrap(),
+            json!({
+                "op": "event.implement",
+                "args": {"at": "main:CommonForm.Test.Item.Value.Event.OnChange"}
+            })
+        );
+    }
+
+    #[test]
+    fn duplicate_property_bindings_are_invalid_and_never_advertise_implementation() {
+        let bindings = [
+            FormEventBindingInput::property(
+                FormBindingOwner::Element(FormElementKind::InputField),
+                "main:CommonForm.Test.Item.Value.Event.OnChange",
+                "OnChange",
+                "FirstHandler",
+                None,
+            ),
+            FormEventBindingInput::property(
+                FormBindingOwner::Element(FormElementKind::InputField),
+                "main:CommonForm.Test.Item.Value.Event.OnChange",
+                "OnChange",
+                "SecondHandler",
+                None,
+            ),
+        ];
+
+        let event = project_form_events(&bindings, &[])
+            .into_iter()
+            .find(|event| event.event_id == "OnChange")
+            .unwrap();
+
+        assert_eq!(event.state, EventState::Invalid);
+        assert!(event.can.is_empty());
+        assert!(event.implementation_at.is_none());
+    }
+
+    #[test]
+    fn form_command_execute_uses_action_handler_and_form_signature() {
+        let owner = FormEventOwnerInput::new(
+            FormBindingOwner::Command,
+            "main:CommonForm.Test.Command.Refresh",
+        );
+        let available = project_form_owner_events(std::slice::from_ref(&owner), &[], &[]);
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].event_id, "Execute");
+        assert_eq!(available[0].state, EventState::Available);
+        assert_eq!(
+            available[0].signature,
+            "Процедура ОбработкаКоманды(Команда)"
+        );
+        assert_eq!(
+            available[0].contexts,
+            [
+                "thinClient",
+                "webClient",
+                "thickClientManaged",
+                "mobileClient",
+                "mobileAppClient",
+            ]
+        );
+
+        let action = FormEventBindingInput::property(
+            FormBindingOwner::Command,
+            "main:CommonForm.Test.Command.Refresh.Event.Execute",
+            "Execute",
+            "RefreshAction",
+            None,
+        );
+        let missing = project_form_owner_events(
+            std::slice::from_ref(&owner),
+            std::slice::from_ref(&action),
+            &[],
+        );
+        assert_eq!(missing[0].state, EventState::Missing);
+        assert_eq!(missing[0].handler, "RefreshAction");
+        assert_eq!(missing[0].signature, "Процедура RefreshAction(Команда)");
+
+        let method = [FormMethodFact::new(
+            "RefreshAction",
+            crate::domain::module_projection::MethodKind::Procedure,
+            "Процедура RefreshAction(Команда)",
+            vec![
+                "thinClient",
+                "webClient",
+                "thickClientManaged",
+                "mobileClient",
+                "mobileAppClient",
+            ],
+        )];
+        let implemented = project_form_owner_events(
+            std::slice::from_ref(&owner),
+            std::slice::from_ref(&action),
+            &method,
+        );
+        assert_eq!(implemented[0].state, EventState::Implemented);
+
+        let duplicate = project_form_owner_events(&[owner], &[action.clone(), action], &method);
+        assert_eq!(duplicate[0].state, EventState::Invalid);
+        assert!(duplicate[0].can.is_empty());
+    }
+
+    #[test]
+    fn borrowed_form_command_with_multiple_call_type_actions_fails_closed() {
+        let context = form_context(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><Commands/><BaseForm/></Form>"#,
+            NodeKind::CommonForm,
+        );
+        let owner = FormEventOwnerInput::new(
+            FormBindingOwner::Command,
+            "main:CommonForm.Test.Command.Refresh",
+        );
+        let bindings = [
+            FormEventBindingInput::property(
+                FormBindingOwner::Command,
+                "main:CommonForm.Test.Command.Refresh.Event.Execute",
+                "Execute",
+                "BeforeRefresh",
+                Some("Before"),
+            ),
+            FormEventBindingInput::property(
+                FormBindingOwner::Command,
+                "main:CommonForm.Test.Command.Refresh.Event.Execute",
+                "Execute",
+                "AfterRefresh",
+                Some("After"),
+            ),
+        ];
+
+        let event = project_form_owner_events_with_context(&context, &[owner], &bindings, &[])
+            .into_iter()
+            .next()
+            .unwrap();
+
+        assert_eq!(event.event_id, "Execute");
+        assert_eq!(event.state, EventState::Invalid);
+        assert!(event.can.is_empty());
+    }
+
+    #[test]
     fn form_possible_events_are_exact_for_document_and_dynamic_list_sources_without_bsl() {
         let document_context = form_context(
             r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"
@@ -2152,6 +2437,7 @@ mod tests {
             handles: &[],
             declarative_bindings: &[],
             extension_targets: &[],
+            platform_event_write: PlatformEventWriteCapability::Proven,
         })
         .unwrap_err();
         assert!(error.contains("common-module flags"), "{error}");
@@ -2188,6 +2474,7 @@ mod tests {
             handles: &handles,
             declarative_bindings: &[],
             extension_targets: &[],
+            platform_event_write: PlatformEventWriteCapability::Proven,
         })
         .unwrap();
 
@@ -2332,6 +2619,7 @@ mod tests {
             handles: &[],
             declarative_bindings: &[],
             extension_targets: &targets,
+            platform_event_write: PlatformEventWriteCapability::Proven,
         })
         .unwrap();
         let kinds = projection

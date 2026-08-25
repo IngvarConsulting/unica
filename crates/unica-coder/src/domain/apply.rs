@@ -558,10 +558,20 @@ impl OperationRegistry {
             .collect()
     }
 
-    pub(crate) fn event_implementation_skeleton(self, at: impl Into<String>) -> OperationRef {
-        self.lookup("event.implement")
-            .expect("the closed operation registry owns event implementation")
-            .copyable_skeleton_at(at)
+    pub(crate) fn event_implementation_skeleton(
+        self,
+        at: impl Into<String>,
+        call_type: Option<&str>,
+    ) -> OperationRef {
+        let descriptor = self
+            .lookup("event.implement")
+            .expect("the closed operation registry owns event implementation");
+        let mut args = descriptor.skeleton.args();
+        args.insert("at".to_string(), Value::String(at.into()));
+        if let Some(call_type) = call_type {
+            args.insert("callType".to_string(), Value::String(call_type.to_string()));
+        }
+        OperationRef::new(descriptor.name, args)
     }
 }
 

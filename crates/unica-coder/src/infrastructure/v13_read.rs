@@ -19,6 +19,7 @@ use crate::domain::source_target::SourceTarget;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::bsl_module_projection::{
     project_module, FormBindingOwner, FormEventBindingInput, ModuleProjectionRequest,
+    PlatformEventWriteCapability,
 };
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
 use crate::infrastructure::native_operations::form::{FormInfoElement, FormInfoEvent};
@@ -620,6 +621,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 handles: &handles,
                 declarative_bindings: &[],
                 extension_targets: &[],
+                platform_event_write: match self.read.source_set_kind() {
+                    SourceSetKind::Extension => PlatformEventWriteCapability::Unproved,
+                    _ => PlatformEventWriteCapability::Proven,
+                },
             })
             .map_err(|error| ViewError::new("provider_unavailable", error))?,
         );
@@ -669,16 +674,18 @@ impl<'a> LogicalViewReadAuthority<'a> {
         admitted: &ViewSourceSnapshot,
     ) -> Result<(), ViewError> {
         if capability.source_layout() == ModuleSourceLayout::Root {
-            return if matches!(
-                self.read.source_set_kind(),
-                SourceSetKind::Configuration | SourceSetKind::Extension
-            ) {
-                Ok(())
-            } else {
-                Err(ViewError::new(
-                    "not_found",
-                    "external source sets have no configuration runtime modules",
-                ))
+            return match self.read.source_set_kind() {
+                SourceSetKind::Configuration => Ok(()),
+                SourceSetKind::Extension => Err(ViewError::new(
+                    "provider_unavailable",
+                    "extension root runtime module ownership is not proved",
+                )),
+                SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
+                    Err(ViewError::new(
+                        "not_found",
+                        "external source sets have no configuration runtime modules",
+                    ))
+                }
             };
         }
         if capability.role() == ModuleRole::WebSocketClient {

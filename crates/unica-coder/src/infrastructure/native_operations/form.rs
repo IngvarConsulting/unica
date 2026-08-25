@@ -1702,7 +1702,7 @@ fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand>
             actions: form_children(command, "Action")
                 .into_iter()
                 .map(|action| FormInfoEvent {
-                    name: action.attribute("name").unwrap_or("").to_string(),
+                    name: "Execute".to_string(),
                     handler: action.text().unwrap_or("").to_string(),
                     call_type: action.attribute("callType").map(str::to_string),
                 })
@@ -7518,6 +7518,7 @@ pub(crate) fn form_compile_xml(
     let context = form_project_event_context(
         FormEventContext {
             definition: FormDefinitionKind::Regular,
+            direct_part_writable: true,
             main_attribute: MainAttributeKind::Unknown,
             main_attribute_type: None,
             main_attribute_provenance: MainAttributeProvenance::Missing,
@@ -10951,6 +10952,34 @@ pub(crate) mod tests {
             .iter()
             .any(|error| { error.contains("urn:not-logform") && error.contains(FORM_LOGFORM_NS) }));
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_info_projects_direct_command_action_as_execute_binding() {
+        let data = parse_form_info_xml(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+  <ChildItems/>
+  <Commands>
+    <Command name="Refresh" id="1">
+      <Action>RefreshAction</Action>
+    </Command>
+  </Commands>
+</Form>"#,
+            "Test".to_string(),
+            String::new(),
+            DomainObjectSupportData {
+                state: crate::domain::support_state::ObjectSupportState::NotSupported,
+                direct_edit_safe: Some(true),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(data.commands.len(), 1);
+        assert_eq!(data.commands[0].actions.len(), 1);
+        let action = &data.commands[0].actions[0];
+        assert_eq!(action.name, "Execute");
+        assert_eq!(action.handler, "RefreshAction");
+        assert_eq!(action.call_type, None);
     }
 
     #[test]
@@ -18566,7 +18595,8 @@ pub(crate) mod tests {
                         "attributes": [projected_attribute],
                         "formEvents": [{
                             "name": "OnReadAtServer",
-                            "handler": "OnReadAtServer"
+                            "handler": "OnReadAtServer",
+                            "callType": "After"
                         }]
                     }),
                 ),
@@ -19515,6 +19545,40 @@ pub(crate) mod tests {
             }
             let _ = fs::remove_dir_all(&context.cwd);
         }
+    }
+
+    #[test]
+    fn edit_form_rejects_borrowed_event_without_call_type_before_write() {
+        let context = temp_context("edit-borrowed-event-missing-call-type");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(Some("CatalogObject.Goods"), "", "", true).into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "formEvents": [{
+                        "name": "OnOpen",
+                        "handler": "OnOpenAfter"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("FORM_EVENT_CALL_TYPE_REQUIRED")));
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
     }
 
     fn event_form_xml(
