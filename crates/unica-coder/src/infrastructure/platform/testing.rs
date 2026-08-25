@@ -85,6 +85,16 @@ pub(crate) fn can_rename_parent_with_retained_cleanup_child_for_test() -> bool {
     false
 }
 
+#[cfg(unix)]
+pub(crate) fn can_swap_named_child_behind_retained_handle_for_test() -> bool {
+    true
+}
+
+#[cfg(not(unix))]
+pub(crate) fn can_swap_named_child_behind_retained_handle_for_test() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileLinkFixtureOutcome {
     Created,

@@ -60,7 +60,6 @@ use super::single_file_publisher::{
 
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 static RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-static RETAINED_APPLY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Result of asking the canonical registrar to add one child object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,9 +268,22 @@ pub(crate) struct CompileTransaction {
 struct PlannedRetainedApplyChange {
     root: Arc<RetainedDirectoryCapability>,
     relative_path: PathBuf,
+    parent: RetainedDirectoryCapability,
+    name: OsString,
     original: Option<Vec<u8>>,
     current: Option<Vec<u8>>,
     original_file:
+        Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
+}
+
+pub(super) struct RetainedApplyChangeBinding {
+    pub(super) root: Arc<RetainedDirectoryCapability>,
+    pub(super) relative_path: PathBuf,
+    pub(super) parent: RetainedDirectoryCapability,
+    pub(super) name: OsString,
+    pub(super) original: Option<Vec<u8>>,
+    pub(super) current: Option<Vec<u8>>,
+    pub(super) original_file:
         Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
 }
 
@@ -305,15 +317,18 @@ impl CompileTransaction {
 
     pub(super) fn bind_retained_apply_change(
         &mut self,
-        root: Arc<RetainedDirectoryCapability>,
-        relative_path: PathBuf,
-        original: Option<Vec<u8>>,
-        current: Option<Vec<u8>>,
-        original_file: Option<
-            crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
-        >,
+        binding: RetainedApplyChangeBinding,
         authority: &ApplyWriterAuthority,
     ) -> Result<(), String> {
+        let RetainedApplyChangeBinding {
+            root,
+            relative_path,
+            parent,
+            name,
+            original,
+            current,
+            original_file,
+        } = binding;
         validate_strict_relative_file_path(&relative_path)?;
         if original == current {
             return Ok(());
@@ -340,6 +355,8 @@ impl CompileTransaction {
         self.retained_apply.push(PlannedRetainedApplyChange {
             root,
             relative_path,
+            parent,
+            name,
             original,
             current,
             original_file,
@@ -1777,16 +1794,13 @@ fn validate_retained_apply_state(
             format!("retained apply source-root physical identity changed: {error}")
         })?;
     }
-    let (parent, name) = entry
-        .root
-        .retain_relative_parent_nofollow(&entry.relative_path)
-        .map_err(|error| {
-            format!(
-                "retained apply target parent cannot be resolved {}: {error}",
-                entry.relative_path.display()
-            )
-        })?;
-    let observed = match parent.retain_immediate_child_nofollow(&name) {
+    entry.parent.validate_named_identity().map_err(|error| {
+        format!(
+            "retained apply target parent link/reparse route or physical identity changed {}: {error}",
+            entry.relative_path.display()
+        )
+    })?;
+    let observed = match entry.parent.retain_immediate_child_nofollow(&entry.name) {
         Ok(RetainedChildCapability::RegularFile(file)) => {
             if file.hard_link_count().map_err(|error| {
                 format!("retained apply hard-link count cannot be read: {error}")
@@ -1841,11 +1855,7 @@ struct PublishedRetainedApplyChange {
 }
 
 fn retained_apply_stage_name() -> OsString {
-    OsString::from(format!(
-        ".unica-apply-{}-{}",
-        std::process::id(),
-        RETAINED_APPLY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ))
+    OsString::from(format!(".unica-apply-{}", uuid::Uuid::new_v4()))
 }
 
 fn publish_retained_apply_change(
@@ -1853,10 +1863,12 @@ fn publish_retained_apply_change(
     journal: &mut Vec<PublishedRetainedApplyChange>,
 ) -> Result<(), String> {
     validate_retained_apply_state(entry, &entry.original, false)?;
-    let (parent, name) = entry
-        .root
-        .retain_relative_parent_nofollow(&entry.relative_path)
-        .map_err(|error| format!("retained apply parent cannot be retained: {error}"))?;
+    entry
+        .parent
+        .validate_named_identity()
+        .map_err(|error| format!("retained apply parent identity cannot be validated: {error}"))?;
+    let parent = entry.parent.clone();
+    let name = entry.name.clone();
     match (&entry.original, &entry.current) {
         (None, Some(bytes)) => {
             let result =
@@ -1959,9 +1971,8 @@ fn rollback_retained_apply(published: &mut Vec<PublishedRetainedApplyChange>) ->
     let mut errors = Vec::new();
     while let Some(change) = published.pop() {
         if let Some(file) = change.published.as_ref() {
-            if let Err(error) = file
-                .validate_named_identity_relative()
-                .and_then(|()| file.remove_named_identity_relative())
+            if let Err(error) =
+                file.remove_named_identity_relative_for_retained_apply(&retained_apply_stage_name())
             {
                 errors.push(format!("published apply child was preserved: {error}"));
             }
@@ -1986,7 +1997,9 @@ fn finalize_retained_apply_recovery(
 ) {
     for change in published {
         if let Some(displaced) = change.displaced.take() {
-            if let Err(error) = displaced.remove_named_identity_relative() {
+            if let Err(error) = displaced
+                .remove_named_identity_relative_for_retained_apply(&retained_apply_stage_name())
+            {
                 report.cleanup_warnings.push(format!(
                     "retained apply recovery child was preserved after success: {error}"
                 ));

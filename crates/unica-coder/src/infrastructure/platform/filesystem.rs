@@ -9,6 +9,7 @@ use std::sync::Arc;
 thread_local! {
     static TEST_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_BEFORE_IDENTITY_BOUND_NO_REPLACE_RENAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static TEST_BEFORE_IDENTITY_BOUND_CLEANUP_MUTATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -27,6 +28,22 @@ pub(crate) fn set_before_identity_bound_no_replace_rename_hook(hook: impl FnOnce
 fn run_before_identity_bound_no_replace_rename_hook() {
     if let Some(hook) =
         TEST_BEFORE_IDENTITY_BOUND_NO_REPLACE_RENAME.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_before_identity_bound_cleanup_mutation_hook(hook: impl FnOnce() + 'static) {
+    TEST_BEFORE_IDENTITY_BOUND_CLEANUP_MUTATION.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+fn run_before_identity_bound_cleanup_mutation_hook() {
+    if let Some(hook) =
+        TEST_BEFORE_IDENTITY_BOUND_CLEANUP_MUTATION.with(|slot| slot.borrow_mut().take())
     {
         hook();
     }
@@ -284,6 +301,12 @@ pub(crate) struct RetainedPublicationError {
     published: Option<RetainedRegularFileCapability>,
 }
 
+#[derive(Debug)]
+enum RetainedMoveOutcome {
+    Expected(RetainedRegularFileCapability),
+    Different(RetainedRegularFileCapability),
+}
+
 impl RetainedPublicationError {
     fn before_rename(error: io::Error) -> Self {
         Self {
@@ -387,6 +410,46 @@ impl RetainedDirectoryCapability {
         self.retained.identity
     }
 
+    /// Compares two absent immediate-child names using the lookup semantics of
+    /// this exact retained directory. The directory descriptor, not its
+    /// ambient path, supplies the filesystem case policy.
+    pub(crate) fn child_names_equivalent(
+        &self,
+        left: &std::ffi::OsStr,
+        right: &std::ffi::OsStr,
+    ) -> io::Result<bool> {
+        if left == right {
+            return Ok(true);
+        }
+        let case_sensitive = filesystem_case_sensitive_for_directory(&self.retained.directory)?;
+        #[cfg(target_vendor = "apple")]
+        {
+            use objc2_core_foundation::{CFComparisonResult, CFString, CFStringCompareFlags};
+
+            let left = left.to_str().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "left child name is not valid Unicode",
+                )
+            })?;
+            let right = right.to_str().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "right child name is not valid Unicode",
+                )
+            })?;
+            let mut flags = CFStringCompareFlags::CompareNonliteral;
+            if !case_sensitive {
+                flags |= CFStringCompareFlags::CompareCaseInsensitive;
+            }
+            let left = CFString::from_str(left);
+            let right = CFString::from_str(right);
+            Ok(left.compare(Some(&right), flags) == CFComparisonResult::CompareEqualTo)
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        host_path_components_equal(left, right, case_sensitive)
+    }
+
     pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
         let rebound = if let Some(parent) = &self.parent {
             parent.directory.validate_named_identity()?;
@@ -437,18 +500,7 @@ impl RetainedDirectoryCapability {
         let mut stage = create_new_regular_child(&self.retained.directory, stage_name)
             .map_err(RetainedPublicationError::before_rename)?;
         let identity = file_identity(&stage).map_err(RetainedPublicationError::before_rename)?;
-        let before_rename = (|| {
-            stage.write_all(bytes)?;
-            stage.sync_data()?;
-            replace_identity_bound_regular_child(
-                &self.retained.directory,
-                stage_name,
-                identity,
-                &stage,
-                destination_name,
-            )
-        })();
-        if let Err(error) = before_rename {
+        if let Err(error) = stage.write_all(bytes).and_then(|()| stage.sync_data()) {
             let _ = remove_identity_bound_regular_child(
                 &self.retained.directory,
                 stage_name,
@@ -457,11 +509,53 @@ impl RetainedDirectoryCapability {
             );
             return Err(RetainedPublicationError::before_rename(error));
         }
-        let published = RetainedRegularFileCapability {
+        let staged = RetainedRegularFileCapability {
             parent: self.clone(),
-            name: destination_name.to_os_string(),
+            name: stage_name.to_os_string(),
             file: stage,
             identity,
+        };
+        if let Err(error) = replace_identity_bound_regular_child(
+            &self.retained.directory,
+            stage_name,
+            identity,
+            &staged.file,
+            destination_name,
+        ) {
+            let _ = staged.remove_named_identity_relative();
+            return Err(RetainedPublicationError::before_rename(error));
+        }
+        let published = match self.observe_moved_regular_child(destination_name, identity) {
+            Ok(RetainedMoveOutcome::Expected(published)) => published,
+            Ok(RetainedMoveOutcome::Different(different)) => {
+                let error = self.restore_unexpected_regular_child_move(
+                    destination_name,
+                    &different,
+                    stage_name,
+                );
+                return Err(match error {
+                    Ok(()) => RetainedPublicationError::before_rename(io::Error::other(
+                        "staged source identity changed at replacement boundary; moved child restored to its source name",
+                    )),
+                    Err(restore) => RetainedPublicationError::after_rename(
+                        io::Error::other(format!(
+                            "staged source identity changed at replacement boundary; moved child could not be restored: {restore}"
+                        )),
+                        different,
+                    ),
+                });
+            }
+            Err(error) => {
+                return Err(RetainedPublicationError::after_rename(
+                    error,
+                    RetainedRegularFileCapability {
+                        parent: self.clone(),
+                        name: destination_name.to_os_string(),
+                        file: staged.file,
+                        identity,
+                    },
+                ));
+            }
         };
         if let Err(error) = sync_renamed_regular_child(&published.file)
             .and_then(|()| sync_directory(&self.retained.directory))
@@ -486,19 +580,7 @@ impl RetainedDirectoryCapability {
         let mut stage = create_new_regular_child(&self.retained.directory, stage_name)
             .map_err(RetainedPublicationError::before_rename)?;
         let identity = file_identity(&stage).map_err(RetainedPublicationError::before_rename)?;
-        let before_rename = (|| {
-            stage.write_all(bytes)?;
-            stage.sync_data()?;
-            rename_identity_bound_regular_child_no_replace(
-                &self.retained.directory,
-                stage_name,
-                identity,
-                &stage,
-                &self.retained.directory,
-                destination_name,
-            )
-        })();
-        if let Err(error) = before_rename {
+        if let Err(error) = stage.write_all(bytes).and_then(|()| stage.sync_data()) {
             let _ = remove_identity_bound_regular_child(
                 &self.retained.directory,
                 stage_name,
@@ -507,11 +589,40 @@ impl RetainedDirectoryCapability {
             );
             return Err(RetainedPublicationError::before_rename(error));
         }
-        let published = RetainedRegularFileCapability {
+        let staged = RetainedRegularFileCapability {
             parent: self.clone(),
-            name: destination_name.to_os_string(),
+            name: stage_name.to_os_string(),
             file: stage,
             identity,
+        };
+        let published = match self.move_regular_child_no_replace_observed(
+            stage_name,
+            &staged,
+            destination_name,
+        ) {
+            Ok(RetainedMoveOutcome::Expected(published)) => published,
+            Ok(RetainedMoveOutcome::Different(different)) => {
+                let error = self.restore_unexpected_regular_child_move(
+                    destination_name,
+                    &different,
+                    stage_name,
+                );
+                return Err(match error {
+                    Ok(()) => RetainedPublicationError::before_rename(io::Error::other(
+                        "staged source identity changed at create boundary; moved child restored to its source name",
+                    )),
+                    Err(restore) => RetainedPublicationError::after_rename(
+                        io::Error::other(format!(
+                            "staged source identity changed at create boundary; moved child could not be restored: {restore}"
+                        )),
+                        different,
+                    ),
+                });
+            }
+            Err(error) => {
+                let _ = staged.remove_named_identity_relative();
+                return Err(RetainedPublicationError::before_rename(error));
+            }
         };
         if let Err(error) = sync_renamed_regular_child(&published.file)
             .and_then(|()| sync_directory(&self.retained.directory))
@@ -538,42 +649,28 @@ impl RetainedDirectoryCapability {
                 "retained destination belongs to another parent",
             ));
         }
-        let retained = expected.file.try_clone()?;
-        rename_identity_bound_regular_child_no_replace(
-            &self.retained.directory,
+        match self.move_regular_child_no_replace_observed(
             destination_name,
-            expected.identity,
-            &expected.file,
-            &self.retained.directory,
+            expected,
             recovery_name,
-        )?;
-        let displaced = RetainedRegularFileCapability {
-            parent: self.clone(),
-            name: recovery_name.to_os_string(),
-            file: retained,
-            identity: expected.identity,
-        };
-        if let Err(validation) = displaced.validate_named_identity_relative() {
-            let restore = self.retain_regular_child(recovery_name).and_then(|raced| {
-                rename_identity_bound_regular_child_no_replace(
-                    &self.retained.directory,
+        )? {
+            RetainedMoveOutcome::Expected(displaced) => Ok(displaced),
+            RetainedMoveOutcome::Different(different) => {
+                let restore = self.restore_unexpected_regular_child_move(
                     recovery_name,
-                    raced.identity,
-                    &raced.file,
-                    &self.retained.directory,
+                    &different,
                     destination_name,
-                )
-            });
-            return Err(match restore {
-                Ok(()) => io::Error::other(format!(
-                    "retained destination identity changed at mutation boundary: {validation}"
-                )),
-                Err(restore) => io::Error::other(format!(
-                    "retained destination identity changed at mutation boundary: {validation}; recovery child was preserved because restore failed: {restore}"
-                )),
-            });
+                );
+                Err(match restore {
+                    Ok(()) => io::Error::other(
+                        "retained destination identity changed at mutation boundary; moved child restored",
+                    ),
+                    Err(restore) => io::Error::other(format!(
+                        "retained destination identity changed at mutation boundary; moved child was preserved because restore failed: {restore}"
+                    )),
+                })
+            }
         }
-        Ok(displaced)
     }
 
     /// Restores one previously displaced child without replacing any child
@@ -589,15 +686,72 @@ impl RetainedDirectoryCapability {
                 "retained recovery child belongs to another parent",
             ));
         }
+        match self.move_regular_child_no_replace_observed(
+            &displaced.name,
+            displaced,
+            destination_name,
+        )? {
+            RetainedMoveOutcome::Expected(_) => sync_directory(&self.retained.directory),
+            RetainedMoveOutcome::Different(different) => {
+                let restore = self.restore_unexpected_regular_child_move(
+                    destination_name,
+                    &different,
+                    &displaced.name,
+                );
+                Err(match restore {
+                    Ok(()) => io::Error::other(
+                        "retained recovery identity changed at restore boundary; moved child restored to recovery name",
+                    ),
+                    Err(restore) => io::Error::other(format!(
+                        "retained recovery identity changed at restore boundary; moved child could not be restored: {restore}"
+                    )),
+                })
+            }
+        }
+    }
+
+    fn move_regular_child_no_replace_observed(
+        &self,
+        source_name: &std::ffi::OsStr,
+        expected: &RetainedRegularFileCapability,
+        destination_name: &std::ffi::OsStr,
+    ) -> io::Result<RetainedMoveOutcome> {
         rename_identity_bound_regular_child_no_replace(
             &self.retained.directory,
-            &displaced.name,
-            displaced.identity,
-            &displaced.file,
+            source_name,
+            expected.identity,
+            &expected.file,
             &self.retained.directory,
             destination_name,
         )?;
-        sync_directory(&self.retained.directory)
+        self.observe_moved_regular_child(destination_name, expected.identity)
+    }
+
+    fn observe_moved_regular_child(
+        &self,
+        destination_name: &std::ffi::OsStr,
+        expected_identity: FileIdentity,
+    ) -> io::Result<RetainedMoveOutcome> {
+        let observed = self.retain_regular_child(destination_name)?;
+        if observed.identity == expected_identity {
+            Ok(RetainedMoveOutcome::Expected(observed))
+        } else {
+            Ok(RetainedMoveOutcome::Different(observed))
+        }
+    }
+
+    fn restore_unexpected_regular_child_move(
+        &self,
+        moved_name: &std::ffi::OsStr,
+        moved: &RetainedRegularFileCapability,
+        source_name: &std::ffi::OsStr,
+    ) -> io::Result<()> {
+        match self.move_regular_child_no_replace_observed(moved_name, moved, source_name)? {
+            RetainedMoveOutcome::Expected(_) => Ok(()),
+            RetainedMoveOutcome::Different(_) => Err(io::Error::other(
+                "a second identity change raced restoration; an observed child may remain preserved outside its original name",
+            )),
+        }
     }
 
     pub(crate) fn read_relative_regular_bounded(
@@ -850,6 +1004,74 @@ impl RetainedRegularFileCapability {
             self.identity,
             &self.file,
         )
+    }
+
+    /// Removes this retained apply child without exposing the admitted public
+    /// name to Unix's validate-then-`unlinkat` race. Unix first moves the
+    /// identity to a unique transaction-owned quarantine name, verifies the
+    /// move outcome, and only then performs best-effort artifact deletion.
+    /// Windows keeps its stronger handle-based delete. Portable Unix has no
+    /// unlink-by-descriptor operation: the final unlink of the verified,
+    /// transaction-unique quarantine is still name-based. A hostile same-user
+    /// process that discovers and swaps that internal name in the final gap can
+    /// redirect artifact deletion, but it cannot redirect deletion at the
+    /// admitted public/recovery name because that name is never unlinked.
+    pub(crate) fn remove_named_identity_relative_for_retained_apply(
+        &self,
+        quarantine_name: &std::ffi::OsStr,
+    ) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            #[cfg(test)]
+            run_before_identity_bound_cleanup_mutation_hook();
+            rename_identity_bound_regular_child_no_replace_after_cleanup_hook(
+                &self.parent.retained.directory,
+                &self.name,
+                self.identity,
+                &self.file,
+                &self.parent.retained.directory,
+                quarantine_name,
+            )?;
+            let outcome = self
+                .parent
+                .observe_moved_regular_child(quarantine_name, self.identity)?;
+            let quarantined = match outcome {
+                RetainedMoveOutcome::Expected(quarantined) => quarantined,
+                RetainedMoveOutcome::Different(different) => {
+                    let restore = self.parent.restore_unexpected_regular_child_move(
+                        quarantine_name,
+                        &different,
+                        &self.name,
+                    );
+                    return Err(match restore {
+                        Ok(()) => io::Error::other(
+                            "cleanup target identity changed at quarantine boundary; concurrent child restored and retained child left untouched",
+                        ),
+                        Err(restore) => io::Error::other(format!(
+                            "cleanup target identity changed at quarantine boundary; concurrent child could not be restored: {restore}"
+                        )),
+                    });
+                }
+            };
+            quarantined
+                .validate_named_identity_relative()
+                .and_then(|()| quarantined.remove_named_identity_relative())
+                .map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "verified cleanup quarantine {} in retained parent {:?} could not be deleted: {error}",
+                            Path::new(quarantine_name).display(),
+                            self.parent.identity()
+                        ),
+                    )
+                })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = quarantine_name;
+            self.remove_named_identity_relative()
+        }
     }
 }
 
@@ -3975,16 +4197,25 @@ pub(crate) fn distinct_non_unicode_paths_for_test() -> Option<(PathBuf, PathBuf)
 
 #[cfg(windows)]
 pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
-    open_absolute_directory_path_nofollow(path)
-        .and_then(|directory| relative_child_object_attributes(&directory))
-        .map(|attributes| attributes == 0)
+    let directory = open_absolute_directory_path_nofollow(path)?;
+    filesystem_case_sensitive_for_directory(&directory)
+}
+
+#[cfg(windows)]
+fn filesystem_case_sensitive_for_directory(directory: &fs::File) -> io::Result<bool> {
+    relative_child_object_attributes(directory).map(|attributes| attributes == 0)
 }
 
 #[cfg(target_vendor = "apple")]
 pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
+    let directory = open_absolute_directory_path_nofollow(path)?;
+    filesystem_case_sensitive_for_directory(&directory)
+}
+
+#[cfg(target_vendor = "apple")]
+fn filesystem_case_sensitive_for_directory(directory: &fs::File) -> io::Result<bool> {
     use std::os::fd::AsRawFd;
 
-    let directory = open_absolute_directory_path_nofollow(path)?;
     // SAFETY: directory owns a valid descriptor and fpathconf only queries it.
     let result = unsafe { libc::fpathconf(directory.as_raw_fd(), libc::_PC_CASE_SENSITIVE) };
     if result == -1 {
@@ -3996,10 +4227,15 @@ pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
+    let directory = open_absolute_directory_path_nofollow(path)?;
+    filesystem_case_sensitive_for_directory(&directory)
+}
+
+#[cfg(target_os = "linux")]
+fn filesystem_case_sensitive_for_directory(directory: &fs::File) -> io::Result<bool> {
     use std::mem::MaybeUninit;
     use std::os::fd::AsRawFd;
 
-    let directory = open_absolute_directory_path_nofollow(path)?;
     let mut filesystem = MaybeUninit::<libc::statfs>::uninit();
     // SAFETY: directory owns a valid descriptor and fstatfs initializes the
     // pointed structure on success.
@@ -4071,6 +4307,14 @@ fn linux_filesystem_case_sensitive_from_metadata(
 
 #[cfg(all(not(windows), not(target_vendor = "apple"), not(target_os = "linux")))]
 pub(crate) fn host_filesystem_case_sensitive(_path: &Path) -> io::Result<bool> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "filesystem case-sensitivity cannot be proven on this host",
+    ))
+}
+
+#[cfg(all(not(windows), not(target_vendor = "apple"), not(target_os = "linux")))]
+fn filesystem_case_sensitive_for_directory(_directory: &fs::File) -> io::Result<bool> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "filesystem case-sensitivity cannot be proven on this host",
@@ -4566,6 +4810,37 @@ pub(crate) fn rename_identity_bound_regular_child_no_replace(
     }
     #[cfg(test)]
     run_before_identity_bound_no_replace_rename_hook();
+    rename_regular_child_at_no_replace(
+        source_parent,
+        source_name,
+        destination_parent,
+        destination_name,
+    )
+}
+
+/// Cleanup has its own deterministic mutation-boundary hook. Keeping the
+/// generic no-replace hook out of this second path lets recovery tests target
+/// the later restore move while the same production checks remain in force.
+#[cfg(unix)]
+fn rename_identity_bound_regular_child_no_replace_after_cleanup_hook(
+    source_parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "retained regular child identity changed; replacement left untouched",
+        ));
+    }
+    let named = open_regular_child_nofollow(source_parent, source_name)?;
+    if file_identity(&named)? != expected_identity {
+        return Err(io::Error::other(
+            "regular child identity changed; replacement left untouched",
+        ));
+    }
     rename_regular_child_at_no_replace(
         source_parent,
         source_name,

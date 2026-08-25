@@ -1,10 +1,12 @@
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
-use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
-use crate::infrastructure::platform::filesystem::{
-    RetainedChildCapability, RetainedDirectoryCapability,
+use crate::infrastructure::native_operations::compile_transaction::{
+    CompileTransaction, RetainedApplyChangeBinding,
 };
-use std::collections::BTreeMap;
+use crate::infrastructure::platform::filesystem::{
+    FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
+};
+use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -43,6 +45,10 @@ pub(crate) struct StagedApplyChange {
 
 #[derive(Debug)]
 struct StagedEntry {
+    relative_path: PathBuf,
+    parent: RetainedDirectoryCapability,
+    name: OsString,
+    target_identity: StagedTargetIdentity,
     original: StagedFileState,
     current: StagedFileState,
     original_file:
@@ -50,12 +56,23 @@ struct StagedEntry {
 }
 
 #[derive(Debug)]
+enum StagedTargetIdentity {
+    Existing(FileIdentity),
+    Absent {
+        parent: FileIdentity,
+        name: OsString,
+    },
+}
+
+#[derive(Debug)]
 pub(crate) struct ApplyStagedState {
     root: Arc<RetainedDirectoryCapability>,
-    entries: BTreeMap<PathBuf, StagedEntry>,
+    entries: Vec<StagedEntry>,
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
     writer_authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
+    #[cfg(test)]
+    absent_name_identity_for_test: Option<fn(&std::ffi::OsStr, &std::ffi::OsStr) -> bool>,
 }
 
 impl ApplyStagedState {
@@ -67,22 +84,19 @@ impl ApplyStagedState {
     ) -> Self {
         Self {
             root,
-            entries: BTreeMap::new(),
+            entries: Vec::new(),
             deadline,
             cancellation,
             writer_authority,
+            #[cfg(test)]
+            absent_name_identity_for_test: None,
         }
     }
 
     pub(crate) fn read(&mut self, relative: &Path) -> Result<Option<Vec<u8>>, String> {
         let relative = strict_relative(relative)?;
-        self.ensure_loaded(&relative)?;
-        Ok(self
-            .entries
-            .get(&relative)
-            .expect("loaded staged entry must remain present")
-            .current
-            .as_option())
+        let index = self.ensure_loaded(&relative)?;
+        Ok(self.entries[index].current.as_option())
     }
 
     pub(crate) fn create(
@@ -91,8 +105,8 @@ impl ApplyStagedState {
         bytes: Vec<u8>,
     ) -> Result<(), String> {
         let relative = strict_relative(relative.as_ref())?;
-        self.ensure_loaded(&relative)?;
-        let entry = self.entries.get_mut(&relative).expect("loaded entry");
+        let index = self.ensure_loaded(&relative)?;
+        let entry = &mut self.entries[index];
         if entry.current != StagedFileState::Absent {
             return Err(format!(
                 "staged create target already exists: {}",
@@ -110,8 +124,8 @@ impl ApplyStagedState {
         bytes: Vec<u8>,
     ) -> Result<(), String> {
         let relative = strict_relative(relative.as_ref())?;
-        self.ensure_loaded(&relative)?;
-        let entry = self.entries.get_mut(&relative).expect("loaded entry");
+        let index = self.ensure_loaded(&relative)?;
+        let entry = &mut self.entries[index];
         if entry.current != StagedFileState::Bytes(expected_current.as_ref().to_vec()) {
             return Err(format!(
                 "staged replace preimage changed: {}",
@@ -128,8 +142,8 @@ impl ApplyStagedState {
         expected_current: impl AsRef<[u8]>,
     ) -> Result<(), String> {
         let relative = strict_relative(relative.as_ref())?;
-        self.ensure_loaded(&relative)?;
-        let entry = self.entries.get_mut(&relative).expect("loaded entry");
+        let index = self.ensure_loaded(&relative)?;
+        let entry = &mut self.entries[index];
         if entry.current != StagedFileState::Bytes(expected_current.as_ref().to_vec()) {
             return Err(format!(
                 "staged remove preimage changed: {}",
@@ -141,11 +155,12 @@ impl ApplyStagedState {
     }
 
     pub(crate) fn planned_changes(&self) -> Vec<StagedApplyChange> {
-        self.entries
+        let mut changes = self
+            .entries
             .iter()
-            .filter(|(_, entry)| entry.original != entry.current)
-            .map(|(relative_path, entry)| StagedApplyChange {
-                relative_path: relative_path.clone(),
+            .filter(|entry| entry.original != entry.current)
+            .map(|entry| StagedApplyChange {
+                relative_path: entry.relative_path.clone(),
                 kind: match (&entry.original, &entry.current) {
                     (StagedFileState::Absent, StagedFileState::Bytes(_)) => {
                         StagedChangeKind::Create
@@ -161,23 +176,31 @@ impl ApplyStagedState {
                 original: entry.original.clone(),
                 current: entry.current.clone(),
             })
-            .collect()
+            .collect::<Vec<_>>();
+        changes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        changes
     }
 
     pub(crate) fn finalize(self) -> Result<CompileTransaction, String> {
         self.checkpoint("apply finalization")?;
         let mut transaction = CompileTransaction::new();
         transaction.bind_retained_apply_authority(&self.writer_authority)?;
-        for (relative_path, entry) in self.entries {
+        let mut entries = self.entries;
+        entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        for entry in entries {
             if entry.original == entry.current {
                 continue;
             }
             transaction.bind_retained_apply_change(
-                Arc::clone(&self.root),
-                relative_path,
-                entry.original.as_option(),
-                entry.current.as_option(),
-                entry.original_file,
+                RetainedApplyChangeBinding {
+                    root: Arc::clone(&self.root),
+                    relative_path: entry.relative_path,
+                    parent: entry.parent,
+                    name: entry.name,
+                    original: entry.original.as_option(),
+                    current: entry.current.as_option(),
+                    original_file: entry.original_file,
+                },
                 &self.writer_authority,
             )?;
         }
@@ -198,10 +221,22 @@ impl ApplyStagedState {
         &self.writer_authority == authority
     }
 
-    fn ensure_loaded(&mut self, relative: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    fn set_absent_name_identity_for_test(
+        &mut self,
+        comparator: fn(&std::ffi::OsStr, &std::ffi::OsStr) -> bool,
+    ) {
+        self.absent_name_identity_for_test = Some(comparator);
+    }
+
+    fn ensure_loaded(&mut self, relative: &Path) -> Result<usize, String> {
         self.checkpoint("apply staged read")?;
-        if self.entries.contains_key(relative) {
-            return Ok(());
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.relative_path == relative)
+        {
+            return Ok(index);
         }
         let (parent, name) = self
             .root
@@ -209,7 +244,39 @@ impl ApplyStagedState {
             .map_err(|error| {
                 format!("staged target parent rejected link/reparse traversal: {error}")
             })?;
-        let (original, original_file) = match parent.retain_immediate_child_nofollow(&name) {
+        let retained_child = parent.retain_immediate_child_nofollow(&name);
+        if let Ok(RetainedChildCapability::RegularFile(file)) = retained_child.as_ref() {
+            if file
+                .hard_link_count()
+                .map_err(|error| format!("hard-link count failed: {error}"))?
+                != 1
+            {
+                return Err(format!(
+                    "staged target has a hard-link alias: {}",
+                    relative.display()
+                ));
+            }
+        }
+        let target_identity = match retained_child.as_ref() {
+            Ok(RetainedChildCapability::RegularFile(file)) => {
+                Some(StagedTargetIdentity::Existing(file.identity()))
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                Some(StagedTargetIdentity::Absent {
+                    parent: parent.identity(),
+                    name: name.clone(),
+                })
+            }
+            _ => None,
+        };
+        if let Some(target_identity) = target_identity.as_ref() {
+            for (index, entry) in self.entries.iter().enumerate() {
+                if self.same_target(&entry.target_identity, target_identity, &parent)? {
+                    return Ok(index);
+                }
+            }
+        }
+        let (original, original_file) = match retained_child {
             Ok(RetainedChildCapability::RegularFile(file)) => {
                 if file
                     .hard_link_count()
@@ -241,15 +308,50 @@ impl ApplyStagedState {
             Err(error) if error.kind() == ErrorKind::NotFound => (StagedFileState::Absent, None),
             Err(error) => return Err(format!("staged target inspection failed: {error}")),
         };
-        self.entries.insert(
-            relative.to_path_buf(),
-            StagedEntry {
-                current: original.clone(),
-                original,
-                original_file,
-            },
-        );
-        Ok(())
+        self.entries.push(StagedEntry {
+            relative_path: relative.to_path_buf(),
+            parent,
+            name,
+            target_identity: target_identity.expect("regular or absent target has an identity"),
+            current: original.clone(),
+            original,
+            original_file,
+        });
+        Ok(self.entries.len() - 1)
+    }
+
+    fn same_target(
+        &self,
+        left: &StagedTargetIdentity,
+        right: &StagedTargetIdentity,
+        right_parent: &RetainedDirectoryCapability,
+    ) -> Result<bool, String> {
+        match (left, right) {
+            (StagedTargetIdentity::Existing(left), StagedTargetIdentity::Existing(right)) => {
+                Ok(left == right)
+            }
+            (
+                StagedTargetIdentity::Absent {
+                    parent: left_parent,
+                    name: left_name,
+                },
+                StagedTargetIdentity::Absent {
+                    parent: right_parent_identity,
+                    name: right_name,
+                },
+            ) if left_parent == right_parent_identity => {
+                #[cfg(test)]
+                if let Some(comparator) = self.absent_name_identity_for_test {
+                    return Ok(comparator(left_name, right_name));
+                }
+                right_parent
+                    .child_names_equivalent(left_name, right_name)
+                    .map_err(|error| {
+                        format!("staged child-name identity cannot be proven: {error}")
+                    })
+            }
+            _ => Ok(false),
+        }
     }
 
     fn checkpoint(&self, phase: &str) -> Result<(), String> {
@@ -524,6 +626,271 @@ mod tests {
     }
 
     #[test]
+    fn retained_create_stage_source_swap_leaves_no_destination_mutation_and_loses_neither_file() {
+        if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            return;
+        }
+        let root = temp_root("stage-source-swap");
+        let parent = root.join("Ext");
+        std::fs::create_dir_all(&parent).unwrap();
+        let target = parent.join("new.txt");
+        let owned_stage = parent.join("owned-stage.txt");
+        let mut state = staged(&root);
+        state
+            .create("Ext/new.txt", b"apply-stage".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        let hook_parent = parent.clone();
+        let hook_owned = owned_stage.clone();
+        crate::infrastructure::platform::filesystem::set_before_identity_bound_no_replace_rename_hook(
+            move || {
+                let stage = apply_artifact(&hook_parent);
+                std::fs::rename(&stage, &hook_owned).unwrap();
+                std::fs::write(&stage, b"concurrent-stage").unwrap();
+            },
+        );
+
+        let error = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap_err();
+
+        assert!(
+            error.contains("identity") || error.contains("source"),
+            "{error}"
+        );
+        assert!(
+            !target.exists(),
+            "reported failure left a destination mutation"
+        );
+        assert_eq!(std::fs::read(&owned_stage).unwrap(), b"apply-stage");
+        assert!(apply_artifact_contents(&parent)
+            .iter()
+            .any(|bytes| bytes == b"concurrent-stage"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_rollback_restore_recovery_swap_never_reports_a_different_inode_restored() {
+        if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            return;
+        }
+        let root = temp_root("restore-recovery-swap");
+        let parent = root.join("Ext");
+        std::fs::create_dir_all(&parent).unwrap();
+        let target = parent.join("Module.bsl");
+        let owned_recovery = parent.join("owned-recovery.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let mut state = staged(&root);
+        state
+            .replace("Ext/Module.bsl", b"original", b"apply-bytes".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        let hook_parent = parent.clone();
+        let hook_owned = owned_recovery.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || {
+                crate::infrastructure::platform::filesystem::set_before_identity_bound_no_replace_rename_hook(
+                    move || {
+                        let recovery = apply_artifact(&hook_parent);
+                        std::fs::rename(&recovery, &hook_owned).unwrap();
+                        std::fs::write(&recovery, b"concurrent-recovery").unwrap();
+                    },
+                );
+            },
+        );
+
+        let error = transaction
+            .commit_retained_apply_with(
+                authority,
+                || Ok(()),
+                || Err::<(), _>("post validation failure".to_string()),
+            )
+            .unwrap_err();
+
+        assert!(error.contains("rollback"), "{error}");
+        assert!(!target.exists(), "a different recovery inode was restored");
+        assert_eq!(std::fs::read(&owned_recovery).unwrap(), b"original");
+        assert!(apply_artifact_contents(&parent)
+            .iter()
+            .any(|bytes| bytes == b"concurrent-recovery"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_rollback_published_cleanup_never_unlinks_a_concurrent_child() {
+        if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            return;
+        }
+        let root = temp_root("published-cleanup-swap");
+        let parent = root.join("Ext");
+        std::fs::create_dir_all(&parent).unwrap();
+        let target = parent.join("new.txt");
+        let owned_published = parent.join("owned-published.txt");
+        let mut state = staged(&root);
+        state
+            .create("Ext/new.txt", b"apply-bytes".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        let hook_target = target.clone();
+        let hook_owned = owned_published.clone();
+        crate::infrastructure::platform::filesystem::set_before_identity_bound_cleanup_mutation_hook(
+            move || {
+                std::fs::rename(&hook_target, &hook_owned).unwrap();
+                std::fs::write(&hook_target, b"concurrent-target").unwrap();
+            },
+        );
+
+        let error = transaction
+            .commit_retained_apply_with(
+                authority,
+                || Ok(()),
+                || Err::<(), _>("post validation failure".to_string()),
+            )
+            .unwrap_err();
+
+        assert!(error.contains("rollback"), "{error}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"concurrent-target");
+        assert_eq!(std::fs::read(&owned_published).unwrap(), b"apply-bytes");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_success_recovery_cleanup_never_unlinks_a_concurrent_child() {
+        if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            return;
+        }
+        let root = temp_root("recovery-cleanup-swap");
+        let parent = root.join("Ext");
+        std::fs::create_dir_all(&parent).unwrap();
+        let target = parent.join("Module.bsl");
+        let owned_recovery = parent.join("owned-recovery.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let mut state = staged(&root);
+        state
+            .replace("Ext/Module.bsl", b"original", b"apply-bytes".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        let hook_parent = parent.clone();
+        let hook_owned = owned_recovery.clone();
+        crate::infrastructure::platform::filesystem::set_before_identity_bound_cleanup_mutation_hook(
+            move || {
+                let recovery = apply_artifact(&hook_parent);
+                std::fs::rename(&recovery, &hook_owned).unwrap();
+                std::fs::write(&recovery, b"concurrent-recovery").unwrap();
+            },
+        );
+
+        let (report, ()) = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"apply-bytes");
+        assert_eq!(std::fs::read(&owned_recovery).unwrap(), b"original");
+        assert!(apply_artifact_contents(&parent)
+            .iter()
+            .any(|bytes| bytes == b"concurrent-recovery"));
+        assert!(!report.cleanup_warnings.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_success_without_contention_leaves_no_apply_artifacts() {
+        let root = temp_root("success-cleans-recovery");
+        let parent = root.join("Ext");
+        std::fs::create_dir_all(&parent).unwrap();
+        let target = parent.join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let mut state = staged(&root);
+        state
+            .replace("Ext/Module.bsl", b"original", b"apply-bytes".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+
+        let (report, ()) = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"apply-bytes");
+        assert!(report.cleanup_warnings.is_empty(), "{report:?}");
+        assert!(apply_artifact_contents(&parent).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_absent_create_keeps_the_exact_staged_parent_authority() {
+        let root = temp_root("absent-parent-authority");
+        let nested = root.join("Nested");
+        let retained_nested = root.join("Nested-retained");
+        std::fs::create_dir_all(&nested).unwrap();
+        let mut state = staged(&root);
+        assert_eq!(state.read(Path::new("Nested/new.txt")).unwrap(), None);
+        state
+            .create("Nested/new.txt", b"must-not-redirect".to_vec())
+            .unwrap();
+        let authority = state.writer_authority.clone();
+        let transaction = state.finalize().unwrap();
+        std::fs::rename(&nested, &retained_nested).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("marker.txt"), b"replacement-parent").unwrap();
+
+        let error = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap_err();
+
+        assert!(
+            error.contains("parent") || error.contains("identity"),
+            "{error}"
+        );
+        assert!(!nested.join("new.txt").exists());
+        assert!(!retained_nested.join("new.txt").exists());
+        assert_eq!(
+            std::fs::read(nested.join("marker.txt")).unwrap(),
+            b"replacement-parent"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn staged_aliases_share_one_physical_overlay_and_the_second_op_sees_the_first_postimage() {
+        let root = temp_root("physical-overlay-alias");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        let mut state = staged(&root);
+        state.set_absent_name_identity_for_test(|left, right| {
+            left.to_string_lossy()
+                .eq_ignore_ascii_case(&right.to_string_lossy())
+        });
+
+        state
+            .create("Ext/Module.bsl", b"first-postimage".to_vec())
+            .unwrap();
+        assert_eq!(
+            state.read(Path::new("Ext/module.bsl")).unwrap(),
+            Some(b"first-postimage".to_vec())
+        );
+        state
+            .replace(
+                "Ext/module.bsl",
+                b"first-postimage",
+                b"second-postimage".to_vec(),
+            )
+            .unwrap();
+
+        let changes = state.planned_changes();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].relative_path, PathBuf::from("Ext/Module.bsl"));
+        assert_eq!(
+            changes[0].current,
+            StagedFileState::Bytes(b"second-postimage".to_vec())
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn apply_staged_read_has_one_closed_bound_that_cannot_be_caller_bypassed() {
         let root = temp_root("closed-read-bound");
         std::fs::create_dir_all(root.join("Ext")).unwrap();
@@ -551,5 +918,30 @@ mod tests {
             "unica-apply-stage-{name}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    fn apply_artifact(parent: &Path) -> PathBuf {
+        std::fs::read_dir(parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".unica-apply-"))
+            })
+            .expect("retained apply artifact")
+    }
+
+    fn apply_artifact_contents(parent: &Path) -> Vec<Vec<u8>> {
+        std::fs::read_dir(parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".unica-apply-"))
+            })
+            .map(|path| std::fs::read(path).unwrap())
+            .collect()
     }
 }
