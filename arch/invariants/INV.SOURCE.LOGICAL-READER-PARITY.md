@@ -9,12 +9,15 @@ scope: [app, platform, product, source]
 
 # Логический view делегирует предметным readers без универсального raw payload
 
-Именованный non-skipping contract test строит реальный Platform XML source set
-и проходит одиннадцать адресных случаев: configuration, metadata, form,
-role/RLS, subsystem, interface facet, DCS, MXL, XDTO, common module и form
-module binding. Reader-specific projections оставляют в `props` только
-ограниченные локальные scalars, коллекции делают branches/items, а неизвестные
-поля provider-а дают typed failure.
+Именованный non-skipping contract test строит реальные Platform XML source sets,
+проходит все 19 `validAddresses` профиля и одиннадцать retained reader cases:
+configuration, metadata, form, role/RLS, subsystem, interface facet, DCS, MXL,
+XDTO, common module и form module binding. Branch count равен длине достижимой
+collection, каждый projector потребляет весь suffix, а remap source set после
+admission не меняет bytes или revision authority. Reader-specific projections
+оставляют в `props` только ограниченные локальные scalars, коллекции делают
+branches/items, неизвестные поля provider-а дают typed failure, а неподдержанный
+filter — `bad_value`.
 
 Bot использует доказанную зарегистрированную раскладку. WebSocketClient profile
 видим в логическом дереве, но его source view остаётся явным

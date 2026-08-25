@@ -339,12 +339,7 @@ fn info(
     if requested.is_some() && (args.contains_key("limit") || args.contains_key("cursor")) {
         return Err("xdto info `typeName` detail does not accept `limit` or `cursor`".to_string());
     }
-    if requested
-        .as_deref()
-        .is_some_and(|name| !validation::is_ncname(name))
-    {
-        return Err("xdto info `typeName` must be an XML NCName".to_string());
-    }
+    validate_xdto_type_name(requested.as_deref())?;
     let pagination = if requested.is_none() {
         let limit = xdto_info_limit(args)?;
         let cursor = optional_cursor(args)?;
@@ -355,15 +350,72 @@ fn info(
     } else {
         None
     };
-    let text = decode(&raw)?;
+    let descriptor = fs::read(&package.descriptor_path)
+        .map_err(|_| "target_not_found: cannot read proven XDTO descriptor".to_string())?;
+    let model = parse_xdto_info_model(&raw, &descriptor, &package)?;
+    let page = if let Some((limit, cursor_key, offset)) = pagination {
+        let (start, end, next_cursor) =
+            page_bounds_from_offset(offset, &cursor_key, limit, model.types.len())
+                .map_err(xdto_cursor_error)?;
+        Some((start, end, next_cursor))
+    } else {
+        None
+    };
+    let data = build_xdto_info(&package, &model, requested.as_deref(), page)?;
+    Ok(xdto_info_execution(&package, data))
+}
+
+/// Parse the exact XDTO bytes admitted by a caller-owned read capability.
+///
+/// This is the shared construction core for the V12 filesystem wrapper and
+/// retained V13 readers. It deliberately accepts no workspace or path, so it
+/// cannot re-resolve a source set after admission.
+pub(crate) fn parse_xdto_info_bytes(
+    package_bytes: &[u8],
+    descriptor_bytes: &[u8],
+    source_set: &str,
+    metadata_address: &MetadataAddress,
+    type_name: Option<&str>,
+) -> Result<XdtoInfoData, String> {
+    if source_set.trim().is_empty() || source_set != source_set.trim() {
+        return Err("source_set_unknown: sourceSet must be a non-empty string".to_string());
+    }
+    let identity = AdmittedXdtoIdentity {
+        source_set,
+        metadata_path: metadata_address.as_str(),
+    };
+    let model = parse_xdto_info_model(package_bytes, descriptor_bytes, &identity)?;
+    build_xdto_info(&identity, &model, type_name, None)
+}
+
+fn parse_xdto_info_model(
+    package_bytes: &[u8],
+    descriptor_bytes: &[u8],
+    identity: &impl XdtoIdentity,
+) -> Result<PackageModel, String> {
+    let expected_name = xdto_metadata_name(identity.metadata_path())?;
+    let text = decode(package_bytes)?;
     let model = PackageModel::parse(&text).map_err(model_error)?;
-    let descriptor_namespace = descriptor_namespace(&package.descriptor_path)?;
-    if model.target_namespace() != Some(descriptor_namespace.as_str()) {
+    let descriptor = descriptor_identity(descriptor_bytes)?;
+    if descriptor.name != expected_name {
+        return Err("not_an_xdto_package: descriptor Name does not match metadataPath".to_string());
+    }
+    if model.target_namespace() != Some(descriptor.namespace.as_str()) {
         return Err(
             "namespace_mismatch: descriptor Namespace must equal package targetNamespace"
                 .to_string(),
         );
     }
+    Ok(model)
+}
+
+fn build_xdto_info(
+    identity: &impl XdtoIdentity,
+    model: &PackageModel,
+    requested: Option<&str>,
+    page: Option<(usize, usize, Option<String>)>,
+) -> Result<XdtoInfoData, String> {
+    validate_xdto_type_name(requested)?;
     let value_types = model
         .types
         .iter()
@@ -375,7 +427,7 @@ fn info(
         object_types: model.types.len() - value_types,
         global_properties: model.global_properties.len(),
     };
-    let (selected, type_detail, next_cursor) = if let Some(name) = requested.as_deref() {
+    let (selected, type_detail, next_cursor) = if let Some(name) = requested {
         let matches = model
             .types
             .iter()
@@ -388,23 +440,19 @@ fn info(
                 format!("duplicate_type: XDTO type `{name}` is ambiguous")
             });
         }
-        (Vec::new(), Some(type_info(&package, matches[0])), None)
+        (Vec::new(), Some(type_info(identity, matches[0])), None)
     } else {
-        let (limit, cursor_key, offset) =
-            pagination.expect("list-mode pagination was authenticated before parsing");
-        let (start, end, next_cursor) =
-            page_bounds_from_offset(offset, &cursor_key, limit, model.types.len())
-                .map_err(xdto_cursor_error)?;
+        let (start, end, next_cursor) = page.unwrap_or((0, model.types.len(), None));
         (
             model.types[start..end].iter().collect::<Vec<_>>(),
             None,
             next_cursor,
         )
     };
-    let location = addressed_location(&package);
-    let data = XdtoInfoData {
-        source_set: package.source_set.clone(),
-        metadata_path: package.metadata_path.clone(),
+    let location = addressed_location(identity);
+    Ok(XdtoInfoData {
+        source_set: identity.source_set().to_string(),
+        metadata_path: identity.metadata_path().to_string(),
         location,
         target_namespace: model
             .target_namespace
@@ -418,27 +466,37 @@ fn info(
                     .namespace
                     .as_ref()
                     .map(|namespace| namespace.value.clone()),
-                location: internal_location(&package, &import.key, &import.span),
+                location: internal_location(identity, &import.key, &import.span),
             })
             .collect(),
         counts,
         global_properties: model
             .global_properties
             .iter()
-            .map(|property| property_info(&package, property))
+            .map(|property| property_info(identity, property))
             .collect(),
         types: selected
             .into_iter()
-            .map(|named| type_summary(&package, named))
+            .map(|named| type_summary(identity, named))
             .collect(),
         type_detail,
-        findings: validate(&model)
+        findings: validate(model)
             .into_iter()
-            .map(|finding| baseline_finding(&package, finding))
+            .map(|finding| baseline_finding(identity, finding))
             .collect(),
         next_cursor,
-    };
-    Ok(XdtoExecution {
+    })
+}
+
+fn validate_xdto_type_name(requested: Option<&str>) -> Result<(), String> {
+    if requested.is_some_and(|name| !validation::is_ncname(name)) {
+        return Err("xdto info `typeName` must be an XML NCName".to_string());
+    }
+    Ok(())
+}
+
+fn xdto_info_execution(package: &Package, data: XdtoInfoData) -> XdtoExecution<XdtoInfoData> {
+    XdtoExecution {
         outcome: AdapterOutcome {
             ok: true,
             summary: "unica.xdto.info inspected XDTO package".to_string(),
@@ -454,21 +512,55 @@ fn info(
             command: None,
         },
         data: Some(data),
-    })
+    }
 }
 
-fn addressed_location(package: &Package) -> XdtoLocation {
+trait XdtoIdentity {
+    fn source_set(&self) -> &str;
+    fn metadata_path(&self) -> &str;
+}
+
+struct AdmittedXdtoIdentity<'a> {
+    source_set: &'a str,
+    metadata_path: &'a str,
+}
+
+impl XdtoIdentity for AdmittedXdtoIdentity<'_> {
+    fn source_set(&self) -> &str {
+        self.source_set
+    }
+
+    fn metadata_path(&self) -> &str {
+        self.metadata_path
+    }
+}
+
+impl XdtoIdentity for Package {
+    fn source_set(&self) -> &str {
+        &self.source_set
+    }
+
+    fn metadata_path(&self) -> &str {
+        &self.metadata_path
+    }
+}
+
+fn addressed_location(package: &impl XdtoIdentity) -> XdtoLocation {
     XdtoLocation::Addressed {
-        source_set: package.source_set.clone(),
-        metadata_path: package.metadata_path.clone(),
+        source_set: package.source_set().to_string(),
+        metadata_path: package.metadata_path().to_string(),
         target_kind: TargetKind::MetadataObject,
     }
 }
 
-fn internal_location(package: &Package, node_key: &str, span: &model::SourceSpan) -> XdtoLocation {
+fn internal_location(
+    package: &impl XdtoIdentity,
+    node_key: &str,
+    span: &model::SourceSpan,
+) -> XdtoLocation {
     XdtoLocation::Unaddressable {
-        source_set: package.source_set.clone(),
-        owner_metadata_path: package.metadata_path.clone(),
+        source_set: package.source_set().to_string(),
+        owner_metadata_path: package.metadata_path().to_string(),
         node_key: node_key.to_string(),
         body_byte_range: XdtoByteRange {
             start: span.start,
@@ -486,7 +578,7 @@ fn qname_info(qname: &model::QNameRef) -> XdtoQNameInfo {
     }
 }
 
-fn type_info(package: &Package, named: &model::NamedType) -> XdtoTypeInfo {
+fn type_info(package: &impl XdtoIdentity, named: &model::NamedType) -> XdtoTypeInfo {
     XdtoTypeInfo {
         kind: match named.kind {
             model::TypeKind::Value => XdtoTypeKind::Value,
@@ -503,7 +595,7 @@ fn type_info(package: &Package, named: &model::NamedType) -> XdtoTypeInfo {
     }
 }
 
-fn type_summary(package: &Package, named: &model::NamedType) -> XdtoTypeSummary {
+fn type_summary(package: &impl XdtoIdentity, named: &model::NamedType) -> XdtoTypeSummary {
     XdtoTypeSummary {
         kind: match named.kind {
             model::TypeKind::Value => XdtoTypeKind::Value,
@@ -515,7 +607,7 @@ fn type_summary(package: &Package, named: &model::NamedType) -> XdtoTypeSummary 
     }
 }
 
-fn property_info(package: &Package, property: &model::Property) -> XdtoPropertyInfo {
+fn property_info(package: &impl XdtoIdentity, property: &model::Property) -> XdtoPropertyInfo {
     let lower = property
         .lower_bound
         .as_ref()
@@ -545,7 +637,7 @@ fn property_info(package: &Package, property: &model::Property) -> XdtoPropertyI
 }
 
 fn anonymous_type_info(
-    package: &Package,
+    package: &impl XdtoIdentity,
     anonymous: &model::AnonymousObject,
 ) -> XdtoAnonymousTypeInfo {
     XdtoAnonymousTypeInfo {
@@ -562,7 +654,7 @@ fn anonymous_type_info(
     }
 }
 
-fn baseline_finding(package: &Package, finding: validation::Finding) -> XdtoFinding {
+fn baseline_finding(package: &impl XdtoIdentity, finding: validation::Finding) -> XdtoFinding {
     XdtoFinding {
         code: finding.code,
         severity: XdtoFindingSeverity::Error,
@@ -570,8 +662,8 @@ fn baseline_finding(package: &Package, finding: validation::Finding) -> XdtoFind
         phase: XdtoFindingPhase::Before,
         message: finding.message,
         location: XdtoLocation::Unaddressable {
-            source_set: package.source_set.clone(),
-            owner_metadata_path: package.metadata_path.clone(),
+            source_set: package.source_set().to_string(),
+            owner_metadata_path: package.metadata_path().to_string(),
             node_key: finding.location.key,
             body_byte_range: XdtoByteRange {
                 start: finding.location.span.start,
@@ -1348,10 +1440,44 @@ fn model_error(error: model::ModelError) -> String {
         error.code, error.message, error.span.start
     )
 }
+
+struct XdtoDescriptorIdentity {
+    name: String,
+    namespace: String,
+}
+
+struct XdtoDescriptorFields {
+    name: Option<String>,
+    namespace: String,
+}
+
+fn xdto_metadata_name(metadata_path: &str) -> Result<&str, String> {
+    let parts = metadata_path.split('.').collect::<Vec<_>>();
+    if parts.len() != 2 || parts[0] != "XDTOPackage" || parts[1].is_empty() {
+        return Err("not_an_xdto_package: metadataPath must be XDTOPackage.<name>".to_string());
+    }
+    Ok(parts[1])
+}
+
 fn descriptor_namespace(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path)
         .map_err(|_| "target_not_found: cannot read proven XDTO descriptor".to_string())?;
-    let text = std::str::from_utf8(&bytes)
+    descriptor_fields(&bytes).map(|fields| fields.namespace)
+}
+
+fn descriptor_identity(bytes: &[u8]) -> Result<XdtoDescriptorIdentity, String> {
+    let fields = descriptor_fields(bytes)?;
+    let name = fields
+        .name
+        .ok_or_else(|| "not_an_xdto_package: XDTO descriptor has no Name".to_string())?;
+    Ok(XdtoDescriptorIdentity {
+        name,
+        namespace: fields.namespace,
+    })
+}
+
+fn descriptor_fields(bytes: &[u8]) -> Result<XdtoDescriptorFields, String> {
+    let text = std::str::from_utf8(bytes)
         .map_err(|_| "not_an_xdto_package: XDTO descriptor is not UTF-8".to_string())?;
     let document = Document::parse(text)
         .map_err(|_| "not_an_xdto_package: XDTO descriptor is not valid XML".to_string())?;
@@ -1369,13 +1495,20 @@ fn descriptor_namespace(path: &Path) -> Result<String, String> {
         .children()
         .find(|child| child.has_tag_name((MD_CLASSES_NS, "Properties")))
         .ok_or_else(|| "namespace_mismatch: XDTO descriptor has no Properties".to_string())?;
-    properties
+    let name = properties
+        .children()
+        .find(|child| child.has_tag_name((MD_CLASSES_NS, "Name")))
+        .and_then(|name| name.text())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
+    let namespace = properties
         .children()
         .find(|child| child.has_tag_name((MD_CLASSES_NS, "Namespace")))
         .and_then(|namespace| namespace.text())
         .filter(|namespace| !namespace.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| "namespace_mismatch: XDTO descriptor has no Namespace".to_string())
+        .ok_or_else(|| "namespace_mismatch: XDTO descriptor has no Namespace".to_string())?;
+    Ok(XdtoDescriptorFields { name, namespace })
 }
 fn parse(text: &str) -> Result<Document<'_>, String> {
     let doc = Document::parse(text)
@@ -1394,8 +1527,12 @@ fn required<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a str, Str
 }
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{apply_with_data, decode, encode_like, info_with_data, preview_with_data, writer};
+    use super::{
+        apply_with_data, decode, encode_like, info_with_data, parse_xdto_info_bytes,
+        preview_with_data, writer,
+    };
     use crate::application::{SupportGuardRequirement, UnicaApplication};
+    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::common::support_guard_violation;
     use crate::infrastructure::native_operations::single_file_publisher::{
@@ -1423,6 +1560,92 @@ pub(crate) mod tests {
 </package>"#;
 
     static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn xdto_info_shared_core_uses_exact_descriptor_identity_and_admitted_bytes() {
+        let address =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "XDTOPackage.Sample").unwrap();
+        let descriptor = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage><Properties><Name>Sample</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#;
+
+        let data = parse_xdto_info_bytes(
+            PACKAGE.as_bytes(),
+            descriptor,
+            "main",
+            &address,
+            Some("ЛюбаяСсылка"),
+        )
+        .unwrap();
+        let value = serde_json::to_value(data).unwrap();
+        assert_eq!(value["sourceSet"], "main");
+        assert_eq!(value["metadataPath"], "XDTOPackage.Sample");
+        assert_eq!(value["typeDetail"]["name"], "ЛюбаяСсылка");
+
+        let wrong_owner = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage><Properties><Name>Other</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#;
+        let error = parse_xdto_info_bytes(PACKAGE.as_bytes(), wrong_owner, "main", &address, None)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "not_an_xdto_package: descriptor Name does not match metadataPath"
+        );
+
+        let malformed = parse_xdto_info_bytes(
+            PACKAGE.as_bytes(),
+            b"<MetaDataObject",
+            "main",
+            &address,
+            None,
+        )
+        .expect_err("malformed descriptor must fail");
+        assert_eq!(
+            malformed,
+            "not_an_xdto_package: XDTO descriptor is not valid XML"
+        );
+
+        let other_namespace = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage><Properties><Name>Sample</Name><Namespace>urn:other</Namespace></Properties></XDTOPackage></MetaDataObject>"#;
+        let mismatch =
+            parse_xdto_info_bytes(PACKAGE.as_bytes(), other_namespace, "main", &address, None)
+                .expect_err("namespace mismatch must fail");
+        assert_eq!(
+            mismatch,
+            "namespace_mismatch: descriptor Namespace must equal package targetNamespace"
+        );
+    }
+
+    #[test]
+    fn xdto_v12_wrapper_and_shared_core_share_projection_and_reject_wrong_owner() {
+        let (context, _, package, descriptor) = xdto_guard_fixture("info-shared-core-parity");
+        let request = args(&[
+            ("sourceSet", json!("main")),
+            ("metadataPath", json!("XDTOPackage.Sample")),
+            ("typeName", json!("ЛюбаяСсылка")),
+        ]);
+        let wrapper = info_with_data(&request, &context).unwrap().data.unwrap();
+        let address =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "XDTOPackage.Sample").unwrap();
+        let core = parse_xdto_info_bytes(
+            &fs::read(&package).unwrap(),
+            &fs::read(&descriptor).unwrap(),
+            "main",
+            &address,
+            Some("ЛюбаяСсылка"),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(wrapper).unwrap(),
+            serde_json::to_value(core).unwrap()
+        );
+
+        fs::write(
+            &descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><XDTOPackage><Properties><Name>Other</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#,
+        )
+        .unwrap();
+        let error = info_with_data(&request, &context)
+            .err()
+            .expect("wrong descriptor owner must fail");
+        assert!(error.starts_with("target_not_found:"), "{error}");
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
 
     fn args(entries: &[(&str, Value)]) -> Map<String, Value> {
         entries

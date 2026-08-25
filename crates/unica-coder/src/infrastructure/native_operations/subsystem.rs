@@ -2493,7 +2493,30 @@ fn prepare_subsystem_info_with_checkpoint(
         },
     };
     checkpoint().map_err(subsystem_info_checkpoint_message)?;
-    let result = SubsystemInfoResult {
+    let result = build_subsystem_info_result(data, tree, command_interface, support);
+    let summary = format!(
+        "unica.subsystem.info described {} with {} content item(s)",
+        result.name,
+        result.content.len()
+    );
+    checkpoint().map_err(subsystem_info_checkpoint_message)?;
+    Ok(PreparedSubsystemInfo {
+        execution: subsystem_info_success(
+            SubsystemInfoAnswer::Subsystem(Box::new(result)),
+            xml_path,
+            summary,
+        ),
+        format_documents,
+    })
+}
+
+pub(crate) fn build_subsystem_info_result(
+    data: SubsystemInfoData,
+    tree: Option<Vec<SubsystemTreeNode>>,
+    command_interface: Option<SubsystemCommandInterfaceData>,
+    support: DomainObjectSupportData,
+) -> SubsystemInfoResult {
+    SubsystemInfoResult {
         name: data.name,
         synonym: subsystem_optional(data.synonym),
         comment: subsystem_optional(data.comment),
@@ -2511,21 +2534,7 @@ fn prepare_subsystem_info_with_checkpoint(
         children: data.child_names,
         tree,
         command_interface,
-    };
-    let summary = format!(
-        "unica.subsystem.info described {} with {} content item(s)",
-        result.name,
-        result.content.len()
-    );
-    checkpoint().map_err(subsystem_info_checkpoint_message)?;
-    Ok(PreparedSubsystemInfo {
-        execution: subsystem_info_success(
-            SubsystemInfoAnswer::Subsystem(Box::new(result)),
-            xml_path,
-            summary,
-        ),
-        format_documents,
-    })
+    }
 }
 
 fn subsystem_info_success(
@@ -2943,7 +2952,7 @@ pub(crate) fn subsystem_command_interface_data(
     parse_subsystem_command_interface_data(&ci_path, &text).map(Some)
 }
 
-fn parse_subsystem_command_interface_data(
+pub(crate) fn parse_subsystem_command_interface_data(
     ci_path: &Path,
     text: &str,
 ) -> Result<SubsystemCommandInterfaceData, String> {

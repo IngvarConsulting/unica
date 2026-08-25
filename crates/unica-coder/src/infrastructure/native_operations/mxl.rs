@@ -237,6 +237,201 @@ pub(crate) struct MxlInfoExecution {
     pub(crate) data: Option<MxlInfoData>,
 }
 
+pub(crate) fn parse_mxl_info_xml(
+    bytes: &[u8],
+    template_name: &str,
+    support: DomainObjectSupportData,
+    include_text: bool,
+) -> Result<MxlInfoData, String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "Template.xml is not UTF-8".to_string())?;
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error in Template.xml: {err}"))?;
+    let root = doc.root_element();
+    require_mxl_document_root(root)?;
+
+    let mut column_sets = Vec::<(String, i64)>::new();
+    let mut default_col_count = 0i64;
+    for cols in root
+        .children()
+        .filter(|node| role_info_element(*node, "columns", None))
+    {
+        let size = child_text(cols, "size", None).parse::<i64>().unwrap_or(0);
+        let id = child_text(cols, "id", None);
+        if id.is_empty() {
+            default_col_count = size;
+        } else {
+            column_sets.push((id, size));
+        }
+    }
+
+    let row_nodes = root
+        .children()
+        .filter(|node| role_info_element(*node, "rowsItem", None))
+        .collect::<Vec<_>>();
+    let doc_height = mxl_logical_height(root, &row_nodes);
+    let mut row_map = Vec::<(i64, roxmltree::Node<'_, '_>)>::new();
+    for row_item in &row_nodes {
+        if let Ok(index) = child_text(*row_item, "index", None).parse::<i64>() {
+            row_map.push((index, *row_item));
+        }
+    }
+
+    let mut named_areas = Vec::<MxlNamedArea>::new();
+    let mut named_drawings = Vec::<(String, String)>::new();
+    for item in root
+        .children()
+        .filter(|node| role_info_element(*node, "namedItem", None))
+    {
+        let item_type = attribute_by_local_name(item, "type").unwrap_or("");
+        let name = child_text(item, "name", None);
+        if item_type.contains("NamedItemCells") {
+            if let Some(area) = item
+                .children()
+                .find(|node| role_info_element(*node, "area", None))
+            {
+                named_areas.push(MxlNamedArea {
+                    name,
+                    area_type: child_text(area, "type", None),
+                    begin_row: child_text(area, "beginRow", None).parse().unwrap_or(0),
+                    end_row: child_text(area, "endRow", None).parse().unwrap_or(0),
+                    begin_col: child_text(area, "beginColumn", None).parse().unwrap_or(0),
+                    end_col: child_text(area, "endColumn", None).parse().unwrap_or(0),
+                    columns_id: {
+                        let value = child_text(area, "columnsID", None);
+                        (!value.is_empty()).then_some(value)
+                    },
+                });
+            }
+        } else if item_type.contains("NamedItemDrawing") {
+            named_drawings.push((name, child_text(item, "drawingID", None)));
+        }
+    }
+    named_areas.sort_by(|left, right| {
+        let left_key = if left.area_type == "Columns" {
+            (left.begin_col, &left.name)
+        } else {
+            (left.begin_row, &left.name)
+        };
+        let right_key = if right.area_type == "Columns" {
+            (right.begin_col, &right.name)
+        } else {
+            (right.begin_row, &right.name)
+        };
+        left_key.cmp(&right_key)
+    });
+
+    let mut area_data = Vec::<MxlAreaInfo>::new();
+    let mut covered_rows = Vec::<i64>::new();
+    for area in &named_areas {
+        let (params, details, texts, templates) =
+            mxl_area_cell_data(area, &row_map, doc_height, include_text);
+        if area.begin_row != -1 && area.end_row != -1 {
+            for row in area.begin_row..=area.end_row {
+                if !covered_rows.contains(&row) {
+                    covered_rows.push(row);
+                }
+            }
+        }
+        area_data.push(MxlAreaInfo {
+            area: area.clone(),
+            params,
+            details,
+            texts,
+            templates,
+        });
+    }
+
+    let mut outside_params = Vec::<String>::new();
+    let mut outside_details = Vec::<String>::new();
+    let mut outside_texts = Vec::<String>::new();
+    let mut outside_templates = Vec::<String>::new();
+    row_map.sort_by_key(|(index, _)| *index);
+    for (row_index, row_node) in &row_map {
+        if covered_rows.contains(row_index) {
+            continue;
+        }
+        for cell in mxl_cell_data(*row_node, include_text) {
+            match cell {
+                MxlCellData::Parameter(value, detail) => {
+                    if let Some(detail) = detail {
+                        outside_details.push(format!("{value}->{detail}"));
+                    }
+                    outside_params.push(value);
+                }
+                MxlCellData::TemplateParam(value) => outside_params.push(format!("{value} [tpl]")),
+                MxlCellData::Text(value) => outside_texts.push(value),
+                MxlCellData::Template(value) => outside_templates.push(value),
+            }
+        }
+    }
+
+    let merge_count = root
+        .children()
+        .filter(|node| role_info_element(*node, "merge", None))
+        .count();
+    let drawing_count = root
+        .children()
+        .filter(|node| role_info_element(*node, "drawing", None))
+        .count();
+    // Both branches described the same template: one as prose, the other as
+    // a JSON string inside the JSON envelope. Data replaces both.
+    let areas = area_data
+        .iter()
+        .map(|item| MxlAreaData {
+            name: item.area.name.clone(),
+            kind: item.area.area_type.clone(),
+            begin_row: item.area.begin_row,
+            end_row: item.area.end_row,
+            begin_col: item.area.begin_col,
+            end_col: item.area.end_col,
+            columns_id: item.area.columns_id.clone(),
+            drawing_id: None,
+            params: item.params.clone(),
+            details: item.details.clone(),
+            texts: include_text.then(|| item.texts.clone()),
+            templates: include_text.then(|| item.templates.clone()),
+        })
+        .chain(named_drawings.iter().map(|(name, drawing_id)| MxlAreaData {
+            name: name.clone(),
+            kind: "Drawing".to_string(),
+            begin_row: 0,
+            end_row: 0,
+            begin_col: 0,
+            end_col: 0,
+            columns_id: None,
+            drawing_id: Some(drawing_id.clone()),
+            params: Vec::new(),
+            details: Vec::new(),
+            texts: include_text.then(Vec::new),
+            templates: include_text.then(Vec::new),
+        }))
+        .collect::<Vec<_>>();
+
+    let data = MxlInfoData {
+        name: template_name.to_string(),
+        support,
+        rows: doc_height,
+        columns: default_col_count,
+        column_sets: column_sets
+            .iter()
+            .map(|(id, size)| MxlColumnSetData {
+                id: id.clone(),
+                size: *size,
+            })
+            .collect(),
+        areas,
+        outside: MxlOutsideData {
+            params: outside_params,
+            details: outside_details,
+            texts: include_text.then_some(outside_texts),
+            templates: include_text.then_some(outside_templates),
+        },
+        merge_count,
+        drawing_count,
+    };
+    Ok(data)
+}
+
 pub(crate) fn analyze_mxl_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -248,206 +443,24 @@ pub(crate) fn analyze_mxl_info(
         if !template_path.is_file() {
             return Err(format!("File not found: {}", template_path.display()));
         }
-        let text = fs::read_to_string(&template_path)
+        let bytes = fs::read(&template_path)
             .map_err(|err| format!("failed to read {}: {err}", template_path.display()))?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", template_path.display()))?;
-        let root = doc.root_element();
-        require_mxl_document_root(root)?;
-        let include_text = bool_arg(args, &["withText", "WithText"]);
-
-        let mut column_sets = Vec::<(String, i64)>::new();
-        let mut default_col_count = 0i64;
-        for cols in root
-            .children()
-            .filter(|node| role_info_element(*node, "columns", None))
-        {
-            let size = child_text(cols, "size", None).parse::<i64>().unwrap_or(0);
-            let id = child_text(cols, "id", None);
-            if id.is_empty() {
-                default_col_count = size;
-            } else {
-                column_sets.push((id, size));
-            }
-        }
-
-        let row_nodes = root
-            .children()
-            .filter(|node| role_info_element(*node, "rowsItem", None))
-            .collect::<Vec<_>>();
-        let doc_height = mxl_logical_height(root, &row_nodes);
-        let mut row_map = Vec::<(i64, roxmltree::Node<'_, '_>)>::new();
-        for row_item in &row_nodes {
-            if let Ok(index) = child_text(*row_item, "index", None).parse::<i64>() {
-                row_map.push((index, *row_item));
-            }
-        }
-
-        let mut named_areas = Vec::<MxlNamedArea>::new();
-        let mut named_drawings = Vec::<(String, String)>::new();
-        for item in root
-            .children()
-            .filter(|node| role_info_element(*node, "namedItem", None))
-        {
-            let item_type = attribute_by_local_name(item, "type").unwrap_or("");
-            let name = child_text(item, "name", None);
-            if item_type.contains("NamedItemCells") {
-                if let Some(area) = item
-                    .children()
-                    .find(|node| role_info_element(*node, "area", None))
-                {
-                    named_areas.push(MxlNamedArea {
-                        name,
-                        area_type: child_text(area, "type", None),
-                        begin_row: child_text(area, "beginRow", None).parse().unwrap_or(0),
-                        end_row: child_text(area, "endRow", None).parse().unwrap_or(0),
-                        begin_col: child_text(area, "beginColumn", None).parse().unwrap_or(0),
-                        end_col: child_text(area, "endColumn", None).parse().unwrap_or(0),
-                        columns_id: {
-                            let value = child_text(area, "columnsID", None);
-                            (!value.is_empty()).then_some(value)
-                        },
-                    });
-                }
-            } else if item_type.contains("NamedItemDrawing") {
-                named_drawings.push((name, child_text(item, "drawingID", None)));
-            }
-        }
-        named_areas.sort_by(|left, right| {
-            let left_key = if left.area_type == "Columns" {
-                (left.begin_col, &left.name)
-            } else {
-                (left.begin_row, &left.name)
-            };
-            let right_key = if right.area_type == "Columns" {
-                (right.begin_col, &right.name)
-            } else {
-                (right.begin_row, &right.name)
-            };
-            left_key.cmp(&right_key)
-        });
-
-        let mut area_data = Vec::<MxlAreaInfo>::new();
-        let mut covered_rows = Vec::<i64>::new();
-        for area in &named_areas {
-            let (params, details, texts, templates) =
-                mxl_area_cell_data(area, &row_map, doc_height, include_text);
-            if area.begin_row != -1 && area.end_row != -1 {
-                for row in area.begin_row..=area.end_row {
-                    if !covered_rows.contains(&row) {
-                        covered_rows.push(row);
-                    }
-                }
-            }
-            area_data.push(MxlAreaInfo {
-                area: area.clone(),
-                params,
-                details,
-                texts,
-                templates,
-            });
-        }
-
-        let mut outside_params = Vec::<String>::new();
-        let mut outside_details = Vec::<String>::new();
-        let mut outside_texts = Vec::<String>::new();
-        let mut outside_templates = Vec::<String>::new();
-        row_map.sort_by_key(|(index, _)| *index);
-        for (row_index, row_node) in &row_map {
-            if covered_rows.contains(row_index) {
-                continue;
-            }
-            for cell in mxl_cell_data(*row_node, include_text) {
-                match cell {
-                    MxlCellData::Parameter(value, detail) => {
-                        if let Some(detail) = detail {
-                            outside_details.push(format!("{value}->{detail}"));
-                        }
-                        outside_params.push(value);
-                    }
-                    MxlCellData::TemplateParam(value) => {
-                        outside_params.push(format!("{value} [tpl]"))
-                    }
-                    MxlCellData::Text(value) => outside_texts.push(value),
-                    MxlCellData::Template(value) => outside_templates.push(value),
-                }
-            }
-        }
-
-        let merge_count = root
-            .children()
-            .filter(|node| role_info_element(*node, "merge", None))
-            .count();
-        let drawing_count = root
-            .children()
-            .filter(|node| role_info_element(*node, "drawing", None))
-            .count();
         let template_name = template_path
             .parent()
             .and_then(Path::parent)
             .and_then(|path| path.file_name())
             .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        // Both branches described the same template: one as prose, the other as
-        // a JSON string inside the JSON envelope. Data replaces both.
-        let areas = area_data
-            .iter()
-            .map(|item| MxlAreaData {
-                name: item.area.name.clone(),
-                kind: item.area.area_type.clone(),
-                begin_row: item.area.begin_row,
-                end_row: item.area.end_row,
-                begin_col: item.area.begin_col,
-                end_col: item.area.end_col,
-                columns_id: item.area.columns_id.clone(),
-                drawing_id: None,
-                params: item.params.clone(),
-                details: item.details.clone(),
-                texts: include_text.then(|| item.texts.clone()),
-                templates: include_text.then(|| item.templates.clone()),
-            })
-            .chain(named_drawings.iter().map(|(name, drawing_id)| MxlAreaData {
-                name: name.clone(),
-                kind: "Drawing".to_string(),
-                begin_row: 0,
-                end_row: 0,
-                begin_col: 0,
-                end_col: 0,
-                columns_id: None,
-                drawing_id: Some(drawing_id.clone()),
-                params: Vec::new(),
-                details: Vec::new(),
-                texts: include_text.then(Vec::new),
-                templates: include_text.then(Vec::new),
-            }))
-            .collect::<Vec<_>>();
-
-        let data = MxlInfoData {
-            name: template_name,
-            support: support_reader
-                .object_support(&selection.target)
-                .map_err(|error| error.to_string())?,
-            rows: doc_height,
-            columns: default_col_count,
-            column_sets: column_sets
-                .iter()
-                .map(|(id, size)| MxlColumnSetData {
-                    id: id.clone(),
-                    size: *size,
-                })
-                .collect(),
-            areas,
-            outside: MxlOutsideData {
-                params: outside_params,
-                details: outside_details,
-                texts: include_text.then_some(outside_texts),
-                templates: include_text.then_some(outside_templates),
-            },
-            merge_count,
-            drawing_count,
-        };
+            .unwrap_or("");
+        let support = support_reader
+            .object_support(&selection.target)
+            .map_err(|error| error.to_string())?;
+        let data = parse_mxl_info_xml(
+            &bytes,
+            template_name,
+            support,
+            bool_arg(args, &["withText", "WithText"]),
+        )
+        .map_err(|error| mxl_info_path_error(error, &template_path))?;
         Ok((data, template_path))
     })();
 
@@ -485,6 +498,19 @@ pub(crate) fn analyze_mxl_info(
             data: None,
         },
     }
+}
+
+fn mxl_info_path_error(error: String, template_path: &Path) -> String {
+    if error == "Template.xml is not UTF-8" {
+        return format!(
+            "failed to read {}: stream did not contain valid UTF-8",
+            template_path.display()
+        );
+    }
+    if let Some(detail) = error.strip_prefix("XML parse error in Template.xml:") {
+        return format!("XML parse error in {}:{detail}", template_path.display());
+    }
+    error
 }
 
 pub(crate) fn validate_mxl(
@@ -3211,10 +3237,53 @@ pub(crate) fn invoke_mutation(
 pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
+    use crate::domain::support_state::{ObjectSupportData, ObjectSupportState};
     use crate::infrastructure::native_operations::compile_transaction::{
         with_commit_failpoint, CommitFailpoint,
     };
     use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
+
+    #[test]
+    fn mxl_info_shared_core_parses_admitted_bytes_without_workspace_resolution() {
+        let bytes = fs::read(platform_mxl_fixture()).unwrap();
+        let support = ObjectSupportData {
+            state: ObjectSupportState::EditableWithSupport,
+            direct_edit_safe: Some(true),
+        };
+
+        let data = parse_mxl_info_xml(&bytes, "Печать", support.clone(), false).unwrap();
+        let value = serde_json::to_value(data).unwrap();
+
+        assert_eq!(value["name"], "Печать");
+        assert_eq!(value["support"], serde_json::to_value(support).unwrap());
+        assert_eq!(value["rows"], 0);
+        assert!(value["outside"]["texts"].is_null());
+    }
+
+    #[test]
+    fn mxl_v12_wrapper_and_shared_core_return_the_same_typed_data() {
+        let context = test_context("info-shared-core-parity");
+        let template_path = mxl_info_template_path(&context);
+        fs::copy(platform_mxl_fixture(), &template_path).unwrap();
+        let args = path_args(&template_path);
+        let wrapper =
+            analyze_mxl_info(&args, &context, &WorkspaceSupportStateReader::new(&context))
+                .data
+                .unwrap();
+        let core = parse_mxl_info_xml(
+            &fs::read(&template_path).unwrap(),
+            &wrapper.name,
+            wrapper.support.clone(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(wrapper).unwrap(),
+            serde_json::to_value(core).unwrap()
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
 
     #[test]
     fn empty_spreadsheet_document_has_no_rows_container() {

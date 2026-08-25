@@ -507,6 +507,19 @@ fn dcs_info_collect(
     }
 }
 
+pub(crate) fn parse_dcs_info_xml(
+    text: &str,
+    support: DomainObjectSupportData,
+) -> Result<DcsInfoData, String> {
+    const NS_SCHEMA: &str = DCS_SCHEMA_NS;
+    const NS_SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("DCS XML parse error: {err}"))?;
+    let root = doc.root_element();
+    require_dcs_root(root)?;
+    Ok(dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS, support))
+}
+
 pub(crate) fn analyze_dcs_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -520,9 +533,6 @@ pub(crate) fn analyze_dcs_info_with_data(
     context: &WorkspaceContext,
     support_reader: &dyn SupportStateReader,
 ) -> DcsInfoExecution {
-    const NS_SCHEMA: &str = DCS_SCHEMA_NS;
-    const NS_SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
-
     let result = (|| -> Result<(DcsInfoData, PathBuf), String> {
         let selection = resolve_dcs_info_target(args, context)?;
         let template_path = selection.resource_path;
@@ -530,16 +540,10 @@ pub(crate) fn analyze_dcs_info_with_data(
             .canonicalize()
             .unwrap_or_else(|_| template_path.clone());
         let text = read_utf8_sig(&resolved_path)?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", resolved_path.display()))?;
-        let root = doc.root_element();
-        require_dcs_root(root)?;
-        // Eleven modes sliced one schema into eleven reports. Data answers
-        // with every section at once; a caller projects what it needs.
         let support = support_reader
             .object_support(&selection.target)
             .map_err(|error| error.to_string())?;
-        let data = dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS, support);
+        let data = parse_dcs_info_xml(&text, support)?;
         Ok((data, resolved_path))
     })();
 

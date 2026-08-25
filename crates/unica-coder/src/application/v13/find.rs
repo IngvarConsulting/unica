@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 100;
+const MAX_QUERY_CHARS: usize = 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FindRequest {
@@ -17,6 +18,12 @@ impl FindRequest {
         let query = query.trim();
         if query.is_empty() {
             return Err(FindError::new("bad_value", "find query must not be empty"));
+        }
+        if query.chars().count() > MAX_QUERY_CHARS {
+            return Err(FindError::new(
+                "bad_value",
+                format!("find query must not exceed {MAX_QUERY_CHARS} characters"),
+            ));
         }
         Ok(Self {
             query: query.to_string(),
@@ -116,6 +123,10 @@ impl FindDocument {
                     .iter()
                     .fold(0usize, |total, fact| total.saturating_add(fact.value.len())),
             )
+    }
+
+    pub(crate) fn at(&self) -> &str {
+        &self.at
     }
 }
 
@@ -445,5 +456,12 @@ mod tests {
                 .len(),
             100,
         );
+    }
+
+    #[test]
+    fn find_rejects_queries_above_the_identity_work_bound() {
+        let error = FindRequest::new(&"Я".repeat(1_025)).unwrap_err();
+
+        assert_eq!(error.code(), "bad_value");
     }
 }

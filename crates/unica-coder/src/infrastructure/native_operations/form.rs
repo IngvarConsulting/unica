@@ -1757,6 +1757,95 @@ pub(crate) fn resolve_form_info_target(
         .map_err(|failure| failure.to_string())
 }
 
+pub(crate) fn parse_form_info_xml(
+    text: &str,
+    form_name: String,
+    object_context: String,
+    support: DomainObjectSupportData,
+) -> Result<FormInfoData, String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("Form XML parse error: {err}"))?;
+    let root = doc.root_element();
+    require_form_root(root)?;
+    let base_form = form_child(root, "BaseForm");
+    let is_extension = base_form.is_some();
+    let form_title = form_child(root, "Title")
+        .map(form_ml_text)
+        .filter(|value| !value.is_empty());
+    let prop_names = [
+        "Width",
+        "Height",
+        "Group",
+        "WindowOpeningMode",
+        "EnterKeyBehavior",
+        "AutoTitle",
+        "AutoURL",
+        "AutoFillCheck",
+        "Customizable",
+        "CommandBarLocation",
+        "SaveDataInSettings",
+        "AutoSaveDataInSettings",
+        "AutoTime",
+        "UsePostingMode",
+        "RepostOnWrite",
+        "UseForFoldersAndItems",
+        "ReportResult",
+        "DetailsData",
+        "ReportFormType",
+        "VerticalScroll",
+        "ScalingMode",
+    ];
+    let properties = prop_names
+        .iter()
+        .filter_map(|name| {
+            form_child(root, name).and_then(|node| {
+                let value = form_ml_text(node);
+                (!value.is_empty()).then(|| FormInfoProperty {
+                    name: (*name).to_string(),
+                    value,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let command_bar_location = form_child_text(root, "CommandBarLocation")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Auto".to_string());
+    let auto_command_bar = if command_bar_location != "None" {
+        form_child(root, "AutoCommandBar")
+            .map(form_main_command_bar_lines)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    Ok(FormInfoData {
+        name: form_name,
+        title: form_title,
+        object_context: (!object_context.is_empty()).then_some(object_context),
+        is_extension,
+        base_form_version: base_form
+            .map(|node| node.attribute("version").unwrap_or("").to_string()),
+        support,
+        properties,
+        events: form_child(root, "Events")
+            .map(form_info_events_section)
+            .unwrap_or_default(),
+        auto_command_bar,
+        command_bar_location,
+        elements: form_child(root, "ChildItems")
+            .map(form_info_tree)
+            .unwrap_or_default(),
+        attributes: form_child(root, "Attributes")
+            .map(form_info_attributes)
+            .unwrap_or_default(),
+        parameters: form_child(root, "Parameters")
+            .map(form_info_parameters)
+            .unwrap_or_default(),
+        commands: form_child(root, "Commands")
+            .map(form_info_commands)
+            .unwrap_or_default(),
+    })
+}
+
 pub(crate) fn analyze_form_info_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -1770,94 +1859,11 @@ pub(crate) fn analyze_form_info_with_data(
         }
 
         let text = read_utf8_sig(&form_path)?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", form_path.display()))?;
-        let root = doc.root_element();
-        require_form_root(root)?;
-        let base_form = form_child(root, "BaseForm");
-        let is_extension = base_form.is_some();
         let (form_name, object_context) = form_info_context(&form_path);
-
-        let form_title = form_child(root, "Title")
-            .map(form_ml_text)
-            .filter(|value| !value.is_empty());
-
-        let prop_names = [
-            "Width",
-            "Height",
-            "Group",
-            "WindowOpeningMode",
-            "EnterKeyBehavior",
-            "AutoTitle",
-            "AutoURL",
-            "AutoFillCheck",
-            "Customizable",
-            "CommandBarLocation",
-            "SaveDataInSettings",
-            "AutoSaveDataInSettings",
-            "AutoTime",
-            "UsePostingMode",
-            "RepostOnWrite",
-            "UseForFoldersAndItems",
-            "ReportResult",
-            "DetailsData",
-            "ReportFormType",
-            "VerticalScroll",
-            "ScalingMode",
-        ];
-        let properties = prop_names
-            .iter()
-            .filter_map(|name| {
-                form_child(root, name).and_then(|node| {
-                    let value = form_ml_text(node);
-                    (!value.is_empty()).then(|| FormInfoProperty {
-                        name: (*name).to_string(),
-                        value,
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let command_bar_location = form_child_text(root, "CommandBarLocation")
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "Auto".to_string());
-        let auto_command_bar = if command_bar_location != "None" {
-            form_child(root, "AutoCommandBar")
-                .map(form_main_command_bar_lines)
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let data = FormInfoData {
-            name: form_name,
-            title: form_title,
-            object_context: (!object_context.is_empty()).then_some(object_context),
-            is_extension,
-            base_form_version: base_form
-                .map(|node| node.attribute("version").unwrap_or("").to_string()),
-            support: support_reader
-                .object_support(&selection.target)
-                .map_err(|error| error.to_string())?,
-            properties,
-            events: form_child(root, "Events")
-                .map(form_info_events_section)
-                .unwrap_or_default(),
-            auto_command_bar,
-            command_bar_location,
-            elements: form_child(root, "ChildItems")
-                .map(form_info_tree)
-                .unwrap_or_default(),
-            attributes: form_child(root, "Attributes")
-                .map(form_info_attributes)
-                .unwrap_or_default(),
-            parameters: form_child(root, "Parameters")
-                .map(form_info_parameters)
-                .unwrap_or_default(),
-            commands: form_child(root, "Commands")
-                .map(form_info_commands)
-                .unwrap_or_default(),
-        };
+        let support = support_reader
+            .object_support(&selection.target)
+            .map_err(|error| error.to_string())?;
+        let data = parse_form_info_xml(&text, form_name, object_context, support)?;
 
         Ok((data, form_path))
     })();

@@ -955,7 +955,7 @@ fn optional(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-fn cf_home_page_item_data(items: &[CfHomePageItem]) -> Vec<CfHomePageItemData> {
+pub(crate) fn cf_home_page_item_data(items: &[CfHomePageItem]) -> Vec<CfHomePageItemData> {
     items
         .iter()
         .map(|item| CfHomePageItemData {
@@ -1442,6 +1442,10 @@ pub(crate) fn cf_append_full_panel_layout(lines: &mut Vec<String>, config_dir: &
 pub(crate) fn cf_read_home_page(config_dir: &Path) -> Option<CfHomePageLayout> {
     let path = config_dir.join("Ext").join("HomePageWorkArea.xml");
     let text = read_utf8_sig(&path).ok()?;
+    parse_cf_home_page_xml(&text)
+}
+
+pub(crate) fn parse_cf_home_page_xml(text: &str) -> Option<CfHomePageLayout> {
     let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
     let root = doc.root_element();
     let template = child_text(root, "WorkingAreaTemplate", Some(CF_HP_NS))

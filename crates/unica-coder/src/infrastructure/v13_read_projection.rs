@@ -4,6 +4,9 @@ use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData
 use crate::infrastructure::logical_tree::{LogicalReader, LogicalTreeRoute};
 use serde_json::{json, Map, Value};
 
+mod role;
+use role::project_role;
+
 const MAX_PROJECTED_BRANCHES: usize = 256;
 const MAX_COMPACT_PROP_BYTES: usize = 2_048;
 
@@ -62,7 +65,7 @@ fn project_form(
                 "commandBarLocation",
             ],
         );
-        let branches = [
+        let mut branches = [
             NodeKind::Item,
             NodeKind::Attribute,
             NodeKind::Parameter,
@@ -75,7 +78,8 @@ fn project_form(
             let count = values.as_array().map_or(0, Vec::len);
             (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
         })
-        .collect();
+        .collect::<Vec<_>>();
+        branches.push(BranchRef::new(format!("{}.Module.Form", address), 1));
         return Ok(NodeViewData::Node(
             NodeView::new(
                 address.to_string(),
@@ -314,7 +318,7 @@ fn project_dcs(
         address.to_string(),
         detail.kind().as_str(),
         name,
-        compact_props(item),
+        reader_node_props(LogicalReader::Dcs, detail.kind(), item),
     )))
 }
 
@@ -693,14 +697,14 @@ pub(super) fn project_known_suffix(
 
 fn select_kind_value(reader: LogicalReader, value: &Value, kind: NodeKind) -> Option<&Value> {
     if kind == NodeKind::Interface {
-        return find_field(value, &["commandInterface"]);
+        return value.get("commandInterface");
     }
     if kind == NodeKind::Type {
-        if let Some(detail) = find_field(value, &["typeDetail"]).filter(|value| !value.is_null()) {
+        if let Some(detail) = value.get("typeDetail").filter(|value| !value.is_null()) {
             return Some(detail);
         }
     }
-    find_field(value, reader_branch_fields(reader, kind))
+    first_field(value, reader_branch_fields(reader, kind))
 }
 
 fn reader_branch_fields(reader: LogicalReader, kind: NodeKind) -> &'static [&'static str] {
@@ -729,7 +733,17 @@ fn project_metadata(
     if suffix.is_empty() {
         let mut props = selected_scalar_props(payload, &["kind", "synonym", "support"]);
         if let Some(details) = payload.get("details") {
-            props.extend(compact_props(details));
+            props.extend(selected_scalar_props(
+                details,
+                &[
+                    "hierarchical",
+                    "codeLength",
+                    "descriptionLength",
+                    "numberLength",
+                    "periodicity",
+                    "registerRecords",
+                ],
+            ));
         }
         let branches = metadata_branch_kinds()
             .iter()
@@ -738,7 +752,7 @@ fn project_metadata(
                 let count = value.as_array().map_or(0, Vec::len);
                 (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             })
-            .collect();
+            .collect::<Vec<_>>();
         let title = payload
             .get("synonym")
             .and_then(Value::as_str)
@@ -887,7 +901,7 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
             }
         }
     }
-    let branches = item
+    let mut branches = item
         .get("attributes")
         .and_then(Value::as_array)
         .filter(|items| !items.is_empty())
@@ -898,6 +912,18 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
             )]
         })
         .unwrap_or_default();
+    branches.extend(
+        item.get("logicalBranches")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|branch| {
+                let kind = branch.get("kind")?.as_str()?;
+                let count = usize::try_from(branch.get("count")?.as_u64()?).ok()?;
+                let kind = NodeKind::parse(kind).ok()?;
+                (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
+            }),
+    );
     NodeView::new(
         address.to_string(),
         kind.as_str(),
@@ -908,219 +934,6 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
         props,
     )
     .with_branches(branches)
-}
-
-fn project_role(
-    address: &QualifiedAddress,
-    payload: &Value,
-    suffix: &[AddressSegment],
-) -> Result<NodeViewData, ViewError> {
-    let objects = role_objects(payload);
-    let restricted = payload
-        .get("restrictedObjects")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if suffix.is_empty() {
-        let mut props = selected_scalar_props(payload, &["synonym"]);
-        if let Some(totals) = payload.get("totals") {
-            props.extend(
-                compact_props(totals)
-                    .into_iter()
-                    .map(|(key, value)| (format!("total{key}"), value)),
-            );
-        }
-        let mut branches = Vec::new();
-        if !objects.is_empty() {
-            branches.push(BranchRef::new(format!("{}.Right", address), objects.len()));
-        }
-        if !restricted.is_empty() {
-            branches.push(BranchRef::new(format!("{}.RLS", address), restricted.len()));
-        }
-        return Ok(NodeViewData::Node(
-            NodeView::new(
-                address.to_string(),
-                NodeKind::Role.as_str(),
-                payload
-                    .get("synonym")
-                    .and_then(Value::as_str)
-                    .or_else(|| payload.get("name").and_then(Value::as_str))
-                    .unwrap_or("Role"),
-                props,
-            )
-            .with_branches(branches),
-        ));
-    }
-    let segment = &suffix[0];
-    match (segment.kind(), segment.name()) {
-        (NodeKind::Right, None) => Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(address.to_string(), "Right", "Rights", Map::new()),
-            objects
-                .iter()
-                .filter_map(|object| role_object_value(address, object))
-                .collect(),
-        ))),
-        (NodeKind::Right, Some(name)) => {
-            let object = objects
-                .iter()
-                .find(|object| object.get("name").and_then(Value::as_str) == Some(name))
-                .ok_or_else(|| {
-                    ViewError::new("not_found", format!("role object `{name}` was not found"))
-                })?;
-            if suffix.len() == 1 {
-                return Ok(NodeViewData::Node(role_object_node(address, object)));
-            }
-            project_role_object_suffix(address, object, &suffix[1..])
-        }
-        (NodeKind::Rls, None) => Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(address.to_string(), "RLS", "RLS", Map::new()),
-            restricted
-                .iter()
-                .filter_map(Value::as_str)
-                .filter_map(|name| {
-                    let at = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
-                    serde_json::to_value(NodeView::new(at.to_string(), "RLS", name, Map::new()))
-                        .ok()
-                })
-                .collect(),
-        ))),
-        (NodeKind::Rls, Some(name))
-            if restricted.iter().any(|value| value.as_str() == Some(name)) =>
-        {
-            Ok(NodeViewData::Node(NodeView::new(
-                address.to_string(),
-                "RLS",
-                name,
-                Map::new(),
-            )))
-        }
-        _ => Err(ViewError::new("not_found", "role projection was not found")),
-    }
-}
-
-fn project_role_object_suffix(
-    address: &QualifiedAddress,
-    object: &Value,
-    suffix: &[AddressSegment],
-) -> Result<NodeViewData, ViewError> {
-    let [rls] = suffix else {
-        return Err(ViewError::new(
-            "not_found",
-            "role right projection did not consume the complete address suffix",
-        ));
-    };
-    if rls.kind() != NodeKind::Rls {
-        return Err(ViewError::new(
-            "not_found",
-            "role right has no requested child projection",
-        ));
-    }
-    let rights = object
-        .get("rights")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|right| right.get("restricted").and_then(Value::as_bool) == Some(true))
-        .collect::<Vec<_>>();
-    match rls.name() {
-        None => Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(address.to_string(), "RLS", "RLS", Map::new()),
-            rights
-                .into_iter()
-                .filter_map(|right| {
-                    let name = right.get("name")?.as_str()?;
-                    serde_json::to_value(NodeView::new(
-                        format!("{address}.{name}"),
-                        "RLS",
-                        name,
-                        Map::new(),
-                    ))
-                    .ok()
-                })
-                .collect(),
-        ))),
-        Some(name) => rights
-            .into_iter()
-            .find(|right| right.get("name").and_then(Value::as_str) == Some(name))
-            .map(|_| {
-                NodeViewData::Node(NodeView::new(address.to_string(), "RLS", name, Map::new()))
-            })
-            .ok_or_else(|| {
-                ViewError::new(
-                    "not_found",
-                    format!("restricted role right `{name}` was not found"),
-                )
-            }),
-    }
-}
-
-fn role_objects(payload: &Value) -> Vec<Value> {
-    let mut result = Vec::new();
-    for (access, key) in [("allowed", "allowed"), ("denied", "denied")] {
-        for group in payload
-            .get(key)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let group_kind = group.get("kind").cloned().unwrap_or(Value::Null);
-            for object in group
-                .get("objects")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let mut object = object.as_object().cloned().unwrap_or_default();
-                object.insert("access".to_string(), json!(access));
-                object.insert("objectKind".to_string(), group_kind.clone());
-                result.push(Value::Object(object));
-            }
-        }
-    }
-    result
-}
-
-fn role_object_value(address: &QualifiedAddress, object: &Value) -> Option<Value> {
-    let name = object.get("name")?.as_str()?;
-    let at = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
-    serde_json::to_value(role_object_node(&at, object)).ok()
-}
-
-fn role_object_node(address: &QualifiedAddress, object: &Value) -> NodeView {
-    let restricted = object
-        .get("rights")
-        .and_then(Value::as_array)
-        .map(|rights| {
-            rights
-                .iter()
-                .filter(|right| right.get("restricted").and_then(Value::as_bool) == Some(true))
-                .count()
-        })
-        .unwrap_or_default();
-    NodeView::new(
-        address.to_string(),
-        "Right",
-        object
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("Right"),
-        Map::from_iter([
-            (
-                "access".to_string(),
-                object.get("access").cloned().unwrap_or(Value::Null),
-            ),
-            (
-                "objectKind".to_string(),
-                object.get("objectKind").cloned().unwrap_or(Value::Null),
-            ),
-        ]),
-    )
-    .with_branches(
-        (restricted > 0)
-            .then(|| BranchRef::new(format!("{}.RLS", address), restricted))
-            .into_iter()
-            .collect(),
-    )
 }
 
 fn project_subsystem_interface(
@@ -1176,7 +989,7 @@ fn project_subsystem_interface(
                         at.to_string(),
                         "Command",
                         name,
-                        compact_props(item),
+                        reader_node_props(LogicalReader::Interface, NodeKind::Command, item),
                     ))
                     .ok()
                 })
@@ -1190,7 +1003,7 @@ fn project_subsystem_interface(
                     address.to_string(),
                     "Command",
                     name,
-                    compact_props(item),
+                    reader_node_props(LogicalReader::Interface, NodeKind::Command, item),
                 ))
             })
             .ok_or_else(|| {
@@ -1251,7 +1064,10 @@ fn project_xdto(
     if suffix.is_empty() {
         let mut props = selected_scalar_props(payload, &["targetNamespace"]);
         if let Some(counts) = payload.get("counts") {
-            props.extend(compact_props(counts));
+            props.extend(selected_scalar_props(
+                counts,
+                &["total", "valueTypes", "objectTypes", "globalProperties"],
+            ));
         }
         let type_count = payload
             .get("types")
@@ -1329,7 +1145,7 @@ fn project_xdto(
     let item = select_named(selected, name)
         .ok_or_else(|| ViewError::new("not_found", format!("XDTO node `{name}` was not found")))?;
     if suffix.len() == 1 {
-        let mut props = compact_props(item);
+        let mut props = reader_node_props(LogicalReader::Xdto, segment.kind(), item);
         if let Some(base) = item.get("base") {
             props.insert(
                 "base".to_string(),
@@ -1374,7 +1190,7 @@ fn project_xdto(
         address.to_string(),
         "Property",
         property_name,
-        compact_props(property),
+        reader_node_props(LogicalReader::Xdto, NodeKind::Property, property),
     )))
 }
 
@@ -1414,38 +1230,17 @@ fn branch_field_names(kind: NodeKind) -> &'static [&'static str] {
     }
 }
 
-fn find_field<'a>(value: &'a Value, names: &[&str]) -> Option<&'a Value> {
-    let object = value.as_object()?;
-    for name in names {
-        if let Some(found) = object.get(*name) {
-            return Some(found);
-        }
-    }
-    for nested in object.values().filter(|value| value.is_object()) {
-        if let Some(found) = find_field(nested, names) {
-            return Some(found);
-        }
-    }
-    None
+fn first_field<'a>(value: &'a Value, names: &[&str]) -> Option<&'a Value> {
+    names.iter().find_map(|name| value.get(*name))
 }
 
 fn select_named<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
     match value {
-        Value::Array(items) => items.iter().find_map(|item| {
-            if item_identity(item).is_some_and(|identity| identity == name) {
-                Some(item)
-            } else {
-                select_named(item, name)
-            }
-        }),
-        Value::Object(object) => {
-            if item_identity(value).is_some_and(|identity| identity == name) {
-                Some(value)
-            } else {
-                object
-                    .values()
-                    .find_map(|nested| select_named(nested, name))
-            }
+        Value::Array(items) => items
+            .iter()
+            .find(|item| item_identity(item).is_some_and(|identity| identity == name)),
+        Value::Object(_) if item_identity(value).is_some_and(|identity| identity == name) => {
+            Some(value)
         }
         Value::String(text) if text == name => Some(value),
         _ => None,
@@ -1562,7 +1357,7 @@ fn known_reader_branches(
     kinds
         .iter()
         .filter_map(|kind| {
-            let selected = find_field(value, reader_branch_fields(reader, *kind))?;
+            let selected = first_field(value, reader_branch_fields(reader, *kind))?;
             let count = match selected {
                 Value::Array(items) => items.len(),
                 Value::Null => 0,
@@ -1574,42 +1369,7 @@ fn known_reader_branches(
         .collect()
 }
 
-fn compact_props(value: &Value) -> Map<String, Value> {
-    let Some(object) = value.as_object() else {
-        return Map::from_iter([("value".to_string(), value.clone())]);
-    };
-    object
-        .iter()
-        .filter(|(key, value)| safe_prop(key, value))
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect()
-}
-
-fn safe_prop(key: &str, value: &Value) -> bool {
-    if [
-        "sourceSet",
-        "metadataPath",
-        "location",
-        "path",
-        "fileExists",
-        "layout",
-        "provider",
-        "sourceState",
-        "set",
-        "query",
-        "body",
-        "text",
-        "texts",
-        "templates",
-        "content",
-        "stdout",
-        "stderr",
-        "nextCursor",
-    ]
-    .contains(&key)
-    {
-        return false;
-    }
+fn safe_prop(_key: &str, value: &Value) -> bool {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => true,
         Value::String(text) => text.len() <= MAX_COMPACT_PROP_BYTES,
@@ -1640,7 +1400,7 @@ fn collection_items(
             .collect(),
         Value::Object(_) => vec![collection_item(reader, address, kind, value)],
         Value::Null => Vec::new(),
-        scalar => vec![json!({"value": scalar})],
+        scalar => vec![data_row(scalar)],
     }
 }
 
@@ -1652,15 +1412,23 @@ fn collection_item(
 ) -> Value {
     let Some(name) = item_identity(value) else {
         return if value.is_object() {
-            Value::Object(compact_props(value))
+            Value::Object(reader_node_props(reader, kind, value))
         } else {
-            json!({"value": value})
+            data_row(value)
         };
     };
     let at = format!("{address}.{name}");
     let Ok(at) = QualifiedAddress::parse(&at) else {
-        return Value::Object(compact_props(value));
+        return Value::Object(reader_node_props(reader, kind, value));
     };
     serde_json::to_value(known_reader_node(reader, &at, kind, value))
-        .unwrap_or_else(|_| Value::Object(compact_props(value)))
+        .unwrap_or_else(|_| Value::Object(reader_node_props(reader, kind, value)))
+}
+
+fn data_row(value: &Value) -> Value {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => json!({"value": value}),
+        Value::String(text) if text.len() <= MAX_COMPACT_PROP_BYTES => json!({"value": text}),
+        Value::String(_) | Value::Array(_) | Value::Object(_) => json!({"value": "<omitted>"}),
+    }
 }

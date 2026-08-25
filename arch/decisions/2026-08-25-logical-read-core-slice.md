@@ -2,7 +2,7 @@
 id: DEC.2026-08-25.LOGICAL-READ-CORE-SLICE
 status: active
 governs: product
-realized: crates/unica-coder/src/infrastructure/v13_read/tests.rs::logical_reader_parity_contract_is_complete
+realized: crates/unica-coder/src/infrastructure/daemon/mod.rs::injected_hidden_v13_service_executes_real_view_and_find_through_actor_capabilities
 supersedes: []
 superseded-by: null
 establishes: [CTR.SOURCE.LOGICAL-NODE-VIEW-SHAPE, INV.SOURCE.LOGICAL-READER-PARITY, INV.SOURCE.REVISION-BOUND-VIEW-CURSOR, INV.SOURCE.FIND-IDENTITY-ONLY]
@@ -17,11 +17,13 @@ design: docs/design/2026-08-23-v0-13-execution-surface-design.md
 строк и исходные строки адреса не получают.
 
 Metadata, form, role/RLS, subsystem/interface, DCS, MXL, XDTO и module читаются
-через существующие предметные readers и Task 13 projector. Неизвестный payload
-reader-а отклоняется; физическое состояние и raw provider data не становятся
-`props`. WebSocketClient остаётся логически допустимым, но source-backed чтение
-отвечает `provider_unavailable`, пока versioned format spec и реальная export
-fixture не докажут раскладку его модуля.
+через один actor-supplied retained read authority, существующие предметные
+parsers и Task 13 projector. Каждый reader получает ту же exact revision
+authority и не переопределяет source set через изменившийся workspace config.
+Неизвестный payload reader-а отклоняется; физическое состояние и raw provider
+data не становятся `props`. WebSocketClient остаётся логически допустимым, но
+source-backed чтение отвечает `provider_unavailable`, пока versioned format
+spec и реальная export fixture не докажут раскладку его модуля.
 
 Continuation хранит уже нарезанные целые элементы или строки в ограниченном
 process-local store. Непрозрачный cursor связан с адресом, выбранной адресом
@@ -29,9 +31,11 @@ process-local store. Непрозрачный cursor связан с адрес�
 limit. Повтор cursor-а идемпотентен; смена revision даёт `stale_cursor`, другая
 identity вопроса, подмена, неизвестность или expiry — `invalid_cursor`.
 
-Внутренний `find` строится из actor-owned retained source roots и индексирует
-только address/name/synonym/export-path/kind facts. BSL и body он не читает;
-nearest ограничен name/address facts.
+Внутренний `find` проходит то же адресуемое дерево из actor-owned retained
+source roots и индексирует только address/name/synonym/export-path/kind facts.
+BSL и body он не читает; nearest ограничен name/address facts. Явно injected
+canonical service исполняет оба handler-а на actor capability; production
+default остаётся dormant до Task 22.
 
 Широкие `DEC.2026-08-23.V0-13-EXECUTION-SURFACE` и
 `DEC.2026-08-23.MODULE-CONTRACT` остаются `planned`. Production v0.12 и

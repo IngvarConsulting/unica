@@ -4,19 +4,24 @@ use super::{
     PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::application::result_store::ViewCursorStore;
+use crate::application::v13::find::FindRequest;
 use crate::application::v13::view::{ViewRequest, ViewService};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::platform_profile::PlatformProfile;
+use crate::domain::project_sources::SourceSetKind;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::logical_tree::route_logical_address;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::source_revision::SourceRevisionService;
+use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
+use serde::Deserialize;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[test]
 fn typed_projection_keeps_summary_compact_and_content_address_selected() {
@@ -99,10 +104,10 @@ fn actor_owned_reader_never_follows_a_source_set_remap_after_admission() {
         SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
     );
     let authority = LogicalViewReadAuthority::new(
-        &fixture.context,
         &cancellation,
         "main",
         "actor-fixture-main",
+        SourceSetKind::Configuration,
         revisions,
         source_root,
         PlatformProfile::v8_3_27(),
@@ -142,7 +147,222 @@ fn actor_owned_reader_never_follows_a_source_set_remap_after_admission() {
 }
 
 #[test]
-fn configuration_root_branch_count_matches_the_reachable_catalog_collection() {
+fn actor_owned_configuration_support_and_home_page_sidecars_are_retained() {
+    let fixture = RealReaderFixture::new();
+    fs::create_dir_all(fixture.source.join("Ext")).unwrap();
+    fs::copy(
+        fixture_path("platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"),
+        fixture.source.join("Ext/ParentConfigurations.bin"),
+    )
+    .unwrap();
+    fs::copy(
+        fixture_path("unica_mcp_script_parity/cf-info/Ext/HomePageWorkArea.xml"),
+        fixture.source.join("Ext/HomePageWorkArea.xml"),
+    )
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
+    );
+    let authority = LogicalViewReadAuthority::new(
+        &cancellation,
+        "main",
+        "actor-fixture-main",
+        SourceSetKind::Configuration,
+        revisions,
+        source_root,
+        PlatformProfile::v8_3_27(),
+    );
+    let route = route_logical_address(
+        &QualifiedAddress::parse("main:Configuration").unwrap(),
+        PlatformProfile::v8_3_27(),
+    )
+    .unwrap();
+    let admitted = authority.typed_payload(&route).unwrap();
+    assert_eq!(admitted["support"]["state"], "supported");
+    assert_eq!(admitted["homePage"]["template"], "TwoColumns");
+
+    let replacement = fixture.root.path().join("replacement");
+    fs::create_dir_all(&replacement).unwrap();
+    fs::write(
+        replacement.join("Configuration.xml"),
+        fixture_text("xdto/enterprise-data-minimal/Configuration.xml"),
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: replacement\n",
+    )
+    .unwrap();
+
+    let after_remap = authority.typed_payload(&route).unwrap();
+    assert_eq!(after_remap["support"], admitted["support"]);
+    assert_eq!(after_remap["homePage"], admitted["homePage"]);
+}
+
+#[test]
+fn actor_supplied_extension_kind_preserves_extension_support_semantics() {
+    let fixture = RealReaderFixture::new();
+    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
+    );
+    let reader = ProviderReadAuthority::new(
+        "extension",
+        "actor-fixture-extension",
+        SourceSetKind::Extension,
+        root,
+        revisions,
+    );
+
+    let payload = reader.configuration_payload().unwrap();
+    assert_eq!(payload["support"]["state"], "extension");
+}
+
+#[test]
+fn actor_owned_typed_form_reader_never_follows_a_source_set_remap() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+    let admitted = service
+        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Item.Goods").unwrap());
+    assert!(admitted.ok, "{:?}", admitted.diagnostics);
+
+    let replacement = fixture.root.path().join("replacement");
+    fs::create_dir_all(replacement.join("Reports/ParityReport/Forms/MainForm/Ext")).unwrap();
+    fs::write(
+        replacement.join("Configuration.xml"),
+        replace_child_objects(
+            &fixture_text("xdto/enterprise-data-minimal/Configuration.xml"),
+            "<Report>ParityReport</Report>",
+        ),
+    )
+    .unwrap();
+    fs::copy(
+        fixture.source.join("Reports/ParityReport.xml"),
+        replacement.join("Reports/ParityReport.xml"),
+    )
+    .unwrap();
+    fs::copy(
+        fixture
+            .source
+            .join("Reports/ParityReport/Forms/MainForm.xml"),
+        replacement.join("Reports/ParityReport/Forms/MainForm.xml"),
+    )
+    .unwrap();
+    fs::write(
+        replacement.join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml"),
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems><InputField name="Replacement"/></ChildItems></Form>"#,
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: replacement\n",
+    )
+    .unwrap();
+
+    let replacement_only = service
+        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Item.Replacement").unwrap());
+    assert!(!replacement_only.ok, "{:?}", replacement_only.data);
+    let retained = service
+        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Item.Goods").unwrap());
+    assert!(retained.ok, "{:?}", retained.diagnostics);
+    assert_eq!(retained.rev, admitted.rev);
+}
+
+#[test]
+fn actor_owned_module_reader_never_follows_a_source_set_remap() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+    let address = "main:CommonModule.РеактивныйСервер.Method";
+    let admitted = service.view(ViewRequest::new(address).unwrap());
+    assert!(admitted.ok, "{:?}", admitted.diagnostics);
+    assert!(admitted.data.as_ref().unwrap()["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["at"] == "main:CommonModule.РеактивныйСервер.Method.InternalService"));
+
+    let replacement = fixture.root.path().join("replacement");
+    fs::create_dir_all(replacement.join("CommonModules/РеактивныйСервер/Ext")).unwrap();
+    fs::write(
+        replacement.join("Configuration.xml"),
+        replace_child_objects(
+            &fixture_text("xdto/enterprise-data-minimal/Configuration.xml"),
+            "<CommonModule>РеактивныйСервер</CommonModule>",
+        ),
+    )
+    .unwrap();
+    fs::copy(
+        fixture.source.join("CommonModules/РеактивныйСервер.xml"),
+        replacement.join("CommonModules/РеактивныйСервер.xml"),
+    )
+    .unwrap();
+    fs::write(
+        replacement.join("CommonModules/РеактивныйСервер/Ext/Module.bsl"),
+        "Процедура ReplacementOnly() Экспорт\nКонецПроцедуры\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: replacement\n",
+    )
+    .unwrap();
+
+    let retained = service.view(ViewRequest::new(address).unwrap());
+    assert!(retained.ok, "{:?}", retained.diagnostics);
+    assert_eq!(retained.rev, admitted.rev);
+    let items = retained.data.as_ref().unwrap()["items"].as_array().unwrap();
+    assert!(items
+        .iter()
+        .any(|item| item["at"] == "main:CommonModule.РеактивныйСервер.Method.InternalService"));
+    assert!(!items
+        .iter()
+        .any(|item| item["at"] == "main:CommonModule.РеактивныйСервер.Method.ReplacementOnly"));
+}
+
+#[test]
+fn every_typed_reader_remains_on_the_admitted_root_after_source_set_remap() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+    let addresses = [
+        "main:Catalog.Items.Attribute.Code",
+        "main:Role.SalesReader.Right.Catalog_Products.RLS.View",
+        "main:Subsystem.Sales.Interface",
+        "main:Report.ParityReport.Template.MainSchema.DataSet",
+        "main:Report.ParityReport.Template.Print.Area",
+        "main:XDTOPackage.EnterpriseData_1_17_3.Type",
+    ];
+    for address in addresses {
+        let result = service.view(ViewRequest::new(address).unwrap());
+        assert!(result.ok, "admission {address}: {:?}", result.diagnostics);
+    }
+
+    let replacement = fixture.root.path().join("replacement");
+    fs::create_dir_all(&replacement).unwrap();
+    fs::write(
+        replacement.join("Configuration.xml"),
+        fixture_text("xdto/enterprise-data-minimal/Configuration.xml"),
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: replacement\n",
+    )
+    .unwrap();
+
+    for address in addresses {
+        let result = service.view(ViewRequest::new(address).unwrap());
+        assert!(
+            result.ok,
+            "retained read {address}: {} {:?}",
+            result.summary, result.diagnostics
+        );
+    }
+}
+
+#[test]
+fn configuration_root_branch_counts_match_every_reachable_collection() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
@@ -150,10 +370,10 @@ fn configuration_root_branch_count_matches_the_reachable_catalog_collection() {
         SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
     );
     let authority = LogicalViewReadAuthority::new(
-        &fixture.context,
         &cancellation,
         "main",
         "actor-fixture-main",
+        SourceSetKind::Configuration,
         revisions,
         source_root,
         PlatformProfile::v8_3_27(),
@@ -161,13 +381,68 @@ fn configuration_root_branch_count_matches_the_reachable_catalog_collection() {
     let service = ViewService::new(authority, ViewCursorStore::default());
 
     let root = service.view(ViewRequest::new("main:Configuration").unwrap());
-    let catalog_branch = root.data.as_ref().unwrap()["branches"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|branch| branch["at"] == "main:Catalog")
-        .expect("configuration root must expose its registered Catalog branch");
-    assert_eq!(catalog_branch["count"], 1);
+    let branches = root.data.as_ref().unwrap()["branches"].as_array().unwrap();
+    assert!(!branches.is_empty());
+    for branch in branches {
+        let at = branch["at"].as_str().unwrap();
+        let collection = service.view(ViewRequest::new(at).unwrap());
+        assert!(
+            collection.ok,
+            "{at}: {} {:?}",
+            collection.summary, collection.diagnostics
+        );
+        let items = collection.data.as_ref().unwrap()["items"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            branch["count"].as_u64().unwrap(),
+            items.len() as u64,
+            "{at}"
+        );
+        assert!(
+            items.iter().all(|item| item.get("at").is_some()),
+            "addressable branch rows must keep canonical addresses: {at}"
+        );
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcceptedAddressProfile {
+    valid_addresses: Vec<AcceptedAddressCase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcceptedAddressCase {
+    case: String,
+    input: String,
+}
+
+#[test]
+fn every_accepted_profile_address_has_a_real_non_skipping_view() {
+    let fixture = RealReaderFixture::new();
+    fixture.install_accepted_profile_sources();
+    let service = fixture.view_service();
+    let profile: AcceptedAddressProfile = serde_json::from_str(include_str!(
+        "../../../../../tests/fixtures/v013/address-profile-8.3.27.json"
+    ))
+    .unwrap();
+
+    for case in profile.valid_addresses {
+        let expected_at = QualifiedAddress::parse(&case.input).unwrap().to_string();
+        let result = service.view(ViewRequest::new(&case.input).unwrap());
+        assert!(
+            result.ok,
+            "{} ({expected_at}): {} {:?}",
+            case.case, result.summary, result.diagnostics
+        );
+        assert_eq!(
+            result.data.as_ref().unwrap()["at"],
+            expected_at,
+            "{}",
+            case.case
+        );
+    }
 }
 
 #[test]
@@ -178,7 +453,13 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
     let revisions = Arc::new(
         SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
     );
-    let reader = ProviderReadAuthority::new("main", "actor-fixture-main", root, revisions);
+    let reader = ProviderReadAuthority::new(
+        "main",
+        "actor-fixture-main",
+        SourceSetKind::Configuration,
+        root,
+        revisions,
+    );
     reader
         .exact_revision(
             crate::domain::code_intelligence::ProviderDeadline::from_budget(
@@ -216,10 +497,10 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
         SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
     );
     let authority = LogicalViewReadAuthority::new(
-        &fixture.context,
         &cancellation,
         "main",
         "actor-fixture-main",
+        SourceSetKind::Configuration,
         revisions,
         source_root,
         PlatformProfile::v8_3_27(),
@@ -525,10 +806,10 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
     );
     assert!(metadata_resolution.is_ok(), "{metadata_resolution:?}");
     let authority = LogicalViewReadAuthority::new(
-        &fixture.context,
         &cancellation,
         "main",
         "actor-fixture-main",
+        SourceSetKind::Configuration,
         revisions,
         source_root,
         PlatformProfile::v8_3_27(),
@@ -602,10 +883,10 @@ fn websocket_client_source_view_is_an_explicit_provider_gap() {
         SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
     );
     let authority = LogicalViewReadAuthority::new(
-        &fixture.context,
         &cancellation,
         "main",
         "actor-fixture-main",
+        SourceSetKind::Configuration,
         revisions,
         source_root,
         PlatformProfile::v8_3_27(),
@@ -621,10 +902,125 @@ fn websocket_client_source_view_is_an_explicit_provider_gap() {
 
 #[test]
 fn logical_reader_parity_contract_is_complete() {
+    actor_owned_reader_never_follows_a_source_set_remap_after_admission();
+    actor_owned_configuration_support_and_home_page_sidecars_are_retained();
+    actor_owned_typed_form_reader_never_follows_a_source_set_remap();
+    actor_owned_module_reader_never_follows_a_source_set_remap();
+    every_typed_reader_remains_on_the_admitted_root_after_source_set_remap();
+    actor_supplied_extension_kind_preserves_extension_support_semantics();
+    configuration_root_branch_counts_match_every_reachable_collection();
+    every_accepted_profile_address_has_a_real_non_skipping_view();
     real_typed_readers_cover_every_task14_profile_without_skipping();
+    every_reader_rejects_an_extra_unconsumed_address_tail();
+    form_table_column_event_consumes_arbitrary_depth_and_preserves_owner_address();
+    form_projection_uses_a_positive_nested_scalar_allowlist();
+    role_right_projection_never_serializes_an_unbounded_rights_array_into_props();
+    unsupported_view_filter_is_a_typed_bad_value_instead_of_a_noop();
+    module_body_context_filter_excludes_at_client_source_from_server_slice();
+    module_method_public_filter_returns_only_export_methods();
     typed_projection_never_leaks_provider_or_physical_slots();
     typed_projection_rejects_unknown_provider_payload_instead_of_dumping_it();
     websocket_client_source_view_is_an_explicit_provider_gap();
+}
+
+#[test]
+fn find_walks_every_real_addressable_reader_family_without_parallel_xml_semantics() {
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    let expected_addresses = [
+        "main:Configuration",
+        "main:Catalog",
+        "main:Catalog.Items",
+        "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+        "main:Report.ParityReport.Form.MainForm",
+        "main:Report.ParityReport.Template.MainSchema",
+        "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
+        "main:Report.ParityReport.Form.MainForm.Event.OnOpen",
+        "main:Role.SalesReader.Right.Catalog_Products.RLS.View",
+        "main:Subsystem.Sales.Interface",
+        "main:Report.ParityReport.Template.MainSchema.DataSet.MainData.Field.Code",
+        "main:Report.ParityReport.Template.MainSchema.DataSet.MainData.Parameter.Period",
+        "main:Report.ParityReport.Template.Print.Area.Header.Parameter.Title",
+        "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы",
+        "main:CommonModule.РеактивныйСервер.Method.InternalService",
+        "main:CommonModule.РеактивныйСервер.Region.ПрограммныйИнтерфейс",
+        "main:Report.ParityReport.Form.MainForm.Module.Form.Method.OnOpen",
+    ];
+    for expected in expected_addresses {
+        let found = index.find(FindRequest::new(expected).unwrap());
+        assert!(
+            !found.is_nearest()
+                && found
+                    .candidates()
+                    .iter()
+                    .any(|candidate| candidate.at() == expected),
+            "missing real logical identity {expected}: {found:?}",
+        );
+    }
+}
+
+#[test]
+pub(crate) fn find_uses_each_typed_readers_real_export_path_without_publishing_it_in_view_props() {
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    let cases = [
+        (
+            "Reports/ParityReport/Forms/MainForm.xml",
+            "main:Report.ParityReport.Form.MainForm",
+        ),
+        (
+            "Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
+            "main:Report.ParityReport.Form.MainForm.Item.Goods",
+        ),
+        (
+            "Roles/SalesReader/Ext/Rights.xml",
+            "main:Role.SalesReader.Right.Catalog_Products.RLS.View",
+        ),
+        (
+            "Subsystems/Sales/Ext/CommandInterface.xml",
+            "main:Subsystem.Sales.Interface",
+        ),
+        (
+            "Reports/ParityReport/Templates/MainSchema/Ext/Template.xml",
+            "main:Report.ParityReport.Template.MainSchema.DataSet.MainData.Field.Code",
+        ),
+        (
+            "Reports/ParityReport/Templates/Print/Ext/Template.xml",
+            "main:Report.ParityReport.Template.Print.Area.Header.Parameter.Title",
+        ),
+        (
+            "XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+            "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы",
+        ),
+        (
+            "CommonModules/РеактивныйСервер/Ext/Module.bsl",
+            "main:CommonModule.РеактивныйСервер.Method.InternalService",
+        ),
+    ];
+    for (path, expected_at) in cases {
+        let result = index.find(FindRequest::new(path).unwrap().with_limit(64).unwrap());
+        assert!(
+            !result.is_nearest()
+                && result.candidates().iter().any(|candidate| {
+                    candidate.at() == expected_at && candidate.reason() == "exportPath"
+                }),
+            "missing {expected_at} for {path}: {result:?}"
+        );
+    }
 }
 
 struct RealReaderFixture {
@@ -692,7 +1088,7 @@ impl RealReaderFixture {
 </Form>"#;
         write(
             &source.join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml"),
-            &form,
+            form,
         );
         write(
             &source.join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl"),
@@ -793,21 +1189,144 @@ impl RealReaderFixture {
         }
     }
 
-    fn view_service(&self) -> ViewService<LogicalViewReadAuthority<'_>> {
+    fn read_authority(&self) -> LogicalViewReadAuthority<'_> {
         let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
         let revisions = Arc::new(
             SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
         );
-        let authority = LogicalViewReadAuthority::new(
-            &self.context,
+        LogicalViewReadAuthority::new(
             &self.cancellation,
             "main",
             "actor-fixture-main",
+            SourceSetKind::Configuration,
             revisions,
             source_root,
             PlatformProfile::v8_3_27(),
+        )
+    }
+
+    fn view_service(&self) -> ViewService<LogicalViewReadAuthority<'_>> {
+        ViewService::new(self.read_authority(), ViewCursorStore::default())
+    }
+
+    fn install_accepted_profile_sources(&self) {
+        let configuration_path = self.source.join("Configuration.xml");
+        let configuration = fs::read_to_string(&configuration_path).unwrap();
+        fs::write(
+            configuration_path,
+            configuration.replace(
+                "</ChildObjects>",
+                "\n<Document>Заказ</Document>\n<Role>Кладовщик</Role>\n<Report>Продажи</Report>\n</ChildObjects>",
+            ),
+        )
+        .unwrap();
+
+        write(
+            &self.source.join("Documents/Заказ.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20">
+  <Document uuid="10000000-0000-4000-8000-000000000001">
+    <Properties><Name>Заказ</Name></Properties>
+    <ChildObjects>
+      <Attribute><Properties><Name>Контрагент</Name><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute>
+      <TabularSection><Properties><Name>Товары</Name></Properties><ChildObjects>
+        <Attribute><Properties><Name>Количество</Name><Type><v8:Type>xs:decimal</v8:Type></Type></Properties></Attribute>
+      </ChildObjects></TabularSection>
+      <Form>ФормаДокумента</Form>
+    </ChildObjects>
+  </Document>
+</MetaDataObject>"#,
         );
-        ViewService::new(authority, ViewCursorStore::default())
+        write(
+            &self.source.join("Documents/Заказ/Forms/ФормаДокумента.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000002"><Properties><Name>ФормаДокумента</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#,
+        );
+        write(
+            &self
+                .source
+                .join("Documents/Заказ/Forms/ФормаДокумента/Ext/Form.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20">
+  <ChildItems>
+    <InputField name="Склад" id="1"/>
+    <Table name="Товары" id="2"><ChildItems><InputField name="Количество" id="3"><Events><Event name="Change">КоличествоИзменение</Event></Events></InputField></ChildItems></Table>
+  </ChildItems>
+  <Attributes><Attribute name="Объект" id="1"><Type><v8:Type>xs:string</v8:Type></Type></Attribute></Attributes>
+  <Parameters><Parameter name="Режим"><Type><v8:Type>xs:string</v8:Type></Type></Parameter></Parameters>
+  <Commands><Command name="Пересчитать" id="1"/></Commands>
+</Form>"#,
+        );
+
+        write(
+            &self.source.join("Roles/Кладовщик.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role uuid="10000000-0000-4000-8000-000000000003"><Properties><Name>Кладовщик</Name></Properties></Role></MetaDataObject>"#,
+        );
+        write(
+            &self.source.join("Roles/Кладовщик/Ext/Rights.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Catalog.Товары</name><right><name>Read</name><value>true</value><restrictionByCondition><condition>Товары.Владелец = &amp;ТекущийПользователь</condition></restrictionByCondition></right></object></Rights>"#,
+        );
+
+        let report = fixture_text("unica_mcp_script_parity/form-remove/ParityReport.xml")
+            .replace("ParityReport", "Продажи");
+        write(
+            &self.source.join("Reports/Продажи.xml"),
+            &replace_child_objects(
+                &report,
+                "<Template>ОсновнаяСхема</Template><Template>Печать</Template>",
+            ),
+        );
+        let schema_descriptor = fixture_text(
+            "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
+        )
+        .replace("MainSchema", "ОсновнаяСхема");
+        write(
+            &self
+                .source
+                .join("Reports/Продажи/Templates/ОсновнаяСхема.xml"),
+            &schema_descriptor,
+        );
+        let dcs = fixture_text("unica_mcp_script_parity/dcs-validate/BadPrefix.xml")
+            .replace("MainData", "Продажи")
+            .replace("Code", "Сумма")
+            .replace(
+                "xmlns:bad=\"http://example.com\">bad:CatalogRef.X",
+                ">xs:decimal",
+            )
+            .replace(
+                "\n</DataCompositionSchema>",
+                "\n<parameter><name>Период</name><valueType><v8:Type>xs:dateTime</v8:Type></valueType></parameter>\n</DataCompositionSchema>",
+            );
+        write(
+            &self
+                .source
+                .join("Reports/Продажи/Templates/ОсновнаяСхема/Ext/Template.xml"),
+            &dcs,
+        );
+        let print_descriptor = schema_descriptor
+            .replace("ОсновнаяСхема", "Печать")
+            .replace("DataCompositionSchema", "SpreadsheetDocument");
+        write(
+            &self.source.join("Reports/Продажи/Templates/Печать.xml"),
+            &print_descriptor,
+        );
+        let mxl = fixture_text("platform_8_3_27/mxl/Template.xml")
+            .replace(
+                "\n\t<templateMode>true</templateMode>",
+                "\n\t<namedItem xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"NamedItemCells\"><name>Шапка</name><area><type>Rows</type><beginRow>0</beginRow><endRow>0</endRow><beginColumn>-1</beginColumn><endColumn>-1</endColumn></area></namedItem>\n\t<templateMode>true</templateMode>",
+            )
+            .replace(
+                "\n\t\t\t<empty>true</empty>",
+                "\n\t\t\t<c><c><f>0</f><parameter>Заголовок</parameter></c></c>",
+            );
+        write(
+            &self
+                .source
+                .join("Reports/Продажи/Templates/Печать/Ext/Template.xml"),
+            &mxl,
+        );
     }
 }
 

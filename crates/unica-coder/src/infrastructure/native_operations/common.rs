@@ -704,6 +704,18 @@ pub(crate) fn parse_subsystem_info_data(
     path: &Path,
     text: &str,
 ) -> Result<(SubsystemInfoData, Vec<String>), String> {
+    let has_ci = subsystem_dir_for_xml(path)
+        .join("Ext")
+        .join("CommandInterface.xml")
+        .is_file();
+    parse_subsystem_info_xml(path, text, has_ci)
+}
+
+pub(crate) fn parse_subsystem_info_xml(
+    path: &Path,
+    text: &str,
+    has_ci: bool,
+) -> Result<(SubsystemInfoData, Vec<String>), String> {
     let doc = Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error in {}: {err}", path.display()))?;
     let root = doc.root_element();
@@ -761,9 +773,6 @@ pub(crate) fn parse_subsystem_info_data(
     let content_items = subsystem_content_items(props);
     let groups = subsystem_group_content(&content_items);
     let child_names = subsystem_child_names(sub);
-    let sub_dir = subsystem_dir_for_xml(path);
-    let has_ci = sub_dir.join("Ext").join("CommandInterface.xml").is_file();
-
     Ok((
         SubsystemInfoData {
             name,
@@ -2568,6 +2577,17 @@ pub(crate) fn read_support_state_strict(
             "support-state marker bytes are unreadable",
         )
     })?;
+    parse_support_state_strict_bytes(Some(&data))
+}
+
+/// Parses already-admitted support-state bytes with the same semantics as the
+/// path wrapper. The caller owns file identity/no-follow checks.
+pub(crate) fn parse_support_state_strict_bytes(
+    data: Option<&[u8]>,
+) -> Result<Option<SupportState>, SupportReadError> {
+    let Some(data) = data else {
+        return Ok(None);
+    };
     if data.is_empty() {
         return Ok(Some(SupportState {
             global_editing_enabled: true,
@@ -2578,7 +2598,7 @@ pub(crate) fn read_support_state_strict(
             vendors: Vec::new(),
         }));
     }
-    let text = std::str::from_utf8(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data))
+    let text = std::str::from_utf8(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(data))
         .map_err(|_| {
             SupportReadError::new(
                 SupportReadErrorCode::StateInvalid,

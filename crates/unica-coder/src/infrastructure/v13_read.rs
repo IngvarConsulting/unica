@@ -1,4 +1,4 @@
-use crate::application::metadata::MetaInfoRequest;
+use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
 use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot};
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
@@ -11,36 +11,28 @@ use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData
 use crate::domain::platform_profile::{
     ModuleCapability, ModuleRole, ModuleSourceLayout, PlatformProfile,
 };
-use crate::domain::source_target::{
-    MetadataAddress, SourceTarget, PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
-use crate::domain::workspace::WorkspaceContext;
+use crate::domain::project_sources::SourceSetKind;
+#[cfg(test)]
+use crate::domain::source_target::SourceTarget;
+use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::bsl_module_projection::{
     project_module, FormBindingOwner, FormEventBindingInput, ModuleProjectionRequest,
 };
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
-use crate::infrastructure::metadata_operations::MetadataOperations;
-use crate::infrastructure::native_operations::common::read_utf8_sig;
-use crate::infrastructure::native_operations::form::{
-    analyze_form_info_with_data, FormInfoElement, FormInfoEvent,
-};
+use crate::infrastructure::native_operations::form::{FormInfoElement, FormInfoEvent};
 use crate::infrastructure::native_operations::form_event_registry::FormElementKind;
-use crate::infrastructure::native_operations::typed_result::NativeInvocationContext;
-use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+#[cfg(test)]
 use crate::infrastructure::platform_xml_source_targets::{
-    platform_xml_resource_evidence, resolve_platform_xml_target, TargetKindPolicy,
+    resolve_platform_xml_target, TargetKindPolicy,
 };
 use crate::infrastructure::source_revision::SourceRevisionService;
-use crate::infrastructure::support_state::WorkspaceSupportStateReader;
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Map, Value};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 const READ_BUDGET: Duration = Duration::from_secs(7);
-const META_READ_LIMIT: usize = 1_000;
 const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
 const MODULE_CONTEXTS: &[&str] = &[
     "client",
@@ -66,7 +58,6 @@ struct ModuleViewFilter {
 /// workspace actor that owns the source capability; the adapter never creates
 /// an ambient per-call revision authority.
 pub(crate) struct LogicalViewReadAuthority<'a> {
-    context: &'a WorkspaceContext,
     cancellation: &'a CancellationToken,
     read: ProviderReadAuthority,
     profile: PlatformProfile,
@@ -74,20 +65,20 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
 
 impl<'a> LogicalViewReadAuthority<'a> {
     pub(crate) fn new(
-        context: &'a WorkspaceContext,
         cancellation: &'a CancellationToken,
         source_set: impl Into<String>,
         source_set_identity: impl Into<String>,
+        source_set_kind: SourceSetKind,
         revision_service: Arc<SourceRevisionService>,
         source_root: Arc<RetainedDirectoryCapability>,
         profile: PlatformProfile,
     ) -> Self {
         Self {
-            context,
             cancellation,
             read: ProviderReadAuthority::new(
                 source_set,
                 source_set_identity,
+                source_set_kind,
                 source_root,
                 revision_service,
             ),
@@ -102,24 +93,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         )
     }
 
-    fn read_module_source(&self, path: &Path) -> Result<Option<String>, ViewError> {
-        let relative = path.strip_prefix(self.read.root_path()).map_err(|_| {
-            ViewError::new(
-                "provider_unavailable",
-                "module target escaped the actor-owned source root",
-            )
-        })?;
-        match self
-            .read
-            .read_optional_relative(relative, MAX_MODULE_BYTES)?
-        {
-            Some(bytes) => String::from_utf8(bytes)
-                .map(|text| Some(text.trim_start_matches('\u{feff}').to_string()))
-                .map_err(|_| ViewError::new("provider_unavailable", "BSL module is not UTF-8")),
-            None => Ok(None),
-        }
-    }
-
     fn typed_payload(&self, route: &LogicalTreeRoute) -> Result<Value, ViewError> {
         if route.reader() == LogicalReader::Configuration {
             return self.read.configuration_payload();
@@ -127,81 +100,114 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if route.reader() == LogicalReader::Metadata {
             return self.metadata_payload(route);
         }
-        let (operation, tool_name) = match route.reader() {
-            LogicalReader::Configuration => ("cf-info", "unica.cf.info"),
-            LogicalReader::Form => ("form-info", "unica.form.info"),
-            LogicalReader::Role => ("role-info", "unica.role.info"),
-            LogicalReader::Subsystem | LogicalReader::Interface => {
-                ("subsystem-info", "unica.subsystem.info")
-            }
-            LogicalReader::Dcs => ("dcs-info", "unica.dcs.info"),
-            LogicalReader::Mxl => ("mxl-info", "unica.mxl.info"),
-            LogicalReader::Xdto => ("xdto-info", "unica.xdto.info"),
-            LogicalReader::Metadata | LogicalReader::Module => {
-                return Err(ViewError::new(
-                    "provider_unavailable",
-                    "logical reader requires its dedicated adapter",
-                ));
-            }
-        };
-        let mut args = Map::from_iter([("sourceSet".to_string(), json!(self.read.source_set()))]);
-        if let Some(target) = route.reader_metadata_path() {
-            args.insert("metadataPath".to_string(), json!(target.as_str()));
+        if route.reader() == LogicalReader::Form {
+            return self
+                .read
+                .form_payload(route.reader_metadata_path().ok_or_else(|| {
+                    ViewError::new("provider_unavailable", "form route has no typed target")
+                })?);
+        }
+        if route.reader() == LogicalReader::Dcs {
+            return self
+                .read
+                .dcs_payload(route.reader_metadata_path().ok_or_else(|| {
+                    ViewError::new("provider_unavailable", "DCS route has no typed target")
+                })?);
+        }
+        if route.reader() == LogicalReader::Role {
+            return self
+                .read
+                .role_payload(route.reader_metadata_path().ok_or_else(|| {
+                    ViewError::new("provider_unavailable", "role route has no typed target")
+                })?);
+        }
+        if matches!(
+            route.reader(),
+            LogicalReader::Subsystem | LogicalReader::Interface
+        ) {
+            return self
+                .read
+                .subsystem_payload(route.reader_metadata_path().ok_or_else(|| {
+                    ViewError::new(
+                        "provider_unavailable",
+                        "subsystem route has no typed target",
+                    )
+                })?);
+        }
+        if route.reader() == LogicalReader::Mxl {
+            return self
+                .read
+                .mxl_payload(route.reader_metadata_path().ok_or_else(|| {
+                    ViewError::new("provider_unavailable", "MXL route has no typed target")
+                })?);
         }
         if route.reader() == LogicalReader::Xdto {
-            if let Some(type_name) = named_segment(route.at(), NodeKind::Type) {
-                args.insert("typeName".to_string(), json!(type_name));
-            }
+            return self.read.xdto_payload(
+                route.reader_metadata_path().ok_or_else(|| {
+                    ViewError::new("provider_unavailable", "XDTO route has no typed target")
+                })?,
+                named_segment(route.at(), NodeKind::Type),
+            );
         }
-        let support = WorkspaceSupportStateReader::new(self.context);
-        let invocation = NativeInvocationContext::new(
-            &support,
-            self.cancellation,
-            ProviderDeadline::from_budget(READ_BUDGET),
-        );
-        let result = NativeOperationAdapter::invoke_with_data(
-            operation,
-            tool_name,
-            &args,
-            self.context,
-            false,
-            false,
-            invocation,
-        )
-        .map_err(|error| ViewError::new("provider_unavailable", error))?;
-        if !result.adapter.ok {
-            return Err(ViewError::new(
-                classify_reader_failure(&result.adapter.errors),
-                result.adapter.summary,
-            ));
-        }
-        result.data.ok_or_else(|| {
-            ViewError::new(
-                "provider_unavailable",
-                format!("{operation} returned no typed payload"),
-            )
-        })
+        Err(ViewError::new(
+            "provider_unavailable",
+            "logical reader requires its dedicated retained adapter",
+        ))
     }
 
     fn metadata_payload(&self, route: &LogicalTreeRoute) -> Result<Value, ViewError> {
         let target = route.reader_metadata_path().ok_or_else(|| {
             ViewError::new("not_found", "metadata address has no typed reader target")
         })?;
-        let request = MetaInfoRequest {
-            source_set: self.read.source_set().to_string(),
-            metadata_path: target.clone(),
-            sections: Vec::new(),
-            limit: META_READ_LIMIT,
-        };
-        let support = WorkspaceSupportStateReader::new(self.context);
-        let read =
-            MetadataOperations::read_local(&request, self.context, self.cancellation, &support)
-                .map_err(|failure| {
-                    let message = serde_json::to_string(&failure.diagnostics)
-                        .unwrap_or_else(|_| "metadata reader failed".to_string());
-                    ViewError::new("provider_unavailable", message)
-                })?;
-        let local = read.local;
+        let local = self.read.metadata_local(target)?;
+        let template_branches = local
+            .collections
+            .templates
+            .iter()
+            .map(|template| {
+                let child = MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("{}.Template.{}", target.as_str(), template.name),
+                )
+                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+                let branches = match self.read.metadata_child_profile(&child) {
+                    Ok(MetadataChildProfile::Template(
+                        MetadataTemplateType::DataCompositionSchema,
+                    )) => {
+                        let payload = self.read.dcs_payload(&child)?;
+                        vec![(
+                            NodeKind::DataSet,
+                            payload
+                                .get("dataSets")
+                                .and_then(Value::as_array)
+                                .map_or(0, Vec::len),
+                        )]
+                    }
+                    Ok(MetadataChildProfile::Template(
+                        MetadataTemplateType::SpreadsheetDocument,
+                    )) => {
+                        let payload = self.read.mxl_payload(&child)?;
+                        vec![(
+                            NodeKind::Area,
+                            payload
+                                .get("areas")
+                                .and_then(Value::as_array)
+                                .map_or(0, Vec::len),
+                        )]
+                    }
+                    Ok(MetadataChildProfile::Template(_)) => Vec::new(),
+                    Ok(MetadataChildProfile::Form | MetadataChildProfile::Command) => {
+                        return Err(ViewError::new(
+                            "provider_unavailable",
+                            "template registry points to a non-template descriptor",
+                        ));
+                    }
+                    Err(error) if error.code() == "not_found" => Vec::new(),
+                    Err(error) => return Err(error),
+                };
+                Ok((template.name.clone(), branches))
+            })
+            .collect::<Result<std::collections::BTreeMap<_, _>, ViewError>>()?;
         let mut payload = Map::new();
         payload.insert("name".to_string(), json!(local.name));
         payload.insert("synonym".to_string(), json!(local.synonym));
@@ -211,7 +217,27 @@ impl<'a> LogicalViewReadAuthority<'a> {
         insert_serialized(&mut payload, "properties", &local.properties)?;
         insert_serialized(&mut payload, "declarations", &local.declarations)?;
         insert_serialized(&mut payload, "relations", &local.relations)?;
-        insert_serialized(&mut payload, "collections", &local.collections)?;
+        let mut collections = serde_json::to_value(&local.collections)
+            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+        if let Some(templates) = collections
+            .get_mut("templates")
+            .and_then(Value::as_array_mut)
+        {
+            for template in templates {
+                let Some(name) = template.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(branches) = template_branches.get(name) else {
+                    continue;
+                };
+                template["logicalBranches"] = json!(branches
+                    .iter()
+                    .filter(|(_, count)| *count > 0)
+                    .map(|(kind, count)| json!({"kind": kind.as_str(), "count": count}))
+                    .collect::<Vec<_>>());
+            }
+        }
+        payload.insert("collections".to_string(), collections);
         Ok(Value::Object(payload))
     }
 
@@ -235,27 +261,19 @@ impl<'a> LogicalViewReadAuthority<'a> {
         }
         let (module_at, prefix_len) = module_prefix(route.at(), self.profile, capability)?;
         let metadata_path = module_source_address(&module_at, capability)?;
-        let resolution = resolve_platform_xml_target(
-            self.context,
-            &SourceTarget {
-                source_set: self.read.source_set().to_string(),
-                metadata_path: Some(metadata_path),
-            },
-            TargetKindPolicy::ModuleOnlyAllowingAbsent,
-        )
-        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
-        let evidence = platform_xml_resource_evidence(self.context, &resolution.handle)
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
-        let source = self.read_module_source(&evidence.target_path)?;
+        let source = self.read.module_source(&metadata_path)?;
         let common_module = if capability.role() == ModuleRole::Common {
-            Some(common_module_properties(
-                evidence.descriptor_paths.first().ok_or_else(|| {
-                    ViewError::new(
-                        "provider_unavailable",
-                        "common module has no proven descriptor",
-                    )
-                })?,
-            )?)
+            let owner = metadata_path
+                .as_str()
+                .rsplit_once('.')
+                .map(|(owner, _)| owner)
+                .ok_or_else(|| {
+                    ViewError::new("provider_unavailable", "common module owner is invalid")
+                })?;
+            let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, owner)
+                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+            let descriptor = self.read.metadata_descriptor(&owner)?;
+            Some(common_module_properties(&descriptor)?)
         } else {
             None
         };
@@ -295,24 +313,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let metadata_path =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path())
                 .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
-        let args = Map::from_iter([
-            ("sourceSet".to_string(), json!(self.read.source_set())),
-            ("metadataPath".to_string(), json!(metadata_path.as_str())),
-        ]);
-        let support = WorkspaceSupportStateReader::new(self.context);
-        let execution = analyze_form_info_with_data(&args, self.context, &support);
-        if !execution.outcome.ok {
-            return Err(ViewError::new(
-                classify_reader_failure(&execution.outcome.errors),
-                execution.outcome.summary,
-            ));
-        }
-        let data = execution.data.ok_or_else(|| {
-            ViewError::new(
-                "provider_unavailable",
-                "form reader returned no typed payload",
-            )
-        })?;
+        let data = self.read.form_data(&metadata_path)?;
         let mut bindings = data
             .events
             .iter()
@@ -346,6 +347,57 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             source_set_identity: self.read.source_set_identity().to_string(),
             revision: self.exact_revision()?,
         })
+    }
+
+    fn identity_export_path(&self, at: &QualifiedAddress) -> Result<Option<String>, ViewError> {
+        if at.source_set() != self.read.source_set() {
+            return Err(ViewError::new(
+                "not_found",
+                "logical address belongs to another actor-owned source set",
+            ));
+        }
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new("not_found", error.to_string()))?;
+        if route.reader() == LogicalReader::Configuration {
+            return Ok(Some("Configuration.xml".to_string()));
+        }
+        if route.reader() == LogicalReader::Module {
+            let capability = route.module().ok_or_else(|| {
+                ViewError::new("provider_unavailable", "module capability is missing")
+            })?;
+            let (module_at, _) = module_prefix(at, self.profile, capability)?;
+            let target = module_source_address(&module_at, capability)?;
+            return self.read.module_export_path(&target).map(Some);
+        }
+        let Some(target) = route.reader_metadata_path() else {
+            return Ok(None);
+        };
+        let target_depth = target.as_str().split('.').count().div_ceil(2);
+        let is_detail = at.segments().len() > target_depth;
+        let path = match route.reader() {
+            LogicalReader::Form if is_detail => self
+                .read
+                .attached_resource_export_path(target, "Form.xml")?,
+            LogicalReader::Role if is_detail => self
+                .read
+                .attached_resource_export_path(target, "Rights.xml")?,
+            LogicalReader::Interface => self
+                .read
+                .attached_resource_export_path(target, "CommandInterface.xml")?,
+            LogicalReader::Dcs | LogicalReader::Mxl => self
+                .read
+                .attached_resource_export_path(target, "Template.xml")?,
+            LogicalReader::Xdto if is_detail => self
+                .read
+                .attached_resource_export_path(target, "Package.bin")?,
+            LogicalReader::Metadata
+            | LogicalReader::Form
+            | LogicalReader::Role
+            | LogicalReader::Subsystem
+            | LogicalReader::Xdto => self.read.metadata_descriptor_export_path(target)?,
+            LogicalReader::Configuration | LogicalReader::Module => unreachable!(),
+        };
+        Ok(Some(path))
     }
 
     fn read_exact(
@@ -596,10 +648,14 @@ fn unsupported_module_layout(capability: ModuleCapability) -> ViewError {
     )
 }
 
-fn common_module_properties(path: &Path) -> Result<CommonModuleProperties, ViewError> {
-    let text =
-        read_utf8_sig(path).map_err(|error| ViewError::new("provider_unavailable", error))?;
-    let document = roxmltree::Document::parse(&text)
+fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, ViewError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        ViewError::new(
+            "provider_unavailable",
+            "common module descriptor is not UTF-8",
+        )
+    })?;
+    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
     let root = document.root_element();
     let boolean = |name| -> Result<bool, ViewError> {
@@ -1088,18 +1144,6 @@ fn insert_serialized<T: serde::Serialize>(
     Ok(())
 }
 
-fn classify_reader_failure(errors: &[String]) -> &'static str {
-    if errors.iter().any(|error| {
-        error.contains("not found")
-            || error.contains("File not found")
-            || error.contains("resource_missing")
-    }) {
-        "not_found"
-    } else {
-        "provider_unavailable"
-    }
-}
-
 fn named_segment(address: &QualifiedAddress, kind: NodeKind) -> Option<&str> {
     address
         .segments()
@@ -1113,4 +1157,4 @@ use crate::infrastructure::v13_read_projection::project_known_suffix;
 use crate::infrastructure::v13_read_projection::project_typed_payload;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

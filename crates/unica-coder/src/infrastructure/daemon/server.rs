@@ -20,7 +20,10 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{
     DomainResult, InvocationFailure, InvocationOutcome, SafeIdentityHash,
 };
+use crate::domain::project_sources::{SourceFormat, SourceSetKind};
+use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
+use crate::infrastructure::source_roots::normalize_contained_source_root;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
     IndexWorkIdentity, ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry,
@@ -49,11 +52,31 @@ pub(crate) struct ActorBoundInvocation {
     response_deadline: InvocationResponseDeadline,
     actor: Arc<WorkspaceActor>,
     provider_root: ProviderRootBinding,
+    #[allow(dead_code)] // consumed only by the injected Task 14 service before Task 22
+    read_sources: Arc<[ActorReadSourceBinding]>,
     workspace_identity_hash: SafeIdentityHash,
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
     runtime_resources: Arc<RuntimeResourceOwner>,
     runtime_service: Option<Arc<RuntimeJobService>>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone)]
+struct ActorReadSourceBinding {
+    name: String,
+    kind: SourceSetKind,
+    binding: ProviderRootBinding,
+}
+
+#[allow(dead_code)]
+pub(crate) struct ActorReadSourceCapability {
+    pub(crate) name: String,
+    pub(crate) kind: SourceSetKind,
+    pub(crate) identity: String,
+    pub(crate) retained_root:
+        Arc<crate::infrastructure::platform::filesystem::RetainedDirectoryCapability>,
+    pub(crate) revisions: Arc<crate::infrastructure::source_revision::SourceRevisionService>,
 }
 
 impl ActorBoundInvocation {
@@ -107,6 +130,30 @@ impl ActorBoundExecution {
     #[allow(dead_code)]
     pub(crate) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
         self.invocation.workspace_identity_hash()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn read_sources(&self) -> Result<Vec<ActorReadSourceCapability>, String> {
+        self.invocation
+            .read_sources
+            .iter()
+            .map(|source| {
+                Ok(ActorReadSourceCapability {
+                    name: source.name.clone(),
+                    kind: source.kind,
+                    identity: format!(
+                        "{}:{}",
+                        self.invocation.workspace_identity_hash.as_str(),
+                        source.name
+                    ),
+                    retained_root: source.binding.retained_root(),
+                    revisions: self
+                        .invocation
+                        .actor
+                        .source_revision_service(&source.binding)?,
+                })
+            })
+            .collect()
     }
 
     /// Daemon-owned exact delivery capability. Canonical work may wait here
@@ -241,17 +288,58 @@ fn bind_workspace_invocation(
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
     let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
         .map_err(|_| WorkspaceAdmissionError::Invalid)?;
-    let source_root = context.workspace_root.clone();
+    let source_map = discover_project_source_map(&context.workspace_root)
+        .map_err(|_| WorkspaceAdmissionError::Invalid)?;
+    let mut admitted_sources = source_map
+        .source_sets
+        .into_iter()
+        .filter(|source| source.source_format == SourceFormat::PlatformXml)
+        .map(|source| {
+            let root = normalize_contained_source_root(&context.workspace_root, &source.path)
+                .map_err(|_| WorkspaceAdmissionError::Invalid)?;
+            Ok((source.name, source.kind, root))
+        })
+        .collect::<Result<Vec<_>, WorkspaceAdmissionError>>()?;
+    if admitted_sources.is_empty() {
+        admitted_sources.push((
+            "main".to_string(),
+            SourceSetKind::Configuration,
+            context.workspace_root.clone(),
+        ));
+    }
+    admitted_sources.sort_by(|left, right| left.0.cmp(&right.0));
     let actor = actors
-        .get_or_create(&context, [("main", &source_root)], "canonical-v0.13")
+        .get_or_create(
+            &context,
+            admitted_sources
+                .iter()
+                .map(|(name, _, root)| (name.as_str(), root)),
+            "canonical-v0.13",
+        )
         .map_err(|error| match error {
             WorkspaceActorRegistryError::Capacity { .. } => WorkspaceAdmissionError::Capacity,
             WorkspaceActorRegistryError::InvalidIdentity(_) => WorkspaceAdmissionError::Invalid,
             WorkspaceActorRegistryError::Poisoned => WorkspaceAdmissionError::RegistryFailed,
         })?;
-    let provider_root = actor
-        .bind_provider_root("main", &source_root)
-        .map_err(|_| WorkspaceAdmissionError::Invalid)?;
+    let read_sources = admitted_sources
+        .iter()
+        .map(|(name, kind, root)| {
+            actor
+                .bind_provider_root(name, root)
+                .map(|binding| ActorReadSourceBinding {
+                    name: name.clone(),
+                    kind: *kind,
+                    binding,
+                })
+                .map_err(|_| WorkspaceAdmissionError::Invalid)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let provider_root = read_sources
+        .iter()
+        .find(|source| source.name == "main")
+        .or_else(|| read_sources.first())
+        .map(|source| source.binding.clone())
+        .ok_or(WorkspaceAdmissionError::Invalid)?;
     let workspace_identity_hash = actor
         .safe_identity_hash()
         .map_err(|_| WorkspaceAdmissionError::Invalid)?;
@@ -261,6 +349,7 @@ fn bind_workspace_invocation(
         response_deadline,
         actor,
         provider_root,
+        read_sources: Arc::from(read_sources),
         workspace_identity_hash,
         deliveries,
         provider_hosts,

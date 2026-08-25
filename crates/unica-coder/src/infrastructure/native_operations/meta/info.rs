@@ -172,26 +172,14 @@ use super::xml_model::{
     parse_meta_event_subscription_source,
 };
 
-/// Parse the descriptor image already acquired by the logical resolver. The
-/// same bytes are retained in the validation subject, so typed info never
-/// performs a second descriptor read between structure and validation.
-pub(crate) fn read_typed_meta_info(
-    resolved: &ResolvedMetadataObject,
-    source_set: &str,
+/// Projects local typed metadata from one exact descriptor image. The caller
+/// owns both the bytes and the support observation; this function performs no
+/// workspace resolution and no filesystem reads.
+pub(crate) fn parse_typed_meta_local_info(
+    descriptor_preimage: &[u8],
     target: &MetadataAddress,
-    context: &WorkspaceContext,
-    deadline: ProviderDeadline,
-    cancellation: &CancellationToken,
-    support_reader: &dyn SupportStateReader,
-) -> Result<(MetaLocalInfo, MetadataValidationSubject), MetaFailure> {
-    #[cfg(test)]
-    let test_descriptor_image = meta_info_descriptor_image_for_test(&resolved.descriptor_preimage);
-    #[cfg(test)]
-    let descriptor_preimage = test_descriptor_image
-        .as_deref()
-        .unwrap_or(&resolved.descriptor_preimage);
-    #[cfg(not(test))]
-    let descriptor_preimage = resolved.descriptor_preimage.as_slice();
+    support: MetaSupportStatus,
+) -> Result<MetaLocalInfo, MetaFailure> {
     let identity = super::validation_context::inspect_metadata_image_identity(descriptor_preimage)
         .map_err(|error| {
             let diagnostic = MetaDiagnostic::error(
@@ -234,10 +222,6 @@ pub(crate) fn read_typed_meta_info(
         .with_metadata_path(target.clone())
         .into());
     }
-    let object_identity = MetadataObjectIdentity {
-        address: target.clone(),
-        uuid: identity.object_uuid,
-    };
     let property_containers = object
         .children()
         .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
@@ -341,8 +325,7 @@ pub(crate) fn read_typed_meta_info(
     let collection_route = |tag, nested_attributes, field| {
         TypedRootCollectionRoute::new(kind, tag, nested_attributes, field)
     };
-    let support = typed_support_status(support_reader, &resolved.resolved_target)?;
-    let mut local = MetaLocalInfo {
+    Ok(MetaLocalInfo {
         metadata_path: target.clone(),
         kind,
         details,
@@ -455,7 +438,61 @@ pub(crate) fn read_typed_meta_info(
             ),
         },
         diagnostics,
+    })
+}
+
+/// Parse the descriptor image already acquired by the logical resolver. The
+/// same bytes are retained in the validation subject, so typed info never
+/// performs a second descriptor read between structure and validation.
+pub(crate) fn read_typed_meta_info(
+    resolved: &ResolvedMetadataObject,
+    source_set: &str,
+    target: &MetadataAddress,
+    context: &WorkspaceContext,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    support_reader: &dyn SupportStateReader,
+) -> Result<(MetaLocalInfo, MetadataValidationSubject), MetaFailure> {
+    #[cfg(test)]
+    let test_descriptor_image = meta_info_descriptor_image_for_test(&resolved.descriptor_preimage);
+    #[cfg(test)]
+    let descriptor_preimage = test_descriptor_image
+        .as_deref()
+        .unwrap_or(&resolved.descriptor_preimage);
+    #[cfg(not(test))]
+    let descriptor_preimage = resolved.descriptor_preimage.as_slice();
+    // The local typed projection is shared with capability-bound readers. V12
+    // computes support from its resolved target after the descriptor has been
+    // proved, preserving the previous error precedence for malformed images.
+    let mut local =
+        parse_typed_meta_local_info(descriptor_preimage, target, MetaSupportStatus::Supported)?;
+    local.support = typed_support_status(support_reader, &resolved.resolved_target)?;
+
+    let identity = super::validation_context::inspect_metadata_image_identity(descriptor_preimage)
+        .expect("the shared local parser proved the exact descriptor image");
+    let text =
+        std::str::from_utf8(descriptor_preimage).expect("the shared local parser proved UTF-8");
+    let xml = text.trim_start_matches('\u{feff}');
+    let doc = Document::parse(xml).expect("the shared local parser proved the XML document");
+    let object = doc
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+        .expect("the shared local parser proved one object");
+    let kind = local.kind;
+    let object_identity = MetadataObjectIdentity {
+        address: target.clone(),
+        uuid: identity.object_uuid,
     };
+    let properties = object
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(super::info_projection::MD_CLASSES_NAMESPACE)
+                && node.tag_name().name() == "Properties"
+        })
+        .expect("the shared local parser proved Properties");
+    let properties = Some(properties);
     let mut validation_resources = vec![
         MetadataResourceImage {
             role: MetadataResourceRole::Descriptor,

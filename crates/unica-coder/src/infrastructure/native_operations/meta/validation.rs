@@ -1281,6 +1281,16 @@ fn parse_child_descriptor(
     parse_child_artifact(artifact, owner).map(Some)
 }
 
+/// Parse one already-retained physical child descriptor through the same
+/// closed validator used by V12 metadata mutation planning.
+pub(crate) fn parse_child_profile_from_bytes(
+    bytes: &[u8],
+    owner: &MetadataAddress,
+) -> Result<Option<(MetadataAddress, MetadataChildProfile)>, String> {
+    parse_child_descriptor(bytes, owner)
+        .map(|descriptor| descriptor.map(|descriptor| (descriptor.child, descriptor.profile)))
+}
+
 fn exact_metadata_artifact<'a, 'input>(
     document: &'a Document<'input>,
 ) -> Result<roxmltree::Node<'a, 'input>, String> {

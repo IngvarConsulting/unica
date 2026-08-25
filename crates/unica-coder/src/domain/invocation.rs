@@ -139,6 +139,10 @@ impl SafeIdentityHash {
     pub(crate) fn from_sha256(bytes: [u8; 32]) -> Self {
         Self(encode_sha256(bytes))
     }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl<'de> Deserialize<'de> for SafeIdentityHash {

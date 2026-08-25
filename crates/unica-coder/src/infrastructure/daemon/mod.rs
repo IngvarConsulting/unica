@@ -2,6 +2,8 @@ pub(crate) mod client;
 pub(crate) mod identity;
 pub(crate) mod protocol;
 pub(crate) mod server;
+#[allow(dead_code)]
+mod v13_service;
 
 #[cfg(test)]
 mod tests {
@@ -20,6 +22,7 @@ mod tests {
         write_bytes_before, ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService,
         DaemonServerConfig, MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
     };
+    use super::v13_service::CanonicalV13ReadService;
     use crate::application::invocation_store::{
         InvocationStore, InvocationStoreError, NewInvocationRecord, SafeFailureReason,
         SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
@@ -1304,6 +1307,146 @@ mod tests {
         crate::infrastructure::task_store::tests::file_invocation_store_bounds_and_retention_are_enforced();
         crate::infrastructure::daemon::server::actor_capacity_tests::restart_request_does_not_claim_noncooperative_actor_released_in_process();
         process_death_owns_fail_stop_handoff_and_recovery();
+    }
+
+    #[test]
+    fn injected_hidden_v13_service_executes_real_view_and_find_through_actor_capabilities() {
+        let daemon_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let identity = CoreIdentity::production();
+        let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
+            .with_invocation_service(Arc::new(CanonicalV13ReadService::default()));
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(daemon_root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical_root(daemon_root.path()),
+            identity,
+        ));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+
+        let view = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::View,
+                    serde_json::json!({"at": "main:Catalog.Items"}),
+                    physical_root(workspace.path()).to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let InvocationResponse::Direct(view) = view else {
+            panic!("hidden view should complete inline")
+        };
+        assert!(view.ok, "{} {:?}", view.summary, view.diagnostics);
+        assert_eq!(view.at.as_deref(), Some("main:Catalog.Items"));
+        assert_eq!(view.data.as_ref().unwrap()["kind"], "Catalog");
+        assert!(view.rev.is_some());
+
+        let find = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Find,
+                    serde_json::json!({"query": "Items"}),
+                    physical_root(workspace.path()).to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let InvocationResponse::Direct(find) = find else {
+            panic!("hidden find should complete inline")
+        };
+        assert!(find.ok, "{} {:?}", find.summary, find.diagnostics);
+        assert_eq!(
+            find.data.as_ref().unwrap()["candidates"][0]["at"],
+            "main:Catalog.Items"
+        );
+        assert!(find.rev.is_some());
+
+        let unknown = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::View,
+                    serde_json::json!({
+                        "at": "main:Catalog.Items",
+                        "raw": true,
+                    }),
+                    physical_root(workspace.path()).to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let InvocationResponse::Direct(unknown) = unknown else {
+            panic!("invalid hidden arguments must fail before task materialization")
+        };
+        assert!(!unknown.ok);
+        assert!(unknown.summary.contains("unknown argument `raw`"));
+
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn daemon_default_keeps_the_hidden_v13_service_dormant_before_task22() {
+        let daemon_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let identity = CoreIdentity::production();
+        let config = server_config(daemon_root.path().to_path_buf(), identity.clone());
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(daemon_root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical_root(daemon_root.path()),
+            identity,
+        ));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+
+        let response = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::View,
+                    serde_json::json!({"at": "main:Configuration"}),
+                    physical_root(workspace.path()).to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let InvocationResponse::Direct(result) = response else {
+            panic!("dormant service should reject inline")
+        };
+        assert!(!result.ok);
+        assert!(result
+            .summary
+            .contains("not installed before the Task 22 cutover"));
+
+        drop(owner);
+        server.join().unwrap().unwrap();
     }
 
     fn canonical_service_reads_only_actor_bound_roots_and_persists_the_same_identity() {

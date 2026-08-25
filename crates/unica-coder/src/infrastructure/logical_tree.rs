@@ -79,6 +79,9 @@ pub(crate) fn route_logical_address(
     {
         return Ok(route(address, LogicalReader::Configuration, None, None));
     }
+    if matches!(segments, [branch] if branch.kind().is_metadata_kind() && branch.name().is_none()) {
+        return Ok(route(address, LogicalReader::Metadata, None, None));
+    }
     if segments
         .first()
         .is_some_and(|segment| segment.kind() == NodeKind::Role)
@@ -104,10 +107,10 @@ pub(crate) fn route_logical_address(
     }
     if segments
         .first()
-        .is_some_and(|segment| segment.kind() == NodeKind::CommonForm)
+        .is_some_and(|segment| segment.kind() == NodeKind::CommonForm && segment.name().is_some())
         || segments
             .iter()
-            .any(|segment| segment.kind() == NodeKind::Form)
+            .any(|segment| segment.kind() == NodeKind::Form && segment.name().is_some())
     {
         let target = typed_form_reader_target(address).ok_or_else(|| not_found(address))?;
         return Ok(route(address, LogicalReader::Form, Some(target), None));

@@ -3,6 +3,7 @@ use crate::domain::address::QualifiedAddress;
 use crate::domain::invocation::DomainResult;
 use crate::domain::node_view::NodeViewData;
 use serde_json::{Map, Value};
+use std::sync::Arc;
 
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 1_000;
@@ -119,6 +120,11 @@ pub(crate) struct ViewSourceSnapshot {
 pub(crate) trait ViewReadAuthority: Send + Sync {
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError>;
 
+    /// Internal identity fact for `find`; it is never serialized by `view`.
+    fn identity_export_path(&self, _at: &QualifiedAddress) -> Result<Option<String>, ViewError> {
+        Ok(None)
+    }
+
     fn read_exact(
         &self,
         at: &QualifiedAddress,
@@ -146,13 +152,26 @@ impl ViewError {
     }
 }
 
+impl std::fmt::Display for ViewError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
 pub(crate) struct ViewService<A> {
     authority: A,
-    cursors: ViewCursorStore,
+    cursors: Arc<ViewCursorStore>,
 }
 
 impl<A: ViewReadAuthority> ViewService<A> {
     pub(crate) fn new(authority: A, cursors: ViewCursorStore) -> Self {
+        Self {
+            authority,
+            cursors: Arc::new(cursors),
+        }
+    }
+
+    pub(crate) fn with_shared_cursors(authority: A, cursors: Arc<ViewCursorStore>) -> Self {
         Self { authority, cursors }
     }
 

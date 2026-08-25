@@ -100,7 +100,7 @@ mod xml_model;
 pub(crate) use edit::{
     prepare_typed_edit, resolve_typed_edit_object, resolve_typed_metadata_object,
 };
-pub(crate) use info::read_typed_meta_info;
+pub(crate) use info::{parse_typed_meta_local_info, read_typed_meta_info};
 #[cfg(test)]
 pub(crate) use info::{
     with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
@@ -119,6 +119,7 @@ pub(crate) use remove::with_meta_remove_before_reauthorization_hook;
 pub(crate) use template_catalog::emit_meta_internal_info;
 pub(crate) use template_catalog::metadata_generated_types_8_3_27;
 pub(crate) use usage_scan::{scan_local_enrichment, LocalEnrichment, LocalSection};
+pub(crate) use validation::parse_child_profile_from_bytes;
 pub(crate) use validation::{
     service_child_semantics, validate_metadata_owner_shape_8_3_27, MetadataValidator,
 };

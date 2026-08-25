@@ -1,28 +1,26 @@
 use crate::application::v13::find::{FindDocument, FindFact, FindFactKind, FindIndex};
+use crate::application::v13::view::{ViewFilter, ViewReadAuthority};
 use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::infrastructure::metadata_kinds::metadata_kind;
-use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
-use roxmltree::{Document, Node};
-use std::io;
-use std::path::{Path, PathBuf};
+use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::ProviderDeadline;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 const MAX_SOURCE_SETS: usize = 64;
 const DEFAULT_MAX_DOCUMENTS: usize = 65_536;
 const DEFAULT_MAX_FACT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
-const MAX_DESCRIPTOR_BYTES: usize = 2 * 1024 * 1024;
 
 /// One source-set root retained by the workspace actor. The builder never
 /// reopens a workspace path or discovers ambient roots on its own.
-#[derive(Clone, Copy)]
 pub(crate) struct ActorFindSource<'a> {
     name: &'a str,
-    root: &'a RetainedDirectoryCapability,
+    reader: &'a dyn ViewReadAuthority,
 }
 
 impl<'a> ActorFindSource<'a> {
-    pub(crate) const fn new(name: &'a str, root: &'a RetainedDirectoryCapability) -> Self {
-        Self { name, root }
+    pub(crate) const fn new(name: &'a str, reader: &'a dyn ViewReadAuthority) -> Self {
+        Self { name, reader }
     }
 }
 
@@ -57,6 +55,11 @@ pub(crate) struct WorkspaceFindIndexBuilder {
     max_total_fact_bytes: usize,
 }
 
+pub(crate) struct BuiltFindIndex {
+    pub(crate) index: FindIndex,
+    pub(crate) revision: String,
+}
+
 impl Default for WorkspaceFindIndexBuilder {
     fn default() -> Self {
         Self {
@@ -86,7 +89,19 @@ impl WorkspaceFindIndexBuilder {
     pub(crate) fn build(
         &self,
         sources: &[ActorFindSource<'_>],
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
     ) -> Result<FindIndex, FindBuildError> {
+        self.build_with_revision(sources, deadline, cancellation)
+            .map(|built| built.index)
+    }
+
+    pub(crate) fn build_with_revision(
+        &self,
+        sources: &[ActorFindSource<'_>],
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<BuiltFindIndex, FindBuildError> {
         if sources.len() > MAX_SOURCE_SETS {
             return Err(FindBuildError::new(
                 "provider_limit_exceeded",
@@ -95,18 +110,26 @@ impl WorkspaceFindIndexBuilder {
         }
         let mut documents = Vec::new();
         let mut total_fact_bytes = 0;
+        let mut revisions = Vec::with_capacity(sources.len());
         for source in sources {
-            source
-                .root
-                .validate_named_identity()
-                .map_err(|error| provider_error("source root identity", error))?;
-            self.add_source(source, &mut documents, &mut total_fact_bytes)?;
-            source
-                .root
-                .validate_named_identity()
-                .map_err(|error| provider_error("source root identity", error))?;
+            find_checkpoint(deadline, cancellation)?;
+            let admitted = self.add_source(
+                source,
+                &mut documents,
+                &mut total_fact_bytes,
+                deadline,
+                cancellation,
+            )?;
+            revisions.push((
+                source.name.to_string(),
+                admitted.source_set_identity,
+                admitted.revision,
+            ));
         }
-        Ok(FindIndex::new(documents))
+        Ok(BuiltFindIndex {
+            index: FindIndex::new(documents),
+            revision: aggregate_revision(&revisions),
+        })
     }
 
     fn add_source(
@@ -114,98 +137,100 @@ impl WorkspaceFindIndexBuilder {
         source: &ActorFindSource<'_>,
         documents: &mut Vec<FindDocument>,
         total_fact_bytes: &mut usize,
-    ) -> Result<(), FindBuildError> {
-        let bytes = source
-            .root
-            .read_relative_regular_bounded(Path::new("Configuration.xml"), MAX_CONFIGURATION_BYTES)
-            .map_err(|error| provider_error("Configuration.xml", error))?;
-        let text = std::str::from_utf8(&bytes).map_err(|_| {
-            FindBuildError::new(
-                "provider_unavailable",
-                "Configuration.xml is not valid UTF-8",
-            )
-        })?;
-        let document = Document::parse(text.trim_start_matches('\u{feff}')).map_err(|error| {
-            FindBuildError::new(
-                "provider_unavailable",
-                format!("Configuration.xml is not valid XML: {error}"),
-            )
-        })?;
-        let configuration = document
-            .root_element()
-            .children()
-            .find(|node| node.is_element() && node.tag_name().name() == "Configuration")
-            .ok_or_else(|| {
-                FindBuildError::new(
-                    "provider_unavailable",
-                    "Configuration.xml has no Configuration owner",
-                )
-            })?;
-        let configuration_at = format!("{}:Configuration", source.name);
-        validate_address(&configuration_at)?;
-        let configuration_identity = descriptor_identity(configuration);
-        self.push_document(
-            documents,
-            total_fact_bytes,
-            identity_document(
-                configuration_at,
-                NodeKind::Configuration,
-                configuration_identity,
-                Some("Configuration.xml"),
-            ),
-        )?;
-
-        let child_objects = configuration
-            .children()
-            .find(|node| node.is_element() && node.tag_name().name() == "ChildObjects");
-        for registration in child_objects
-            .into_iter()
-            .flat_map(|children| children.children().filter(Node::is_element))
-        {
-            let kind_text = registration.tag_name().name();
-            let Some(layout) = metadata_kind(kind_text) else {
-                return Err(FindBuildError::new(
-                    "provider_unavailable",
-                    format!("Configuration.xml registers unsupported kind `{kind_text}`"),
-                ));
-            };
-            let kind = NodeKind::parse(kind_text).map_err(|_| {
-                FindBuildError::new(
-                    "provider_unavailable",
-                    format!("Configuration.xml registers unaddressable kind `{kind_text}`"),
-                )
-            })?;
-            let name = registration.text().unwrap_or_default().trim();
-            if !valid_platform_name(name) {
-                return Err(FindBuildError::new(
-                    "provider_unavailable",
-                    format!("Configuration.xml registers an invalid {kind_text} name"),
-                ));
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::application::v13::view::ViewSourceSnapshot, FindBuildError> {
+        let root_at = QualifiedAddress::parse(&format!("{}:Configuration", source.name))
+            .map_err(|error| FindBuildError::new("provider_unavailable", error.to_string()))?;
+        let admitted = source.reader.snapshot(&root_at).map_err(view_error)?;
+        let mut queue = VecDeque::from([root_at.clone()]);
+        let mut queued = HashSet::new();
+        let mut fallbacks = HashMap::<String, Value>::new();
+        queued.insert(queue[0].to_string());
+        while let Some(address) = queue.pop_front() {
+            find_checkpoint(deadline, cancellation)?;
+            let projection =
+                match source
+                    .reader
+                    .read_exact(&address, &ViewFilter::default(), &admitted)
+                {
+                    Ok(projection) => projection,
+                    Err(error) if error.code() == "not_found" && address != root_at => {
+                        if let Some(fallback) = fallbacks.get(&address.to_string()) {
+                            self.push_identity_value(documents, total_fact_bytes, fallback, None)?;
+                        }
+                        continue;
+                    }
+                    Err(error) => {
+                        let mapped = view_error(error);
+                        return Err(FindBuildError::new(
+                            mapped.code(),
+                            format!("find could not read logical identity `{address}`: {mapped}"),
+                        ));
+                    }
+                };
+            let value = serde_json::to_value(projection)
+                .map_err(|error| FindBuildError::new("provider_unavailable", error.to_string()))?;
+            let export_path = source
+                .reader
+                .identity_export_path(&address)
+                .map_err(view_error)?;
+            self.push_identity_value(documents, total_fact_bytes, &value, export_path.as_deref())?;
+            for child in logical_children(&value)? {
+                let Some(at) = child.get("at").and_then(Value::as_str) else {
+                    continue;
+                };
+                if child.get("kind").is_some() && child.get("title").is_some() {
+                    fallbacks.insert(at.to_string(), child.clone());
+                }
+                if queued.insert(at.to_string()) {
+                    let address = QualifiedAddress::parse(at).map_err(|error| {
+                        FindBuildError::new("provider_unavailable", error.to_string())
+                    })?;
+                    if address.source_set() != source.name {
+                        return Err(FindBuildError::new(
+                            "provider_unavailable",
+                            "typed logical child belongs to another source set",
+                        ));
+                    }
+                    if queued.len() > self.max_documents {
+                        return Err(FindBuildError::new(
+                            "provider_limit_exceeded",
+                            "find logical-tree queue exceeds the bounded document limit",
+                        ));
+                    }
+                    queue.push_back(address);
+                }
             }
-            let at = format!("{}:{kind_text}.{name}", source.name);
-            validate_address(&at)?;
-            let relative = PathBuf::from(layout.directory).join(format!("{name}.xml"));
-            let descriptor = optional_descriptor(source.root, &relative)?;
-            let identity = descriptor
-                .as_deref()
-                .and_then(|bytes| std::str::from_utf8(bytes).ok())
-                .and_then(|text| Document::parse(text.trim_start_matches('\u{feff}')).ok())
-                .and_then(|descriptor| {
-                    descriptor
-                        .root_element()
-                        .children()
-                        .find(|node| node.is_element() && node.tag_name().name() == kind_text)
-                        .map(descriptor_identity)
-                })
-                .unwrap_or_else(|| DescriptorIdentity::named(name));
-            let export_path = format!("{}/{}.xml", layout.directory, name);
-            self.push_document(
-                documents,
-                total_fact_bytes,
-                identity_document(at, kind, identity, Some(&export_path)),
-            )?;
         }
-        Ok(())
+        find_checkpoint(deadline, cancellation)?;
+        let current = source.reader.snapshot(&root_at).map_err(view_error)?;
+        if current != admitted {
+            return Err(FindBuildError::new(
+                "stale_revision",
+                "source revision changed during find index construction",
+            ));
+        }
+        Ok(admitted)
+    }
+
+    fn push_identity_value(
+        &self,
+        documents: &mut Vec<FindDocument>,
+        total_fact_bytes: &mut usize,
+        value: &Value,
+        export_path: Option<&str>,
+    ) -> Result<(), FindBuildError> {
+        let Some(document) = identity_document_from_view(value, export_path)? else {
+            return Ok(());
+        };
+        if documents
+            .iter()
+            .any(|existing| existing.at() == document.at())
+        {
+            return Ok(());
+        }
+        self.push_document(documents, total_fact_bytes, document)
     }
 
     fn push_document(
@@ -240,115 +265,240 @@ impl WorkspaceFindIndexBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
-struct DescriptorIdentity {
-    name: String,
-    synonyms: Vec<String>,
-}
-
-impl DescriptorIdentity {
-    fn named(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            synonyms: Vec::new(),
+fn aggregate_revision(revisions: &[(String, String, String)]) -> String {
+    if let [(_, _, revision)] = revisions {
+        return revision.clone();
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"unica-find-source-revision-v1\0");
+    for (name, identity, revision) in revisions {
+        for value in [name, identity, revision] {
+            digest.update((value.len() as u64).to_le_bytes());
+            digest.update(value.as_bytes());
         }
     }
+    let mut encoded = String::with_capacity(64);
+    for byte in digest.finalize() {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
 }
 
-fn descriptor_identity(owner: Node<'_, '_>) -> DescriptorIdentity {
-    let properties = owner
-        .children()
-        .find(|node| node.is_element() && node.tag_name().name() == "Properties");
-    let name = properties
-        .and_then(|properties| {
-            properties
-                .children()
-                .find(|node| node.is_element() && node.tag_name().name() == "Name")
-        })
-        .and_then(|node| node.text())
-        .unwrap_or_else(|| owner.tag_name().name())
-        .trim()
-        .to_string();
-    let mut synonyms = properties
-        .and_then(|properties| {
-            properties
-                .children()
-                .find(|node| node.is_element() && node.tag_name().name() == "Synonym")
-        })
-        .into_iter()
-        .flat_map(|synonym| synonym.descendants())
-        .filter(|node| node.is_element() && node.tag_name().name() == "content")
-        .filter_map(|node| node.text())
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    synonyms.sort();
-    synonyms.dedup();
-    DescriptorIdentity { name, synonyms }
+fn logical_children(value: &Value) -> Result<Vec<&Value>, FindBuildError> {
+    let object = value.as_object().ok_or_else(|| {
+        FindBuildError::new(
+            "provider_unavailable",
+            "typed logical view is not an object",
+        )
+    })?;
+    let mut children = Vec::new();
+    for key in ["branches", "items"] {
+        if let Some(values) = object.get(key) {
+            let values = values.as_array().ok_or_else(|| {
+                FindBuildError::new(
+                    "provider_unavailable",
+                    format!("typed logical view `{key}` is not an array"),
+                )
+            })?;
+            children.extend(values.iter().filter(|value| value.get("at").is_some()));
+        }
+    }
+    Ok(children)
 }
 
-fn identity_document(
-    at: String,
-    kind: NodeKind,
-    identity: DescriptorIdentity,
+fn identity_document_from_view(
+    value: &Value,
     export_path: Option<&str>,
-) -> FindDocument {
-    let mut facts = vec![FindFact::new(FindFactKind::Name, identity.name.clone())];
-    facts.extend(
-        identity
-            .synonyms
-            .iter()
-            .map(|synonym| FindFact::new(FindFactKind::Synonym, synonym)),
-    );
-    if let Some(export_path) = export_path {
-        facts.push(FindFact::new(FindFactKind::ExportPath, export_path));
+) -> Result<Option<FindDocument>, FindBuildError> {
+    let Some(at) = value.get("at").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let address = QualifiedAddress::parse(at)
+        .map_err(|error| FindBuildError::new("provider_unavailable", error.to_string()))?;
+    let Some(kind) = value.get("kind").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    NodeKind::parse(kind).map_err(|_| {
+        FindBuildError::new(
+            "provider_unavailable",
+            format!("typed node has unaddressable kind `{kind}`"),
+        )
+    })?;
+    let Some(title) = value.get("title").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let name = address
+        .segments()
+        .last()
+        .and_then(|segment| segment.name())
+        .unwrap_or(kind);
+    let mut facts = vec![FindFact::new(FindFactKind::Name, name)];
+    if title != name && title != kind {
+        facts.push(FindFact::new(FindFactKind::Synonym, title));
     }
-    let title = identity
-        .synonyms
-        .first()
-        .cloned()
-        .unwrap_or_else(|| identity.name.clone());
-    FindDocument::new(at, kind.as_str(), title, facts)
-}
-
-fn optional_descriptor(
-    root: &RetainedDirectoryCapability,
-    relative: &Path,
-) -> Result<Option<Vec<u8>>, FindBuildError> {
-    match root.read_relative_regular_bounded(relative, MAX_DESCRIPTOR_BYTES) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(provider_error("metadata descriptor", error)),
+    if let Some(props) = value.get("props").and_then(Value::as_object) {
+        for key in ["name", "synonym"] {
+            if let Some(identity) = props.get(key).and_then(Value::as_str) {
+                if !identity.is_empty() {
+                    facts.push(FindFact::new(
+                        if key == "synonym" {
+                            FindFactKind::Synonym
+                        } else {
+                            FindFactKind::Name
+                        },
+                        identity,
+                    ));
+                }
+            }
+        }
     }
+    if let Some(path) = export_path {
+        facts.push(FindFact::new(FindFactKind::ExportPath, path));
+    }
+    Ok(Some(FindDocument::new(at, kind, title, facts)))
 }
 
-fn valid_platform_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|character| character == '_' || character.is_alphanumeric())
+fn find_checkpoint(
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<(), FindBuildError> {
+    if cancellation.is_cancelled() {
+        return Err(FindBuildError::new(
+            "cancelled",
+            "find index construction was cancelled",
+        ));
+    }
+    if deadline.remaining().is_zero() {
+        return Err(FindBuildError::new(
+            "provider_deadline",
+            "find index construction deadline elapsed",
+        ));
+    }
+    Ok(())
 }
 
-fn validate_address(at: &str) -> Result<(), FindBuildError> {
-    QualifiedAddress::parse(at)
-        .map(|_| ())
-        .map_err(|error| FindBuildError::new("provider_unavailable", error.to_string()))
-}
-
-fn provider_error(subject: &str, error: io::Error) -> FindBuildError {
-    FindBuildError::new(
-        "provider_unavailable",
-        format!("cannot read {subject}: {error}"),
-    )
+fn view_error(error: crate::application::v13::view::ViewError) -> FindBuildError {
+    FindBuildError::new(error.code(), error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{ActorFindSource, WorkspaceFindIndexBuilder};
     use crate::application::v13::find::FindRequest;
+    use crate::application::v13::view::{
+        ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot,
+    };
+    use crate::domain::address::QualifiedAddress;
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::code_intelligence::ProviderDeadline;
+    use crate::domain::node_view::{NodeView, NodeViewData};
+    use crate::domain::platform_profile::PlatformProfile;
+    use crate::domain::project_sources::SourceSetKind;
+    use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+    use crate::infrastructure::source_revision::SourceRevisionService;
+    use crate::infrastructure::v13_read::LogicalViewReadAuthority;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn build_index(
+        builder: WorkspaceFindIndexBuilder,
+        source: &std::path::Path,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<crate::application::v13::find::FindIndex, super::FindBuildError> {
+        let workspace_root = source.parent().unwrap().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace_root.clone(),
+            workspace_root: workspace_root.clone(),
+            cache_root: workspace_root.join(".cache"),
+            workspace_epoch: 1,
+        };
+        let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
+        let revisions =
+            Arc::new(SourceRevisionService::new_reconciling_for_test(&context, source).unwrap());
+        let authority = LogicalViewReadAuthority::new(
+            cancellation,
+            "main",
+            "find-fixture-main",
+            SourceSetKind::Configuration,
+            revisions,
+            root,
+            PlatformProfile::v8_3_27(),
+        );
+        builder.build(
+            &[ActorFindSource::new("main", &authority)],
+            deadline,
+            cancellation,
+        )
+    }
+
+    fn deadline() -> ProviderDeadline {
+        ProviderDeadline::from_budget(Duration::from_secs(7))
+    }
+
+    struct MutatingRevisionReader {
+        snapshots: AtomicUsize,
+    }
+
+    impl ViewReadAuthority for MutatingRevisionReader {
+        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
+            let revision = if self.snapshots.fetch_add(1, Ordering::SeqCst) == 0 {
+                "rev-a"
+            } else {
+                "rev-b"
+            };
+            Ok(ViewSourceSnapshot {
+                source_set_identity: "source-a".to_string(),
+                revision: revision.to_string(),
+            })
+        }
+
+        fn read_exact(
+            &self,
+            at: &QualifiedAddress,
+            _filter: &ViewFilter,
+            _admitted: &ViewSourceSnapshot,
+        ) -> Result<NodeViewData, ViewError> {
+            Ok(NodeViewData::Node(NodeView::new(
+                at.to_string(),
+                "Configuration",
+                "Configuration",
+                serde_json::Map::new(),
+            )))
+        }
+    }
+
+    struct CancellingReader {
+        cancellation: CancellationToken,
+    }
+
+    impl ViewReadAuthority for CancellingReader {
+        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
+            Ok(ViewSourceSnapshot {
+                source_set_identity: "source-a".to_string(),
+                revision: "rev-a".to_string(),
+            })
+        }
+
+        fn read_exact(
+            &self,
+            at: &QualifiedAddress,
+            _filter: &ViewFilter,
+            _admitted: &ViewSourceSnapshot,
+        ) -> Result<NodeViewData, ViewError> {
+            self.cancellation.cancel();
+            Ok(NodeViewData::Node(NodeView::new(
+                at.to_string(),
+                "Configuration",
+                "Configuration",
+                serde_json::Map::new(),
+            )))
+        }
+    }
 
     fn identity_source(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         let fixture = tempfile::tempdir().unwrap();
@@ -361,7 +511,7 @@ mod tests {
         .unwrap();
         fs::write(
             source.join("Catalogs/Товары.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Catalog><Properties><Name>Товары</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item></Synonym></Properties></Catalog></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Товары</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item></Synonym></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(source.join("Catalogs/Товары/Ext/ObjectModule.bsl"), body).unwrap();
@@ -373,21 +523,29 @@ mod tests {
     fn actor_owned_platform_xml_registry_builds_identity_only_find_index() {
         let (_fixture, source) =
             identity_source("Procedure СовершенноСекретноеСлово()\nEndProcedure");
-        let root = RetainedDirectoryCapability::open(&source).unwrap();
-        let index = WorkspaceFindIndexBuilder::default()
-            .build(&[ActorFindSource::new("main", &root)])
-            .unwrap();
+        let cancellation = CancellationToken::new();
+        let index = build_index(
+            WorkspaceFindIndexBuilder::default(),
+            &source,
+            &cancellation,
+            deadline(),
+        )
+        .unwrap();
 
-        for (query, reason) in [
-            ("Товары", "name"),
-            ("Номенклатура", "synonym"),
-            ("Catalog", "kind"),
-            ("Catalogs/Товары.xml", "exportPath"),
+        for (query, reason, expected_at) in [
+            ("Товары", "name", "main:Catalog.Товары"),
+            ("Номенклатура", "synonym", "main:Catalog.Товары"),
+            ("Catalog", "name", "main:Catalog"),
+            ("Catalogs/Товары.xml", "exportPath", "main:Catalog.Товары"),
         ] {
             let found = index.find(FindRequest::new(query).unwrap());
-            assert_eq!(found.candidates()[0].at(), "main:Catalog.Товары");
+            assert_eq!(found.candidates()[0].at(), expected_at);
             assert_eq!(found.candidates()[0].reason(), reason);
         }
+        let english_kind = index.find(FindRequest::new("Catalog").unwrap());
+        assert!(english_kind.candidates().iter().any(|candidate| {
+            candidate.at() == "main:Catalog.Товары" && candidate.reason() == "kind"
+        }));
         let content = index.find(FindRequest::new("СовершенноСекретноеСлово").unwrap());
         assert!(content.is_nearest());
         assert!(content.candidates().iter().all(|candidate| {
@@ -403,15 +561,10 @@ mod tests {
         let (_right_fixture, right_source) = identity_source(
             "Procedure СовсемДругойМетод()\nСообщить(\"другой текст\");\nEndProcedure",
         );
-        let left_root = RetainedDirectoryCapability::open(&left_source).unwrap();
-        let right_root = RetainedDirectoryCapability::open(&right_source).unwrap();
         let builder = WorkspaceFindIndexBuilder::default();
-        let left = builder
-            .build(&[ActorFindSource::new("main", &left_root)])
-            .unwrap();
-        let right = builder
-            .build(&[ActorFindSource::new("main", &right_root)])
-            .unwrap();
+        let cancellation = CancellationToken::new();
+        let left = build_index(builder.clone(), &left_source, &cancellation, deadline()).unwrap();
+        let right = build_index(builder, &right_source, &cancellation, deadline()).unwrap();
 
         assert_eq!(left.fact_bytes(), right.fact_bytes());
         for query in ["Номенклатура", "Номенклатур"] {
@@ -430,6 +583,98 @@ mod tests {
     }
 
     #[test]
+    fn find_indexes_nested_addressable_metadata_identity() {
+        let (_fixture, source) = identity_source("Procedure Any()\nEndProcedure");
+        fs::write(
+            source.join("Catalogs/Товары.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Товары</Name></Properties><ChildObjects><Attribute uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>КодПоставщика</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Код поставщика</v8:content></v8:item></Synonym><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let index = build_index(
+            WorkspaceFindIndexBuilder::default(),
+            &source,
+            &cancellation,
+            deadline(),
+        )
+        .unwrap();
+
+        let result = index.find(FindRequest::new("Код поставщика").unwrap());
+        assert!(!result.is_nearest(), "{result:?}");
+        assert_eq!(
+            result.candidates()[0].at(),
+            "main:Catalog.Товары.Attribute.КодПоставщика"
+        );
+    }
+
+    #[test]
+    fn find_fails_closed_when_a_registered_descriptor_is_malformed() {
+        let (_fixture, source) = identity_source("Procedure Any()\nEndProcedure");
+        fs::write(source.join("Catalogs/Товары.xml"), "<broken>").unwrap();
+        let cancellation = CancellationToken::new();
+        let error = build_index(
+            WorkspaceFindIndexBuilder::default(),
+            &source,
+            &cancellation,
+            deadline(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), "provider_unavailable");
+    }
+
+    #[test]
+    fn find_fails_when_the_exact_source_revision_changes_during_the_walk() {
+        let reader = MutatingRevisionReader {
+            snapshots: AtomicUsize::new(0),
+        };
+        let cancellation = CancellationToken::new();
+        let error = WorkspaceFindIndexBuilder::default()
+            .build(
+                &[ActorFindSource::new("main", &reader)],
+                deadline(),
+                &cancellation,
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), "stale_revision");
+    }
+
+    #[test]
+    fn find_observes_cancellation_inside_the_logical_tree_walk() {
+        let cancellation = CancellationToken::new();
+        let reader = CancellingReader {
+            cancellation: cancellation.clone(),
+        };
+        let error = WorkspaceFindIndexBuilder::default()
+            .build(
+                &[ActorFindSource::new("main", &reader)],
+                deadline(),
+                &cancellation,
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), "cancelled");
+    }
+
+    #[test]
+    fn find_observes_one_aggregate_provider_deadline() {
+        let reader = MutatingRevisionReader {
+            snapshots: AtomicUsize::new(0),
+        };
+        let cancellation = CancellationToken::new();
+        let error = WorkspaceFindIndexBuilder::default()
+            .build(
+                &[ActorFindSource::new("main", &reader)],
+                ProviderDeadline::from_budget(Duration::ZERO),
+                &cancellation,
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), "provider_deadline");
+    }
+
+    #[test]
     fn workspace_find_builder_refuses_registry_materialization_above_bound() {
         let fixture = tempfile::tempdir().unwrap();
         let source = fixture.path().join("src");
@@ -440,11 +685,14 @@ mod tests {
         )
         .unwrap();
         let source = fs::canonicalize(source).unwrap();
-        let root = RetainedDirectoryCapability::open(&source).unwrap();
-
-        let error = WorkspaceFindIndexBuilder::with_document_limit(2)
-            .build(&[ActorFindSource::new("main", &root)])
-            .unwrap_err();
+        let cancellation = CancellationToken::new();
+        let error = build_index(
+            WorkspaceFindIndexBuilder::with_document_limit(2),
+            &source,
+            &cancellation,
+            deadline(),
+        )
+        .unwrap_err();
 
         assert_eq!(error.code(), "provider_limit_exceeded");
     }
@@ -452,12 +700,29 @@ mod tests {
     #[test]
     fn workspace_find_builder_refuses_identity_facts_above_byte_budget() {
         let (_fixture, source) = identity_source("Procedure Any()\nEndProcedure");
-        let root = RetainedDirectoryCapability::open(&source).unwrap();
-
-        let error = WorkspaceFindIndexBuilder::with_limits(10, 64)
-            .build(&[ActorFindSource::new("main", &root)])
-            .unwrap_err();
+        let cancellation = CancellationToken::new();
+        let error = build_index(
+            WorkspaceFindIndexBuilder::with_limits(10, 64),
+            &source,
+            &cancellation,
+            deadline(),
+        )
+        .unwrap_err();
 
         assert_eq!(error.code(), "provider_limit_exceeded");
+    }
+
+    #[test]
+    fn find_identity_only_contract_is_complete() {
+        actor_owned_platform_xml_registry_builds_identity_only_find_index();
+        find_identity_facts_and_results_are_independent_of_bsl_body_bytes();
+        find_indexes_nested_addressable_metadata_identity();
+        find_fails_closed_when_a_registered_descriptor_is_malformed();
+        find_fails_when_the_exact_source_revision_changes_during_the_walk();
+        find_observes_cancellation_inside_the_logical_tree_walk();
+        find_observes_one_aggregate_provider_deadline();
+        workspace_find_builder_refuses_registry_materialization_above_bound();
+        workspace_find_builder_refuses_identity_facts_above_byte_budget();
+        crate::infrastructure::v13_read::tests::find_uses_each_typed_readers_real_export_path_without_publishing_it_in_view_props();
     }
 }
