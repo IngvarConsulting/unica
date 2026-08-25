@@ -18,6 +18,7 @@ pub mod long_work;
 pub(crate) mod metadata;
 #[allow(dead_code)]
 pub(crate) mod module_projection;
+pub(crate) mod node_view;
 pub mod operational_config;
 #[allow(dead_code)]
 pub(crate) mod platform_profile;

@@ -2976,6 +2976,7 @@ enum PlatformXmlModuleLayoutFamily {
 
 const OWNER_MODULE_KINDS: &[&str] = &[
     "CommonModule",
+    "Bot",
     "HTTPService",
     "WebService",
     "IntegrationService",
@@ -3952,6 +3953,7 @@ mod tests {
             ("Constants", "Constant", "Mode"),
             ("CommonForms", "CommonForm", "Main"),
             ("CommonCommands", "CommonCommand", "Print"),
+            ("Bots", "Bot", "Assistant"),
         ] {
             write_metadata_descriptor(&root, directory, kind, name, name);
         }
@@ -4002,6 +4004,7 @@ mod tests {
                 "CommonCommand.Print.CommandModule",
                 "CommonCommands/Print/Ext/CommandModule.bsl",
             ),
+            ("Bot.Assistant.Module", "Bots/Assistant/Ext/Module.bsl"),
             (
                 "Catalog.Items.Form.List.FormModule",
                 "Catalogs/Items/Forms/List/Ext/Form/Module.bsl",

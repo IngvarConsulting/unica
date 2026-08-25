@@ -4,6 +4,7 @@ use crate::domain::source_target::MetadataAddress;
 use crate::infrastructure::native_operations::common::typed_role_reader_target;
 use crate::infrastructure::native_operations::dcs::typed_dcs_reader_target;
 use crate::infrastructure::native_operations::form::typed_form_reader_target;
+use crate::infrastructure::native_operations::logical_selector::typed_reader_metadata_target;
 use crate::infrastructure::native_operations::meta::{
     accepts_logical_metadata_address, logical_metadata_reader_target,
 };
@@ -19,8 +20,11 @@ pub(crate) enum LogicalReader {
     Metadata,
     Form,
     Role,
+    Subsystem,
+    Interface,
     Dcs,
     Mxl,
+    Xdto,
     Module,
 }
 
@@ -84,6 +88,22 @@ pub(crate) fn route_logical_address(
     }
     if segments
         .first()
+        .is_some_and(|segment| segment.kind() == NodeKind::Subsystem)
+    {
+        let target = typed_reader_metadata_target(address, &["Subsystem"])
+            .ok_or_else(|| not_found(address))?;
+        let reader = if segments
+            .iter()
+            .any(|segment| segment.kind() == NodeKind::Interface)
+        {
+            LogicalReader::Interface
+        } else {
+            LogicalReader::Subsystem
+        };
+        return Ok(route(address, reader, Some(target), None));
+    }
+    if segments
+        .first()
         .is_some_and(|segment| segment.kind() == NodeKind::CommonForm)
         || segments
             .iter()
@@ -111,6 +131,14 @@ pub(crate) fn route_logical_address(
     {
         let target = typed_mxl_reader_target(address).ok_or_else(|| not_found(address))?;
         return Ok(route(address, LogicalReader::Mxl, Some(target), None));
+    }
+    if segments
+        .first()
+        .is_some_and(|segment| segment.kind() == NodeKind::XdtoPackage)
+    {
+        let target = typed_reader_metadata_target(address, &["XDTOPackage"])
+            .ok_or_else(|| not_found(address))?;
+        return Ok(route(address, LogicalReader::Xdto, Some(target), None));
     }
     if accepts_logical_metadata_address(address) {
         return Ok(route(
@@ -299,9 +327,50 @@ mod tests {
     }
 
     #[test]
+    fn task14_profiles_route_to_their_real_typed_readers_without_skips() {
+        let profile = PlatformProfile::v8_3_27();
+        let cases = [
+            ("main:Configuration", LogicalReader::Configuration),
+            (
+                "main:Document.Заказ.Attribute.Контрагент",
+                LogicalReader::Metadata,
+            ),
+            (
+                "main:Document.Заказ.Form.ФормаДокумента.Item.Товары",
+                LogicalReader::Form,
+            ),
+            (
+                "main:Role.Кладовщик.RLS.Document_Заказ",
+                LogicalReader::Role,
+            ),
+            ("main:Subsystem.Продажи", LogicalReader::Subsystem),
+            ("main:Subsystem.Продажи.Interface", LogicalReader::Interface),
+            (
+                "main:Report.Продажи.Template.ОсновнаяСхема.DataSet.Продажи",
+                LogicalReader::Dcs,
+            ),
+            (
+                "main:Report.Продажи.Template.Печать.Area.Шапка",
+                LogicalReader::Mxl,
+            ),
+            ("main:XDTOPackage.Обмен.Type.Заказ", LogicalReader::Xdto),
+            ("main:Document.Заказ.Module.Object", LogicalReader::Module),
+        ];
+
+        for (raw, expected) in cases {
+            let address = QualifiedAddress::parse(raw).unwrap();
+            let route = route_logical_address(&address, profile)
+                .unwrap_or_else(|error| panic!("{raw}: {error}"));
+            assert_eq!(route.reader(), expected, "{raw}");
+            assert!(route.diagnostic_file().is_none(), "{raw}");
+        }
+    }
+
+    #[test]
     fn qualified_logical_tree_core_contract_is_complete() {
         logical_tree_routes_branches_to_existing_typed_readers();
         logical_tree_delegates_representative_addresses_to_current_typed_reader_adapters();
+        task14_profiles_route_to_their_real_typed_readers_without_skips();
         platform_capability_controls_logical_existence_without_filesystem_evidence();
         deep_invalid_module_suffix_cannot_hide_below_a_valid_module_prefix();
     }

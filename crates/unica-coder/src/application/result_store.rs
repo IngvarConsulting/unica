@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
+use uuid::Uuid;
 
 pub const DEFAULT_TTL: Duration = Duration::from_secs(15 * 60);
 pub const DEFAULT_MAX_ENTRIES: usize = 32;
@@ -69,6 +70,200 @@ pub struct ResultStore {
     max_total_bytes: usize,
     next_id: AtomicU64,
     entries: Mutex<HashMap<String, Entry>>,
+}
+
+/// Identity a v0.13 continuation is allowed to resume. The source revision is
+/// deliberately separate: replay against the same question after a change is
+/// `stale_cursor`, while replay against another question is `invalid_cursor`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ViewCursorBinding {
+    pub(crate) canonical_at: String,
+    pub(crate) projection: String,
+    pub(crate) normalized_filter: String,
+    pub(crate) source_set_identity: String,
+    pub(crate) source_revision: String,
+    pub(crate) page_limit: usize,
+}
+
+struct ViewCursorEntry {
+    binding: ViewCursorBinding,
+    node: Value,
+    items: Vec<Value>,
+    next_cursor: Option<String>,
+    bytes: usize,
+    stored_at: Instant,
+    last_read: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StoredViewCursor {
+    pub(crate) binding: ViewCursorBinding,
+    pub(crate) node: Value,
+    pub(crate) items: Vec<Value>,
+    pub(crate) next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ViewCursorError {
+    Invalid,
+    Stale,
+}
+
+impl ViewCursorError {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Invalid => "invalid_cursor",
+            Self::Stale => "stale_cursor",
+        }
+    }
+}
+
+/// Bounded process-local storage for opaque v0.13 page continuations. Tokens
+/// are random replayable capabilities; no numeric parser offset crosses the
+/// public boundary. Each stored entry owns one already-cut page and its stable
+/// successor, so a client retry after a transport timeout is byte-equivalent.
+pub(crate) struct ViewCursorStore {
+    ttl: Duration,
+    max_entries: usize,
+    max_total_bytes: usize,
+    entries: Mutex<HashMap<String, ViewCursorEntry>>,
+}
+
+impl Default for ViewCursorStore {
+    fn default() -> Self {
+        Self::new(DEFAULT_TTL, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_TOTAL_BYTES)
+    }
+}
+
+impl ViewCursorStore {
+    pub(crate) fn new(ttl: Duration, max_entries: usize, max_total_bytes: usize) -> Self {
+        Self {
+            ttl,
+            max_entries,
+            max_total_bytes,
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn insert_pages(
+        &self,
+        binding: ViewCursorBinding,
+        node: Value,
+        items: Vec<Value>,
+        offset: usize,
+        page_limit: usize,
+    ) -> Option<String> {
+        if offset >= items.len() || page_limit == 0 {
+            return None;
+        }
+        let page_count = items.len().saturating_sub(offset).div_ceil(page_limit);
+        if page_count > self.max_entries {
+            return None;
+        }
+        let now = Instant::now();
+        let pages = items[offset..]
+            .chunks(page_limit)
+            .map(<[Value]>::to_vec)
+            .collect::<Vec<_>>();
+        let tokens = (0..pages.len())
+            .map(|_| format!("vc1.{}", Uuid::new_v4().simple()))
+            .collect::<Vec<_>>();
+        let entries_to_add = pages
+            .into_iter()
+            .enumerate()
+            .map(|(index, page)| {
+                let next_cursor = tokens.get(index + 1).cloned();
+                let bytes = serde_json::to_vec(&(&node, &page, &next_cursor))
+                    .ok()?
+                    .len();
+                Some((
+                    tokens[index].clone(),
+                    ViewCursorEntry {
+                        binding: binding.clone(),
+                        node: node.clone(),
+                        items: page,
+                        next_cursor,
+                        bytes,
+                        stored_at: now,
+                        last_read: now,
+                    },
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let added_bytes = entries_to_add
+            .iter()
+            .map(|(_, entry)| entry.bytes)
+            .sum::<usize>();
+        if added_bytes > self.max_total_bytes {
+            return None;
+        }
+        let mut entries = self.entries.lock().expect("view cursor store poisoned");
+        entries.retain(|_, entry| now.duration_since(entry.stored_at) < self.ttl);
+        let mut total = entries.values().map(|entry| entry.bytes).sum::<usize>();
+        while entries.len().saturating_add(entries_to_add.len()) > self.max_entries
+            || (total.saturating_add(added_bytes) > self.max_total_bytes && !entries.is_empty())
+        {
+            let oldest = entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_read)
+                .map(|(token, _)| token.clone())?;
+            if let Some(removed) = entries.remove(&oldest) {
+                total = total.saturating_sub(removed.bytes);
+            }
+        }
+        let first = tokens.first()?.clone();
+        entries.extend(entries_to_add);
+        Some(first)
+    }
+
+    pub(crate) fn read(
+        &self,
+        token: &str,
+        expected: &ViewCursorBinding,
+        current_revision: &str,
+    ) -> Result<StoredViewCursor, ViewCursorError> {
+        if !valid_view_cursor_token(token) {
+            return Err(ViewCursorError::Invalid);
+        }
+        let mut entries = self.entries.lock().expect("view cursor store poisoned");
+        let now = Instant::now();
+        let Some(entry) = entries.get(token) else {
+            return Err(ViewCursorError::Invalid);
+        };
+        if now.duration_since(entry.stored_at) >= self.ttl {
+            entries.remove(token);
+            return Err(ViewCursorError::Invalid);
+        }
+        let entry = entries
+            .get_mut(token)
+            .expect("the checked view cursor remains present");
+        if entry.binding.canonical_at != expected.canonical_at
+            || entry.binding.projection != expected.projection
+            || entry.binding.normalized_filter != expected.normalized_filter
+            || entry.binding.source_set_identity != expected.source_set_identity
+            || entry.binding.page_limit != expected.page_limit
+        {
+            return Err(ViewCursorError::Invalid);
+        }
+        if entry.binding.source_revision != current_revision {
+            return Err(ViewCursorError::Stale);
+        }
+        entry.last_read = now;
+        Ok(StoredViewCursor {
+            binding: entry.binding.clone(),
+            node: entry.node.clone(),
+            items: entry.items.clone(),
+            next_cursor: entry.next_cursor.clone(),
+        })
+    }
+}
+
+fn valid_view_cursor_token(token: &str) -> bool {
+    token.len() == 36
+        && token.starts_with("vc1.")
+        && token[4..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 impl Default for ResultStore {
@@ -286,5 +481,141 @@ mod tests {
         assert!(store
             .insert("t", "big", snapshot(), json!(3), 200)
             .is_none());
+    }
+
+    fn view_binding(at: &str, revision: &str) -> ViewCursorBinding {
+        ViewCursorBinding {
+            canonical_at: at.to_string(),
+            projection: "Body".to_string(),
+            normalized_filter: "{}".to_string(),
+            source_set_identity: "main:sha256-source-id".to_string(),
+            source_revision: revision.to_string(),
+            page_limit: 1,
+        }
+    }
+
+    #[test]
+    fn opaque_view_cursor_retry_is_idempotent_and_bound_to_the_complete_question() {
+        let store = ViewCursorStore::default();
+        let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
+        let token = store
+            .insert_pages(
+                binding.clone(),
+                json!({"at": binding.canonical_at}),
+                vec![json!({"line": 2}), json!({"line": 3})],
+                0,
+                1,
+            )
+            .unwrap();
+        assert!(token.starts_with("vc1."));
+        assert!(token[4..].parse::<usize>().is_err());
+
+        let mut other = binding.clone();
+        other.canonical_at = "main:Document.Счет.Module.Object.Body".to_string();
+        assert_eq!(
+            store.read(&token, &other, "rev-1").unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        let mut other = binding.clone();
+        other.projection = "Method".to_string();
+        assert_eq!(
+            store.read(&token, &other, "rev-1").unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        let mut other = binding.clone();
+        other.normalized_filter = "{\"visibility\":\"public\"}".to_string();
+        assert_eq!(
+            store.read(&token, &other, "rev-1").unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        let mut other = binding.clone();
+        other.source_set_identity = "other:sha256-source-id".to_string();
+        assert_eq!(
+            store.read(&token, &other, "rev-1").unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        let mut other = binding.clone();
+        other.page_limit = 2;
+        assert_eq!(
+            store.read(&token, &other, "rev-1").unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        let page = store.read(&token, &binding, "rev-1").unwrap();
+        assert_eq!(page.items, vec![json!({"line": 2})]);
+        assert!(page.next_cursor.is_some());
+        let replay = store.read(&token, &binding, "rev-1").unwrap();
+        assert_eq!(replay, page);
+    }
+
+    #[test]
+    fn cursor_chain_is_refused_before_it_can_exceed_the_entry_bound() {
+        let store = ViewCursorStore::new(DEFAULT_TTL, 2, 1_024);
+        let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
+
+        assert!(store
+            .insert_pages(
+                binding.clone(),
+                json!({"at": binding.canonical_at}),
+                vec![json!(1), json!(2), json!(3)],
+                0,
+                1,
+            )
+            .is_none());
+        assert!(store
+            .insert_pages(
+                binding.clone(),
+                json!({"at": binding.canonical_at}),
+                vec![json!(1), json!(2)],
+                0,
+                1,
+            )
+            .is_some());
+    }
+
+    #[test]
+    fn exact_revision_change_is_stale_but_tampering_and_expiry_are_invalid() {
+        let store = ViewCursorStore::default();
+        let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
+        let token = store
+            .insert_pages(
+                binding.clone(),
+                json!({"at": binding.canonical_at}),
+                vec![json!({"line": 2})],
+                0,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            store.read(&token, &binding, "rev-2").unwrap_err(),
+            ViewCursorError::Stale
+        );
+        assert_eq!(
+            store
+                .read("vc1.00000000000000000000000000000000", &binding, "rev-1")
+                .unwrap_err(),
+            ViewCursorError::Invalid
+        );
+
+        let expiring = ViewCursorStore::new(Duration::ZERO, 4, 1024);
+        let token = expiring
+            .insert_pages(
+                binding.clone(),
+                json!({"at": binding.canonical_at}),
+                vec![json!({"line": 2})],
+                0,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            expiring.read(&token, &binding, "rev-1").unwrap_err(),
+            ViewCursorError::Invalid
+        );
+    }
+
+    #[test]
+    fn revision_bound_view_cursor_contract_is_complete() {
+        opaque_view_cursor_retry_is_idempotent_and_bound_to_the_complete_question();
+        exact_revision_change_is_stale_but_tampering_and_expiry_are_invalid();
+        cursor_chain_is_refused_before_it_can_exceed_the_entry_bound();
     }
 }
