@@ -898,6 +898,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     &method.signature,
                     method.compile.contexts.iter().map(String::as_str).collect(),
                 )
+                .with_directive(method.compile.directive.as_deref())
             })
             .collect::<Vec<_>>();
         let inputs = form_semantic_inputs(&form_at.to_string(), &data);

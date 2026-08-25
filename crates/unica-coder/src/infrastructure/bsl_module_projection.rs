@@ -120,6 +120,7 @@ pub(crate) struct FormMethodFact<'a> {
     pub(crate) name: &'a str,
     pub(crate) method_kind: MethodKind,
     pub(crate) signature: &'a str,
+    pub(crate) directive: Option<&'a str>,
     pub(crate) contexts: Vec<&'a str>,
 }
 
@@ -134,8 +135,15 @@ impl<'a> FormMethodFact<'a> {
             name,
             method_kind,
             signature,
+            directive: None,
             contexts,
         }
+    }
+
+    #[must_use]
+    pub(crate) const fn with_directive(mut self, directive: Option<&'a str>) -> Self {
+        self.directive = directive;
+        self
     }
 }
 
@@ -1127,7 +1135,11 @@ fn parameter_shape(signature: &str) -> String {
         .unwrap_or_default()
 }
 
-fn form_method_matches_event(method: &FormMethodFact<'_>, spec: &PlatformEventSpec) -> bool {
+fn form_method_matches_event(
+    method: &FormMethodFact<'_>,
+    spec: &PlatformEventSpec,
+    owner: FormBindingOwner,
+) -> bool {
     let kind = match method.method_kind {
         MethodKind::Procedure => "procedure",
         MethodKind::Function => "function",
@@ -1140,6 +1152,8 @@ fn form_method_matches_event(method: &FormMethodFact<'_>, spec: &PlatformEventSp
             .contexts
             .iter()
             .all(|expected| method.contexts.contains(&expected.as_str()))
+        && (owner != FormBindingOwner::Command
+            || matches!(method.directive, Some("&НаКлиенте" | "&AtClient")))
 }
 
 pub(crate) fn project_form_events(
@@ -1220,7 +1234,9 @@ pub(crate) fn project_form_owner_events(
                 (false, None, _, _) => EventState::Available,
                 (false, Some(_), _, false) => EventState::Invalid,
                 (false, Some(_), None, true) => EventState::Missing,
-                (false, Some(_), Some(method), true) if form_method_matches_event(method, spec) => {
+                (false, Some(_), Some(method), true)
+                    if form_method_matches_event(method, spec, owner.owner) =>
+                {
                     EventState::Implemented
                 }
                 (false, Some(_), Some(_), true) => EventState::Invalid,
@@ -2116,7 +2132,8 @@ mod tests {
                 "mobileClient",
                 "mobileAppClient",
             ],
-        )];
+        )
+        .with_directive(Some("&НаКлиенте"))];
         let implemented = project_form_owner_events(
             std::slice::from_ref(&owner),
             std::slice::from_ref(&action),

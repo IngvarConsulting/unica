@@ -942,6 +942,117 @@ fn production_form_command_execute_has_one_semantic_identity_across_view_and_fin
 }
 
 #[test]
+fn production_form_command_execute_requires_an_exact_client_directive() {
+    let fixture = RealReaderFixture::new();
+    fixture.install_main_form_sources(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+  <Commands>
+    <Command name="RussianClient" id="1"><Action>RussianClientAction</Action></Command>
+    <Command name="EnglishClient" id="2"><Action>EnglishClientAction</Action></Command>
+    <Command name="MissingDirective" id="3"><Action>MissingDirectiveAction</Action></Command>
+    <Command name="ClientServer" id="4"><Action>ClientServerAction</Action></Command>
+    <Command name="GuardOnly" id="5"><Action>GuardOnlyAction</Action></Command>
+  </Commands>
+</Form>"#,
+        r#"&НаКлиенте
+Процедура RussianClientAction(Команда)
+КонецПроцедуры
+
+&AtClient
+Процедура EnglishClientAction(Команда)
+КонецПроцедуры
+
+Процедура MissingDirectiveAction(Команда)
+КонецПроцедуры
+
+&НаКлиентеНаСервере
+Процедура ClientServerAction(Команда)
+КонецПроцедуры
+
+#Если Клиент Тогда
+Процедура GuardOnlyAction(Команда)
+КонецПроцедуры
+#КонецЕсли
+"#,
+    );
+    let service = fixture.view_service();
+    let form_at = "main:Report.ParityReport.Form.MainForm";
+    for (command, handler, state) in [
+        ("RussianClient", "RussianClientAction", "implemented"),
+        ("EnglishClient", "EnglishClientAction", "implemented"),
+        ("MissingDirective", "MissingDirectiveAction", "invalid"),
+        ("ClientServer", "ClientServerAction", "invalid"),
+        ("GuardOnly", "GuardOnlyAction", "invalid"),
+    ] {
+        let command_at = format!("{form_at}.Command.{command}");
+        let event_at = format!("{command_at}.Event.Execute");
+        let collection = service.view(ViewRequest::new(&format!("{command_at}.Event")).unwrap());
+        assert!(
+            collection.ok,
+            "{command}: {} {:?}",
+            collection.summary, collection.diagnostics
+        );
+        let items = collection.data.as_ref().unwrap()["items"]
+            .as_array()
+            .unwrap();
+        assert_eq!(items.len(), 1, "{command}: {items:?}");
+        assert_eq!(items[0]["at"], event_at);
+        assert_eq!(items[0]["props"]["eventId"], "Execute");
+        assert_eq!(items[0]["props"]["state"], state, "{command}: {}", items[0]);
+        assert_eq!(
+            items[0]["props"]["implementationAt"],
+            format!("{form_at}.Module.Form.Method.{handler}")
+        );
+        assert!(items[0].get("can").is_none(), "{command}: {}", items[0]);
+
+        let direct = service.view(ViewRequest::new(&event_at).unwrap());
+        assert!(
+            direct.ok,
+            "{command}: {} {:?}",
+            direct.summary, direct.diagnostics
+        );
+        assert_eq!(direct.data.as_ref().unwrap(), &items[0]);
+    }
+
+    let authority = fixture.operation_read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    for command in [
+        "RussianClient",
+        "EnglishClient",
+        "MissingDirective",
+        "ClientServer",
+        "GuardOnly",
+    ] {
+        let event_at = format!("{form_at}.Command.{command}.Event.Execute");
+        let found = index.find(
+            FindRequest::new(&event_at)
+                .unwrap()
+                .with_limit(100)
+                .unwrap(),
+        );
+        assert!(!found.is_nearest(), "{event_at}: {found:?}");
+        assert_eq!(
+            found
+                .candidates()
+                .iter()
+                .filter(|candidate| candidate.at() == event_at)
+                .count(),
+            1,
+            "{event_at}: {found:?}"
+        );
+    }
+}
+
+#[test]
 fn production_borrowed_command_defaults_after_and_base_form_only_has_no_can() {
     let borrowed = RealReaderFixture::new();
     borrowed.install_main_form_sources(
