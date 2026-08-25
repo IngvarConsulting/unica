@@ -16,7 +16,7 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::platform_xml_source_targets::{
-    platform_xml_resource_evidence, resolve_platform_xml_target, TargetKindPolicy,
+    platform_xml_resource_evidence, resolve_platform_xml_read_target, TargetKindPolicy,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -284,7 +284,7 @@ impl PlatformXmlResourceProvider {
             ));
         }
         let resolution =
-            resolve_platform_xml_target(context, &request.target, TargetKindPolicy::Any)
+            resolve_platform_xml_read_target(context, &request.target, TargetKindPolicy::Any)
                 .map_err(public_target_error)?;
         self.run_phase_hook();
         self.check_cancelled(cancellation)?;
@@ -1188,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn source_resources_keep_unsupported_source_format_as_a_missing_target() {
+    fn source_resources_report_an_empty_external_source_set_as_a_missing_target() {
         let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
         fs::create_dir_all(fixture.root.join("external")).unwrap();
         fs::write(

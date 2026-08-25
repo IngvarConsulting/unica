@@ -285,7 +285,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         source_set: source_set.to_string(),
                         metadata_path: Some(address),
                     };
-                    crate::infrastructure::platform_xml_source_targets::resolve_platform_xml_target(
+                    crate::infrastructure::platform_xml_source_targets::resolve_platform_xml_read_target(
                         context,
                         &target,
                         crate::infrastructure::platform_xml_source_targets::TargetKindPolicy::Any,

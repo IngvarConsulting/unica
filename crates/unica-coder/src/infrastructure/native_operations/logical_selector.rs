@@ -26,8 +26,8 @@ use crate::infrastructure::platform::filesystem::{
     strip_windows_extended_length_prefix,
 };
 use crate::infrastructure::platform_xml_source_targets::{
-    locate_platform_xml_reader_path, platform_xml_resource_evidence, resolve_platform_xml_target,
-    PlatformXmlResourceEvidence, TargetKindPolicy,
+    locate_platform_xml_reader_path, platform_xml_resource_evidence,
+    resolve_platform_xml_read_target, PlatformXmlResourceEvidence, TargetKindPolicy,
 };
 use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::source_roots::{
@@ -149,7 +149,7 @@ fn resolve(
         source_set,
         metadata_path,
     };
-    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
+    let resolution = resolve_platform_xml_read_target(context, &target, TargetKindPolicy::Any)
         .map_err(|error| selector_failure(error.code))?;
     let evidence = platform_xml_resource_evidence(context, &resolution.handle).map_err(|_| {
         LogicalSelectorFailure::new("provider_unavailable", "the target evidence is unavailable")
@@ -292,8 +292,9 @@ pub(crate) fn physical_selection(
         source_set: source_set.name.clone(),
         metadata_path,
     };
-    let resolution = resolve_platform_xml_target(context, &source_target, TargetKindPolicy::Any)
-        .map_err(|error| selector_failure(error.code))?;
+    let resolution =
+        resolve_platform_xml_read_target(context, &source_target, TargetKindPolicy::Any)
+            .map_err(|error| selector_failure(error.code))?;
     let evidence = platform_xml_resource_evidence(context, &resolution.handle).map_err(|_| {
         LogicalSelectorFailure::new("provider_unavailable", "the target evidence is unavailable")
     })?;

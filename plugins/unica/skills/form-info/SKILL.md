@@ -59,6 +59,10 @@ allowed-tools:
 `unica.form.info` принимает либо логический селектор, либо файловый путь —
 ровно один из двух. Оба сразу отклоняются кодом `selector_conflict`.
 
+Для Designer EPF/ERF оба селектора поддерживаются тем же read-only профилем:
+`ExternalDataProcessor.<Имя>.Form.<Форма>` / `ExternalReport.<Имя>.Form.<Форма>`
+и соответствующий `FormPath` сходятся к одному ресурсу.
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -68,7 +72,7 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "<имя набора>",
-      "metadataPath": "Catalog.<Объект>.Form.<Форма>"
+      "metadataPath": "ExternalDataProcessor.<Имя>.Form.<Форма>"
     }
   }
 }

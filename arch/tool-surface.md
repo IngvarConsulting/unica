@@ -399,6 +399,7 @@
 
 - Прогнать диагностики по изменённому модулю перед коммитом
 - Объяснить, почему BSL LS ругается на конструкцию
+- Проверить ObjectModule или FormModule выгруженной внешней обработки
 
 ### `unica.code.graph`
 
@@ -763,6 +764,7 @@
 
 - Изучить форму перед написанием её модуля
 - Найти имя элемента для программного обращения
+- Прочитать форму Designer EPF/ERF по логическому адресу или FormPath
 
 ### `unica.form.remove`
 
@@ -900,7 +902,7 @@
 | `sections` | array | нет | — |
 | `sourceSet` | string | да | — |
 
-**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта с обязательной связанной парой `kind + details` для 23 видов; `details` возвращает наблюдаемые типы Constant/DefinedType, метод ScheduledJob, schedule CalculationRegister, HTTP templates/methods и WebService packages/operations/parameters с expanded XDTO QName. Формы и макеты наблюдаются по ссылке владельца и отдельному XML-дескриптору, встроенные команды — по дескриптору; HTML-страницы зарегистрированных макетов удерживаются как UTF-8 без XML-разбора. Тип содержит `mutationCapability: editable | readOnly`; UUID представлен вариантом `uuid` и доказанно редактируем, а неизвестный корректный платформенный QName оставляет только свой элемент `incomplete` с warning. `ChartOfCharacteristicTypes.details.type`, `ChartOfCalculationTypes.details.baseCalculationTypes` и `DocumentJournal.details.registeredDocuments` сохраняют kind-specific факты; `standardAttributes`, `characteristics`, `standardTabularSections`, `relations.dataLockFields` и коллекции `recalculations`/`accountingFlags`/`extDimensionAccountingFlags`/`addressingAttributes` имеют typed-владельцев и all-or-none tri-state. Общие read-properties не зависят от writer allowlist; неизвестный составной узел даёт `provider_unavailable`, а не пропускается. `relations.source`, `Event`, `Handler` сохраняют контракт подписки; `functionalSubsystems` и `interfaceSubsystems` содержат только членства текущего объекта в зарегистрированной топологии как плоские `SubsystemAddress`, сопоставляя `Content` по адресу метаданных или UUID корневого дескриптора; доказанное отсутствие членств сериализуется как `[]`, а при недоступном или повреждённом доказательстве поля отсутствуют и диагностика содержит `provider_unavailable`. Явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, а `predefinedItems.items` возвращает плоский документный порядок, UUID, `parentId` и typed-поля владельца; обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта с обязательной связанной парой `kind + details` для 23 конфигурационных видов и read-only discriminators `ExternalDataProcessor`/`ExternalReport`; `details` возвращает наблюдаемые типы Constant/DefinedType, метод ScheduledJob, schedule CalculationRegister, HTTP templates/methods и WebService packages/operations/parameters с expanded XDTO QName. Формы и макеты наблюдаются по ссылке владельца и отдельному XML-дескриптору, встроенные команды — по дескриптору; HTML-страницы зарегистрированных макетов удерживаются как UTF-8 без XML-разбора. Тип содержит `mutationCapability: editable | readOnly`; UUID представлен вариантом `uuid` и доказанно редактируем, а неизвестный корректный платформенный QName оставляет только свой элемент `incomplete` с warning. `ChartOfCharacteristicTypes.details.type`, `ChartOfCalculationTypes.details.baseCalculationTypes` и `DocumentJournal.details.registeredDocuments` сохраняют kind-specific факты; `standardAttributes`, `characteristics`, `standardTabularSections`, `relations.dataLockFields` и коллекции `recalculations`/`accountingFlags`/`extDimensionAccountingFlags`/`addressingAttributes` имеют typed-владельцев и all-or-none tri-state. Общие read-properties не зависят от writer allowlist; неизвестный составной узел даёт `provider_unavailable`, а не пропускается. `relations.source`, `Event`, `Handler` сохраняют контракт подписки; `functionalSubsystems` и `interfaceSubsystems` содержат только членства текущего объекта в зарегистрированной топологии как плоские `SubsystemAddress`, сопоставляя `Content` по адресу метаданных или UUID корневого дескриптора; доказанное отсутствие членств сериализуется как `[]`, а при недоступном или повреждённом доказательстве поля отсутствуют и диагностика содержит `provider_unavailable`. Явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, а `predefinedItems.items` возвращает плоский документный порядок, UUID, `parentId` и typed-поля владельца; обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -913,6 +915,7 @@
 - Увидеть функциональные и интерфейсные подсистемы, в которые входит объект
 - Прочитать вложенные маршруты HTTP-сервиса и типизированный контракт WebService
 - Прочитать предопределённые элементы в документном порядке вместе с их parentId
+- Прочитать структуру и validation Designer EPF/ERF без требования edit capability
 
 ### `unica.meta.remove`
 
@@ -1009,6 +1012,7 @@
 - Узнать заполняемые параметры печатной формы перед написанием печати
 - Построить пересечения строчных и колоночных областей для `ПолучитьОбласть`
 - Достать текст ячеек макета вместе с параметрами через `WithText`
+- Прочитать MXL-макет Designer EPF/ERF по логическому адресу или TemplatePath
 
 ### `unica.mxl.validate`
 
@@ -1317,6 +1321,7 @@
 
 - Обойти дерево метаданных на один уровень вниз от корня набора
 - Перечислить формы объекта, не читая каталог `Forms/`
+- Увидеть формы, макеты и модули Designer EPF/ERF как детей внешнего артефакта
 
 ### `unica.source.locate`
 

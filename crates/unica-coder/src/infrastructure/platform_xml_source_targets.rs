@@ -37,6 +37,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+const PLATFORM_XML_EXPORT_FORMAT: &str = "2.20";
 const MAX_NAVIGATION_INVENTORY_ENTRIES: usize = 4_096;
 const MAX_NAVIGATION_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -413,6 +414,19 @@ fn locate_platform_xml_source_path_in_with_policy(
     check_navigation_cancellation(cancellation)?;
     let relative_text = portable_relative(&relative);
 
+    if matches!(
+        source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return locate_external_source_path(
+            source_set,
+            source_root,
+            &relative,
+            relative_text,
+            version_policy,
+        );
+    }
+
     // A module is addressable in its own right; everything else can at best
     // name the metadata object that owns it.
     if relative.extension().and_then(|value| value.to_str()) == Some("bsl") {
@@ -525,6 +539,168 @@ fn locate_platform_xml_source_path_in_with_policy(
         target_kind: is_object_descriptor.then_some(TargetKind::MetadataObject),
         owner_metadata_path: Some(object_address),
         rejection: (!is_object_descriptor).then_some(LocateRejection::NotAddressable),
+    })
+}
+
+fn locate_external_source_path(
+    source_set: &ProjectSourceSet,
+    source_root: &Path,
+    relative: &Path,
+    relative_text: String,
+    version_policy: DescriptorVersionPolicy,
+) -> Result<SourceLocateResult, String> {
+    let reject = |rejection: LocateRejection| SourceLocateResult {
+        source_set: source_set.name.clone(),
+        relative_path: relative_text.clone(),
+        metadata_path: None,
+        target_kind: None,
+        owner_metadata_path: None,
+        rejection: Some(rejection),
+    };
+    let parts = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(parts) = parts else {
+        return Ok(reject(LocateRejection::NotAddressable));
+    };
+    let Some(first) = parts.first().copied() else {
+        return Ok(reject(LocateRejection::NotAddressable));
+    };
+    let stem = first.trim_end_matches(".xml");
+    let expected_kind = match source_set.kind {
+        SourceSetKind::ExternalProcessor => "ExternalDataProcessor",
+        SourceSetKind::ExternalReport => "ExternalReport",
+        _ => unreachable!("external locator has an external source-set kind"),
+    };
+    let owner_relative = PathBuf::from(format!("{stem}.xml"));
+    let owner_outcome = descriptor_outcome_with_policy(
+        source_root,
+        &owner_relative,
+        expected_kind,
+        stem,
+        version_policy,
+    );
+    let Ok(owner_bytes) = read_navigation_descriptor(&source_root.join(&owner_relative)) else {
+        return Ok(reject(LocateRejection::OwnerUnproven));
+    };
+    let owner_name = if owner_outcome == ExactCandidate::Proven {
+        stem.to_string()
+    } else {
+        let Ok((version, name)) =
+            descriptor_version_and_name_from_bytes(&owner_bytes, expected_kind)
+        else {
+            return Ok(reject(LocateRejection::OwnerUnproven));
+        };
+        if version_policy == DescriptorVersionPolicy::ActiveProfile
+            && version.as_deref() != Some(PLATFORM_XML_EXPORT_FORMAT)
+        {
+            return Ok(reject(LocateRejection::OwnerUnproven));
+        }
+        name
+    };
+    let owner_raw = format!("{expected_kind}.{owner_name}");
+    let owner = MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &owner_raw,
+    )
+    .map_err(|error| error.to_string())?;
+
+    let addressed = |metadata_path: MetadataAddress, target_kind: TargetKind| SourceLocateResult {
+        source_set: source_set.name.clone(),
+        relative_path: relative_text.clone(),
+        metadata_path: Some(metadata_path.clone()),
+        target_kind: Some(target_kind),
+        owner_metadata_path: Some(if target_kind == TargetKind::Module {
+            owner.clone()
+        } else {
+            metadata_path
+        }),
+        rejection: None,
+    };
+    match parts.as_slice() {
+        [file] if file.ends_with(".xml") => {
+            return Ok(addressed(owner.clone(), TargetKind::MetadataObject));
+        }
+        [artifact, "Ext", "ObjectModule.bsl"] if *artifact == stem => {
+            let address = MetadataAddress::parse(
+                crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("{owner_raw}.ObjectModule"),
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok(addressed(address, TargetKind::Module));
+        }
+        _ => {}
+    }
+    let (child_kind, child_directory, child_name) = match parts.as_slice() {
+        [artifact, directory @ ("Forms" | "Templates"), child, ..] if *artifact == stem => {
+            let child_kind = if *directory == "Forms" {
+                "Form"
+            } else {
+                "Template"
+            };
+            (child_kind, *directory, child.trim_end_matches(".xml"))
+        }
+        _ => return Ok(reject(LocateRejection::NotAddressable)),
+    };
+    let child_raw = format!("{owner_raw}.{child_kind}.{child_name}");
+    let registered = external_registered_children(&owner_bytes, expected_kind)
+        .ok()
+        .is_some_and(|children| {
+            children
+                .iter()
+                .filter(|(kind, name)| kind == child_kind && name == child_name)
+                .count()
+                == 1
+        });
+    if !registered {
+        return Ok(reject(LocateRejection::OwnerUnproven));
+    }
+    let child = MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &child_raw,
+    )
+    .map_err(|error| error.to_string())?;
+    let child_descriptor = PathBuf::from(stem)
+        .join(child_directory)
+        .join(format!("{child_name}.xml"));
+    if descriptor_outcome_with_policy(
+        source_root,
+        &child_descriptor,
+        child_kind,
+        child_name,
+        version_policy,
+    ) != ExactCandidate::Proven
+    {
+        return Ok(reject(LocateRejection::OwnerUnproven));
+    }
+    let is_descriptor = parts.len() == 3 && parts[2].ends_with(".xml");
+    if is_descriptor {
+        return Ok(addressed(child, TargetKind::MetadataObject));
+    }
+    if child_kind == "Form"
+        && matches!(
+            parts.as_slice(),
+            [_, "Forms", _, "Ext", "Form", "Module.bsl"]
+        )
+    {
+        let module = MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{child_raw}.FormModule"),
+        )
+        .map_err(|error| error.to_string())?;
+        return Ok(addressed(module, TargetKind::Module));
+    }
+    Ok(SourceLocateResult {
+        source_set: source_set.name.clone(),
+        relative_path: relative_text,
+        metadata_path: None,
+        target_kind: None,
+        owner_metadata_path: Some(child),
+        rejection: Some(LocateRejection::NotAddressable),
     })
 }
 
@@ -1153,7 +1329,7 @@ fn exact_module_outcome(
         source_set: source_set.to_string(),
         metadata_path: Some(address.clone()),
     };
-    match resolve_platform_xml_target_in(
+    match resolve_platform_xml_read_target_in(
         context,
         &target,
         TargetKindPolicy::ModuleOnly,
@@ -1296,6 +1472,123 @@ fn object_descriptor_evidence(parts: &[&str]) -> Option<ObjectDescriptorEvidence
     }
 }
 
+fn object_descriptor_evidence_for_source_set(
+    source_root: &Path,
+    source_set_kind: SourceSetKind,
+    parts: &[&str],
+) -> Result<Option<ObjectDescriptorEvidence>, SourceTargetError> {
+    let expected_owner_kind = match source_set_kind {
+        SourceSetKind::ExternalProcessor => "ExternalDataProcessor",
+        SourceSetKind::ExternalReport => "ExternalReport",
+        SourceSetKind::Configuration | SourceSetKind::Extension => {
+            return Ok(object_descriptor_evidence(parts));
+        }
+    };
+    let [owner_kind, owner_name, rest @ ..] = parts else {
+        return Ok(None);
+    };
+    if *owner_kind != expected_owner_kind {
+        return Ok(None);
+    }
+    let owner = find_external_owner_descriptor(source_root, expected_owner_kind, owner_name)?;
+    let Some(owner) = owner else {
+        return Ok(None);
+    };
+    if rest.is_empty() {
+        return Ok(Some(owner));
+    }
+    let [child_kind, child_name] = rest else {
+        return Ok(None);
+    };
+    let child_directory = match *child_kind {
+        "Form" => "Forms",
+        "Template" => "Templates",
+        _ => return Ok(None),
+    };
+    let artifact_directory = owner.path.with_extension("");
+    Ok(Some(ObjectDescriptorEvidence {
+        path: artifact_directory
+            .join(child_directory)
+            .join(format!("{child_name}.xml")),
+        kind: (*child_kind).to_string(),
+        name: (*child_name).to_string(),
+    }))
+}
+
+fn find_external_owner_descriptor(
+    source_root: &Path,
+    expected_kind: &str,
+    expected_name: &str,
+) -> Result<Option<ObjectDescriptorEvidence>, SourceTargetError> {
+    let entries = fs::read_dir(source_root).map_err(|_| {
+        SourceTargetError::new(
+            SourceTargetErrorCode::SourceRootNotAddressable,
+            "external source root is unavailable",
+        )
+    })?;
+    let mut matches = Vec::new();
+    for (inspected, entry) in entries.enumerate() {
+        if inspected >= MAX_NAVIGATION_INVENTORY_ENTRIES {
+            return Err(SourceTargetError::new(
+                SourceTargetErrorCode::SourceRootNotAddressable,
+                "external descriptor identity scan exceeded its proof bound",
+            ));
+        }
+        let entry = entry.map_err(|_| {
+            SourceTargetError::new(
+                SourceTargetErrorCode::SourceRootNotAddressable,
+                "external descriptor identity scan is incomplete",
+            )
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("xml") {
+            continue;
+        }
+        let raw = read_navigation_descriptor(&path).map_err(|_| {
+            SourceTargetError::new(
+                SourceTargetErrorCode::SourceRootNotAddressable,
+                "external descriptor identity evidence is unavailable",
+            )
+        })?;
+        let reserved_kind = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("ConfigDumpInfo.xml"))
+            .then(|| classify_already_read_config_dump_info_xml(&raw));
+        if reserved_kind == Some(ConfigDumpInfoXmlKind::RuntimeSidecar) {
+            continue;
+        }
+        let (version, name) =
+            descriptor_version_and_name_from_bytes(&raw, expected_kind).map_err(|_| {
+                SourceTargetError::new(
+                    SourceTargetErrorCode::SourceRootNotAddressable,
+                    "external descriptor identity evidence is malformed",
+                )
+            })?;
+        if version.as_deref() == Some(PLATFORM_XML_EXPORT_FORMAT) && name == expected_name {
+            let relative = path.strip_prefix(source_root).map_err(|_| {
+                SourceTargetError::new(
+                    SourceTargetErrorCode::ContainmentDenied,
+                    "external descriptor escaped its source root",
+                )
+            })?;
+            matches.push(ObjectDescriptorEvidence {
+                path: relative.to_path_buf(),
+                kind: expected_kind.to_string(),
+                name,
+            });
+        }
+    }
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.pop()),
+        _ => Err(SourceTargetError::new(
+            SourceTargetErrorCode::SourceRootNotAddressable,
+            "external descriptor identity is ambiguous",
+        )),
+    }
+}
+
 fn descriptor_outcome(
     source_root: &Path,
     descriptor: &Path,
@@ -1326,11 +1619,6 @@ pub(crate) fn children_platform_xml_source_navigation(
         return Ok(result);
     }
     let inventory = navigation_inventory(context, &request.source_set, cancellation)?;
-    let external_artifact_children_unscanned = request.metadata_path.is_some()
-        && matches!(
-            inventory.source_set_kind,
-            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-        );
     let mut children = if let Some(parent) = request.metadata_path.as_ref() {
         children_of_address(&inventory, parent, cancellation)?
     } else {
@@ -1359,14 +1647,12 @@ pub(crate) fn children_platform_xml_source_navigation(
         children.len(),
     )?;
     let children = children[start..end].to_vec();
-    let completeness = if !external_artifact_children_unscanned
-        && inventory.completeness == NavigationCompleteness::Complete
-        && next_cursor.is_none()
-    {
-        NavigationCompleteness::Complete
-    } else {
-        NavigationCompleteness::Partial
-    };
+    let completeness =
+        if inventory.completeness == NavigationCompleteness::Complete && next_cursor.is_none() {
+            NavigationCompleteness::Complete
+        } else {
+            NavigationCompleteness::Partial
+        };
     Ok(SourceChildrenResult {
         children,
         completeness,
@@ -1409,7 +1695,7 @@ fn navigation_inventory(
             )?;
         }
         SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
-            collect_external_navigation(&selected.path, &mut inventory, cancellation)?;
+            collect_external_navigation(context, &selected.path, &mut inventory, cancellation)?;
         }
     }
     check_navigation_cancellation(cancellation)?;
@@ -1660,6 +1946,7 @@ fn descriptor_identity_matches(
 }
 
 fn collect_external_navigation(
+    context: &WorkspaceContext,
     source_root: &Path,
     inventory: &mut NavigationInventory,
     cancellation: &CancellationToken,
@@ -1716,15 +2003,146 @@ fn collect_external_navigation(
             continue;
         }
         match descriptor_name_from_bytes(&raw, expected_kind) {
-            Ok(name) => add_address(
-                inventory,
-                format!("{expected_kind}.{name}"),
-                name,
-                TargetKind::MetadataObject,
-            ),
+            Ok(name) => {
+                add_address(
+                    inventory,
+                    format!("{expected_kind}.{name}"),
+                    name.clone(),
+                    TargetKind::MetadataObject,
+                );
+                collect_external_artifact_navigation(
+                    context,
+                    source_root,
+                    &path,
+                    expected_kind,
+                    &name,
+                    &raw,
+                    inventory,
+                    cancellation,
+                )?;
+            }
             Err(()) => observe_external_path(inventory, &path),
         }
         check_navigation_cancellation(cancellation)?;
+    }
+    Ok(())
+}
+
+fn external_module_outcome(
+    context: &WorkspaceContext,
+    source_set: &str,
+    address: &str,
+    physical_path: &Path,
+) -> Result<ExactCandidate, String> {
+    if fs::symlink_metadata(physical_path).is_err() {
+        return Ok(ExactCandidate::Absent);
+    }
+    let address = MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        address,
+    )
+    .map_err(|error| error.to_string())?;
+    let target = SourceTarget {
+        source_set: source_set.to_string(),
+        metadata_path: Some(address),
+    };
+    match resolve_platform_xml_read_target(context, &target, TargetKindPolicy::ModuleOnly) {
+        Ok(_) => Ok(ExactCandidate::Proven),
+        Err(error) if error.code == SourceTargetErrorCode::ContainmentDenied => {
+            Err(error.to_string())
+        }
+        Err(_) => Ok(ExactCandidate::Unproven),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_external_artifact_navigation(
+    context: &WorkspaceContext,
+    source_root: &Path,
+    owner_descriptor: &Path,
+    owner_kind: &str,
+    owner_name: &str,
+    owner_raw: &[u8],
+    inventory: &mut NavigationInventory,
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
+    let owner_relative = owner_descriptor
+        .strip_prefix(source_root)
+        .map_err(|_| "external descriptor escaped its source root".to_string())?;
+    let artifact = owner_relative.with_extension("");
+    let owner_address = format!("{owner_kind}.{owner_name}");
+    let object_module = artifact.join("Ext/ObjectModule.bsl");
+    let object_module_address = format!("{owner_address}.ObjectModule");
+    match external_module_outcome(
+        context,
+        &inventory.source_set,
+        &object_module_address,
+        &source_root.join(&object_module),
+    )? {
+        ExactCandidate::Proven => add_address(
+            inventory,
+            object_module_address,
+            "ObjectModule".to_string(),
+            TargetKind::Module,
+        ),
+        ExactCandidate::Unproven => {
+            inventory.completeness = NavigationCompleteness::Partial;
+        }
+        ExactCandidate::Absent => {}
+    }
+
+    let registered = match external_registered_children(owner_raw, owner_kind) {
+        Ok(registered) => registered,
+        Err(()) => {
+            inventory.completeness = NavigationCompleteness::Partial;
+            return Ok(());
+        }
+    };
+    for (child_kind, child_name) in registered {
+        check_navigation_cancellation(cancellation)?;
+        let directory = if child_kind == "Form" {
+            "Forms"
+        } else {
+            "Templates"
+        };
+        let descriptor = artifact.join(directory).join(format!("{child_name}.xml"));
+        if descriptor_outcome(source_root, &descriptor, &child_kind, &child_name)
+            != ExactCandidate::Proven
+        {
+            inventory.completeness = NavigationCompleteness::Partial;
+            continue;
+        }
+        let child_address = format!("{owner_address}.{child_kind}.{child_name}");
+        add_address(
+            inventory,
+            child_address.clone(),
+            child_name.clone(),
+            TargetKind::MetadataObject,
+        );
+        if child_kind == "Form" {
+            let module = artifact
+                .join("Forms")
+                .join(&child_name)
+                .join("Ext/Form/Module.bsl");
+            let module_address = format!("{child_address}.FormModule");
+            match external_module_outcome(
+                context,
+                &inventory.source_set,
+                &module_address,
+                &source_root.join(&module),
+            )? {
+                ExactCandidate::Proven => add_address(
+                    inventory,
+                    module_address,
+                    "FormModule".to_string(),
+                    TargetKind::Module,
+                ),
+                ExactCandidate::Unproven => {
+                    inventory.completeness = NavigationCompleteness::Partial;
+                }
+                ExactCandidate::Absent => {}
+            }
+        }
     }
     Ok(())
 }
@@ -1864,6 +2282,67 @@ fn descriptor_version_and_name_from_bytes(
     ))
 }
 
+fn external_registered_children(
+    raw: &[u8],
+    expected_kind: &str,
+) -> Result<Vec<(String, String)>, ()> {
+    let text = std::str::from_utf8(raw).map_err(|_| ())?;
+    let document =
+        roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(|_| ())?;
+    let root = document.root_element();
+    if root.tag_name().namespace() != Some(MD_CLASSES_NS)
+        || root.tag_name().name() != "MetaDataObject"
+    {
+        return Err(());
+    }
+    let artifacts = root
+        .children()
+        .filter(|node| node.is_element())
+        .collect::<Vec<_>>();
+    let [artifact] = artifacts.as_slice() else {
+        return Err(());
+    };
+    if artifact.tag_name().namespace() != Some(MD_CLASSES_NS)
+        || artifact.tag_name().name() != expected_kind
+    {
+        return Err(());
+    }
+    let child_objects = artifact
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "ChildObjects")
+        .collect::<Vec<_>>();
+    if child_objects
+        .iter()
+        .any(|node| node.tag_name().namespace() != Some(MD_CLASSES_NS))
+        || child_objects.len() > 1
+    {
+        return Err(());
+    }
+    let Some(child_objects) = child_objects.first() else {
+        return Ok(Vec::new());
+    };
+    let mut registered = Vec::new();
+    for child in child_objects.children().filter(|node| node.is_element()) {
+        if child.tag_name().namespace() != Some(MD_CLASSES_NS) {
+            return Err(());
+        }
+        let child_kind = child.tag_name().name();
+        if !matches!(child_kind, "Form" | "Template") {
+            continue;
+        }
+        if child.children().any(|node| node.is_element()) {
+            return Err(());
+        }
+        let name = child
+            .text()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or(())?;
+        registered.push((child_kind.to_string(), name.to_string()));
+    }
+    Ok(registered)
+}
+
 fn add_address(
     inventory: &mut NavigationInventory,
     raw_address: String,
@@ -1979,13 +2458,6 @@ fn children_of_address(
     if parent_item.target_kind == TargetKind::Module {
         return Ok(Vec::new());
     }
-    if matches!(
-        inventory.source_set_kind,
-        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-    ) {
-        return Ok(Vec::new());
-    }
-
     let parent_parts = parent.segments().collect::<Vec<_>>();
     let mut collections = BTreeSet::new();
     let mut children = Vec::new();
@@ -2064,11 +2536,19 @@ pub(crate) struct ClosedPlatformXmlTarget {
     source_format: SourceFormat,
     target_kind: TargetKind,
     target_path: PathBuf,
+    registration_path: PathBuf,
     module_owner: Option<String>,
+    access: PlatformXmlTargetAccess,
     /// Whether this handle was issued under a policy that tolerates a module
     /// file the platform never exported. Revalidation reproduces the same
     /// decision, so a handle can neither gain nor lose that tolerance.
     module_absence_allowed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlatformXmlTargetAccess {
+    Read,
+    Write,
 }
 
 /// Closed provider handle for creation in one Platform XML source set. Public
@@ -2318,6 +2798,23 @@ pub(crate) fn resolve_platform_xml_target(
     target: &SourceTarget,
     policy: TargetKindPolicy,
 ) -> Result<PlatformXmlResolution, SourceTargetError> {
+    resolve_platform_xml_target_with_access(context, target, policy, PlatformXmlTargetAccess::Write)
+}
+
+pub(crate) fn resolve_platform_xml_read_target(
+    context: &WorkspaceContext,
+    target: &SourceTarget,
+    policy: TargetKindPolicy,
+) -> Result<PlatformXmlResolution, SourceTargetError> {
+    resolve_platform_xml_target_with_access(context, target, policy, PlatformXmlTargetAccess::Read)
+}
+
+fn resolve_platform_xml_target_with_access(
+    context: &WorkspaceContext,
+    target: &SourceTarget,
+    policy: TargetKindPolicy,
+    access: PlatformXmlTargetAccess,
+) -> Result<PlatformXmlResolution, SourceTargetError> {
     if target.source_set.is_empty() {
         return Err(SourceTargetError::new(
             SourceTargetErrorCode::SourceSetRequired,
@@ -2326,7 +2823,7 @@ pub(crate) fn resolve_platform_xml_target(
     }
     let selected = resolve_named_source_set(context, &target.source_set)
         .map_err(|error| public_source_set_error(&target.source_set, error))?;
-    resolve_platform_xml_target_in(context, target, policy, selected)
+    resolve_platform_xml_target_in_with_access(context, target, policy, selected, access)
 }
 
 /// Resolves another logical observation inside the exact source set already
@@ -2344,7 +2841,13 @@ pub(crate) fn resolve_platform_xml_target_in_diagnostic_context(
         lexical_path: source_root.to_path_buf(),
         path: source_root.to_path_buf(),
     };
-    resolve_platform_xml_target_in(context, target, policy, selected)
+    resolve_platform_xml_target_in_with_access(
+        context,
+        target,
+        policy,
+        selected,
+        PlatformXmlTargetAccess::Read,
+    )
 }
 
 /// The same resolution against an already-resolved source set.
@@ -2359,7 +2862,38 @@ pub(crate) fn resolve_platform_xml_target_in(
     policy: TargetKindPolicy,
     selected: ResolvedNamedSourceSet,
 ) -> Result<PlatformXmlResolution, SourceTargetError> {
-    validate_source_set(&selected)?;
+    resolve_platform_xml_target_in_with_access(
+        context,
+        target,
+        policy,
+        selected,
+        PlatformXmlTargetAccess::Write,
+    )
+}
+
+pub(crate) fn resolve_platform_xml_read_target_in(
+    context: &WorkspaceContext,
+    target: &SourceTarget,
+    policy: TargetKindPolicy,
+    selected: ResolvedNamedSourceSet,
+) -> Result<PlatformXmlResolution, SourceTargetError> {
+    resolve_platform_xml_target_in_with_access(
+        context,
+        target,
+        policy,
+        selected,
+        PlatformXmlTargetAccess::Read,
+    )
+}
+
+fn resolve_platform_xml_target_in_with_access(
+    context: &WorkspaceContext,
+    target: &SourceTarget,
+    policy: TargetKindPolicy,
+    selected: ResolvedNamedSourceSet,
+    access: PlatformXmlTargetAccess,
+) -> Result<PlatformXmlResolution, SourceTargetError> {
+    validate_source_set(&selected, access)?;
     // The policy decides every target kind, including the source root a missing
     // `metadataPath` names. Answering the root before the policy is consulted
     // would make `ModuleOnly` a filter over addresses rather than the
@@ -2373,15 +2907,17 @@ pub(crate) fn resolve_platform_xml_target_in(
             selected,
             address.expect("a module kind comes from an address"),
             policy,
+            access,
         ),
         (TargetKind::MetadataObject, TargetKindPolicy::Any) => resolve_platform_xml_object(
             context,
             target,
             selected,
             address.expect("a metadata object kind comes from an address"),
+            access,
         ),
         (TargetKind::SourceRoot, TargetKindPolicy::Any) => {
-            resolve_platform_xml_root(context, target, selected)
+            resolve_platform_xml_root(context, target, selected, access)
         }
         (TargetKind::SourceRoot, _) => Err(SourceTargetError::new(
             SourceTargetErrorCode::TargetKindMismatch,
@@ -2400,13 +2936,22 @@ fn resolve_platform_xml_module(
     selected: ResolvedNamedSourceSet,
     address: &MetadataAddress,
     policy: TargetKindPolicy,
+    access: PlatformXmlTargetAccess,
 ) -> Result<PlatformXmlResolution, SourceTargetError> {
-    let relative_path = module_path_for_address(address).map_err(|error| {
-        SourceTargetError::new(SourceTargetErrorCode::MetadataAddressNotFound, error)
-    })?;
-    let identity = platform_xml_module_identity(&relative_path).map_err(|error| {
-        SourceTargetError::new(SourceTargetErrorCode::MetadataAddressNotFound, error)
-    })?;
+    let (relative_path, identity) = if matches!(
+        selected.source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        external_module_for_address(&selected.path, selected.source_set.kind, address)?
+    } else {
+        let relative_path = module_path_for_address(address).map_err(|error| {
+            SourceTargetError::new(SourceTargetErrorCode::MetadataAddressNotFound, error)
+        })?;
+        let identity = platform_xml_module_identity(&relative_path).map_err(|error| {
+            SourceTargetError::new(SourceTargetErrorCode::MetadataAddressNotFound, error)
+        })?;
+        (relative_path, identity)
+    };
     if &identity.address != address {
         return Err(SourceTargetError::new(
             SourceTargetErrorCode::MetadataAddressNotFound,
@@ -2441,6 +2986,18 @@ fn resolve_platform_xml_module(
 
     let workspace_root = normalize_path_identity(&context.workspace_root)
         .map_err(|_| target_containment_error(&target.source_set))?;
+    let registration_path = if matches!(
+        selected.source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        identity
+            .descriptors
+            .first()
+            .map(|path| selected.path.join(path))
+            .ok_or_else(|| metadata_owner_evidence_error(target))?
+    } else {
+        selected.path.join("Configuration.xml")
+    };
     Ok(PlatformXmlResolution {
         resolved: ResolvedTarget {
             source_set: selected.source_set.name.clone(),
@@ -2457,9 +3014,112 @@ fn resolve_platform_xml_module(
             source_format: selected.source_set.source_format,
             target_kind: TargetKind::Module,
             target_path,
+            registration_path,
             module_owner: Some(identity.owner),
+            access,
         },
     })
+}
+
+fn external_module_for_address(
+    source_root: &Path,
+    source_set_kind: SourceSetKind,
+    address: &MetadataAddress,
+) -> Result<(PathBuf, PlatformXmlModuleIdentity), SourceTargetError> {
+    let expected_owner_kind = match source_set_kind {
+        SourceSetKind::ExternalProcessor => "ExternalDataProcessor",
+        SourceSetKind::ExternalReport => "ExternalReport",
+        _ => {
+            return Err(SourceTargetError::new(
+                SourceTargetErrorCode::MetadataAddressNotFound,
+                "external module layout requires an external source set",
+            ))
+        }
+    };
+    let parts = address.segments().collect::<Vec<_>>();
+    let [owner_kind, owner_name, rest @ ..] = parts.as_slice() else {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::MetadataAddressNotFound,
+            "metadataPath does not identify an external module",
+        ));
+    };
+    if *owner_kind != expected_owner_kind {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::MetadataAddressNotFound,
+            "metadataPath kind does not match the external source set",
+        ));
+    }
+    let owner = find_external_owner_descriptor(source_root, expected_owner_kind, owner_name)?
+        .ok_or_else(|| {
+            SourceTargetError::new(
+                SourceTargetErrorCode::MetadataAddressNotFound,
+                "external module owner was not found",
+            )
+        })?;
+    let artifact = owner.path.with_extension("");
+    let owner_address = format!("{owner_kind}.{owner_name}");
+    match rest {
+        ["ObjectModule"] => {
+            let relative = artifact.join("Ext/ObjectModule.bsl");
+            let identity = module_identity(
+                address.as_str().to_string(),
+                owner_address,
+                PlatformXmlModuleRole::ObjectModule,
+                vec![owner.path],
+            )
+            .map_err(|error| {
+                SourceTargetError::new(SourceTargetErrorCode::MetadataAddressNotFound, error)
+            })?;
+            Ok((relative, identity))
+        }
+        ["Form", form_name, "FormModule"] => {
+            let child = artifact.join("Forms").join(format!("{form_name}.xml"));
+            let form_address = format!("{owner_address}.Form.{form_name}");
+            let owner_raw =
+                read_navigation_descriptor(&source_root.join(&owner.path)).map_err(|_| {
+                    SourceTargetError::new(
+                        SourceTargetErrorCode::MetadataAddressNotFound,
+                        "external form module owner is unavailable",
+                    )
+                })?;
+            let registrations = external_registered_children(&owner_raw, expected_owner_kind)
+                .map_err(|_| {
+                    SourceTargetError::new(
+                        SourceTargetErrorCode::MetadataAddressNotFound,
+                        "external form module owner registration is malformed",
+                    )
+                })?;
+            if registrations
+                .iter()
+                .filter(|(kind, name)| kind == "Form" && name == *form_name)
+                .count()
+                != 1
+            {
+                return Err(SourceTargetError::new(
+                    SourceTargetErrorCode::MetadataAddressNotFound,
+                    "external form module owner was not registered",
+                ));
+            }
+            let relative = artifact
+                .join("Forms")
+                .join(form_name)
+                .join("Ext/Form/Module.bsl");
+            let identity = module_identity(
+                address.as_str().to_string(),
+                form_address,
+                PlatformXmlModuleRole::FormModule,
+                vec![owner.path, child],
+            )
+            .map_err(|error| {
+                SourceTargetError::new(SourceTargetErrorCode::MetadataAddressNotFound, error)
+            })?;
+            Ok((relative, identity))
+        }
+        _ => Err(SourceTargetError::new(
+            SourceTargetErrorCode::MetadataAddressNotFound,
+            "metadataPath does not identify a supported external module",
+        )),
+    }
 }
 
 /// Resolves a metadata object to the descriptor that proves it. The descriptor
@@ -2470,16 +3130,21 @@ fn resolve_platform_xml_object(
     target: &SourceTarget,
     selected: ResolvedNamedSourceSet,
     address: &MetadataAddress,
+    access: PlatformXmlTargetAccess,
 ) -> Result<PlatformXmlResolution, SourceTargetError> {
     let parts = address.segments().collect::<Vec<_>>();
-    let relative_path = object_descriptor_evidence(&parts)
-        .map(|evidence| evidence.path)
-        .ok_or_else(|| {
-            SourceTargetError::new(
-                SourceTargetErrorCode::MetadataAddressNotFound,
-                "metadataPath does not identify a known metadata object",
-            )
-        })?;
+    let relative_path = object_descriptor_evidence_for_source_set(
+        &selected.path,
+        selected.source_set.kind,
+        &parts,
+    )?
+    .map(|evidence| evidence.path)
+    .ok_or_else(|| {
+        SourceTargetError::new(
+            SourceTargetErrorCode::MetadataAddressNotFound,
+            "metadataPath does not identify a known metadata object",
+        )
+    })?;
     let target_path = WorkspacePathPolicy::new(context)
         .resolve_write(selected.path.join(&relative_path))
         .map_err(|_| target_containment_error(&target.source_set))?;
@@ -2511,24 +3176,49 @@ fn resolve_platform_xml_object(
     let descriptor = read_navigation_descriptor(&target_path)
         .map_err(|_| metadata_owner_evidence_error(target))?;
     let parts = address.segments().collect::<Vec<_>>();
-    let expected =
-        object_descriptor_evidence(&parts).ok_or_else(|| metadata_owner_evidence_error(target))?;
+    let expected = object_descriptor_evidence_for_source_set(
+        &selected.path,
+        selected.source_set.kind,
+        &parts,
+    )?
+    .ok_or_else(|| metadata_owner_evidence_error(target))?;
     let (version, name) = descriptor_version_and_name_from_bytes(&descriptor, &expected.kind)
         .map_err(|_| metadata_owner_evidence_error(target))?;
     if name != expected.name {
         return Err(metadata_owner_evidence_error(target));
     }
-    if let ObjectOwnerVersionEvidence::Exact(owner_version) = owner_version {
-        if version != owner_version {
-            return Err(SourceTargetError::source_format_unsupported(format!(
-                "metadataPath `{address}` format does not match its proven metadata owner in sourceSet `{}`",
-                target.source_set
-            )));
+    let version_matches = match owner_version {
+        ObjectOwnerVersionEvidence::SelfOwned => {
+            version.as_deref() == Some(PLATFORM_XML_EXPORT_FORMAT)
         }
+        ObjectOwnerVersionEvidence::Exact(owner_version) => version == owner_version,
+    };
+    if !version_matches {
+        return Err(SourceTargetError::source_format_unsupported(format!(
+            "metadataPath `{address}` format does not match its proven metadata owner in sourceSet `{}`",
+            target.source_set
+        )));
     }
 
     let workspace_root = normalize_path_identity(&context.workspace_root)
         .map_err(|_| target_containment_error(&target.source_set))?;
+    let registration_path = if matches!(
+        selected.source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        let owner_parts = parts
+            .get(..2)
+            .ok_or_else(|| metadata_owner_evidence_error(target))?;
+        let owner = object_descriptor_evidence_for_source_set(
+            &selected.path,
+            selected.source_set.kind,
+            owner_parts,
+        )?
+        .ok_or_else(|| metadata_owner_evidence_error(target))?;
+        selected.path.join(owner.path)
+    } else {
+        selected.path.join("Configuration.xml")
+    };
     Ok(PlatformXmlResolution {
         resolved: ResolvedTarget {
             source_set: selected.source_set.name.clone(),
@@ -2545,7 +3235,9 @@ fn resolve_platform_xml_object(
             source_format: selected.source_set.source_format,
             target_kind: TargetKind::MetadataObject,
             target_path,
+            registration_path,
             module_owner: None,
+            access,
         },
     })
 }
@@ -2565,16 +3257,50 @@ fn object_registration_evidence(
     selected: &ResolvedNamedSourceSet,
     address: &MetadataAddress,
 ) -> Result<Option<ObjectOwnerVersionEvidence>, SourceTargetError> {
-    if matches!(
-        selected.source_set.kind,
-        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-    ) {
-        return Ok(Some(ObjectOwnerVersionEvidence::SelfOwned));
-    }
     let logical_target = SourceTarget {
         source_set: selected.source_set.name.clone(),
         metadata_path: Some(address.clone()),
     };
+    if matches!(
+        selected.source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        let parts = address.segments().collect::<Vec<_>>();
+        let [owner_kind, owner_name, rest @ ..] = parts.as_slice() else {
+            return Ok(None);
+        };
+        let Some(owner) = find_external_owner_descriptor(
+            &selected.path,
+            match selected.source_set.kind {
+                SourceSetKind::ExternalProcessor => "ExternalDataProcessor",
+                SourceSetKind::ExternalReport => "ExternalReport",
+                _ => unreachable!("external branch has an external kind"),
+            },
+            owner_name,
+        )?
+        else {
+            return Ok(None);
+        };
+        if owner.kind != *owner_kind {
+            return Ok(None);
+        }
+        if rest.is_empty() {
+            return Ok(Some(ObjectOwnerVersionEvidence::SelfOwned));
+        }
+        let [child_kind @ ("Form" | "Template"), child_name] = rest else {
+            return Ok(None);
+        };
+        let raw = read_navigation_descriptor(&selected.path.join(owner.path))
+            .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+        let registrations = external_registered_children(&raw, owner_kind)
+            .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+        let registered = registrations
+            .iter()
+            .filter(|(kind, name)| kind == child_kind && name == child_name)
+            .count()
+            == 1;
+        return Ok(registered.then_some(ObjectOwnerVersionEvidence::SelfOwned));
+    }
     let source_owner_relative = PathBuf::from("Configuration.xml");
     validate_platform_xml_module_descriptors(
         context,
@@ -2669,7 +3395,17 @@ fn resolve_platform_xml_root(
     context: &WorkspaceContext,
     target: &SourceTarget,
     selected: ResolvedNamedSourceSet,
+    access: PlatformXmlTargetAccess,
 ) -> Result<PlatformXmlResolution, SourceTargetError> {
+    if matches!(
+        selected.source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::MetadataAddressNotFound,
+            "external sourceSet root has no readable resource target",
+        ));
+    }
     let root_path = WorkspacePathPolicy::new(context)
         .resolve_write(selected.lexical_path.clone())
         .map_err(|_| source_root_containment_error(&target.source_set))?;
@@ -2685,6 +3421,7 @@ fn resolve_platform_xml_root(
     }
     let workspace_root = normalize_path_identity(&context.workspace_root)
         .map_err(|_| source_root_containment_error(&target.source_set))?;
+    let registration_path = selected.path.join("Configuration.xml");
     Ok(PlatformXmlResolution {
         resolved: ResolvedTarget {
             source_set: selected.source_set.name.clone(),
@@ -2701,7 +3438,9 @@ fn resolve_platform_xml_root(
             source_format: selected.source_set.source_format,
             target_kind: TargetKind::SourceRoot,
             target_path: selected.path,
+            registration_path,
             module_owner: None,
+            access,
         },
     })
 }
@@ -2735,8 +3474,14 @@ pub(crate) fn revalidate_platform_xml_target(
         TargetKind::Module => TargetKindPolicy::ModuleOnly,
         TargetKind::MetadataObject | TargetKind::SourceRoot => TargetKindPolicy::Any,
     };
-    let current = resolve_platform_xml_target(context, &handle.source_target, policy)?;
+    let current = resolve_platform_xml_target_with_access(
+        context,
+        &handle.source_target,
+        policy,
+        handle.access,
+    )?;
     if current.handle.target_path != handle.target_path
+        || current.handle.registration_path != handle.registration_path
         || current.handle.module_owner != handle.module_owner
         || current.handle.target_kind != handle.target_kind
     {
@@ -2755,17 +3500,33 @@ pub(crate) fn platform_xml_resource_evidence(
     let mut module_paths = Vec::new();
     let descriptor_paths = match handle.target_kind {
         TargetKind::Module => {
-            let relative = current
-                .path
-                .strip_prefix(&handle.source_root)
-                .map_err(|_| target_containment_error(&handle.source_target.source_set))?;
-            platform_xml_module_identity(relative)
-                .map_err(|_| {
+            let identity = if matches!(
+                handle.source_set_kind,
+                SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+            ) {
+                external_module_for_address(
+                    &handle.source_root,
+                    handle.source_set_kind,
+                    handle
+                        .source_target
+                        .metadata_path
+                        .as_ref()
+                        .expect("a module handle carries its address"),
+                )?
+                .1
+            } else {
+                let relative = current
+                    .path
+                    .strip_prefix(&handle.source_root)
+                    .map_err(|_| target_containment_error(&handle.source_target.source_set))?;
+                platform_xml_module_identity(relative).map_err(|_| {
                     SourceTargetError::new(
                         SourceTargetErrorCode::MetadataAddressNotFound,
                         "module resource evidence is unavailable",
                     )
                 })?
+            };
+            identity
                 .descriptors
                 .into_iter()
                 .map(|path| handle.source_root.join(path))
@@ -2777,7 +3538,12 @@ pub(crate) fn platform_xml_resource_evidence(
                 .metadata_path
                 .as_ref()
                 .expect("an object handle carries its address");
-            module_paths = object_module_paths(context, &handle.source_root, address);
+            module_paths = object_module_paths(
+                context,
+                &handle.source_root,
+                handle.source_set_kind,
+                address,
+            );
             Vec::new()
         }
         TargetKind::SourceRoot => vec![handle.source_root.join("Configuration.xml")],
@@ -2787,7 +3553,7 @@ pub(crate) fn platform_xml_resource_evidence(
         target_path: current.path,
         source_root: handle.source_root.clone(),
         descriptor_paths,
-        registration_path: handle.source_root.join("Configuration.xml"),
+        registration_path: handle.registration_path.clone(),
         module_owner: handle.module_owner.clone(),
     })
 }
@@ -2810,6 +3576,7 @@ const PLATFORM_XML_OBJECT_MODULE_ROLES: &[PlatformXmlModuleRole] = &[
 fn object_module_paths(
     context: &WorkspaceContext,
     source_root: &Path,
+    source_set_kind: SourceSetKind,
     address: &MetadataAddress,
 ) -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -2820,11 +3587,23 @@ fn object_module_paths(
         ) else {
             continue;
         };
-        let Ok(relative) = module_path_for_address(&candidate) else {
-            continue;
-        };
-        let Ok(identity) = platform_xml_module_identity(&relative) else {
-            continue;
+        let (relative, identity) = if matches!(
+            source_set_kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            let Ok(pair) = external_module_for_address(source_root, source_set_kind, &candidate)
+            else {
+                continue;
+            };
+            pair
+        } else {
+            let Ok(relative) = module_path_for_address(&candidate) else {
+                continue;
+            };
+            let Ok(identity) = platform_xml_module_identity(&relative) else {
+                continue;
+            };
+            (relative, identity)
         };
         if identity.address != candidate {
             continue;
@@ -2914,15 +3693,27 @@ fn source_map_rebind_error(source_set: &str) -> SourceTargetError {
     )
 }
 
-fn validate_source_set(selected: &ResolvedNamedSourceSet) -> Result<(), SourceTargetError> {
-    if !matches!(
-        selected.source_set.kind,
-        SourceSetKind::Configuration | SourceSetKind::Extension
-    ) || selected.source_set.source_format != SourceFormat::PlatformXml
-    {
+fn validate_source_set(
+    selected: &ResolvedNamedSourceSet,
+    access: PlatformXmlTargetAccess,
+) -> Result<(), SourceTargetError> {
+    let kind_supported = match access {
+        PlatformXmlTargetAccess::Write => matches!(
+            selected.source_set.kind,
+            SourceSetKind::Configuration | SourceSetKind::Extension
+        ),
+        PlatformXmlTargetAccess::Read => matches!(
+            selected.source_set.kind,
+            SourceSetKind::Configuration
+                | SourceSetKind::Extension
+                | SourceSetKind::ExternalProcessor
+                | SourceSetKind::ExternalReport
+        ),
+    };
+    if !kind_supported || selected.source_set.source_format != SourceFormat::PlatformXml {
         return Err(SourceTargetError::source_format_unsupported(format!(
-            "source set `{}` must be a Platform XML Configuration or Extension",
-            selected.source_set.name
+            "source set `{}` is outside the supported Platform XML {:?} profile",
+            selected.source_set.name, access
         )));
     }
     Ok(())
@@ -4951,10 +5742,290 @@ mod tests {
             assert!(artifact_page.children.is_empty());
             assert_eq!(
                 artifact_page.completeness,
-                NavigationCompleteness::Partial,
-                "descriptor-root enumeration must not claim knowledge of unscanned artifact children"
+                NavigationCompleteness::Complete,
+                "a proven descriptor with no registered children is complete"
             );
         }
+        cleanup(&context);
+    }
+
+    #[test]
+    fn external_processor_read_targets_follow_the_descriptor_owned_layout() {
+        let context = fixture(
+            "external-processor-read-targets",
+            project_yaml("processors", "EXTERNAL_DATA_PROCESSORS", "epf"),
+        );
+        let root = context.workspace_root.join("epf");
+        write_external_descriptor(&root, "ExternalDataProcessor", "Review", "Review");
+        register_fixture_item(
+            &root.join("Review.xml"),
+            "ExternalDataProcessor",
+            "Form",
+            "Main",
+        );
+        register_fixture_item(
+            &root.join("Review.xml"),
+            "ExternalDataProcessor",
+            "Template",
+            "Print",
+        );
+        write_nested_module_fixture_xml(
+            &root,
+            "Review/Forms/Main/Ext/Form/Module.bsl",
+            "Review/Forms/Main.xml",
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Main</Name></Properties></Form></MetaDataObject>"#,
+        );
+        fs::create_dir_all(root.join("Review/Templates")).unwrap();
+        fs::write(
+            root.join("Review/Templates/Print.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template><Properties><Name>Print</Name></Properties></Template></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("Review/Ext")).unwrap();
+        fs::write(
+            root.join("Review/Ext/ObjectModule.bsl"),
+            "Procedure Run()\nEndProcedure\n",
+        )
+        .unwrap();
+
+        for metadata_path in [
+            "ExternalDataProcessor.Review",
+            "ExternalDataProcessor.Review.Form.Main",
+            "ExternalDataProcessor.Review.Template.Print",
+        ] {
+            let resolution = super::resolve_platform_xml_read_target(
+                &context,
+                &target("processors", metadata_path),
+                super::TargetKindPolicy::Any,
+            )
+            .unwrap_or_else(|error| panic!("{metadata_path}: {error}"));
+            assert_eq!(
+                resolution.resolved.target_kind,
+                crate::domain::source_target::TargetKind::MetadataObject
+            );
+        }
+        for metadata_path in [
+            "ExternalDataProcessor.Review.ObjectModule",
+            "ExternalDataProcessor.Review.Form.Main.FormModule",
+        ] {
+            let resolution = super::resolve_platform_xml_read_target(
+                &context,
+                &target("processors", metadata_path),
+                super::TargetKindPolicy::ModuleOnly,
+            )
+            .unwrap_or_else(|error| panic!("{metadata_path}: {error}"));
+            assert_eq!(
+                resolution.resolved.target_kind,
+                crate::domain::source_target::TargetKind::Module
+            );
+        }
+
+        let children = children_platform_xml_source_navigation(
+            &context,
+            &SourceChildrenRequest {
+                source_set: "processors".to_string(),
+                metadata_path: Some(
+                    MetadataAddress::parse(
+                        PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        "ExternalDataProcessor.Review",
+                    )
+                    .unwrap(),
+                ),
+                limit: 50,
+                cursor: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(children.completeness, NavigationCompleteness::Complete);
+        assert_eq!(
+            children
+                .children
+                .iter()
+                .map(|child| child.display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["Forms", "ObjectModule", "Templates"]
+        );
+
+        cleanup(&context);
+    }
+
+    #[test]
+    fn external_navigation_does_not_publish_a_linked_object_module() {
+        let context = fixture(
+            "external-linked-object-module",
+            project_yaml("processors", "EXTERNAL_DATA_PROCESSORS", "epf"),
+        );
+        let root = context.workspace_root.join("epf");
+        write_external_descriptor(&root, "ExternalDataProcessor", "Review", "Review");
+        fs::create_dir_all(root.join("Review/Ext")).unwrap();
+        let real = root.join("Review/Ext/RealObjectModule.bsl");
+        let linked = root.join("Review/Ext/ObjectModule.bsl");
+        fs::write(&real, "Procedure Run()\nEndProcedure\n").unwrap();
+        let outcome = create_file_link_fixture_for_test(&real, &linked)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            cleanup(&context);
+            return;
+        }
+
+        let error = children_platform_xml_source_navigation(
+            &context,
+            &SourceChildrenRequest {
+                source_set: "processors".to_string(),
+                metadata_path: Some(
+                    MetadataAddress::parse(
+                        PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        "ExternalDataProcessor.Review",
+                    )
+                    .unwrap(),
+                ),
+                limit: 50,
+                cursor: None,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("ContainmentDenied"), "{error}");
+        assert!(!error.contains(&context.workspace_root.display().to_string()));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn external_child_registration_requires_the_owners_direct_childobjects() {
+        let context = fixture(
+            "external-child-registration-decoy",
+            project_yaml("processors", "EXTERNAL_DATA_PROCESSORS", "epf"),
+        );
+        let root = context.workspace_root.join("epf");
+        fs::create_dir_all(root.join("Review/Forms")).unwrap();
+        fs::write(
+            root.join("Review.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor><Properties><Name>Review</Name></Properties><Decoy><ChildObjects><Form>Main</Form></ChildObjects></Decoy></ExternalDataProcessor></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Review/Forms/Main.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Main</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let error = super::resolve_platform_xml_read_target(
+            &context,
+            &target("processors", "ExternalDataProcessor.Review.Form.Main"),
+            super::TargetKindPolicy::Any,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn external_child_registration_rejects_a_foreign_childobjects_collection() {
+        let context = fixture(
+            "external-child-registration-foreign-namespace",
+            project_yaml("processors", "EXTERNAL_DATA_PROCESSORS", "epf"),
+        );
+        let root = context.workspace_root.join("epf");
+        fs::create_dir_all(root.join("Review/Forms")).unwrap();
+        fs::write(
+            root.join("Review.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:foreign="urn:foreign" version="2.20"><ExternalDataProcessor><Properties><Name>Review</Name></Properties><ChildObjects><Form>Main</Form></ChildObjects><foreign:ChildObjects><foreign:Form>Hidden</foreign:Form></foreign:ChildObjects></ExternalDataProcessor></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Review/Forms/Main.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Main</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let error = super::resolve_platform_xml_read_target(
+            &context,
+            &target("processors", "ExternalDataProcessor.Review.Form.Main"),
+            super::TargetKindPolicy::Any,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn external_owner_identity_refuses_an_incomplete_bounded_scan() {
+        let context = fixture(
+            "external-owner-bounded-scan",
+            project_yaml("processors", "EXTERNAL_DATA_PROCESSORS", "epf"),
+        );
+        let root = context.workspace_root.join("epf");
+        write_external_descriptor(&root, "ExternalDataProcessor", "Review", "Review");
+        for index in 0..super::MAX_NAVIGATION_INVENTORY_ENTRIES {
+            fs::create_dir(root.join(format!("decoy-{index:04}"))).unwrap();
+        }
+
+        let error = match super::find_external_owner_descriptor(
+            &normalize_path_identity(&root).unwrap(),
+            "ExternalDataProcessor",
+            "Review",
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("an incomplete owner scan unexpectedly proved an identity"),
+        };
+
+        assert_eq!(error.code, SourceTargetErrorCode::SourceRootNotAddressable);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn external_public_locator_rejects_a_mismatched_descriptor_version() {
+        let context = fixture(
+            "external-locate-old-format",
+            project_yaml("processors", "EXTERNAL_DATA_PROCESSORS", "epf"),
+        );
+        let root = context.workspace_root.join("epf");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("Alias.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><ExternalDataProcessor><Properties><Name>Review</Name></Properties><ChildObjects/></ExternalDataProcessor></MetaDataObject>"#,
+        )
+        .unwrap();
+        let request = crate::application::source_navigation::SourceLocateRequest {
+            source_set: "processors".to_string(),
+            path: "epf/Alias.xml".to_string(),
+        };
+
+        let located =
+            super::locate_platform_xml_source_path(&context, &request, &CancellationToken::new())
+                .unwrap();
+
+        assert_eq!(
+            located.rejection,
+            Some(crate::application::source_navigation::LocateRejection::OwnerUnproven)
+        );
+        assert!(located.metadata_path.is_none());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn external_owner_named_config_dump_info_remains_addressable() {
+        let context = fixture(
+            "external-owner-config-dump-info",
+            project_yaml("processors", "EXTERNAL_DATA_PROCESSORS", "epf"),
+        );
+        let root = context.workspace_root.join("epf");
+        write_external_descriptor(
+            &root,
+            "ExternalDataProcessor",
+            "ConfigDumpInfo",
+            "ConfigDumpInfo",
+        );
+
+        let resolution = super::resolve_platform_xml_read_target(
+            &context,
+            &target("processors", "ExternalDataProcessor.ConfigDumpInfo"),
+            super::TargetKindPolicy::Any,
+        );
+
+        assert!(resolution.is_ok(), "{resolution:?}");
         cleanup(&context);
     }
 

@@ -7,9 +7,9 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{
     metadata_identifier_is_valid, MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode,
-    MetaDiagnosticSeverity, MetaElementData, MetaEventSource, MetaInfoPropertyData,
-    MetaInfoPropertyValue, MetaInfoPropertyValueKind, MetaRelationTargetData, MetaRelationsData,
-    MetaSupportStatus, MetadataKind, META_INFO_PROPERTY_PROFILE,
+    MetaDiagnosticSeverity, MetaElementData, MetaEventSource, MetaInfoDetails,
+    MetaInfoPropertyData, MetaInfoPropertyValue, MetaInfoPropertyValueKind, MetaRelationTargetData,
+    MetaRelationsData, MetaSupportStatus, MetadataKind, META_INFO_PROPERTY_PROFILE,
 };
 use crate::domain::source_target::{
     MetadataAddress, ResolvedTarget, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -17,7 +17,7 @@ use crate::domain::source_target::{
 use crate::domain::support_state::{ObjectSupportState, SupportStateReader};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_source_targets::{
-    platform_xml_resource_evidence, resolve_platform_xml_target, TargetKindPolicy,
+    platform_xml_resource_evidence, resolve_platform_xml_read_target, TargetKindPolicy,
 };
 use roxmltree::Document;
 use std::collections::HashSet;
@@ -214,7 +214,12 @@ pub(crate) fn read_typed_meta_info(
         .children()
         .find(|node| node.is_element())
         .expect("the exact metadata identity proof found one object");
-    let kind = MetadataKind::parse(&identity.object_type).map_err(|diagnostic| {
+    let kind = match identity.object_type.as_str() {
+        "ExternalDataProcessor" => Ok(MetadataKind::DataProcessor),
+        "ExternalReport" => Ok(MetadataKind::Report),
+        other => MetadataKind::parse(other),
+    }
+    .map_err(|diagnostic| {
         MetaFailure::from(
             MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, diagnostic.message)
                 .with_metadata_path(target.clone()),
@@ -332,6 +337,11 @@ pub(crate) fn read_typed_meta_info(
         target,
         &mut diagnostics,
     );
+    let details = match identity.object_type.as_str() {
+        "ExternalDataProcessor" => MetaInfoDetails::ExternalDataProcessor {},
+        "ExternalReport" => MetaInfoDetails::ExternalReport {},
+        _ => details,
+    };
     let declarations = super::info_projection::project_meta_info_declarations(
         kind,
         properties,
@@ -494,7 +504,7 @@ pub(crate) fn read_typed_meta_info(
     let child_resources = match super::edit::observe_typed_child_resources(
         &resolved.descriptor_path,
         target,
-        kind.as_str(),
+        &identity.object_type,
         &local.name,
         xml,
     ) {
@@ -555,7 +565,7 @@ fn typed_event_source_dependency_images(
             metadata_path: Some(metadata_path.clone()),
         };
         let Ok(resolution) =
-            resolve_platform_xml_target(context, &source_target, TargetKindPolicy::Any)
+            resolve_platform_xml_read_target(context, &source_target, TargetKindPolicy::Any)
         else {
             continue;
         };
