@@ -19,6 +19,8 @@ thread_local! {
         std::cell::RefCell::new(None);
     static SUPPORT_POLICY_VALIDATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
+    static SUPPORT_POLICY_BEFORE_RETAINED_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -29,6 +31,11 @@ pub(crate) fn set_support_policy_capture_hook(hook: impl FnOnce() + 'static) {
 #[cfg(test)]
 pub(crate) fn set_support_policy_validation_hook(hook: impl FnOnce() + 'static) {
     SUPPORT_POLICY_VALIDATION_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn set_support_policy_before_retained_read_hook(hook: impl FnOnce() + 'static) {
+    SUPPORT_POLICY_BEFORE_RETAINED_READ_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
 }
 
 #[cfg(test)]
@@ -43,6 +50,15 @@ fn run_support_policy_capture_hook() {
 #[cfg(test)]
 fn run_support_policy_validation_hook() {
     SUPPORT_POLICY_VALIDATION_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn run_support_policy_before_retained_read_hook() {
+    SUPPORT_POLICY_BEFORE_RETAINED_READ_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
         }
@@ -355,9 +371,13 @@ fn validate_candidate(
         RetainedPolicyCandidate::Exact { file, bytes } => {
             file.validate_named_identity()
                 .map_err(|_| changed("support-policy file identity changed"))?;
+            #[cfg(test)]
+            run_support_policy_before_retained_read_hook();
             let current = file
                 .read_bounded(MAX_SUPPORT_POLICY_BYTES)
                 .map_err(|_| changed("support-policy file bytes became unreadable"))?;
+            file.validate_named_identity()
+                .map_err(|_| changed("support-policy file identity changed during validation"))?;
             if &current == bytes {
                 Ok(())
             } else {
@@ -367,8 +387,14 @@ fn validate_candidate(
         RetainedPolicyCandidate::Oversized(file) => {
             file.validate_named_identity()
                 .map_err(|_| changed("oversized support-policy identity changed"))?;
+            #[cfg(test)]
+            run_support_policy_before_retained_read_hook();
             match file.read_bounded(MAX_SUPPORT_POLICY_BYTES) {
-                Err(error) if error.kind() == ErrorKind::InvalidData => Ok(()),
+                Err(error) if error.kind() == ErrorKind::InvalidData => {
+                    file.validate_named_identity().map_err(|_| {
+                        changed("oversized support-policy identity changed during validation")
+                    })
+                }
                 _ => Err(changed("oversized support-policy evidence changed")),
             }
         }
@@ -580,5 +606,58 @@ pub(crate) mod tests {
             error.kind(),
             SupportPolicyEvidenceErrorKind::ContainmentIdentity
         );
+    }
+
+    #[test]
+    pub(crate) fn retained_support_policy_exact_and_oversized_reject_name_replacement_during_read_validation(
+    ) {
+        if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test()
+        {
+            eprintln!(
+                "[SKIPPED FIXTURE] support-policy mid-validation name replacement is unsupported while a retained file handle is open"
+            );
+            return;
+        }
+
+        let mut rejected = Vec::new();
+        for category in ["exact", "oversized"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let workspace = temporary.path().join("workspace");
+            let source = workspace.join("src");
+            std::fs::create_dir_all(&source).unwrap();
+            let policy = workspace.join(POLICY_NAME);
+            match category {
+                "exact" => std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap(),
+                "oversized" => {
+                    std::fs::write(&policy, vec![b' '; MAX_SUPPORT_POLICY_BYTES + 1]).unwrap()
+                }
+                _ => unreachable!(),
+            }
+            let workspace = std::fs::canonicalize(workspace).unwrap();
+            let source = std::fs::canonicalize(source).unwrap();
+            let evidence = RetainedSupportPolicyEvidence::capture(
+                &workspace,
+                &source,
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            let displaced = temporary.path().join(format!("{category}-displaced.json"));
+            let hook_policy = policy.clone();
+            set_support_policy_before_retained_read_hook(move || {
+                std::fs::rename(&hook_policy, &displaced).unwrap();
+                std::fs::write(&hook_policy, br#"{"editingAllowedCheck":"warn"}"#).unwrap();
+            });
+
+            rejected.push(
+                evidence
+                    .validate(
+                        ProviderDeadline::from_budget(Duration::from_secs(10)),
+                        &CancellationToken::new(),
+                    )
+                    .is_err(),
+            );
+        }
+        assert_eq!(rejected, [true, true]);
     }
 }
