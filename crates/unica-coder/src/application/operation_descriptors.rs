@@ -149,10 +149,10 @@ const MXL_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputPath"];
 const ROLE_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputDir"];
 const ROLE_EDIT_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operations"];
 const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
-// `selector` and `position` are required only by selector-based operations, so
-// the descriptor cannot demand them for every call; `initialize` deliberately
-// has neither and `validate_code_patch_arguments` enforces each operation.
-const CODE_PATCH_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operation", "content"];
+// The flat form requires `content`, while the atomic replacement form carries
+// content in each `replacements` item. Operation-specific validation closes
+// both branches.
+const CODE_PATCH_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operation"];
 const XDTO_INFO_REQUIRED: &[&str] = &["sourceSet", "metadataPath"];
 const XDTO_EDIT_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operations"];
 

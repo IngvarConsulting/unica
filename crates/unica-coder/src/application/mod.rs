@@ -5530,6 +5530,46 @@ pub(crate) mod tests {
         );
         assert_eq!(std::fs::read(&module).unwrap(), before_invalid);
 
+        args.remove("selector");
+        args.remove("content");
+        args.remove("position");
+        args.insert("operation".to_string(), json!("replace"));
+        args.insert(
+            "replacements".to_string(),
+            json!([
+                {
+                    "selector": {"anchor": "Message(\"ok\");"},
+                    "content": "Message(\"done\");",
+                    "expectedCount": 1
+                },
+                {
+                    "selector": {"anchor": "\"ok\""},
+                    "content": "\"done\"",
+                    "expectedCount": 1
+                }
+            ]),
+        );
+        let overlap = app.call_tool("unica.code.patch", &args).unwrap();
+        assert!(!overlap.ok);
+        assert!(overlap.cache.events.is_empty());
+        let overlap_data = overlap.data.as_ref().unwrap();
+        assert_eq!(overlap_data["code"], "replacement_overlap");
+        let text = std::str::from_utf8(&before_invalid).unwrap();
+        let left_start = text.find("Message(\"ok\");").unwrap();
+        let right_start = text.find("\"ok\"").unwrap();
+        assert_eq!(
+            overlap_data["conflicts"][0],
+            json!({
+                "leftReplacementIndex": 0,
+                "leftStartByte": left_start,
+                "leftEndByte": left_start + "Message(\"ok\");".len(),
+                "rightReplacementIndex": 1,
+                "rightStartByte": right_start,
+                "rightEndByte": right_start + "\"ok\"".len()
+            })
+        );
+        assert_eq!(std::fs::read(&module).unwrap(), before_invalid);
+
         let empty_module = src.join("CommonModules/Empty/Ext/Module.bsl");
         std::fs::create_dir_all(empty_module.parent().unwrap()).unwrap();
         std::fs::write(

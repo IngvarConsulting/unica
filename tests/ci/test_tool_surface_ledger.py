@@ -197,6 +197,19 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertEqual(published - set(self.review), set())
         self.assertEqual(set(self.review) - published, set())
 
+    def test_atomic_replacement_result_is_reviewed_under_code_patch_only(self) -> None:
+        owners = {
+            name
+            for name, entry in self.review.items()
+            if "replacement_overlap" in entry["result"]["now"]
+        }
+
+        self.assertEqual(owners, {"unica.code.patch"})
+        self.assertIn(
+            "DEC.2026-08-22.ATOMIC-CODE-REPLACEMENT-BATCH",
+            self.review["unica.code.patch"]["result"]["now"],
+        )
+
     def test_xdto_surface_is_exactly_the_typed_info_edit_pair(self) -> None:
         expected = {"unica.xdto.info", "unica.xdto.edit"}
         published = {
