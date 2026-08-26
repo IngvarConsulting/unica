@@ -1,3 +1,4 @@
+use crate::application::tool_contracts::CODE_PATCH_MAX_REPLACEMENTS;
 use crate::application::AdapterOutcome;
 use crate::application::SupportGuardRequirement;
 use crate::domain::source_target::{ResolvedTarget, TargetKind};
@@ -433,8 +434,10 @@ fn plan_replacement_batch(
     let replacements = value
         .as_array()
         .ok_or_else(|| "replacements must be an array".to_string())?;
-    if replacements.is_empty() || replacements.len() > 50 {
-        return Err("replacements must contain between 1 and 50 items".to_string());
+    if replacements.is_empty() || replacements.len() > CODE_PATCH_MAX_REPLACEMENTS {
+        return Err(format!(
+            "replacements must contain between 1 and {CODE_PATCH_MAX_REPLACEMENTS} items"
+        ));
     }
     let mut edits = Vec::new();
     for (request_index, value) in replacements.iter().enumerate() {
@@ -494,29 +497,34 @@ fn plan_replacement_batch(
 }
 
 fn reject_overlapping_replacements(edits: &[PlannedEdit]) -> Result<(), CodePatchBuildError> {
+    let mut conflicts = Vec::new();
+    let mut messages = Vec::new();
     for pair in edits.windows(2) {
         let (left_start, left_end) = pair[0].site.original_range();
         let (right_start, right_end) = pair[1].site.original_range();
         if right_start < left_end {
-            let message = format!(
+            messages.push(format!(
                 "replacement_overlap: replacements[{}] range [{left_start}, {left_end}) overlaps replacements[{}] range [{right_start}, {right_end})",
                 pair[0].request_index, pair[1].request_index
-            );
-            return Err(CodePatchBuildError {
-                message,
-                data: Some(CodePatchResultData::Failure(CodePatchFailureData {
-                    code: "replacement_overlap",
-                    conflicts: vec![ReplacementConflict {
-                        left_replacement_index: pair[0].request_index,
-                        left_start_byte: left_start,
-                        left_end_byte: left_end,
-                        right_replacement_index: pair[1].request_index,
-                        right_start_byte: right_start,
-                        right_end_byte: right_end,
-                    }],
-                })),
+            ));
+            conflicts.push(ReplacementConflict {
+                left_replacement_index: pair[0].request_index,
+                left_start_byte: left_start,
+                left_end_byte: left_end,
+                right_replacement_index: pair[1].request_index,
+                right_start_byte: right_start,
+                right_end_byte: right_end,
             });
         }
+    }
+    if !conflicts.is_empty() {
+        return Err(CodePatchBuildError {
+            message: messages.join("; "),
+            data: Some(CodePatchResultData::Failure(CodePatchFailureData {
+                code: "replacement_overlap",
+                conflicts,
+            })),
+        });
     }
     Ok(())
 }
@@ -2183,7 +2191,8 @@ pub(super) mod tests {
             "CommonModule.Sample.Module",
             json!([
                 {"selector":{"anchor":"A = Старое;"},"content":"A = Новое;","expectedCount":1},
-                {"selector":{"anchor":"Старое"},"content":"Новое","expectedCount":1}
+                {"selector":{"anchor":"Старое"},"content":"Новое","expectedCount":1},
+                {"selector":{"anchor":"A ="},"content":"B =","expectedCount":1}
             ]),
         );
         let refused = patch_inner(&overlap, &context, PatchMode::Apply);
@@ -2191,8 +2200,11 @@ pub(super) mod tests {
         assert!(refused.outcome.errors[0].starts_with("replacement_overlap:"));
         let failure = serde_json::to_value(refused.data.unwrap()).unwrap();
         assert_eq!(failure["code"], "replacement_overlap");
-        assert_eq!(failure["conflicts"][0]["leftReplacementIndex"], 0);
-        assert_eq!(failure["conflicts"][0]["rightReplacementIndex"], 1);
+        assert_eq!(failure["conflicts"].as_array().map(Vec::len), Some(2));
+        assert_eq!(failure["conflicts"][0]["leftReplacementIndex"], 2);
+        assert_eq!(failure["conflicts"][0]["rightReplacementIndex"], 0);
+        assert_eq!(failure["conflicts"][1]["leftReplacementIndex"], 0);
+        assert_eq!(failure["conflicts"][1]["rightReplacementIndex"], 1);
         assert!(failure["conflicts"][0]["leftStartByte"].is_number());
         assert!(failure["conflicts"][0]["leftEndByte"].is_number());
         assert!(failure["conflicts"][0]["rightStartByte"].is_number());

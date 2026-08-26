@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "confirm"];
 const MUTATION_ARGS: &[&str] = &["dryRun"];
+pub(crate) const CODE_PATCH_MAX_REPLACEMENTS: usize = 50;
 /// How much of a logical address a bridged reader can actually use. Publishing
 /// `metadataPath` on a tool that never reads one would be a lie in the schema,
 /// so the three cases are distinguished rather than collapsed into a flag.
@@ -1756,10 +1757,10 @@ fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> R
             .get("replacements")
             .and_then(Value::as_array)
             .ok_or_else(|| format!("{} argument `replacements` must be an array", tool.name))?;
-        if replacements.is_empty() || replacements.len() > 50 {
+        if replacements.is_empty() || replacements.len() > CODE_PATCH_MAX_REPLACEMENTS {
             return Err(format!(
-                "{} argument `replacements` must contain between 1 and 50 items",
-                tool.name
+                "{} argument `replacements` must contain between 1 and {} items",
+                tool.name, CODE_PATCH_MAX_REPLACEMENTS
             ));
         }
         for (index, replacement) in replacements.iter().enumerate() {
@@ -3984,7 +3985,7 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             "replacements" => json!({
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 50,
+                "maxItems": CODE_PATCH_MAX_REPLACEMENTS,
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
