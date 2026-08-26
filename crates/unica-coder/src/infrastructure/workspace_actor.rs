@@ -2,8 +2,10 @@ use crate::application::shared_work::{
     LongWorkFailure, SharedWork, SharedWorkKey, SharedWorkLease, SharedWorkLifetime,
     SharedWorkProducer,
 };
+use crate::domain::cache::CacheAccess;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
+use crate::domain::events::DomainEvent;
 use crate::domain::invocation::SafeIdentityHash;
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
@@ -13,16 +15,19 @@ use crate::infrastructure::native_operations::apply::{
 };
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::platform::filesystem::{
-    path_starts_with_host_root, stable_path_identity_bytes, RetainedDirectoryCapability,
+    path_starts_with_host_root, stable_path_identity_bytes, RetainedChildCapability,
+    RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_revision::{
-    RetainedRevisionLease, SourceRevisionService, WorkspaceStateScope,
+    PreparedRevisionReconciliation, RetainedRevisionLease, SourceRevisionService,
+    WorkspaceStateScope,
 };
-use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::source_roots::{normalize_path_identity, GENERATED_DIR_NAME};
 use crate::infrastructure::workspace_index::{IndexRunner, WorkspaceIndexService};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -314,6 +319,54 @@ pub(crate) struct ApplyAdmission {
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
     writer_authority: ApplyWriterAuthority,
+    workspace_cache: WorkspaceCachePublicationAuthority,
+    context: WorkspaceContext,
+}
+
+#[derive(Clone)]
+struct WorkspaceCachePublicationAuthority {
+    logical_root: PathBuf,
+    anchor: Arc<RetainedDirectoryCapability>,
+    relative_root: PathBuf,
+    participant: WorkspaceCacheParticipantAuthority,
+}
+
+/// Actor-issued proof that the second retained participant is the workspace
+/// cache captured during admission, rather than an arbitrary transaction that
+/// happens to share the writer authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::infrastructure) struct WorkspaceCacheParticipantAuthority {
+    writer_authority: ApplyWriterAuthority,
+    logical_root: PathBuf,
+    anchor_identity: crate::infrastructure::platform::filesystem::FileIdentity,
+}
+
+impl WorkspaceCacheParticipantAuthority {
+    pub(in crate::infrastructure) fn writer_authority(&self) -> &ApplyWriterAuthority {
+        &self.writer_authority
+    }
+
+    pub(in crate::infrastructure) fn logical_root(&self) -> &Path {
+        &self.logical_root
+    }
+
+    pub(in crate::infrastructure) fn anchor_identity(
+        &self,
+    ) -> crate::infrastructure::platform::filesystem::FileIdentity {
+        self.anchor_identity
+    }
+}
+
+#[cfg(test)]
+pub(in crate::infrastructure) fn workspace_cache_participant_authority_for_test(
+    writer_authority: ApplyWriterAuthority,
+    root: &RetainedDirectoryCapability,
+) -> WorkspaceCacheParticipantAuthority {
+    WorkspaceCacheParticipantAuthority {
+        writer_authority,
+        logical_root: root.path().to_path_buf(),
+        anchor_identity: root.identity(),
+    }
 }
 
 impl std::fmt::Debug for ApplyAdmission {
@@ -338,12 +391,21 @@ impl ApplyAdmission {
             self.deadline,
             self.cancellation.clone(),
             self.writer_authority.clone(),
-        ))
+        )
+        .forbid_generated_subtree())
     }
 
     pub(crate) fn prepare(
         self,
         state: ApplyStagedState,
+    ) -> Result<PreparedApplyBatch, ApplyStagingError> {
+        self.prepare_with_cache_effects(state, &[])
+    }
+
+    pub(crate) fn prepare_with_cache_effects(
+        self,
+        state: ApplyStagedState,
+        events: &[DomainEvent],
     ) -> Result<PreparedApplyBatch, ApplyStagingError> {
         apply_staging_checkpoint(self.deadline, &self.cancellation, "apply preparation")?;
         if state.retained_root_identity() != self.source_root.identity() {
@@ -358,7 +420,67 @@ impl ApplyAdmission {
                 "apply staged state belongs to another actor-issued authority",
             ));
         }
-        let transaction = state.finalize()?;
+        let source_changes = state.planned_changes();
+        let source_transaction = state.finalize()?;
+        let revision_reconciliation = self
+            .revision_service
+            .prepare_retained_apply_reconciliation(
+                &self.source_root,
+                &self.revision,
+                &source_changes,
+                self.deadline,
+                &self.cancellation,
+            )
+            .map_err(|error| {
+                ApplyStagingError::new(ApplyStagingErrorKind::ConcurrentRevision, error)
+            })?;
+        let mut cache_state = ApplyStagedState::from_retained_root(
+            Arc::clone(&self.workspace_cache.anchor),
+            self.deadline,
+            self.cancellation.clone(),
+            self.writer_authority.clone(),
+        );
+        let projected_cache_report =
+            crate::infrastructure::workspace_state::WorkspaceStateRepository::new(&self.context)
+                .stage_report_in_retained_apply(
+                    &mut cache_state,
+                    &self.workspace_cache.relative_root,
+                    &self.context,
+                    events,
+                    false,
+                    CacheAccess::default(),
+                )?;
+        let record_path =
+            normalize_path_identity(revision_reconciliation.record_path()).map_err(|error| {
+                ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
+            })?;
+        let record_suffix = record_path
+            .strip_prefix(&self.workspace_cache.logical_root)
+            .map_err(|_| {
+                ApplyStagingError::new(
+                    ApplyStagingErrorKind::ContainmentIdentity,
+                    "source revision record escaped the actor-owned cache root",
+                )
+            })?;
+        let record_relative = self.workspace_cache.relative_root.join(record_suffix);
+        match cache_state.read(&record_relative)? {
+            Some(previous) => cache_state.replace(
+                &record_relative,
+                &previous,
+                revision_reconciliation.record_bytes().to_vec(),
+            )?,
+            None => cache_state.create(
+                &record_relative,
+                revision_reconciliation.record_bytes().to_vec(),
+            )?,
+        }
+        let cache_transaction = cache_state.finalize()?;
+        let transaction = source_transaction
+            .close_with_workspace_cache_participant(
+                cache_transaction,
+                &self.workspace_cache.participant,
+            )
+            .map_err(|error| ApplyStagingError::new(ApplyStagingErrorKind::Invariant, error))?;
         Ok(PreparedApplyBatch {
             actor_identity: self.actor_identity,
             actor_instance: self.actor_instance,
@@ -371,6 +493,9 @@ impl ApplyAdmission {
             cancellation: self.cancellation,
             transaction,
             writer_authority: self.writer_authority,
+            workspace_cache: self.workspace_cache,
+            projected_cache_report,
+            revision_reconciliation,
         })
     }
 }
@@ -387,6 +512,55 @@ pub(crate) struct PreparedApplyBatch {
     cancellation: CancellationToken,
     transaction: CompileTransaction,
     writer_authority: ApplyWriterAuthority,
+    workspace_cache: WorkspaceCachePublicationAuthority,
+    projected_cache_report: crate::domain::cache::CacheReport,
+    revision_reconciliation: PreparedRevisionReconciliation,
+}
+
+pub(in crate::infrastructure) struct RetainedApplyFinalGate<'a, R> {
+    actor: &'a WorkspaceActor<R>,
+    binding: ProviderRootBinding,
+    deadline: ProviderDeadline,
+    cancellation: CancellationToken,
+}
+
+impl<R> RetainedApplyFinalGate<'_, R> {
+    pub(in crate::infrastructure) fn deadline(&self) -> ProviderDeadline {
+        self.deadline
+    }
+
+    pub(in crate::infrastructure) fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+
+    pub(in crate::infrastructure) fn checkpoint(
+        &self,
+        phase: &str,
+    ) -> Result<(), ApplyPublicationError> {
+        apply_publication_checkpoint(self.deadline, &self.cancellation, phase)
+    }
+
+    pub(in crate::infrastructure) fn validate(&self) -> Result<(), ApplyPublicationError> {
+        self.actor
+            .validate_binding(&self.binding)
+            .map_err(|error| {
+                ApplyPublicationError::new(ApplyPublicationErrorKind::ContainmentIdentity, error)
+            })?;
+        self.checkpoint("prepared apply final gate")
+    }
+
+    pub(in crate::infrastructure) fn revision_error(
+        &self,
+        message: String,
+    ) -> ApplyPublicationError {
+        if self.cancellation.is_cancelled() {
+            ApplyPublicationError::new(ApplyPublicationErrorKind::Cancelled, message)
+        } else if self.deadline.remaining().is_zero() {
+            ApplyPublicationError::new(ApplyPublicationErrorKind::Deadline, message)
+        } else {
+            ApplyPublicationError::new(ApplyPublicationErrorKind::ConcurrentRevision, message)
+        }
+    }
 }
 
 impl std::fmt::Debug for PreparedApplyBatch {
@@ -437,6 +611,52 @@ pub(crate) struct ApplyPublicationResult {
     commit_count: usize,
     cleanup_diagnostics: Vec<ApplyCleanupDiagnostic>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApplyPublicationErrorKind {
+    Cancelled,
+    Deadline,
+    ConcurrentRevision,
+    ContainmentIdentity,
+    ProviderPostvalidation,
+    RollbackIncomplete,
+    Invariant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApplyPublicationError {
+    kind: ApplyPublicationErrorKind,
+    message: String,
+}
+
+impl ApplyPublicationError {
+    pub(in crate::infrastructure) fn new(
+        kind: ApplyPublicationErrorKind,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> ApplyPublicationErrorKind {
+        self.kind
+    }
+
+    #[cfg(test)]
+    fn contains(&self, pattern: &str) -> bool {
+        self.message.contains(pattern)
+    }
+}
+
+impl std::fmt::Display for ApplyPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for ApplyPublicationError {}
 
 impl ApplyPublicationResult {
     pub(crate) fn rev(&self) -> &str {
@@ -766,7 +986,7 @@ impl<R> WorkspaceActor<R> {
         apply_checkpoint(deadline, cancellation, "apply admission")?;
         self.validate_binding(binding)?;
         let revision_service = self.source_revision_service(binding)?;
-        let revision = revision_service.begin_retained_operation(
+        let revision = revision_service.observe_retained_operation(
             &binding.source_root,
             deadline,
             cancellation,
@@ -779,6 +999,12 @@ impl<R> WorkspaceActor<R> {
                 if_rev.unwrap_or_default()
             ));
         }
+        let writer_authority = ApplyWriterAuthority::issue();
+        let workspace_cache = retain_workspace_cache_publication_authority(
+            &self.context,
+            &binding.source_root,
+            &writer_authority,
+        )?;
         Ok(ApplyAdmission {
             actor_identity: self.identity.clone(),
             actor_instance: self.instance_id.clone(),
@@ -789,55 +1015,96 @@ impl<R> WorkspaceActor<R> {
             dry_run,
             deadline,
             cancellation: cancellation.clone(),
-            writer_authority: ApplyWriterAuthority::issue(),
+            writer_authority,
+            workspace_cache,
+            context: self.context.clone(),
         })
     }
 
     pub(crate) fn publish_prepared_apply(
         &self,
         prepared: PreparedApplyBatch,
-    ) -> Result<ApplyPublicationResult, String> {
+    ) -> Result<ApplyPublicationResult, ApplyPublicationError> {
         if prepared.actor_identity != self.identity
             || prepared.actor_instance != self.instance_id
             || !self.identity.source_sets.contains(&prepared.source_set)
         {
-            return Err("prepared apply batch belongs to another workspace actor".to_string());
+            return Err(ApplyPublicationError::new(
+                ApplyPublicationErrorKind::Invariant,
+                "prepared apply batch belongs to another workspace actor",
+            ));
         }
-        apply_checkpoint(
+        apply_publication_checkpoint(
             prepared.deadline,
             &prepared.cancellation,
             "prepared apply publication",
         )?;
-        let _lane = self.mutation_lane.acquire_before(
-            prepared.deadline,
-            &prepared.cancellation,
-            "workspace actor prepared apply wait",
-        )?;
+        let _lane = self
+            .mutation_lane
+            .acquire_before(
+                prepared.deadline,
+                &prepared.cancellation,
+                "workspace actor prepared apply wait",
+            )
+            .map_err(|error| {
+                classify_publication_wait(prepared.deadline, &prepared.cancellation, error)
+            })?;
         let binding = ProviderRootBinding {
             actor_identity: prepared.actor_identity.clone(),
             actor_instance: prepared.actor_instance.clone(),
             source_set: prepared.source_set.clone(),
             source_root: Arc::clone(&prepared.source_root),
         };
-        self.validate_binding(&binding)?;
-        prepared.revision_service.confirm_retained_operation(
-            &prepared.source_root,
-            &prepared.revision,
-            prepared.deadline,
-            &prepared.cancellation,
-        )?;
-        if prepared.dry_run {
-            prepared.transaction.validate_retained_for_apply()?;
-            prepared.revision_service.confirm_retained_operation(
+        self.validate_binding(&binding).map_err(|error| {
+            ApplyPublicationError::new(ApplyPublicationErrorKind::ContainmentIdentity, error)
+        })?;
+        prepared
+            .workspace_cache
+            .anchor
+            .validate_named_identity()
+            .map_err(|error| {
+                ApplyPublicationError::new(
+                    ApplyPublicationErrorKind::ContainmentIdentity,
+                    format!(
+                        "workspace-cache retained authority changed before publication {}: {error}",
+                        prepared.workspace_cache.logical_root.display()
+                    ),
+                )
+            })?;
+        let _projected_cache_report = &prepared.projected_cache_report;
+        prepared
+            .revision_service
+            .confirm_retained_observation(
                 &prepared.source_root,
                 &prepared.revision,
                 prepared.deadline,
                 &prepared.cancellation,
-            )?;
+            )
+            .map_err(|error| {
+                classify_revision_wait(prepared.deadline, &prepared.cancellation, error)
+            })?;
+        if prepared.dry_run {
+            prepared
+                .transaction
+                .validate_retained_for_apply_typed()
+                .map_err(apply_validation_publication_error)?;
+            prepared
+                .revision_service
+                .confirm_retained_observation(
+                    &prepared.source_root,
+                    &prepared.revision,
+                    prepared.deadline,
+                    &prepared.cancellation,
+                )
+                .map_err(|error| {
+                    classify_revision_wait(prepared.deadline, &prepared.cancellation, error)
+                })?;
             #[cfg(test)]
             run_apply_dry_run_after_confirmation_hook();
-            self.validate_binding(&binding)?;
-            apply_checkpoint(
+            self.validate_binding(&binding).map_err(|error| {
+                ApplyPublicationError::new(ApplyPublicationErrorKind::ContainmentIdentity, error)
+            })?;
+            apply_publication_checkpoint(
                 prepared.deadline,
                 &prepared.cancellation,
                 "prepared apply result",
@@ -849,22 +1116,16 @@ impl<R> WorkspaceActor<R> {
             });
         }
 
-        let deadline = prepared.deadline;
-        let cancellation = prepared.cancellation.clone();
-        let root = Arc::clone(&prepared.source_root);
-        let revisions = Arc::clone(&prepared.revision_service);
-        let actor = self;
-        let (report, revision) = prepared.transaction.commit_retained_apply_with(
+        let final_gate = RetainedApplyFinalGate {
+            actor: self,
+            binding,
+            deadline: prepared.deadline,
+            cancellation: prepared.cancellation.clone(),
+        };
+        let (report, revision) = prepared.transaction.commit_retained_apply(
             prepared.writer_authority,
-            || apply_checkpoint(deadline, &cancellation, "prepared apply commit"),
-            || {
-                apply_checkpoint(deadline, &cancellation, "apply revision reconciliation")?;
-                revisions.mark_dirty();
-                let revision = revisions.snapshot_retained(&root, deadline, &cancellation)?;
-                actor.validate_binding(&binding)?;
-                apply_checkpoint(deadline, &cancellation, "prepared apply result")?;
-                Ok(revision)
-            },
+            prepared.revision_reconciliation,
+            final_gate,
         )?;
         debug_assert_eq!(
             report.cleanup_warnings.len(),
@@ -1147,6 +1408,83 @@ impl<R> WorkspaceActor<R> {
     }
 }
 
+fn retain_workspace_cache_publication_authority(
+    context: &WorkspaceContext,
+    source_root: &RetainedDirectoryCapability,
+    writer_authority: &ApplyWriterAuthority,
+) -> Result<WorkspaceCachePublicationAuthority, String> {
+    let cache_root = normalize_path_identity(&context.cache_root)?;
+    let source_root_path = normalize_path_identity(source_root.path())?;
+    if source_root_path.starts_with(&cache_root) {
+        return Err(
+            "workspace cache/source overlap: roots must not contain one another".to_string(),
+        );
+    }
+    if let Ok(relative_cache) = cache_root.strip_prefix(&source_root_path) {
+        let expected = Path::new(GENERATED_DIR_NAME).join("unica");
+        if relative_cache != expected {
+            return Err(
+                "workspace cache/source overlap is only allowed for exact .build/unica".to_string(),
+            );
+        }
+    }
+    let relative = cache_root
+        .strip_prefix(&context.workspace_root)
+        .map_err(|_| "workspace cache root escaped the actor workspace".to_string())?;
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err("workspace cache root is not a closed workspace-relative path".to_string());
+    }
+    let mut anchor = RetainedDirectoryCapability::open(&context.workspace_root)
+        .map_err(|error| format!("workspace cache ancestor cannot be retained: {error}"))?;
+    let components = relative
+        .components()
+        .map(|component| component.as_os_str().to_os_string())
+        .collect::<Vec<_>>();
+    let mut relative_root = PathBuf::new();
+    for (index, name) in components.iter().enumerate() {
+        match anchor.retain_immediate_child_nofollow(name) {
+            Ok(RetainedChildCapability::Directory(directory)) => anchor = directory,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                relative_root.extend(components[index..].iter());
+                break;
+            }
+            Ok(RetainedChildCapability::ReparsePoint) => {
+                return Err("workspace cache authority encountered a link/reparse point".to_string())
+            }
+            Ok(_) => {
+                return Err(
+                    "workspace cache authority encountered a non-directory component".to_string(),
+                )
+            }
+            Err(error) => {
+                return Err(format!(
+                    "workspace cache authority cannot retain its path: {error}"
+                ))
+            }
+        }
+    }
+    if cache_root == source_root_path && anchor.identity() == source_root.identity() {
+        return Err(
+            "workspace cache and source roots resolve to one physical directory".to_string(),
+        );
+    }
+    let participant = WorkspaceCacheParticipantAuthority {
+        writer_authority: writer_authority.clone(),
+        logical_root: cache_root.clone(),
+        anchor_identity: anchor.identity(),
+    };
+    Ok(WorkspaceCachePublicationAuthority {
+        logical_root: cache_root,
+        anchor: Arc::new(anchor),
+        relative_root,
+        participant,
+    })
+}
+
 fn apply_checkpoint(
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
@@ -1159,6 +1497,72 @@ fn apply_checkpoint(
     } else {
         Ok(())
     }
+}
+
+fn apply_publication_checkpoint(
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    phase: &str,
+) -> Result<(), ApplyPublicationError> {
+    if cancellation.is_cancelled() {
+        Err(ApplyPublicationError::new(
+            ApplyPublicationErrorKind::Cancelled,
+            format!("{phase} cancelled"),
+        ))
+    } else if deadline.remaining().is_zero() {
+        Err(ApplyPublicationError::new(
+            ApplyPublicationErrorKind::Deadline,
+            format!("{phase} deadline exceeded"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn classify_publication_wait(
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    message: String,
+) -> ApplyPublicationError {
+    if cancellation.is_cancelled() {
+        ApplyPublicationError::new(ApplyPublicationErrorKind::Cancelled, message)
+    } else if deadline.remaining().is_zero() {
+        ApplyPublicationError::new(ApplyPublicationErrorKind::Deadline, message)
+    } else {
+        ApplyPublicationError::new(ApplyPublicationErrorKind::Invariant, message)
+    }
+}
+
+fn classify_revision_wait(
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    message: String,
+) -> ApplyPublicationError {
+    if cancellation.is_cancelled() {
+        ApplyPublicationError::new(ApplyPublicationErrorKind::Cancelled, message)
+    } else if deadline.remaining().is_zero() {
+        ApplyPublicationError::new(ApplyPublicationErrorKind::Deadline, message)
+    } else {
+        ApplyPublicationError::new(ApplyPublicationErrorKind::ConcurrentRevision, message)
+    }
+}
+
+fn apply_validation_publication_error(
+    error: crate::infrastructure::native_operations::compile_transaction::RetainedApplyValidationError,
+) -> ApplyPublicationError {
+    use crate::infrastructure::native_operations::compile_transaction::RetainedApplyValidationErrorKind;
+
+    let kind = match error.kind() {
+        RetainedApplyValidationErrorKind::ContainmentIdentity
+        | RetainedApplyValidationErrorKind::AbsentChainOccupied => {
+            ApplyPublicationErrorKind::ContainmentIdentity
+        }
+        RetainedApplyValidationErrorKind::UnsupportedProvider => {
+            ApplyPublicationErrorKind::ProviderPostvalidation
+        }
+        RetainedApplyValidationErrorKind::Invariant => ApplyPublicationErrorKind::Invariant,
+    };
+    ApplyPublicationError::new(kind, error.to_string())
 }
 
 fn apply_staging_checkpoint(
@@ -1356,7 +1760,11 @@ pub(crate) mod tests {
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::apply::ApplyStagingErrorKind;
     use crate::infrastructure::platform::source_revision_fence::{
-        FenceCapability, FenceOutcome, SourceRevisionFence,
+        expected_platform_fence_capability_for_test, FenceCapability, FenceOutcome,
+        SourceRevisionFence,
+    };
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
     use crate::infrastructure::source_revision::SourceRevisionService;
     use std::path::{Path, PathBuf};
@@ -2806,6 +3214,850 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn apply_admission_rejects_source_inside_cache() {
+        let root = temp_root("source-inside-cache");
+        let source = root.join("cache/src");
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        let mut actor_context = context(&root);
+        actor_context.cache_root = cache;
+        let identity =
+            WorkspaceIdentity::new(&actor_context, [("src", &source)], "test-provider").unwrap();
+        let actor = super::WorkspaceActor::new(identity, actor_context).unwrap();
+        let binding = actor.bind_provider_root("src", &source).unwrap();
+
+        let error = actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert!(error.contains("overlap"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_root_source_allows_exact_generated_cache_descendant() {
+        let root = temp_root("workspace-root-source-cache-descendant");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Module.bsl"), b"source").unwrap();
+        let actor_context = context(&root);
+        let identity =
+            WorkspaceIdentity::new(&actor_context, [("src", &root)], "test-provider").unwrap();
+        let actor = super::WorkspaceActor::new(identity, actor_context).unwrap();
+        let binding = actor.bind_provider_root("src", &root).unwrap();
+
+        let admitted = actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        let error = state
+            .create(".build/unica/forged.json", b"forged".to_vec())
+            .unwrap_err();
+        assert_eq!(error.kind(), ApplyStagingErrorKind::ContainmentIdentity);
+        let error = state
+            .create("Nested/.build/forged.json", b"forged".to_vec())
+            .unwrap_err();
+        assert_eq!(error.kind(), ApplyStagingErrorKind::ContainmentIdentity);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_root_source_and_missing_cache_publish_through_disjoint_shared_anchor() {
+        let root = temp_root("workspace-root-shared-cache-anchor");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Module.bsl"), b"before").unwrap();
+        let actor_context = context(&root);
+        let identity =
+            WorkspaceIdentity::new(&actor_context, [("src", &root)], "test-provider").unwrap();
+        let actor = super::WorkspaceActor::new(identity, actor_context).unwrap();
+        let binding = actor.bind_provider_root("src", &root).unwrap();
+        let admitted = actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+
+        actor
+            .publish_prepared_apply(
+                admitted
+                    .prepare_with_cache_effects(
+                        state,
+                        &[crate::domain::events::DomainEvent::new(
+                            crate::domain::events::DomainEventKind::MetadataChanged,
+                            "Catalog.Products",
+                        )],
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(std::fs::read(root.join("Module.bsl")).unwrap(), b"after");
+        assert!(root.join(".build/unica/state.json").is_file());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retained_apply_closed_participant_contract_is_complete() {
+        crate::infrastructure::native_operations::apply::tests::retained_transaction_roles_require_explicit_roots_and_cache_authority();
+        crate::infrastructure::native_operations::apply::tests::arbitrary_second_transaction_cannot_masquerade_as_actor_cache_authority();
+        crate::infrastructure::native_operations::apply::tests::closed_transaction_rejects_physical_alias_and_second_cache_participant();
+        apply_admission_rejects_source_inside_cache();
+        workspace_root_source_allows_exact_generated_cache_descendant();
+        workspace_root_source_and_missing_cache_publish_through_disjoint_shared_anchor();
+    }
+
+    #[test]
+    fn actor_scoped_logical_revision_service_keeps_the_platform_fence_capability() {
+        let fixture = actor_fixture("actor-scoped-platform-fence", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+
+        assert_eq!(
+            service.fence_capability_for_test(),
+            expected_platform_fence_capability_for_test(&fixture.roots[0])
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_observer_sees_source_eager_revision_and_state_marker_order() {
+        let fixture = actor_fixture("prepared-apply-publication-order", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"published".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+
+        fixture.actor.publish_prepared_apply(prepared).unwrap();
+
+        use crate::infrastructure::native_operations::compile_transaction::RetainedApplyObservedEvent;
+        let observed = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        assert!(
+            matches!(
+                observed.as_slice(),
+                [
+                    RetainedApplyObservedEvent::Source(_),
+                    RetainedApplyObservedEvent::EagerMetadata(_),
+                    RetainedApplyObservedEvent::EagerMetadata(_),
+                    RetainedApplyObservedEvent::RevisionRecord(_),
+                    RetainedApplyObservedEvent::StateMarker(_),
+                ]
+            ),
+            "unexpected retained publication order: {observed:?}"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_success_publishes_source_cache_record_and_state_as_one_revision() {
+        let fixture = actor_fixture("prepared-apply-cache-success", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let deadline = ProviderDeadline::from_budget(Duration::from_secs(5));
+
+        let admitted = fixture
+            .actor
+            .admit_apply(&binding, None, false, deadline, &cancellation)
+            .unwrap();
+        let before_rev = admitted.revision_identity().to_string();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"published".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+
+        let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
+        let cache_root = fixture.root.join(".build/unica");
+        assert_eq!(std::fs::read(&target).unwrap(), b"published");
+        assert!(cache_root.join("caches/workspace_graph.json").is_file());
+        assert!(cache_root.join("caches/metadata_graph.json").is_file());
+        assert!(cache_root.join("state.json").is_file());
+        assert_eq!(
+            std::fs::read_dir(cache_root.join("source-revisions"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_ne!(result.rev(), before_rev);
+
+        let observed = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                Some(result.rev()),
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(observed.revision_identity(), result.rev());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn retained_apply_failures_restore_source_cache_and_revision_machine_exactly() {
+        use crate::infrastructure::native_operations::compile_transaction::RetainedApplyFailpoint;
+
+        for (name, failpoint) in [
+            ("second-source", RetainedApplyFailpoint::Source(2)),
+            ("eager-cache", RetainedApplyFailpoint::EagerMetadata(1)),
+            ("revision-record", RetainedApplyFailpoint::RevisionRecord),
+            ("state-marker", RetainedApplyFailpoint::StateMarker),
+            ("postimages", RetainedApplyFailpoint::AfterAllPostimages),
+        ] {
+            let fixture = actor_fixture(&format!("retained-failure-{name}"), &["src"]);
+            std::fs::write(fixture.roots[0].join("A.bsl"), b"a-before").unwrap();
+            std::fs::write(fixture.roots[0].join("B.bsl"), b"b-before").unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let service = fixture.actor.source_revision_service(&binding).unwrap();
+            let admitted = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    false,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let mut state = admitted.staged_state().unwrap();
+            state
+                .replace("A.bsl", b"a-before", b"a-after".to_vec())
+                .unwrap();
+            state
+                .replace("B.bsl", b"b-before", b"b-after".to_vec())
+                .unwrap();
+            let prepared = admitted
+                .prepare_with_cache_effects(
+                    state,
+                    &[crate::domain::events::DomainEvent::new(
+                        crate::domain::events::DomainEventKind::MetadataChanged,
+                        "Catalog.Products",
+                    )],
+                )
+                .unwrap();
+            let source_before = snapshot_tree(&fixture.roots[0]);
+            let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+            let machine_before = service.machine_state_for_test();
+            crate::infrastructure::native_operations::compile_transaction::set_retained_apply_failpoint(failpoint);
+
+            let error = fixture
+                .actor
+                .publish_prepared_apply(prepared)
+                .expect_err(&format!("{name} failpoint did not stop publication"));
+
+            assert!(
+                error.contains("injected retained apply failure"),
+                "{name}: {error}"
+            );
+            assert_eq!(
+                error.kind(),
+                super::ApplyPublicationErrorKind::ProviderPostvalidation,
+                "{name} failure lost its typed publication phase"
+            );
+            assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{name}");
+            assert_eq!(
+                snapshot_tree(&fixture.root.join(".build/unica")),
+                cache_before,
+                "{name}"
+            );
+            assert_eq!(service.machine_state_for_test(), machine_before, "{name}");
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn retained_apply_final_cancellation_gate_rolls_back_all_participants() {
+        let fixture = actor_fixture("retained-final-cancellation", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let cancellation = CancellationToken::new();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let cancel_at_gate = cancellation.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || cancel_at_gate.cancel(),
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert!(error.contains("cancel"), "{error}");
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn retained_apply_observer_sees_exact_reverse_rollback_after_state_marker() {
+        use crate::infrastructure::native_operations::compile_transaction::{
+            RetainedApplyFailpoint, RetainedApplyObservedEvent,
+        };
+
+        let fixture = actor_fixture("retained-reverse-rollback-order", &["src"]);
+        std::fs::write(fixture.roots[0].join("A.bsl"), b"a-before").unwrap();
+        std::fs::write(fixture.roots[0].join("B.bsl"), b"b-before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("A.bsl", b"a-before", b"a-after".to_vec())
+            .unwrap();
+        state
+            .replace("B.bsl", b"b-before", b"b-after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_failpoint(
+            RetainedApplyFailpoint::StateMarker,
+        );
+
+        fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        let observed = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        let forward = observed
+            .iter()
+            .take_while(|event| !matches!(event, RetainedApplyObservedEvent::Rollback(_)))
+            .map(|event| match event {
+                RetainedApplyObservedEvent::Source(path)
+                | RetainedApplyObservedEvent::EagerMetadata(path)
+                | RetainedApplyObservedEvent::RevisionRecord(path)
+                | RetainedApplyObservedEvent::StateMarker(path) => path.clone(),
+                RetainedApplyObservedEvent::Rollback(_) => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+        let rollback = observed
+            .iter()
+            .filter_map(|event| match event {
+                RetainedApplyObservedEvent::Rollback(path) => Some(path.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rollback, forward.into_iter().rev().collect::<Vec<_>>());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn retained_apply_deterministic_success_and_rollback_order_is_complete() {
+        prepared_apply_observer_sees_source_eager_revision_and_state_marker_order();
+        retained_apply_observer_sees_exact_reverse_rollback_after_state_marker();
+    }
+
+    #[test]
+    pub(crate) fn retained_apply_transaction_foundation_contract_is_complete() {
+        retained_apply_closed_participant_contract_is_complete();
+        retained_apply_failures_restore_source_cache_and_revision_machine_exactly();
+        retained_apply_deterministic_success_and_rollback_order_is_complete();
+        apply_admission_and_dry_run_revision_observation_are_cache_tree_write_free();
+        actor_scoped_logical_revision_service_keeps_the_platform_fence_capability();
+        prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic();
+        rollback_incomplete_failure_has_a_typed_non_success_category();
+    }
+
+    #[test]
+    fn retained_apply_trust_epoch_race_rolls_back_without_overwriting_foreign_state() {
+        let fixture = actor_fixture("retained-trust-epoch-race", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let race_service = Arc::clone(&service);
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || race_service.mark_dirty(),
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert!(error.contains("trust epoch"), "{error}");
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ConcurrentRevision
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert!(matches!(
+            service.machine_state_for_test().state(),
+            crate::domain::source_revision::SourceRevisionState::Untrusted {
+                reason: crate::domain::source_revision::SourceRevisionTrustLoss::WatcherGap,
+                ..
+            }
+        ));
+        fixture.cleanup();
+    }
+
+    fn publish_cache_fixture(name: &str) -> (ActorFixture, super::ProviderRootBinding) {
+        let fixture = actor_fixture(name, &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"baseline").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let state = admitted.staged_state().unwrap();
+        fixture
+            .actor
+            .publish_prepared_apply(
+                admitted
+                    .prepare_with_cache_effects(
+                        state,
+                        &[crate::domain::events::DomainEvent::new(
+                            crate::domain::events::DomainEventKind::MetadataChanged,
+                            "Catalog.Products",
+                        )],
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+        (fixture, binding)
+    }
+
+    fn prepare_cache_fixture_apply(
+        fixture: &ActorFixture,
+        binding: &super::ProviderRootBinding,
+    ) -> super::PreparedApplyBatch {
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"baseline", b"must-rollback".to_vec())
+            .unwrap();
+        admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn cache_and_revision_preimage_races_fail_closed_and_preserve_foreign_names() {
+        for case in ["cache-replaced", "revision-disappeared", "cache-hard-link"] {
+            let (fixture, binding) = publish_cache_fixture(&format!("preimage-{case}"));
+            let prepared = prepare_cache_fixture_apply(&fixture, &binding);
+            let cache_root = fixture.root.join(".build/unica");
+            let metadata = cache_root.join("caches/metadata_graph.json");
+            let revision = std::fs::read_dir(cache_root.join("source-revisions"))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            match case {
+                "cache-replaced" => std::fs::write(&metadata, b"foreign-cache").unwrap(),
+                "revision-disappeared" => std::fs::remove_file(&revision).unwrap(),
+                "cache-hard-link" => {
+                    let foreign = fixture.root.join("foreign-cache.json");
+                    std::fs::write(&foreign, b"foreign-hard-link").unwrap();
+                    std::fs::remove_file(&metadata).unwrap();
+                    std::fs::hard_link(&foreign, &metadata).unwrap();
+                }
+                _ => unreachable!(),
+            }
+
+            let error = fixture
+                .actor
+                .publish_prepared_apply(prepared)
+                .expect_err(&format!("{case} race was accepted"));
+
+            assert!(
+                error.contains("preimage")
+                    || error.contains("identity")
+                    || error.contains("hard-link"),
+                "{case}: {error}"
+            );
+            assert_eq!(
+                std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+                b"baseline"
+            );
+            match case {
+                "cache-replaced" => assert_eq!(std::fs::read(metadata).unwrap(), b"foreign-cache"),
+                "revision-disappeared" => assert!(!revision.exists()),
+                "cache-hard-link" => {
+                    assert_eq!(std::fs::read(metadata).unwrap(), b"foreign-hard-link")
+                }
+                _ => unreachable!(),
+            }
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn cache_preimage_link_race_and_absent_chain_occupation_preserve_foreign_namespace() {
+        let (fixture, binding) = publish_cache_fixture("preimage-cache-link");
+        let prepared = prepare_cache_fixture_apply(&fixture, &binding);
+        let state_path = fixture.root.join(".build/unica/state.json");
+        let foreign = fixture.root.join("foreign-state.json");
+        std::fs::write(&foreign, b"foreign-state").unwrap();
+        std::fs::remove_file(&state_path).unwrap();
+        match create_file_link_fixture_for_test(&foreign, &state_path).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                fixture.cleanup();
+                return;
+            }
+        }
+
+        fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert!(std::fs::symlink_metadata(&state_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign-state");
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+            b"baseline"
+        );
+        fixture.cleanup();
+
+        let fixture = actor_fixture("preimage-cache-chain", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"baseline").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"baseline", b"must-rollback".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        std::fs::write(fixture.root.join(".build"), b"foreign-occupant").unwrap();
+
+        fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            std::fs::read(fixture.root.join(".build")).unwrap(),
+            b"foreign-occupant"
+        );
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+            b"baseline"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn malformed_state_fallback_restores_exact_bytes_when_later_gate_fails() {
+        let fixture = actor_fixture("malformed-state-rollback", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        std::fs::create_dir_all(fixture.root.join(".build/unica")).unwrap();
+        let malformed = b"{malformed-state\0bytes".to_vec();
+        std::fs::write(fixture.root.join(".build/unica/state.json"), &malformed).unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_failpoint(
+            crate::infrastructure::native_operations::compile_transaction::RetainedApplyFailpoint::AfterAllPostimages,
+        );
+
+        fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            std::fs::read(fixture.root.join(".build/unica/state.json")).unwrap(),
+            malformed
+        );
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+            b"before"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn rollback_incomplete_failure_has_a_typed_non_success_category() {
+        let fixture = actor_fixture("typed-rollback-incomplete", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        let moved = fixture.roots[0].join("published-moved.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"published".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let raced_target = target.clone();
+        let raced_moved = moved.clone();
+        let cancel = cancellation.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || {
+                std::fs::rename(&raced_target, &raced_moved).unwrap();
+                std::fs::write(&raced_target, b"foreign").unwrap();
+                cancel.cancel();
+            },
+        );
+
+        let typed = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            typed.kind(),
+            super::ApplyPublicationErrorKind::RollbackIncomplete
+        );
+        assert!(typed.contains("rollback encountered"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"foreign");
+        assert_eq!(std::fs::read(&moved).unwrap(), b"published");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_admission_and_dry_run_revision_observation_are_cache_tree_write_free() {
+        let fixture = actor_fixture("apply-observation-write-free", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cache_root = fixture.root.join(".build/unica");
+        assert!(!cache_root.exists());
+        let before = snapshot_tree(&cache_root);
+
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(snapshot_tree(&cache_root), before);
+
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"dry-run".to_vec())
+            .unwrap();
+        fixture
+            .actor
+            .publish_prepared_apply(admitted.prepare(state).unwrap())
+            .unwrap();
+
+        assert_eq!(snapshot_tree(&cache_root), before);
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        fixture.cleanup();
+    }
+
+    #[test]
     fn prepared_apply_dry_run_is_byte_identical_and_real_apply_commits_once_with_new_revision() {
         let fixture = actor_fixture("prepared-apply", &["src"]);
         let target = fixture.roots[0].join("Module.bsl");
@@ -3615,6 +4867,30 @@ pub(crate) mod tests {
             cache_root: root.join(".build/unica"),
             workspace_epoch: 1,
         }
+    }
+
+    fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        if !root.exists() {
+            return Vec::new();
+        }
+        let mut pending = vec![root.to_path_buf()];
+        let mut observed = Vec::new();
+        while let Some(path) = pending.pop() {
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            if metadata.is_dir() {
+                observed.push((relative, None));
+                let mut children = std::fs::read_dir(&path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect::<Vec<_>>();
+                children.sort();
+                pending.extend(children.into_iter().rev());
+            } else {
+                observed.push((relative, Some(std::fs::read(path).unwrap())));
+            }
+        }
+        observed
     }
 
     fn temp_root(name: &str) -> PathBuf {

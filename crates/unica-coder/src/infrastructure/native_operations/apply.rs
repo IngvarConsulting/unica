@@ -7,6 +7,7 @@ use crate::infrastructure::native_operations::compile_transaction::{
 use crate::infrastructure::platform::filesystem::{
     FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
 };
+use crate::infrastructure::source_roots::GENERATED_DIR_NAME;
 use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
@@ -21,6 +22,7 @@ pub(crate) enum ApplyStagingErrorKind {
     ContainmentIdentity,
     AbsentChainOccupied,
     UnsupportedProvider,
+    ConcurrentRevision,
     Invariant,
 }
 
@@ -136,6 +138,7 @@ pub(crate) struct ApplyStagedState {
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
     writer_authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
+    generated_subtree_forbidden: bool,
     #[cfg(test)]
     absent_name_identity_for_test: Option<fn(&std::ffi::OsStr, &std::ffi::OsStr) -> bool>,
 }
@@ -153,9 +156,15 @@ impl ApplyStagedState {
             deadline,
             cancellation,
             writer_authority,
+            generated_subtree_forbidden: false,
             #[cfg(test)]
             absent_name_identity_for_test: None,
         }
+    }
+
+    pub(in crate::infrastructure) fn forbid_generated_subtree(mut self) -> Self {
+        self.generated_subtree_forbidden = true;
+        self
     }
 
     pub(crate) fn read(&mut self, relative: &Path) -> Result<Option<Vec<u8>>, ApplyStagingError> {
@@ -253,14 +262,11 @@ impl ApplyStagedState {
         self.checkpoint("apply finalization")?;
         let mut transaction = CompileTransaction::new();
         transaction
-            .bind_retained_apply_authority(&self.writer_authority)
+            .bind_retained_apply_root(Arc::clone(&self.root), &self.writer_authority)
             .map_err(|error| ApplyStagingError::new(ApplyStagingErrorKind::Invariant, error))?;
         let mut entries = self.entries;
         entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         for entry in entries {
-            if entry.original == entry.current {
-                continue;
-            }
             transaction
                 .bind_retained_apply_change(
                     RetainedApplyChangeBinding {
@@ -306,6 +312,16 @@ impl ApplyStagedState {
 
     fn ensure_loaded(&mut self, relative: &Path) -> Result<usize, ApplyStagingError> {
         self.checkpoint("apply staged read")?;
+        if self.generated_subtree_forbidden
+            && relative
+                .components()
+                .any(|component| component.as_os_str() == GENERATED_DIR_NAME)
+        {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::ContainmentIdentity,
+                "source participant cannot address the generated .build subtree",
+            ));
+        }
         if let Some(index) = self
             .entries
             .iter()
@@ -569,7 +585,7 @@ fn strict_relative(relative: &Path) -> Result<PathBuf, ApplyStagingError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         ApplyStagedState, ApplyStagingErrorKind, StagedChangeKind, StagedFileState,
         MAX_APPLY_FILE_BYTES,
@@ -591,13 +607,128 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn staged(root: &Path) -> ApplyStagedState {
+        staged_with_authority(
+            root,
+            crate::infrastructure::workspace_actor::apply_writer_authority_for_test(),
+        )
+    }
+
+    fn staged_with_authority(
+        root: &Path,
+        authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
+    ) -> ApplyStagedState {
         let canonical = std::fs::canonicalize(root).unwrap();
         ApplyStagedState::from_retained_root(
             Arc::new(RetainedDirectoryCapability::open(&canonical).unwrap()),
             ProviderDeadline::from_budget(Duration::from_secs(5)),
             CancellationToken::new(),
-            crate::infrastructure::workspace_actor::apply_writer_authority_for_test(),
+            authority,
         )
+    }
+
+    fn cache_participant_authority(
+        root: &Path,
+        authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
+    ) -> crate::infrastructure::workspace_actor::WorkspaceCacheParticipantAuthority {
+        let canonical = std::fs::canonicalize(root).unwrap();
+        let retained = RetainedDirectoryCapability::open(&canonical).unwrap();
+        crate::infrastructure::workspace_actor::workspace_cache_participant_authority_for_test(
+            authority, &retained,
+        )
+    }
+
+    #[test]
+    pub(crate) fn retained_transaction_roles_require_explicit_roots_and_cache_authority() {
+        let root = temp_root("closed-participant-roots");
+        let source = root.join("source");
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let cache_participant = cache_participant_authority(&cache, authority.clone());
+
+        let closed = staged_with_authority(&source, authority.clone())
+            .finalize()
+            .unwrap()
+            .close_with_workspace_cache_participant(
+                staged_with_authority(&cache, authority.clone())
+                    .finalize()
+                    .unwrap(),
+                &cache_participant,
+            )
+            .unwrap();
+
+        assert_eq!(closed.retained_role_root_counts_for_test(), (1, 1));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    pub(crate) fn arbitrary_second_transaction_cannot_masquerade_as_actor_cache_authority() {
+        let root = temp_root("closed-participant-authority");
+        let source = root.join("source");
+        let foreign = root.join("foreign");
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let source = staged_with_authority(&source, authority.clone())
+            .finalize()
+            .unwrap();
+        let foreign = staged_with_authority(&foreign, authority.clone())
+            .finalize()
+            .unwrap();
+        let cache_participant = cache_participant_authority(&cache, authority.clone());
+
+        assert!(source
+            .close_with_workspace_cache_participant(foreign, &cache_participant)
+            .is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    pub(crate) fn closed_transaction_rejects_physical_alias_and_second_cache_participant() {
+        let root = temp_root("closed-participant-cardinality");
+        let source = root.join("source");
+        let cache = root.join("cache");
+        let other = root.join("other-cache");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let aliased_participant = cache_participant_authority(&source, authority.clone());
+
+        let aliased_source = staged_with_authority(&source, authority.clone())
+            .finalize()
+            .unwrap();
+        let aliased_cache = staged_with_authority(&source, authority.clone())
+            .finalize()
+            .unwrap();
+        assert!(aliased_source
+            .close_with_workspace_cache_participant(aliased_cache, &aliased_participant)
+            .is_err());
+
+        let cache_participant = cache_participant_authority(&cache, authority.clone());
+        let closed = staged_with_authority(&source, authority.clone())
+            .finalize()
+            .unwrap()
+            .close_with_workspace_cache_participant(
+                staged_with_authority(&cache, authority.clone())
+                    .finalize()
+                    .unwrap(),
+                &cache_participant,
+            )
+            .unwrap();
+        let other_participant = cache_participant_authority(&other, authority.clone());
+        assert!(closed
+            .close_with_workspace_cache_participant(
+                staged_with_authority(&other, authority.clone())
+                    .finalize()
+                    .unwrap(),
+                &other_participant,
+            )
+            .is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

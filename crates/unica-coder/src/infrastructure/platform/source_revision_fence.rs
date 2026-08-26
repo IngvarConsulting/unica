@@ -3,11 +3,27 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::source_revision::SourceRevisionTrustLoss;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FenceCapability {
     ProvenFast,
     Unsupported,
+}
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn expected_platform_fence_capability_for_test(root: &Path) -> FenceCapability {
+    if macos::is_local_apfs(root) {
+        FenceCapability::ProvenFast
+    } else {
+        FenceCapability::Unsupported
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+pub(crate) fn expected_platform_fence_capability_for_test(_root: &Path) -> FenceCapability {
+    FenceCapability::Unsupported
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +39,63 @@ pub(crate) trait SourceRevisionFence: Send + Sync {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<FenceOutcome, String>;
+}
+
+/// Defers the macOS watcher/cache initialization until a caller actually uses
+/// the fence. Retained apply observation never calls the fence, while logical
+/// reads keep the exact same platform capability on first use.
+#[cfg(target_os = "macos")]
+pub(crate) fn deferred_platform_fence(
+    root: &Path,
+    cache_root: &Path,
+) -> Arc<dyn SourceRevisionFence> {
+    Arc::new(DeferredPlatformFence {
+        root: root.to_path_buf(),
+        cache_root: cache_root.to_path_buf(),
+        initialized: OnceLock::new(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn deferred_platform_fence(
+    root: &Path,
+    cache_root: &Path,
+) -> Arc<dyn SourceRevisionFence> {
+    platform_fence(root, cache_root).expect("non-macOS platform fence construction is infallible")
+}
+
+#[cfg(target_os = "macos")]
+struct DeferredPlatformFence {
+    root: PathBuf,
+    cache_root: PathBuf,
+    initialized: OnceLock<Result<Arc<dyn SourceRevisionFence>, String>>,
+}
+
+#[cfg(target_os = "macos")]
+impl DeferredPlatformFence {
+    fn initialized(&self) -> Result<&Arc<dyn SourceRevisionFence>, String> {
+        self.initialized
+            .get_or_init(|| platform_fence(&self.root, &self.cache_root))
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl SourceRevisionFence for DeferredPlatformFence {
+    fn capability(&self) -> FenceCapability {
+        self.initialized()
+            .map(|fence| fence.capability())
+            .unwrap_or(FenceCapability::Unsupported)
+    }
+
+    fn flush(
+        &self,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<FenceOutcome, String> {
+        self.initialized()?.flush(deadline, cancellation)
+    }
 }
 
 #[cfg(target_os = "macos")]

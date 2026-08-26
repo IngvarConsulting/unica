@@ -972,5 +972,49 @@ class LayerBoundaryTests(unittest.TestCase):
         )
 
 
+class RetainedApplyFoundationTests(unittest.TestCase):
+    def test_closed_transaction_slice_has_narrow_active_records(self) -> None:
+        decision = ARCH_ROOT / "decisions/2026-08-26-retained-apply-transaction-foundation-slice.md"
+        participants = ARCH_ROOT / "invariants/INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS.md"
+        rollback = ARCH_ROOT / "invariants/INV.CACHE.RETAINED-APPLY-REVISION-ROLLBACK.md"
+        order = ARCH_ROOT / "invariants/INV.CACHE.RETAINED-APPLY-DETERMINISTIC-ORDER.md"
+        write_free = ARCH_ROOT / "invariants/INV.SOURCE.RETAINED-APPLY-WRITE-FREE.md"
+
+        self.assertTrue(decision.is_file())
+        self.assertTrue(participants.is_file())
+        self.assertTrue(rollback.is_file())
+        self.assertTrue(order.is_file())
+        self.assertTrue(write_free.is_file())
+        self.assertIn("status: active", decision.read_text(encoding="utf-8"))
+        self.assertIn(
+            "retained_apply_transaction_foundation_contract_is_complete",
+            decision.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "retained_apply_closed_participant_contract_is_complete",
+            participants.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "retained_apply_failures_restore_source_cache_and_revision_machine_exactly",
+            rollback.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "retained_apply_deterministic_success_and_rollback_order_is_complete",
+            order.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "apply_admission_and_dry_run_revision_observation_are_cache_tree_write_free",
+            write_free.read_text(encoding="utf-8"),
+        )
+
+    def test_process_cache_rule_claims_only_application_dispatch(self) -> None:
+        text = (ARCH_ROOT / "invariants/INV.CACHE.ORCHESTRATOR-OWNED.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("отдельно", text)
+        self.assertNotIn("Обработчик не публикует кеш", text)
+        self.assertIn("application dispatch", text.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::domain::source_revision::SourceRevision;
 use crate::infrastructure::platform::filesystem::{
     create_new_directory_child, file_identity, hard_link_count, metadata_is_link_or_reparse_point,
     open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
@@ -31,11 +32,100 @@ use crate::infrastructure::platform::filesystem::{
     rename_no_replace, retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
     RetainedChildCapability, RetainedDirectoryCapability,
 };
+use crate::infrastructure::source_revision::PreparedRevisionReconciliation;
 use crate::infrastructure::source_roots::normalize_path_identity;
-use crate::infrastructure::workspace_actor::ApplyWriterAuthority;
+use crate::infrastructure::workspace_actor::{
+    ApplyPublicationError, ApplyPublicationErrorKind, ApplyWriterAuthority, RetainedApplyFinalGate,
+    WorkspaceCacheParticipantAuthority,
+};
 
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RetainedApplyObservedEvent {
+    Source(PathBuf),
+    EagerMetadata(PathBuf),
+    RevisionRecord(PathBuf),
+    StateMarker(PathBuf),
+    Rollback(PathBuf),
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetainedApplyFailpoint {
+    Source(usize),
+    EagerMetadata(usize),
+    RevisionRecord,
+    StateMarker,
+    AfterAllPostimages,
+}
+
+#[cfg(test)]
+thread_local! {
+    static RETAINED_APPLY_OBSERVED_EVENTS: RefCell<Vec<RetainedApplyObservedEvent>> = const { RefCell::new(Vec::new()) };
+    static RETAINED_APPLY_FAILPOINT: RefCell<Option<RetainedApplyFailpoint>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_retained_apply_observed_events() -> Vec<RetainedApplyObservedEvent> {
+    RETAINED_APPLY_OBSERVED_EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()))
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_apply_failpoint(failpoint: RetainedApplyFailpoint) {
+    RETAINED_APPLY_FAILPOINT.with(|slot| *slot.borrow_mut() = Some(failpoint));
+}
+
+#[cfg(test)]
+fn retained_apply_fail_after(event: &RetainedApplyObservedEvent) -> Result<(), String> {
+    RETAINED_APPLY_FAILPOINT.with(|slot| {
+        let mut pending = slot.borrow_mut();
+        let Some(failpoint) = pending.as_mut() else {
+            return Ok(());
+        };
+        let triggered = match (failpoint, event) {
+            (RetainedApplyFailpoint::Source(remaining), RetainedApplyObservedEvent::Source(_)) => {
+                *remaining = remaining.saturating_sub(1);
+                *remaining == 0
+            }
+            (
+                RetainedApplyFailpoint::EagerMetadata(remaining),
+                RetainedApplyObservedEvent::EagerMetadata(_),
+            ) => {
+                *remaining = remaining.saturating_sub(1);
+                *remaining == 0
+            }
+            (
+                RetainedApplyFailpoint::RevisionRecord,
+                RetainedApplyObservedEvent::RevisionRecord(_),
+            )
+            | (RetainedApplyFailpoint::StateMarker, RetainedApplyObservedEvent::StateMarker(_)) => {
+                true
+            }
+            _ => false,
+        };
+        if triggered {
+            pending.take();
+            Err("injected retained apply failure after publication".to_string())
+        } else {
+            Ok(())
+        }
+    })
+}
+
+#[cfg(test)]
+fn retained_apply_fail_after_all_postimages() -> Result<(), String> {
+    RETAINED_APPLY_FAILPOINT.with(|slot| {
+        if *slot.borrow() == Some(RetainedApplyFailpoint::AfterAllPostimages) {
+            slot.borrow_mut().take();
+            Err("injected retained apply failure after all postimages".to_string())
+        } else {
+            Ok(())
+        }
+    })
+}
 
 #[cfg(test)]
 use crate::infrastructure::platform::filesystem::replace_file_atomically;
@@ -135,6 +225,22 @@ impl std::fmt::Display for RetainedApplyValidationError {
 }
 
 impl std::error::Error for RetainedApplyValidationError {}
+
+fn retained_apply_validation_publication_error(
+    error: RetainedApplyValidationError,
+) -> ApplyPublicationError {
+    let kind = match error.kind() {
+        RetainedApplyValidationErrorKind::ContainmentIdentity
+        | RetainedApplyValidationErrorKind::AbsentChainOccupied => {
+            ApplyPublicationErrorKind::ContainmentIdentity
+        }
+        RetainedApplyValidationErrorKind::UnsupportedProvider => {
+            ApplyPublicationErrorKind::ProviderPostvalidation
+        }
+        RetainedApplyValidationErrorKind::Invariant => ApplyPublicationErrorKind::Invariant,
+    };
+    ApplyPublicationError::new(kind, error.to_string())
+}
 
 impl RetainedApplyCleanupDiagnostic {
     pub(in crate::infrastructure) fn into_parts(self) -> (PathBuf, OsString) {
@@ -312,6 +418,9 @@ pub(crate) struct CompileTransaction {
     planned_path_identities: BTreeMap<PathBuf, PlannedPathKind>,
     retained_apply: Vec<PlannedRetainedApplyChange>,
     retained_apply_authority: Option<ApplyWriterAuthority>,
+    retained_apply_root: Option<Arc<RetainedDirectoryCapability>>,
+    retained_apply_cache_root: Option<Arc<RetainedDirectoryCapability>>,
+    retained_apply_cache_start: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -367,6 +476,24 @@ impl CompileTransaction {
         }
     }
 
+    pub(super) fn bind_retained_apply_root(
+        &mut self,
+        root: Arc<RetainedDirectoryCapability>,
+        authority: &ApplyWriterAuthority,
+    ) -> Result<(), String> {
+        self.bind_retained_apply_authority(authority)?;
+        match &self.retained_apply_root {
+            Some(bound) if bound.identity() != root.identity() => {
+                Err("one retained apply transaction cannot mix source roots".to_string())
+            }
+            Some(_) => Ok(()),
+            None => {
+                self.retained_apply_root = Some(root);
+                Ok(())
+            }
+        }
+    }
+
     pub(super) fn bind_retained_apply_change(
         &mut self,
         binding: RetainedApplyChangeBinding,
@@ -383,13 +510,10 @@ impl CompileTransaction {
             original_file,
         } = binding;
         validate_strict_relative_file_path(&relative_path)?;
-        if original == current {
-            return Ok(());
-        }
         if original.is_some() != original_file.is_some() {
             return Err("retained apply preimage bytes and file authority disagree".to_string());
         }
-        self.bind_retained_apply_authority(authority)?;
+        self.bind_retained_apply_root(Arc::clone(&root), authority)?;
         if self.retained_apply.iter().any(|entry| {
             entry.root.identity() == root.identity() && entry.relative_path == relative_path
         }) {
@@ -420,6 +544,72 @@ impl CompileTransaction {
         Ok(())
     }
 
+    pub(in crate::infrastructure) fn close_with_workspace_cache_participant(
+        mut self,
+        cache: CompileTransaction,
+        participant: &WorkspaceCacheParticipantAuthority,
+    ) -> Result<Self, String> {
+        let authority = participant.writer_authority();
+        if self.retained_apply_cache_start.is_some() || self.retained_apply_cache_root.is_some() {
+            return Err(
+                "retained apply transaction already has a workspace-cache participant".to_string(),
+            );
+        }
+        if cache.retained_apply_cache_start.is_some() || cache.retained_apply_cache_root.is_some() {
+            return Err(
+                "workspace-cache participant must be an unclosed retained transaction".to_string(),
+            );
+        }
+        if self.retained_apply_authority.as_ref() != Some(authority)
+            || cache.retained_apply_authority.as_ref() != Some(authority)
+        {
+            return Err(
+                "source and workspace-cache participants require one actor authority".to_string(),
+            );
+        }
+        let source_root = self
+            .retained_apply_root
+            .as_ref()
+            .ok_or_else(|| "source participant requires one explicit retained root".to_string())?;
+        let cache_root = cache.retained_apply_root.as_ref().ok_or_else(|| {
+            "workspace-cache participant requires one explicit retained root".to_string()
+        })?;
+        if cache_root.identity() != participant.anchor_identity() {
+            return Err(format!(
+                "workspace-cache participant root does not match actor-captured authority for {}",
+                participant.logical_root().display()
+            ));
+        }
+        if source_root.identity() == cache_root.identity() {
+            let relative_cache = participant
+                .logical_root()
+                .strip_prefix(source_root.path())
+                .map_err(|_| {
+                    "source and workspace-cache participants physically alias".to_string()
+                })?;
+            if relative_cache.as_os_str().is_empty()
+                || self.retained_apply.iter().any(|entry| {
+                    entry.relative_path.starts_with(relative_cache)
+                        || relative_cache.starts_with(&entry.relative_path)
+                })
+                || cache
+                    .retained_apply
+                    .iter()
+                    .any(|entry| !entry.relative_path.starts_with(relative_cache))
+            {
+                return Err(
+                    "source and workspace-cache participant targets physically overlap".to_string(),
+                );
+            }
+        }
+        let cache_start = self.retained_apply.len();
+        self.retained_apply.extend(cache.retained_apply);
+        self.retained_apply_cache_root = cache.retained_apply_root;
+        self.retained_apply_cache_start = Some(cache_start);
+        Ok(self)
+    }
+
+    #[cfg(test)]
     pub(crate) fn validate_retained_for_apply(&self) -> Result<(), String> {
         self.validate_retained_for_apply_typed()
             .map_err(|error| error.to_string())
@@ -471,6 +661,7 @@ impl CompileTransaction {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(in crate::infrastructure) fn commit_retained_apply_with<T>(
         self,
         authority: ApplyWriterAuthority,
@@ -485,9 +676,29 @@ impl CompileTransaction {
         let mut published = Vec::with_capacity(self.retained_apply.len());
         let mut created_directories = Vec::new();
         let operation = (|| {
-            for entry in &self.retained_apply {
+            for (_index, entry) in self.retained_apply.iter().enumerate() {
                 checkpoint()?;
                 publish_retained_apply_change(entry, &mut published, &mut created_directories)?;
+                #[cfg(test)]
+                RETAINED_APPLY_OBSERVED_EVENTS.with(|events| {
+                    let event = if self
+                        .retained_apply_cache_start
+                        .is_some_and(|cache_start| _index >= cache_start)
+                    {
+                        if entry.relative_path.ends_with("state.json") {
+                            RetainedApplyObservedEvent::StateMarker(entry.relative_path.clone())
+                        } else if entry.relative_path.components().any(|component| {
+                            component.as_os_str() == OsStr::new("source-revisions")
+                        }) {
+                            RetainedApplyObservedEvent::RevisionRecord(entry.relative_path.clone())
+                        } else {
+                            RetainedApplyObservedEvent::EagerMetadata(entry.relative_path.clone())
+                        }
+                    } else {
+                        RetainedApplyObservedEvent::Source(entry.relative_path.clone())
+                    };
+                    events.borrow_mut().push(event);
+                });
             }
             for entry in &self.retained_apply {
                 checkpoint()?;
@@ -502,7 +713,8 @@ impl CompileTransaction {
                 let path = entry.root.path().join(&entry.relative_path);
                 match (&entry.original, &entry.current) {
                     (None, Some(_)) => report.created.push(path),
-                    (Some(_), Some(_)) => report.updated.push(path),
+                    (Some(before), Some(after)) if before != after => report.updated.push(path),
+                    (Some(_), Some(_)) => {}
                     (Some(_), None) | (None, None) => {}
                 }
             }
@@ -525,9 +737,153 @@ impl CompileTransaction {
         }
     }
 
+    pub(in crate::infrastructure) fn commit_retained_apply<R>(
+        self,
+        authority: ApplyWriterAuthority,
+        reconciliation: PreparedRevisionReconciliation,
+        final_gate: RetainedApplyFinalGate<'_, R>,
+    ) -> Result<(CommitReport, SourceRevision), ApplyPublicationError> {
+        if self.retained_apply_authority.as_ref() != Some(&authority) {
+            return Err(ApplyPublicationError::new(
+                ApplyPublicationErrorKind::Invariant,
+                "retained apply commit requires its actor-issued authority",
+            ));
+        }
+        let cache_start = self.retained_apply_cache_start.ok_or_else(|| {
+            ApplyPublicationError::new(
+                ApplyPublicationErrorKind::Invariant,
+                "retained apply commit requires a closed workspace-cache participant",
+            )
+        })?;
+        self.validate_retained_for_apply_typed()
+            .map_err(retained_apply_validation_publication_error)?;
+        final_gate.checkpoint("prepared apply commit")?;
+        let active_revision = reconciliation
+            .activate(final_gate.deadline(), final_gate.cancellation())
+            .map_err(|error| final_gate.revision_error(error))?;
+        let mut published = Vec::with_capacity(self.retained_apply.len());
+        let mut created_directories = Vec::new();
+        let operation = (|| {
+            for entry in &self.retained_apply[..cache_start] {
+                final_gate.checkpoint("prepared apply source publication")?;
+                publish_retained_apply_change(entry, &mut published, &mut created_directories)
+                    .map_err(|error| {
+                        ApplyPublicationError::new(
+                            ApplyPublicationErrorKind::ContainmentIdentity,
+                            error,
+                        )
+                    })?;
+                #[cfg(test)]
+                {
+                    let event = RetainedApplyObservedEvent::Source(entry.relative_path.clone());
+                    RETAINED_APPLY_OBSERVED_EVENTS
+                        .with(|events| events.borrow_mut().push(event.clone()));
+                    retained_apply_fail_after(&event).map_err(|error| {
+                        ApplyPublicationError::new(
+                            ApplyPublicationErrorKind::ProviderPostvalidation,
+                            error,
+                        )
+                    })?;
+                }
+            }
+            active_revision
+                .validate_published_source(final_gate.deadline(), final_gate.cancellation())
+                .map_err(|error| final_gate.revision_error(error))?;
+            for entry in &self.retained_apply[cache_start..] {
+                final_gate.checkpoint("prepared apply cache publication")?;
+                publish_retained_apply_change(entry, &mut published, &mut created_directories)
+                    .map_err(|error| {
+                        ApplyPublicationError::new(
+                            ApplyPublicationErrorKind::ContainmentIdentity,
+                            error,
+                        )
+                    })?;
+                #[cfg(test)]
+                {
+                    let event =
+                        if entry.relative_path.ends_with("state.json") {
+                            RetainedApplyObservedEvent::StateMarker(entry.relative_path.clone())
+                        } else if entry.relative_path.components().any(|component| {
+                            component.as_os_str() == OsStr::new("source-revisions")
+                        }) {
+                            RetainedApplyObservedEvent::RevisionRecord(entry.relative_path.clone())
+                        } else {
+                            RetainedApplyObservedEvent::EagerMetadata(entry.relative_path.clone())
+                        };
+                    RETAINED_APPLY_OBSERVED_EVENTS
+                        .with(|events| events.borrow_mut().push(event.clone()));
+                    retained_apply_fail_after(&event).map_err(|error| {
+                        ApplyPublicationError::new(
+                            ApplyPublicationErrorKind::ProviderPostvalidation,
+                            error,
+                        )
+                    })?;
+                }
+            }
+            for entry in &self.retained_apply {
+                final_gate.checkpoint("prepared apply postimage validation")?;
+                validate_retained_apply_postimage(entry, &entry.current, &created_directories)
+                    .map_err(|error| {
+                        ApplyPublicationError::new(
+                            ApplyPublicationErrorKind::ProviderPostvalidation,
+                            error,
+                        )
+                    })?;
+            }
+            #[cfg(test)]
+            retained_apply_fail_after_all_postimages().map_err(|error| {
+                ApplyPublicationError::new(ApplyPublicationErrorKind::ProviderPostvalidation, error)
+            })?;
+            #[cfg(test)]
+            run_retained_apply_before_post_validation_hook();
+            final_gate.validate()?;
+            let revision = active_revision
+                .install()
+                .map_err(|error| final_gate.revision_error(error))?;
+            let mut report = CommitReport::default();
+            finalize_retained_apply_recovery(&mut published, &mut report);
+            for entry in &self.retained_apply {
+                let path = entry.root.path().join(&entry.relative_path);
+                match (&entry.original, &entry.current) {
+                    (None, Some(_)) => report.created.push(path),
+                    (Some(before), Some(after)) if before != after => report.updated.push(path),
+                    (Some(_), Some(_)) => {}
+                    (Some(_), None) | (None, None) => {}
+                }
+            }
+            Ok((report, revision))
+        })();
+        match operation {
+            Ok(result) => Ok(result),
+            Err(primary) => {
+                let rollback_errors =
+                    rollback_retained_apply(&mut published, &mut created_directories);
+                if rollback_errors.is_empty() {
+                    Err(primary)
+                } else {
+                    Err(ApplyPublicationError::new(
+                        ApplyPublicationErrorKind::RollbackIncomplete,
+                        format!(
+                            "{primary}; retained apply rollback encountered: {}",
+                            rollback_errors.join("; ")
+                        ),
+                    ))
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn retained_planned_change_count_for_test(&self) -> usize {
         self.retained_apply.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_role_root_counts_for_test(&self) -> (usize, usize) {
+        (
+            usize::from(self.retained_apply_root.is_some()),
+            usize::from(self.retained_apply_cache_root.is_some()),
+        )
     }
 
     /// Whether an existing exact plan already protects this path with the
@@ -2211,6 +2567,9 @@ fn publish_retained_apply_change(
     journal: &mut Vec<PublishedRetainedApplyChange>,
     created_directories: &mut Vec<CreatedRetainedApplyDirectory>,
 ) -> Result<(), String> {
+    if entry.original == entry.current {
+        return Ok(());
+    }
     let parent = if entry.missing_parent_chain.is_empty() {
         validate_retained_apply_state(entry, &entry.original, false)?;
         entry.ancestor.clone()
@@ -2333,6 +2692,14 @@ fn rollback_retained_apply(
 ) -> Vec<String> {
     let mut errors = Vec::new();
     while let Some(change) = published.pop() {
+        #[cfg(test)]
+        RETAINED_APPLY_OBSERVED_EVENTS.with(|events| {
+            events
+                .borrow_mut()
+                .push(RetainedApplyObservedEvent::Rollback(
+                    change.relative_path.clone(),
+                ));
+        });
         if let Some(file) = change.published.as_ref() {
             if let Err(error) =
                 file.remove_named_identity_relative_for_retained_apply(&retained_apply_stage_name())

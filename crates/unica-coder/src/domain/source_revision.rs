@@ -32,7 +32,7 @@ pub enum SourceRevisionState {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceRevisionMachine {
     state: SourceRevisionState,
     last_trusted: Option<SourceRevision>,
@@ -73,6 +73,24 @@ impl SourceRevisionMachine {
         &self.state
     }
 
+    /// Derives the revision that a successful reconciliation would publish
+    /// without changing trust, generation or the last trusted snapshot.
+    pub(crate) fn candidate_for_digest(&self, digest: String) -> Result<SourceRevision, String> {
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("source revision digest must be 64 hexadecimal characters".to_string());
+        }
+        let generation = match self.last_trusted.as_ref() {
+            Some(previous) if previous.digest == digest => previous.generation,
+            Some(previous) => previous.generation.saturating_add(1),
+            None => 1,
+        };
+        Ok(SourceRevision {
+            generation,
+            digest,
+            algorithm: SOURCE_REVISION_ALGORITHM.to_string(),
+        })
+    }
+
     pub fn begin_reconcile(&mut self) {
         self.state = SourceRevisionState::Reconciling {
             generation: self.generation(),
@@ -84,16 +102,7 @@ impl SourceRevisionMachine {
             self.lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
             return Err("source revision digest must be 64 hexadecimal characters".to_string());
         }
-        let generation = match self.last_trusted.as_ref() {
-            Some(previous) if previous.digest == digest => previous.generation,
-            Some(previous) => previous.generation.saturating_add(1),
-            None => 1,
-        };
-        let revision = SourceRevision {
-            generation,
-            digest,
-            algorithm: SOURCE_REVISION_ALGORITHM.to_string(),
-        };
+        let revision = self.candidate_for_digest(digest)?;
         self.last_trusted = Some(revision.clone());
         self.state = SourceRevisionState::Trusted(revision.clone());
         Ok(revision)
@@ -112,6 +121,23 @@ impl SourceRevisionMachine {
 
     pub fn trust_loss_epoch(&self) -> u64 {
         self.trust_loss_epoch
+    }
+
+    /// Installs a previously validated candidate only while the entire
+    /// admitted machine state (including the trust-loss epoch) is unchanged.
+    /// The candidate was already validated when it was prepared, so success is
+    /// infallible and may be the final observable step of a retained commit.
+    pub(crate) fn install_candidate_if_unchanged(
+        &mut self,
+        expected: &Self,
+        candidate: SourceRevision,
+    ) -> bool {
+        if self != expected {
+            return false;
+        }
+        self.last_trusted = Some(candidate.clone());
+        self.state = SourceRevisionState::Trusted(candidate);
+        true
     }
 
     pub fn lose_trust(&mut self, reason: SourceRevisionTrustLoss) {

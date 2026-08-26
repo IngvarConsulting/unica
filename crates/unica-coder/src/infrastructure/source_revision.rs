@@ -11,10 +11,11 @@ use crate::infrastructure::platform::filesystem::{
     is_nofollow_link_error, FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
 };
 use crate::infrastructure::platform::source_revision_fence::{
-    platform_fence, FenceCapability, FenceOutcome, SourceRevisionFence,
+    deferred_platform_fence, platform_fence, FenceCapability, FenceOutcome, SourceRevisionFence,
 };
 // The corpus scan and the platform fence must prune the same directory: a
 // fence that reports what the manifest ignores can never converge.
+use crate::infrastructure::native_operations::apply::{StagedApplyChange, StagedFileState};
 use crate::infrastructure::source_roots::GENERATED_DIR_NAME;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,7 +27,7 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -259,6 +260,128 @@ pub(crate) struct RetainedRevisionLease {
     root_identity: FileIdentity,
 }
 
+pub(crate) struct PreparedRevisionReconciliation {
+    service: Arc<SourceRevisionService>,
+    root: Arc<RetainedDirectoryCapability>,
+    root_identity: FileIdentity,
+    expected_machine: SourceRevisionMachine,
+    projected_manifest: SourceManifest,
+    candidate: SourceRevision,
+    record_path: PathBuf,
+    record_bytes: Vec<u8>,
+}
+
+pub(crate) struct ActiveRevisionReconciliation<'a> {
+    prepared: &'a PreparedRevisionReconciliation,
+    _operation: MutexGuard<'a, ()>,
+}
+
+impl PreparedRevisionReconciliation {
+    pub(crate) fn record_path(&self) -> &Path {
+        &self.record_path
+    }
+
+    pub(crate) fn record_bytes(&self) -> &[u8] {
+        &self.record_bytes
+    }
+
+    pub(crate) fn activate(
+        &self,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<ActiveRevisionReconciliation<'_>, String> {
+        let operation = self.service.operation.acquire_before(
+            deadline,
+            cancellation,
+            "prepared revision reconciliation wait",
+        )?;
+        if *self
+            .service
+            .machine
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            != self.expected_machine
+        {
+            return Err("source revision machine changed after apply planning".to_string());
+        }
+        Ok(ActiveRevisionReconciliation {
+            prepared: self,
+            _operation: operation,
+        })
+    }
+}
+
+impl ActiveRevisionReconciliation<'_> {
+    pub(crate) fn validate_published_source(
+        &self,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
+        let root = &self.prepared.root;
+        if root.identity() != self.prepared.root_identity {
+            return Err("revision participant belongs to another retained source root".to_string());
+        }
+        root.validate_named_identity().map_err(|error| {
+            format!("retained source identity changed during revision reconciliation: {error}")
+        })?;
+        let first =
+            self.prepared
+                .service
+                .capture_retained_manifest(root, deadline, cancellation)?;
+        let second =
+            self.prepared
+                .service
+                .capture_retained_manifest(root, deadline, cancellation)?;
+        if !first.namespace_stable
+            || !second.namespace_stable
+            || first.manifest != second.manifest
+            || first.identities != second.identities
+            || second.manifest != self.prepared.projected_manifest
+        {
+            return Err(
+                "temporarily published source does not match revision candidate".to_string(),
+            );
+        }
+        let digest = digest_source_manifest(&second.manifest)?;
+        if digest != self.prepared.candidate.digest {
+            return Err(
+                "temporarily published source digest does not match revision candidate".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn install(self) -> Result<SourceRevision, String> {
+        let mut machine = self
+            .prepared
+            .service
+            .machine
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !machine.install_candidate_if_unchanged(
+            &self.prepared.expected_machine,
+            self.prepared.candidate.clone(),
+        ) {
+            return Err("source revision trust epoch changed during apply publication".to_string());
+        }
+        *self
+            .prepared
+            .service
+            .manifest
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Some(self.prepared.projected_manifest.clone());
+        *self
+            .prepared
+            .service
+            .manifest_provenance
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Some(ManifestProvenance::Retained(self.prepared.root_identity));
+        Ok(self.prepared.candidate.clone())
+    }
+}
+
 impl RetainedRevisionLease {
     pub(crate) fn revision_identity(&self) -> String {
         format!(
@@ -335,7 +458,7 @@ impl SourceRevisionService {
         }
         let canonical_source_root = fs::canonicalize(source_root)
             .map_err(|error| format!("source revision root cannot be normalized: {error}"))?;
-        let fence = platform_fence(&canonical_source_root, &context.cache_root)?;
+        let fence = deferred_platform_fence(&canonical_source_root, &context.cache_root);
         Self::with_fence(context, &canonical_source_root, state_scope, fence)
     }
 
@@ -582,6 +705,157 @@ impl SourceRevisionService {
         })
     }
 
+    /// Observes one exact retained revision without flushing the platform
+    /// fence, persisting a record or advancing the in-memory revision machine.
+    /// Two equal retained captures bind both bytes and namespace identity.
+    pub(crate) fn observe_retained_operation(
+        &self,
+        root: &RetainedDirectoryCapability,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<RetainedRevisionLease, String> {
+        let _operation = self.operation.acquire_before(
+            deadline,
+            cancellation,
+            "retained source revision observation wait",
+        )?;
+        if root.identity() != self.source_root_identity {
+            return Err(
+                "retained source revision capability has a different actor identity".to_string(),
+            );
+        }
+        root.validate_named_identity().map_err(|error| {
+            format!("retained source revision identity changed during observation: {error}")
+        })?;
+        let first = self.capture_retained_manifest(root, deadline, cancellation)?;
+        let second = self.capture_retained_manifest(root, deadline, cancellation)?;
+        if !first.namespace_stable
+            || !second.namespace_stable
+            || first.manifest != second.manifest
+            || first.identities != second.identities
+        {
+            return Err(
+                "retained source revision did not stabilize during observation".to_string(),
+            );
+        }
+        let digest = digest_source_manifest(&second.manifest)?;
+        let revision = self
+            .machine
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .candidate_for_digest(digest)?;
+        Ok(RetainedRevisionLease {
+            revision,
+            root_identity: root.identity(),
+        })
+    }
+
+    pub(crate) fn confirm_retained_observation(
+        &self,
+        root: &RetainedDirectoryCapability,
+        lease: &RetainedRevisionLease,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
+        if root.identity() != lease.root_identity {
+            return Err("retained revision lease belongs to another source identity".to_string());
+        }
+        let current = self.observe_retained_operation(root, deadline, cancellation)?;
+        if current.revision != lease.revision {
+            return Err("retained source revision changed during logical operation".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_retained_apply_reconciliation(
+        self: &Arc<Self>,
+        root: &Arc<RetainedDirectoryCapability>,
+        lease: &RetainedRevisionLease,
+        changes: &[StagedApplyChange],
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<PreparedRevisionReconciliation, String> {
+        let _operation = self.operation.acquire_before(
+            deadline,
+            cancellation,
+            "prepared revision planning wait",
+        )?;
+        if root.identity() != self.source_root_identity || root.identity() != lease.root_identity {
+            return Err("revision planning belongs to another retained source root".to_string());
+        }
+        let first = self.capture_retained_manifest(root, deadline, cancellation)?;
+        let second = self.capture_retained_manifest(root, deadline, cancellation)?;
+        if !first.namespace_stable
+            || !second.namespace_stable
+            || first.manifest != second.manifest
+            || first.identities != second.identities
+        {
+            return Err(
+                "retained source revision did not stabilize during apply planning".to_string(),
+            );
+        }
+        let expected_machine = self
+            .machine
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let observed =
+            expected_machine.candidate_for_digest(digest_source_manifest(&second.manifest)?)?;
+        if observed != lease.revision {
+            return Err("retained source revision changed during apply planning".to_string());
+        }
+        let mut projected_manifest = second.manifest;
+        for change in changes {
+            match &change.current {
+                StagedFileState::Absent => {
+                    projected_manifest.remove(&change.relative_path);
+                }
+                StagedFileState::Bytes(bytes) => {
+                    let mut digest = Sha256::new();
+                    digest.update(bytes);
+                    projected_manifest.insert(
+                        change.relative_path.clone(),
+                        SourceEntryDigest {
+                            kind: 2,
+                            digest: digest.finalize().into(),
+                        },
+                    );
+                    let mut parent = change.relative_path.parent();
+                    while let Some(relative) = parent {
+                        if relative.as_os_str().is_empty() {
+                            break;
+                        }
+                        projected_manifest.entry(relative.to_path_buf()).or_insert(
+                            SourceEntryDigest {
+                                kind: 1,
+                                digest: [0; 32],
+                            },
+                        );
+                        parent = relative.parent();
+                    }
+                }
+            }
+        }
+        let candidate =
+            expected_machine.candidate_for_digest(digest_source_manifest(&projected_manifest)?)?;
+        let record_bytes = revision_record_bytes(
+            &self.workspace_root,
+            &self.source_root,
+            self.state_scope.record_value(),
+            &candidate,
+        )?;
+        Ok(PreparedRevisionReconciliation {
+            service: Arc::clone(self),
+            root: Arc::clone(root),
+            root_identity: root.identity(),
+            expected_machine,
+            projected_manifest,
+            candidate,
+            record_path: self.record_path.clone(),
+            record_bytes,
+        })
+    }
+
     pub(crate) fn confirm_retained_operation(
         &self,
         root: &RetainedDirectoryCapability,
@@ -685,6 +959,19 @@ impl SourceRevisionService {
     #[cfg(test)]
     pub(crate) fn retained_scan_count(&self) -> usize {
         self.retained_scans.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fence_capability_for_test(&self) -> FenceCapability {
+        self.fence.capability()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn machine_state_for_test(&self) -> SourceRevisionMachine {
+        self.machine
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     fn trusted_snapshot(&self) -> Result<SourceRevision, String> {
@@ -1007,6 +1294,19 @@ fn persist_revision_record(
         .ok_or_else(|| "source revision record has no parent".to_string())?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("source revision record directory cannot be created: {error}"))?;
+    let bytes = revision_record_bytes(workspace_root, source_root, state_scope, revision)?;
+    let temporary = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+    fs::write(&temporary, bytes)
+        .and_then(|_| fs::rename(&temporary, path))
+        .map_err(|error| format!("source revision record cannot be published: {error}"))
+}
+
+fn revision_record_bytes(
+    workspace_root: &Path,
+    source_root: &Path,
+    state_scope: Option<&str>,
+    revision: &SourceRevision,
+) -> Result<Vec<u8>, String> {
     let record = SourceRevisionRecord {
         schema_version: REVISION_RECORD_SCHEMA_VERSION,
         workspace_root: workspace_root.to_string_lossy().into_owned(),
@@ -1014,12 +1314,8 @@ fn persist_revision_record(
         state_scope: state_scope.map(str::to_string),
         revision: revision.clone(),
     };
-    let bytes = serde_json::to_vec(&record)
-        .map_err(|error| format!("source revision record cannot be serialized: {error}"))?;
-    let temporary = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    fs::write(&temporary, bytes)
-        .and_then(|_| fs::rename(&temporary, path))
-        .map_err(|error| format!("source revision record cannot be published: {error}"))
+    serde_json::to_vec(&record)
+        .map_err(|error| format!("source revision record cannot be serialized: {error}"))
 }
 
 #[cfg(test)]
