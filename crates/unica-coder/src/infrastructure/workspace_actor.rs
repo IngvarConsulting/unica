@@ -3036,6 +3036,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn apply_preparation_classifies_an_occupied_absent_final_file_by_cause() {
+        let fixture = actor_fixture("prepare-occupied-absent-final", &["src"]);
+        std::fs::create_dir(fixture.roots[0].join("Ext")).unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .create("Ext/Module.bsl", b"must not replace".to_vec())
+            .unwrap();
+        std::fs::write(
+            fixture.roots[0].join("Ext/Module.bsl"),
+            b"external regular file",
+        )
+        .unwrap();
+
+        let error = admitted.prepare(state).unwrap_err();
+
+        assert_eq!(error.kind(), ApplyStagingErrorKind::AbsentChainOccupied);
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Ext/Module.bsl")).unwrap(),
+            b"external regular file"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
     fn prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic() {
         if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
             return;

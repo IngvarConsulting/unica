@@ -77,12 +77,6 @@ impl std::fmt::Display for ApplyStagingError {
 
 impl std::error::Error for ApplyStagingError {}
 
-impl From<String> for ApplyStagingError {
-    fn from(message: String) -> Self {
-        Self::new(ApplyStagingErrorKind::Invariant, message)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StagedFileState {
     Bytes(Vec<u8>),
@@ -323,9 +317,12 @@ impl ApplyStagedState {
             .components()
             .map(|component| match component {
                 Component::Normal(name) => Ok(name.to_os_string()),
-                _ => Err(format!(
-                    "staged target must contain only normal relative components: {}",
-                    relative.display()
+                _ => Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::ContainmentIdentity,
+                    format!(
+                        "staged target must contain only normal relative components: {}",
+                        relative.display()
+                    ),
                 )),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -377,10 +374,12 @@ impl ApplyStagedState {
             None
         };
         if let Some(Ok(RetainedChildCapability::RegularFile(file))) = retained_child.as_ref() {
-            if file
-                .hard_link_count()
-                .map_err(|error| format!("hard-link count failed: {error}"))?
-                != 1
+            if file.hard_link_count().map_err(|error| {
+                ApplyStagingError::new(
+                    ApplyStagingErrorKind::UnsupportedProvider,
+                    format!("hard-link count failed: {error}"),
+                )
+            })? != 1
             {
                 return Err(ApplyStagingError::new(
                     ApplyStagingErrorKind::ContainmentIdentity,
@@ -423,10 +422,12 @@ impl ApplyStagedState {
         let (original, original_file) = match retained_child {
             None => (StagedFileState::Absent, None),
             Some(Ok(RetainedChildCapability::RegularFile(file))) => {
-                if file
-                    .hard_link_count()
-                    .map_err(|error| format!("hard-link count failed: {error}"))?
-                    != 1
+                if file.hard_link_count().map_err(|error| {
+                    ApplyStagingError::new(
+                        ApplyStagingErrorKind::UnsupportedProvider,
+                        format!("hard-link count failed: {error}"),
+                    )
+                })? != 1
                 {
                     return Err(ApplyStagingError::new(
                         ApplyStagingErrorKind::ContainmentIdentity,
@@ -436,9 +437,12 @@ impl ApplyStagedState {
                         ),
                     ));
                 }
-                let bytes = file
-                    .read_bounded(MAX_APPLY_FILE_BYTES)
-                    .map_err(|error| format!("staged target fixed read bound failed: {error}"))?;
+                let bytes = file.read_bounded(MAX_APPLY_FILE_BYTES).map_err(|error| {
+                    ApplyStagingError::new(
+                        ApplyStagingErrorKind::UnsupportedProvider,
+                        format!("staged target fixed read bound failed: {error}"),
+                    )
+                })?;
                 (StagedFileState::Bytes(bytes), Some(file))
             }
             Some(Ok(RetainedChildCapability::ReparsePoint)) => {
@@ -515,7 +519,10 @@ impl ApplyStagedState {
                     if !right_parent
                         .child_names_equivalent(left_name, right_name)
                         .map_err(|error| {
-                            format!("staged child-name identity cannot be proven: {error}")
+                            ApplyStagingError::new(
+                                ApplyStagingErrorKind::UnsupportedProvider,
+                                format!("staged child-name identity cannot be proven: {error}"),
+                            )
                         })?
                     {
                         return Ok(false);
@@ -570,7 +577,7 @@ mod tests {
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::infrastructure::platform::filesystem::{
-        inject_post_rename_sync_failure_for_test,
+        file_identity, inject_post_rename_sync_failure_for_test,
         set_before_identity_bound_directory_cleanup_mutation_hook,
         set_before_identity_bound_no_replace_rename_hook, RetainedChildCapability,
         RetainedDirectoryCapability,
@@ -580,7 +587,7 @@ mod tests {
     };
     use std::cell::Cell;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn staged(root: &Path) -> ApplyStagedState {
@@ -1093,10 +1100,7 @@ mod tests {
         let mut state = staged(&root);
 
         let error = state.read(Path::new("Ext/oversized.bin")).unwrap_err();
-        assert!(
-            error.contains("too large") || error.contains("bound"),
-            "{error}"
-        );
+        assert_eq!(error.kind(), ApplyStagingErrorKind::UnsupportedProvider);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1525,9 +1529,13 @@ mod tests {
         let owned = root.join("Ext/owned-form");
         let hook_public = public.clone();
         let hook_owned = owned.clone();
+        let foreign_identity = Arc::new(Mutex::new(None));
+        let hook_foreign_identity = Arc::clone(&foreign_identity);
         set_before_identity_bound_directory_cleanup_mutation_hook(move || {
             std::fs::rename(&hook_public, &hook_owned).unwrap();
             std::fs::create_dir(&hook_public).unwrap();
+            *hook_foreign_identity.lock().unwrap() =
+                Some(file_identity(&std::fs::File::open(&hook_public).unwrap()).unwrap());
         });
 
         let error = transaction
@@ -1541,6 +1549,11 @@ mod tests {
         assert!(
             public.is_dir(),
             "the concurrent public directory was deleted"
+        );
+        assert_eq!(
+            Some(file_identity(&std::fs::File::open(&public).unwrap()).unwrap()),
+            *foreign_identity.lock().unwrap(),
+            "rollback replaced the concurrent public directory identity"
         );
         assert!(owned.is_dir(), "the exact batch-created directory was lost");
         assert!(

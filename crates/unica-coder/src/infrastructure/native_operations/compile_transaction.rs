@@ -2021,8 +2021,13 @@ fn validate_retained_apply_state_at_parent_typed(
         }
     };
     if observed != *expected {
+        let kind = if expected.is_none() {
+            RetainedApplyValidationErrorKind::AbsentChainOccupied
+        } else {
+            RetainedApplyValidationErrorKind::ContainmentIdentity
+        };
         return Err(RetainedApplyValidationError::new(
-            RetainedApplyValidationErrorKind::ContainmentIdentity,
+            kind,
             format!(
                 "retained apply preimage changed: {}",
                 entry.relative_path.display()
