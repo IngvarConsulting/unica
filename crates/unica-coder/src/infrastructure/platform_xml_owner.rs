@@ -59,6 +59,7 @@ pub(crate) struct PlatformXmlSourceSetOwnerEvidence {
     artifact_kind: String,
     artifact_name: Option<String>,
     registrations: BTreeSet<(String, String)>,
+    configuration_extension: bool,
 }
 
 impl PlatformXmlSourceSetOwnerEvidence {
@@ -83,6 +84,10 @@ impl PlatformXmlSourceSetOwnerEvidence {
         self.registrations
             .iter()
             .map(|(kind, name)| (kind.as_str(), name.as_str()))
+    }
+
+    pub(crate) const fn is_configuration_extension(&self) -> bool {
+        self.configuration_extension
     }
 }
 
@@ -257,6 +262,7 @@ pub(crate) fn prove_already_read_source_set_owner(
         artifact_kind: artifact.tag_name().name().to_string(),
         artifact_name: metadata_artifact_property(artifact, "Name"),
         registrations,
+        configuration_extension: is_configuration_extension_artifact(artifact),
     })
 }
 
@@ -301,6 +307,7 @@ pub(crate) fn prove_already_read_metadata_owner(
         artifact_kind: artifact.tag_name().name().to_string(),
         artifact_name: metadata_artifact_property(artifact, "Name"),
         registrations,
+        configuration_extension: false,
     })
 }
 

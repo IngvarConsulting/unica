@@ -51,7 +51,7 @@ impl FormBindingOwner {
         }
     }
 
-    fn catalog_owner(self) -> FormEventOwnerKind {
+    pub(crate) fn catalog_owner(self) -> FormEventOwnerKind {
         match self {
             Self::Form => FormEventOwnerKind::Form,
             Self::Element(kind) => FormEventOwnerKind::Element(kind),
@@ -194,6 +194,27 @@ pub(crate) struct ModuleProjectionRequest<'a> {
     pub(crate) platform_event_write: PlatformEventWriteCapability,
 }
 
+pub(crate) struct PlatformEventProjectionRecord {
+    pub(crate) projection: EventProjection,
+    pub(crate) spec: &'static PlatformEventSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PlatformEventProjectionRecordError {
+    InvalidSource(String),
+    ProviderUnavailable(String),
+}
+
+impl std::fmt::Display for PlatformEventProjectionRecordError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidSource(message) | Self::ProviderUnavailable(message) => {
+                message.fmt(formatter)
+            }
+        }
+    }
+}
+
 /// Typed proof status for generating a Platform-bound event capability. An
 /// extension source set currently has no retained `PropertyState` evidence to
 /// distinguish a New owner from an adopted/extended owner, so it is unproved.
@@ -248,6 +269,47 @@ impl RequiredEventDirective {
 pub(crate) fn project_module(
     request: ModuleProjectionRequest<'_>,
 ) -> Result<ModuleProjectionSet, String> {
+    let specs = module_event_catalog_8_3_27(request.capability);
+    project_module_with_specs(request, specs)
+}
+
+pub(crate) fn project_module_event_record(
+    request: ModuleProjectionRequest<'_>,
+    event_at: &str,
+) -> Result<PlatformEventProjectionRecord, PlatformEventProjectionRecordError> {
+    let specs = module_event_catalog_8_3_27(request.capability);
+    let projection = project_module_with_specs(request, specs)
+        .map_err(PlatformEventProjectionRecordError::InvalidSource)?;
+    let index = projection
+        .events()
+        .iter()
+        .position(|event| event.at == event_at)
+        .ok_or_else(|| {
+            PlatformEventProjectionRecordError::ProviderUnavailable(format!(
+                "event `{event_at}` is not in the frozen module catalog"
+            ))
+        })?;
+    let event = projection.events()[index].clone();
+    let spec = specs.get(index).ok_or_else(|| {
+        PlatformEventProjectionRecordError::ProviderUnavailable(
+            "module event projection lost the selected frozen catalog record".to_string(),
+        )
+    })?;
+    if event.event_id != spec.event_id {
+        return Err(PlatformEventProjectionRecordError::ProviderUnavailable(
+            "module event projection/catalog ordering diverged".to_string(),
+        ));
+    }
+    Ok(PlatformEventProjectionRecord {
+        projection: event,
+        spec,
+    })
+}
+
+fn project_module_with_specs(
+    request: ModuleProjectionRequest<'_>,
+    possible_events: &'static [PlatformEventSpec],
+) -> Result<ModuleProjectionSet, String> {
     if request.capability.role() == ModuleRole::Common && request.common_module.is_none() {
         return Err(
             "common-module flags are required to build the normalized module summary".to_string(),
@@ -264,7 +326,6 @@ pub(crate) fn project_module(
         rev: request.rev.to_string(),
     };
 
-    let possible_events = module_event_catalog_8_3_27(request.capability);
     let Some(source) = request.source else {
         let events = possible_events
             .iter()
@@ -375,12 +436,17 @@ fn project_module_events(
     specs
         .iter()
         .map(|spec| {
-            let Some(method) = methods
-                .iter_mut()
-                .find(|method| event_handler_name_matches(&method.name, spec))
-            else {
+            let matching = methods
+                .iter()
+                .enumerate()
+                .filter(|(_, method)| event_handler_name_matches(&method.name, spec))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let Some(&method_index) = matching.first() else {
                 return available_module_event(at, spec, write);
             };
+            let duplicate = matching.len() > 1;
+            let method = &mut methods[method_index];
             let compatible = method_matches_event(
                 method.method_kind,
                 &method.signature,
@@ -400,7 +466,7 @@ fn project_module_events(
             EventProjection {
                 at: event_at,
                 event_id: spec.event_id.to_string(),
-                state: if compatible {
+                state: if compatible && !duplicate {
                     EventState::Implemented
                 } else {
                     EventState::Invalid
@@ -1301,6 +1367,34 @@ pub(crate) fn project_form_events(
     project_form_owner_events(context, &owners, bindings, methods)
 }
 
+pub(crate) struct FormEventProjectionRecord {
+    pub(crate) projection: EventProjection,
+    pub(crate) spec: &'static PlatformEventSpec,
+    pub(crate) owner: FormBindingOwner,
+}
+
+pub(crate) fn project_form_owner_event_record(
+    context: &FormEventContext,
+    owner: &FormEventOwnerInput,
+    bindings: &[FormEventBindingInput],
+    methods: &[FormMethodFact<'_>],
+    event_at: &str,
+) -> Option<FormEventProjectionRecord> {
+    let catalog = form_event_catalog_8_3_27(
+        context,
+        owner.owner.catalog_owner(),
+        owner.data_path.as_deref(),
+    );
+    catalog.into_iter().find_map(|spec| {
+        let at = format!("{}.Event.{}", owner.at, spec.event_id);
+        (at == event_at).then(|| FormEventProjectionRecord {
+            projection: project_known_form_event(context, owner, bindings, methods, spec),
+            spec,
+            owner: owner.owner,
+        })
+    })
+}
+
 pub(crate) fn project_form_owner_events(
     context: &FormEventContext,
     owners: &[FormEventOwnerInput],
@@ -1320,90 +1414,9 @@ pub(crate) fn project_form_owner_events(
             owner.data_path.as_deref(),
         );
         for spec in &catalog {
-            let owner_prefix = owner.at.as_str();
-            let at = format!("{owner_prefix}.Event.{}", spec.event_id);
-            let actuals = bindings
-                .iter()
-                .filter(|candidate| {
-                    candidate.owner.catalog_owner() == owner.owner.catalog_owner()
-                        && candidate
-                            .at
-                            .split(".Event.")
-                            .next()
-                            .unwrap_or(candidate.at.as_str())
-                            == owner_prefix
-                        && spec.event_id == candidate.event
-                })
-                .collect::<Vec<_>>();
-            let duplicate = actuals.len() > 1;
-            let actual = (actuals.len() == 1).then(|| actuals[0]);
-            let method = actual.and_then(|binding| {
-                methods
-                    .iter()
-                    .find(|method| method.name.to_lowercase() == binding.handler.to_lowercase())
-            });
-            let binding_is_valid = actual.is_none_or(|binding| {
-                validate_property_event_binding(
-                    context,
-                    binding.owner.validation_target(),
-                    &FormEventBinding {
-                        name: binding.event.as_str(),
-                        handler: binding.handler.as_str(),
-                        call_type: binding.call_type.as_deref(),
-                    },
-                )
-                .is_ok()
-            });
-            let state = match (duplicate, actual, method, binding_is_valid) {
-                (true, _, _, _) => EventState::Invalid,
-                (false, None, _, _) => EventState::Available,
-                (false, Some(_), _, false) => EventState::Invalid,
-                (false, Some(_), None, true) => EventState::Missing,
-                (false, Some(_), Some(method), true)
-                    if form_method_matches_event(method, spec, owner.owner) =>
-                {
-                    EventState::Implemented
-                }
-                (false, Some(_), Some(_), true) => EventState::Invalid,
-            };
-            let signature = if owner.owner == FormBindingOwner::Command {
-                actual.map_or_else(
-                    || spec.signature_ru.clone(),
-                    |binding| format!("Процедура {}(Команда)", binding.handler),
-                )
-            } else {
-                spec.signature_ru.clone()
-            };
-            let can = match state {
-                EventState::Available if context.direct_part_writable => {
-                    vec![OperationRegistry::closed().event_implementation_skeleton(
-                        at.clone(),
-                        (context.definition == crate::infrastructure::native_operations::form_event_registry::FormDefinitionKind::Extension)
-                            .then_some("After"),
-                    )]
-                }
-                EventState::Missing => {
-                    vec![OperationRegistry::closed().event_implementation_skeleton(at.clone(), None)]
-                }
-                EventState::Available | EventState::Implemented | EventState::Invalid => Vec::new(),
-            };
-            events.push(EventProjection {
-                at: at.clone(),
-                event_id: spec.event_id.to_string(),
-                state,
-                signature,
-                contexts: spec.contexts.clone(),
-                binding: BindingFact::Property,
-                handler: actual
-                    .map_or(spec.handler_ru.as_str(), |binding| binding.handler.as_str())
-                    .to_string(),
-                handler_en: spec.handler_en.clone(),
-                implementation_at: actual.and_then(|binding| {
-                    method.map(|method| form_method_at(binding.at.as_str(), method.name))
-                }),
-                call_type: actual.and_then(|binding| binding.call_type.clone()),
-                can,
-            });
+            events.push(project_known_form_event(
+                context, owner, bindings, methods, spec,
+            ));
         }
         let known = catalog
             .iter()
@@ -1448,6 +1461,109 @@ pub(crate) fn project_form_owner_events(
         }
     }
     events
+}
+
+fn project_known_form_event(
+    context: &FormEventContext,
+    owner: &FormEventOwnerInput,
+    bindings: &[FormEventBindingInput],
+    methods: &[FormMethodFact<'_>],
+    spec: &PlatformEventSpec,
+) -> EventProjection {
+    let owner_prefix = owner.at.as_str();
+    let at = format!("{owner_prefix}.Event.{}", spec.event_id);
+    let actuals = bindings
+        .iter()
+        .filter(|candidate| {
+            candidate.owner.catalog_owner() == owner.owner.catalog_owner()
+                && candidate
+                    .at
+                    .split(".Event.")
+                    .next()
+                    .unwrap_or(candidate.at.as_str())
+                    == owner_prefix
+                && spec.event_id == candidate.event
+        })
+        .collect::<Vec<_>>();
+    let duplicate = actuals.len() > 1;
+    let actual = (actuals.len() == 1).then(|| actuals[0]);
+    let matching_methods = actual
+        .map(|binding| {
+            methods
+                .iter()
+                .filter(|method| method.name.to_lowercase() == binding.handler.to_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let duplicate_method = matching_methods.len() > 1;
+    let method = (matching_methods.len() == 1).then(|| matching_methods[0]);
+    let binding_is_valid = actual.is_none_or(|binding| {
+        validate_property_event_binding(
+            context,
+            binding.owner.validation_target(),
+            &FormEventBinding {
+                name: binding.event.as_str(),
+                handler: binding.handler.as_str(),
+                call_type: binding.call_type.as_deref(),
+            },
+        )
+        .is_ok()
+    });
+    let state = match (
+        duplicate || duplicate_method,
+        actual,
+        method,
+        binding_is_valid,
+    ) {
+        (true, _, _, _) => EventState::Invalid,
+        (false, None, _, _) => EventState::Available,
+        (false, Some(_), _, false) => EventState::Invalid,
+        (false, Some(_), None, true) => EventState::Missing,
+        (false, Some(_), Some(method), true)
+            if form_method_matches_event(method, spec, owner.owner) =>
+        {
+            EventState::Implemented
+        }
+        (false, Some(_), Some(_), true) => EventState::Invalid,
+    };
+    let signature = if owner.owner == FormBindingOwner::Command {
+        actual.map_or_else(
+            || spec.signature_ru.clone(),
+            |binding| format!("Процедура {}(Команда)", binding.handler),
+        )
+    } else {
+        spec.signature_ru.clone()
+    };
+    let can = match state {
+        EventState::Available if context.direct_part_writable => {
+            vec![OperationRegistry::closed().event_implementation_skeleton(
+                at.clone(),
+                (context.definition == crate::infrastructure::native_operations::form_event_registry::FormDefinitionKind::Extension)
+                    .then_some("After"),
+            )]
+        }
+        EventState::Missing => {
+            vec![OperationRegistry::closed().event_implementation_skeleton(at.clone(), None)]
+        }
+        EventState::Available | EventState::Implemented | EventState::Invalid => Vec::new(),
+    };
+    EventProjection {
+        at,
+        event_id: spec.event_id.to_string(),
+        state,
+        signature,
+        contexts: spec.contexts.clone(),
+        binding: BindingFact::Property,
+        handler: actual
+            .map_or(spec.handler_ru.as_str(), |binding| binding.handler.as_str())
+            .to_string(),
+        handler_en: spec.handler_en.clone(),
+        implementation_at: actual.and_then(|binding| {
+            method.map(|method| form_method_at(binding.at.as_str(), method.name))
+        }),
+        call_type: actual.and_then(|binding| binding.call_type.clone()),
+        can,
+    }
 }
 
 fn form_method_at(event_at: &str, handler: &str) -> String {
@@ -2010,6 +2126,69 @@ mod tests {
         )];
         assert_eq!(
             project_form_events(&[binding], &function)
+                .iter()
+                .find(|event| event.event_id == "OnChange")
+                .unwrap()
+                .state,
+            EventState::Invalid
+        );
+    }
+
+    #[test]
+    fn duplicate_case_insensitive_event_methods_are_invalid_for_platform_and_property_sources() {
+        let platform = project(
+            "main:Catalog.Products.Module.Object",
+            Some(
+                "Процедура ПередЗаписью(Отказ)\nКонецПроцедуры\n\nПроцедура передзаписью(Отказ)\nКонецПроцедуры\n",
+            ),
+        );
+        assert_eq!(
+            platform
+                .events()
+                .iter()
+                .find(|event| event.event_id == "BeforeWrite")
+                .unwrap()
+                .state,
+            EventState::Invalid
+        );
+
+        let owner = FormEventOwnerInput::new(
+            FormBindingOwner::Element(FormElementKind::InputField),
+            "main:CommonForm.Test.Item.Field",
+        );
+        let binding = FormEventBindingInput::property(
+            FormBindingOwner::Element(FormElementKind::InputField),
+            "main:CommonForm.Test.Item.Field.Event.OnChange",
+            "OnChange",
+            "FieldOnChange",
+            None,
+        );
+        let contexts = vec![
+            "thinClient",
+            "webClient",
+            "thickClientManaged",
+            "mobileClient",
+            "mobileAppClient",
+        ];
+        let methods = [
+            FormMethodFact::new(
+                "FieldOnChange",
+                crate::domain::module_projection::MethodKind::Procedure,
+                "Procedure FieldOnChange()",
+                contexts.clone(),
+            )
+            .with_directive(Some("&AtClient")),
+            FormMethodFact::new(
+                "fieldonchange",
+                crate::domain::module_projection::MethodKind::Procedure,
+                "Procedure fieldonchange()",
+                contexts,
+            )
+            .with_directive(Some("&AtClient")),
+        ];
+        let property = project_form_owner_events(&[owner], &[binding], &methods);
+        assert_eq!(
+            property
                 .iter()
                 .find(|event| event.event_id == "OnChange")
                 .unwrap()

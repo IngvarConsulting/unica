@@ -43,8 +43,31 @@ pub(crate) struct PropertyEventSource {
     pub(crate) form_target: MetadataAddress,
     pub(crate) form_xml_relative: PathBuf,
     pub(crate) module_relative: PathBuf,
+    pub(crate) module_at: QualifiedAddress,
     pub(crate) owner_chain: Vec<PropertyEventOwner>,
     pub(crate) descriptor_requirements: Vec<PathBuf>,
+    pub(crate) owner_evidence: EventOwnerEvidencePlan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EventOwnerDescriptorProof {
+    SourceSet,
+    Metadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EventOwnerDescriptorExpectation {
+    pub(crate) relative: PathBuf,
+    pub(crate) proof: EventOwnerDescriptorProof,
+    pub(crate) expected_kind: String,
+    pub(crate) expected_name: Option<String>,
+    pub(crate) registered_by: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EventOwnerEvidencePlan {
+    pub(crate) source_set_kind: SourceSetKind,
+    pub(crate) descriptors: Vec<EventOwnerDescriptorExpectation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,14 +249,101 @@ fn resolve_property_event_source(
     let module_relative =
         module_relative(&module_target, source_set_kind).map_err(EventSourceError::unavailable)?;
     let descriptor_requirements = form_descriptor_requirements(&form_target, source_set_kind)?;
+    let owner_evidence =
+        owner_evidence_plan(source_set_kind, &form_target, &descriptor_requirements)?;
+    let module_at = QualifiedAddress::parse(&format!("{form_at}.Module.Form"))
+        .map_err(|error| EventSourceError::unavailable(error.to_string()))?;
     Ok(PropertyEventSource {
         event_at: event_at.clone(),
         form_at,
         form_target,
         form_xml_relative,
         module_relative,
+        module_at,
         owner_chain,
         descriptor_requirements,
+        owner_evidence,
+    })
+}
+
+pub(crate) fn platform_event_owner_evidence(
+    source_set_kind: SourceSetKind,
+    source: &PlatformEventSource,
+) -> Result<EventOwnerEvidencePlan, EventSourceError> {
+    owner_evidence_plan(
+        source_set_kind,
+        &source.module_target,
+        &source.descriptor_requirements,
+    )
+}
+
+fn owner_evidence_plan(
+    source_set_kind: SourceSetKind,
+    target: &MetadataAddress,
+    descriptor_requirements: &[PathBuf],
+) -> Result<EventOwnerEvidencePlan, EventSourceError> {
+    let parts = target.as_str().split('.').collect::<Vec<_>>();
+    let external = matches!(
+        source_set_kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    );
+    let mut descriptors = Vec::new();
+    if external {
+        let [owner_kind, owner_name, ..] = parts.as_slice() else {
+            return Err(EventSourceError::unavailable(
+                "external event target has no typed owner identity",
+            ));
+        };
+        let root_target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{owner_kind}.{owner_name}"),
+        )
+        .map_err(|error| EventSourceError::unavailable(error.to_string()))?;
+        descriptors.push(EventOwnerDescriptorExpectation {
+            relative: metadata_descriptor_relative(&root_target, source_set_kind)
+                .map_err(EventSourceError::unavailable)?,
+            proof: EventOwnerDescriptorProof::SourceSet,
+            expected_kind: (*owner_kind).to_string(),
+            expected_name: Some((*owner_name).to_string()),
+            registered_by: None,
+        });
+    } else {
+        descriptors.push(EventOwnerDescriptorExpectation {
+            relative: PathBuf::from("Configuration.xml"),
+            proof: EventOwnerDescriptorProof::SourceSet,
+            expected_kind: match source_set_kind {
+                SourceSetKind::Configuration => "Configuration",
+                SourceSetKind::Extension => "Configuration",
+                SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => unreachable!(),
+            }
+            .to_string(),
+            expected_name: None,
+            registered_by: None,
+        });
+    }
+
+    for relative in descriptor_requirements {
+        if descriptors.iter().any(|step| step.relative == *relative) {
+            continue;
+        }
+        let index = descriptors.len();
+        let identity_start = if external { 2 * index } else { 2 * (index - 1) };
+        let identity = parts
+            .get(identity_start..identity_start + 2)
+            .ok_or_else(|| {
+                EventSourceError::unavailable("owner descriptor depth is inconsistent")
+            })?;
+        descriptors.push(EventOwnerDescriptorExpectation {
+            relative: relative.clone(),
+            proof: EventOwnerDescriptorProof::Metadata,
+            expected_kind: identity[0].to_string(),
+            expected_name: Some(identity[1].to_string()),
+            registered_by: Some(index - 1),
+        });
+    }
+    Ok(EventOwnerEvidencePlan {
+        source_set_kind,
+        descriptors,
     })
 }
 
@@ -303,9 +413,24 @@ fn module_descriptor_requirements(
     };
     let descriptor = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &descriptor_raw)
         .map_err(|error| EventSourceError::unavailable(error.to_string()))?;
-    metadata_descriptor_relative(&descriptor, source_set_kind)
-        .map(|path| vec![path])
-        .map_err(EventSourceError::unavailable)
+    let nested = metadata_descriptor_relative(&descriptor, source_set_kind)
+        .map_err(EventSourceError::unavailable)?;
+    if matches!(
+        capability.source_layout(),
+        ModuleSourceLayout::NestedForm | ModuleSourceLayout::NestedCommand
+    ) && !matches!(
+        source_set_kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
+            .map_err(|error| EventSourceError::unavailable(error.to_string()))?;
+        return Ok(vec![
+            metadata_descriptor_relative(&owner, source_set_kind)
+                .map_err(EventSourceError::unavailable)?,
+            nested,
+        ]);
+    }
+    Ok(vec![nested])
 }
 
 pub(crate) fn module_prefix(

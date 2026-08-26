@@ -7,6 +7,9 @@ pub(crate) mod code;
 pub(crate) mod common;
 pub(crate) mod compile_transaction;
 pub(crate) mod dcs;
+// The pure B1b planner is intentionally not actor-routed until B2.
+#[allow(dead_code)]
+pub(crate) mod event;
 pub(crate) mod external;
 pub(crate) mod form;
 pub(crate) mod form_event_registry;
