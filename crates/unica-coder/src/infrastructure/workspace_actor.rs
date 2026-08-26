@@ -7435,7 +7435,8 @@ pub(crate) mod tests {
         apply_policy_stable_deny_evidence_allows_unrelated_dry_run_and_real_publication();
         apply_policy_category_and_identity_transitions_are_rejected();
         crate::infrastructure::support_policy_evidence::tests::retained_support_policy_candidate_parent_replacement_is_rejected();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_exact_and_oversized_reject_name_replacement_during_read_validation();
+        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_exact_and_oversized_reject_name_replacement_after_pre_read_identity();
+        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_exact_rejects_name_replacement_after_retained_read_before_acceptance();
         apply_policy_dry_run_churn_is_write_free_and_returns_no_receipt();
         apply_policy_churn_before_source_publication_is_write_free();
         apply_policy_churn_after_source_publication_rolls_back_all_retained_state();

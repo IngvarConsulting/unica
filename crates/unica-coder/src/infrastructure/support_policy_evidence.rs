@@ -19,7 +19,9 @@ thread_local! {
         std::cell::RefCell::new(None);
     static SUPPORT_POLICY_VALIDATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
-    static SUPPORT_POLICY_BEFORE_RETAINED_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+    static SUPPORT_POLICY_AFTER_PRE_READ_IDENTITY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static SUPPORT_POLICY_AFTER_RETAINED_READ_BEFORE_ACCEPTANCE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
 }
 
@@ -34,8 +36,15 @@ pub(crate) fn set_support_policy_validation_hook(hook: impl FnOnce() + 'static) 
 }
 
 #[cfg(test)]
-fn set_support_policy_before_retained_read_hook(hook: impl FnOnce() + 'static) {
-    SUPPORT_POLICY_BEFORE_RETAINED_READ_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+fn set_support_policy_after_pre_read_identity_hook(hook: impl FnOnce() + 'static) {
+    SUPPORT_POLICY_AFTER_PRE_READ_IDENTITY_HOOK
+        .with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn set_support_policy_after_retained_read_before_acceptance_hook(hook: impl FnOnce() + 'static) {
+    SUPPORT_POLICY_AFTER_RETAINED_READ_BEFORE_ACCEPTANCE_HOOK
+        .with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
 }
 
 #[cfg(test)]
@@ -57,8 +66,17 @@ fn run_support_policy_validation_hook() {
 }
 
 #[cfg(test)]
-fn run_support_policy_before_retained_read_hook() {
-    SUPPORT_POLICY_BEFORE_RETAINED_READ_HOOK.with(|slot| {
+fn run_support_policy_after_pre_read_identity_hook() {
+    SUPPORT_POLICY_AFTER_PRE_READ_IDENTITY_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn run_support_policy_after_retained_read_before_acceptance_hook() {
+    SUPPORT_POLICY_AFTER_RETAINED_READ_BEFORE_ACCEPTANCE_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
         }
@@ -372,23 +390,24 @@ fn validate_candidate(
             file.validate_named_identity()
                 .map_err(|_| changed("support-policy file identity changed"))?;
             #[cfg(test)]
-            run_support_policy_before_retained_read_hook();
+            run_support_policy_after_pre_read_identity_hook();
             let current = file
                 .read_bounded(MAX_SUPPORT_POLICY_BYTES)
                 .map_err(|_| changed("support-policy file bytes became unreadable"))?;
+            if &current != bytes {
+                return Err(changed("support-policy file bytes changed"));
+            }
+            #[cfg(test)]
+            run_support_policy_after_retained_read_before_acceptance_hook();
             file.validate_named_identity()
                 .map_err(|_| changed("support-policy file identity changed during validation"))?;
-            if &current == bytes {
-                Ok(())
-            } else {
-                Err(changed("support-policy file bytes changed"))
-            }
+            Ok(())
         }
         RetainedPolicyCandidate::Oversized(file) => {
             file.validate_named_identity()
                 .map_err(|_| changed("oversized support-policy identity changed"))?;
             #[cfg(test)]
-            run_support_policy_before_retained_read_hook();
+            run_support_policy_after_pre_read_identity_hook();
             match file.read_bounded(MAX_SUPPORT_POLICY_BYTES) {
                 Err(error) if error.kind() == ErrorKind::InvalidData => {
                     file.validate_named_identity().map_err(|_| {
@@ -609,7 +628,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn retained_support_policy_exact_and_oversized_reject_name_replacement_during_read_validation(
+    pub(crate) fn retained_support_policy_exact_and_oversized_reject_name_replacement_after_pre_read_identity(
     ) {
         if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test()
         {
@@ -644,7 +663,7 @@ pub(crate) mod tests {
             .unwrap();
             let displaced = temporary.path().join(format!("{category}-displaced.json"));
             let hook_policy = policy.clone();
-            set_support_policy_before_retained_read_hook(move || {
+            set_support_policy_after_pre_read_identity_hook(move || {
                 std::fs::rename(&hook_policy, &displaced).unwrap();
                 std::fs::write(&hook_policy, br#"{"editingAllowedCheck":"warn"}"#).unwrap();
             });
@@ -659,5 +678,51 @@ pub(crate) mod tests {
             );
         }
         assert_eq!(rejected, [true, true]);
+    }
+
+    #[test]
+    pub(crate) fn retained_support_policy_exact_rejects_name_replacement_after_retained_read_before_acceptance(
+    ) {
+        if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test()
+        {
+            eprintln!(
+                "[SKIPPED FIXTURE] support-policy post-read name replacement is unsupported while a retained file handle is open"
+            );
+            return;
+        }
+
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let source = workspace.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        let policy = workspace.join(POLICY_NAME);
+        std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+        let workspace = std::fs::canonicalize(workspace).unwrap();
+        let source = std::fs::canonicalize(source).unwrap();
+        let evidence = RetainedSupportPolicyEvidence::capture(
+            &workspace,
+            &source,
+            ProviderDeadline::from_budget(Duration::from_secs(10)),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let displaced = temporary.path().join("exact-displaced.json");
+        let hook_policy = policy.clone();
+        set_support_policy_after_retained_read_before_acceptance_hook(move || {
+            std::fs::rename(&hook_policy, &displaced).unwrap();
+            std::fs::write(&hook_policy, br#"{"editingAllowedCheck":"warn"}"#).unwrap();
+        });
+
+        let rejected = evidence
+            .validate(
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+            )
+            .is_err();
+
+        assert!(
+            rejected,
+            "exact evidence accepted a persistent fixed-name replacement after its retained read"
+        );
     }
 }
