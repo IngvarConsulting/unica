@@ -13,16 +13,11 @@ use crate::infrastructure::native_operations::role::resolve_role_edit_guard_path
 use crate::infrastructure::native_operations::support;
 use crate::infrastructure::native_operations::template;
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
-use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::support_policy_evidence::{
+    support_policy_mode_from_bytes, v8_project_candidates_for_directory, SupportPolicyMode,
+};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SupportGuardMode {
-    Deny,
-    Warn,
-    Off,
-}
 
 pub(crate) enum ResolvedSupportGuardCheck {
     Allow,
@@ -79,13 +74,13 @@ pub(crate) fn evaluate_resolved_support_guard(
         return ResolvedSupportGuardCheck::Allow;
     };
     match support_guard_mode(&violation.config_dir, context) {
-        SupportGuardMode::Off => ResolvedSupportGuardCheck::Allow,
-        SupportGuardMode::Warn => ResolvedSupportGuardCheck::Warn(format!(
+        SupportPolicyMode::Off => ResolvedSupportGuardCheck::Allow,
+        SupportPolicyMode::Warn => ResolvedSupportGuardCheck::Warn(format!(
             "[support guard] ПРЕДУПРЕЖДЕНИЕ: {}. Цель: {}",
             violation.reason,
             violation.target_path.display()
         )),
-        SupportGuardMode::Deny => ResolvedSupportGuardCheck::Block(violation),
+        SupportPolicyMode::Deny => ResolvedSupportGuardCheck::Block(violation),
     }
 }
 
@@ -152,23 +147,12 @@ fn bind_optional_file(transaction: &mut CompileTransaction, path: &Path) -> Resu
 }
 
 fn v8_project_candidates(start: &Path) -> Vec<PathBuf> {
-    let mut current = if start.is_dir() {
+    let current = if start.is_dir() {
         start.to_path_buf()
     } else {
         start.parent().unwrap_or(start).to_path_buf()
     };
-    let mut candidates = Vec::new();
-    for _ in 0..20 {
-        candidates.push(current.join(".v8-project.json"));
-        let Some(parent) = current.parent() else {
-            break;
-        };
-        if parent == current {
-            break;
-        }
-        current = parent.to_path_buf();
-    }
-    candidates
+    v8_project_candidates_for_directory(&current)
 }
 
 fn support_guard_target(
@@ -232,73 +216,24 @@ fn support_guard_object_name_target(
     Some(direct)
 }
 
-fn support_guard_mode(config_dir: &Path, context: &WorkspaceContext) -> SupportGuardMode {
+fn support_guard_mode(config_dir: &Path, context: &WorkspaceContext) -> SupportPolicyMode {
     let Some(project_file) = find_v8_project_file(&context.cwd)
         .or_else(|| find_v8_project_file(config_dir))
         .or_else(|| find_v8_project_file(&context.workspace_root))
     else {
-        return SupportGuardMode::Deny;
+        return SupportPolicyMode::Deny;
     };
-    let Ok(text) = std::fs::read_to_string(&project_file) else {
-        return SupportGuardMode::Deny;
-    };
-    let Ok(project) = serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')) else {
-        return SupportGuardMode::Deny;
+    let Ok(bytes) = std::fs::read(&project_file) else {
+        return SupportPolicyMode::Deny;
     };
     let project_dir = project_file.parent().unwrap_or_else(|| Path::new(""));
-    let config_dir = normalize_guard_path(config_dir);
-
-    if let Some(databases) = project.get("databases").and_then(Value::as_array) {
-        for database in databases {
-            let Some(config_src) = database.get("configSrc").and_then(Value::as_str) else {
-                continue;
-            };
-            let config_src = PathBuf::from(config_src);
-            let config_src = if config_src.is_absolute() {
-                config_src
-            } else {
-                project_dir.join(config_src)
-            };
-            let config_src = normalize_guard_path(&config_src);
-            if (config_dir == config_src || config_dir.starts_with(&config_src))
-                && database
-                    .get("editingAllowedCheck")
-                    .and_then(Value::as_str)
-                    .is_some()
-            {
-                return support_guard_mode_value(
-                    database
-                        .get("editingAllowedCheck")
-                        .and_then(Value::as_str)
-                        .expect("checked above"),
-                );
-            }
-        }
-    }
-
-    project
-        .get("editingAllowedCheck")
-        .and_then(Value::as_str)
-        .map(support_guard_mode_value)
-        .unwrap_or(SupportGuardMode::Deny)
+    support_policy_mode_from_bytes(&bytes, project_dir, config_dir)
 }
 
 fn find_v8_project_file(start: &Path) -> Option<PathBuf> {
     v8_project_candidates(start)
         .into_iter()
         .find(|candidate| candidate.is_file())
-}
-
-fn support_guard_mode_value(value: &str) -> SupportGuardMode {
-    match value {
-        "warn" => SupportGuardMode::Warn,
-        "off" => SupportGuardMode::Off,
-        _ => SupportGuardMode::Deny,
-    }
-}
-
-fn normalize_guard_path(path: &Path) -> PathBuf {
-    normalize_path_identity(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn support_guard_blocked_outcome(
@@ -354,17 +289,20 @@ fn support_guard_blocked_outcome(
 
 #[cfg(test)]
 mod tests {
-    use super::{support_guard_mode, support_guard_mode_value, SupportGuardMode};
+    use super::support_guard_mode;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::support_policy_evidence::{
+        support_policy_mode_value, SupportPolicyMode,
+    };
 
     #[test]
     fn project_editing_policy_is_the_closed_support_guard_downgrade_source() {
-        assert_eq!(support_guard_mode_value("warn"), SupportGuardMode::Warn);
-        assert_eq!(support_guard_mode_value("off"), SupportGuardMode::Off);
+        assert_eq!(support_policy_mode_value("warn"), SupportPolicyMode::Warn);
+        assert_eq!(support_policy_mode_value("off"), SupportPolicyMode::Off);
         for value in ["deny", "", "WARN", "unsupported"] {
             assert_eq!(
-                support_guard_mode_value(value),
-                SupportGuardMode::Deny,
+                support_policy_mode_value(value),
+                SupportPolicyMode::Deny,
                 "{value}"
             );
         }
@@ -385,7 +323,7 @@ mod tests {
         };
         assert_eq!(
             support_guard_mode(&config, &context),
-            SupportGuardMode::Deny
+            SupportPolicyMode::Deny
         );
 
         let policy_paths = [
@@ -394,9 +332,9 @@ mod tests {
             workspace.join(".v8-project.json"),
         ];
         let values = [
-            ("deny", SupportGuardMode::Deny),
-            ("warn", SupportGuardMode::Warn),
-            ("off", SupportGuardMode::Off),
+            ("deny", SupportPolicyMode::Deny),
+            ("warn", SupportPolicyMode::Warn),
+            ("off", SupportPolicyMode::Off),
         ];
         for (cwd_value, cwd_expected) in values {
             for (config_value, _) in values {
@@ -467,7 +405,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             support_guard_mode(&config, &context),
-            SupportGuardMode::Warn
+            SupportPolicyMode::Warn
         );
 
         for document in [
@@ -479,14 +417,14 @@ mod tests {
             std::fs::write(&policy_paths[2], document).unwrap();
             assert_eq!(
                 support_guard_mode(&config, &context),
-                SupportGuardMode::Deny,
+                SupportPolicyMode::Deny,
                 "{document}"
             );
         }
         std::fs::remove_file(&policy_paths[2]).unwrap();
         assert_eq!(
             support_guard_mode(&config, &context),
-            SupportGuardMode::Deny
+            SupportPolicyMode::Deny
         );
     }
 

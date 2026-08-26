@@ -52,6 +52,8 @@ pub(crate) mod source_roots;
 #[allow(dead_code)]
 pub(crate) mod subsystem_topology;
 pub(crate) mod support_guard;
+#[allow(dead_code)]
+pub(crate) mod support_policy_evidence;
 // The daemon becomes this store's sole writer in the following migration slice.
 #[allow(dead_code)]
 pub(crate) mod task_store;

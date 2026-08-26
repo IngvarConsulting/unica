@@ -26,6 +26,10 @@ use crate::infrastructure::source_revision::{
     RetainedRevisionLease, SourceRevisionService, WorkspaceStateScope,
 };
 use crate::infrastructure::source_roots::{normalize_path_identity, GENERATED_DIR_NAME};
+use crate::infrastructure::support_policy_evidence::{
+    RetainedSupportPolicyEvidence, SupportPolicyEvidenceError, SupportPolicyEvidenceErrorKind,
+    SupportPolicyMode,
+};
 use crate::infrastructure::workspace_index::{IndexRunner, WorkspaceIndexService};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -323,6 +327,7 @@ pub(crate) struct ApplyAdmission {
     cancellation: CancellationToken,
     writer_authority: ApplyWriterAuthority,
     workspace_cache: WorkspaceCachePublicationAuthority,
+    support_policy: RetainedSupportPolicyEvidence,
     context: WorkspaceContext,
 }
 
@@ -396,6 +401,10 @@ impl ApplyAdmission {
             self.writer_authority.clone(),
         )
         .forbid_generated_subtree())
+    }
+
+    pub(crate) const fn support_policy_mode(&self) -> SupportPolicyMode {
+        self.support_policy.mode()
     }
 
     pub(crate) fn prepare(
@@ -496,6 +505,7 @@ impl ApplyAdmission {
             transaction,
             writer_authority: self.writer_authority,
             workspace_cache: self.workspace_cache,
+            support_policy: self.support_policy,
             effects: PreparedApplyEffectReceipt {
                 events,
                 cache: projected_cache_report,
@@ -533,6 +543,7 @@ pub(crate) struct PreparedApplyBatch {
     transaction: CompileTransaction,
     writer_authority: ApplyWriterAuthority,
     workspace_cache: WorkspaceCachePublicationAuthority,
+    support_policy: RetainedSupportPolicyEvidence,
     effects: PreparedApplyEffectReceipt,
     revision_reconciliation: PreparedRevisionReconciliation,
 }
@@ -558,6 +569,7 @@ pub(in crate::infrastructure) struct RetainedApplyFinalGate<'a, R> {
     binding: ProviderRootBinding,
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
+    support_policy: RetainedSupportPolicyEvidence,
 }
 
 impl<R> RetainedApplyFinalGate<'_, R> {
@@ -582,7 +594,10 @@ impl<R> RetainedApplyFinalGate<'_, R> {
             .map_err(|error| {
                 ApplyPublicationError::new(ApplyPublicationErrorKind::ContainmentIdentity, error)
             })?;
-        self.checkpoint("prepared apply final gate")
+        self.checkpoint("prepared apply final gate")?;
+        self.support_policy
+            .validate(self.deadline, &self.cancellation)
+            .map_err(support_policy_publication_error)
     }
 }
 
@@ -1060,6 +1075,13 @@ impl<R> WorkspaceActor<R> {
             &binding.source_root,
             &writer_authority,
         )?;
+        let support_policy = RetainedSupportPolicyEvidence::capture(
+            &self.context.workspace_root,
+            binding.source_root.path(),
+            deadline,
+            cancellation,
+        )
+        .map_err(|error| error.to_string())?;
         Ok(ApplyAdmission {
             actor_identity: self.identity.clone(),
             actor_instance: self.instance_id.clone(),
@@ -1072,6 +1094,7 @@ impl<R> WorkspaceActor<R> {
             cancellation: cancellation.clone(),
             writer_authority,
             workspace_cache,
+            support_policy,
             context: self.context.clone(),
         })
     }
@@ -1132,6 +1155,10 @@ impl<R> WorkspaceActor<R> {
                 &prepared.cancellation,
             )
             .map_err(retained_revision_publication_error)?;
+        prepared
+            .support_policy
+            .validate(prepared.deadline, &prepared.cancellation)
+            .map_err(support_policy_publication_error)?;
         if prepared.dry_run {
             prepared
                 .transaction
@@ -1148,6 +1175,10 @@ impl<R> WorkspaceActor<R> {
                 .map_err(retained_revision_publication_error)?;
             #[cfg(test)]
             run_apply_dry_run_after_confirmation_hook();
+            prepared
+                .support_policy
+                .validate(prepared.deadline, &prepared.cancellation)
+                .map_err(support_policy_publication_error)?;
             self.validate_binding(&binding).map_err(|error| {
                 ApplyPublicationError::new(ApplyPublicationErrorKind::ContainmentIdentity, error)
             })?;
@@ -1171,6 +1202,7 @@ impl<R> WorkspaceActor<R> {
             binding,
             deadline: prepared.deadline,
             cancellation: prepared.cancellation.clone(),
+            support_policy: prepared.support_policy,
         };
         let (report, revision) = prepared.transaction.commit_retained_apply(
             prepared.writer_authority,
@@ -1633,6 +1665,20 @@ fn apply_validation_publication_error(
     ApplyPublicationError::new(kind, error.to_string())
 }
 
+fn support_policy_publication_error(error: SupportPolicyEvidenceError) -> ApplyPublicationError {
+    let kind = match error.kind() {
+        SupportPolicyEvidenceErrorKind::Cancelled => ApplyPublicationErrorKind::Cancelled,
+        SupportPolicyEvidenceErrorKind::Deadline => ApplyPublicationErrorKind::Deadline,
+        SupportPolicyEvidenceErrorKind::ContainmentIdentity => {
+            ApplyPublicationErrorKind::ContainmentIdentity
+        }
+        SupportPolicyEvidenceErrorKind::Provider => {
+            ApplyPublicationErrorKind::ProviderPostvalidation
+        }
+    };
+    ApplyPublicationError::new(kind, error.to_string())
+}
+
 fn apply_staging_checkpoint(
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
@@ -1840,9 +1886,13 @@ pub(crate) mod tests {
         SourceRevisionFence,
     };
     use crate::infrastructure::platform::testing::{
-        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        create_file_link_fixture_for_test, set_unix_mode_for_test, FileLinkFixtureOutcome,
     };
     use crate::infrastructure::source_revision::SourceRevisionService;
+    use crate::infrastructure::support_policy_evidence::SupportPolicyMode;
+    use crate::infrastructure::support_policy_evidence::{
+        set_support_policy_capture_hook, set_support_policy_validation_hook,
+    };
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
@@ -6477,6 +6527,732 @@ pub(crate) mod tests {
             prepared.effects.cache.events,
             ["FormChanged", "ModuleChanged"]
         );
+    }
+
+    #[test]
+    fn apply_policy_preserves_workspace_ancestor_precedence_over_source_local_policy() {
+        let container = temp_root("apply-policy-precedence");
+        let workspace = container.join("worktrees/one");
+        let source = workspace.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            container.join(".v8-project.json"),
+            br#"{"editingAllowedCheck":"warn"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join(".v8-project.json"),
+            br#"{"editingAllowedCheck":"off"}"#,
+        )
+        .unwrap();
+        let context = context(&workspace);
+        let identity =
+            WorkspaceIdentity::new(&context, [("main", source.as_path())], "test-provider")
+                .unwrap();
+        let actor = super::WorkspaceActor::new(identity, context).unwrap();
+        let binding = actor.bind_provider_root("main", &source).unwrap();
+
+        let admission = actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Warn);
+        std::fs::remove_dir_all(container).unwrap();
+    }
+
+    #[test]
+    fn apply_policy_absent_chain_rejects_nearer_policy_insertion_before_publication() {
+        let fixture = actor_fixture("apply-policy-absent-insertion", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let mut state = admission.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"published".to_vec())
+            .unwrap();
+        let prepared = admission.prepare(state).unwrap();
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        std::fs::write(
+            fixture.root.join(".v8-project.json"),
+            br#"{"editingAllowedCheck":"off"}"#,
+        )
+        .unwrap();
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_policy_exact_file_rejects_byte_change_and_rename_replacement() {
+        let mut rejected = Vec::new();
+        for replacement in [false, true] {
+            let fixture = actor_fixture(
+                if replacement {
+                    "apply-policy-identity-replacement"
+                } else {
+                    "apply-policy-byte-change"
+                },
+                &["src"],
+            );
+            let target = fixture.roots[0].join("Module.bsl");
+            let policy = fixture.root.join(".v8-project.json");
+            std::fs::write(&target, b"original").unwrap();
+            std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    false,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Off);
+            let mut state = admission.staged_state().unwrap();
+            state
+                .replace("Module.bsl", b"original", b"published".to_vec())
+                .unwrap();
+            let prepared = admission.prepare(state).unwrap();
+            if replacement {
+                std::fs::rename(&policy, fixture.root.join("policy-displaced.json")).unwrap();
+                std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+            } else {
+                std::fs::write(&policy, br#"{"editingAllowedCheck":"warn"}"#).unwrap();
+            }
+            rejected.push(fixture.actor.publish_prepared_apply(prepared).is_err());
+            fixture.cleanup();
+        }
+        assert_eq!(rejected, [true, true]);
+    }
+
+    #[test]
+    fn apply_policy_rejects_symlink_wrong_kind_and_parent_root_replacement() {
+        let wrong_kind = actor_fixture("apply-policy-wrong-kind", &["src"]);
+        let policy = wrong_kind.root.join(".v8-project.json");
+        std::fs::create_dir(&policy).unwrap();
+        let binding = wrong_kind
+            .actor
+            .bind_provider_root("src", &wrong_kind.roots[0])
+            .unwrap();
+        let admission = wrong_kind
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
+        let state = admission.staged_state().unwrap();
+        let prepared = admission.prepare(state).unwrap();
+        std::fs::remove_dir(&policy).unwrap();
+        std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+        let wrong_kind_rejected = wrong_kind.actor.publish_prepared_apply(prepared).is_err();
+        wrong_kind.cleanup();
+
+        let symlink = actor_fixture("apply-policy-symlink", &["src"]);
+        let policy = symlink.root.join(".v8-project.json");
+        let target = symlink.root.join("linked-policy.json");
+        std::fs::write(&target, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+        let link_outcome = create_file_link_fixture_for_test(&target, &policy).unwrap();
+        let symlink_rejected = if link_outcome == FileLinkFixtureOutcome::Created {
+            let binding = symlink
+                .actor
+                .bind_provider_root("src", &symlink.roots[0])
+                .unwrap();
+            let admission = symlink
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
+            let state = admission.staged_state().unwrap();
+            let prepared = admission.prepare(state).unwrap();
+            std::fs::remove_file(&policy).unwrap();
+            std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+            symlink.actor.publish_prepared_apply(prepared).is_err()
+        } else {
+            true
+        };
+        symlink.cleanup();
+
+        assert!(wrong_kind_rejected);
+        assert!(symlink_rejected);
+        prepared_apply_root_and_actor_capabilities_cannot_be_redirected_or_replayed();
+    }
+
+    #[test]
+    fn apply_policy_dry_run_churn_is_write_free_and_returns_no_receipt() {
+        let fixture = actor_fixture("apply-policy-dry-run-churn", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        let policy = fixture.root.join(".v8-project.json");
+        std::fs::write(&target, b"original").unwrap();
+        std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admission.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"projected".to_vec())
+            .unwrap();
+        let prepared = admission.prepare(state).unwrap();
+        let raced_policy = policy.clone();
+        set_apply_dry_run_after_confirmation_hook(move || {
+            std::fs::write(raced_policy, br#"{"editingAllowedCheck":"warn"}"#).unwrap();
+        });
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        assert!(!fixture.root.join(".build/unica").exists());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_policy_churn_before_source_publication_is_write_free() {
+        let fixture = actor_fixture("apply-policy-prepublication-churn", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        let policy = fixture.root.join(".v8-project.json");
+        std::fs::write(&target, b"original").unwrap();
+        std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admission.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"published".to_vec())
+            .unwrap();
+        let prepared = admission.prepare(state).unwrap();
+        std::fs::write(&policy, br#"{"editingAllowedCheck":"warn"}"#).unwrap();
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        assert!(!fixture.root.join(".build/unica").exists());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_policy_churn_after_source_publication_rolls_back_all_retained_state() {
+        let fixture = actor_fixture("apply-policy-postpublication-churn", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        let policy = fixture.root.join(".v8-project.json");
+        std::fs::write(&target, b"original").unwrap();
+        std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admission.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"published".to_vec())
+            .unwrap();
+        let prepared = admission.prepare(state).unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let raced_policy = policy.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || {
+                std::fs::write(raced_policy, br#"{"editingAllowedCheck":"warn"}"#).unwrap();
+            },
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_policy_foreign_actor_and_sibling_worktree_replay_are_rejected() {
+        real_effect_foreign_actor_replay_preserves_both_actor_states();
+
+        let fixture = actor_fixture("apply-policy-sibling-source", &["one", "two"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("one", &fixture.roots[0])
+            .unwrap();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admission.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"projected".to_vec())
+            .unwrap();
+        let mut prepared = admission.prepare(state).unwrap();
+        prepared.source_set = fixture
+            .actor
+            .identity
+            .source_sets
+            .iter()
+            .find(|source| source.name == "two")
+            .unwrap()
+            .clone();
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_policy_same_ancestor_can_govern_two_worktrees_without_authority_aliasing() {
+        let container = temp_root("apply-policy-shared-ancestor");
+        std::fs::create_dir_all(&container).unwrap();
+        std::fs::write(
+            container.join(".v8-project.json"),
+            br#"{"editingAllowedCheck":"off"}"#,
+        )
+        .unwrap();
+        let mut actors = Vec::new();
+        for name in ["one", "two"] {
+            let workspace = container.join("worktrees").join(name);
+            let source = workspace.join("src");
+            std::fs::create_dir_all(&source).unwrap();
+            let context = context(&workspace);
+            let identity =
+                WorkspaceIdentity::new(&context, [("main", source.as_path())], "test-provider")
+                    .unwrap();
+            actors.push((
+                Arc::new(super::WorkspaceActor::new(identity, context).unwrap()),
+                source,
+            ));
+        }
+        let first_binding = actors[0]
+            .0
+            .bind_provider_root("main", &actors[0].1)
+            .unwrap();
+        let first_admission = actors[0]
+            .0
+            .admit_apply(
+                &first_binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            first_admission.support_policy_mode(),
+            SupportPolicyMode::Off
+        );
+        let first_state = first_admission.staged_state().unwrap();
+        let first_prepared = first_admission.prepare(first_state).unwrap();
+        let replay = actors[1].0.publish_prepared_apply(first_prepared);
+        assert_eq!(
+            replay.unwrap_err().kind(),
+            super::ApplyPublicationErrorKind::Invariant
+        );
+
+        for (actor, source) in &actors {
+            let binding = actor.bind_provider_root("main", source).unwrap();
+            let admission = actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Off);
+            let state = admission.staged_state().unwrap();
+            let result = actor
+                .publish_prepared_apply(admission.prepare(state).unwrap())
+                .unwrap();
+            assert_eq!(result.commit_count_for_test(), 0);
+        }
+        std::fs::remove_dir_all(container).unwrap();
+    }
+
+    #[test]
+    fn apply_policy_deadline_and_cancellation_during_capture_are_write_free() {
+        let mut rejected = Vec::new();
+        for gate in ["cancelled", "deadline"] {
+            let fixture = actor_fixture(&format!("apply-policy-capture-{gate}"), &["src"]);
+            std::fs::write(
+                fixture.root.join(".v8-project.json"),
+                br#"{"editingAllowedCheck":"off"}"#,
+            )
+            .unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let cancellation = CancellationToken::new();
+            if gate == "cancelled" {
+                let cancel = cancellation.clone();
+                set_support_policy_capture_hook(move || cancel.cancel());
+            } else {
+                set_support_policy_capture_hook(|| {
+                    std::thread::sleep(Duration::from_millis(80));
+                });
+            }
+            let result = fixture.actor.admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(if gate == "deadline" {
+                    Duration::from_millis(50)
+                } else {
+                    Duration::from_secs(5)
+                }),
+                &cancellation,
+            );
+            rejected.push(result.is_err());
+            assert!(!fixture.root.join(".build/unica").exists());
+            fixture.cleanup();
+        }
+        assert_eq!(rejected, [true, true]);
+    }
+
+    #[test]
+    fn apply_policy_deadline_and_cancellation_during_final_validation_roll_back() {
+        for gate in ["cancelled", "deadline"] {
+            let fixture = actor_fixture(&format!("apply-policy-final-{gate}"), &["src"]);
+            let target = fixture.roots[0].join("Module.bsl");
+            std::fs::write(&target, b"original").unwrap();
+            std::fs::write(
+                fixture.root.join(".v8-project.json"),
+                br#"{"editingAllowedCheck":"off"}"#,
+            )
+            .unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let service = fixture.actor.source_revision_service(&binding).unwrap();
+            let cancellation = CancellationToken::new();
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    false,
+                    ProviderDeadline::from_budget(if gate == "deadline" {
+                        Duration::from_millis(500)
+                    } else {
+                        Duration::from_secs(5)
+                    }),
+                    &cancellation,
+                )
+                .unwrap();
+            let mut state = admission.staged_state().unwrap();
+            state
+                .replace("Module.bsl", b"original", b"published".to_vec())
+                .unwrap();
+            let prepared = admission.prepare(state).unwrap();
+            let source_before = snapshot_tree(&fixture.roots[0]);
+            let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+            let machine_before = service.machine_state_for_test();
+            if gate == "cancelled" {
+                let cancel = cancellation.clone();
+                crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+                    move || {
+                        set_support_policy_validation_hook(move || cancel.cancel());
+                    },
+                );
+            } else {
+                crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+                    || {
+                        set_support_policy_validation_hook(|| {
+                            std::thread::sleep(Duration::from_millis(550));
+                        });
+                    },
+                );
+            }
+
+            let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+            assert_eq!(
+                error.kind(),
+                if gate == "cancelled" {
+                    super::ApplyPublicationErrorKind::Cancelled
+                } else {
+                    super::ApplyPublicationErrorKind::Deadline
+                }
+            );
+            assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+            assert_eq!(
+                snapshot_tree(&fixture.root.join(".build/unica")),
+                cache_before
+            );
+            assert_eq!(service.machine_state_for_test(), machine_before);
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn apply_policy_warn_off_deny_database_and_malformed_match_v12() {
+        let cases: &[(&str, &[u8], SupportPolicyMode)] = &[
+            (
+                "warn",
+                br#"{"editingAllowedCheck":"warn"}"#,
+                SupportPolicyMode::Warn,
+            ),
+            (
+                "off",
+                br#"{"editingAllowedCheck":"off"}"#,
+                SupportPolicyMode::Off,
+            ),
+            (
+                "deny",
+                br#"{"editingAllowedCheck":"deny"}"#,
+                SupportPolicyMode::Deny,
+            ),
+            ("missing-value", br#"{}"#, SupportPolicyMode::Deny),
+            ("malformed", b"not json", SupportPolicyMode::Deny),
+            (
+                "unknown",
+                br#"{"editingAllowedCheck":"WARN"}"#,
+                SupportPolicyMode::Deny,
+            ),
+            (
+                "bom",
+                b"\xef\xbb\xbf{\"editingAllowedCheck\":\"off\"}",
+                SupportPolicyMode::Off,
+            ),
+            (
+                "database",
+                br#"{"editingAllowedCheck":"off","databases":[{"configSrc":"src","editingAllowedCheck":"warn"}]}"#,
+                SupportPolicyMode::Warn,
+            ),
+        ];
+        for (name, bytes, expected) in cases {
+            let fixture = actor_fixture(&format!("apply-policy-mode-{name}"), &["src"]);
+            std::fs::write(fixture.root.join(".v8-project.json"), bytes).unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(admission.support_policy_mode(), *expected, "{name}");
+            fixture.cleanup();
+        }
+
+        let missing = actor_fixture("apply-policy-mode-missing", &["src"]);
+        let binding = missing
+            .actor
+            .bind_provider_root("src", &missing.roots[0])
+            .unwrap();
+        let admission = missing
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
+        missing.cleanup();
+
+        let oversized = actor_fixture("apply-policy-mode-oversized", &["src"]);
+        std::fs::write(
+            oversized.root.join(".v8-project.json"),
+            vec![b' '; 32 * 1024 * 1024 + 1],
+        )
+        .unwrap();
+        let binding = oversized
+            .actor
+            .bind_provider_root("src", &oversized.roots[0])
+            .unwrap();
+        let admission = oversized
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
+        oversized.cleanup();
+
+        let unreadable = actor_fixture("apply-policy-mode-unreadable", &["src"]);
+        let policy = unreadable.root.join(".v8-project.json");
+        std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+        if set_unix_mode_for_test(&policy, 0o000).unwrap() {
+            let binding = unreadable
+                .actor
+                .bind_provider_root("src", &unreadable.roots[0])
+                .unwrap();
+            let admission = unreadable
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
+            drop(admission);
+            assert!(set_unix_mode_for_test(&policy, 0o600).unwrap());
+        }
+        unreadable.cleanup();
+    }
+
+    #[test]
+    fn retained_apply_support_policy_evidence_does_not_add_a_third_writer_participant() {
+        let fixture = actor_fixture("apply-policy-two-writers", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let state = admission.staged_state().unwrap();
+        let prepared = admission.prepare(state).unwrap();
+        assert_eq!(
+            prepared.transaction.retained_role_root_counts_for_test(),
+            (1, 1)
+        );
+        retained_apply_closed_participant_contract_is_complete();
+        fixture.cleanup();
+    }
+
+    #[test]
+    pub(crate) fn retained_apply_support_policy_evidence_contract_is_complete() {
+        apply_policy_preserves_workspace_ancestor_precedence_over_source_local_policy();
+        apply_policy_absent_chain_rejects_nearer_policy_insertion_before_publication();
+        apply_policy_exact_file_rejects_byte_change_and_rename_replacement();
+        apply_policy_rejects_symlink_wrong_kind_and_parent_root_replacement();
+        apply_policy_dry_run_churn_is_write_free_and_returns_no_receipt();
+        apply_policy_churn_before_source_publication_is_write_free();
+        apply_policy_churn_after_source_publication_rolls_back_all_retained_state();
+        apply_policy_foreign_actor_and_sibling_worktree_replay_are_rejected();
+        apply_policy_same_ancestor_can_govern_two_worktrees_without_authority_aliasing();
+        apply_policy_deadline_and_cancellation_during_capture_are_write_free();
+        apply_policy_deadline_and_cancellation_during_final_validation_roll_back();
+        apply_policy_warn_off_deny_database_and_malformed_match_v12();
+        retained_apply_support_policy_evidence_does_not_add_a_third_writer_participant();
     }
 
     fn plan_actor_events(
