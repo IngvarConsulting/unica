@@ -1886,7 +1886,8 @@ pub(crate) mod tests {
         SourceRevisionFence,
     };
     use crate::infrastructure::platform::testing::{
-        create_file_link_fixture_for_test, set_unix_mode_for_test, FileLinkFixtureOutcome,
+        can_swap_named_child_behind_retained_handle_for_test, create_file_link_fixture_for_test,
+        set_unix_mode_for_test, FileLinkFixtureOutcome,
     };
     use crate::infrastructure::source_revision::SourceRevisionService;
     use crate::infrastructure::support_policy_evidence::SupportPolicyMode;
@@ -6661,7 +6662,100 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn apply_policy_rejects_symlink_wrong_kind_and_parent_root_replacement() {
+    fn apply_policy_stable_deny_evidence_allows_unrelated_dry_run_and_real_publication() {
+        for category in ["wrong-kind", "oversized", "unreadable"] {
+            for dry_run in [true, false] {
+                let fixture = actor_fixture(
+                    &format!(
+                        "apply-policy-stable-{category}-{}",
+                        if dry_run { "dry" } else { "real" }
+                    ),
+                    &["src"],
+                );
+                let policy = fixture.root.join(".v8-project.json");
+                let unreadable = match category {
+                    "wrong-kind" => {
+                        std::fs::create_dir(&policy).unwrap();
+                        false
+                    }
+                    "oversized" => {
+                        std::fs::write(&policy, vec![b' '; 32 * 1024 * 1024 + 1]).unwrap();
+                        false
+                    }
+                    "unreadable" => {
+                        std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+                        if !set_unix_mode_for_test(&policy, 0o000).unwrap() {
+                            eprintln!(
+                                "[SKIPPED FIXTURE] unreadable support-policy publication requires Unix permission bits"
+                            );
+                            fixture.cleanup();
+                            continue;
+                        }
+                        true
+                    }
+                    _ => unreachable!(),
+                };
+                let target = fixture.roots[0].join("Module.bsl");
+                std::fs::write(&target, b"original").unwrap();
+                let binding = fixture
+                    .actor
+                    .bind_provider_root("src", &fixture.roots[0])
+                    .unwrap();
+                let admission = fixture
+                    .actor
+                    .admit_apply(
+                        &binding,
+                        None,
+                        dry_run,
+                        ProviderDeadline::from_budget(Duration::from_secs(10)),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap();
+                assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
+                let mut state = admission.staged_state().unwrap();
+                if !dry_run {
+                    state
+                        .replace("Module.bsl", b"original", b"published".to_vec())
+                        .unwrap();
+                }
+                let result = fixture
+                    .actor
+                    .publish_prepared_apply(admission.prepare(state).unwrap())
+                    .unwrap();
+
+                assert_eq!(
+                    result.effects().disposition(),
+                    if dry_run {
+                        ApplyEffectDisposition::Projected
+                    } else {
+                        ApplyEffectDisposition::Committed
+                    },
+                    "category={category}, dry_run={dry_run}"
+                );
+                assert_eq!(
+                    result.commit_count_for_test(),
+                    usize::from(!dry_run),
+                    "category={category}, dry_run={dry_run}"
+                );
+                assert_eq!(
+                    std::fs::read(&target).unwrap(),
+                    if dry_run {
+                        b"original".as_slice()
+                    } else {
+                        b"published".as_slice()
+                    },
+                    "category={category}, dry_run={dry_run}"
+                );
+                if unreadable {
+                    assert!(set_unix_mode_for_test(&policy, 0o600).unwrap());
+                }
+                fixture.cleanup();
+            }
+        }
+    }
+
+    #[test]
+    fn apply_policy_category_and_identity_transitions_are_rejected() {
         let wrong_kind = actor_fixture("apply-policy-wrong-kind", &["src"]);
         let policy = wrong_kind.root.join(".v8-project.json");
         std::fs::create_dir(&policy).unwrap();
@@ -6684,7 +6778,14 @@ pub(crate) mod tests {
         let prepared = admission.prepare(state).unwrap();
         std::fs::remove_dir(&policy).unwrap();
         std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
-        let wrong_kind_rejected = wrong_kind.actor.publish_prepared_apply(prepared).is_err();
+        assert_eq!(
+            wrong_kind
+                .actor
+                .publish_prepared_apply(prepared)
+                .unwrap_err()
+                .kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
         wrong_kind.cleanup();
 
         let symlink = actor_fixture("apply-policy-symlink", &["src"]);
@@ -6692,12 +6793,92 @@ pub(crate) mod tests {
         let target = symlink.root.join("linked-policy.json");
         std::fs::write(&target, br#"{"editingAllowedCheck":"off"}"#).unwrap();
         let link_outcome = create_file_link_fixture_for_test(&target, &policy).unwrap();
-        let symlink_rejected = if link_outcome == FileLinkFixtureOutcome::Created {
-            let binding = symlink
+        match link_outcome {
+            FileLinkFixtureOutcome::Created => {
+                let binding = symlink
+                    .actor
+                    .bind_provider_root("src", &symlink.roots[0])
+                    .unwrap();
+                let admission = symlink
+                    .actor
+                    .admit_apply(
+                        &binding,
+                        None,
+                        true,
+                        ProviderDeadline::from_budget(Duration::from_secs(5)),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap();
+                assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
+                let state = admission.staged_state().unwrap();
+                let prepared = admission.prepare(state).unwrap();
+                std::fs::remove_file(&policy).unwrap();
+                std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+                assert_eq!(
+                    symlink
+                        .actor
+                        .publish_prepared_apply(prepared)
+                        .unwrap_err()
+                        .kind(),
+                    super::ApplyPublicationErrorKind::ContainmentIdentity
+                );
+            }
+            FileLinkFixtureOutcome::Unsupported => eprintln!(
+                "[SKIPPED FIXTURE] support-policy symlink transition is unsupported on this platform"
+            ),
+            FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => eprintln!(
+                "[SKIPPED FIXTURE] support-policy symlink transition needs an unavailable Windows privilege"
+            ),
+        }
+        symlink.cleanup();
+
+        if can_swap_named_child_behind_retained_handle_for_test() {
+            let oversized = actor_fixture("apply-policy-oversized-identity", &["src"]);
+            let policy = oversized.root.join(".v8-project.json");
+            std::fs::write(&policy, vec![b' '; 32 * 1024 * 1024 + 1]).unwrap();
+            let binding = oversized
                 .actor
-                .bind_provider_root("src", &symlink.roots[0])
+                .bind_provider_root("src", &oversized.roots[0])
                 .unwrap();
-            let admission = symlink
+            let admission = oversized
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(10)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
+            let state = admission.staged_state().unwrap();
+            let prepared = admission.prepare(state).unwrap();
+            std::fs::rename(&policy, oversized.root.join("oversized-displaced.json")).unwrap();
+            std::fs::write(&policy, vec![b' '; 32 * 1024 * 1024 + 1]).unwrap();
+            assert_eq!(
+                oversized
+                    .actor
+                    .publish_prepared_apply(prepared)
+                    .unwrap_err()
+                    .kind(),
+                super::ApplyPublicationErrorKind::ContainmentIdentity
+            );
+            oversized.cleanup();
+        } else {
+            eprintln!(
+                "[SKIPPED FIXTURE] oversized support-policy identity replacement is unsupported while a retained handle is open"
+            );
+        }
+
+        let unreadable = actor_fixture("apply-policy-unreadable-transition", &["src"]);
+        let policy = unreadable.root.join(".v8-project.json");
+        std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+        if set_unix_mode_for_test(&policy, 0o000).unwrap() {
+            let binding = unreadable
+                .actor
+                .bind_provider_root("src", &unreadable.roots[0])
+                .unwrap();
+            let admission = unreadable
                 .actor
                 .admit_apply(
                     &binding,
@@ -6710,17 +6891,21 @@ pub(crate) mod tests {
             assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
             let state = admission.staged_state().unwrap();
             let prepared = admission.prepare(state).unwrap();
-            std::fs::remove_file(&policy).unwrap();
-            std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
-            symlink.actor.publish_prepared_apply(prepared).is_err()
+            assert!(set_unix_mode_for_test(&policy, 0o600).unwrap());
+            assert_eq!(
+                unreadable
+                    .actor
+                    .publish_prepared_apply(prepared)
+                    .unwrap_err()
+                    .kind(),
+                super::ApplyPublicationErrorKind::ContainmentIdentity
+            );
         } else {
-            true
-        };
-        symlink.cleanup();
-
-        assert!(wrong_kind_rejected);
-        assert!(symlink_rejected);
-        prepared_apply_root_and_actor_capabilities_cannot_be_redirected_or_replayed();
+            eprintln!(
+                "[SKIPPED FIXTURE] unreadable support-policy transition requires Unix permission bits"
+            );
+        }
+        unreadable.cleanup();
     }
 
     #[test]
@@ -7207,6 +7392,10 @@ pub(crate) mod tests {
             assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
             drop(admission);
             assert!(set_unix_mode_for_test(&policy, 0o600).unwrap());
+        } else {
+            eprintln!(
+                "[SKIPPED FIXTURE] unreadable support-policy mode requires Unix permission bits"
+            );
         }
         unreadable.cleanup();
     }
@@ -7243,7 +7432,9 @@ pub(crate) mod tests {
         apply_policy_preserves_workspace_ancestor_precedence_over_source_local_policy();
         apply_policy_absent_chain_rejects_nearer_policy_insertion_before_publication();
         apply_policy_exact_file_rejects_byte_change_and_rename_replacement();
-        apply_policy_rejects_symlink_wrong_kind_and_parent_root_replacement();
+        apply_policy_stable_deny_evidence_allows_unrelated_dry_run_and_real_publication();
+        apply_policy_category_and_identity_transitions_are_rejected();
+        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_candidate_parent_replacement_is_rejected();
         apply_policy_dry_run_churn_is_write_free_and_returns_no_receipt();
         apply_policy_churn_before_source_publication_is_write_free();
         apply_policy_churn_after_source_publication_rolls_back_all_retained_state();
@@ -7252,6 +7443,9 @@ pub(crate) mod tests {
         apply_policy_deadline_and_cancellation_during_capture_are_write_free();
         apply_policy_deadline_and_cancellation_during_final_validation_roll_back();
         apply_policy_warn_off_deny_database_and_malformed_match_v12();
+        crate::infrastructure::support_policy_evidence::tests::support_policy_database_paths_distinguish_nested_sources_from_prefix_siblings();
+        crate::infrastructure::support_policy_evidence::tests::support_policy_candidate_search_stops_at_exact_twentieth_candidate();
+        crate::infrastructure::support_policy_evidence::tests::support_policy_overlapping_chains_keep_first_occurrence_order_without_duplicates();
         retained_apply_support_policy_evidence_does_not_add_a_third_writer_participant();
     }
 

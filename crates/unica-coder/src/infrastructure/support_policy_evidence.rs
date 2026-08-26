@@ -438,3 +438,147 @@ fn checkpoint(
         Ok(())
     }
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    pub(crate) fn support_policy_database_paths_distinguish_nested_sources_from_prefix_siblings() {
+        let temporary = tempfile::tempdir().unwrap();
+        let project_dir = temporary.path().join("project");
+        let source = project_dir.join("src");
+        let nested = source.join("nested");
+        let sibling = project_dir.join("src-copy");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+
+        let relative = br#"{
+            "editingAllowedCheck":"off",
+            "databases":[{"configSrc":"src","editingAllowedCheck":"warn"}]
+        }"#;
+        assert_eq!(
+            support_policy_mode_from_bytes(relative, &project_dir, &nested),
+            SupportPolicyMode::Warn
+        );
+        assert_eq!(
+            support_policy_mode_from_bytes(relative, &project_dir, &sibling),
+            SupportPolicyMode::Off
+        );
+
+        let absolute = serde_json::to_vec(&serde_json::json!({
+            "editingAllowedCheck": "deny",
+            "databases": [{
+                "configSrc": source.to_string_lossy(),
+                "editingAllowedCheck": "off"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            support_policy_mode_from_bytes(&absolute, &project_dir, &nested),
+            SupportPolicyMode::Off
+        );
+        assert_eq!(
+            support_policy_mode_from_bytes(&absolute, &project_dir, &sibling),
+            SupportPolicyMode::Deny
+        );
+    }
+
+    #[test]
+    pub(crate) fn support_policy_candidate_search_stops_at_exact_twentieth_candidate() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut start = temporary.path().to_path_buf();
+        for index in 0..24 {
+            start.push(format!("level-{index}"));
+        }
+        std::fs::create_dir_all(&start).unwrap();
+
+        let candidates = v8_project_candidates_for_directory(&start);
+
+        assert_eq!(candidates.len(), 20);
+        assert_eq!(candidates[0], start.join(POLICY_NAME));
+        assert_eq!(
+            candidates[19],
+            start.ancestors().nth(19).unwrap().join(POLICY_NAME)
+        );
+        assert!(!candidates.contains(&start.ancestors().nth(20).unwrap().join(POLICY_NAME)));
+    }
+
+    #[test]
+    pub(crate) fn support_policy_overlapping_chains_keep_first_occurrence_order_without_duplicates()
+    {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut workspace = temporary.path().to_path_buf();
+        for index in 0..24 {
+            workspace.push(format!("level-{index}"));
+        }
+        let source = workspace.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        let workspace = std::fs::canonicalize(workspace).unwrap();
+        let source = std::fs::canonicalize(source).unwrap();
+
+        let evidence = RetainedSupportPolicyEvidence::capture(
+            &workspace,
+            &source,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let actual = evidence
+            .candidates
+            .iter()
+            .map(|candidate| match candidate {
+                RetainedPolicyCandidate::Absent(parent) => parent.path().join(POLICY_NAME),
+                _ => panic!("fixture intentionally contains no policy candidates"),
+            })
+            .collect::<Vec<_>>();
+        let mut expected = workspace
+            .ancestors()
+            .take(20)
+            .map(|parent| parent.join(POLICY_NAME))
+            .collect::<Vec<_>>();
+        expected.push(source.join(POLICY_NAME));
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    pub(crate) fn retained_support_policy_candidate_parent_replacement_is_rejected() {
+        if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test()
+        {
+            eprintln!(
+                "[SKIPPED FIXTURE] retained support-policy parent replacement is unsupported while a directory handle is open"
+            );
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let source = workspace.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        let workspace = std::fs::canonicalize(workspace).unwrap();
+        let source = std::fs::canonicalize(source).unwrap();
+        let evidence = RetainedSupportPolicyEvidence::capture(
+            &workspace,
+            &source,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let displaced = temporary.path().join("workspace-displaced");
+        std::fs::rename(&workspace, &displaced).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let error = evidence
+            .validate(
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            SupportPolicyEvidenceErrorKind::ContainmentIdentity
+        );
+    }
+}
