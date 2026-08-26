@@ -15,8 +15,11 @@ Actor admission удерживает bounded V12 candidate order, включая
 exact bytes. Каждая evidence revalidation до publication, в конце dry run и в
 late final gate с rollback выполняет два последовательных полных pass всей
 ordered chain под одной absolute deadline/cancellation, повторяя admitted
-category, physical identity и exact bytes; actor mutation lane сериализует
-actor-owned writers. Это bounded optimistic stabilization для обычной конечной
-внешней правки, а не history-sensitive защита от arbitrary same-user/ABA writer,
-strict multi-object linearizability или immutability до/через revision install.
-Evidence не добавляет writer participant.
+category, physical identity и exact bytes. Каждый descriptor-relative retained
+read соблюдает `limit + 1`, читает чанками не более 64 КиБ и проверяет ту же
+deadline/cancellation до и после каждого чанка; отдельный блокирующий syscall не
+обещается прерываемым. Actor mutation lane сериализует actor-owned writers. Это
+bounded optimistic stabilization для обычной конечной внешней правки, а не
+history-sensitive защита от arbitrary same-user/ABA writer, strict multi-object
+linearizability или immutability до/через revision install. Evidence не
+добавляет writer participant.

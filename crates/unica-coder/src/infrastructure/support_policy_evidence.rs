@@ -7,11 +7,12 @@ use crate::infrastructure::source_roots::normalize_path_identity;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 const POLICY_NAME: &str = ".v8-project.json";
 const MAX_SUPPORT_POLICY_BYTES: usize = 32 * 1024 * 1024;
+const SUPPORT_POLICY_READ_CHUNK_BYTES: usize = 64 * 1024;
 
 #[cfg(test)]
 thread_local! {
@@ -23,6 +24,14 @@ thread_local! {
         std::cell::RefCell::new(None);
     static SUPPORT_POLICY_AFTER_RETAINED_READ_BEFORE_ACCEPTANCE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
+    static SUPPORT_POLICY_READ_CHUNK_HOOK: std::cell::RefCell<Option<SupportPolicyReadChunkHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+enum SupportPolicyReadChunkHook {
+    Once(Box<dyn FnOnce(usize)>),
+    Repeating(Box<dyn FnMut(usize)>),
 }
 
 #[cfg(test)]
@@ -47,6 +56,27 @@ pub(crate) fn set_support_policy_after_retained_read_before_acceptance_hook(
 ) {
     SUPPORT_POLICY_AFTER_RETAINED_READ_BEFORE_ACCEPTANCE_HOOK
         .with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+pub(crate) fn set_support_policy_read_chunk_hook_once(hook: impl FnOnce(usize) + 'static) {
+    SUPPORT_POLICY_READ_CHUNK_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(SupportPolicyReadChunkHook::Once(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+fn set_support_policy_read_chunk_hook_repeating(hook: impl FnMut(usize) + 'static) {
+    SUPPORT_POLICY_READ_CHUNK_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(SupportPolicyReadChunkHook::Repeating(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn clear_support_policy_read_chunk_hook() {
+    SUPPORT_POLICY_READ_CHUNK_HOOK.with(|slot| {
+        slot.borrow_mut().take();
+    });
 }
 
 #[cfg(test)]
@@ -81,6 +111,22 @@ fn run_support_policy_after_retained_read_before_acceptance_hook() {
     SUPPORT_POLICY_AFTER_RETAINED_READ_BEFORE_ACCEPTANCE_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn run_support_policy_read_chunk_hook(chunk_count: usize) {
+    SUPPORT_POLICY_READ_CHUNK_HOOK.with(|slot| {
+        let Some(hook) = slot.borrow_mut().take() else {
+            return;
+        };
+        match hook {
+            SupportPolicyReadChunkHook::Once(hook) => hook(chunk_count),
+            SupportPolicyReadChunkHook::Repeating(mut hook) => {
+                hook(chunk_count);
+                *slot.borrow_mut() = Some(SupportPolicyReadChunkHook::Repeating(hook));
+            }
         }
     });
 }
@@ -277,7 +323,13 @@ impl RetainedSupportPolicyEvidence {
                     });
                 }
                 Ok(RetainedChildCapability::RegularFile(file)) => {
-                    return match file.read_bounded(MAX_SUPPORT_POLICY_BYTES) {
+                    return match read_support_policy_bounded(
+                        &file,
+                        MAX_SUPPORT_POLICY_BYTES,
+                        deadline,
+                        cancellation,
+                        "support-policy capture",
+                    ) {
                         Ok(bytes) => {
                             let mode =
                                 support_policy_mode_from_bytes(&bytes, parent_path, source_root);
@@ -287,7 +339,9 @@ impl RetainedSupportPolicyEvidence {
                             checkpoint(deadline, cancellation, "support-policy capture")?;
                             Ok(Self { mode, candidates })
                         }
-                        Err(error) if error.kind() == ErrorKind::InvalidData => {
+                        Err(SupportPolicyReadError::Io(error))
+                            if error.kind() == ErrorKind::InvalidData =>
+                        {
                             candidates.push(RetainedPolicyCandidate::Oversized(file));
                             #[cfg(test)]
                             run_support_policy_capture_hook();
@@ -297,7 +351,8 @@ impl RetainedSupportPolicyEvidence {
                                 candidates,
                             })
                         }
-                        Err(_) => {
+                        Err(SupportPolicyReadError::Terminal(error)) => Err(error),
+                        Err(SupportPolicyReadError::Io(_)) => {
                             candidates.push(RetainedPolicyCandidate::Unreadable(parent));
                             #[cfg(test)]
                             run_support_policy_capture_hook();
@@ -380,7 +435,7 @@ impl RetainedSupportPolicyEvidence {
         checkpoint(deadline, cancellation, "support-policy validation")?;
         for candidate in &self.candidates {
             checkpoint(deadline, cancellation, "support-policy validation")?;
-            validate_candidate(candidate)?;
+            validate_candidate(candidate, deadline, cancellation)?;
             #[cfg(test)]
             run_support_policy_validation_hook();
             checkpoint(deadline, cancellation, "support-policy validation")?;
@@ -391,6 +446,8 @@ impl RetainedSupportPolicyEvidence {
 
 fn validate_candidate(
     candidate: &RetainedPolicyCandidate,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
 ) -> Result<(), SupportPolicyEvidenceError> {
     match candidate {
         RetainedPolicyCandidate::Absent(parent) => {
@@ -405,9 +462,19 @@ fn validate_candidate(
                 .map_err(|_| changed("support-policy file identity changed"))?;
             #[cfg(test)]
             run_support_policy_after_pre_read_identity_hook();
-            let current = file
-                .read_bounded(MAX_SUPPORT_POLICY_BYTES)
-                .map_err(|_| changed("support-policy file bytes became unreadable"))?;
+            let current = read_support_policy_bounded(
+                file,
+                MAX_SUPPORT_POLICY_BYTES,
+                deadline,
+                cancellation,
+                "support-policy validation",
+            )
+            .map_err(|error| match error {
+                SupportPolicyReadError::Terminal(error) => error,
+                SupportPolicyReadError::Io(_) => {
+                    changed("support-policy file bytes became unreadable")
+                }
+            })?;
             if &current != bytes {
                 return Err(changed("support-policy file bytes changed"));
             }
@@ -422,12 +489,21 @@ fn validate_candidate(
                 .map_err(|_| changed("oversized support-policy identity changed"))?;
             #[cfg(test)]
             run_support_policy_after_pre_read_identity_hook();
-            match file.read_bounded(MAX_SUPPORT_POLICY_BYTES) {
-                Err(error) if error.kind() == ErrorKind::InvalidData => {
+            match read_support_policy_bounded(
+                file,
+                MAX_SUPPORT_POLICY_BYTES,
+                deadline,
+                cancellation,
+                "support-policy validation",
+            ) {
+                Err(SupportPolicyReadError::Io(error))
+                    if error.kind() == ErrorKind::InvalidData =>
+                {
                     file.validate_named_identity().map_err(|_| {
                         changed("oversized support-policy identity changed during validation")
                     })
                 }
+                Err(SupportPolicyReadError::Terminal(error)) => Err(error),
                 _ => Err(changed("oversized support-policy evidence changed")),
             }
         }
@@ -463,6 +539,59 @@ fn validate_candidate(
             }
         }
     }
+}
+
+enum SupportPolicyReadError {
+    Terminal(SupportPolicyEvidenceError),
+    Io(std::io::Error),
+}
+
+fn read_support_policy_bounded(
+    retained: &RetainedRegularFileCapability,
+    max_bytes: usize,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    phase: &str,
+) -> Result<Vec<u8>, SupportPolicyReadError> {
+    checkpoint(deadline, cancellation, phase).map_err(SupportPolicyReadError::Terminal)?;
+    let mut file = retained
+        .try_clone_file()
+        .map_err(SupportPolicyReadError::Io)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(SupportPolicyReadError::Io)?;
+    let mut remaining = max_bytes.saturating_add(1);
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; SUPPORT_POLICY_READ_CHUNK_BYTES];
+    #[cfg(test)]
+    let mut chunk_count = 0;
+    while remaining > 0 {
+        checkpoint(deadline, cancellation, phase).map_err(SupportPolicyReadError::Terminal)?;
+        let read = file.read(&mut chunk[..remaining.min(SUPPORT_POLICY_READ_CHUNK_BYTES)]);
+        if read.as_ref().is_err() {
+            checkpoint(deadline, cancellation, phase).map_err(SupportPolicyReadError::Terminal)?;
+        }
+        let read = read.map_err(SupportPolicyReadError::Io)?;
+        if read > 0 {
+            bytes.extend_from_slice(&chunk[..read]);
+            remaining -= read;
+            #[cfg(test)]
+            {
+                chunk_count += 1;
+                run_support_policy_read_chunk_hook(chunk_count);
+            }
+        }
+        checkpoint(deadline, cancellation, phase).map_err(SupportPolicyReadError::Terminal)?;
+        if read == 0 {
+            break;
+        }
+    }
+    if bytes.len() > max_bytes {
+        return Err(SupportPolicyReadError::Io(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("regular file exceeds the {max_bytes}-byte read limit"),
+        )));
+    }
+    Ok(bytes)
 }
 
 fn validate_parent(parent: &RetainedDirectoryCapability) -> Result<(), SupportPolicyEvidenceError> {
@@ -501,7 +630,25 @@ fn checkpoint(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
     use std::time::Duration;
+    use std::time::Instant;
+
+    thread_local! {
+        static SUPPORT_POLICY_TEST_NOW: Cell<Instant> = Cell::new(Instant::now());
+    }
+
+    fn support_policy_test_now() -> Instant {
+        SUPPORT_POLICY_TEST_NOW.get()
+    }
+
+    fn set_support_policy_test_now(now: Instant) {
+        SUPPORT_POLICY_TEST_NOW.set(now);
+    }
 
     #[test]
     pub(crate) fn support_policy_database_paths_distinguish_nested_sources_from_prefix_siblings() {
@@ -786,5 +933,254 @@ pub(crate) mod tests {
             error.kind(),
             SupportPolicyEvidenceErrorKind::ContainmentIdentity
         );
+    }
+
+    #[test]
+    pub(crate) fn retained_support_policy_read_stops_before_post_read_when_pre_read_becomes_terminal(
+    ) {
+        let mut observed = Vec::new();
+        for gate in ["cancelled", "deadline"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let workspace = temporary.path().join("workspace");
+            let source = workspace.join("src");
+            std::fs::create_dir_all(&source).unwrap();
+            let policy = workspace.join(POLICY_NAME);
+            let prefix = br#"{"editingAllowedCheck":"off"}"#;
+            let mut policy_bytes = vec![b' '; 3 * 64 * 1024];
+            policy_bytes[..prefix.len()].copy_from_slice(prefix);
+            std::fs::write(&policy, policy_bytes).unwrap();
+            let workspace = std::fs::canonicalize(workspace).unwrap();
+            let source = std::fs::canonicalize(source).unwrap();
+            let evidence = RetainedSupportPolicyEvidence::capture(
+                &workspace,
+                &source,
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            let cancellation = CancellationToken::new();
+            let started = Instant::now();
+            set_support_policy_test_now(started);
+            let deadline = if gate == "deadline" {
+                ProviderDeadline::with_clock(
+                    started + Duration::from_secs(1),
+                    support_policy_test_now,
+                )
+            } else {
+                ProviderDeadline::from_budget(Duration::from_secs(10))
+            };
+            if gate == "cancelled" {
+                let cancel = cancellation.clone();
+                set_support_policy_after_pre_read_identity_hook(move || cancel.cancel());
+            } else {
+                set_support_policy_after_pre_read_identity_hook(move || {
+                    set_support_policy_test_now(started + Duration::from_secs(2));
+                });
+            }
+            let after_read = Arc::new(AtomicBool::new(false));
+            let observed_after_read = Arc::clone(&after_read);
+            set_support_policy_after_retained_read_before_acceptance_hook(move || {
+                observed_after_read.store(true, Ordering::SeqCst);
+            });
+
+            let error = evidence.validate(deadline, &cancellation).unwrap_err();
+            observed.push((error.kind(), after_read.load(Ordering::SeqCst)));
+            set_support_policy_test_now(Instant::now());
+        }
+
+        assert_eq!(
+            observed,
+            [
+                (SupportPolicyEvidenceErrorKind::Cancelled, false),
+                (SupportPolicyEvidenceErrorKind::Deadline, false),
+            ]
+        );
+    }
+
+    #[test]
+    pub(crate) fn retained_support_policy_read_stops_after_first_chunk_when_terminal() {
+        let mut observed = Vec::new();
+        for gate in ["cancelled", "deadline"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let workspace = temporary.path().join("workspace");
+            let source = workspace.join("src");
+            std::fs::create_dir_all(&source).unwrap();
+            let policy = workspace.join(POLICY_NAME);
+            let prefix = br#"{"editingAllowedCheck":"off"}"#;
+            let mut policy_bytes = vec![b' '; 3 * 64 * 1024];
+            policy_bytes[..prefix.len()].copy_from_slice(prefix);
+            std::fs::write(&policy, policy_bytes).unwrap();
+            let workspace = std::fs::canonicalize(workspace).unwrap();
+            let source = std::fs::canonicalize(source).unwrap();
+            let evidence = RetainedSupportPolicyEvidence::capture(
+                &workspace,
+                &source,
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            let cancellation = CancellationToken::new();
+            let started = Instant::now();
+            set_support_policy_test_now(started);
+            let deadline = if gate == "deadline" {
+                ProviderDeadline::with_clock(
+                    started + Duration::from_secs(1),
+                    support_policy_test_now,
+                )
+            } else {
+                ProviderDeadline::from_budget(Duration::from_secs(10))
+            };
+            let chunks = Arc::new(AtomicUsize::new(0));
+            let observed_chunks = Arc::clone(&chunks);
+            if gate == "cancelled" {
+                let cancel = cancellation.clone();
+                set_support_policy_read_chunk_hook_repeating(move |_| {
+                    if observed_chunks.fetch_add(1, Ordering::SeqCst) == 0 {
+                        cancel.cancel();
+                    }
+                });
+            } else {
+                set_support_policy_read_chunk_hook_repeating(move |_| {
+                    if observed_chunks.fetch_add(1, Ordering::SeqCst) == 0 {
+                        set_support_policy_test_now(started + Duration::from_secs(2));
+                    }
+                });
+            }
+            let after_read = Arc::new(AtomicBool::new(false));
+            let observed_after_read = Arc::clone(&after_read);
+            set_support_policy_after_retained_read_before_acceptance_hook(move || {
+                observed_after_read.store(true, Ordering::SeqCst);
+            });
+
+            let error = evidence.validate(deadline, &cancellation).unwrap_err();
+            clear_support_policy_read_chunk_hook();
+            observed.push((
+                error.kind(),
+                chunks.load(Ordering::SeqCst),
+                after_read.load(Ordering::SeqCst),
+            ));
+            set_support_policy_test_now(Instant::now());
+        }
+
+        assert_eq!(
+            observed,
+            [
+                (SupportPolicyEvidenceErrorKind::Cancelled, 1, false),
+                (SupportPolicyEvidenceErrorKind::Deadline, 1, false),
+            ]
+        );
+    }
+
+    #[test]
+    pub(crate) fn retained_support_policy_second_pass_reuses_terminal_state_between_chunks() {
+        let mut observed = Vec::new();
+        for gate in ["cancelled", "deadline"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let workspace = temporary.path().join("workspace");
+            let source = workspace.join("src");
+            std::fs::create_dir_all(&source).unwrap();
+            let policy = workspace.join(POLICY_NAME);
+            let prefix = br#"{"editingAllowedCheck":"off"}"#;
+            let mut policy_bytes = vec![b' '; 3 * 64 * 1024];
+            policy_bytes[..prefix.len()].copy_from_slice(prefix);
+            std::fs::write(&policy, policy_bytes).unwrap();
+            let workspace = std::fs::canonicalize(workspace).unwrap();
+            let source = std::fs::canonicalize(source).unwrap();
+            let evidence = RetainedSupportPolicyEvidence::capture(
+                &workspace,
+                &source,
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            let cancellation = CancellationToken::new();
+            let started = Instant::now();
+            set_support_policy_test_now(started);
+            let deadline = if gate == "deadline" {
+                ProviderDeadline::with_clock(
+                    started + Duration::from_secs(1),
+                    support_policy_test_now,
+                )
+            } else {
+                ProviderDeadline::from_budget(Duration::from_secs(10))
+            };
+            let read_starts = Arc::new(AtomicUsize::new(0));
+            let second_pass_chunks = Arc::new(AtomicUsize::new(0));
+            let observed_starts = Arc::clone(&read_starts);
+            let observed_second_pass_chunks = Arc::clone(&second_pass_chunks);
+            if gate == "cancelled" {
+                let cancel = cancellation.clone();
+                set_support_policy_read_chunk_hook_repeating(move |chunk| {
+                    if chunk == 1 && observed_starts.fetch_add(1, Ordering::SeqCst) == 1 {
+                        cancel.cancel();
+                    }
+                    if observed_starts.load(Ordering::SeqCst) == 2 {
+                        observed_second_pass_chunks.fetch_add(1, Ordering::SeqCst);
+                    }
+                });
+            } else {
+                set_support_policy_read_chunk_hook_repeating(move |chunk| {
+                    if chunk == 1 && observed_starts.fetch_add(1, Ordering::SeqCst) == 1 {
+                        set_support_policy_test_now(started + Duration::from_secs(2));
+                    }
+                    if observed_starts.load(Ordering::SeqCst) == 2 {
+                        observed_second_pass_chunks.fetch_add(1, Ordering::SeqCst);
+                    }
+                });
+            }
+
+            let error = evidence.validate(deadline, &cancellation).unwrap_err();
+            clear_support_policy_read_chunk_hook();
+            observed.push((
+                error.kind(),
+                read_starts.load(Ordering::SeqCst),
+                second_pass_chunks.load(Ordering::SeqCst),
+            ));
+            set_support_policy_test_now(Instant::now());
+        }
+
+        assert_eq!(
+            observed,
+            [
+                (SupportPolicyEvidenceErrorKind::Cancelled, 2, 1),
+                (SupportPolicyEvidenceErrorKind::Deadline, 2, 1),
+            ]
+        );
+    }
+
+    #[test]
+    pub(crate) fn retained_support_policy_reader_preserves_limit_plus_one_in_64_kib_chunks() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join(POLICY_NAME), vec![b' '; 64 * 1024 + 1]).unwrap();
+        let workspace = std::fs::canonicalize(workspace).unwrap();
+        let parent = RetainedDirectoryCapability::open(&workspace).unwrap();
+        let RetainedChildCapability::RegularFile(file) = parent
+            .retain_immediate_child_nofollow(OsStr::new(POLICY_NAME))
+            .unwrap()
+        else {
+            panic!("regular support-policy fixture changed kind")
+        };
+        let chunks = Arc::new(AtomicUsize::new(0));
+        let observed_chunks = Arc::clone(&chunks);
+        set_support_policy_read_chunk_hook_repeating(move |_| {
+            observed_chunks.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let result = read_support_policy_bounded(
+            &file,
+            64 * 1024,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+            "support-policy validation",
+        );
+        clear_support_policy_read_chunk_hook();
+
+        assert!(matches!(
+            result,
+            Err(SupportPolicyReadError::Io(error)) if error.kind() == ErrorKind::InvalidData
+        ));
+        assert_eq!(chunks.load(Ordering::SeqCst), 2);
     }
 }

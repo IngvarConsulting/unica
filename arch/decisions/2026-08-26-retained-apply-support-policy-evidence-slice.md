@@ -24,10 +24,14 @@ fail-closed `Deny` без глобального отказа admission; их ev
 candidate chain: до публикации, после dry-run revision confirmation и в
 retained final gate после postimages. Оба pass используют одну исходную
 absolute deadline/cancellation и повторно доказывают admitted category,
-physical identity и exact authorizing bytes. Ошибка до публикации write-free,
-поздняя ошибка использует существующий reverse rollback. Evidence ничего не
-публикует и не становится третьим transaction participant: writers остаются
-ровно `Source + WorkspaceCache`. Публичный wire-контракт не меняется.
+physical identity и exact authorizing bytes. Retained regular-file content
+читается descriptor-relative с сохранением `limit + 1` semantics, чанками не
+более 64 КиБ и с той же deadline/cancellation перед и после каждого чанка; это
+cooperative bound между syscall, а не обещание прервать один зависший syscall.
+Ошибка до публикации
+write-free, поздняя ошибка использует существующий reverse rollback. Evidence
+ничего не публикует и не становится третьим transaction participant: writers
+остаются ровно `Source + WorkspaceCache`. Публичный wire-контракт не меняется.
 
 **Почему.** Pure v0.13 planners не должны получать `WorkspaceContext`, path или
 сырой policy, но обязаны сохранять V12 authorisation semantics. Два полных pass

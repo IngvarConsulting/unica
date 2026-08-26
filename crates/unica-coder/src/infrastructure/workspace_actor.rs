@@ -1892,14 +1892,28 @@ pub(crate) mod tests {
     use crate::infrastructure::source_revision::SourceRevisionService;
     use crate::infrastructure::support_policy_evidence::SupportPolicyMode;
     use crate::infrastructure::support_policy_evidence::{
-        set_support_policy_capture_hook, set_support_policy_validation_hook,
+        clear_support_policy_read_chunk_hook, set_support_policy_capture_hook,
+        set_support_policy_read_chunk_hook_once, set_support_policy_validation_hook,
     };
+    use std::cell::Cell;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::sync::Arc;
     use std::thread;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    thread_local! {
+        static SUPPORT_POLICY_ACTOR_TEST_NOW: Cell<Instant> = Cell::new(Instant::now());
+    }
+
+    fn support_policy_actor_test_now() -> Instant {
+        SUPPORT_POLICY_ACTOR_TEST_NOW.get()
+    }
+
+    fn set_support_policy_actor_test_now(now: Instant) {
+        SUPPORT_POLICY_ACTOR_TEST_NOW.set(now);
+    }
 
     #[test]
     fn index_coordination_has_no_raw_crate_level_constructor_or_owner_escape() {
@@ -7264,6 +7278,82 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn apply_policy_capture_stops_after_first_retained_read_chunk_write_free() {
+        let mut observed = Vec::new();
+        for gate in ["cancelled", "deadline"] {
+            let fixture = actor_fixture(&format!("apply-policy-chunked-capture-{gate}"), &["src"]);
+            let policy = fixture.root.join(".v8-project.json");
+            let prefix = br#"{"editingAllowedCheck":"off"}"#;
+            let mut policy_bytes = vec![b' '; 3 * 64 * 1024];
+            policy_bytes[..prefix.len()].copy_from_slice(prefix);
+            std::fs::write(&policy, policy_bytes).unwrap();
+            let target = fixture.roots[0].join("Module.bsl");
+            std::fs::write(&target, b"original").unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let service = fixture.actor.source_revision_service(&binding).unwrap();
+            let source_before = snapshot_tree(&fixture.roots[0]);
+            let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+            let machine_before = service.machine_state_for_test();
+            let cancellation = CancellationToken::new();
+            let started = Instant::now();
+            set_support_policy_actor_test_now(started);
+            let deadline = if gate == "deadline" {
+                ProviderDeadline::with_clock(
+                    started + Duration::from_secs(1),
+                    support_policy_actor_test_now,
+                )
+            } else {
+                ProviderDeadline::from_budget(Duration::from_secs(10))
+            };
+            let chunks = Arc::new(AtomicUsize::new(0));
+            let observed_chunks = Arc::clone(&chunks);
+            if gate == "cancelled" {
+                let cancel = cancellation.clone();
+                set_support_policy_read_chunk_hook_once(move |_| {
+                    observed_chunks.fetch_add(1, Ordering::SeqCst);
+                    cancel.cancel();
+                });
+            } else {
+                set_support_policy_read_chunk_hook_once(move |_| {
+                    observed_chunks.fetch_add(1, Ordering::SeqCst);
+                    set_support_policy_actor_test_now(started + Duration::from_secs(2));
+                });
+            }
+
+            let result = fixture
+                .actor
+                .admit_apply(&binding, None, false, deadline, &cancellation);
+            clear_support_policy_read_chunk_hook();
+            observed.push((result.err(), chunks.load(Ordering::SeqCst)));
+            set_support_policy_actor_test_now(Instant::now());
+
+            assert_eq!(std::fs::read(&target).unwrap(), b"original", "{gate}");
+            assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{gate}");
+            assert_eq!(
+                snapshot_tree(&fixture.root.join(".build/unica")),
+                cache_before,
+                "{gate}"
+            );
+            assert_eq!(service.machine_state_for_test(), machine_before, "{gate}");
+            fixture.cleanup();
+        }
+
+        assert_eq!(
+            observed,
+            [
+                (Some("support-policy capture cancelled".to_string()), 1),
+                (
+                    Some("support-policy capture deadline exceeded".to_string()),
+                    1,
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn apply_policy_all_absent_capture_rejects_terminal_cancellation_and_deadline_write_free() {
         let mut observed = Vec::new();
         for gate in ["cancelled", "deadline"] {
@@ -7390,6 +7480,99 @@ pub(crate) mod tests {
             assert_eq!(service.machine_state_for_test(), machine_before);
             fixture.cleanup();
         }
+    }
+
+    #[test]
+    fn apply_policy_final_gate_stops_after_first_retained_read_chunk_and_rolls_back() {
+        let mut observed = Vec::new();
+        for gate in ["cancelled", "deadline"] {
+            let fixture = actor_fixture(&format!("apply-policy-chunked-final-{gate}"), &["src"]);
+            let target = fixture.roots[0].join("Module.bsl");
+            std::fs::write(&target, b"original").unwrap();
+            let policy = fixture.root.join(".v8-project.json");
+            let prefix = br#"{"editingAllowedCheck":"off"}"#;
+            let mut policy_bytes = vec![b' '; 3 * 64 * 1024];
+            policy_bytes[..prefix.len()].copy_from_slice(prefix);
+            std::fs::write(&policy, policy_bytes).unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let service = fixture.actor.source_revision_service(&binding).unwrap();
+            let cancellation = CancellationToken::new();
+            let started = Instant::now();
+            set_support_policy_actor_test_now(started);
+            let deadline = if gate == "deadline" {
+                ProviderDeadline::with_clock(
+                    started + Duration::from_secs(1),
+                    support_policy_actor_test_now,
+                )
+            } else {
+                ProviderDeadline::from_budget(Duration::from_secs(10))
+            };
+            let admission = fixture
+                .actor
+                .admit_apply(&binding, None, false, deadline, &cancellation)
+                .unwrap();
+            let mut state = admission.staged_state().unwrap();
+            state
+                .replace("Module.bsl", b"original", b"published".to_vec())
+                .unwrap();
+            let prepared = admission.prepare(state).unwrap();
+            let source_before = snapshot_tree(&fixture.roots[0]);
+            let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+            let machine_before = service.machine_state_for_test();
+            let chunks = Arc::new(AtomicUsize::new(0));
+            let observed_chunks = Arc::clone(&chunks);
+            if gate == "cancelled" {
+                let cancel = cancellation.clone();
+                crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+                    move || {
+                        set_support_policy_read_chunk_hook_once(move |_| {
+                            observed_chunks.fetch_add(1, Ordering::SeqCst);
+                            cancel.cancel();
+                        });
+                    },
+                );
+            } else {
+                crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+                    move || {
+                        set_support_policy_read_chunk_hook_once(move |_| {
+                            observed_chunks.fetch_add(1, Ordering::SeqCst);
+                            set_support_policy_actor_test_now(
+                                started + Duration::from_secs(2),
+                            );
+                        });
+                    },
+                );
+            }
+
+            let result = fixture.actor.publish_prepared_apply(prepared);
+            clear_support_policy_read_chunk_hook();
+            observed.push((
+                result.as_ref().err().map(|error| error.kind()),
+                chunks.load(Ordering::SeqCst),
+            ));
+            assert!(result.is_err(), "{gate} returned a terminal receipt");
+            set_support_policy_actor_test_now(Instant::now());
+
+            assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{gate}");
+            assert_eq!(
+                snapshot_tree(&fixture.root.join(".build/unica")),
+                cache_before,
+                "{gate}"
+            );
+            assert_eq!(service.machine_state_for_test(), machine_before, "{gate}");
+            fixture.cleanup();
+        }
+
+        assert_eq!(
+            observed,
+            [
+                (Some(super::ApplyPublicationErrorKind::Cancelled), 1),
+                (Some(super::ApplyPublicationErrorKind::Deadline), 1),
+            ]
+        );
     }
 
     #[test]
@@ -7566,7 +7749,13 @@ pub(crate) mod tests {
         apply_policy_deadline_and_cancellation_during_capture_are_write_free();
         apply_policy_all_absent_capture_rejects_terminal_cancellation_and_deadline_write_free();
         apply_policy_deadline_and_cancellation_during_final_validation_roll_back();
+        apply_policy_capture_stops_after_first_retained_read_chunk_write_free();
+        apply_policy_final_gate_stops_after_first_retained_read_chunk_and_rolls_back();
         apply_policy_warn_off_deny_database_and_malformed_match_v12();
+        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_read_stops_before_post_read_when_pre_read_becomes_terminal();
+        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_read_stops_after_first_chunk_when_terminal();
+        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_second_pass_reuses_terminal_state_between_chunks();
+        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_reader_preserves_limit_plus_one_in_64_kib_chunks();
         crate::infrastructure::support_policy_evidence::tests::support_policy_database_paths_distinguish_nested_sources_from_prefix_siblings();
         crate::infrastructure::support_policy_evidence::tests::support_policy_candidate_search_stops_at_exact_twentieth_candidate();
         crate::infrastructure::support_policy_evidence::tests::support_policy_overlapping_chains_keep_first_occurrence_order_without_duplicates();
