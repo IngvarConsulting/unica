@@ -205,6 +205,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
             "meta-compile-http-service",
             "meta-compile-web-service",
             "meta-compile-defined-type",
+            "meta-compile-external-data-source",
         ],
         required_branches: &[
             "Catalog",
@@ -230,6 +231,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
             "HTTPService",
             "WebService",
             "DefinedType",
+            "ExternalDataSource",
         ],
     },
     MutatorRegistryEntry {
@@ -571,6 +573,11 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
         id: "meta-compile-defined-type",
         tool: "unica.meta.add",
         branch: "DefinedType",
+    },
+    ExecutableCase {
+        id: "meta-compile-external-data-source",
+        tool: "unica.meta.add",
+        branch: "ExternalDataSource",
     },
     ExecutableCase {
         id: "meta-edit-predefined-items",
@@ -1949,6 +1956,9 @@ fn meta_definition(kind: &str) -> Option<Value> {
         }),
         "DefinedType" => json!({
             "type": "DefinedType", "name": "CorpusDefinedType", "valueTypes": ["String(100)", "Number(15,2)"]
+        }),
+        "ExternalDataSource" => json!({
+            "type": "ExternalDataSource", "name": "CorpusExternalDataSource"
         }),
         _ => return None,
     })
@@ -5523,7 +5533,7 @@ fn meta_info_manifest_platform_cases_are_exact_executable_meta_add_branches() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/platform_8_3_27/meta_info/manifest.json");
     let manifest: MetaInfoManifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(manifest.kinds.len(), 23);
+    assert_eq!(manifest.kinds.len(), 24);
 
     for entry in manifest.kinds {
         let executable = EXECUTABLE_CASES

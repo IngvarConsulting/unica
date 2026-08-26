@@ -46,6 +46,7 @@
     {"kind": "EventSubscription", "mainFixture": "canonical-template", "platformCase": "meta-compile-event-subscription"},
     {"kind": "HTTPService", "mainFixture": "canonical-template", "platformCase": "meta-compile-http-service", "edgeFixtures": ["edge/http-service.xml"]},
     {"kind": "WebService", "mainFixture": "canonical-template", "platformCase": "meta-compile-web-service", "edgeFixtures": ["edge/web-service.xml"]},
-    {"kind": "DefinedType", "mainFixture": "canonical-template", "platformCase": "meta-compile-defined-type", "edgeFixtures": ["edge/defined-type.xml"]}
+    {"kind": "DefinedType", "mainFixture": "canonical-template", "platformCase": "meta-compile-defined-type", "edgeFixtures": ["edge/defined-type.xml"]},
+    {"kind": "ExternalDataSource", "mainFixture": "canonical-template", "platformCase": "meta-compile-external-data-source", "edgeFixtures": ["edge/external-data-source.xml"]}
   ]
 }

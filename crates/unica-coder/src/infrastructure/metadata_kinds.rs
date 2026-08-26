@@ -81,6 +81,7 @@ metadata_kind_registry! {
     "BusinessProcess" => { directory: "BusinessProcesses", display_name_ru: "Бизнес-процессы", config_dump_prefix: None, config_dump_module_suffix: None },
     "Task" => { directory: "Tasks", display_name_ru: "Задачи", config_dump_prefix: None, config_dump_module_suffix: None },
     "IntegrationService" => { directory: "IntegrationServices", display_name_ru: "Сервисы интеграции", config_dump_prefix: None, config_dump_module_suffix: None },
+    "ExternalDataSource" => { directory: "ExternalDataSources", display_name_ru: "Внешние источники данных", config_dump_prefix: None, config_dump_module_suffix: None },
 }
 
 pub(crate) fn metadata_kind(tag: &str) -> Option<&'static MetadataLayout> {
@@ -236,6 +237,7 @@ pub(crate) fn metadata_kind_value_types(kind: MetadataKind) -> &'static [&'stati
         MetadataKind::Report => &["ReportObject", "ReportManager"],
         MetadataKind::DataProcessor => &["DataProcessorObject", "DataProcessorManager"],
         MetadataKind::DefinedType => &["DefinedType"],
+        MetadataKind::ExternalDataSource => &["ExternalDataSourceManager"],
         MetadataKind::CommonModule
         | MetadataKind::ScheduledJob
         | MetadataKind::EventSubscription
@@ -307,9 +309,10 @@ mod tests {
             "BusinessProcess",
             "Task",
             "IntegrationService",
+            "ExternalDataSource",
         ];
 
-        assert_eq!(METADATA_KINDS.len(), 45);
+        assert_eq!(METADATA_KINDS.len(), 46);
         assert_eq!(METADATA_KIND_TAGS, EXPECTED_TAGS);
         assert_eq!(METADATA_KIND_TAGS.len(), METADATA_KINDS.len());
         assert_eq!(

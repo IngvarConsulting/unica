@@ -60,8 +60,8 @@ impl MetadataAddress {
         &self.0
     }
 
-    /// Arity decides the kind, not the spelling of the last segment: `parse`
-    /// accepts a module terminal only on an odd segment count, so an object
+    /// Arity decides the target kind: `parse` accepts a module role only after
+    /// a complete object address, so an object
     /// legitimately named `Module` stays a metadata object instead of being
     /// read as the module role of a nameless owner.
     pub fn target_kind(&self) -> TargetKind {
@@ -216,15 +216,15 @@ impl AddressProfile {
             };
         }
 
-        if matches!(parts.len(), 3 | 5)
-            && !is_module_terminal(parts.last().copied().unwrap_or_default())
-        {
+        let has_module_terminal = parts.len() % 2 == 1;
+        if has_module_terminal && !is_module_terminal(parts.last().copied().unwrap_or_default()) {
             return Err(SourceTargetError::invalid(format!(
                 "unsupported metadata address terminal `{}`",
                 parts.last().copied().unwrap_or_default()
             )));
         }
-        if !matches!(parts.len(), 2..=5) {
+        let object_len = parts.len() - usize::from(has_module_terminal);
+        if object_len < 2 || object_len % 2 != 0 {
             return Err(SourceTargetError::invalid(
                 "metadata address has an unsupported segment count",
             ));
@@ -234,9 +234,9 @@ impl AddressProfile {
         let owner_kind = canonical_kind(parts[0])?;
         canonical.push(owner_kind);
         canonical.push(parts[1]);
-        if parts.len() >= 4 {
+        if object_len >= 4 {
             let child_kind = canonical_nested_kind_for_owner(owner_kind, parts[2])?;
-            if child_kind == "Recalculation" && parts.len() != 4 {
+            if child_kind == "Recalculation" && (object_len != 4 || has_module_terminal) {
                 return Err(SourceTargetError::invalid(
                     "nested Recalculation metadata has no module terminal",
                 ));
@@ -244,7 +244,22 @@ impl AddressProfile {
             canonical.push(child_kind);
             canonical.push(parts[3]);
         }
-        if parts.len() % 2 == 1 {
+        if object_len >= 6 {
+            if owner_kind != "ExternalDataSource" || canonical[2] != "Cube" {
+                return Err(SourceTargetError::invalid(
+                    "metadata address has an unsupported nesting depth",
+                ));
+            }
+            let grandchild_kind = canonical_external_data_source_grandchild_kind(parts[4])?;
+            canonical.push(grandchild_kind);
+            canonical.push(parts[5]);
+        }
+        if object_len > 6 {
+            return Err(SourceTargetError::invalid(
+                "metadata address has an unsupported nesting depth",
+            ));
+        }
+        if has_module_terminal {
             canonical.push(parts.last().copied().unwrap_or_default());
         }
         Ok(MetadataAddress(canonical.join(".")))
@@ -257,7 +272,7 @@ impl AddressProfile {
                 "metadata address prefix contains an empty segment",
             ));
         }
-        if parts.len() > 5 {
+        if parts.len() > 7 {
             return Err(SourceTargetError::invalid(
                 "metadata address prefix has an unsupported segment count",
             ));
@@ -265,6 +280,7 @@ impl AddressProfile {
 
         if parts.len() == 1 {
             if let Ok(kind) = canonical_kind_or_collection(parts[0]) {
+                ensure_top_level_kind(kind)?;
                 return Ok(MetadataAddressPrefix(kind.to_string()));
             }
             if is_root_module_terminal(parts[0]) {
@@ -287,8 +303,76 @@ impl AddressProfile {
 
         let mut canonical = Vec::with_capacity(parts.len());
         let owner_kind = canonical_kind_or_collection(parts[0])?;
+        ensure_top_level_kind(owner_kind)?;
         canonical.push(owner_kind);
         canonical.push(parts[1]);
+        if owner_kind == "ExternalDataSource" && parts.len() >= 3 {
+            let child_kind = if parts.len() == 3 {
+                match canonical_nested_kind_for_owner(owner_kind, parts[2]) {
+                    Ok(kind) => kind,
+                    Err(_)
+                        if ["Table", "Cube"]
+                            .iter()
+                            .any(|kind| kind.starts_with(parts[2])) =>
+                    {
+                        canonical.push(parts[2]);
+                        return Ok(MetadataAddressPrefix(canonical.join(".")));
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                canonical_nested_kind_for_owner(owner_kind, parts[2])?
+            };
+            canonical.push(child_kind);
+            if parts.len() >= 4 {
+                canonical.push(parts[3]);
+            }
+            if parts.len() == 5 {
+                if child_kind == "Cube" {
+                    if let Ok(kind) = canonical_external_data_source_grandchild_kind(parts[4]) {
+                        canonical.push(kind);
+                        return Ok(MetadataAddressPrefix(canonical.join(".")));
+                    }
+                    if "DimensionTable".starts_with(parts[4]) {
+                        canonical.push(parts[4]);
+                        return Ok(MetadataAddressPrefix(canonical.join(".")));
+                    }
+                }
+                if MODULE_TERMINALS
+                    .iter()
+                    .any(|terminal| terminal.starts_with(parts[4]))
+                {
+                    canonical.push(parts[4]);
+                    return Ok(MetadataAddressPrefix(canonical.join(".")));
+                }
+                return Err(SourceTargetError::invalid(format!(
+                    "unknown metadata address prefix transition `{}`",
+                    parts[4]
+                )));
+            }
+            if parts.len() >= 6 {
+                if child_kind != "Cube" {
+                    return Err(SourceTargetError::invalid(
+                        "only an ExternalDataSource cube has a third object level",
+                    ));
+                }
+                canonical.push(canonical_external_data_source_grandchild_kind(parts[4])?);
+                canonical.push(parts[5]);
+            }
+            if parts.len() == 7 {
+                if !MODULE_TERMINALS
+                    .iter()
+                    .any(|terminal| terminal.starts_with(parts[6]))
+                {
+                    return Err(SourceTargetError::invalid(format!(
+                        "metadata address prefix terminal `{}` is invalid after `DimensionTable`",
+                        parts[6]
+                    )));
+                }
+                canonical.push(parts[6]);
+            }
+            return Ok(MetadataAddressPrefix(canonical.join(".")));
+        }
         match parts.len() {
             2 => {}
             3 => {
@@ -337,7 +421,11 @@ impl AddressProfile {
                 }
                 canonical.push(parts[4]);
             }
-            _ => unreachable!("prefix segment count was bounded"),
+            _ => {
+                return Err(SourceTargetError::invalid(
+                    "metadata address prefix has an unsupported segment count",
+                ))
+            }
         }
         Ok(MetadataAddressPrefix(canonical.join(".")))
     }
@@ -535,6 +623,18 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         &["СервисИнтеграции"],
         &["IntegrationServices", "СервисыИнтеграции"],
     ),
+    kind(
+        "ExternalDataSource",
+        &["ВнешнийИсточникДанных"],
+        &["ExternalDataSources", "ВнешниеИсточникиДанных"],
+    ),
+    kind("Table", &["Таблица"], &["Tables", "Таблицы"]),
+    kind("Cube", &["Куб"], &["Cubes", "Кубы"]),
+    kind(
+        "DimensionTable",
+        &["ТаблицаИзмерения"],
+        &["DimensionTables", "ТаблицыИзмерений"],
+    ),
     kind("Form", &["Форма"], &["Forms", "Формы"]),
     kind("Template", &["Макет"], &["Templates", "Макеты"]),
     kind("Command", &["Команда"], &["Commands", "Команды"]),
@@ -567,6 +667,7 @@ fn canonical_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
         .iter()
         .find(|kind| kind.canonical == raw || kind.russian_aliases.contains(&raw))
     {
+        ensure_top_level_kind(kind.canonical)?;
         return Ok(kind.canonical);
     }
     if ADDRESS_KINDS
@@ -580,6 +681,17 @@ fn canonical_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
     Err(SourceTargetError::invalid(format!(
         "unknown metadata kind `{raw}`"
     )))
+}
+
+const NESTED_ONLY_KINDS: &[&str] = &["Table", "Cube", "DimensionTable"];
+
+fn ensure_top_level_kind(kind: &str) -> Result<(), SourceTargetError> {
+    if NESTED_ONLY_KINDS.contains(&kind) {
+        return Err(SourceTargetError::invalid(format!(
+            "metadata kind `{kind}` is only addressable below ExternalDataSource"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static str>> {
@@ -611,7 +723,7 @@ fn canonical_kind_or_collection(raw: &str) -> Result<&'static str, SourceTargetE
 fn is_canonical_token_prefix(raw: &str) -> bool {
     ADDRESS_KINDS
         .iter()
-        .any(|kind| kind.canonical.starts_with(raw))
+        .any(|kind| !NESTED_ONLY_KINDS.contains(&kind.canonical) && kind.canonical.starts_with(raw))
         || ROOT_MODULE_TERMINALS
             .iter()
             .any(|terminal| terminal.starts_with(raw))
@@ -619,10 +731,12 @@ fn is_canonical_token_prefix(raw: &str) -> bool {
 
 fn is_alias_prefix(raw: &str) -> bool {
     ADDRESS_KINDS.iter().any(|kind| {
-        kind.russian_aliases
-            .iter()
-            .chain(kind.collection_aliases.iter())
-            .any(|alias| alias.starts_with(raw))
+        !NESTED_ONLY_KINDS.contains(&kind.canonical)
+            && kind
+                .russian_aliases
+                .iter()
+                .chain(kind.collection_aliases.iter())
+                .any(|alias| alias.starts_with(raw))
     })
 }
 
@@ -641,10 +755,33 @@ fn canonical_nested_kind_for_owner(
     owner_kind: &str,
     raw: &str,
 ) -> Result<&'static str, SourceTargetError> {
+    if owner_kind == "ExternalDataSource" {
+        let canonical = canonical_kind_or_collection(raw)?;
+        return if matches!(canonical, "Table" | "Cube") {
+            Ok(canonical)
+        } else {
+            Err(SourceTargetError::invalid(format!(
+                "unsupported ExternalDataSource child kind `{raw}`"
+            )))
+        };
+    }
     if owner_kind == "CalculationRegister" && RECALCULATION_KIND_SPELLINGS.contains(&raw) {
         return Ok("Recalculation");
     }
     canonical_nested_kind(raw)
+}
+
+fn canonical_external_data_source_grandchild_kind(
+    raw: &str,
+) -> Result<&'static str, SourceTargetError> {
+    let canonical = canonical_kind_or_collection(raw)?;
+    if canonical == "DimensionTable" {
+        Ok(canonical)
+    } else {
+        Err(SourceTargetError::invalid(format!(
+            "unsupported ExternalDataSource cube child kind `{raw}`"
+        )))
+    }
 }
 
 pub(crate) const RECALCULATION_KIND_SPELLINGS: &[&str] = &[
@@ -999,5 +1136,70 @@ mod tests {
 
         let top_level = profile.parse("Subsystem.A").unwrap();
         assert_eq!(top_level.target_kind(), TargetKind::MetadataObject);
+    }
+
+    #[test]
+    fn external_data_source_addresses_reach_tables_cubes_and_dimension_tables() {
+        let profile = AddressProfile::new(PLATFORM_XML_8_3_27_FORMAT_2_20).unwrap();
+        for (raw, expected_kind) in [
+            (
+                "ExternalDataSource.Remote.Table.Items",
+                TargetKind::MetadataObject,
+            ),
+            (
+                "ExternalDataSource.Remote.Table.Items.ManagerModule",
+                TargetKind::Module,
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales",
+                TargetKind::MetadataObject,
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar",
+                TargetKind::MetadataObject,
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar.ObjectModule",
+                TargetKind::Module,
+            ),
+        ] {
+            let address = profile.parse(raw).unwrap();
+            assert_eq!(address.as_str(), raw);
+            assert_eq!(address.target_kind(), expected_kind, "{raw}");
+        }
+    }
+
+    #[test]
+    fn source_target_prefix_rejects_unsupported_deep_non_external_data_source_paths() {
+        for raw in [
+            "Catalog.Items.Form.Order.FormModule.Extra",
+            "Catalog.Items.Form.Order.FormModule.Extra.More",
+        ] {
+            let error =
+                MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap_err();
+            assert_eq!(
+                error.code,
+                SourceTargetErrorCode::MetadataAddressInvalid,
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn external_data_source_addresses_reject_unsupported_nesting() {
+        let profile = AddressProfile::new(PLATFORM_XML_8_3_27_FORMAT_2_20).unwrap();
+        for raw in [
+            "Table.Items",
+            "ExternalDataSource.Remote.Table.Items.DimensionTable.Calendar",
+            "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar.DimensionTable.Extra",
+            "ExternalDataSource.Remote.Form.List",
+        ] {
+            let error = profile.parse(raw).unwrap_err();
+            assert_eq!(
+                error.code,
+                SourceTargetErrorCode::MetadataAddressInvalid,
+                "{raw}"
+            );
+        }
     }
 }

@@ -38,6 +38,7 @@
 | `DEC.2026-08-21.V2-PROCESS-POLICY` | решение · process | active | да | Процессная политика v2 не переносит недоказанную широту v1 | [decisions/2026-08-21-v2-process-policy.md](decisions/2026-08-21-v2-process-policy.md) |
 | `DEC.2026-08-22.EVIDENCE-BOUNDED-PRESERVATION` | решение · product | active | да | Перенесённое обещание не шире исполняемого доказательства | [decisions/2026-08-22-evidence-bounded-preservation.md](decisions/2026-08-22-evidence-bounded-preservation.md) |
 | `DEC.2026-08-22.EVIDENCE-BOUNDED-SAFETY` | решение · product | active | да | Safety-правило не шире исполняемого доказательства | [decisions/2026-08-22-evidence-bounded-safety.md](decisions/2026-08-22-evidence-bounded-safety.md) |
+| `DEC.2026-08-22.EXTERNAL-DATA-SOURCE-METADATA` | решение · product | active | да | Внешний источник данных входит в типизированную ветку метаданных | [decisions/2026-08-22-external-data-source-metadata.md](decisions/2026-08-22-external-data-source-metadata.md) |
 | `DEC.2026-08-22.LINEAR-PUBLICATION` | решение · product | active | да | Публикация выражается зависимостями одного конвейера | [decisions/2026-08-22-linear-publication.md](decisions/2026-08-22-linear-publication.md) |
 | `INV.APP.CODE-DEFINITION-READINESS` | инвариант · product | active |  | Definition не публикует ложный типизированный успех | [invariants/INV.APP.CODE-DEFINITION-READINESS.md](invariants/INV.APP.CODE-DEFINITION-READINESS.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Оверлей конфигурации не меняет исходный снимок | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
@@ -51,6 +52,7 @@
 | `INV.APP.DOCUMENTATION-SECTIONS` | инвариант · product | active |  | Секции документации следуют порядку поставщиков | [invariants/INV.APP.DOCUMENTATION-SECTIONS.md](invariants/INV.APP.DOCUMENTATION-SECTIONS.md) |
 | `INV.APP.EVENT-BINDING` | инвариант · product | active |  | Обработчик подписки требует явный признак неглобального модуля | [invariants/INV.APP.EVENT-BINDING.md](invariants/INV.APP.EVENT-BINDING.md) |
 | `INV.APP.EVENT-SOURCE` | инвариант · product | active |  | Логический источник подписки проходит обратное чтение | [invariants/INV.APP.EVENT-SOURCE.md](invariants/INV.APP.EVENT-SOURCE.md) |
+| `INV.APP.EXTERNAL-DATA-SOURCE-READ-MODEL` | инвариант · product | active |  | Read model внешнего источника различает пустоту и недоступность | [invariants/INV.APP.EXTERNAL-DATA-SOURCE-READ-MODEL.md](invariants/INV.APP.EXTERNAL-DATA-SOURCE-READ-MODEL.md) |
 | `INV.APP.HIDDEN-SERVICES` | инвариант · product | active |  | Внутренние сервисы привязаны к рабочему пространству | [invariants/INV.APP.HIDDEN-SERVICES.md](invariants/INV.APP.HIDDEN-SERVICES.md) |
 | `INV.APP.META-FINDINGS` | инвариант · product | active |  | Находка метаданных несёт код, поле и язык | [invariants/INV.APP.META-FINDINGS.md](invariants/INV.APP.META-FINDINGS.md) |
 | `INV.APP.META-INFO-COVERAGE` | инвариант · product | active |  | Профиль чтения покрывает каждый вид метаданных | [invariants/INV.APP.META-INFO-COVERAGE.md](invariants/INV.APP.META-INFO-COVERAGE.md) |
@@ -186,6 +188,8 @@
 | `INV.SOURCE.EXACT-ROOT-VERSIONLESS` | инвариант · product | active |  | Версионно независимые цели не получают владельца формата | [invariants/INV.SOURCE.EXACT-ROOT-VERSIONLESS.md](invariants/INV.SOURCE.EXACT-ROOT-VERSIONLESS.md) |
 | `INV.SOURCE.EXACT-VERSION` | инвариант · product | active |  | Версия самой цели старше версии окружающего набора | [invariants/INV.SOURCE.EXACT-VERSION.md](invariants/INV.SOURCE.EXACT-VERSION.md) |
 | `INV.SOURCE.EXACT-VERSION-LITERAL` | инвариант · product | active |  | Поддерживаемая версия — точный литерал | [invariants/INV.SOURCE.EXACT-VERSION-LITERAL.md](invariants/INV.SOURCE.EXACT-VERSION-LITERAL.md) |
+| `INV.SOURCE.EXTERNAL-DATA-SOURCE-ADDRESSING` | инвариант · product | active |  | Адрес внешнего источника имеет закрытую глубину | [invariants/INV.SOURCE.EXTERNAL-DATA-SOURCE-ADDRESSING.md](invariants/INV.SOURCE.EXTERNAL-DATA-SOURCE-ADDRESSING.md) |
+| `INV.SOURCE.EXTERNAL-DATA-SOURCE-XML-PROFILE` | инвариант · product | active |  | Минимальный внешний источник следует профилю 8.3.27 | [invariants/INV.SOURCE.EXTERNAL-DATA-SOURCE-XML-PROFILE.md](invariants/INV.SOURCE.EXTERNAL-DATA-SOURCE-XML-PROFILE.md) |
 | `INV.SOURCE.FORMAT-PER-SET` | инвариант · product | active |  | Кодовая мутация соблюдает формат своего набора исходников | [invariants/INV.SOURCE.FORMAT-PER-SET.md](invariants/INV.SOURCE.FORMAT-PER-SET.md) |
 | `INV.SOURCE.IDEMPOTENT-ATTEMPT-METADATA` | инвариант · product | active |  | Неизменная публикация может сохранить квитанцию о попытке | [invariants/INV.SOURCE.IDEMPOTENT-ATTEMPT-METADATA.md](invariants/INV.SOURCE.IDEMPOTENT-ATTEMPT-METADATA.md) |
 | `INV.SOURCE.IDEMPOTENT-CONSUMED-SELECTOR` | инвариант · product | active |  | Поглощённый селектор закрывает повторную запись | [invariants/INV.SOURCE.IDEMPOTENT-CONSUMED-SELECTOR.md](invariants/INV.SOURCE.IDEMPOTENT-CONSUMED-SELECTOR.md) |
@@ -259,6 +263,7 @@
 | `INV.WIRE.DATA-DRIVEN-TOOL-LIST` | инвариант · process | active |  | Application владеет контрактами проекции инструментов | [invariants/INV.WIRE.DATA-DRIVEN-TOOL-LIST.md](invariants/INV.WIRE.DATA-DRIVEN-TOOL-LIST.md) |
 | `INV.WIRE.DIRECT-FIRST-LIFECYCLE` | инвариант · product | active |  | Direct-first tools/list отдаёт непересекающиеся ограниченные страницы | [invariants/INV.WIRE.DIRECT-FIRST-LIFECYCLE.md](invariants/INV.WIRE.DIRECT-FIRST-LIFECYCLE.md) |
 | `INV.WIRE.EOF-DRAINS-WORKERS` | инвариант · product | active |  | EOF-дренирование не оставляет отслеживаемый worker | [invariants/INV.WIRE.EOF-DRAINS-WORKERS.md](invariants/INV.WIRE.EOF-DRAINS-WORKERS.md) |
+| `INV.WIRE.EXTERNAL-DATA-SOURCE-ROLE-RIGHTS` | инвариант · product | active |  | Role edit принимает доказанные права внешнего источника | [invariants/INV.WIRE.EXTERNAL-DATA-SOURCE-ROLE-RIGHTS.md](invariants/INV.WIRE.EXTERNAL-DATA-SOURCE-ROLE-RIGHTS.md) |
 | `INV.WIRE.GUARANTEED-VERSIONS` | инвариант · product | active |  | Релизная проверка требует гарантированные версии протокола | [invariants/INV.WIRE.GUARANTEED-VERSIONS.md](invariants/INV.WIRE.GUARANTEED-VERSIONS.md) |
 | `INV.WIRE.ONE-SERVER` | инвариант · product | active |  | Плагин объявляет один публичный MCP-сервер | [invariants/INV.WIRE.ONE-SERVER.md](invariants/INV.WIRE.ONE-SERVER.md) |
 | `INV.WIRE.PINNED-FALLBACK-VERSION` | инвариант · product | active |  | Legacy fallback закреплён на 2025-11-25 | [invariants/INV.WIRE.PINNED-FALLBACK-VERSION.md](invariants/INV.WIRE.PINNED-FALLBACK-VERSION.md) |

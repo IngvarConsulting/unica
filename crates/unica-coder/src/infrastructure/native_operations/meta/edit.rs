@@ -7236,6 +7236,7 @@ pub(crate) mod tests {
             (MetadataKind::HTTPService, &[]),
             (MetadataKind::WebService, &[]),
             (MetadataKind::DefinedType, &[]),
+            (MetadataKind::ExternalDataSource, &[]),
         ];
 
         assert_eq!(cases.len(), MetadataKind::ALL.len());

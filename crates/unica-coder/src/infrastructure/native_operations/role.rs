@@ -3141,6 +3141,38 @@ pub(crate) mod role_edit_contract_tests {
         validate_role_rights_document(text, RoleValueScope::WrittenRights(&pairs))
     }
 
+    fn assert_direct_role_value(
+        text: &str,
+        expected_object: &str,
+        expected_right: &str,
+        expected_value: bool,
+    ) {
+        let document = Document::parse(text).unwrap();
+        let object = direct_role_children(document.root_element(), "object", ROLE_RIGHTS_NAMESPACE)
+            .into_iter()
+            .find(|object| {
+                direct_role_children(*object, "name", ROLE_RIGHTS_NAMESPACE)
+                    .first()
+                    .is_some_and(|name| role_text_content(*name) == expected_object)
+            })
+            .unwrap_or_else(|| panic!("missing role object {expected_object}"));
+        let right = direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE)
+            .into_iter()
+            .find(|right| {
+                direct_role_children(*right, "name", ROLE_RIGHTS_NAMESPACE)
+                    .first()
+                    .is_some_and(|name| role_text_content(*name) == expected_right)
+            })
+            .unwrap_or_else(|| panic!("missing right {expected_right} for {expected_object}"));
+        let values = direct_role_children(right, "value", ROLE_RIGHTS_NAMESPACE);
+        assert_eq!(
+            values.len(),
+            1,
+            "{expected_object}/{expected_right}: {text}"
+        );
+        assert_eq!(role_direct_boolean(values[0]), Some(expected_value));
+    }
+
     use crate::infrastructure::platform::testing::{
         create_dir_symlink_for_test, create_file_symlink_for_test, remove_dir_symlink_for_test,
     };
@@ -3805,6 +3837,87 @@ pub(crate) mod role_edit_contract_tests {
         assert!(!second.changed);
         assert_eq!(second.before, None);
         assert_eq!(second.action, RoleEditEffectAction::RemoveObject);
+    }
+
+    #[test]
+    fn external_data_source_table_right_round_trips_through_writer() {
+        let body = r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights" version="2.20">
+  <setForNewObjects>false</setForNewObjects>
+  <setForAttributesByDefault>true</setForAttributesByDefault>
+  <independentRightsOfChildObjects>false</independentRightsOfChildObjects>
+  <object>
+    <name>ExternalDataSource.Remote.Table.Items</name>
+    <right><name>Read</name><value>true</value></right>
+  </object>
+</Rights>
+"#;
+        let (updated, effect) = apply_role_edit_operation(
+            body,
+            &operation(
+                "ExternalDataSource.Remote.Table.Items",
+                "InputByString",
+                true,
+            ),
+            0,
+        )
+        .unwrap();
+
+        assert!(effect.changed);
+        assert!(updated.contains("<name>InputByString</name>"), "{updated}");
+        assert_direct_role_value(
+            &updated,
+            "ExternalDataSource.Remote.Table.Items",
+            "InputByString",
+            true,
+        );
+        validate_every_role_value(&updated).unwrap();
+    }
+
+    #[test]
+    fn external_data_source_rights_round_trip_through_public_edit_path() {
+        let (context, mut args, rights) = fixture("external-data-source-rights");
+        let body = r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights" version="2.20">
+  <setForNewObjects>false</setForNewObjects>
+  <setForAttributesByDefault>true</setForAttributesByDefault>
+  <independentRightsOfChildObjects>false</independentRightsOfChildObjects>
+  <object>
+    <name>ExternalDataSource.Remote</name>
+    <right><name>Use</name><value>false</value></right>
+  </object>
+  <object>
+    <name>ExternalDataSource.Remote.Table.Items.Field.Code</name>
+    <right><name>Edit</name><value>false</value></right>
+  </object>
+</Rights>
+"#;
+        fs::write(&rights, encode_role_xml(true, body)).unwrap();
+        args.insert(
+            "operations".to_string(),
+            json!([
+                {"op":"setRight", "objectName":"ExternalDataSource.Remote", "right":"Use", "value":true},
+                {"op":"setRight", "objectName":"ExternalDataSource.Remote.Table.Items.Field.Code", "right":"Edit", "value":true}
+            ]),
+        );
+
+        let applied = apply_edit_with_data(&args, &context);
+
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        let data = applied.data.unwrap();
+        assert!(data.changed);
+        assert_eq!(data.effects.len(), 2);
+        assert!(data.effects.iter().all(|effect| effect.after));
+        let updated = fs::read_to_string(&rights).unwrap();
+        assert!(updated.contains("<name>ExternalDataSource.Remote</name>"));
+        assert!(updated.contains("<name>ExternalDataSource.Remote.Table.Items.Field.Code</name>"));
+        assert_direct_role_value(&updated, "ExternalDataSource.Remote", "Use", true);
+        assert_direct_role_value(
+            &updated,
+            "ExternalDataSource.Remote.Table.Items.Field.Code",
+            "Edit",
+            true,
+        );
+        validate_every_role_value(&updated).unwrap();
+        fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
     fn fixture(name: &str) -> (WorkspaceContext, Map<String, Value>, PathBuf) {
