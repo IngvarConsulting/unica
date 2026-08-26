@@ -5425,6 +5425,64 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn code_patch_runtime_validation_enforces_batch_contract() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .unwrap();
+        let args = |replacements| {
+            Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("CommonModule.X.Module")),
+                ("operation".to_string(), json!("replace")),
+                ("replacements".to_string(), replacements),
+            ])
+        };
+        let valid = json!([
+            {
+                "selector": {"anchor": "Старое"},
+                "content": "Новое",
+                "expectedCount": 2
+            },
+            {
+                "selector": {"method": "Run"},
+                "content": "Procedure Run()\nEndProcedure",
+                "expectedCount": 1
+            }
+        ]);
+
+        validate_tool_arguments(tool, &args(valid.clone()), false)
+            .expect("runtime accepts the documented replacement batch");
+
+        let mut extra_field = valid.clone();
+        extra_field[0]["unexpected"] = json!(true);
+        let error = validate_tool_arguments(tool, &args(extra_field), false).unwrap_err();
+        assert!(error.contains("must contain exactly selector, content, and expectedCount"));
+
+        let mut missing_field = valid.clone();
+        missing_field[0].as_object_mut().unwrap().remove("content");
+        let error = validate_tool_arguments(tool, &args(missing_field), false).unwrap_err();
+        assert!(error.contains("must contain exactly selector, content, and expectedCount"));
+
+        let mut malformed_selector = valid.clone();
+        malformed_selector[0]["selector"] = json!({"method": "Run", "anchor": "Старое"});
+        let error = validate_tool_arguments(tool, &args(malformed_selector), false).unwrap_err();
+        assert!(error.contains("must contain exactly one of `method` or `anchor`"));
+
+        let error = validate_tool_arguments(tool, &args(json!({})), false).unwrap_err();
+        assert!(
+            error.contains("argument `replacements` must be array"),
+            "{error}"
+        );
+
+        let oversized = Value::Array(vec![valid[0].clone(); CODE_PATCH_MAX_REPLACEMENTS + 1]);
+        let error = validate_tool_arguments(tool, &args(oversized), false).unwrap_err();
+        assert!(error.contains(&format!(
+            "argument `replacements` must contain between 1 and {CODE_PATCH_MAX_REPLACEMENTS} items"
+        )));
+    }
+
+    #[test]
     fn xdto_contract_publishes_and_enforces_typed_arguments() {
         let info = tools()
             .into_iter()
