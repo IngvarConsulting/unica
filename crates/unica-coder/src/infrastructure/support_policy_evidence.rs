@@ -42,7 +42,9 @@ fn set_support_policy_after_pre_read_identity_hook(hook: impl FnOnce() + 'static
 }
 
 #[cfg(test)]
-fn set_support_policy_after_retained_read_before_acceptance_hook(hook: impl FnOnce() + 'static) {
+pub(crate) fn set_support_policy_after_retained_read_before_acceptance_hook(
+    hook: impl FnOnce() + 'static,
+) {
     SUPPORT_POLICY_AFTER_RETAINED_READ_BEFORE_ACCEPTANCE_HOOK
         .with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
 }
@@ -366,6 +368,15 @@ impl RetainedSupportPolicyEvidence {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), SupportPolicyEvidenceError> {
+        self.validate_complete_pass(deadline, cancellation)?;
+        self.validate_complete_pass(deadline, cancellation)
+    }
+
+    fn validate_complete_pass(
+        &self,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<(), SupportPolicyEvidenceError> {
         checkpoint(deadline, cancellation, "support-policy validation")?;
         for candidate in &self.candidates {
             checkpoint(deadline, cancellation, "support-policy validation")?;
@@ -374,7 +385,7 @@ impl RetainedSupportPolicyEvidence {
             run_support_policy_validation_hook();
             checkpoint(deadline, cancellation, "support-policy validation")?;
         }
-        Ok(())
+        checkpoint(deadline, cancellation, "support-policy validation")
     }
 }
 
@@ -726,6 +737,54 @@ pub(crate) mod tests {
         assert!(
             rejected,
             "exact evidence accepted a persistent fixed-name replacement after its retained read"
+        );
+    }
+
+    #[test]
+    pub(crate) fn retained_support_policy_exact_rejects_same_inode_change_between_stability_passes()
+    {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let source = workspace.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        let policy = workspace.join(POLICY_NAME);
+        let admitted = br#"{"editingAllowedCheck":"off"}"#;
+        let changed = br#"{"editingAllowedCheck":"bad"}"#;
+        assert_eq!(admitted.len(), changed.len());
+        std::fs::write(&policy, admitted).unwrap();
+        let workspace = std::fs::canonicalize(workspace).unwrap();
+        let source = std::fs::canonicalize(source).unwrap();
+        let evidence = RetainedSupportPolicyEvidence::capture(
+            &workspace,
+            &source,
+            ProviderDeadline::from_budget(Duration::from_secs(10)),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let admitted_identity = crate::infrastructure::platform::filesystem::file_identity(
+            &std::fs::File::open(&policy).unwrap(),
+        )
+        .unwrap();
+        let hook_policy = policy.clone();
+        set_support_policy_after_retained_read_before_acceptance_hook(move || {
+            std::fs::write(&hook_policy, changed).unwrap();
+        });
+
+        let error = evidence
+            .validate(
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        let current_identity = crate::infrastructure::platform::filesystem::file_identity(
+            &std::fs::File::open(&policy).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(current_identity, admitted_identity);
+        assert_eq!(
+            error.kind(),
+            SupportPolicyEvidenceErrorKind::ContainmentIdentity
         );
     }
 }

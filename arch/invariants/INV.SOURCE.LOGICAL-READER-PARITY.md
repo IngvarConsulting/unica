@@ -34,9 +34,12 @@ Semantic digest остаётся byte-compatible с ambient algorithm. Кажд�
 потоковый, проверяет cancellation между chunks и ограничивает entries, file
 bytes и aggregate bytes.
 Любой contributing read, canonical Role resolution и owner proof предшествует
-последнему exact-revision fence, поэтому replacement/mutation даёт coherent
-retained result либо typed stale/invalidation, но не mixed revision; после
-final confirmation source I/O нет.
+последнему exact-revision fence, поэтому при actor-owned или обычной конечной
+внешней правке replacement/mutation даёт coherent retained result либо typed
+stale/invalidation, но не mixed revision; после final confirmation source I/O
+нет. Это bounded optimistic stabilization, не history-sensitive гарантия против
+arbitrary synchronized/ABA writer и не immutability retained tree после
+последнего pass.
 
 До dispatch всех typed readers действует один recursive owner admission:
 top-level `(kind,name)` присутствует в inventory и имеет matching descriptor, а

@@ -7042,6 +7042,72 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn apply_policy_same_inode_churn_during_late_final_gate_rolls_back_all_retained_state() {
+        let fixture = actor_fixture("apply-policy-late-final-same-inode-churn", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        let policy = fixture.root.join(".v8-project.json");
+        std::fs::write(&target, b"original").unwrap();
+        let admitted = br#"{"editingAllowedCheck":"off"}"#;
+        let changed = br#"{"editingAllowedCheck":"bad"}"#;
+        assert_eq!(admitted.len(), changed.len());
+        std::fs::write(&policy, admitted).unwrap();
+        let policy_identity = crate::infrastructure::platform::filesystem::file_identity(
+            &std::fs::File::open(&policy).unwrap(),
+        )
+        .unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admission.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"published".to_vec())
+            .unwrap();
+        let prepared = admission.prepare(state).unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let hook_policy = policy.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || {
+                crate::infrastructure::support_policy_evidence::set_support_policy_after_retained_read_before_acceptance_hook(
+                    move || std::fs::write(hook_policy, changed).unwrap(),
+                );
+            },
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        let current_policy_identity = crate::infrastructure::platform::filesystem::file_identity(
+            &std::fs::File::open(&policy).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
+        assert_eq!(current_policy_identity, policy_identity);
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
     fn apply_policy_foreign_actor_and_sibling_worktree_replay_are_rejected() {
         real_effect_foreign_actor_replay_preserves_both_actor_states();
 
@@ -7490,9 +7556,11 @@ pub(crate) mod tests {
         crate::infrastructure::support_policy_evidence::tests::retained_support_policy_candidate_parent_replacement_is_rejected();
         crate::infrastructure::support_policy_evidence::tests::retained_support_policy_exact_and_oversized_reject_name_replacement_after_pre_read_identity();
         crate::infrastructure::support_policy_evidence::tests::retained_support_policy_exact_rejects_name_replacement_after_retained_read_before_acceptance();
+        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_exact_rejects_same_inode_change_between_stability_passes();
         apply_policy_dry_run_churn_is_write_free_and_returns_no_receipt();
         apply_policy_churn_before_source_publication_is_write_free();
         apply_policy_churn_after_source_publication_rolls_back_all_retained_state();
+        apply_policy_same_inode_churn_during_late_final_gate_rolls_back_all_retained_state();
         apply_policy_foreign_actor_and_sibling_worktree_replay_are_rejected();
         apply_policy_same_ancestor_can_govern_two_worktrees_without_authority_aliasing();
         apply_policy_deadline_and_cancellation_during_capture_are_write_free();

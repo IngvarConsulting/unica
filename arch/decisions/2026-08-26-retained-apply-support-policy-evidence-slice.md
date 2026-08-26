@@ -19,16 +19,24 @@ fail-closed `Deny` без глобального отказа admission; их ev
 достаточную для неизменности `Deny` категорию. Только exact regular bytes могут
 дать `Warn` или `Off`.
 
-Evidence проверяется под actor mutation lane до публикации, после dry-run
-revision confirmation и в retained final gate после postimages. Ошибка до
-публикации write-free, поздняя ошибка использует существующий reverse rollback.
-Evidence ничего не публикует и не становится третьим transaction participant:
-writers остаются ровно `Source + WorkspaceCache`.
-Публичный wire-контракт не меняется.
+Каждая validation boundary под actor mutation lane выполняет два
+последовательных полных descriptor-relative pass по всей retained ordered
+candidate chain: до публикации, после dry-run revision confirmation и в
+retained final gate после postimages. Оба pass используют одну исходную
+absolute deadline/cancellation и повторно доказывают admitted category,
+physical identity и exact authorizing bytes. Ошибка до публикации write-free,
+поздняя ошибка использует существующий reverse rollback. Evidence ничего не
+публикует и не становится третьим transaction participant: writers остаются
+ровно `Source + WorkspaceCache`. Публичный wire-контракт не меняется.
 
 **Почему.** Pure v0.13 planners не должны получать `WorkspaceContext`, path или
-сырой policy, но обязаны сохранять V12 authorisation semantics и закрывать
-policy TOCTOU вплоть до revision installation.
+сырой policy, но обязаны сохранять V12 authorisation semantics. Два полных pass
+дают bounded optimistic stabilization перед publication/result при
+сериализации actor-owned writers и обычной конечной внешней правке. Это не
+доказательство истории без изменений, strict multi-object linearizability,
+защита от arbitrary same-user/ABA writer или неизменность policy до либо через
+`ActiveRevisionReconciliation::install`.
 
-**Цена.** Policy больше 32 MiB не может авторизовать `Warn`/`Off` и трактуется
-как `Deny`; source-map provenance и `SourceSetKind` остаются отдельным C0b/15D.
+**Цена.** Каждая validation boundary платит до 2x bounded validation I/O.
+Policy больше 32 MiB не может авторизовать `Warn`/`Off` и трактуется как
+`Deny`; source-map provenance и `SourceSetKind` остаются отдельным C0b/15D.
