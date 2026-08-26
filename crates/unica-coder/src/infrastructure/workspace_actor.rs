@@ -1892,8 +1892,8 @@ pub(crate) mod tests {
     use crate::infrastructure::source_revision::SourceRevisionService;
     use crate::infrastructure::support_policy_evidence::SupportPolicyMode;
     use crate::infrastructure::support_policy_evidence::{
-        clear_support_policy_read_chunk_hook, set_support_policy_capture_hook,
-        set_support_policy_read_chunk_hook_once, set_support_policy_validation_hook,
+        set_support_policy_capture_hook, set_support_policy_read_chunk_hook_once,
+        set_support_policy_validation_hook, SupportPolicyTestStateGuard,
     };
     use std::cell::Cell;
     use std::path::{Path, PathBuf};
@@ -1913,6 +1913,10 @@ pub(crate) mod tests {
 
     fn set_support_policy_actor_test_now(now: Instant) {
         SUPPORT_POLICY_ACTOR_TEST_NOW.set(now);
+    }
+
+    fn reset_support_policy_actor_test_now() {
+        set_support_policy_actor_test_now(Instant::now());
     }
 
     #[test]
@@ -7057,6 +7061,7 @@ pub(crate) mod tests {
 
     #[test]
     fn apply_policy_same_inode_churn_during_late_final_gate_rolls_back_all_retained_state() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_actor_test_now);
         let fixture = actor_fixture("apply-policy-late-final-same-inode-churn", &["src"]);
         let target = fixture.roots[0].join("Module.bsl");
         let policy = fixture.root.join(".v8-project.json");
@@ -7238,6 +7243,7 @@ pub(crate) mod tests {
 
     #[test]
     fn apply_policy_deadline_and_cancellation_during_capture_are_write_free() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_actor_test_now);
         let mut rejected = Vec::new();
         for gate in ["cancelled", "deadline"] {
             let fixture = actor_fixture(&format!("apply-policy-capture-{gate}"), &["src"]);
@@ -7279,6 +7285,7 @@ pub(crate) mod tests {
 
     #[test]
     fn apply_policy_capture_stops_after_first_retained_read_chunk_write_free() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_actor_test_now);
         let mut observed = Vec::new();
         for gate in ["cancelled", "deadline"] {
             let fixture = actor_fixture(&format!("apply-policy-chunked-capture-{gate}"), &["src"]);
@@ -7326,9 +7333,7 @@ pub(crate) mod tests {
             let result = fixture
                 .actor
                 .admit_apply(&binding, None, false, deadline, &cancellation);
-            clear_support_policy_read_chunk_hook();
             observed.push((result.err(), chunks.load(Ordering::SeqCst)));
-            set_support_policy_actor_test_now(Instant::now());
 
             assert_eq!(std::fs::read(&target).unwrap(), b"original", "{gate}");
             assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{gate}");
@@ -7355,6 +7360,7 @@ pub(crate) mod tests {
 
     #[test]
     fn apply_policy_all_absent_capture_rejects_terminal_cancellation_and_deadline_write_free() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_actor_test_now);
         let mut observed = Vec::new();
         for gate in ["cancelled", "deadline"] {
             let container = temp_root(&format!("apply-policy-all-absent-capture-{gate}"));
@@ -7408,6 +7414,7 @@ pub(crate) mod tests {
 
     #[test]
     fn apply_policy_deadline_and_cancellation_during_final_validation_roll_back() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_actor_test_now);
         for gate in ["cancelled", "deadline"] {
             let fixture = actor_fixture(&format!("apply-policy-final-{gate}"), &["src"]);
             let target = fixture.roots[0].join("Module.bsl");
@@ -7484,6 +7491,7 @@ pub(crate) mod tests {
 
     #[test]
     fn apply_policy_final_gate_stops_after_first_retained_read_chunk_and_rolls_back() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_actor_test_now);
         let mut observed = Vec::new();
         for gate in ["cancelled", "deadline"] {
             let fixture = actor_fixture(&format!("apply-policy-chunked-final-{gate}"), &["src"]);
@@ -7548,14 +7556,11 @@ pub(crate) mod tests {
             }
 
             let result = fixture.actor.publish_prepared_apply(prepared);
-            clear_support_policy_read_chunk_hook();
             observed.push((
                 result.as_ref().err().map(|error| error.kind()),
                 chunks.load(Ordering::SeqCst),
             ));
             assert!(result.is_err(), "{gate} returned a terminal receipt");
-            set_support_policy_actor_test_now(Instant::now());
-
             assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{gate}");
             assert_eq!(
                 snapshot_tree(&fixture.root.join(".build/unica")),
@@ -7756,6 +7761,10 @@ pub(crate) mod tests {
         crate::infrastructure::support_policy_evidence::tests::retained_support_policy_read_stops_after_first_chunk_when_terminal();
         crate::infrastructure::support_policy_evidence::tests::retained_support_policy_second_pass_reuses_terminal_state_between_chunks();
         crate::infrastructure::support_policy_evidence::tests::retained_support_policy_reader_preserves_limit_plus_one_in_64_kib_chunks();
+        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_reader_retries_interrupted_after_partial_read();
+        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_reader_stops_repeated_interrupts_at_terminal_state();
+        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_reader_preserves_limit_plus_one_after_interrupt();
+        crate::infrastructure::support_policy_evidence::tests::terminal_pre_read_does_not_leave_after_read_hook_for_following_validation();
         crate::infrastructure::support_policy_evidence::tests::support_policy_database_paths_distinguish_nested_sources_from_prefix_siblings();
         crate::infrastructure::support_policy_evidence::tests::support_policy_candidate_search_stops_at_exact_twentieth_candidate();
         crate::infrastructure::support_policy_evidence::tests::support_policy_overlapping_chains_keep_first_occurrence_order_without_duplicates();

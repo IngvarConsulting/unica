@@ -80,6 +80,45 @@ pub(crate) fn clear_support_policy_read_chunk_hook() {
 }
 
 #[cfg(test)]
+fn clear_support_policy_test_hooks() {
+    SUPPORT_POLICY_CAPTURE_HOOK.with(|slot| {
+        slot.borrow_mut().take();
+    });
+    SUPPORT_POLICY_VALIDATION_HOOK.with(|slot| {
+        slot.borrow_mut().take();
+    });
+    SUPPORT_POLICY_AFTER_PRE_READ_IDENTITY_HOOK.with(|slot| {
+        slot.borrow_mut().take();
+    });
+    SUPPORT_POLICY_AFTER_RETAINED_READ_BEFORE_ACCEPTANCE_HOOK.with(|slot| {
+        slot.borrow_mut().take();
+    });
+    clear_support_policy_read_chunk_hook();
+}
+
+#[cfg(test)]
+pub(crate) struct SupportPolicyTestStateGuard {
+    reset_clock: fn(),
+}
+
+#[cfg(test)]
+impl SupportPolicyTestStateGuard {
+    pub(crate) fn new(reset_clock: fn()) -> Self {
+        clear_support_policy_test_hooks();
+        reset_clock();
+        Self { reset_clock }
+    }
+}
+
+#[cfg(test)]
+impl Drop for SupportPolicyTestStateGuard {
+    fn drop(&mut self) {
+        clear_support_policy_test_hooks();
+        (self.reset_clock)();
+    }
+}
+
+#[cfg(test)]
 fn run_support_policy_capture_hook() {
     SUPPORT_POLICY_CAPTURE_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -559,6 +598,16 @@ fn read_support_policy_bounded(
         .map_err(SupportPolicyReadError::Io)?;
     file.seek(SeekFrom::Start(0))
         .map_err(SupportPolicyReadError::Io)?;
+    read_support_policy_bounded_from(&mut file, max_bytes, deadline, cancellation, phase)
+}
+
+fn read_support_policy_bounded_from(
+    reader: &mut impl Read,
+    max_bytes: usize,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    phase: &str,
+) -> Result<Vec<u8>, SupportPolicyReadError> {
     let mut remaining = max_bytes.saturating_add(1);
     let mut bytes = Vec::new();
     let mut chunk = [0_u8; SUPPORT_POLICY_READ_CHUNK_BYTES];
@@ -566,11 +615,19 @@ fn read_support_policy_bounded(
     let mut chunk_count = 0;
     while remaining > 0 {
         checkpoint(deadline, cancellation, phase).map_err(SupportPolicyReadError::Terminal)?;
-        let read = file.read(&mut chunk[..remaining.min(SUPPORT_POLICY_READ_CHUNK_BYTES)]);
-        if read.as_ref().is_err() {
-            checkpoint(deadline, cancellation, phase).map_err(SupportPolicyReadError::Terminal)?;
-        }
-        let read = read.map_err(SupportPolicyReadError::Io)?;
+        let read = match reader.read(&mut chunk[..remaining.min(SUPPORT_POLICY_READ_CHUNK_BYTES)]) {
+            Ok(read) => read,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {
+                checkpoint(deadline, cancellation, phase)
+                    .map_err(SupportPolicyReadError::Terminal)?;
+                continue;
+            }
+            Err(error) => {
+                checkpoint(deadline, cancellation, phase)
+                    .map_err(SupportPolicyReadError::Terminal)?;
+                return Err(SupportPolicyReadError::Io(error));
+            }
+        };
         if read > 0 {
             bytes.extend_from_slice(&chunk[..read]);
             remaining -= read;
@@ -631,6 +688,8 @@ fn checkpoint(
 pub(crate) mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::collections::VecDeque;
+    use std::io;
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
@@ -648,6 +707,53 @@ pub(crate) mod tests {
 
     fn set_support_policy_test_now(now: Instant) {
         SUPPORT_POLICY_TEST_NOW.set(now);
+    }
+
+    fn reset_support_policy_test_now() {
+        set_support_policy_test_now(Instant::now());
+    }
+
+    enum ScriptedReadStep {
+        Bytes(&'static [u8]),
+        Interrupted,
+        InterruptedWith(Box<dyn FnOnce()>),
+    }
+
+    struct ScriptedReader {
+        steps: VecDeque<ScriptedReadStep>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ScriptedReader {
+        fn new(steps: impl IntoIterator<Item = ScriptedReadStep>) -> (Self, Arc<AtomicUsize>) {
+            let calls = Arc::new(AtomicUsize::new(0));
+            (
+                Self {
+                    steps: steps.into_iter().collect(),
+                    calls: Arc::clone(&calls),
+                },
+                calls,
+            )
+        }
+    }
+
+    impl Read for ScriptedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match self.steps.pop_front() {
+                Some(ScriptedReadStep::Bytes(bytes)) => {
+                    assert!(bytes.len() <= buffer.len());
+                    buffer[..bytes.len()].copy_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+                Some(ScriptedReadStep::Interrupted) => Err(io::Error::from(ErrorKind::Interrupted)),
+                Some(ScriptedReadStep::InterruptedWith(action)) => {
+                    action();
+                    Err(io::Error::from(ErrorKind::Interrupted))
+                }
+                None => Ok(0),
+            }
+        }
     }
 
     #[test]
@@ -791,6 +897,7 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn retained_support_policy_exact_and_oversized_reject_name_replacement_after_pre_read_identity(
     ) {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
         if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test()
         {
             eprintln!(
@@ -844,6 +951,7 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn retained_support_policy_exact_rejects_name_replacement_after_retained_read_before_acceptance(
     ) {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
         if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test()
         {
             eprintln!(
@@ -890,6 +998,7 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn retained_support_policy_exact_rejects_same_inode_change_between_stability_passes()
     {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");
         let source = workspace.join("src");
@@ -938,6 +1047,7 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn retained_support_policy_read_stops_before_post_read_when_pre_read_becomes_terminal(
     ) {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
         let mut observed = Vec::new();
         for gate in ["cancelled", "deadline"] {
             let temporary = tempfile::tempdir().unwrap();
@@ -985,7 +1095,6 @@ pub(crate) mod tests {
 
             let error = evidence.validate(deadline, &cancellation).unwrap_err();
             observed.push((error.kind(), after_read.load(Ordering::SeqCst)));
-            set_support_policy_test_now(Instant::now());
         }
 
         assert_eq!(
@@ -998,7 +1107,60 @@ pub(crate) mod tests {
     }
 
     #[test]
+    pub(crate) fn terminal_pre_read_does_not_leave_after_read_hook_for_following_validation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let source = workspace.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            workspace.join(POLICY_NAME),
+            br#"{"editingAllowedCheck":"off"}"#,
+        )
+        .unwrap();
+        let workspace = std::fs::canonicalize(workspace).unwrap();
+        let source = std::fs::canonicalize(source).unwrap();
+        let evidence = RetainedSupportPolicyEvidence::capture(
+            &workspace,
+            &source,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let stale_after_read_hook_ran = Arc::new(AtomicBool::new(false));
+        {
+            let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
+            let cancellation = CancellationToken::new();
+            let cancel = cancellation.clone();
+            set_support_policy_after_pre_read_identity_hook(move || cancel.cancel());
+            let observed_stale_hook = Arc::clone(&stale_after_read_hook_ran);
+            set_support_policy_after_retained_read_before_acceptance_hook(move || {
+                observed_stale_hook.store(true, Ordering::SeqCst);
+            });
+
+            let error = evidence
+                .validate(
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &cancellation,
+                )
+                .unwrap_err();
+            assert_eq!(error.kind(), SupportPolicyEvidenceErrorKind::Cancelled);
+        }
+
+        evidence
+            .validate(
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(
+            !stale_after_read_hook_ran.load(Ordering::SeqCst),
+            "terminal pre-read leaked its after-read hook into the following validation"
+        );
+    }
+
+    #[test]
     pub(crate) fn retained_support_policy_read_stops_after_first_chunk_when_terminal() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
         let mut observed = Vec::new();
         for gate in ["cancelled", "deadline"] {
             let temporary = tempfile::tempdir().unwrap();
@@ -1053,13 +1215,11 @@ pub(crate) mod tests {
             });
 
             let error = evidence.validate(deadline, &cancellation).unwrap_err();
-            clear_support_policy_read_chunk_hook();
             observed.push((
                 error.kind(),
                 chunks.load(Ordering::SeqCst),
                 after_read.load(Ordering::SeqCst),
             ));
-            set_support_policy_test_now(Instant::now());
         }
 
         assert_eq!(
@@ -1073,6 +1233,7 @@ pub(crate) mod tests {
 
     #[test]
     pub(crate) fn retained_support_policy_second_pass_reuses_terminal_state_between_chunks() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
         let mut observed = Vec::new();
         for gate in ["cancelled", "deadline"] {
             let temporary = tempfile::tempdir().unwrap();
@@ -1130,13 +1291,11 @@ pub(crate) mod tests {
             }
 
             let error = evidence.validate(deadline, &cancellation).unwrap_err();
-            clear_support_policy_read_chunk_hook();
             observed.push((
                 error.kind(),
                 read_starts.load(Ordering::SeqCst),
                 second_pass_chunks.load(Ordering::SeqCst),
             ));
-            set_support_policy_test_now(Instant::now());
         }
 
         assert_eq!(
@@ -1150,6 +1309,7 @@ pub(crate) mod tests {
 
     #[test]
     pub(crate) fn retained_support_policy_reader_preserves_limit_plus_one_in_64_kib_chunks() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -1175,12 +1335,133 @@ pub(crate) mod tests {
             &CancellationToken::new(),
             "support-policy validation",
         );
-        clear_support_policy_read_chunk_hook();
 
         assert!(matches!(
             result,
             Err(SupportPolicyReadError::Io(error)) if error.kind() == ErrorKind::InvalidData
         ));
+        assert_eq!(chunks.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    pub(crate) fn retained_support_policy_reader_retries_interrupted_after_partial_read() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
+        let (mut reader, calls) = ScriptedReader::new([
+            ScriptedReadStep::Bytes(b"abc"),
+            ScriptedReadStep::Interrupted,
+            ScriptedReadStep::Bytes(b"def"),
+        ]);
+        let chunks = Arc::new(AtomicUsize::new(0));
+        let observed_chunks = Arc::clone(&chunks);
+        set_support_policy_read_chunk_hook_repeating(move |_| {
+            observed_chunks.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let result = read_support_policy_bounded_from(
+            &mut reader,
+            8,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+            "support-policy validation",
+        );
+
+        match result {
+            Ok(bytes) => assert_eq!(bytes, b"abcdef"),
+            Err(SupportPolicyReadError::Terminal(error)) => {
+                panic!("unexpected terminal read error: {}", error.message)
+            }
+            Err(SupportPolicyReadError::Io(error)) => {
+                panic!("unexpected retained read error: {error}")
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(chunks.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    pub(crate) fn retained_support_policy_reader_stops_repeated_interrupts_at_terminal_state() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
+        let mut observed = Vec::new();
+        for gate in ["cancelled", "deadline"] {
+            let cancellation = CancellationToken::new();
+            let started = Instant::now();
+            set_support_policy_test_now(started);
+            let deadline = if gate == "deadline" {
+                ProviderDeadline::with_clock(
+                    started + Duration::from_secs(1),
+                    support_policy_test_now,
+                )
+            } else {
+                ProviderDeadline::from_budget(Duration::from_secs(5))
+            };
+            let terminal_action: Box<dyn FnOnce()> = if gate == "cancelled" {
+                let cancel = cancellation.clone();
+                Box::new(move || cancel.cancel())
+            } else {
+                Box::new(move || {
+                    set_support_policy_test_now(started + Duration::from_secs(2));
+                })
+            };
+            let (mut reader, calls) = ScriptedReader::new(vec![
+                ScriptedReadStep::Interrupted,
+                ScriptedReadStep::InterruptedWith(terminal_action),
+                ScriptedReadStep::Bytes(b"must-not-be-read"),
+            ]);
+
+            let result = read_support_policy_bounded_from(
+                &mut reader,
+                64,
+                deadline,
+                &cancellation,
+                "support-policy validation",
+            );
+            let kind = match result {
+                Err(SupportPolicyReadError::Terminal(error)) => error.kind(),
+                Err(SupportPolicyReadError::Io(error)) => {
+                    panic!("interrupt escaped as retained read error: {error}")
+                }
+                Ok(bytes) => panic!("terminal interrupt returned bytes: {bytes:?}"),
+            };
+            observed.push((kind, calls.load(Ordering::SeqCst)));
+        }
+
+        assert_eq!(
+            observed,
+            [
+                (SupportPolicyEvidenceErrorKind::Cancelled, 2),
+                (SupportPolicyEvidenceErrorKind::Deadline, 2),
+            ]
+        );
+    }
+
+    #[test]
+    pub(crate) fn retained_support_policy_reader_preserves_limit_plus_one_after_interrupt() {
+        let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
+        let (mut reader, calls) = ScriptedReader::new([
+            ScriptedReadStep::Bytes(b"abc"),
+            ScriptedReadStep::Interrupted,
+            ScriptedReadStep::Bytes(b"def"),
+            ScriptedReadStep::Bytes(b"must-not-be-read"),
+        ]);
+        let chunks = Arc::new(AtomicUsize::new(0));
+        let observed_chunks = Arc::clone(&chunks);
+        set_support_policy_read_chunk_hook_repeating(move |_| {
+            observed_chunks.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let result = read_support_policy_bounded_from(
+            &mut reader,
+            5,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+            "support-policy validation",
+        );
+
+        assert!(matches!(
+            result,
+            Err(SupportPolicyReadError::Io(error)) if error.kind() == ErrorKind::InvalidData
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
         assert_eq!(chunks.load(Ordering::SeqCst), 2);
     }
 }
