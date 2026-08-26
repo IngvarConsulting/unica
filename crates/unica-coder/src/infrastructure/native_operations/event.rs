@@ -107,6 +107,196 @@ impl PlannedApplyEffects {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModuleInsertionPlan {
+    ExistingRegion { offset: usize },
+    AppendRegion { offset: usize },
+}
+
+impl ModuleInsertionPlan {
+    const fn offset(self) -> usize {
+        match self {
+            Self::ExistingRegion { offset } | Self::AppendRegion { offset } => offset,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContainerInsertionSite {
+    SelfClosing { offset: usize },
+    Line { offset: usize },
+    Inline { offset: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdjacentInsertionSite {
+    Line { offset: usize },
+    Inline { offset: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerCloseInsertionSite {
+    SelfClosing { offset: usize },
+    Line { offset: usize },
+    Inline { offset: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FormBlock {
+    EventsSection {
+        section_indent: String,
+        event_indent: String,
+        event_xml: String,
+    },
+    Literal(String),
+}
+
+impl FormBlock {
+    fn render(self, eol: &str) -> String {
+        match self {
+            Self::EventsSection {
+                section_indent,
+                event_indent,
+                event_xml,
+            } => format!(
+                "{section_indent}<Events>{eol}{event_indent}{event_xml}{eol}{section_indent}</Events>"
+            ),
+            Self::Literal(value) => value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FormInsertionPlan {
+    IntoContainer {
+        range: Range<usize>,
+        tag: String,
+        child: String,
+        indent: String,
+        child_indent: String,
+        site: ContainerInsertionSite,
+    },
+    AfterElement {
+        block: FormBlock,
+        indent: String,
+        site: AdjacentInsertionSite,
+    },
+    BeforeElement {
+        block: FormBlock,
+        child_indent: String,
+        site: AdjacentInsertionSite,
+    },
+    BeforeOwnerClose {
+        range: Range<usize>,
+        tag: String,
+        block: FormBlock,
+        indent: String,
+        site: OwnerCloseInsertionSite,
+    },
+}
+
+impl FormInsertionPlan {
+    const fn offset(&self) -> usize {
+        match self {
+            Self::IntoContainer { site, .. } => match site {
+                ContainerInsertionSite::SelfClosing { offset }
+                | ContainerInsertionSite::Line { offset }
+                | ContainerInsertionSite::Inline { offset } => *offset,
+            },
+            Self::AfterElement { site, .. } | Self::BeforeElement { site, .. } => match site {
+                AdjacentInsertionSite::Line { offset }
+                | AdjacentInsertionSite::Inline { offset } => *offset,
+            },
+            Self::BeforeOwnerClose { site, .. } => match site {
+                OwnerCloseInsertionSite::SelfClosing { offset }
+                | OwnerCloseInsertionSite::Line { offset }
+                | OwnerCloseInsertionSite::Inline { offset } => *offset,
+            },
+        }
+    }
+
+    fn apply(self, body: &mut String, eol: &str) {
+        match self {
+            Self::IntoContainer {
+                range,
+                tag,
+                child,
+                indent,
+                child_indent,
+                site,
+            } => match site {
+                ContainerInsertionSite::SelfClosing { offset } => {
+                    let opening = body[range.start..offset].trim_end().to_string();
+                    body.replace_range(
+                        range,
+                        &format!("{opening}>{eol}{child_indent}{child}{eol}{indent}</{tag}>"),
+                    );
+                }
+                ContainerInsertionSite::Line { offset } => {
+                    body.insert_str(offset, &format!("{child_indent}{child}{eol}"));
+                }
+                ContainerInsertionSite::Inline { offset } => {
+                    body.insert_str(offset, &format!("{eol}{child_indent}{child}{eol}{indent}"));
+                }
+            },
+            Self::AfterElement {
+                block,
+                indent,
+                site,
+            } => {
+                let block = block.render(eol);
+                match site {
+                    AdjacentInsertionSite::Line { offset } => {
+                        body.insert_str(offset, &format!("{block}{eol}"));
+                    }
+                    AdjacentInsertionSite::Inline { offset } => {
+                        body.insert_str(offset, &format!("{eol}{block}{eol}{indent}"));
+                    }
+                }
+            }
+            Self::BeforeElement {
+                block,
+                child_indent,
+                site,
+            } => {
+                let block = block.render(eol);
+                match site {
+                    AdjacentInsertionSite::Line { offset } => {
+                        body.insert_str(offset, &format!("{block}{eol}"));
+                    }
+                    AdjacentInsertionSite::Inline { offset } => {
+                        body.insert_str(offset, &format!("{eol}{block}{eol}{child_indent}"));
+                    }
+                }
+            }
+            Self::BeforeOwnerClose {
+                range,
+                tag,
+                block,
+                indent,
+                site,
+            } => {
+                let block = block.render(eol);
+                match site {
+                    OwnerCloseInsertionSite::SelfClosing { offset } => {
+                        let opening = body[range.start..offset].trim_end().to_string();
+                        body.replace_range(
+                            range,
+                            &format!("{opening}>{eol}{block}{eol}{indent}</{tag}>"),
+                        );
+                    }
+                    OwnerCloseInsertionSite::Line { offset } => {
+                        body.insert_str(offset, &format!("{block}{eol}"));
+                    }
+                    OwnerCloseInsertionSite::Inline { offset } => {
+                        body.insert_str(offset, &format!("{eol}{block}{eol}{indent}"));
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn emit_event_module(
     current: Option<&[u8]>,
     shape: &EventImplementationShape,
@@ -185,30 +375,34 @@ pub(crate) fn emit_event_module(
         return Err(invalid_source("canonical handler region is duplicated"));
     }
 
-    let insertion_offset = canonical_closes.first().copied();
-    let eol = insertion_offset
-        .map(|offset| local_line_ending(text, offset))
-        .transpose()?
-        .flatten();
+    let insertion_plan = canonical_closes.first().copied().map_or(
+        ModuleInsertionPlan::AppendRegion { offset: text.len() },
+        |marker_offset| ModuleInsertionPlan::ExistingRegion {
+            offset: line_start(text, marker_offset),
+        },
+    );
+    let eol = local_line_ending(text, insertion_plan.offset())?;
     let eol = resolve_observed_line_ending(&snapshot, eol)
         .map_err(|error| invalid_source(error.to_string()))?
         .as_str();
     let method = render_method(shape, eol);
     let mut body = text.to_string();
-    if let Some(offset) = insertion_offset {
-        let line_start = body[..offset].rfind('\n').map_or(0, |newline| newline + 1);
-        body.insert_str(line_start, &format!("{method}{eol}"));
-    } else {
-        if !body.is_empty() {
-            if !(body.ends_with('\n') || body.ends_with('\r')) {
+    match insertion_plan {
+        ModuleInsertionPlan::ExistingRegion { offset } => {
+            body.insert_str(offset, &format!("{method}{eol}"));
+        }
+        ModuleInsertionPlan::AppendRegion { .. } => {
+            if !body.is_empty() {
+                if !(body.ends_with('\n') || body.ends_with('\r')) {
+                    body.push_str(eol);
+                }
                 body.push_str(eol);
             }
-            body.push_str(eol);
+            body.push_str(&format!(
+                "#Область {}{eol}{eol}{method}{eol}#КонецОбласти{eol}",
+                shape.region
+            ));
         }
-        body.push_str(&format!(
-            "#Область {}{eol}{eol}{method}{eol}#КонецОбласти{eol}",
-            shape.region
-        ));
     }
     let reparsed = parse_bsl_syntax(&body);
     if !reparsed.errors().is_empty() {
@@ -248,7 +442,14 @@ pub(crate) fn patch_form_event(
         ));
     }
     let owner = resolve_form_owner(root, source, FORM_NS)?;
-    let eol = local_line_ending(text, owner.range().start)?
+    let insertion_plan = if shape.owner
+        == crate::infrastructure::event_projection::EventImplementationOwner::Command
+    {
+        plan_command_action(text, owner, shape, call_type, FORM_NS)?
+    } else {
+        plan_property_event(text, owner, shape, call_type, FORM_NS)?
+    };
+    let eol = local_line_ending(text, insertion_plan.offset())?
         .or_else(|| match snapshot.line_endings() {
             LineEndingProfile::Uniform(value) => Some(value),
             LineEndingProfile::None => Some(LineEnding::Lf),
@@ -257,11 +458,7 @@ pub(crate) fn patch_form_event(
         .ok_or_else(|| invalid_source("Form.xml insertion EOL is ambiguous"))?
         .as_str();
     let mut body = text.to_string();
-    if shape.owner == crate::infrastructure::event_projection::EventImplementationOwner::Command {
-        patch_command_action(&mut body, owner, shape, call_type, eol, FORM_NS)?;
-    } else {
-        patch_property_event(&mut body, owner, shape, call_type, eol, FORM_NS)?;
-    }
+    insertion_plan.apply(&mut body, eol);
     Document::parse(&body).map_err(|error| {
         EventPlanError::new(
             EventPlanErrorKind::Postcondition,
@@ -452,14 +649,13 @@ fn resolve_form_owner<'a, 'input>(
     Ok(current)
 }
 
-fn patch_property_event(
-    body: &mut String,
+fn plan_property_event(
+    body: &str,
     owner: Node<'_, '_>,
     shape: &EventImplementationShape,
     call_type: Option<FormCallType>,
-    eol: &str,
     namespace: &str,
-) -> Result<(), EventPlanError> {
+) -> Result<FormInsertionPlan, EventPlanError> {
     let events = exact_direct_children(owner, "Events", namespace)?;
     if events.len() > 1 {
         return Err(invalid_source("direct Events section is duplicated"));
@@ -487,15 +683,17 @@ fn patch_property_event(
             ));
         }
         let event_xml = property_event_xml(shape, call_type);
-        return insert_into_container(body, events.range(), "Events", &event_xml, eol);
+        return plan_into_container(body, events.range(), "Events", event_xml);
     }
     let indent = line_indent(body, owner.range().start);
     let section_indent = format!("{indent}\t");
     let event_indent = format!("{section_indent}\t");
     let event_xml = property_event_xml(shape, call_type);
-    let block = format!(
-        "{section_indent}<Events>{eol}{event_indent}{event_xml}{eol}{section_indent}</Events>"
-    );
+    let block = FormBlock::EventsSection {
+        section_indent: section_indent.clone(),
+        event_indent,
+        event_xml,
+    };
     let owner_tag = owner.tag_name().name();
     if owner == owner.document().root_element() {
         let auto = exact_direct_children(owner, "AutoCommandBar", namespace)?;
@@ -503,8 +701,7 @@ fn patch_property_event(
             return Err(invalid_source("root AutoCommandBar is duplicated"));
         }
         if let Some(auto) = auto.first() {
-            insert_after_element(body, auto.range(), &block, &indent, eol);
-            return Ok(());
+            return Ok(plan_after_element(body, auto.range(), block, indent));
         }
         for anchor in [
             "ChildItems",
@@ -518,8 +715,12 @@ fn patch_property_event(
                 return Err(invalid_source(format!("root `{anchor}` is duplicated")));
             }
             if let Some(node) = nodes.first() {
-                insert_before_element(body, node.range().start, &block, &section_indent, eol);
-                return Ok(());
+                return Ok(plan_before_element(
+                    body,
+                    node.range().start,
+                    block,
+                    section_indent,
+                ));
             }
         }
     } else if matches!(owner_tag, "Table" | "Pages") {
@@ -528,27 +729,24 @@ fn patch_property_event(
             return Err(invalid_source("owner ChildItems section is duplicated"));
         }
         if let Some(child_items) = child_items.first() {
-            insert_before_element(
+            return Ok(plan_before_element(
                 body,
                 child_items.range().start,
-                &block,
-                &section_indent,
-                eol,
-            );
-            return Ok(());
+                block,
+                section_indent,
+            ));
         }
     }
-    insert_before_owner_close(body, owner.range(), owner_tag, &block, &indent, eol)
+    plan_before_owner_close(body, owner.range(), owner_tag, block, indent)
 }
 
-fn patch_command_action(
-    body: &mut String,
+fn plan_command_action(
+    body: &str,
     owner: Node<'_, '_>,
     shape: &EventImplementationShape,
     call_type: Option<FormCallType>,
-    eol: &str,
     namespace: &str,
-) -> Result<(), EventPlanError> {
+) -> Result<FormInsertionPlan, EventPlanError> {
     let actions = exact_direct_children(owner, "Action", namespace)?;
     if !actions.is_empty() {
         return Err(invalid_source(
@@ -564,6 +762,7 @@ fn patch_command_action(
         "{child_indent}<Action{call_type}>{}</Action>",
         escape_xml(&shape.handler)
     );
+    let block = FormBlock::Literal(action);
     let following_properties = [
         "Shortcut",
         "Representation",
@@ -580,10 +779,14 @@ fn patch_command_action(
             && following_properties.contains(&child.tag_name().name())
     });
     if let Some(child) = following {
-        insert_before_element(body, child.range().start, &action, &child_indent, eol);
-        return Ok(());
+        return Ok(plan_before_element(
+            body,
+            child.range().start,
+            block,
+            child_indent,
+        ));
     }
-    insert_before_owner_close(body, owner.range(), "Command", &action, &indent, eol)
+    plan_before_owner_close(body, owner.range(), "Command", block, indent)
 }
 
 fn property_event_xml(shape: &EventImplementationShape, call_type: Option<FormCallType>) -> String {
@@ -597,99 +800,124 @@ fn property_event_xml(shape: &EventImplementationShape, call_type: Option<FormCa
     )
 }
 
-fn insert_into_container(
-    body: &mut String,
+fn plan_into_container(
+    body: &str,
     range: Range<usize>,
     tag: &str,
-    child: &str,
-    eol: &str,
-) -> Result<(), EventPlanError> {
+    child: String,
+) -> Result<FormInsertionPlan, EventPlanError> {
     let section = &body[range.clone()];
     let indent = line_indent(body, range.start);
     let child_indent = format!("{indent}\t");
-    if section.trim_end().ends_with("/>") {
-        let close = section
+    let site = if section.trim_end().ends_with("/>") {
+        let relative = section
             .rfind("/>")
             .ok_or_else(|| invalid_source(format!("self-closing `{tag}` has no terminator")))?;
-        let opening = section[..close].trim_end();
-        body.replace_range(
-            range,
-            &format!("{opening}>{eol}{child_indent}{child}{eol}{indent}</{tag}>"),
-        );
-        return Ok(());
-    }
-    let close_tag = format!("</{tag}>");
-    let relative = section
-        .rfind(&close_tag)
-        .ok_or_else(|| invalid_source(format!("`{tag}` has no closing tag")))?;
-    let close = range.start + relative;
-    let start = line_start(body, close);
-    body.insert_str(start, &format!("{child_indent}{child}{eol}"));
-    Ok(())
+        ContainerInsertionSite::SelfClosing {
+            offset: range.start + relative,
+        }
+    } else {
+        let close_tag = format!("</{tag}>");
+        let relative = section
+            .rfind(&close_tag)
+            .ok_or_else(|| invalid_source(format!("`{tag}` has no closing tag")))?;
+        let close = range.start + relative;
+        let start = line_start(body, close);
+        if start >= range.start && body[start..close].trim().is_empty() {
+            ContainerInsertionSite::Line { offset: start }
+        } else {
+            ContainerInsertionSite::Inline { offset: close }
+        }
+    };
+    Ok(FormInsertionPlan::IntoContainer {
+        range,
+        tag: tag.to_string(),
+        child,
+        indent,
+        child_indent,
+        site,
+    })
 }
 
-fn insert_after_element(
-    body: &mut String,
+fn plan_after_element(
+    body: &str,
     range: Range<usize>,
-    block: &str,
-    indent: &str,
-    eol: &str,
-) {
+    block: FormBlock,
+    indent: String,
+) -> FormInsertionPlan {
     let suffix = &body[range.end..];
-    if suffix.starts_with(eol) {
-        body.insert_str(range.end + eol.len(), &format!("{block}{eol}"));
+    let site = if suffix.starts_with("\r\n") {
+        AdjacentInsertionSite::Line {
+            offset: range.end + 2,
+        }
+    } else if suffix.starts_with('\n') {
+        AdjacentInsertionSite::Line {
+            offset: range.end + 1,
+        }
     } else {
-        body.insert_str(range.end, &format!("{eol}{block}{eol}{indent}"));
+        AdjacentInsertionSite::Inline { offset: range.end }
+    };
+    FormInsertionPlan::AfterElement {
+        block,
+        indent,
+        site,
     }
 }
 
-fn insert_before_element(
-    body: &mut String,
+fn plan_before_element(
+    body: &str,
     offset: usize,
-    block: &str,
-    child_indent: &str,
-    eol: &str,
-) {
+    block: FormBlock,
+    child_indent: String,
+) -> FormInsertionPlan {
     let start = line_start(body, offset);
-    if body[start..offset].trim().is_empty() {
-        body.insert_str(start, &format!("{block}{eol}"));
+    let site = if body[start..offset].trim().is_empty() {
+        AdjacentInsertionSite::Line { offset: start }
     } else {
-        body.insert_str(offset, &format!("{eol}{block}{eol}{child_indent}"));
+        AdjacentInsertionSite::Inline { offset }
+    };
+    FormInsertionPlan::BeforeElement {
+        block,
+        child_indent,
+        site,
     }
 }
 
-fn insert_before_owner_close(
-    body: &mut String,
+fn plan_before_owner_close(
+    body: &str,
     range: Range<usize>,
     tag: &str,
-    block: &str,
-    indent: &str,
-    eol: &str,
-) -> Result<(), EventPlanError> {
+    block: FormBlock,
+    indent: String,
+) -> Result<FormInsertionPlan, EventPlanError> {
     let owner = &body[range.clone()];
-    if owner.trim_end().ends_with("/>") {
-        let close = owner
+    let site = if owner.trim_end().ends_with("/>") {
+        let relative = owner
             .rfind("/>")
             .ok_or_else(|| invalid_source("self-closing owner has no terminator"))?;
-        let opening = owner[..close].trim_end();
-        body.replace_range(
-            range,
-            &format!("{opening}>{eol}{block}{eol}{indent}</{tag}>"),
-        );
-        return Ok(());
-    }
-    let close_tag = format!("</{tag}>");
-    let relative = owner
-        .rfind(&close_tag)
-        .ok_or_else(|| invalid_source("form owner has no closing tag"))?;
-    let close = range.start + relative;
-    let start = line_start(body, close);
-    if body[start..close].trim().is_empty() {
-        body.insert_str(start, &format!("{block}{eol}"));
+        OwnerCloseInsertionSite::SelfClosing {
+            offset: range.start + relative,
+        }
     } else {
-        body.insert_str(close, &format!("{eol}{block}{eol}{indent}"));
-    }
-    Ok(())
+        let close_tag = format!("</{tag}>");
+        let relative = owner
+            .rfind(&close_tag)
+            .ok_or_else(|| invalid_source("form owner has no closing tag"))?;
+        let close = range.start + relative;
+        let start = line_start(body, close);
+        if start >= range.start && body[start..close].trim().is_empty() {
+            OwnerCloseInsertionSite::Line { offset: start }
+        } else {
+            OwnerCloseInsertionSite::Inline { offset: close }
+        }
+    };
+    Ok(FormInsertionPlan::BeforeOwnerClose {
+        range,
+        tag: tag.to_string(),
+        block,
+        indent,
+        site,
+    })
 }
 
 fn line_start(text: &str, offset: usize) -> usize {
@@ -1410,6 +1638,34 @@ mod tests {
     }
 
     #[test]
+    fn module_emitter_uses_the_terminal_site_in_mixed_sources_and_rejects_an_ambiguous_site() {
+        let shape = shape(
+            EventImplementationOwner::Form,
+            "ПриОткрытии",
+            "Процедура ПриОткрытии(Отказ)",
+        );
+        let unambiguous_terminal = "// preserved CRLF\r\n// preserved LF\n// terminal";
+        let emitted = String::from_utf8(
+            emit_event_module(Some(unambiguous_terminal.as_bytes()), &shape)
+                .expect("the terminal insertion site has an unambiguous LF profile"),
+        )
+        .unwrap();
+        assert!(emitted.starts_with(unambiguous_terminal));
+        assert!(emitted.contains("// terminal\n\n#Область ОбработчикиСобытийФормы\n\n&НаКлиенте\n"));
+
+        let ambiguous_region = concat!(
+            "// preserved CRLF\r\n",
+            "#Область ОбработчикиСобытийФормы\n",
+            "// previous LF\n",
+            "#КонецОбласти\r\n",
+            "// tail CRLF\r\n"
+        );
+        let error = emit_event_module(Some(ambiguous_region.as_bytes()), &shape)
+            .expect_err("different EOLs adjacent to the real region site are ambiguous");
+        assert_eq!(error.kind(), EventPlanErrorKind::InvalidSource);
+    }
+
+    #[test]
     fn direct_form_event_patch_changes_only_the_root_owner_range() {
         let before = concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
@@ -1434,6 +1690,55 @@ mod tests {
             "\r\n\t<Events>\r\n\t\t<Event name=\"OnOpen\">ПриОткрытии</Event>\r\n\t</Events>\r\n"
         ));
         assert!(text.ends_with("\t<ChildItems/>\r\n</Form>"));
+    }
+
+    #[test]
+    fn form_patcher_uses_the_actual_site_in_mixed_sources_and_rejects_an_ambiguous_site() {
+        let unambiguous_site = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
+            "\t<AutoCommandBar name=\"Bar\" id=\"-1\"/>\n",
+            "\t<ChildItems/>\n",
+            "</Form>\n"
+        );
+        let patched = String::from_utf8(
+            patch_form_event(
+                unambiguous_site.as_bytes(),
+                &form_source(),
+                &shape(
+                    EventImplementationOwner::Form,
+                    "ПриОткрытии",
+                    "Процедура ПриОткрытии(Отказ)",
+                ),
+                None,
+            )
+            .expect("the actual insertion site is locally LF even though the owner start is not"),
+        )
+        .unwrap();
+        assert!(patched.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<Form"));
+        assert!(patched.contains(
+            "\t<AutoCommandBar name=\"Bar\" id=\"-1\"/>\n\t<Events>\n\t\t<Event name=\"OnOpen\">ПриОткрытии</Event>\n\t</Events>\n"
+        ));
+
+        let ambiguous_site = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\r\n",
+            "\t<AutoCommandBar name=\"Bar\" id=\"-1\"/>\n",
+            "\t<ChildItems/>\r\n",
+            "</Form>\r\n"
+        );
+        let error = patch_form_event(
+            ambiguous_site.as_bytes(),
+            &form_source(),
+            &shape(
+                EventImplementationOwner::Form,
+                "ПриОткрытии",
+                "Процедура ПриОткрытии(Отказ)",
+            ),
+            None,
+        )
+        .expect_err("different EOLs adjacent to the real insertion site are ambiguous");
+        assert_eq!(error.kind(), EventPlanErrorKind::InvalidSource);
     }
 
     #[test]
@@ -1801,6 +2106,143 @@ mod tests {
             .join("Catalogs/Products/Forms/Main/Ext/Form/Module.bsl")
             .exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn staged_planner_extends_compact_existing_events_inside_root_and_arbitrary_nested_owners() {
+        struct Case {
+            name: &'static str,
+            form: &'static str,
+            target: &'static str,
+            owner_marker: &'static str,
+            owner_close: &'static str,
+            owner_name: Option<&'static str>,
+            existing_event: &'static str,
+            target_event: &'static str,
+            handler: &'static str,
+        }
+
+        let cases = [
+            Case {
+                name: "compact-root-events",
+                form: concat!(
+                    "\u{feff}<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
+                    "\t<AutoCommandBar name=\"Bar\" id=\"-1\"/>\n",
+                    "\t<Events><Event name=\"OnClose\">ExistingClose</Event></Events>\n",
+                    "\t<ChildItems/>\n",
+                    "\t<Commands/>\n",
+                    "</Form>"
+                ),
+                target: "main:Catalog.Products.Form.Main.Event.OnOpen",
+                owner_marker: "<Form ",
+                owner_close: "</Form>",
+                owner_name: None,
+                existing_event: "OnClose",
+                target_event: "OnOpen",
+                handler: "ПриОткрытии",
+            },
+            Case {
+                name: "compact-arbitrary-nested-events",
+                form: concat!(
+                    "\u{feff}<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
+                    "\t<AutoCommandBar name=\"Bar\" id=\"-1\"/>\n",
+                    "\t<ChildItems>\n",
+                    "\t\t<UsualGroup name=\"Outer\" id=\"1\"><ChildItems><Table name=\"Goods\" id=\"2\"><Events><Event name=\"Selection\">ExistingSelection</Event></Events><ChildItems/></Table></ChildItems></UsualGroup>\n",
+                    "\t</ChildItems>\n",
+                    "\t<Commands/>\n",
+                    "</Form>"
+                ),
+                target: "main:Catalog.Products.Form.Main.Item.Outer.Item.Goods.Event.BeforeAddRow",
+                owner_marker: "<Table name=\"Goods\"",
+                owner_close: "</Table>",
+                owner_name: Some("Goods"),
+                existing_event: "Selection",
+                target_event: "BeforeAddRow",
+                handler: "GoodsПередНачаломДобавления",
+            },
+        ];
+
+        for case in cases {
+            let root = temp_root(case.name);
+            write_catalog_form_fixture(&root);
+            let form_path = root.join("Catalogs/Products/Forms/Main/Ext/Form.xml");
+            std::fs::write(&form_path, case.form.as_bytes()).unwrap();
+            let (planned, _) = plan_event_implement_batch(
+                staged(&root),
+                "main",
+                SourceSetKind::Configuration,
+                PlatformProfile::v8_3_27(),
+                &[EventImplementArgs {
+                    at: QualifiedAddress::parse(case.target).unwrap(),
+                    call_type: None,
+                }],
+            )
+            .expect("compact direct Events must remain the exact projected owner");
+            let form_after = planned
+                .planned_changes()
+                .iter()
+                .find(|change| change.relative_path.ends_with("Form.xml"))
+                .and_then(|change| match &change.current {
+                    crate::infrastructure::native_operations::apply::StagedFileState::Bytes(
+                        bytes,
+                    ) => Some(String::from_utf8(bytes.clone()).unwrap()),
+                    _ => None,
+                })
+                .unwrap();
+
+            let document = Document::parse(form_after.trim_start_matches('\u{feff}')).unwrap();
+            let owner = match case.owner_name {
+                None => document.root_element(),
+                Some(name) => document
+                    .descendants()
+                    .find(|node| node.is_element() && node.attribute("name") == Some(name))
+                    .unwrap(),
+            };
+            let events = owner
+                .children()
+                .filter(Node::is_element)
+                .filter(|node| node.tag_name().name() == "Events")
+                .collect::<Vec<_>>();
+            assert_eq!(events.len(), 1, "{}", case.name);
+            let direct_names = events[0]
+                .children()
+                .filter(Node::is_element)
+                .filter(|node| node.tag_name().name() == "Event")
+                .filter_map(|node| node.attribute("name"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                direct_names,
+                vec![case.existing_event, case.target_event],
+                "{}",
+                case.name
+            );
+            assert!(form_after.contains(case.handler), "{}", case.name);
+
+            let before_start = case.form.find(case.owner_marker).unwrap();
+            let after_start = form_after.find(case.owner_marker).unwrap();
+            assert_eq!(
+                &case.form[..before_start],
+                &form_after[..after_start],
+                "bytes before the exact owner changed in {}",
+                case.name
+            );
+            let before_end = case.form[before_start..]
+                .find(case.owner_close)
+                .map(|relative| before_start + relative + case.owner_close.len())
+                .unwrap();
+            let after_end = form_after[after_start..]
+                .find(case.owner_close)
+                .map(|relative| after_start + relative + case.owner_close.len())
+                .unwrap();
+            assert_eq!(
+                &case.form[before_end..],
+                &form_after[after_end..],
+                "bytes after the exact owner changed in {}",
+                case.name
+            );
+            assert_eq!(std::fs::read_to_string(&form_path).unwrap(), case.form);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
