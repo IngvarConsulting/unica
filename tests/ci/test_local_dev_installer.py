@@ -110,6 +110,51 @@ class LocalDevInstallerTests(unittest.TestCase):
         self.assertIn("==> Unica local target: win-x64\n", completed.stdout)
         self.assertIn("--skip-build requested, but bundle is missing:", completed.stderr)
 
+    def test_installer_rejects_python_3_11(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_python = fake_bin / "python-3.11"
+            self.write_executable(
+                fake_python,
+                "#!/usr/bin/env bash\n"
+                "{ printf '%s\\n' 'import sys; sys.version_info = (3, 11)'; cat; } | "
+                f"{shlex.quote(sys.executable)} \"$@\"\n",
+            )
+            for name in (
+                "python3.12",
+                "python3.11",
+                "python3.10",
+                "python3",
+                "python",
+            ):
+                self.write_executable(fake_bin / name, "#!/usr/bin/env bash\nexit 1\n")
+            env = os.environ.copy()
+            env["PYTHON"] = str(fake_python)
+            env["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+
+            completed = subprocess.run(
+                [
+                    str(INSTALLER),
+                    "--build-dir",
+                    str(tmp_path / "build"),
+                    "--skip-build",
+                    "--skip-install",
+                    "--skip-verify",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 69, completed.stderr)
+        self.assertEqual(completed.stdout, "")
+        self.assertIn("Python >= 3.12 is required", completed.stderr)
+
     def test_installer_does_not_expose_external_bundle_override(self) -> None:
         installer = INSTALLER.read_text(encoding="utf-8")
         self.assertNotIn("UNICA_LOCAL_TOOL_BUNDLE", installer)
@@ -185,7 +230,7 @@ class LocalDevInstallerTests(unittest.TestCase):
     def test_windows_local_development_docs_name_shell_and_prerequisites(self) -> None:
         required = (
             "Git Bash",
-            "Python 3.10",
+            "Python 3.12",
             "MSVC",
             "Microsoft C++ Build Tools",
             "Windows SDK",

@@ -1045,7 +1045,7 @@ fn invalid_owner<T>(path: &Path, reason: &str) -> Result<T, PlatformXmlOwnerErro
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
@@ -1977,7 +1977,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_depth_source_set_owners_are_ambiguous_for_existing_and_new_outputs() {
+    pub(crate) fn equal_depth_source_set_owners_are_ambiguous_for_existing_and_new_outputs() {
         let source_set_orders = [
             "  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n  - name: configuration\n    type: CONFIGURATION\n    path: src\n",
             "  - name: configuration\n    type: CONFIGURATION\n    path: src\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n",

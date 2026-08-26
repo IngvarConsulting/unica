@@ -3105,7 +3105,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod role_edit_contract_tests {
+pub(crate) mod role_edit_contract_tests {
     use super::super::single_file_publisher::{with_publish_failpoints, PublishCheckpoint};
     use super::*;
 
@@ -3139,6 +3139,38 @@ mod role_edit_contract_tests {
             Err(_) => Vec::new(),
         };
         validate_role_rights_document(text, RoleValueScope::WrittenRights(&pairs))
+    }
+
+    fn assert_direct_role_value(
+        text: &str,
+        expected_object: &str,
+        expected_right: &str,
+        expected_value: bool,
+    ) {
+        let document = Document::parse(text).unwrap();
+        let object = direct_role_children(document.root_element(), "object", ROLE_RIGHTS_NAMESPACE)
+            .into_iter()
+            .find(|object| {
+                direct_role_children(*object, "name", ROLE_RIGHTS_NAMESPACE)
+                    .first()
+                    .is_some_and(|name| role_text_content(*name) == expected_object)
+            })
+            .unwrap_or_else(|| panic!("missing role object {expected_object}"));
+        let right = direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE)
+            .into_iter()
+            .find(|right| {
+                direct_role_children(*right, "name", ROLE_RIGHTS_NAMESPACE)
+                    .first()
+                    .is_some_and(|name| role_text_content(*name) == expected_right)
+            })
+            .unwrap_or_else(|| panic!("missing right {expected_right} for {expected_object}"));
+        let values = direct_role_children(right, "value", ROLE_RIGHTS_NAMESPACE);
+        assert_eq!(
+            values.len(),
+            1,
+            "{expected_object}/{expected_right}: {text}"
+        );
+        assert_eq!(role_direct_boolean(values[0]), Some(expected_value));
     }
 
     use crate::infrastructure::platform::testing::{
@@ -3832,6 +3864,12 @@ mod role_edit_contract_tests {
 
         assert!(effect.changed);
         assert!(updated.contains("<name>InputByString</name>"), "{updated}");
+        assert_direct_role_value(
+            &updated,
+            "ExternalDataSource.Remote.Table.Items",
+            "InputByString",
+            true,
+        );
         validate_every_role_value(&updated).unwrap();
     }
 
@@ -3871,6 +3909,13 @@ mod role_edit_contract_tests {
         let updated = fs::read_to_string(&rights).unwrap();
         assert!(updated.contains("<name>ExternalDataSource.Remote</name>"));
         assert!(updated.contains("<name>ExternalDataSource.Remote.Table.Items.Field.Code</name>"));
+        assert_direct_role_value(&updated, "ExternalDataSource.Remote", "Use", true);
+        assert_direct_role_value(
+            &updated,
+            "ExternalDataSource.Remote.Table.Items.Field.Code",
+            "Edit",
+            true,
+        );
         validate_every_role_value(&updated).unwrap();
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
@@ -4005,7 +4050,9 @@ mod role_edit_contract_tests {
     }
 
     #[test]
-    fn role_edit_without_vendor_support_is_logically_addressed_and_idempotent() {
+    pub(crate) fn role_edit_without_vendor_support_is_logically_addressed_and_preserves_identity() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let (context, args, rights) = fixture("roundtrip");
         assert!(
             !context
@@ -4043,6 +4090,7 @@ mod role_edit_contract_tests {
         assert_ne!(after, before);
         assert!(after.starts_with(&[0xEF, 0xBB, 0xBF]));
         assert!(!String::from_utf8_lossy(&after).contains("DataProcessor.Worker"));
+        let identity = file_identity_for_test(&rights).unwrap();
 
         let repeated = apply_edit_with_data(&args, &context);
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome);
@@ -4050,6 +4098,7 @@ mod role_edit_contract_tests {
         assert!(repeated.recorded_cache.is_none());
         assert!(!repeated.data.unwrap().changed);
         assert_eq!(fs::read(&rights).unwrap(), after);
+        assert_eq!(file_identity_for_test(&rights).unwrap(), identity);
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
@@ -4082,7 +4131,7 @@ mod role_edit_contract_tests {
     }
 
     #[test]
-    fn rights_drift_in_the_staging_window_is_classified_as_concurrent() {
+    pub(crate) fn rights_drift_in_the_staging_window_is_classified_as_concurrent() {
         let (context, args, rights) = fixture("staging-byte-drift");
         let changed_rights = rights.clone();
         let changed = with_role_edit_after_rights_reread_hook(
@@ -4506,7 +4555,7 @@ mod role_edit_contract_tests {
 }
 
 #[cfg(test)]
-mod role_info_typed_result_tests {
+pub(super) mod role_info_typed_result_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -4626,7 +4675,7 @@ mod role_info_typed_result_tests {
     }
 
     #[test]
-    fn role_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn role_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = addressable_workspace("bridge");
 
         let physical = analyze_role_info(
@@ -4705,7 +4754,7 @@ mod role_info_typed_result_tests {
     }
 
     #[test]
-    fn role_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn role_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = addressable_workspace("bridge-validate");
 
         let physical = validate_role(
@@ -4730,7 +4779,7 @@ mod role_info_typed_result_tests {
 }
 
 #[cfg(test)]
-mod role_compile_contract_tests {
+pub(crate) mod role_compile_contract_tests {
     use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
     use super::super::single_file_publisher::with_before_commit_hook;
     use super::*;
@@ -4993,7 +5042,7 @@ mod role_compile_contract_tests {
     }
 
     #[test]
-    fn role_compile_rolls_back_if_supported_format_owner_appears_during_publication() {
+    pub(crate) fn role_compile_rolls_back_if_supported_format_owner_appears_during_publication() {
         let workspace = temp_root("supported-owner-appears-during-publication");
         let source = temp_root("detached-supported-owner-appears-during-publication");
         fs::create_dir_all(&source).unwrap();

@@ -26,7 +26,7 @@ class AttributionTests(unittest.TestCase):
         plugin = root / "plugins" / "unica"
         (plugin / ".codex-plugin").mkdir(parents=True)
         (plugin / "third-party").mkdir()
-        (root / "spec" / "provenance").mkdir(parents=True)
+        (root / "docs" / "provenance").mkdir(parents=True)
         (plugin / ".codex-plugin" / "plugin.json").write_text(
             json.dumps(
                 {
@@ -65,7 +65,7 @@ class AttributionTests(unittest.TestCase):
         (plugin / "third-party" / "manifest.json").write_text(
             json.dumps({"internalAdapters": []}), encoding="utf-8"
         )
-        (root / "spec" / "provenance" / "skill-upstreams.json").write_text(
+        (root / "docs" / "provenance" / "skill-upstreams.json").write_text(
             json.dumps({"upstreams": []}), encoding="utf-8"
         )
         (plugin / "LICENSE").write_text("license", encoding="utf-8")

@@ -154,6 +154,13 @@ def runtime_manifest(binary: bytes = b"multidist") -> dict:
 
 
 class BuildUnicaToolsTests(unittest.TestCase):
+    def test_main_requires_python_3_12(self) -> None:
+        module = load_build_module()
+
+        with patch.object(module.sys, "version_info", (3, 11)):
+            with self.assertRaisesRegex(SystemExit, "requires Python >= 3.12"):
+                module.main()
+
     def test_conflicting_metadata_for_one_artifact_name_fails_closed(self) -> None:
         module = load_build_module()
         assets: dict[str, dict] = {}

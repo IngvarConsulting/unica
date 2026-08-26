@@ -10647,7 +10647,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
     use super::super::single_file_publisher::{
         with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
@@ -10767,7 +10767,7 @@ mod tests {
     }
 
     #[test]
-    fn dcs_edit_preserves_a_concurrent_replacement_instead_of_overwriting_it() {
+    pub(crate) fn dcs_edit_preserves_a_concurrent_replacement_instead_of_overwriting_it() {
         let context = temp_context("dcs-edit-concurrent-replacement");
         let template_path = context.cwd.join("Template.xml");
         fs::write(&template_path, exact_dcs_bytes(base_dcs_xml())).unwrap();
@@ -10919,7 +10919,7 @@ mod tests {
     }
 
     #[test]
-    fn dcs_compile_rolls_back_if_format_owner_changes_during_publication() {
+    pub(crate) fn dcs_compile_rolls_back_if_format_owner_changes_during_publication() {
         let context = temp_context("dcs-compile-format-owner-race");
         let source = context.cwd.join("src");
         let output = source.join("Templates/Guarded/Ext/Template.xml");
@@ -12715,11 +12715,14 @@ mod tests {
     }
 
     #[test]
-    fn native_dcs_edit_noop_leaves_file_untouched() {
+    pub(crate) fn native_dcs_edit_noop_leaves_file_bytes_and_identity_untouched() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("dcs-edit-noop");
         let template_path = context.cwd.join("Template.xml");
         fs::write(&template_path, base_dcs_xml()).unwrap();
         let before = fs::read(&template_path).unwrap();
+        let identity = file_identity_for_test(&template_path).unwrap();
 
         let mut args = Map::new();
         args.insert("TemplatePath".to_string(), json!("Template.xml"));
@@ -12738,6 +12741,7 @@ mod tests {
             data.items
         );
         assert_eq!(fs::read(&template_path).unwrap(), before);
+        assert_eq!(file_identity_for_test(&template_path).unwrap(), identity);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }

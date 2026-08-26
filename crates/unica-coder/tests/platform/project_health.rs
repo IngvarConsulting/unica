@@ -718,6 +718,62 @@ fn project_health_full_portable_repository_is_ready() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// Registry-facing positive/negative matrix for every clause that contributes
+/// to portable repository readiness.  Keeping the failure cases beside the
+/// real public `project.status` fixtures prevents the happy path from being
+/// mistaken for proof that each repository prerequisite closes readiness.
+#[test]
+fn portable_git_readiness_contract_is_a_closed_positive_and_negative_matrix() {
+    project_health_full_portable_repository_is_ready();
+    project_health_platform_xml_resource_roles_are_exact();
+    project_health_rejects_cross_kind_staged_config_dump_descriptors();
+    project_health_reports_index_eol_even_when_text_policy_is_missing();
+    project_health_reports_working_eol_even_when_text_policy_is_local_only();
+    project_health_keeps_lfs_errors_scoped_to_the_source_set();
+}
+
+#[test]
+fn project_health_platform_xml_resource_roles_are_exact() {
+    let root = temp_root("platform-resource-roles");
+    git(&root, &["init"]);
+    create_platform_workspace(&root, "src");
+    fs::create_dir_all(root.join("src/XDTOPackages/Sales/Ext")).unwrap();
+    fs::create_dir_all(root.join("src/Templates/Blob/Ext")).unwrap();
+    fs::write(root.join("src/XDTOPackages/Sales/Ext/Package.bin"), "text\n").unwrap();
+    fs::write(root.join("src/Templates/Blob/Ext/Template.bin"), [0_u8, 1, 2]).unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitattributes"),
+        "*.xml text eol=lf\n*.bsl text eol=lf\n*.bin -text\nXDTOPackages/**/Ext/Package.bin text eol=lf\n",
+    )
+    .unwrap();
+    git(&root, &["add", "."]);
+
+    let result = status(&root);
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_eq!(data["repositoryReady"], false, "{data}");
+    assert!(data["diagnostics"].as_array().is_some_and(|items| items.iter().any(|item| {
+        item["code"] == "git.text_resource_marked_binary"
+            && item["paths"] == serde_json::json!(["src/XDTOPackages/Sales/Ext/Package.bin"])
+    })), "{data}");
+
+    fs::write(
+        root.join(".gitattributes"),
+        "*.xml text eol=lf\n*.bsl text eol=lf\n*.bin -text\n**/XDTOPackages/**/Ext/Package.bin text eol=lf\n",
+    )
+    .unwrap();
+    git(&root, &["add", ".gitattributes"]);
+    let corrected = status(&root);
+    assert!(corrected.ok, "{:?}", corrected.errors);
+    assert_eq!(corrected.data.unwrap()["repositoryReady"], true);
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn project_health_mixed_platform_and_nested_edt_publish_profile_specific_checks() {
     let root = temp_root("mixed-platform-edt");

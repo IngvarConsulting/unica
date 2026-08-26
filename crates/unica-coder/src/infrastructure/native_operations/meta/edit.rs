@@ -5088,7 +5088,7 @@ fn apply_typed_event_subscription_source(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::domain::metadata::{
         DateFractions, MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
@@ -8654,7 +8654,9 @@ mod tests {
     }
 
     #[test]
-    fn typed_exact_noop_form_update_has_no_resource_mutation_or_event() {
+    pub(crate) fn typed_exact_noop_form_update_preserves_resource_bytes_and_identities() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let root = std::env::temp_dir().join(format!(
             "unica-meta-edit-form-noop-{}",
             uuid::Uuid::new_v4()
@@ -8679,6 +8681,10 @@ mod tests {
             minimal_typed_form_content("Document", "Order").as_bytes(),
         )
         .unwrap();
+        let child_before = std::fs::read(&child_descriptor).unwrap();
+        let content_before = std::fs::read(&form_content).unwrap();
+        let child_identity = file_identity_for_test(&child_descriptor).unwrap();
+        let content_identity = file_identity_for_test(&form_content).unwrap();
         let operation = MetaEditOperation::update(
             MetaCollection::Forms,
             None,
@@ -8704,6 +8710,16 @@ mod tests {
 
         assert!(resources.file_mutations.is_empty());
         assert!(resources.publication_plan.is_empty());
+        assert_eq!(std::fs::read(&child_descriptor).unwrap(), child_before);
+        assert_eq!(std::fs::read(&form_content).unwrap(), content_before);
+        assert_eq!(
+            file_identity_for_test(&child_descriptor).unwrap(),
+            child_identity
+        );
+        assert_eq!(
+            file_identity_for_test(&form_content).unwrap(),
+            content_identity
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

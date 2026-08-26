@@ -10822,7 +10822,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::domain::cancellation::CancellationToken;
@@ -11772,7 +11772,7 @@ mod tests {
     }
 
     #[test]
-    fn add_form_rejects_partial_existing_scaffold_before_any_mutation() {
+    pub(crate) fn add_form_rejects_partial_existing_scaffold_before_any_mutation() {
         let context = temp_context("add-partial-scaffold");
         let root_xml = context.cwd.join("src/Catalogs/Goods.xml");
         let descriptor = context.cwd.join("src/Catalogs/Goods/Forms/ListForm.xml");
@@ -11806,6 +11806,44 @@ mod tests {
         for (path, expected) in before {
             assert_eq!(fs::read(&path).ok(), expected, "{}", path.display());
         }
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    pub(crate) fn add_form_rejects_scaffold_member_created_after_planning() {
+        let context = temp_context("add-late-scaffold-member");
+        let root_xml = context.cwd.join("src/Catalogs/Goods.xml");
+        let descriptor = context.cwd.join("src/Catalogs/Goods/Forms/ListForm.xml");
+        let form_xml = context
+            .cwd
+            .join("src/Catalogs/Goods/Forms/ListForm/Ext/Form.xml");
+        let module = context
+            .cwd
+            .join("src/Catalogs/Goods/Forms/ListForm/Ext/Form/Module.bsl");
+        write_file(&root_xml, &empty_catalog_xml("\n", true));
+        let owner_before = fs::read(&root_xml).unwrap();
+        let concurrent = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"/></MetaDataObject>"#.to_vec();
+        let descriptor_for_hook = descriptor.clone();
+        let concurrent_for_hook = concurrent.clone();
+        let args = add_list_form_args(&root_xml, "ListForm");
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&descriptor_for_hook, concurrent_for_hook).unwrap(),
+            || add_form(&args, &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("created concurrently")
+                || outcome.errors.join("\n").contains("already exists")
+                || outcome.errors.join("\n").contains("preimage"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&root_xml).unwrap(), owner_before);
+        assert_eq!(fs::read(&descriptor).unwrap(), concurrent);
+        assert!(!form_xml.exists(), "{outcome:?}");
+        assert!(!module.exists(), "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -12031,7 +12069,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_form_rejects_payload_directory_that_appears_after_absent_probe() {
+    pub(crate) fn remove_form_rejects_payload_directory_that_appears_after_absent_probe() {
         let context = temp_context("remove-late-payload-directory");
         let root_xml = context.cwd.join("src/Catalogs/Goods.xml");
         let forms_dir = context.cwd.join("src/Catalogs/Goods/Forms");
@@ -13761,7 +13799,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_form_rejects_stale_preimage_without_overwriting_concurrent_change() {
+    pub(crate) fn edit_form_rejects_stale_preimage_without_overwriting_concurrent_change() {
         let context = temp_context("edit-stale-preimage");
         let form_path = context.cwd.join("Form.xml");
         let original = editable_contract_form(FORM_LOGFORM_NS, "");
@@ -17431,7 +17469,7 @@ mod tests {
     }
 
     #[test]
-    fn form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication() {
+    pub(crate) fn form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication() {
         let context = temp_context("compile-parent-owner-race");
         let source = context.cwd.join("src");
         let definition_path = context.cwd.join("form.json");
@@ -18866,7 +18904,9 @@ mod tests {
     }
 
     #[test]
-    fn edit_form_identical_event_is_byte_exact_idempotent_noop() {
+    pub(crate) fn edit_form_identical_event_is_byte_and_identity_exact_idempotent_noop() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("edit-event-idempotent");
         let form_path = context.cwd.join("Form.xml");
         let original = event_form_xml(
@@ -18880,6 +18920,7 @@ mod tests {
         .trim_end_matches("\r\n")
         .to_string();
         write_file(&form_path, &original);
+        let identity = file_identity_for_test(&form_path).unwrap();
         let args = Map::from_iter([
             (
                 "FormPath".to_string(),
@@ -18908,6 +18949,7 @@ mod tests {
             "{outcome:?}"
         );
         assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
+        assert_eq!(file_identity_for_test(&form_path).unwrap(), identity);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -19536,7 +19578,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod form_read_selector_bridge_tests {
+pub(super) mod form_read_selector_bridge_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19597,7 +19639,7 @@ mod form_read_selector_bridge_tests {
     }
 
     #[test]
-    fn form_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn form_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("info");
 
         let physical = analyze_form_info_with_data(
@@ -19646,7 +19688,7 @@ mod form_read_selector_bridge_tests {
     }
 
     #[test]
-    fn form_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn form_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("validate");
 
         let physical = validate_form(

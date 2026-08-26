@@ -637,8 +637,8 @@ def build_locked_bundle(
 
 
 def main() -> None:
-    if sys.version_info < (3, 10):
-        raise SystemExit("build-unica-tools.py requires Python >= 3.10 because rlm-tools-bsl requires >= 3.10")
+    if sys.version_info < (3, 12):
+        raise SystemExit("build-unica-tools.py requires Python >= 3.12")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True)
