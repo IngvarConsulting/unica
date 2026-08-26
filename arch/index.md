@@ -39,6 +39,7 @@
 | `DEC.2026-08-22.EVIDENCE-BOUNDED-PRESERVATION` | решение · product | active | да | Перенесённое обещание не шире исполняемого доказательства | [decisions/2026-08-22-evidence-bounded-preservation.md](decisions/2026-08-22-evidence-bounded-preservation.md) |
 | `DEC.2026-08-22.EVIDENCE-BOUNDED-SAFETY` | решение · product | active | да | Safety-правило не шире исполняемого доказательства | [decisions/2026-08-22-evidence-bounded-safety.md](decisions/2026-08-22-evidence-bounded-safety.md) |
 | `DEC.2026-08-22.LINEAR-PUBLICATION` | решение · product | active | да | Публикация выражается зависимостями одного конвейера | [decisions/2026-08-22-linear-publication.md](decisions/2026-08-22-linear-publication.md) |
+| `DEC.2026-08-22.PROVIDER-NOT-READY-VOCABULARY` | решение · product | active | да | Неготовность поставщика имеет общий словарь | [decisions/2026-08-22-provider-not-ready-vocabulary.md](decisions/2026-08-22-provider-not-ready-vocabulary.md) |
 | `INV.APP.CODE-DEFINITION-READINESS` | инвариант · product | active |  | Definition не публикует ложный типизированный успех | [invariants/INV.APP.CODE-DEFINITION-READINESS.md](invariants/INV.APP.CODE-DEFINITION-READINESS.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Оверлей конфигурации не меняет исходный снимок | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
 | `INV.APP.DEFERRED-MANIFEST` | инвариант · product | active |  | Большое чтение отвечает ограниченным манифестом | [invariants/INV.APP.DEFERRED-MANIFEST.md](invariants/INV.APP.DEFERRED-MANIFEST.md) |
@@ -263,6 +264,7 @@
 | `INV.WIRE.ONE-SERVER` | инвариант · product | active |  | Плагин объявляет один публичный MCP-сервер | [invariants/INV.WIRE.ONE-SERVER.md](invariants/INV.WIRE.ONE-SERVER.md) |
 | `INV.WIRE.PINNED-FALLBACK-VERSION` | инвариант · product | active |  | Legacy fallback закреплён на 2025-11-25 | [invariants/INV.WIRE.PINNED-FALLBACK-VERSION.md](invariants/INV.WIRE.PINNED-FALLBACK-VERSION.md) |
 | `INV.WIRE.PREVIEW-IS-MUTATION-ONLY` | инвариант · product | active |  | Предпросмотр принадлежит мутации | [invariants/INV.WIRE.PREVIEW-IS-MUTATION-ONLY.md](invariants/INV.WIRE.PREVIEW-IS-MUTATION-ONLY.md) |
+| `INV.WIRE.PROVIDER-NOT-READY-VOCABULARY` | инвариант · product | active |  | Search и diagnostics разделяют словарь неготовности | [invariants/INV.WIRE.PROVIDER-NOT-READY-VOCABULARY.md](invariants/INV.WIRE.PROVIDER-NOT-READY-VOCABULARY.md) |
 | `INV.WIRE.SDK-DEPENDENCY` | инвариант · process | active |  | Зависимость от SDK принадлежит только транспортному package | [invariants/INV.WIRE.SDK-DEPENDENCY.md](invariants/INV.WIRE.SDK-DEPENDENCY.md) |
 | `INV.WIRE.SDK-INITIALIZE` | инвариант · product | active |  | Legacy initialize публикует имя, версию сборки и согласованный протокол | [invariants/INV.WIRE.SDK-INITIALIZE.md](invariants/INV.WIRE.SDK-INITIALIZE.md) |
 | `INV.WIRE.SDK-MODULE-EXPORTS` | инвариант · product | active |  | Транспортный модуль сохраняет точный legacy Rust API | [invariants/INV.WIRE.SDK-MODULE-EXPORTS.md](invariants/INV.WIRE.SDK-MODULE-EXPORTS.md) |

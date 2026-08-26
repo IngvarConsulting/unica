@@ -459,9 +459,18 @@ pub fn code_search_output_schema() -> Value {
                                 ]
                             },
                             "retryable": {"type": "boolean"},
-                            "detailCode": {"type": "string", "minLength": 1}
+                            "detailCode": {"type": "string", "minLength": 1},
+                            "retryAfterMs": {"type": "integer", "minimum": 0},
+                            "state": {"type": "string", "minLength": 1}
                         },
-                        "required": ["code", "retryable"]
+                        "required": ["code", "retryable"],
+                        "allOf": [{
+                            "if": {
+                                "properties": {"code": {"const": "dependencyPending"}},
+                                "required": ["code"]
+                            },
+                            "then": {"required": ["detailCode", "state"]}
+                        }]
                     }
                 ]
             },
@@ -3662,6 +3671,7 @@ pub(crate) mod tests {
     fn code_search_schema_requires_a_machine_readable_section_termination() {
         let schema = code_search_output_schema();
         let section = &schema["properties"]["data"]["properties"]["sections"]["items"];
+        let termination = &section["properties"]["termination"]["oneOf"][1];
 
         assert!(section["required"]
             .as_array()
@@ -3682,6 +3692,30 @@ pub(crate) mod tests {
             section["properties"]["termination"]["oneOf"][1]["properties"]["retryable"]["type"],
             "boolean"
         );
+        assert_eq!(
+            section["properties"]["termination"]["oneOf"][1]["properties"]["retryAfterMs"]
+                ["minimum"],
+            0
+        );
+        assert_eq!(
+            section["properties"]["termination"]["oneOf"][1]["properties"]["state"]["minLength"],
+            1
+        );
+        let validator = jsonschema::validator_for(termination).unwrap();
+        assert!(!validator.is_valid(&json!({
+            "code": "dependencyPending",
+            "retryable": true
+        })));
+        assert!(validator.is_valid(&json!({
+            "code": "dependencyPending",
+            "retryable": true,
+            "detailCode": "buildingIndex",
+            "state": "building"
+        })));
+        assert!(validator.is_valid(&json!({
+            "code": "deadlineExceeded",
+            "retryable": true
+        })));
     }
 
     #[derive(Default)]
@@ -3795,6 +3829,7 @@ pub(crate) mod tests {
         calls: Arc<AtomicUsize>,
         observed_budget: Arc<Mutex<Option<Duration>>>,
         fail: bool,
+        pending: bool,
     }
 
     impl crate::domain::diagnostics::DiagnosticProvider for DiagnosticsBoundaryProvider {
@@ -3811,6 +3846,25 @@ pub(crate) mod tests {
         ) -> crate::domain::diagnostics::DiagnosticProviderOutcome {
             self.calls.fetch_add(1, Ordering::SeqCst);
             *self.observed_budget.lock().unwrap() = Some(deadline.remaining());
+            if self.pending {
+                return crate::domain::diagnostics::DiagnosticProviderOutcome {
+                    status: crate::domain::diagnostics::DiagnosticProviderStatus::Unavailable,
+                    complete: false,
+                    version: Some("test".to_string()),
+                    observations: Vec::new(),
+                    rules: Vec::new(),
+                    readiness: None,
+                    error: Some(
+                        crate::domain::diagnostics::DiagnosticError::dependency_pending(
+                            "index is building",
+                            "buildingIndex",
+                            Some(1500),
+                            Some("building"),
+                            Some("status"),
+                        ),
+                    ),
+                };
+            }
             if self.fail {
                 return crate::domain::diagnostics::DiagnosticProviderOutcome {
                     status: crate::domain::diagnostics::DiagnosticProviderStatus::Failed,
@@ -3823,6 +3877,7 @@ pub(crate) mod tests {
                         code: "provider_unavailable".to_string(),
                         message: "test provider is unavailable".to_string(),
                         retryable: true,
+                        guidance: None,
                     }),
                 };
             }
@@ -3852,6 +3907,7 @@ pub(crate) mod tests {
         provider_calls: Arc<AtomicUsize>,
         observed_budget: Arc<Mutex<Option<Duration>>>,
         fail_provider: bool,
+        pending_provider: bool,
     }
 
     impl ports::ApplicationPorts for DiagnosticsBoundaryPorts {
@@ -3886,6 +3942,7 @@ pub(crate) mod tests {
                     calls: Arc::clone(&self.provider_calls),
                     observed_budget: Arc::clone(&self.observed_budget),
                     fail: self.fail_provider,
+                    pending: self.pending_provider,
                 },
             )])
             .map_err(|error| error.to_string())
@@ -4043,6 +4100,34 @@ pub(crate) mod tests {
         assert!(result.stdout.is_none());
         assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 1);
         assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn diagnostics_application_boundary_keeps_dependency_pending_non_terminal() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts {
+            pending_provider: true,
+            ..Default::default()
+        });
+        let app = UnicaApplication::with_ports(ports);
+        let args = json!({"action": "analyze", "sourceSet": "main"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+
+        assert!(!result.ok);
+        assert_eq!(result.data.as_ref().unwrap()["state"], "pending");
+        assert!(result.summary.contains("not ready"), "{}", result.summary);
+        assert_eq!(
+            result.errors,
+            vec!["dependencyPending: diagnostic providers are not ready"]
+        );
+        let error = &result.data.as_ref().unwrap()["providers"][0]["error"];
+        assert_eq!(error["detailCode"], "buildingIndex");
+        assert_eq!(error["retryAfterMs"], 1500);
+        assert_eq!(error["state"], "building");
+        assert_eq!(error["nextAction"], "status");
     }
 
     #[test]
