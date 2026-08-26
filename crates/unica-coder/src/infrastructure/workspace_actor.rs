@@ -2870,7 +2870,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn capabilities_do_not_cross_distinct_actor_instances_with_equal_identity() {
+    pub(crate) fn capabilities_do_not_cross_distinct_actor_instances_with_equal_identity() {
         let root = temp_root("actor-instance-capability");
         let source = root.join("src");
         std::fs::create_dir_all(&source).unwrap();

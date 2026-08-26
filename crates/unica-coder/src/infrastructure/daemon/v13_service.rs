@@ -8,8 +8,6 @@ use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, InvocationFailure};
 use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder};
-use crate::infrastructure::v13_read::LogicalViewReadAuthority;
-use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -132,7 +130,7 @@ impl CanonicalV13ReadService {
         };
         let Some(source) = sources
             .into_iter()
-            .find(|source| source.name == address.source_set())
+            .find(|source| source.source_set_name() == address.source_set())
         else {
             return error_result(
                 Some(at.to_string()),
@@ -140,19 +138,10 @@ impl CanonicalV13ReadService {
                 "view source set was not admitted by the workspace actor",
             );
         };
-        let read = ProviderReadAuthority::new_with_revision_lease(
-            source.name,
-            source.identity,
-            source.kind,
-            source.retained_root,
-            source.revision,
-        );
-        let authority = LogicalViewReadAuthority::with_read_authority(
-            cancellation,
-            read,
-            source.platform_profile,
-            source.deadline,
-        );
+        let authority = match source.logical_view_read_authority(cancellation) {
+            Ok(authority) => authority,
+            Err(error) => return error_result(Some(at.to_string()), "provider_unavailable", error),
+        };
         ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors)).view(request)
     }
 
@@ -191,7 +180,7 @@ impl CanonicalV13ReadService {
             Ok(sources) => sources,
             Err(error) => return error_result(None, "provider_unavailable", error),
         };
-        let Some(deadline) = sources.first().map(|source| source.deadline) else {
+        let Some(deadline) = sources.first().map(|source| source.deadline()) else {
             return error_result(
                 None,
                 "provider_unavailable",
@@ -201,23 +190,16 @@ impl CanonicalV13ReadService {
         let authorities = sources
             .into_iter()
             .map(|source| {
-                (
-                    source.name.clone(),
-                    LogicalViewReadAuthority::with_read_authority(
-                        cancellation,
-                        ProviderReadAuthority::new_with_revision_lease(
-                            source.name,
-                            source.identity,
-                            source.kind,
-                            source.retained_root,
-                            source.revision,
-                        ),
-                        source.platform_profile,
-                        source.deadline,
-                    ),
-                )
+                let name = source.source_set_name().to_string();
+                source
+                    .logical_view_read_authority(cancellation)
+                    .map(|authority| (name, authority))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>();
+        let authorities = match authorities {
+            Ok(authorities) => authorities,
+            Err(error) => return error_result(None, "provider_unavailable", error),
+        };
         let find_sources = authorities
             .iter()
             .map(|(name, authority)| ActorFindSource::new(name, authority))

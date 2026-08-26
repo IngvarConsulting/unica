@@ -71,17 +71,59 @@ struct ActorReadSourceBinding {
 }
 
 #[allow(dead_code)]
-pub(crate) struct ActorReadSourceCapability {
-    pub(crate) name: String,
-    pub(crate) kind: SourceSetKind,
-    pub(crate) source_format: SourceFormat,
-    pub(crate) source_profile: SourceProfile,
-    pub(crate) platform_profile: crate::domain::platform_profile::PlatformProfile,
-    pub(crate) identity: String,
-    pub(crate) retained_root:
-        Arc<crate::infrastructure::platform::filesystem::RetainedDirectoryCapability>,
-    pub(crate) revision: crate::infrastructure::source_revision::RetainedRevisionLease,
-    pub(crate) deadline: ProviderDeadline,
+pub(super) struct ActorReadSourceCapability {
+    binding: ProviderRootBinding,
+    identity: String,
+    fence: WorkspaceLogicalReadFence,
+    deadline: ProviderDeadline,
+}
+
+#[allow(dead_code)]
+impl ActorReadSourceCapability {
+    pub(super) fn source_set_name(&self) -> &str {
+        self.binding.source_set_name()
+    }
+
+    const fn source_kind(&self) -> SourceSetKind {
+        self.binding.source_kind()
+    }
+
+    const fn source_format(&self) -> SourceFormat {
+        self.binding.source_format()
+    }
+
+    const fn source_profile(&self) -> SourceProfile {
+        self.binding.source_profile()
+    }
+
+    pub(super) const fn deadline(&self) -> ProviderDeadline {
+        self.deadline
+    }
+
+    pub(super) fn logical_view_read_authority<'a>(
+        &self,
+        cancellation: &'a CancellationToken,
+    ) -> Result<crate::infrastructure::v13_read::LogicalViewReadAuthority<'a>, String> {
+        let platform_profile = self.source_profile().platform_profile().ok_or_else(|| {
+            "actor-bound logical source has no supported platform profile".to_string()
+        })?;
+        let read =
+            crate::infrastructure::v13_read_port::ProviderReadAuthority::new_with_revision_lease(
+                self.source_set_name(),
+                self.identity.clone(),
+                self.source_kind(),
+                self.binding.retained_root(),
+                self.fence.revision(),
+            );
+        Ok(
+            crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority(
+                cancellation,
+                read,
+                platform_profile,
+                self.deadline,
+            ),
+        )
+    }
 }
 
 struct ActorLogicalReadSourceLease {
@@ -248,7 +290,7 @@ impl ActorBoundExecution {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn read_sources(&self) -> Result<Vec<ActorReadSourceCapability>, String> {
+    pub(super) fn read_sources(&self) -> Result<Vec<ActorReadSourceCapability>, String> {
         let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
             return Err("logical read sources are unavailable to a legacy invocation".to_string());
         };
@@ -257,23 +299,14 @@ impl ActorBoundExecution {
             .iter()
             .map(|source| {
                 self.invocation.actor.validate_binding(&source.binding)?;
-                let source_profile = source.binding.source_profile();
-                let platform_profile = source_profile.platform_profile().ok_or_else(|| {
-                    "actor-bound logical source has no supported platform profile".to_string()
-                })?;
                 Ok(ActorReadSourceCapability {
-                    name: source.binding.source_set_name().to_string(),
-                    kind: source.binding.source_kind(),
-                    source_format: source.binding.source_format(),
-                    source_profile,
-                    platform_profile,
+                    binding: source.binding.clone(),
                     identity: format!(
                         "{}:{}",
                         self.invocation.workspace_identity_hash.as_str(),
                         source.binding.source_set_name()
                     ),
-                    retained_root: source.binding.retained_root(),
-                    revision: source.fence.revision(),
+                    fence: source.fence.clone(),
                     deadline: lease.deadline,
                 })
             })
@@ -1564,6 +1597,104 @@ pub(crate) mod actor_capacity_tests {
     }
 
     #[test]
+    pub(crate) fn actor_read_source_capability_is_sealed_after_binding() {
+        let source = include_str!("server.rs");
+        let (_, after_declaration) = source
+            .split_once("pub(super) struct ActorReadSourceCapability {")
+            .expect("actor read capability declaration remains available to the witness");
+        let (body, _) = after_declaration
+            .split_once("\n}")
+            .expect("actor read capability declaration remains structurally bounded");
+        let exposed_fields = body
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("pub"))
+            .collect::<Vec<_>>();
+
+        assert!(
+            exposed_fields.is_empty(),
+            "post-binding actor capability exposes forgeable fields: {exposed_fields:?}"
+        );
+        assert!(
+            body.contains("binding: ProviderRootBinding"),
+            "capability detached the actor-issued provider binding"
+        );
+        assert!(
+            body.contains("fence: WorkspaceLogicalReadFence"),
+            "capability detached the actor-issued revision fence"
+        );
+        for detached_authority in [
+            "name:",
+            "kind:",
+            "source_format:",
+            "source_profile:",
+            "platform_profile:",
+            "retained_root:",
+            "revision:",
+        ] {
+            assert!(
+                !body.lines().any(|line| {
+                    line.trim()
+                        .trim_start_matches("pub(crate) ")
+                        .starts_with(detached_authority)
+                }),
+                "capability detached recombinable authority field `{detached_authority}`"
+            );
+        }
+    }
+
+    #[test]
+    pub(crate) fn actor_authenticated_source_architecture_names_complete_witnesses() {
+        fn front_matter_value<'a>(document: &'a str, key: &str) -> &'a str {
+            document
+                .lines()
+                .find_map(|line| line.strip_prefix(key))
+                .map(str::trim)
+                .unwrap_or_else(|| panic!("architecture record has no `{key}` field"))
+        }
+
+        let capability = include_str!(
+            "../../../../../arch/invariants/INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES.md"
+        );
+        assert_eq!(
+            front_matter_value(capability, "check:"),
+            "crates/unica-coder/src/infrastructure/daemon/server.rs::actor_authenticated_source_capability_contract_is_complete",
+            "capability invariant points at a witness that omits daemon no-substitution"
+        );
+
+        let decision = include_str!(
+            "../../../../../arch/decisions/2026-08-26-actor-authenticated-source-profile-slice.md"
+        );
+        assert_eq!(
+            front_matter_value(decision, "realized:"),
+            "crates/unica-coder/src/infrastructure/daemon/server.rs::actor_authenticated_source_profile_contract_is_complete"
+        );
+
+        let source = include_str!("server.rs");
+        let aggregate_declaration = [
+            "pub(crate) fn actor_authenticated_source_profile_contract_is_complete",
+            "()",
+        ]
+        .concat();
+        let (_, after_aggregate) = source
+            .split_once(&aggregate_declaration)
+            .expect("decision aggregate remains available to the architecture witness");
+        let (aggregate, _) = after_aggregate
+            .split_once("\n    }\n")
+            .expect("decision aggregate remains structurally bounded");
+        assert!(
+            aggregate.contains("actor_authenticated_source_capability_contract_is_complete();"),
+            "decision aggregate omits the complete actor capability witness"
+        );
+        assert!(
+            aggregate.contains(
+                "remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state();"
+            ),
+            "decision aggregate omits actor state-scope separation"
+        );
+    }
+
+    #[test]
     pub(crate) fn provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile() {
         let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
@@ -1620,10 +1751,15 @@ pub(crate) mod actor_capacity_tests {
             .unwrap();
         let capability = execution.read_sources().unwrap().remove(0);
 
-        assert_eq!(capability.name, binding.source_set_name());
-        assert_eq!(capability.kind, binding.source_kind());
-        assert_eq!(capability.source_format, binding.source_format());
-        assert_eq!(capability.source_profile, binding.source_profile());
+        assert_eq!(capability.source_set_name(), binding.source_set_name());
+        assert_eq!(capability.source_kind(), binding.source_kind());
+        assert_eq!(capability.source_format(), binding.source_format());
+        assert_eq!(capability.source_profile(), binding.source_profile());
+        assert_eq!(
+            capability.source_profile().platform_profile(),
+            binding.source_profile().platform_profile(),
+            "reader profile must be derived from the actor-issued source profile"
+        );
     }
 
     #[test]
@@ -1771,10 +1907,19 @@ pub(crate) mod actor_capacity_tests {
         crate::infrastructure::workspace_actor::tests::same_name_root_changed_format_or_platform_profile_rotates_actor();
         crate::infrastructure::workspace_actor::tests::workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots();
         crate::infrastructure::workspace_actor::tests::duplicate_physical_root_names_are_rejected_as_ambiguous();
-        provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile();
+        actor_authenticated_source_capability_contract_is_complete();
+        crate::infrastructure::workspace_actor::tests::remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state();
         subsequent_daemon_invocation_after_same_root_kind_change_gets_new_actor_identity();
         v13_daemon_rejects_unproved_edt_invalid_or_empty_platform_fallback();
         hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once();
+    }
+
+    #[test]
+    pub(crate) fn actor_authenticated_source_capability_contract_is_complete() {
+        actor_read_source_capability_is_sealed_after_binding();
+        provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile();
+        crate::infrastructure::workspace_actor::tests::capabilities_do_not_cross_distinct_actor_instances_with_equal_identity();
+        crate::infrastructure::workspace_actor::tests::workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication();
     }
 
     struct ManualInvocationClock(Mutex<Instant>);
@@ -1885,7 +2030,7 @@ pub(crate) mod actor_capacity_tests {
         let sources = execution.read_sources().unwrap();
         assert_eq!(sources.len(), 1);
         assert_eq!(
-            sources[0].deadline.remaining(),
+            sources[0].deadline().remaining(),
             LOGICAL_READ_OPERATION_BUDGET - Duration::from_secs(8),
             "the handoff window must not replenish or cap the logical-read deadline"
         );

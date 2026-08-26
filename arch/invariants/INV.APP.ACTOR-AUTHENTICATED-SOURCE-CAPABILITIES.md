@@ -3,7 +3,7 @@ id: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 status: active
 governs: product
 decision: DEC.2026-08-26.ACTOR-AUTHENTICATED-SOURCE-PROFILE-SLICE
-check: crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication
+check: crates/unica-coder/src/infrastructure/daemon/server.rs::actor_authenticated_source_capability_contract_is_complete
 scope: [app, platform, source]
 ---
 
