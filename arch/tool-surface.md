@@ -878,7 +878,7 @@
 | `operations` | array | да | — |
 | `sourceSet` | string | да | — |
 
-**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций, включая проверку единой связки `EventSubscription.Source`/`Event`/`Handler` через `editRelations.source` и `setProperties`, коллекцию `predefinedItems` в `add`, `update`, `remove` и boolean-свойство CommonModule `ClientOrdinaryApplication` (DEC.2026-08-22.COMMON-MODULE-ORDINARY-CLIENT) (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации шести вариантов typed-операций, включая проверку единой связки `EventSubscription.Source`/`Event`/`Handler` через `editRelations.source` и `setProperties`, коллекцию `predefinedItems` в `add`, `update`, `remove` и boolean-свойство CommonModule `ClientOrdinaryApplication` (DEC.2026-08-22.COMMON-MODULE-ORDINARY-CLIENT) (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
