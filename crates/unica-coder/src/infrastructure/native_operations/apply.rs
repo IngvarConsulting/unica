@@ -8,7 +8,7 @@ use crate::infrastructure::platform::filesystem::{
     FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_roots::GENERATED_DIR_NAME;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -312,15 +312,26 @@ impl ApplyStagedState {
 
     fn ensure_loaded(&mut self, relative: &Path) -> Result<usize, ApplyStagingError> {
         self.checkpoint("apply staged read")?;
-        if self.generated_subtree_forbidden
-            && relative
-                .components()
-                .any(|component| component.as_os_str() == GENERATED_DIR_NAME)
-        {
-            return Err(ApplyStagingError::new(
-                ApplyStagingErrorKind::ContainmentIdentity,
-                "source participant cannot address the generated .build subtree",
-            ));
+        if self.generated_subtree_forbidden {
+            for component in relative.components() {
+                let equivalent = self
+                    .root
+                    .child_names_equivalent(component.as_os_str(), OsStr::new(GENERATED_DIR_NAME))
+                    .map_err(|error| {
+                        ApplyStagingError::new(
+                            ApplyStagingErrorKind::ContainmentIdentity,
+                            format!(
+                                "generated source component identity cannot be proven: {error}"
+                            ),
+                        )
+                    })?;
+                if equivalent {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::ContainmentIdentity,
+                        "source participant cannot address the generated subtree",
+                    ));
+                }
+            }
         }
         if let Some(index) = self
             .entries
@@ -680,9 +691,13 @@ pub(crate) mod tests {
             .unwrap();
         let cache_participant = cache_participant_authority(&cache, authority.clone());
 
-        assert!(source
+        let error = source
             .close_with_workspace_cache_participant(foreign, &cache_participant)
-            .is_err());
+            .unwrap_err();
+        assert!(
+            !error.contains(&cache.display().to_string()),
+            "cache authority diagnostic exposed its absolute root: {error}"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

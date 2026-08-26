@@ -492,32 +492,7 @@ impl RetainedDirectoryCapability {
             return Ok(true);
         }
         let case_sensitive = filesystem_case_sensitive_for_directory(&self.retained.directory)?;
-        #[cfg(target_vendor = "apple")]
-        {
-            use objc2_core_foundation::{CFComparisonResult, CFString, CFStringCompareFlags};
-
-            let left = left.to_str().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "left child name is not valid Unicode",
-                )
-            })?;
-            let right = right.to_str().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "right child name is not valid Unicode",
-                )
-            })?;
-            let mut flags = CFStringCompareFlags::CompareNonliteral;
-            if !case_sensitive {
-                flags |= CFStringCompareFlags::CompareCaseInsensitive;
-            }
-            let left = CFString::from_str(left);
-            let right = CFString::from_str(right);
-            Ok(left.compare(Some(&right), flags) == CFComparisonResult::CompareEqualTo)
-        }
-        #[cfg(not(target_vendor = "apple"))]
-        host_path_components_equal(left, right, case_sensitive)
+        host_component_names_equivalent(left, right, case_sensitive)
     }
 
     pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
@@ -1171,6 +1146,50 @@ impl RetainedDirectoryCapability {
             identity,
         })
     }
+}
+
+/// Compares two path components using the native lookup identity for a proven
+/// filesystem case policy. Callers obtain that policy from a retained or
+/// canonical host directory; no consumer performs its own Unicode folding.
+#[cfg(target_vendor = "apple")]
+pub(crate) fn host_component_names_equivalent(
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
+    case_sensitive: bool,
+) -> io::Result<bool> {
+    use objc2_core_foundation::{CFComparisonResult, CFString, CFStringCompareFlags};
+
+    if left == right {
+        return Ok(true);
+    }
+    let left = left.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "left child name is not valid Unicode",
+        )
+    })?;
+    let right = right.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "right child name is not valid Unicode",
+        )
+    })?;
+    let mut flags = CFStringCompareFlags::CompareNonliteral;
+    if !case_sensitive {
+        flags |= CFStringCompareFlags::CompareCaseInsensitive;
+    }
+    let left = CFString::from_str(left);
+    let right = CFString::from_str(right);
+    Ok(left.compare(Some(&right), flags) == CFComparisonResult::CompareEqualTo)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+pub(crate) fn host_component_names_equivalent(
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
+    case_sensitive: bool,
+) -> io::Result<bool> {
+    host_path_components_equal(left, right, case_sensitive)
 }
 
 fn sync_renamed_regular_child(file: &fs::File) -> io::Result<()> {
@@ -4662,6 +4681,19 @@ pub(crate) fn host_directory_child_names_equal(
         (Err(error), _) | (_, Err(error)) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         (Err(error), _) | (_, Err(error)) => Err(error),
     }
+}
+
+/// Compares two path-component names using the lookup semantics of one
+/// existing host directory. This is the ambient-path counterpart of
+/// `RetainedDirectoryCapability::child_names_equivalent`.
+pub(crate) fn host_directory_component_names_equivalent(
+    parent_path: &Path,
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
+) -> io::Result<bool> {
+    let parent_path = fs::canonicalize(parent_path)?;
+    let case_sensitive = host_filesystem_case_sensitive(&parent_path)?;
+    host_directory_child_names_equal(&parent_path, left, right, case_sensitive)
 }
 
 pub(crate) fn host_directory_child_identity(

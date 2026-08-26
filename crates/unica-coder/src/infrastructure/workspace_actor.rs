@@ -19,8 +19,8 @@ use crate::infrastructure::platform::filesystem::{
     RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_revision::{
-    PreparedRevisionReconciliation, RetainedRevisionLease, SourceRevisionService,
-    WorkspaceStateScope,
+    PreparedRevisionReconciliation, RetainedRevisionError, RetainedRevisionErrorKind,
+    RetainedRevisionLease, SourceRevisionService, WorkspaceStateScope,
 };
 use crate::infrastructure::source_roots::{normalize_path_identity, GENERATED_DIR_NAME};
 use crate::infrastructure::workspace_index::{IndexRunner, WorkspaceIndexService};
@@ -431,9 +431,7 @@ impl ApplyAdmission {
                 self.deadline,
                 &self.cancellation,
             )
-            .map_err(|error| {
-                ApplyStagingError::new(ApplyStagingErrorKind::ConcurrentRevision, error)
-            })?;
+            .map_err(retained_revision_staging_error)?;
         let mut cache_state = ApplyStagedState::from_retained_root(
             Arc::clone(&self.workspace_cache.anchor),
             self.deadline,
@@ -547,19 +545,6 @@ impl<R> RetainedApplyFinalGate<'_, R> {
                 ApplyPublicationError::new(ApplyPublicationErrorKind::ContainmentIdentity, error)
             })?;
         self.checkpoint("prepared apply final gate")
-    }
-
-    pub(in crate::infrastructure) fn revision_error(
-        &self,
-        message: String,
-    ) -> ApplyPublicationError {
-        if self.cancellation.is_cancelled() {
-            ApplyPublicationError::new(ApplyPublicationErrorKind::Cancelled, message)
-        } else if self.deadline.remaining().is_zero() {
-            ApplyPublicationError::new(ApplyPublicationErrorKind::Deadline, message)
-        } else {
-            ApplyPublicationError::new(ApplyPublicationErrorKind::ConcurrentRevision, message)
-        }
     }
 }
 
@@ -1066,23 +1051,20 @@ impl<R> WorkspaceActor<R> {
                 ApplyPublicationError::new(
                     ApplyPublicationErrorKind::ContainmentIdentity,
                     format!(
-                        "workspace-cache retained authority changed before publication {}: {error}",
-                        prepared.workspace_cache.logical_root.display()
+                        "workspace-cache retained authority changed before publication: {error}"
                     ),
                 )
             })?;
         let _projected_cache_report = &prepared.projected_cache_report;
         prepared
             .revision_service
-            .confirm_retained_observation(
+            .confirm_retained_observation_typed(
                 &prepared.source_root,
                 &prepared.revision,
                 prepared.deadline,
                 &prepared.cancellation,
             )
-            .map_err(|error| {
-                classify_revision_wait(prepared.deadline, &prepared.cancellation, error)
-            })?;
+            .map_err(retained_revision_publication_error)?;
         if prepared.dry_run {
             prepared
                 .transaction
@@ -1090,15 +1072,13 @@ impl<R> WorkspaceActor<R> {
                 .map_err(apply_validation_publication_error)?;
             prepared
                 .revision_service
-                .confirm_retained_observation(
+                .confirm_retained_observation_typed(
                     &prepared.source_root,
                     &prepared.revision,
                     prepared.deadline,
                     &prepared.cancellation,
                 )
-                .map_err(|error| {
-                    classify_revision_wait(prepared.deadline, &prepared.cancellation, error)
-                })?;
+                .map_err(retained_revision_publication_error)?;
             #[cfg(test)]
             run_apply_dry_run_after_confirmation_hook();
             self.validate_binding(&binding).map_err(|error| {
@@ -1533,18 +1513,36 @@ fn classify_publication_wait(
     }
 }
 
-fn classify_revision_wait(
-    deadline: ProviderDeadline,
-    cancellation: &CancellationToken,
-    message: String,
+fn retained_revision_staging_error(error: RetainedRevisionError) -> ApplyStagingError {
+    let kind = match error.kind() {
+        RetainedRevisionErrorKind::Cancelled => ApplyStagingErrorKind::Cancelled,
+        RetainedRevisionErrorKind::Deadline => ApplyStagingErrorKind::Deadline,
+        RetainedRevisionErrorKind::ConcurrentRevision => ApplyStagingErrorKind::ConcurrentRevision,
+        RetainedRevisionErrorKind::ContainmentIdentity => {
+            ApplyStagingErrorKind::ContainmentIdentity
+        }
+        RetainedRevisionErrorKind::Provider => ApplyStagingErrorKind::UnsupportedProvider,
+        RetainedRevisionErrorKind::Invariant => ApplyStagingErrorKind::Invariant,
+    };
+    ApplyStagingError::new(kind, error.to_string())
+}
+
+pub(in crate::infrastructure) fn retained_revision_publication_error(
+    error: RetainedRevisionError,
 ) -> ApplyPublicationError {
-    if cancellation.is_cancelled() {
-        ApplyPublicationError::new(ApplyPublicationErrorKind::Cancelled, message)
-    } else if deadline.remaining().is_zero() {
-        ApplyPublicationError::new(ApplyPublicationErrorKind::Deadline, message)
-    } else {
-        ApplyPublicationError::new(ApplyPublicationErrorKind::ConcurrentRevision, message)
-    }
+    let kind = match error.kind() {
+        RetainedRevisionErrorKind::Cancelled => ApplyPublicationErrorKind::Cancelled,
+        RetainedRevisionErrorKind::Deadline => ApplyPublicationErrorKind::Deadline,
+        RetainedRevisionErrorKind::ConcurrentRevision => {
+            ApplyPublicationErrorKind::ConcurrentRevision
+        }
+        RetainedRevisionErrorKind::ContainmentIdentity => {
+            ApplyPublicationErrorKind::ContainmentIdentity
+        }
+        RetainedRevisionErrorKind::Provider => ApplyPublicationErrorKind::ProviderPostvalidation,
+        RetainedRevisionErrorKind::Invariant => ApplyPublicationErrorKind::Invariant,
+    };
+    ApplyPublicationError::new(kind, error.to_string())
 }
 
 fn apply_validation_publication_error(
@@ -3272,6 +3270,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn source_role_rejects_platform_equivalent_generated_components() {
+        let root = temp_root("platform-equivalent-generated-source");
+        std::fs::create_dir_all(&root).unwrap();
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        if crate::infrastructure::platform::filesystem::host_filesystem_case_sensitive(
+            &canonical_root,
+        )
+        .unwrap()
+        {
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        let actor_context = context(&root);
+        let identity =
+            WorkspaceIdentity::new(&actor_context, [("src", &root)], "test-provider").unwrap();
+        let actor = super::WorkspaceActor::new(identity, actor_context).unwrap();
+        let binding = actor.bind_provider_root("src", &root).unwrap();
+        let admitted = actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+
+        for target in [".BUILD/unica/forged.json", "Nested/.BUILD/forged.json"] {
+            let error = state
+                .create(target, b"forged".to_vec())
+                .expect_err("platform-equivalent generated component reached Source role");
+            assert_eq!(error.kind(), ApplyStagingErrorKind::ContainmentIdentity);
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn workspace_root_source_and_missing_cache_publish_through_disjoint_shared_anchor() {
         let root = temp_root("workspace-root-shared-cache-anchor");
         std::fs::create_dir_all(&root).unwrap();
@@ -3582,6 +3618,74 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn retained_apply_late_deadline_after_all_writes_rolls_back_all_participants() {
+        use crate::infrastructure::native_operations::compile_transaction::RetainedApplyObservedEvent;
+
+        let fixture = actor_fixture("retained-final-deadline", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let mut prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(500));
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            || std::thread::sleep(Duration::from_millis(550)),
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Deadline);
+        let observed = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        assert!(
+            observed
+                .iter()
+                .any(|event| matches!(event, RetainedApplyObservedEvent::StateMarker(_))),
+            "deadline fired before all participant writes: {observed:?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .any(|event| matches!(event, RetainedApplyObservedEvent::Rollback(_))),
+            "late deadline did not enter rollback: {observed:?}"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
     fn retained_apply_observer_sees_exact_reverse_rollback_after_state_marker() {
         use crate::infrastructure::native_operations::compile_transaction::{
             RetainedApplyFailpoint, RetainedApplyObservedEvent,
@@ -3659,8 +3763,12 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn retained_apply_transaction_foundation_contract_is_complete() {
         retained_apply_closed_participant_contract_is_complete();
+        prepared_apply_success_publishes_source_cache_record_and_state_as_one_revision();
         retained_apply_failures_restore_source_cache_and_revision_machine_exactly();
         retained_apply_deterministic_success_and_rollback_order_is_complete();
+        retained_apply_final_cancellation_gate_rolls_back_all_participants();
+        retained_apply_late_deadline_after_all_writes_rolls_back_all_participants();
+        retained_apply_trust_epoch_race_rolls_back_without_overwriting_foreign_state();
         apply_admission_and_dry_run_revision_observation_are_cache_tree_write_free();
         actor_scoped_logical_revision_service_keeps_the_platform_fence_capability();
         prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic();
@@ -3725,6 +3833,272 @@ pub(crate) mod tests {
                 ..
             }
         ));
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn retained_apply_publication_preserves_exact_typed_causes_end_to_end() {
+        use crate::infrastructure::source_revision::{
+            set_repeating_retained_scan_test_mutation, RetainedScanTestMutationPoint,
+        };
+
+        let fixture = actor_fixture("typed-cause-cancelled-scan", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let cancel_during_scan = cancellation.clone();
+        let cancel_scan_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancel_scan_observed = Arc::clone(&cancel_scan_count);
+        let _mutation = set_repeating_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
+            move || {
+                if cancel_scan_observed.fetch_add(1, Ordering::AcqRel) == 2 {
+                    cancel_during_scan.cancel();
+                }
+            },
+        );
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
+        fixture.cleanup();
+
+        let fixture = actor_fixture("typed-cause-deadline-scan", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let mut prepared = admitted.prepare(state).unwrap();
+        prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(200));
+        let deadline_scan_ran = Arc::new(AtomicBool::new(false));
+        let deadline_scan_observed = Arc::clone(&deadline_scan_ran);
+        let deadline_scan_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let deadline_scan_counter = Arc::clone(&deadline_scan_count);
+        let _mutation = set_repeating_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
+            move || {
+                if deadline_scan_counter.fetch_add(1, Ordering::AcqRel) == 2 {
+                    deadline_scan_observed.store(true, Ordering::Release);
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            },
+        );
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert!(deadline_scan_ran.load(Ordering::Acquire));
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Deadline);
+        fixture.cleanup();
+
+        let fixture = actor_fixture("typed-cause-provider-scan", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        let nested = fixture.roots[0].join("Nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("NestedModule.bsl"), b"nested").unwrap();
+        if !crate::infrastructure::platform::testing::set_unix_mode_for_test(&nested, 0o700)
+            .unwrap()
+        {
+            fixture.cleanup();
+            return;
+        }
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        crate::infrastructure::platform::testing::set_unix_mode_for_test(&nested, 0o000).unwrap();
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        crate::infrastructure::platform::testing::set_unix_mode_for_test(&nested, 0o700).unwrap();
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ProviderPostvalidation
+        );
+        fixture.cleanup();
+
+        let fixture = actor_fixture("typed-cause-concurrent-scan", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let concurrent = fixture.roots[0].join("Concurrent.bsl");
+        let concurrent_scan_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let concurrent_scan_counter = Arc::clone(&concurrent_scan_count);
+        let _mutation = set_repeating_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
+            move || {
+                if concurrent_scan_counter.fetch_add(1, Ordering::AcqRel) == 2 {
+                    std::fs::write(&concurrent, b"foreign").unwrap();
+                }
+            },
+        );
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ConcurrentRevision
+        );
+        fixture.cleanup();
+
+        let fixture = actor_fixture("typed-cause-containment", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        std::fs::rename(&fixture.roots[0], fixture.root.join("source-displaced")).unwrap();
+        std::fs::create_dir_all(&fixture.roots[0]).unwrap();
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
+        fixture.cleanup();
+
+        let fixture = actor_fixture("typed-cause-publish-provider", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let source_root = fixture.roots[0].clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_provider_io_hook(
+            move || {
+                crate::infrastructure::platform::testing::set_unix_mode_for_test(
+                    &source_root,
+                    0o500,
+                )
+                .unwrap();
+            },
+        );
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        crate::infrastructure::platform::testing::set_unix_mode_for_test(&fixture.roots[0], 0o700)
+            .unwrap();
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ProviderPostvalidation
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_cache_authority_diagnostic_never_exposes_absolute_root() {
+        let (fixture, binding) = publish_cache_fixture("cache-authority-redaction");
+        let cache_root = fixture.root.join(".build/unica");
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let state = admitted.staged_state().unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        std::fs::rename(&cache_root, fixture.root.join("cache-displaced")).unwrap();
+        std::fs::create_dir_all(&cache_root).unwrap();
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
+        assert!(
+            !error
+                .to_string()
+                .contains(&cache_root.display().to_string()),
+            "cache authority diagnostic exposed its absolute root: {error}"
+        );
         fixture.cleanup();
     }
 

@@ -8,7 +8,8 @@ use crate::infrastructure::deadline_lock::{DeadlineLock, Recover};
 #[cfg(test)]
 use crate::infrastructure::platform::filesystem::supports_retained_root_replacement_test;
 use crate::infrastructure::platform::filesystem::{
-    is_nofollow_link_error, FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
+    host_directory_component_names_equivalent, is_nofollow_link_error, FileIdentity,
+    RetainedChildCapability, RetainedDirectoryCapability,
 };
 use crate::infrastructure::platform::source_revision_fence::{
     deferred_platform_fence, platform_fence, FenceCapability, FenceOutcome, SourceRevisionFence,
@@ -31,7 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum RetainedScanTestMutationPoint {
+pub(crate) enum RetainedScanTestMutationPoint {
     ScanStart,
     AfterDirectoryEnumeration,
     BeforeDirectoryRecursion,
@@ -54,7 +55,7 @@ struct RetainedScanTestMutation {
 }
 
 #[cfg(test)]
-struct RetainedScanTestMutationGuard;
+pub(crate) struct RetainedScanTestMutationGuard;
 
 #[cfg(test)]
 impl Drop for RetainedScanTestMutationGuard {
@@ -64,7 +65,7 @@ impl Drop for RetainedScanTestMutationGuard {
 }
 
 #[cfg(test)]
-fn set_retained_scan_test_mutation(
+pub(crate) fn set_retained_scan_test_mutation(
     point: RetainedScanTestMutationPoint,
     mutation: impl FnOnce() + 'static,
 ) -> RetainedScanTestMutationGuard {
@@ -80,7 +81,7 @@ fn set_retained_scan_test_mutation(
 }
 
 #[cfg(test)]
-fn set_repeating_retained_scan_test_mutation(
+pub(crate) fn set_repeating_retained_scan_test_mutation(
     point: RetainedScanTestMutationPoint,
     mutation: impl FnMut() + 'static,
 ) -> RetainedScanTestMutationGuard {
@@ -260,6 +261,58 @@ pub(crate) struct RetainedRevisionLease {
     root_identity: FileIdentity,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetainedRevisionErrorKind {
+    Cancelled,
+    Deadline,
+    ConcurrentRevision,
+    ContainmentIdentity,
+    Provider,
+    Invariant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedRevisionError {
+    kind: RetainedRevisionErrorKind,
+    message: String,
+}
+
+impl RetainedRevisionError {
+    fn new(kind: RetainedRevisionErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> RetainedRevisionErrorKind {
+        self.kind
+    }
+
+    fn wait(
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        message: impl Into<String>,
+    ) -> Self {
+        let kind = if cancellation.is_cancelled() {
+            RetainedRevisionErrorKind::Cancelled
+        } else if deadline.remaining().is_zero() {
+            RetainedRevisionErrorKind::Deadline
+        } else {
+            RetainedRevisionErrorKind::Invariant
+        };
+        Self::new(kind, message)
+    }
+}
+
+impl fmt::Display for RetainedRevisionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RetainedRevisionError {}
+
 pub(crate) struct PreparedRevisionReconciliation {
     service: Arc<SourceRevisionService>,
     root: Arc<RetainedDirectoryCapability>,
@@ -289,12 +342,16 @@ impl PreparedRevisionReconciliation {
         &self,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<ActiveRevisionReconciliation<'_>, String> {
-        let operation = self.service.operation.acquire_before(
-            deadline,
-            cancellation,
-            "prepared revision reconciliation wait",
-        )?;
+    ) -> Result<ActiveRevisionReconciliation<'_>, RetainedRevisionError> {
+        let operation = self
+            .service
+            .operation
+            .acquire_before(
+                deadline,
+                cancellation,
+                "prepared revision reconciliation wait",
+            )
+            .map_err(|error| RetainedRevisionError::wait(deadline, cancellation, error))?;
         if *self
             .service
             .machine
@@ -302,7 +359,10 @@ impl PreparedRevisionReconciliation {
             .unwrap_or_else(|error| error.into_inner())
             != self.expected_machine
         {
-            return Err("source revision machine changed after apply planning".to_string());
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ConcurrentRevision,
+                "source revision machine changed after apply planning",
+            ));
         }
         Ok(ActiveRevisionReconciliation {
             prepared: self,
@@ -316,42 +376,52 @@ impl ActiveRevisionReconciliation<'_> {
         &self,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), RetainedRevisionError> {
         let root = &self.prepared.root;
         if root.identity() != self.prepared.root_identity {
-            return Err("revision participant belongs to another retained source root".to_string());
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                "revision participant belongs to another retained source root",
+            ));
         }
         root.validate_named_identity().map_err(|error| {
-            format!("retained source identity changed during revision reconciliation: {error}")
+            RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                format!("retained source identity changed during revision reconciliation: {error}"),
+            )
         })?;
         let first =
             self.prepared
                 .service
-                .capture_retained_manifest(root, deadline, cancellation)?;
+                .capture_retained_manifest_typed(root, deadline, cancellation)?;
         let second =
             self.prepared
                 .service
-                .capture_retained_manifest(root, deadline, cancellation)?;
+                .capture_retained_manifest_typed(root, deadline, cancellation)?;
         if !first.namespace_stable
             || !second.namespace_stable
             || first.manifest != second.manifest
             || first.identities != second.identities
             || second.manifest != self.prepared.projected_manifest
         {
-            return Err(
-                "temporarily published source does not match revision candidate".to_string(),
-            );
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ConcurrentRevision,
+                "temporarily published source does not match revision candidate",
+            ));
         }
-        let digest = digest_source_manifest(&second.manifest)?;
+        let digest = digest_source_manifest(&second.manifest).map_err(|error| {
+            RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+        })?;
         if digest != self.prepared.candidate.digest {
-            return Err(
-                "temporarily published source digest does not match revision candidate".to_string(),
-            );
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ConcurrentRevision,
+                "temporarily published source digest does not match revision candidate",
+            ));
         }
         Ok(())
     }
 
-    pub(crate) fn install(self) -> Result<SourceRevision, String> {
+    pub(crate) fn install(self) -> Result<SourceRevision, RetainedRevisionError> {
         let mut machine = self
             .prepared
             .service
@@ -362,7 +432,10 @@ impl ActiveRevisionReconciliation<'_> {
             &self.prepared.expected_machine,
             self.prepared.candidate.clone(),
         ) {
-            return Err("source revision trust epoch changed during apply publication".to_string());
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ConcurrentRevision,
+                "source revision trust epoch changed during apply publication",
+            ));
         }
         *self
             .prepared
@@ -714,55 +787,84 @@ impl SourceRevisionService {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<RetainedRevisionLease, String> {
-        let _operation = self.operation.acquire_before(
-            deadline,
-            cancellation,
-            "retained source revision observation wait",
-        )?;
+        self.observe_retained_operation_typed(root, deadline, cancellation)
+            .map_err(|error| error.to_string())
+    }
+
+    fn observe_retained_operation_typed(
+        &self,
+        root: &RetainedDirectoryCapability,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<RetainedRevisionLease, RetainedRevisionError> {
+        let _operation = self
+            .operation
+            .acquire_before(
+                deadline,
+                cancellation,
+                "retained source revision observation wait",
+            )
+            .map_err(|error| RetainedRevisionError::wait(deadline, cancellation, error))?;
         if root.identity() != self.source_root_identity {
-            return Err(
-                "retained source revision capability has a different actor identity".to_string(),
-            );
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                "retained source revision capability has a different actor identity",
+            ));
         }
         root.validate_named_identity().map_err(|error| {
-            format!("retained source revision identity changed during observation: {error}")
+            RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                format!("retained source revision identity changed during observation: {error}"),
+            )
         })?;
-        let first = self.capture_retained_manifest(root, deadline, cancellation)?;
-        let second = self.capture_retained_manifest(root, deadline, cancellation)?;
+        let first = self.capture_retained_manifest_typed(root, deadline, cancellation)?;
+        let second = self.capture_retained_manifest_typed(root, deadline, cancellation)?;
         if !first.namespace_stable
             || !second.namespace_stable
             || first.manifest != second.manifest
             || first.identities != second.identities
         {
-            return Err(
-                "retained source revision did not stabilize during observation".to_string(),
-            );
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ConcurrentRevision,
+                "retained source revision did not stabilize during observation",
+            ));
         }
-        let digest = digest_source_manifest(&second.manifest)?;
+        let digest = digest_source_manifest(&second.manifest).map_err(|error| {
+            RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+        })?;
         let revision = self
             .machine
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .candidate_for_digest(digest)?;
+            .candidate_for_digest(digest)
+            .map_err(|error| {
+                RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+            })?;
         Ok(RetainedRevisionLease {
             revision,
             root_identity: root.identity(),
         })
     }
 
-    pub(crate) fn confirm_retained_observation(
+    pub(crate) fn confirm_retained_observation_typed(
         &self,
         root: &RetainedDirectoryCapability,
         lease: &RetainedRevisionLease,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), RetainedRevisionError> {
         if root.identity() != lease.root_identity {
-            return Err("retained revision lease belongs to another source identity".to_string());
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                "retained revision lease belongs to another source identity",
+            ));
         }
-        let current = self.observe_retained_operation(root, deadline, cancellation)?;
+        let current = self.observe_retained_operation_typed(root, deadline, cancellation)?;
         if current.revision != lease.revision {
-            return Err("retained source revision changed during logical operation".to_string());
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ConcurrentRevision,
+                "retained source revision changed during logical operation",
+            ));
         }
         Ok(())
     }
@@ -774,35 +876,46 @@ impl SourceRevisionService {
         changes: &[StagedApplyChange],
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<PreparedRevisionReconciliation, String> {
-        let _operation = self.operation.acquire_before(
-            deadline,
-            cancellation,
-            "prepared revision planning wait",
-        )?;
+    ) -> Result<PreparedRevisionReconciliation, RetainedRevisionError> {
+        let _operation = self
+            .operation
+            .acquire_before(deadline, cancellation, "prepared revision planning wait")
+            .map_err(|error| RetainedRevisionError::wait(deadline, cancellation, error))?;
         if root.identity() != self.source_root_identity || root.identity() != lease.root_identity {
-            return Err("revision planning belongs to another retained source root".to_string());
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                "revision planning belongs to another retained source root",
+            ));
         }
-        let first = self.capture_retained_manifest(root, deadline, cancellation)?;
-        let second = self.capture_retained_manifest(root, deadline, cancellation)?;
+        let first = self.capture_retained_manifest_typed(root, deadline, cancellation)?;
+        let second = self.capture_retained_manifest_typed(root, deadline, cancellation)?;
         if !first.namespace_stable
             || !second.namespace_stable
             || first.manifest != second.manifest
             || first.identities != second.identities
         {
-            return Err(
-                "retained source revision did not stabilize during apply planning".to_string(),
-            );
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ConcurrentRevision,
+                "retained source revision did not stabilize during apply planning",
+            ));
         }
         let expected_machine = self
             .machine
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
-        let observed =
-            expected_machine.candidate_for_digest(digest_source_manifest(&second.manifest)?)?;
+        let observed = expected_machine
+            .candidate_for_digest(digest_source_manifest(&second.manifest).map_err(|error| {
+                RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+            })?)
+            .map_err(|error| {
+                RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+            })?;
         if observed != lease.revision {
-            return Err("retained source revision changed during apply planning".to_string());
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ConcurrentRevision,
+                "retained source revision changed during apply planning",
+            ));
         }
         let mut projected_manifest = second.manifest;
         for change in changes {
@@ -837,13 +950,20 @@ impl SourceRevisionService {
             }
         }
         let candidate =
-            expected_machine.candidate_for_digest(digest_source_manifest(&projected_manifest)?)?;
+            expected_machine
+                .candidate_for_digest(digest_source_manifest(&projected_manifest).map_err(
+                    |error| RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error),
+                )?)
+                .map_err(|error| {
+                    RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+                })?;
         let record_bytes = revision_record_bytes(
             &self.workspace_root,
             &self.source_root,
             self.state_scope.record_value(),
             &candidate,
-        )?;
+        )
+        .map_err(|error| RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error))?;
         Ok(PreparedRevisionReconciliation {
             service: Arc::clone(self),
             root: Arc::clone(root),
@@ -946,6 +1066,16 @@ impl SourceRevisionService {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<RetainedManifestCapture, String> {
+        self.capture_retained_manifest_typed(root, deadline, cancellation)
+            .map_err(|error| error.to_string())
+    }
+
+    fn capture_retained_manifest_typed(
+        &self,
+        root: &RetainedDirectoryCapability,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<RetainedManifestCapture, RetainedRevisionError> {
         #[cfg(test)]
         self.retained_scans.fetch_add(1, Ordering::Relaxed);
         capture_retained_source_manifest_with_limits(
@@ -1093,12 +1223,18 @@ impl SourceRevisionService {
         // The corpus scan prunes the generated directory; an incremental
         // event under it must stay just as invisible, or the incremental
         // digest would diverge from the digest a full scan produces.
-        if relative_path
-            .components()
-            .any(|component| component.as_os_str() == OsStr::new(GENERATED_DIR_NAME))
-        {
-            manifest.remove(relative_path);
-            return Ok(true);
+        for component in relative_path.components() {
+            if host_directory_component_names_equivalent(
+                &self.source_root,
+                component.as_os_str(),
+                OsStr::new(GENERATED_DIR_NAME),
+            )
+            .map_err(|error| {
+                format!("source revision component identity cannot be proven: {error}")
+            })? {
+                manifest.remove(relative_path);
+                return Ok(true);
+            }
         }
         let path = self.source_root.join(relative_path);
         let metadata = match fs::symlink_metadata(&path) {
@@ -1326,6 +1462,7 @@ fn scan_retained_source_manifest_with_limits(
     limits: RetainedScanLimits,
 ) -> Result<SourceManifest, String> {
     capture_retained_source_manifest_with_limits(root, deadline, cancellation, limits)
+        .map_err(|error| error.to_string())
         .map(|capture| capture.manifest)
 }
 
@@ -1334,7 +1471,7 @@ fn capture_retained_source_manifest_with_limits(
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
     limits: RetainedScanLimits,
-) -> Result<RetainedManifestCapture, String> {
+) -> Result<RetainedManifestCapture, RetainedRevisionError> {
     retained_revision_checkpoint(deadline, cancellation)?;
     let root_stable_before = root.validate_named_identity().is_ok();
     #[cfg(test)]
@@ -1373,10 +1510,13 @@ fn scan_retained_directory(
     state: &mut RetainedScanState,
     manifest: &mut SourceManifest,
     identities: &mut BTreeMap<PathBuf, (u8, FileIdentity)>,
-) -> Result<(), String> {
+) -> Result<(), RetainedRevisionError> {
     retained_revision_checkpoint(context.deadline, context.cancellation)?;
     if depth > MAX_SOURCE_DEPTH {
-        return Err("source revision corpus exceeds maximum depth".to_string());
+        return Err(RetainedRevisionError::new(
+            RetainedRevisionErrorKind::Provider,
+            "source revision corpus exceeds maximum depth",
+        ));
     }
     let remaining_entries = context.limits.max_entries.saturating_sub(state.entries);
     let names = directory
@@ -1385,13 +1525,29 @@ fn scan_retained_directory(
                 .map_err(std::io::Error::other)
         })
         .map_err(|error| {
-            if error.kind() == ErrorKind::InvalidData {
-                format!(
-                    "retained source revision entry limit {} exceeded",
-                    context.limits.max_entries
+            if context.cancellation.is_cancelled() {
+                RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Cancelled,
+                    "retained source revision reconcile cancelled",
+                )
+            } else if context.deadline.remaining().is_zero() {
+                RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Deadline,
+                    "retained source revision deadline exceeded",
+                )
+            } else if error.kind() == ErrorKind::InvalidData {
+                RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!(
+                        "retained source revision entry limit {} exceeded",
+                        context.limits.max_entries
+                    ),
                 )
             } else {
-                format!("retained source revision directory cannot be read: {error}")
+                RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!("retained source revision directory cannot be read: {error}"),
+                )
             }
         })?;
     #[cfg(test)]
@@ -1403,12 +1559,23 @@ fn scan_retained_directory(
             .checked_add(1)
             .filter(|entries| *entries <= context.limits.max_entries)
             .ok_or_else(|| {
-                format!(
-                    "retained source revision entry limit {} exceeded",
-                    context.limits.max_entries
+                RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!(
+                        "retained source revision entry limit {} exceeded",
+                        context.limits.max_entries
+                    ),
                 )
             })?;
-        if name == OsStr::new(GENERATED_DIR_NAME) {
+        if directory
+            .child_names_equivalent(name, OsStr::new(GENERATED_DIR_NAME))
+            .map_err(|error| {
+                RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!("retained generated-directory identity cannot be proven: {error}"),
+                )
+            })?
+        {
             continue;
         }
         let relative = relative_directory.join(name);
@@ -1416,17 +1583,23 @@ fn scan_retained_directory(
             Ok(child) => child,
             Err(error) if is_nofollow_link_error(&error) => {
                 if is_source_file(&relative) {
-                    return Err(format!(
-                        "retained source revision corpus contains an indexed symbolic link: {}",
-                        relative.display()
+                    return Err(RetainedRevisionError::new(
+                        RetainedRevisionErrorKind::ContainmentIdentity,
+                        format!(
+                            "retained source revision corpus contains an indexed symbolic link: {}",
+                            relative.display()
+                        ),
                     ));
                 }
                 continue;
             }
             Err(error) => {
-                return Err(format!(
-                    "retained source revision entry cannot be opened: {}: {error}",
-                    relative.display()
+                return Err(RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!(
+                        "retained source revision entry cannot be opened: {}: {error}",
+                        relative.display()
+                    ),
                 ));
             }
         };
@@ -1468,9 +1641,12 @@ fn scan_retained_directory(
                 }
             }
             RetainedChildCapability::ReparsePoint if is_source_file(&relative) => {
-                return Err(format!(
-                    "retained source revision corpus contains an indexed reparse point: {}",
-                    relative.display()
+                return Err(RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::ContainmentIdentity,
+                    format!(
+                        "retained source revision corpus contains an indexed reparse point: {}",
+                        relative.display()
+                    ),
                 ));
             }
             RetainedChildCapability::RegularFile(_)
@@ -1485,13 +1661,29 @@ fn scan_retained_directory(
                 .map_err(std::io::Error::other)
         })
         .map_err(|error| {
-            if error.kind() == ErrorKind::InvalidData {
-                format!(
-                    "retained source revision verification entry limit {} exceeded",
-                    context.limits.max_entries
+            if context.cancellation.is_cancelled() {
+                RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Cancelled,
+                    "retained source revision reconcile cancelled",
+                )
+            } else if context.deadline.remaining().is_zero() {
+                RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Deadline,
+                    "retained source revision deadline exceeded",
+                )
+            } else if error.kind() == ErrorKind::InvalidData {
+                RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!(
+                        "retained source revision verification entry limit {} exceeded",
+                        context.limits.max_entries
+                    ),
                 )
             } else {
-                format!("retained source revision directory cannot be verified: {error}")
+                RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!("retained source revision directory cannot be verified: {error}"),
+                )
             }
         })?;
     state.verification_entries = state
@@ -1499,9 +1691,12 @@ fn scan_retained_directory(
         .checked_add(verification_names.len())
         .filter(|entries| *entries <= context.limits.max_entries)
         .ok_or_else(|| {
-            format!(
-                "retained source revision verification entry limit {} exceeded",
-                context.limits.max_entries
+            RetainedRevisionError::new(
+                RetainedRevisionErrorKind::Provider,
+                format!(
+                    "retained source revision verification entry limit {} exceeded",
+                    context.limits.max_entries
+                ),
             )
         })?;
     if verification_names != names || directory.validate_named_identity().is_err() {
@@ -1515,7 +1710,7 @@ fn hash_retained_source_file(
     relative: &Path,
     context: RetainedScanContext<'_>,
     state: &mut RetainedScanState,
-) -> Result<[u8; 32], String> {
+) -> Result<[u8; 32], RetainedRevisionError> {
     hash_retained_source_file_with_checkpoint(file, relative, context.limits, state, &mut || {
         retained_revision_checkpoint(context.deadline, context.cancellation)
     })
@@ -1526,18 +1721,24 @@ fn hash_retained_source_file_with_checkpoint(
     relative: &Path,
     limits: RetainedScanLimits,
     state: &mut RetainedScanState,
-    checkpoint: &mut dyn FnMut() -> Result<(), String>,
-) -> Result<[u8; 32], String> {
+    checkpoint: &mut dyn FnMut() -> Result<(), RetainedRevisionError>,
+) -> Result<[u8; 32], RetainedRevisionError> {
     let mut reader = file.try_clone_file().map_err(|error| {
-        format!(
-            "retained source revision file cannot be cloned: {}: {error}",
-            relative.display()
+        RetainedRevisionError::new(
+            RetainedRevisionErrorKind::Provider,
+            format!(
+                "retained source revision file cannot be cloned: {}: {error}",
+                relative.display()
+            ),
         )
     })?;
     reader.seek(SeekFrom::Start(0)).map_err(|error| {
-        format!(
-            "retained source revision file cannot be rewound: {}: {error}",
-            relative.display()
+        RetainedRevisionError::new(
+            RetainedRevisionErrorKind::Provider,
+            format!(
+                "retained source revision file cannot be rewound: {}: {error}",
+                relative.display()
+            ),
         )
     })?;
     let mut digest = Sha256::new();
@@ -1546,32 +1747,47 @@ fn hash_retained_source_file_with_checkpoint(
     loop {
         checkpoint()?;
         let read = reader.read(&mut chunk).map_err(|error| {
-            format!(
-                "retained source revision file cannot be read: {}: {error}",
-                relative.display()
+            RetainedRevisionError::new(
+                RetainedRevisionErrorKind::Provider,
+                format!(
+                    "retained source revision file cannot be read: {}: {error}",
+                    relative.display()
+                ),
             )
         })?;
         if read == 0 {
             break;
         }
         let read = u64::try_from(read).expect("source revision chunk length fits u64");
-        file_bytes = file_bytes
-            .checked_add(read)
-            .ok_or_else(|| "retained source revision file byte count overflowed".to_string())?;
+        file_bytes = file_bytes.checked_add(read).ok_or_else(|| {
+            RetainedRevisionError::new(
+                RetainedRevisionErrorKind::Invariant,
+                "retained source revision file byte count overflowed",
+            )
+        })?;
         if file_bytes > limits.max_file_bytes {
-            return Err(format!(
-                "retained source revision file byte limit {} exceeded: {}",
-                limits.max_file_bytes,
-                relative.display()
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::Provider,
+                format!(
+                    "retained source revision file byte limit {} exceeded: {}",
+                    limits.max_file_bytes,
+                    relative.display()
+                ),
             ));
         }
         state.total_bytes = state.total_bytes.checked_add(read).ok_or_else(|| {
-            "retained source revision aggregate byte count overflowed".to_string()
+            RetainedRevisionError::new(
+                RetainedRevisionErrorKind::Invariant,
+                "retained source revision aggregate byte count overflowed",
+            )
         })?;
         if state.total_bytes > limits.max_total_bytes {
-            return Err(format!(
-                "retained source revision aggregate byte limit {} exceeded",
-                limits.max_total_bytes
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::Provider,
+                format!(
+                    "retained source revision aggregate byte limit {} exceeded",
+                    limits.max_total_bytes
+                ),
             ));
         }
         digest.update(&chunk[..usize::try_from(read).expect("chunk length fits usize")]);
@@ -1585,11 +1801,17 @@ fn hash_retained_source_file_with_checkpoint(
 fn retained_revision_checkpoint(
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
-) -> Result<(), String> {
+) -> Result<(), RetainedRevisionError> {
     if cancellation.is_cancelled() {
-        Err("retained source revision reconcile cancelled".to_string())
+        Err(RetainedRevisionError::new(
+            RetainedRevisionErrorKind::Cancelled,
+            "retained source revision reconcile cancelled",
+        ))
     } else if deadline.remaining().is_zero() {
-        Err("retained source revision deadline exceeded".to_string())
+        Err(RetainedRevisionError::new(
+            RetainedRevisionErrorKind::Deadline,
+            "retained source revision deadline exceeded",
+        ))
     } else {
         Ok(())
     }
@@ -1673,7 +1895,13 @@ fn scan_directory(
             continue;
         }
         if file_type.is_dir() {
-            if child.file_name() == OsStr::new(GENERATED_DIR_NAME) {
+            if host_directory_component_names_equivalent(
+                directory,
+                &child.file_name(),
+                OsStr::new(GENERATED_DIR_NAME),
+            )
+            .map_err(|error| format!("generated-directory identity cannot be proven: {error}"))?
+            {
                 continue;
             }
             manifest.insert(
@@ -2506,6 +2734,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn corpus_digest_ignores_platform_equivalent_generated_directory_name() {
+        let root = tempdir().unwrap();
+        let canonical = fs::canonicalize(root.path()).unwrap();
+        if crate::infrastructure::platform::filesystem::host_filesystem_case_sensitive(&canonical)
+            .unwrap()
+        {
+            return;
+        }
+        fs::write(root.path().join("Module.bsl"), "Процедура A()\n").unwrap();
+        let baseline = scan_source_digest(&canonical, &|| false).unwrap();
+        fs::create_dir_all(root.path().join(".BUILD/unica")).unwrap();
+        fs::write(
+            root.path().join(".BUILD/unica/GeneratedModule.bsl"),
+            "Процедура Cache()\n",
+        )
+        .unwrap();
+
+        assert_eq!(baseline, scan_source_digest(&canonical, &|| false).unwrap());
+    }
+
+    #[test]
     fn corpus_digest_accepts_a_non_utf8_relative_path() {
         let Some(path) =
             crate::infrastructure::platform::testing::non_utf8_relative_path_for_test()
@@ -3324,14 +3573,18 @@ pub(crate) mod tests {
             &mut || {
                 checkpoints += 1;
                 if checkpoints == 3 {
-                    Err("cancelled between chunks".to_string())
+                    Err(RetainedRevisionError::new(
+                        RetainedRevisionErrorKind::Cancelled,
+                        "cancelled between chunks",
+                    ))
                 } else {
                     Ok(())
                 }
             },
         )
         .unwrap_err();
-        assert_eq!(error, "cancelled between chunks");
+        assert_eq!(error.kind(), RetainedRevisionErrorKind::Cancelled);
+        assert_eq!(error.to_string(), "cancelled between chunks");
         assert_eq!(checkpoints, 3);
         assert_eq!(state.total_bytes, (RETAINED_HASH_CHUNK_BYTES * 2) as u64);
     }
