@@ -4123,6 +4123,11 @@ pub(crate) mod tests {
             result.errors,
             vec!["dependencyPending: diagnostic providers are not ready"]
         );
+        let error = &result.data.as_ref().unwrap()["providers"][0]["error"];
+        assert_eq!(error["detailCode"], "buildingIndex");
+        assert_eq!(error["retryAfterMs"], 1500);
+        assert_eq!(error["state"], "building");
+        assert_eq!(error["nextAction"], "status");
     }
 
     #[test]
