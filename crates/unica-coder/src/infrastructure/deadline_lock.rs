@@ -3,7 +3,20 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::Duration;
 
+#[cfg(test)]
+use std::cell::RefCell;
+
 const WAIT_SLICE: Duration = Duration::from_millis(10);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_AFTER_DEADLINE_ERROR_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_after_deadline_error_hook_for_test(hook: impl FnOnce() + 'static) {
+    TEST_AFTER_DEADLINE_ERROR_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+}
 
 /// One synchronous ownership lane whose contention is bounded by the caller's
 /// monotonic deadline and cancellation signal.
@@ -11,8 +24,42 @@ pub(super) trait PoisonPolicy {
     fn resolve<'a>(
         &self,
         poisoned: PoisonError<MutexGuard<'a, ()>>,
-    ) -> Result<MutexGuard<'a, ()>, String>;
+    ) -> Result<MutexGuard<'a, ()>, DeadlineLockError>;
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeadlineLockErrorKind {
+    Cancelled,
+    Deadline,
+    Poisoned,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DeadlineLockError {
+    kind: DeadlineLockErrorKind,
+    message: String,
+}
+
+impl DeadlineLockError {
+    fn new(kind: DeadlineLockErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(super) fn kind(&self) -> DeadlineLockErrorKind {
+        self.kind
+    }
+}
+
+impl std::fmt::Display for DeadlineLockError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for DeadlineLockError {}
 
 pub(super) struct FailClosed {
     error: &'static str,
@@ -28,8 +75,11 @@ impl PoisonPolicy for FailClosed {
     fn resolve<'a>(
         &self,
         _poisoned: PoisonError<MutexGuard<'a, ()>>,
-    ) -> Result<MutexGuard<'a, ()>, String> {
-        Err(self.error.to_string())
+    ) -> Result<MutexGuard<'a, ()>, DeadlineLockError> {
+        Err(DeadlineLockError::new(
+            DeadlineLockErrorKind::Poisoned,
+            self.error,
+        ))
     }
 }
 
@@ -39,7 +89,7 @@ impl PoisonPolicy for Recover {
     fn resolve<'a>(
         &self,
         poisoned: PoisonError<MutexGuard<'a, ()>>,
-    ) -> Result<MutexGuard<'a, ()>, String> {
+    ) -> Result<MutexGuard<'a, ()>, DeadlineLockError> {
         Ok(poisoned.into_inner())
     }
 }
@@ -73,7 +123,7 @@ impl<P: PoisonPolicy> DeadlineLock<P> {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
         operation: &'static str,
-    ) -> Result<MutexGuard<'_, ()>, String> {
+    ) -> Result<MutexGuard<'_, ()>, DeadlineLockError> {
         loop {
             checkpoint(deadline, cancellation, operation)?;
             match self.inner.try_lock() {
@@ -108,9 +158,12 @@ fn checkpoint(
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
     operation: &'static str,
-) -> Result<(), String> {
+) -> Result<(), DeadlineLockError> {
     if cancellation.is_cancelled() {
-        return Err(cancelled_error(format!("{operation} stopped")));
+        return Err(DeadlineLockError::new(
+            DeadlineLockErrorKind::Cancelled,
+            cancelled_error(format!("{operation} stopped")),
+        ));
     }
     if deadline.remaining().is_zero() {
         return Err(deadline_error(operation));
@@ -118,6 +171,14 @@ fn checkpoint(
     Ok(())
 }
 
-fn deadline_error(operation: &str) -> String {
-    format!("{operation} deadline exceeded")
+fn deadline_error(operation: &str) -> DeadlineLockError {
+    let error = DeadlineLockError::new(
+        DeadlineLockErrorKind::Deadline,
+        format!("{operation} deadline exceeded"),
+    );
+    #[cfg(test)]
+    if let Some(hook) = TEST_AFTER_DEADLINE_ERROR_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+    error
 }

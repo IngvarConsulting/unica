@@ -5,7 +5,7 @@ use crate::infrastructure::native_operations::compile_transaction::{
     RetainedApplyValidationErrorKind,
 };
 use crate::infrastructure::platform::filesystem::{
-    FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
+    FileIdentity, RetainedChildCapability, RetainedChildNameComparator, RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_roots::GENERATED_DIR_NAME;
 use std::ffi::{OsStr, OsString};
@@ -14,6 +14,32 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 const MAX_APPLY_FILE_BYTES: usize = 32 * 1024 * 1024;
+
+fn generated_component_identity_error(error: std::io::Error) -> ApplyStagingError {
+    ApplyStagingError::new(
+        ApplyStagingErrorKind::ContainmentIdentity,
+        format!("generated source component identity cannot be proven: {error}"),
+    )
+}
+
+fn reject_generated_component(
+    comparator: Option<&RetainedChildNameComparator>,
+    component: &OsStr,
+) -> Result<(), ApplyStagingError> {
+    let Some(comparator) = comparator else {
+        return Ok(());
+    };
+    if comparator
+        .names_equivalent(component, OsStr::new(GENERATED_DIR_NAME))
+        .map_err(generated_component_identity_error)?
+    {
+        return Err(ApplyStagingError::new(
+            ApplyStagingErrorKind::ContainmentIdentity,
+            "source participant cannot address the generated subtree",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ApplyStagingErrorKind {
@@ -312,27 +338,6 @@ impl ApplyStagedState {
 
     fn ensure_loaded(&mut self, relative: &Path) -> Result<usize, ApplyStagingError> {
         self.checkpoint("apply staged read")?;
-        if self.generated_subtree_forbidden {
-            for component in relative.components() {
-                let equivalent = self
-                    .root
-                    .child_names_equivalent(component.as_os_str(), OsStr::new(GENERATED_DIR_NAME))
-                    .map_err(|error| {
-                        ApplyStagingError::new(
-                            ApplyStagingErrorKind::ContainmentIdentity,
-                            format!(
-                                "generated source component identity cannot be proven: {error}"
-                            ),
-                        )
-                    })?;
-                if equivalent {
-                    return Err(ApplyStagingError::new(
-                        ApplyStagingErrorKind::ContainmentIdentity,
-                        "source participant cannot address the generated subtree",
-                    ));
-                }
-            }
-        }
         if let Some(index) = self
             .entries
             .iter()
@@ -359,12 +364,28 @@ impl ApplyStagedState {
             .clone();
         let mut ancestor = self.root.as_ref().clone();
         let mut missing_parent_chain = Vec::new();
+        let mut generated_name_comparator = self
+            .generated_subtree_forbidden
+            .then(|| ancestor.child_name_comparator())
+            .transpose()
+            .map_err(generated_component_identity_error)?;
         for (index, component) in components[..components.len() - 1].iter().enumerate() {
+            reject_generated_component(generated_name_comparator.as_ref(), component)?;
             match ancestor.retain_immediate_child_nofollow(component) {
-                Ok(RetainedChildCapability::Directory(directory)) => ancestor = directory,
+                Ok(RetainedChildCapability::Directory(directory)) => {
+                    ancestor = directory;
+                    generated_name_comparator = self
+                        .generated_subtree_forbidden
+                        .then(|| ancestor.child_name_comparator())
+                        .transpose()
+                        .map_err(generated_component_identity_error)?;
+                }
                 Err(error) if error.kind() == ErrorKind::NotFound => {
                     missing_parent_chain
                         .extend(components[index..components.len() - 1].iter().cloned());
+                    for suffix in &components[index + 1..] {
+                        reject_generated_component(generated_name_comparator.as_ref(), suffix)?;
+                    }
                     break;
                 }
                 Ok(RetainedChildCapability::ReparsePoint) => {
@@ -394,6 +415,9 @@ impl ApplyStagedState {
                     ))
                 }
             }
+        }
+        if missing_parent_chain.is_empty() {
+            reject_generated_component(generated_name_comparator.as_ref(), &name)?;
         }
         let retained_child = if missing_parent_chain.is_empty() {
             Some(ancestor.retain_immediate_child_nofollow(&name))
@@ -1231,6 +1255,46 @@ pub(crate) mod tests {
             changes[0].current,
             StagedFileState::Bytes(b"second-postimage".to_vec())
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_generated_guard_uses_each_retained_parent_case_policy() {
+        let root = temp_root("per-directory-generated-policy");
+        let nested = root.join("Nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let retained_root =
+            RetainedDirectoryCapability::open(&std::fs::canonicalize(&root).unwrap()).unwrap();
+        let retained_nested = retained_root
+            .retain_directory_child(std::ffi::OsStr::new("Nested"))
+            .unwrap();
+        let root_identity = retained_root.identity();
+        let nested_identity = retained_nested.identity();
+        let _policy = crate::infrastructure::platform::filesystem::set_retained_directory_case_policy_for_test(
+            move |identity| {
+                if identity == root_identity {
+                    Some(true)
+                } else if identity == nested_identity {
+                    Some(false)
+                } else {
+                    None
+                }
+            },
+        );
+        let mut state = ApplyStagedState::from_retained_root(
+            Arc::new(retained_root),
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            CancellationToken::new(),
+            crate::infrastructure::workspace_actor::apply_writer_authority_for_test(),
+        )
+        .forbid_generated_subtree();
+
+        let error = state
+            .create("Nested/.BUILD/unica/forged.json", b"forged".to_vec())
+            .expect_err("nested case-insensitive generated identity reached Source role");
+
+        assert_eq!(error.kind(), ApplyStagingErrorKind::ContainmentIdentity);
+        assert!(!root.join("Nested/.BUILD").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -243,6 +243,46 @@ thread_local! {
     static TEST_CASE_SENSITIVITY_QUERY_ERROR: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
+#[cfg(test)]
+type RetainedDirectoryCasePolicyForTest = Box<dyn Fn(FileIdentity) -> Option<bool>>;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_RETAINED_DIRECTORY_CASE_POLICY: std::cell::RefCell<Option<RetainedDirectoryCasePolicyForTest>> = const { std::cell::RefCell::new(None) };
+    static TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) struct RetainedDirectoryCasePolicyTestGuard;
+
+#[cfg(test)]
+impl Drop for RetainedDirectoryCasePolicyTestGuard {
+    fn drop(&mut self) {
+        TEST_RETAINED_DIRECTORY_CASE_POLICY.with(|slot| slot.borrow_mut().take());
+        TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES.with(|slot| slot.set(0));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_directory_case_policy_for_test(
+    policy: impl Fn(FileIdentity) -> Option<bool> + 'static,
+) -> RetainedDirectoryCasePolicyTestGuard {
+    TEST_RETAINED_DIRECTORY_CASE_POLICY.with(|slot| {
+        assert!(
+            slot.borrow().is_none(),
+            "retained case-policy test seam is busy"
+        );
+        *slot.borrow_mut() = Some(Box::new(policy));
+    });
+    TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES.with(|slot| slot.set(0));
+    RetainedDirectoryCasePolicyTestGuard
+}
+
+#[cfg(test)]
+pub(crate) fn retained_directory_case_policy_queries_for_test() -> usize {
+    TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES.with(std::cell::Cell::get)
+}
+
 #[cfg(all(test, windows))]
 fn with_case_sensitivity_query_error<T>(error: u32, action: impl FnOnce() -> T) -> T {
     struct Reset(Option<u32>);
@@ -297,6 +337,23 @@ pub(crate) struct RetainedDirectoryCapability {
     path: PathBuf,
     retained: Arc<RetainedDirectoryCapabilityInner>,
     parent: Option<Arc<RetainedDirectoryParent>>,
+}
+
+pub(crate) struct RetainedChildNameComparator {
+    case_sensitive: bool,
+}
+
+impl RetainedChildNameComparator {
+    pub(crate) fn names_equivalent(
+        &self,
+        left: &std::ffi::OsStr,
+        right: &std::ffi::OsStr,
+    ) -> io::Result<bool> {
+        if left == right {
+            return Ok(true);
+        }
+        host_component_names_equivalent(left, right, self.case_sensitive)
+    }
 }
 
 /// Retained no-follow authority for one regular child of an admitted directory.
@@ -488,11 +545,29 @@ impl RetainedDirectoryCapability {
         left: &std::ffi::OsStr,
         right: &std::ffi::OsStr,
     ) -> io::Result<bool> {
-        if left == right {
-            return Ok(true);
+        self.child_name_comparator()?.names_equivalent(left, right)
+    }
+
+    pub(crate) fn child_name_comparator(&self) -> io::Result<RetainedChildNameComparator> {
+        Ok(RetainedChildNameComparator {
+            case_sensitive: self.case_sensitive_child_names()?,
+        })
+    }
+
+    fn case_sensitive_child_names(&self) -> io::Result<bool> {
+        #[cfg(test)]
+        {
+            TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES
+                .with(|slot| slot.set(slot.get().saturating_add(1)));
+            if let Some(policy) = TEST_RETAINED_DIRECTORY_CASE_POLICY.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .and_then(|policy| policy(self.identity()))
+            }) {
+                return Ok(policy);
+            }
         }
-        let case_sensitive = filesystem_case_sensitive_for_directory(&self.retained.directory)?;
-        host_component_names_equivalent(left, right, case_sensitive)
+        filesystem_case_sensitive_for_directory(&self.retained.directory)
     }
 
     pub(crate) fn validate_named_identity(&self) -> io::Result<()> {

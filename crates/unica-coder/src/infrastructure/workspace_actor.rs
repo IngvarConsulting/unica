@@ -9,7 +9,9 @@ use crate::domain::events::DomainEvent;
 use crate::domain::invocation::SafeIdentityHash;
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::deadline_lock::{DeadlineLock, FailClosed};
+use crate::infrastructure::deadline_lock::{
+    DeadlineLock, DeadlineLockError, DeadlineLockErrorKind, FailClosed,
+};
 use crate::infrastructure::native_operations::apply::{
     ApplyStagedState, ApplyStagingError, ApplyStagingErrorKind,
 };
@@ -1031,9 +1033,7 @@ impl<R> WorkspaceActor<R> {
                 &prepared.cancellation,
                 "workspace actor prepared apply wait",
             )
-            .map_err(|error| {
-                classify_publication_wait(prepared.deadline, &prepared.cancellation, error)
-            })?;
+            .map_err(deadline_lock_publication_error)?;
         let binding = ProviderRootBinding {
             actor_identity: prepared.actor_identity.clone(),
             actor_instance: prepared.actor_instance.clone(),
@@ -1147,11 +1147,14 @@ impl<R> WorkspaceActor<R> {
         if fences.is_empty() {
             return Err("logical read publication requires an admitted source fence".to_string());
         }
-        let _publication = self.mutation_lane.acquire_before(
-            deadline,
-            cancellation,
-            "workspace actor logical read publication wait",
-        )?;
+        let _publication = self
+            .mutation_lane
+            .acquire_before(
+                deadline,
+                cancellation,
+                "workspace actor logical read publication wait",
+            )
+            .map_err(|error| error.to_string())?;
         let mut confirmations = Vec::with_capacity(fences.len());
         let mut source_sets = HashSet::with_capacity(fences.len());
         for fence in fences {
@@ -1280,11 +1283,10 @@ impl<R> WorkspaceActor<R> {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<WorkspacePublicationLease<'_, R>, String> {
-        let publication = self.mutation_lane.acquire_before(
-            deadline,
-            cancellation,
-            "workspace actor mutation lane wait",
-        )?;
+        let publication = self
+            .mutation_lane
+            .acquire_before(deadline, cancellation, "workspace actor mutation lane wait")
+            .map_err(|error| error.to_string())?;
         if fence.actor_identity != self.identity
             || fence.actor_instance != self.instance_id
             || !self.identity.source_sets.contains(&fence.source_set)
@@ -1499,18 +1501,13 @@ fn apply_publication_checkpoint(
     }
 }
 
-fn classify_publication_wait(
-    deadline: ProviderDeadline,
-    cancellation: &CancellationToken,
-    message: String,
-) -> ApplyPublicationError {
-    if cancellation.is_cancelled() {
-        ApplyPublicationError::new(ApplyPublicationErrorKind::Cancelled, message)
-    } else if deadline.remaining().is_zero() {
-        ApplyPublicationError::new(ApplyPublicationErrorKind::Deadline, message)
-    } else {
-        ApplyPublicationError::new(ApplyPublicationErrorKind::Invariant, message)
-    }
+fn deadline_lock_publication_error(error: DeadlineLockError) -> ApplyPublicationError {
+    let kind = match error.kind() {
+        DeadlineLockErrorKind::Cancelled => ApplyPublicationErrorKind::Cancelled,
+        DeadlineLockErrorKind::Deadline => ApplyPublicationErrorKind::Deadline,
+        DeadlineLockErrorKind::Poisoned => ApplyPublicationErrorKind::Invariant,
+    };
+    ApplyPublicationError::new(kind, error.to_string())
 }
 
 fn retained_revision_staging_error(error: RetainedRevisionError) -> ApplyStagingError {
@@ -2108,6 +2105,46 @@ pub(crate) mod tests {
             assert!(result.unwrap_err().contains("deadline exceeded"));
             fixture.cleanup();
         }
+    }
+
+    #[test]
+    fn prepared_apply_lock_deadline_is_not_reclassified_by_later_cancellation() {
+        let fixture = actor_fixture("typed-deadline-lock-race", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let mut prepared = admitted.prepare(state).unwrap();
+        prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(40));
+        let owner = fixture.actor.mutation_lane.hold_for_test();
+        let cancel_after_deadline = cancellation.clone();
+        crate::infrastructure::deadline_lock::set_after_deadline_error_hook_for_test(move || {
+            std::thread::spawn(move || cancel_after_deadline.cancel())
+                .join()
+                .unwrap();
+        });
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Deadline);
+        drop(owner);
+        fixture.cleanup();
     }
 
     #[test]
@@ -4974,6 +5011,114 @@ pub(crate) mod tests {
             std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
             b"replacement-tree"
         );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn postimage_validation_preserves_typed_root_containment_cause() {
+        let fixture = actor_fixture("typed-postimage-root", &["src"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"original").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"original", b"published".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let named_root = fixture.roots[0].clone();
+        let displaced = fixture.root.join("typed-postimage-root-displaced");
+        let hook_displaced = displaced.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_postimages_hook(
+            move || {
+                std::fs::rename(&named_root, &hook_displaced).unwrap();
+                std::fs::create_dir_all(&named_root).unwrap();
+                std::fs::write(named_root.join("foreign.txt"), b"foreign").unwrap();
+            },
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
+        assert_eq!(
+            std::fs::read(displaced.join("Module.bsl")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("foreign.txt")).unwrap(),
+            b"foreign"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn postimage_validation_preserves_typed_absent_chain_containment_cause() {
+        let fixture = actor_fixture("typed-postimage-absent-chain", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .create("Nested/Module.bsl", b"published".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let nested = fixture.roots[0].join("Nested");
+        let displaced = fixture.roots[0].join("Nested-displaced");
+        let hook_nested = nested.clone();
+        let hook_displaced = displaced.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_postimages_hook(
+            move || {
+                std::fs::rename(&hook_nested, &hook_displaced).unwrap();
+                std::fs::create_dir_all(&hook_nested).unwrap();
+                std::fs::write(hook_nested.join("foreign.txt"), b"foreign").unwrap();
+            },
+        );
+        let rollback_nested = nested.clone();
+        let rollback_displaced = displaced.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_rollback_hook(
+            move || {
+                std::fs::remove_dir_all(&rollback_nested).unwrap();
+                std::fs::rename(&rollback_displaced, &rollback_nested).unwrap();
+            },
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
+        assert!(
+            !nested.exists(),
+            "transaction-created parent was not rolled back"
+        );
+        assert!(!displaced.exists(), "test race recovery name leaked");
         fixture.cleanup();
     }
 

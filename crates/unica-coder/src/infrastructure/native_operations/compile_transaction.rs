@@ -776,7 +776,8 @@ impl CompileTransaction {
             }
             for entry in &self.retained_apply {
                 checkpoint()?;
-                validate_retained_apply_postimage(entry, &entry.current, &created_directories)?;
+                validate_retained_apply_postimage(entry, &entry.current, &created_directories)
+                    .map_err(|error| error.to_string())?;
             }
             #[cfg(test)]
             run_retained_apply_before_post_validation_hook();
@@ -797,6 +798,8 @@ impl CompileTransaction {
         match operation {
             Ok(result) => Ok(result),
             Err(primary) => {
+                #[cfg(test)]
+                run_retained_apply_before_rollback_hook();
                 let rollback_errors =
                     rollback_retained_apply(&mut published, &mut created_directories);
                 if rollback_errors.is_empty() {
@@ -884,15 +887,12 @@ impl CompileTransaction {
                     })?;
                 }
             }
+            #[cfg(test)]
+            run_retained_apply_before_postimages_hook();
             for entry in &self.retained_apply {
                 final_gate.checkpoint("prepared apply postimage validation")?;
                 validate_retained_apply_postimage(entry, &entry.current, &created_directories)
-                    .map_err(|error| {
-                        ApplyPublicationError::new(
-                            ApplyPublicationErrorKind::ProviderPostvalidation,
-                            error,
-                        )
-                    })?;
+                    .map_err(retained_apply_publish_publication_error)?;
             }
             #[cfg(test)]
             retained_apply_fail_after_all_postimages().map_err(|error| {
@@ -920,6 +920,8 @@ impl CompileTransaction {
         match operation {
             Ok(result) => Ok(result),
             Err(primary) => {
+                #[cfg(test)]
+                run_retained_apply_before_rollback_hook();
                 let rollback_errors =
                     rollback_retained_apply(&mut published, &mut created_directories);
                 if rollback_errors.is_empty() {
@@ -2287,15 +2289,6 @@ fn validate_retained_apply_preimage_typed(
     validate_retained_apply_state_typed(entry, &entry.original, true)
 }
 
-fn validate_retained_apply_state(
-    entry: &PlannedRetainedApplyChange,
-    expected: &Option<Vec<u8>>,
-    validate_root_name: bool,
-) -> Result<(), String> {
-    validate_retained_apply_state_typed(entry, expected, validate_root_name)
-        .map_err(|error| error.to_string())
-}
-
 fn validate_retained_apply_state_typed(
     entry: &PlannedRetainedApplyChange,
     expected: &Option<Vec<u8>>,
@@ -2357,15 +2350,6 @@ fn validate_retained_apply_state_typed(
         };
     }
     validate_retained_apply_state_at_parent_typed(entry, &entry.ancestor, expected)
-}
-
-fn validate_retained_apply_state_at_parent(
-    entry: &PlannedRetainedApplyChange,
-    parent: &RetainedDirectoryCapability,
-    expected: &Option<Vec<u8>>,
-) -> Result<(), String> {
-    validate_retained_apply_state_at_parent_typed(entry, parent, expected)
-        .map_err(|error| error.to_string())
 }
 
 fn validate_retained_apply_state_at_parent_typed(
@@ -2625,25 +2609,31 @@ fn validate_retained_apply_postimage(
     entry: &PlannedRetainedApplyChange,
     expected: &Option<Vec<u8>>,
     created: &[CreatedRetainedApplyDirectory],
-) -> Result<(), String> {
+) -> Result<(), RetainedApplyPublishError> {
     if entry.missing_parent_chain.is_empty() {
-        return validate_retained_apply_state(entry, expected, true);
+        return validate_retained_apply_state_typed(entry, expected, true)
+            .map_err(RetainedApplyPublishError::from);
     }
     entry.root.validate_named_identity().map_err(|error| {
-        format!("retained apply source-root physical identity changed: {error}")
+        RetainedApplyPublishError::containment(format!(
+            "retained apply source-root physical identity changed: {error}"
+        ))
     })?;
     let mut parent = entry.ancestor.clone();
     for name in &entry.missing_parent_chain {
-        parent = owned_retained_apply_directory_child(&parent, name, created)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| {
-                format!(
-                    "retained apply postimage parent is not transaction-owned: {}",
-                    entry.relative_path.display()
+        parent =
+            owned_retained_apply_directory_child(&parent, name, created)?.ok_or_else(|| {
+                RetainedApplyPublishError::new(
+                    RetainedApplyPublishErrorKind::Invariant,
+                    format!(
+                        "retained apply postimage parent is not transaction-owned: {}",
+                        entry.relative_path.display()
+                    ),
                 )
             })?;
     }
-    validate_retained_apply_state_at_parent(entry, &parent, expected)
+    validate_retained_apply_state_at_parent_typed(entry, &parent, expected)
+        .map_err(RetainedApplyPublishError::from)
 }
 
 fn publish_retained_apply_change(
@@ -5442,6 +5432,12 @@ type AfterRegistrationRollbackRestoreHook = Box<dyn FnOnce(&Path, &Path)>;
 type RetainedApplyBeforePostValidationHook = Box<dyn FnOnce()>;
 
 #[cfg(test)]
+type RetainedApplyBeforePostimagesHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+type RetainedApplyBeforeRollbackHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
 type RetainedApplyBeforeProviderIoHook = Box<dyn FnOnce()>;
 
 #[cfg(test)]
@@ -5456,6 +5452,8 @@ thread_local! {
     static TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK: RefCell<Option<BeforeRollbackQuarantineRestoreRenameHook>> = const { RefCell::new(None) };
     static TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK: RefCell<Option<AfterRegistrationRollbackRestoreHook>> = const { RefCell::new(None) };
     static TEST_RETAINED_APPLY_BEFORE_POST_VALIDATION_HOOK: RefCell<Option<RetainedApplyBeforePostValidationHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_BEFORE_POSTIMAGES_HOOK: RefCell<Option<RetainedApplyBeforePostimagesHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_BEFORE_ROLLBACK_HOOK: RefCell<Option<RetainedApplyBeforeRollbackHook>> = const { RefCell::new(None) };
     static TEST_RETAINED_APPLY_BEFORE_PROVIDER_IO_HOOK: RefCell<Option<RetainedApplyBeforeProviderIoHook>> = const { RefCell::new(None) };
     static TEST_RETAINED_APPLY_VALIDATION_PROVIDER_FAILURE: Cell<bool> = const { Cell::new(false) };
 }
@@ -5473,6 +5471,20 @@ pub(crate) fn set_retained_apply_before_post_validation_hook(hook: impl FnOnce()
 }
 
 #[cfg(test)]
+pub(crate) fn set_retained_apply_before_postimages_hook(hook: impl FnOnce() + 'static) {
+    TEST_RETAINED_APPLY_BEFORE_POSTIMAGES_HOOK.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_apply_before_rollback_hook(hook: impl FnOnce() + 'static) {
+    TEST_RETAINED_APPLY_BEFORE_ROLLBACK_HOOK.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
 pub(crate) fn set_retained_apply_before_provider_io_hook(hook: impl FnOnce() + 'static) {
     TEST_RETAINED_APPLY_BEFORE_PROVIDER_IO_HOOK.with(|slot| {
         slot.replace(Some(Box::new(hook)));
@@ -5483,6 +5495,24 @@ pub(crate) fn set_retained_apply_before_provider_io_hook(hook: impl FnOnce() + '
 fn run_retained_apply_before_provider_io_hook() {
     if let Some(hook) =
         TEST_RETAINED_APPLY_BEFORE_PROVIDER_IO_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn run_retained_apply_before_postimages_hook() {
+    if let Some(hook) =
+        TEST_RETAINED_APPLY_BEFORE_POSTIMAGES_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn run_retained_apply_before_rollback_hook() {
+    if let Some(hook) =
+        TEST_RETAINED_APPLY_BEFORE_ROLLBACK_HOOK.with(|slot| slot.borrow_mut().take())
     {
         hook();
     }

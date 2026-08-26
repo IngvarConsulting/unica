@@ -4,7 +4,9 @@ use crate::domain::source_revision::{
     SourceRevision, SourceRevisionMachine, SourceRevisionState, SourceRevisionTrustLoss,
 };
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::deadline_lock::{DeadlineLock, Recover};
+use crate::infrastructure::deadline_lock::{
+    DeadlineLock, DeadlineLockError, DeadlineLockErrorKind, Recover,
+};
 #[cfg(test)]
 use crate::infrastructure::platform::filesystem::supports_retained_root_replacement_test;
 use crate::infrastructure::platform::filesystem::{
@@ -289,19 +291,13 @@ impl RetainedRevisionError {
         self.kind
     }
 
-    fn wait(
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-        message: impl Into<String>,
-    ) -> Self {
-        let kind = if cancellation.is_cancelled() {
-            RetainedRevisionErrorKind::Cancelled
-        } else if deadline.remaining().is_zero() {
-            RetainedRevisionErrorKind::Deadline
-        } else {
-            RetainedRevisionErrorKind::Invariant
+    fn from_deadline_lock(error: DeadlineLockError) -> Self {
+        let kind = match error.kind() {
+            DeadlineLockErrorKind::Cancelled => RetainedRevisionErrorKind::Cancelled,
+            DeadlineLockErrorKind::Deadline => RetainedRevisionErrorKind::Deadline,
+            DeadlineLockErrorKind::Poisoned => RetainedRevisionErrorKind::Invariant,
         };
-        Self::new(kind, message)
+        Self::new(kind, error.to_string())
     }
 }
 
@@ -351,7 +347,7 @@ impl PreparedRevisionReconciliation {
                 cancellation,
                 "prepared revision reconciliation wait",
             )
-            .map_err(|error| RetainedRevisionError::wait(deadline, cancellation, error))?;
+            .map_err(RetainedRevisionError::from_deadline_lock)?;
         if *self
             .service
             .machine
@@ -616,11 +612,10 @@ impl SourceRevisionService {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<SourceRevision, String> {
-        let _operation = self.operation.acquire_before(
-            deadline,
-            cancellation,
-            "source revision operation wait",
-        )?;
+        let _operation = self
+            .operation
+            .acquire_before(deadline, cancellation, "source revision operation wait")
+            .map_err(|error| error.to_string())?;
         let ambient_identity = self.ambient_root_identity()?;
         if self.fence.capability() == FenceCapability::Unsupported {
             self.machine
@@ -703,11 +698,14 @@ impl SourceRevisionService {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<SourceRevision, String> {
-        let _operation = self.operation.acquire_before(
-            deadline,
-            cancellation,
-            "retained source revision operation wait",
-        )?;
+        let _operation = self
+            .operation
+            .acquire_before(
+                deadline,
+                cancellation,
+                "retained source revision operation wait",
+            )
+            .map_err(|error| error.to_string())?;
         if root.identity() != self.source_root_identity {
             return Err(
                 "retained source revision capability has a different actor identity".to_string(),
@@ -804,7 +802,7 @@ impl SourceRevisionService {
                 cancellation,
                 "retained source revision observation wait",
             )
-            .map_err(|error| RetainedRevisionError::wait(deadline, cancellation, error))?;
+            .map_err(RetainedRevisionError::from_deadline_lock)?;
         if root.identity() != self.source_root_identity {
             return Err(RetainedRevisionError::new(
                 RetainedRevisionErrorKind::ContainmentIdentity,
@@ -880,7 +878,7 @@ impl SourceRevisionService {
         let _operation = self
             .operation
             .acquire_before(deadline, cancellation, "prepared revision planning wait")
-            .map_err(|error| RetainedRevisionError::wait(deadline, cancellation, error))?;
+            .map_err(RetainedRevisionError::from_deadline_lock)?;
         if root.identity() != self.source_root_identity || root.identity() != lease.root_identity {
             return Err(RetainedRevisionError::new(
                 RetainedRevisionErrorKind::ContainmentIdentity,
@@ -1552,6 +1550,12 @@ fn scan_retained_directory(
         })?;
     #[cfg(test)]
     run_retained_scan_test_mutation(RetainedScanTestMutationPoint::AfterDirectoryEnumeration);
+    let child_name_comparator = directory.child_name_comparator().map_err(|error| {
+        RetainedRevisionError::new(
+            RetainedRevisionErrorKind::Provider,
+            format!("retained child-name policy cannot be proven: {error}"),
+        )
+    })?;
     for name in &names {
         retained_revision_checkpoint(context.deadline, context.cancellation)?;
         state.entries = state
@@ -1567,8 +1571,8 @@ fn scan_retained_directory(
                     ),
                 )
             })?;
-        if directory
-            .child_names_equivalent(name, OsStr::new(GENERATED_DIR_NAME))
+        if child_name_comparator
+            .names_equivalent(name, OsStr::new(GENERATED_DIR_NAME))
             .map_err(|error| {
                 RetainedRevisionError::new(
                     RetainedRevisionErrorKind::Provider,
@@ -1935,7 +1939,10 @@ fn is_source_file(path: &Path) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+    use crate::infrastructure::platform::filesystem::{
+        retained_directory_case_policy_queries_for_test,
+        set_retained_directory_case_policy_for_test, RetainedDirectoryCapability,
+    };
     use crate::infrastructure::platform::testing::{
         create_dir_symlink_for_test, create_file_symlink_for_test,
     };
@@ -3542,6 +3549,59 @@ pub(crate) mod tests {
         assert!(
             aggregate_error.contains("aggregate byte limit"),
             "{aggregate_error}"
+        );
+    }
+
+    #[test]
+    fn retained_scan_resolves_child_name_policy_once_per_directory() {
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("source");
+        let nested = source.join("Nested");
+        fs::create_dir_all(&nested).unwrap();
+        for index in 0..8 {
+            fs::write(source.join(format!("Root{index}.xml")), b"root").unwrap();
+        }
+        for index in 0..6 {
+            fs::write(nested.join(format!("Nested{index}.xml")), b"nested").unwrap();
+        }
+        let generated_alias = nested.join(".BUILD/unica");
+        fs::create_dir_all(&generated_alias).unwrap();
+        fs::write(generated_alias.join("Forged.bsl"), b"generated").unwrap();
+        let retained = RetainedDirectoryCapability::open(&fs::canonicalize(&source).unwrap())
+            .expect("retain source");
+        let retained_nested = retained
+            .retain_directory_child(OsStr::new("Nested"))
+            .expect("retain nested source directory");
+        let root_identity = retained.identity();
+        let nested_identity = retained_nested.identity();
+        let _policy = set_retained_directory_case_policy_for_test(move |identity| {
+            if identity == root_identity {
+                Some(true)
+            } else if identity == nested_identity {
+                Some(false)
+            } else {
+                Some(true)
+            }
+        });
+
+        let manifest = scan_retained_source_manifest_with_limits(
+            &retained,
+            ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+            &CancellationToken::new(),
+            RetainedScanLimits::new(32, 32, 1024),
+        )
+        .expect("fixture scan");
+
+        assert!(
+            manifest
+                .keys()
+                .all(|path| !path.starts_with("Nested/.BUILD")),
+            "the nested parent policy did not prune its generated-name identity"
+        );
+        assert_eq!(
+            retained_directory_case_policy_queries_for_test(),
+            2,
+            "one native child-name policy lookup is allowed per scanned retained directory"
         );
     }
 
