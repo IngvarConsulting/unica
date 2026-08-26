@@ -1,6 +1,6 @@
 ---
 id: INV.APP.WORKSPACE-ACTOR-IDENTITY
-status: active
+status: superseded
 governs: product
 decision: DEC.2026-08-23.WORKSPACE-ACTOR-SLICE
 check: crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots

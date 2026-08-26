@@ -2699,6 +2699,11 @@ mod tests {
 
         let state = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+        )
+        .unwrap();
         let state_root = std::fs::canonicalize(state.path()).unwrap();
         let workspace_hint = std::fs::canonicalize(workspace.path())
             .unwrap()

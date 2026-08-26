@@ -145,7 +145,20 @@ mod tests {
     }
 
     fn server_config(root: PathBuf, identity: CoreIdentity) -> DaemonServerConfig {
+        ensure_platform_xml_workspace(&root);
         DaemonServerConfig::new(physical_root(&root), identity, Duration::from_millis(350))
+    }
+
+    fn ensure_platform_xml_workspace(root: &std::path::Path) {
+        let project = root.join("v8project.yaml");
+        if project.exists() {
+            return;
+        }
+        std::fs::write(
+            project,
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+        )
+        .unwrap();
     }
 
     fn physical_root(root: &std::path::Path) -> PathBuf {
@@ -1161,6 +1174,7 @@ mod tests {
     fn durability_uncertainty_stops_the_daemon_before_idle_grace() {
         let root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
+        ensure_platform_xml_workspace(workspace.path());
         let physical = physical_root(root.path());
         let identity = CoreIdentity::production();
         let store = Arc::new(DaemonMemoryStore::default());
@@ -1221,6 +1235,7 @@ mod tests {
         let executions = state_root.join("executions.log");
         std::fs::create_dir(&store_root).unwrap();
         std::fs::create_dir(&workspace).unwrap();
+        ensure_platform_xml_workspace(&workspace);
         let identity = CoreIdentity::production();
 
         let mut faulting =
@@ -1422,6 +1437,7 @@ mod tests {
     fn daemon_default_keeps_the_hidden_v13_service_dormant_before_task22() {
         let daemon_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
+        ensure_platform_xml_workspace(workspace.path());
         let identity = CoreIdentity::production();
         let config = server_config(daemon_root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
@@ -1462,6 +1478,8 @@ mod tests {
         let daemon_root = tempfile::tempdir().unwrap();
         let workspace_a = tempfile::tempdir().unwrap();
         let workspace_b = tempfile::tempdir().unwrap();
+        ensure_platform_xml_workspace(workspace_a.path());
+        ensure_platform_xml_workspace(workspace_b.path());
         std::fs::write(workspace_a.path().join("Module.bsl"), b"workspace A").unwrap();
         std::fs::write(workspace_b.path().join("Module.bsl"), b"workspace B").unwrap();
         let identity = CoreIdentity::production();
@@ -1519,6 +1537,7 @@ mod tests {
         let workspace_parent = tempfile::tempdir().unwrap();
         let workspace = workspace_parent.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
+        ensure_platform_xml_workspace(&workspace);
         std::fs::write(workspace.join("Module.bsl"), b"initial").unwrap();
         let identity = CoreIdentity::production();
         let (entered, entered_wait) = mpsc::channel();

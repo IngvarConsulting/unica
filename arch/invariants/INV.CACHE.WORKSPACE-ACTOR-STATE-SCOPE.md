@@ -1,6 +1,6 @@
 ---
 id: INV.CACHE.WORKSPACE-ACTOR-STATE-SCOPE
-status: active
+status: superseded
 governs: product
 decision: DEC.2026-08-23.WORKSPACE-ACTOR-SLICE
 check: crates/unica-coder/src/infrastructure/workspace_actor.rs::remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state

@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-08-23.WORKSPACE-ACTOR-SLICE
-status: active
+status: superseded
 governs: product
 realized: crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-08-26.ACTOR-AUTHENTICATED-SOURCE-PROFILE-SLICE
 establishes: [INV.APP.WORKSPACE-ACTOR-CAPABILITIES, INV.APP.WORKSPACE-ACTOR-IDENTITY, INV.CACHE.WORKSPACE-ACTOR-STATE-SCOPE]
 design: docs/design/2026-08-23-v0-13-execution-surface-design.md
 ---

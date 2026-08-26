@@ -1,6 +1,6 @@
 ---
 id: INV.APP.WORKSPACE-ACTOR-CAPABILITIES
-status: active
+status: superseded
 governs: product
 decision: DEC.2026-08-23.WORKSPACE-ACTOR-SLICE
 check: crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication

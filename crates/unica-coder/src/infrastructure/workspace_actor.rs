@@ -7,6 +7,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::events::DomainEvent;
 use crate::domain::invocation::SafeIdentityHash;
+use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::deadline_lock::{
@@ -119,18 +120,48 @@ pub(crate) struct WorkspaceIdentity {
 pub(crate) struct WorkspaceSourceSetIdentity {
     name: String,
     root: PathBuf,
+    kind: SourceSetKind,
+    source_format: SourceFormat,
+    source_profile: SourceProfile,
+}
+
+/// Complete typed source-set input. The registry canonicalizes and retains its
+/// root before it becomes actor authority.
+#[derive(Debug, Clone)]
+pub(crate) struct WorkspaceSourceSetInput {
+    name: String,
+    root: PathBuf,
+    kind: SourceSetKind,
+    source_format: SourceFormat,
+    source_profile: SourceProfile,
+}
+
+impl WorkspaceSourceSetInput {
+    pub(crate) fn new(
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        kind: SourceSetKind,
+        source_format: SourceFormat,
+        source_profile: SourceProfile,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            root: root.into(),
+            kind,
+            source_format,
+            source_profile,
+        }
+    }
 }
 
 impl WorkspaceIdentity {
-    pub(crate) fn new<I, N, P>(
+    pub(crate) fn new<I>(
         context: &WorkspaceContext,
         source_sets: I,
         provider_profile: &str,
     ) -> Result<Self, String>
     where
-        I: IntoIterator<Item = (N, P)>,
-        N: AsRef<str>,
-        P: AsRef<Path>,
+        I: IntoIterator<Item = WorkspaceSourceSetInput>,
     {
         if provider_profile.trim().is_empty() || provider_profile.chars().any(char::is_control) {
             return Err("workspace provider profile must be non-empty text".to_string());
@@ -138,14 +169,17 @@ impl WorkspaceIdentity {
         let workspace_root = normalize_path_identity(&context.workspace_root)?;
         let mut source_sets = source_sets
             .into_iter()
-            .map(|(name, root)| {
-                let name = name.as_ref();
+            .map(|source_set| {
+                let name = source_set.name;
                 if name.trim().is_empty() || name.chars().any(char::is_control) {
                     return Err("workspace source-set name must be non-empty text".to_string());
                 }
                 Ok(WorkspaceSourceSetIdentity {
-                    name: name.to_string(),
-                    root: normalize_path_identity(root.as_ref())?,
+                    name,
+                    root: normalize_path_identity(&source_set.root)?,
+                    kind: source_set.kind,
+                    source_format: source_set.source_format,
+                    source_profile: source_set.source_profile,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -198,13 +232,22 @@ impl WorkspaceIdentity {
 
     fn state_scope_hash(&self) -> Result<[u8; 32], String> {
         let mut digest = Sha256::new();
-        digest.update(b"unica-workspace-actor-state-v1\0");
+        digest.update(b"unica-workspace-actor-state-v2\0");
         update_digest_path(&mut digest, &self.workspace_root)?;
         digest.update((self.source_sets.len() as u64).to_le_bytes());
         for source_set in &self.source_sets {
+            digest.update(b"source-set-name\0");
             update_digest_text(&mut digest, &source_set.name);
+            digest.update(b"source-set-root\0");
             update_digest_path(&mut digest, &source_set.root)?;
+            digest.update(b"source-set-kind\0");
+            digest.update([source_set.kind.stable_discriminant()]);
+            digest.update(b"source-format\0");
+            digest.update([source_set.source_format.stable_discriminant()]);
+            digest.update(b"source-profile\0");
+            digest.update(source_set.source_profile.stable_discriminants());
         }
+        digest.update(b"provider-profile\0");
         update_digest_text(&mut digest, &self.provider_profile);
         Ok(digest.finalize().into())
     }
@@ -261,6 +304,22 @@ impl std::fmt::Debug for ProviderRootBinding {
 }
 
 impl ProviderRootBinding {
+    pub(crate) fn source_set_name(&self) -> &str {
+        &self.source_set.name
+    }
+
+    pub(crate) const fn source_kind(&self) -> SourceSetKind {
+        self.source_set.kind
+    }
+
+    pub(crate) const fn source_format(&self) -> SourceFormat {
+        self.source_set.source_format
+    }
+
+    pub(crate) const fn source_profile(&self) -> SourceProfile {
+        self.source_set.source_profile
+    }
+
     pub(super) fn source_root(&self) -> &Path {
         self.source_root.path()
     }
@@ -1769,16 +1828,14 @@ impl Default for WorkspaceActorRegistry {
 }
 
 impl WorkspaceActorRegistry {
-    pub(crate) fn get_or_create<I, N, P>(
+    pub(crate) fn get_or_create<I>(
         &self,
         context: &WorkspaceContext,
         source_sets: I,
         provider_profile: &str,
     ) -> Result<Arc<WorkspaceActor>, WorkspaceActorRegistryError>
     where
-        I: IntoIterator<Item = (N, P)>,
-        N: AsRef<str>,
-        P: AsRef<Path>,
+        I: IntoIterator<Item = WorkspaceSourceSetInput>,
     {
         let identity = WorkspaceIdentity::new(context, source_sets, provider_profile)
             .map_err(WorkspaceActorRegistryError::InvalidIdentity)?;
@@ -1868,14 +1925,14 @@ pub(crate) mod tests {
     use super::{
         set_apply_dry_run_after_confirmation_hook, ApplyAdmission, ApplyEffectDisposition,
         ApplyEffectReceipt, PreparedApplyBatch, WorkspaceActorRegistry,
-        WorkspaceActorRegistryError, WorkspaceIdentity,
+        WorkspaceActorRegistryError, WorkspaceIdentity, WorkspaceSourceSetInput,
     };
     use crate::domain::address::QualifiedAddress;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::events::DomainEventKind;
     use crate::domain::platform_profile::PlatformProfile;
-    use crate::domain::project_sources::SourceSetKind;
+    use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::apply::ApplyStagingErrorKind;
     use crate::infrastructure::native_operations::event::{
@@ -1902,6 +1959,16 @@ pub(crate) mod tests {
     use std::sync::Arc;
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    fn source_input(name: &str, root: impl AsRef<Path>) -> WorkspaceSourceSetInput {
+        WorkspaceSourceSetInput::new(
+            name,
+            root.as_ref(),
+            SourceSetKind::Configuration,
+            SourceFormat::PlatformXml,
+            SourceProfile::platform_xml_8_3_27_format_2_20(),
+        )
+    }
 
     thread_local! {
         static SUPPORT_POLICY_ACTOR_TEST_NOW: Cell<Instant> = Cell::new(Instant::now());
@@ -2808,7 +2875,8 @@ pub(crate) mod tests {
         let source = root.join("src");
         std::fs::create_dir_all(&source).unwrap();
         let context = context(&root);
-        let identity = WorkspaceIdentity::new(&context, [("main", &source)], "profile").unwrap();
+        let identity =
+            WorkspaceIdentity::new(&context, [source_input("main", &source)], "profile").unwrap();
         let first = super::WorkspaceActor::new(identity.clone(), context.clone()).unwrap();
         let second = super::WorkspaceActor::new(identity, context).unwrap();
         let binding = first.bind_provider_root("main", &source).unwrap();
@@ -2832,7 +2900,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication() {
+    pub(crate) fn workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication() {
         use crate::infrastructure::platform::testing::{
             create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
         };
@@ -2847,11 +2915,15 @@ pub(crate) mod tests {
         let context = context(&root);
         assert!(WorkspaceIdentity::new(
             &context,
-            [("main", &source), ("alias", &source)],
+            [
+                source_input("main", &source),
+                source_input("alias", &source)
+            ],
             "profile",
         )
         .is_err());
-        let identity = WorkspaceIdentity::new(&context, [("main", &source)], "profile").unwrap();
+        let identity =
+            WorkspaceIdentity::new(&context, [source_input("main", &source)], "profile").unwrap();
         let first = super::WorkspaceActor::new(identity.clone(), context.clone()).unwrap();
         let second = super::WorkspaceActor::new(identity, context).unwrap();
         let binding = first.bind_provider_root("main", &source).unwrap();
@@ -2933,21 +3005,27 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn duplicate_physical_root_names_are_rejected_as_ambiguous() {
+    pub(crate) fn duplicate_physical_root_names_are_rejected_as_ambiguous() {
         let root = temp_root("duplicate-physical-root");
         let source = root.join("src");
         std::fs::create_dir_all(&source).unwrap();
         let context = context(&root);
 
-        let result =
-            WorkspaceIdentity::new(&context, [("main", &source), ("alias", &source)], "profile");
+        let result = WorkspaceIdentity::new(
+            &context,
+            [
+                source_input("main", &source),
+                source_input("alias", &source),
+            ],
+            "profile",
+        );
 
         assert!(result.is_err(), "duplicate physical root was accepted");
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state() {
+    pub(crate) fn remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state() {
         let root = temp_root("state-scope-separation");
         let source = root.join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -2962,7 +3040,8 @@ pub(crate) mod tests {
             ("renamed", "program"),
             ("main", "program-and-service"),
         ] {
-            let identity = WorkspaceIdentity::new(&context, [(name, &source)], profile).unwrap();
+            let identity =
+                WorkspaceIdentity::new(&context, [source_input(name, &source)], profile).unwrap();
             let actor = super::WorkspaceActor::new(identity, context.clone()).unwrap();
             let binding = actor.bind_provider_root(name, &source).unwrap();
             actor
@@ -2996,8 +3075,18 @@ pub(crate) mod tests {
             crate::infrastructure::source_revision::SourceRevisionService::new(&context, &source)
                 .unwrap();
         legacy_direct.snapshot(deadline(), &cancellation).unwrap();
-        let legacy_identity =
-            WorkspaceIdentity::new(&context, [("main", &source)], "legacy-profile").unwrap();
+        let legacy_identity = WorkspaceIdentity::new(
+            &context,
+            [WorkspaceSourceSetInput::new(
+                "main",
+                &source,
+                SourceSetKind::Configuration,
+                SourceFormat::Unknown,
+                SourceProfile::legacy_workspace_service_compatibility(),
+            )],
+            "legacy-profile",
+        )
+        .unwrap();
         let legacy_actor =
             super::WorkspaceActor::with_legacy_runtime(legacy_identity, context.clone(), ())
                 .unwrap();
@@ -3035,6 +3124,9 @@ pub(crate) mod tests {
                 source_sets: vec![super::WorkspaceSourceSetIdentity {
                     name: "main".to_string(),
                     root: source_root,
+                    kind: SourceSetKind::Configuration,
+                    source_format: SourceFormat::PlatformXml,
+                    source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
                 }],
                 provider_profile: "profile".to_string(),
             };
@@ -3074,6 +3166,9 @@ pub(crate) mod tests {
             source_sets: vec![super::WorkspaceSourceSetIdentity {
                 name: "main".to_string(),
                 root: PathBuf::from("/workspace/source"),
+                kind: SourceSetKind::Configuration,
+                source_format: SourceFormat::PlatformXml,
+                source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
             }],
             provider_profile: "profile".to_string(),
         };
@@ -3095,6 +3190,9 @@ pub(crate) mod tests {
             source_sets: vec![super::WorkspaceSourceSetIdentity {
                 name: "main".to_string(),
                 root,
+                kind: SourceSetKind::Configuration,
+                source_format: SourceFormat::PlatformXml,
+                source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
             }],
             provider_profile: "profile".to_string(),
         };
@@ -3107,7 +3205,125 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots() {
+    pub(crate) fn same_name_root_changed_kind_rotates_actor_and_state_scope() {
+        let root = temp_root("typed-kind-identity");
+        let source = root.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        let context = context(&root);
+        let input = |kind| {
+            WorkspaceSourceSetInput::new(
+                "main",
+                &source,
+                kind,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            )
+        };
+        let configuration_identity =
+            WorkspaceIdentity::new(&context, [input(SourceSetKind::Configuration)], "provider")
+                .unwrap();
+        let extension_identity =
+            WorkspaceIdentity::new(&context, [input(SourceSetKind::Extension)], "provider")
+                .unwrap();
+        let registry = WorkspaceActorRegistry::default();
+        let configuration = registry
+            .get_or_create(&context, [input(SourceSetKind::Configuration)], "provider")
+            .unwrap();
+        let extension = registry
+            .get_or_create(&context, [input(SourceSetKind::Extension)], "provider")
+            .unwrap();
+
+        let actor_was_reused = Arc::ptr_eq(&configuration, &extension);
+        let scope_was_reused = configuration_identity.state_scope_digest().unwrap()
+            == extension_identity.state_scope_digest().unwrap();
+        assert!(
+            !actor_was_reused && !scope_was_reused,
+            "changed source kind reused actor={actor_was_reused}, state_scope={scope_was_reused}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    pub(crate) fn same_name_root_changed_format_or_platform_profile_rotates_actor() {
+        let root = temp_root("typed-format-profile-identity");
+        let source = root.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        let context = context(&root);
+        let input = |source_format, source_profile| {
+            WorkspaceSourceSetInput::new(
+                "main",
+                &source,
+                SourceSetKind::Configuration,
+                source_format,
+                source_profile,
+            )
+        };
+        let cases = [
+            (
+                "format",
+                SourceFormat::Edt,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ),
+            (
+                "platform",
+                SourceFormat::PlatformXml,
+                SourceProfile::TestPlatform8_3_28Format2_20,
+            ),
+            (
+                "serialization",
+                SourceFormat::PlatformXml,
+                SourceProfile::TestPlatform8_3_27Format2_21,
+            ),
+        ];
+        let baseline_identity = WorkspaceIdentity::new(
+            &context,
+            [input(
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            )],
+            "provider",
+        )
+        .unwrap();
+        let registry = WorkspaceActorRegistry::default();
+        let baseline = registry
+            .get_or_create(
+                &context,
+                [input(
+                    SourceFormat::PlatformXml,
+                    SourceProfile::platform_xml_8_3_27_format_2_20(),
+                )],
+                "provider",
+            )
+            .unwrap();
+        let mut aliases = Vec::new();
+        for (label, source_format, source_profile) in cases {
+            let changed_identity = WorkspaceIdentity::new(
+                &context,
+                [input(source_format, source_profile)],
+                "provider",
+            )
+            .unwrap();
+            let changed = registry
+                .get_or_create(&context, [input(source_format, source_profile)], "provider")
+                .unwrap();
+            if Arc::ptr_eq(&baseline, &changed)
+                || baseline_identity.state_scope_digest().unwrap()
+                    == changed_identity.state_scope_digest().unwrap()
+            {
+                aliases.push(label);
+            }
+        }
+
+        assert!(
+            aliases.is_empty(),
+            "planner-significant typed source fields aliased baseline identity: {aliases:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    pub(crate) fn workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots(
+    ) {
         let root = temp_root("identity");
         let shared_git = root.join("repository/.git");
         let worktree_a = root.join("worktrees/a");
@@ -3130,8 +3346,8 @@ pub(crate) mod tests {
             .get_or_create(
                 &context_a,
                 [
-                    ("main", worktree_a.join("src-a")),
-                    ("extension", worktree_a.join("src-b")),
+                    source_input("main", worktree_a.join("src-a")),
+                    source_input("extension", worktree_a.join("src-b")),
                 ],
                 "bsl-ls:program",
             )
@@ -3140,8 +3356,8 @@ pub(crate) mod tests {
             .get_or_create(
                 &context_a,
                 [
-                    ("extension", worktree_a.join("src-b")),
-                    ("main", worktree_a.join("src-a")),
+                    source_input("extension", worktree_a.join("src-b")),
+                    source_input("main", worktree_a.join("src-a")),
                 ],
                 "bsl-ls:program",
             )
@@ -3150,8 +3366,8 @@ pub(crate) mod tests {
             .get_or_create(
                 &context_b,
                 [
-                    ("main", worktree_b.join("src-a")),
-                    ("extension", worktree_b.join("src-b")),
+                    source_input("main", worktree_b.join("src-a")),
+                    source_input("extension", worktree_b.join("src-b")),
                 ],
                 "bsl-ls:program",
             )
@@ -3159,7 +3375,7 @@ pub(crate) mod tests {
         let other_roots = registry
             .get_or_create(
                 &context_a,
-                [("main", worktree_a.join("src-a"))],
+                [source_input("main", worktree_a.join("src-a"))],
                 "bsl-ls:program",
             )
             .unwrap();
@@ -3167,8 +3383,8 @@ pub(crate) mod tests {
             .get_or_create(
                 &context_a,
                 [
-                    ("main", worktree_a.join("src-a")),
-                    ("extension", worktree_a.join("src-b")),
+                    source_input("main", worktree_a.join("src-a")),
+                    source_input("extension", worktree_a.join("src-b")),
                 ],
                 "bsl-ls:program-and-service",
             )
@@ -3177,8 +3393,8 @@ pub(crate) mod tests {
             .get_or_create(
                 &context_a,
                 [
-                    ("main", worktree_a.join("src-b")),
-                    ("extension", worktree_a.join("src-a")),
+                    source_input("main", worktree_a.join("src-b")),
+                    source_input("extension", worktree_a.join("src-a")),
                 ],
                 "bsl-ls:program",
             )
@@ -3211,12 +3427,16 @@ pub(crate) mod tests {
         let registry = WorkspaceActorRegistry::default();
 
         let first = registry
-            .get_or_create(&first_context, [("main", &source)], "legacy-bsl-rlm")
+            .get_or_create(
+                &first_context,
+                [source_input("main", &source)],
+                "legacy-bsl-rlm",
+            )
             .unwrap();
         let second = registry
             .get_or_create(
                 &second_context,
-                [("main", root.join("frontend/../src"))],
+                [source_input("main", root.join("frontend/../src"))],
                 "legacy-bsl-rlm",
             )
             .unwrap();
@@ -3236,7 +3456,11 @@ pub(crate) mod tests {
             let source = root.join("src");
             std::fs::create_dir_all(&source).unwrap();
             let actor = registry
-                .get_or_create(&context(&root), [("main", &source)], "canonical-v0.13")
+                .get_or_create(
+                    &context(&root),
+                    [source_input("main", &source)],
+                    "canonical-v0.13",
+                )
                 .unwrap();
             assert_eq!(registry.live_len_for_test().unwrap(), 1);
             drop(actor);
@@ -3258,7 +3482,11 @@ pub(crate) mod tests {
             std::fs::create_dir_all(&source).unwrap();
             actors.push(
                 registry
-                    .get_or_create(&context(&root), [("main", &source)], "canonical-v0.13")
+                    .get_or_create(
+                        &context(&root),
+                        [source_input("main", &source)],
+                        "canonical-v0.13",
+                    )
                     .unwrap(),
             );
         }
@@ -3270,7 +3498,7 @@ pub(crate) mod tests {
             registry
                 .get_or_create(
                     &context(&rejected_root),
-                    [("main", &rejected_source)],
+                    [source_input("main", &rejected_source)],
                     "canonical-v0.13",
                 )
                 .unwrap_err(),
@@ -3282,7 +3510,7 @@ pub(crate) mod tests {
         let admitted = registry
             .get_or_create(
                 &context(&rejected_root),
-                [("main", &rejected_source)],
+                [source_input("main", &rejected_source)],
                 "canonical-v0.13",
             )
             .unwrap();
@@ -3300,13 +3528,17 @@ pub(crate) mod tests {
         std::fs::create_dir_all(root.join("nested")).unwrap();
         let registry = WorkspaceActorRegistry::with_capacity_for_test(1);
         let first = registry
-            .get_or_create(&context(&root), [("main", &source)], "canonical-v0.13")
+            .get_or_create(
+                &context(&root),
+                [source_input("main", &source)],
+                "canonical-v0.13",
+            )
             .unwrap();
         let stale_binding = first.bind_provider_root("main", &source).unwrap();
         let alias = registry
             .get_or_create(
                 &context(&root.join("nested/..")),
-                [("main", root.join("nested/../src"))],
+                [source_input("main", root.join("nested/../src"))],
                 "canonical-v0.13",
             )
             .unwrap();
@@ -3315,7 +3547,11 @@ pub(crate) mod tests {
         drop(alias);
         drop(first);
         let replacement = registry
-            .get_or_create(&context(&root), [("main", &source)], "canonical-v0.13")
+            .get_or_create(
+                &context(&root),
+                [source_input("main", &source)],
+                "canonical-v0.13",
+            )
             .unwrap();
         assert!(replacement.validate_binding(&stale_binding).is_err());
         let _ = std::fs::remove_dir_all(root);
@@ -3406,8 +3642,12 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&source).unwrap();
         let mut actor_context = context(&root);
         actor_context.cache_root = cache;
-        let identity =
-            WorkspaceIdentity::new(&actor_context, [("src", &source)], "test-provider").unwrap();
+        let identity = WorkspaceIdentity::new(
+            &actor_context,
+            [source_input("src", &source)],
+            "test-provider",
+        )
+        .unwrap();
         let actor = super::WorkspaceActor::new(identity, actor_context).unwrap();
         let binding = actor.bind_provider_root("src", &source).unwrap();
 
@@ -3430,8 +3670,12 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("Module.bsl"), b"source").unwrap();
         let actor_context = context(&root);
-        let identity =
-            WorkspaceIdentity::new(&actor_context, [("src", &root)], "test-provider").unwrap();
+        let identity = WorkspaceIdentity::new(
+            &actor_context,
+            [source_input("src", &root)],
+            "test-provider",
+        )
+        .unwrap();
         let actor = super::WorkspaceActor::new(identity, actor_context).unwrap();
         let binding = actor.bind_provider_root("src", &root).unwrap();
 
@@ -3470,8 +3714,12 @@ pub(crate) mod tests {
             return;
         }
         let actor_context = context(&root);
-        let identity =
-            WorkspaceIdentity::new(&actor_context, [("src", &root)], "test-provider").unwrap();
+        let identity = WorkspaceIdentity::new(
+            &actor_context,
+            [source_input("src", &root)],
+            "test-provider",
+        )
+        .unwrap();
         let actor = super::WorkspaceActor::new(identity, actor_context).unwrap();
         let binding = actor.bind_provider_root("src", &root).unwrap();
         let admitted = actor
@@ -3500,8 +3748,12 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("Module.bsl"), b"before").unwrap();
         let actor_context = context(&root);
-        let identity =
-            WorkspaceIdentity::new(&actor_context, [("src", &root)], "test-provider").unwrap();
+        let identity = WorkspaceIdentity::new(
+            &actor_context,
+            [source_input("src", &root)],
+            "test-provider",
+        )
+        .unwrap();
         let actor = super::WorkspaceActor::new(identity, actor_context).unwrap();
         let binding = actor.bind_provider_root("src", &root).unwrap();
         let admitted = actor
@@ -6565,9 +6817,12 @@ pub(crate) mod tests {
         )
         .unwrap();
         let context = context(&workspace);
-        let identity =
-            WorkspaceIdentity::new(&context, [("main", source.as_path())], "test-provider")
-                .unwrap();
+        let identity = WorkspaceIdentity::new(
+            &context,
+            [source_input("main", source.as_path())],
+            "test-provider",
+        )
+        .unwrap();
         let actor = super::WorkspaceActor::new(identity, context).unwrap();
         let binding = actor.bind_provider_root("main", &source).unwrap();
 
@@ -7186,9 +7441,12 @@ pub(crate) mod tests {
             let source = workspace.join("src");
             std::fs::create_dir_all(&source).unwrap();
             let context = context(&workspace);
-            let identity =
-                WorkspaceIdentity::new(&context, [("main", source.as_path())], "test-provider")
-                    .unwrap();
+            let identity = WorkspaceIdentity::new(
+                &context,
+                [source_input("main", source.as_path())],
+                "test-provider",
+            )
+            .unwrap();
             actors.push((
                 Arc::new(super::WorkspaceActor::new(identity, context).unwrap()),
                 source,
@@ -7370,9 +7628,12 @@ pub(crate) mod tests {
             let source = root.join("src");
             std::fs::create_dir_all(&source).unwrap();
             let context = context(&root);
-            let identity =
-                WorkspaceIdentity::new(&context, [("src", source.as_path())], "test-provider")
-                    .unwrap();
+            let identity = WorkspaceIdentity::new(
+                &context,
+                [source_input("src", source.as_path())],
+                "test-provider",
+            )
+            .unwrap();
             let actor = super::WorkspaceActor::new(identity, context).unwrap();
             let binding = actor.bind_provider_root("src", &source).unwrap();
             let before = snapshot_tree(&root);
@@ -7908,7 +8169,10 @@ pub(crate) mod tests {
             std::fs::create_dir_all(source_root).unwrap();
         }
         let context = context(&root);
-        let source_sets = relative_roots.iter().zip(roots.iter());
+        let source_sets = relative_roots
+            .iter()
+            .zip(roots.iter())
+            .map(|(name, root)| source_input(name, root));
         let identity = WorkspaceIdentity::new(&context, source_sets, "test-provider").unwrap();
         let actor = Arc::new(super::WorkspaceActor::new(identity, context).unwrap());
         ActorFixture { root, roots, actor }

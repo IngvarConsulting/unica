@@ -7,7 +7,6 @@ use crate::application::v13::view::{ViewRequest, ViewService};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, InvocationFailure};
-use crate::domain::platform_profile::PlatformProfile;
 use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder};
 use crate::infrastructure::v13_read::LogicalViewReadAuthority;
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
@@ -151,7 +150,7 @@ impl CanonicalV13ReadService {
         let authority = LogicalViewReadAuthority::with_read_authority(
             cancellation,
             read,
-            PlatformProfile::v8_3_27(),
+            source.platform_profile,
             source.deadline,
         );
         ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors)).view(request)
@@ -213,7 +212,7 @@ impl CanonicalV13ReadService {
                             source.retained_root,
                             source.revision,
                         ),
-                        PlatformProfile::v8_3_27(),
+                        source.platform_profile,
                         source.deadline,
                     ),
                 )

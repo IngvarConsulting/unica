@@ -22,7 +22,7 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{
     DomainResult, InvocationFailure, InvocationOutcome, SafeIdentityHash,
 };
-use crate::domain::project_sources::{SourceFormat, SourceSetKind};
+use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
 use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
 use crate::infrastructure::source_roots::normalize_contained_source_root;
@@ -30,6 +30,7 @@ use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
     IndexWorkIdentity, ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry,
     WorkspaceActorRegistryError, WorkspaceLogicalReadFence, WorkspaceRevisionFence,
+    WorkspaceSourceSetInput,
 };
 use std::collections::HashSet;
 use std::io::{self, BufReader, Write};
@@ -66,8 +67,6 @@ pub(crate) struct ActorBoundInvocation {
 #[allow(dead_code)]
 #[derive(Clone)]
 struct ActorReadSourceBinding {
-    name: String,
-    kind: SourceSetKind,
     binding: ProviderRootBinding,
 }
 
@@ -75,6 +74,9 @@ struct ActorReadSourceBinding {
 pub(crate) struct ActorReadSourceCapability {
     pub(crate) name: String,
     pub(crate) kind: SourceSetKind,
+    pub(crate) source_format: SourceFormat,
+    pub(crate) source_profile: SourceProfile,
+    pub(crate) platform_profile: crate::domain::platform_profile::PlatformProfile,
     pub(crate) identity: String,
     pub(crate) retained_root:
         Arc<crate::infrastructure::platform::filesystem::RetainedDirectoryCapability>,
@@ -83,8 +85,6 @@ pub(crate) struct ActorReadSourceCapability {
 }
 
 struct ActorLogicalReadSourceLease {
-    name: String,
-    kind: SourceSetKind,
     binding: ProviderRootBinding,
     fence: WorkspaceLogicalReadFence,
 }
@@ -138,7 +138,9 @@ impl ActorBoundInvocation {
                                 Ok(address) => match self
                                 .read_sources
                                 .iter()
-                                .find(|source| source.name == address.source_set())
+                                .find(|source| {
+                                    source.binding.source_set_name() == address.source_set()
+                                })
                             {
                                 Some(source) => (vec![source], ActorLogicalReadRoute::Admitted),
                                     None => (
@@ -193,8 +195,6 @@ impl ActorBoundInvocation {
                         cancellation,
                     )?;
                     sources.push(ActorLogicalReadSourceLease {
-                        name: source.name.clone(),
-                        kind: source.kind,
                         binding: source.binding.clone(),
                         fence,
                     });
@@ -257,13 +257,20 @@ impl ActorBoundExecution {
             .iter()
             .map(|source| {
                 self.invocation.actor.validate_binding(&source.binding)?;
+                let source_profile = source.binding.source_profile();
+                let platform_profile = source_profile.platform_profile().ok_or_else(|| {
+                    "actor-bound logical source has no supported platform profile".to_string()
+                })?;
                 Ok(ActorReadSourceCapability {
-                    name: source.name.clone(),
-                    kind: source.kind,
+                    name: source.binding.source_set_name().to_string(),
+                    kind: source.binding.source_kind(),
+                    source_format: source.binding.source_format(),
+                    source_profile,
+                    platform_profile,
                     identity: format!(
                         "{}:{}",
                         self.invocation.workspace_identity_hash.as_str(),
-                        source.name
+                        source.binding.source_set_name()
                     ),
                     retained_root: source.binding.retained_root(),
                     revision: source.fence.revision(),
@@ -443,6 +450,43 @@ fn bind_workspace_invocation(
     runtime_service: Option<Arc<RuntimeJobService>>,
     response_deadline: InvocationResponseDeadline,
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
+    bind_workspace_invocation_controlled(
+        request,
+        actors,
+        ActorInvocationResources {
+            deliveries,
+            provider_hosts,
+            runtime_resources,
+            runtime_service,
+        },
+        response_deadline,
+        |_| {},
+    )
+}
+
+struct ActorInvocationResources {
+    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+    provider_hosts: Arc<ProviderHostOwner>,
+    runtime_resources: Arc<RuntimeResourceOwner>,
+    runtime_service: Option<Arc<RuntimeJobService>>,
+}
+
+#[derive(Clone)]
+struct DiscoveredActorSource {
+    name: String,
+    kind: SourceSetKind,
+    source_format: SourceFormat,
+    source_profile: SourceProfile,
+    root: std::path::PathBuf,
+}
+
+fn bind_workspace_invocation_controlled(
+    request: &InvocationRequest,
+    actors: &WorkspaceActorRegistry,
+    resources: ActorInvocationResources,
+    response_deadline: InvocationResponseDeadline,
+    after_actor_admission: impl FnOnce(&mut [DiscoveredActorSource]),
+) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
     let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
         .map_err(|_| WorkspaceAdmissionError::Invalid)?;
     let source_map = discover_project_source_map(&context.workspace_root)
@@ -454,23 +498,31 @@ fn bind_workspace_invocation(
         .map(|source| {
             let root = normalize_contained_source_root(&context.workspace_root, &source.path)
                 .map_err(|_| WorkspaceAdmissionError::Invalid)?;
-            Ok((source.name, source.kind, root))
+            Ok(DiscoveredActorSource {
+                name: source.name,
+                kind: source.kind,
+                source_format: source.source_format,
+                source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
+                root,
+            })
         })
         .collect::<Result<Vec<_>, WorkspaceAdmissionError>>()?;
     if admitted_sources.is_empty() {
-        admitted_sources.push((
-            "main".to_string(),
-            SourceSetKind::Configuration,
-            context.workspace_root.clone(),
-        ));
+        return Err(WorkspaceAdmissionError::Invalid);
     }
-    admitted_sources.sort_by(|left, right| left.0.cmp(&right.0));
+    admitted_sources.sort_by(|left, right| left.name.cmp(&right.name));
     let actor = actors
         .get_or_create(
             &context,
-            admitted_sources
-                .iter()
-                .map(|(name, _, root)| (name.as_str(), root)),
+            admitted_sources.iter().map(|source| {
+                WorkspaceSourceSetInput::new(
+                    source.name.clone(),
+                    source.root.clone(),
+                    source.kind,
+                    source.source_format,
+                    source.source_profile,
+                )
+            }),
             "canonical-v0.13",
         )
         .map_err(|error| match error {
@@ -478,22 +530,19 @@ fn bind_workspace_invocation(
             WorkspaceActorRegistryError::InvalidIdentity(_) => WorkspaceAdmissionError::Invalid,
             WorkspaceActorRegistryError::Poisoned => WorkspaceAdmissionError::RegistryFailed,
         })?;
+    after_actor_admission(&mut admitted_sources);
     let read_sources = admitted_sources
         .iter()
-        .map(|(name, kind, root)| {
+        .map(|source| {
             actor
-                .bind_provider_root(name, root)
-                .map(|binding| ActorReadSourceBinding {
-                    name: name.clone(),
-                    kind: *kind,
-                    binding,
-                })
+                .bind_provider_root(&source.name, &source.root)
+                .map(|binding| ActorReadSourceBinding { binding })
                 .map_err(|_| WorkspaceAdmissionError::Invalid)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let provider_root = read_sources
         .iter()
-        .find(|source| source.name == "main")
+        .find(|source| source.binding.source_set_name() == "main")
         .or_else(|| read_sources.first())
         .map(|source| source.binding.clone())
         .ok_or(WorkspaceAdmissionError::Invalid)?;
@@ -508,10 +557,10 @@ fn bind_workspace_invocation(
         provider_root,
         read_sources: Arc::from(read_sources),
         workspace_identity_hash,
-        deliveries,
-        provider_hosts,
-        runtime_resources,
-        runtime_service,
+        deliveries: resources.deliveries,
+        provider_hosts: resources.provider_hosts,
+        runtime_resources: resources.runtime_resources,
+        runtime_service: resources.runtime_service,
     })
 }
 
@@ -1514,6 +1563,220 @@ pub(crate) mod actor_capacity_tests {
         LOGICAL_READ_NOW.with(|current| *current.borrow_mut() = Some(now));
     }
 
+    #[test]
+    pub(crate) fn provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Items"}),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let invocation = bind_workspace_invocation_controlled(
+            &request,
+            &runtime.workspace_actors,
+            ActorInvocationResources {
+                deliveries: Arc::clone(&runtime.deliveries),
+                provider_hosts: Arc::clone(&runtime.provider_hosts),
+                runtime_resources: Arc::clone(&runtime.runtime_resources),
+                runtime_service: None,
+            },
+            runtime.capture_response_deadline(),
+            |sources| {
+                sources[0].kind = SourceSetKind::Extension;
+                sources[0].source_format = SourceFormat::Edt;
+                sources[0].source_profile = SourceProfile::TestPlatform8_3_28Format2_20;
+            },
+        )
+        .unwrap();
+        let binding = invocation.read_sources[0].binding.clone();
+        let execution = invocation
+            .begin_execution(&CancellationToken::new())
+            .unwrap();
+        let capability = execution.read_sources().unwrap().remove(0);
+
+        assert_eq!(capability.name, binding.source_set_name());
+        assert_eq!(capability.kind, binding.source_kind());
+        assert_eq!(capability.source_format, binding.source_format());
+        assert_eq!(capability.source_profile, binding.source_profile());
+    }
+
+    #[test]
+    pub(crate) fn subsequent_daemon_invocation_after_same_root_kind_change_gets_new_actor_identity()
+    {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        let project = workspace.path().join("v8project.yaml");
+        let write_project = |kind: &str| {
+            std::fs::write(
+                &project,
+                format!(
+                    "format: DESIGNER\nsource-set:\n  - name: main\n    type: {kind}\n    path: src\n"
+                ),
+            )
+            .unwrap();
+        };
+        write_project("CONFIGURATION");
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Items"}),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let bind = || {
+            bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline(),
+            )
+            .unwrap()
+        };
+        let configuration = bind();
+        write_project("EXTENSION");
+        let extension = bind();
+
+        assert!(
+            !Arc::ptr_eq(&configuration.actor, &extension.actor),
+            "subsequent semantic kind change reused the live actor"
+        );
+        assert_ne!(
+            configuration.workspace_identity_hash, extension.workspace_identity_hash,
+            "durable daemon workspace identity ignored the changed source kind"
+        );
+    }
+
+    #[test]
+    pub(crate) fn v13_daemon_rejects_unproved_edt_invalid_or_empty_platform_fallback() {
+        let task_root = tempfile::tempdir().unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        let edt = tempfile::tempdir().unwrap();
+        let invalid = tempfile::tempdir().unwrap();
+
+        let edt_source = edt.path().join("src");
+        std::fs::create_dir_all(&edt_source).unwrap();
+        std::fs::write(
+            edt.path().join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+
+        let invalid_source = invalid.path().join("src");
+        std::fs::create_dir_all(&invalid_source).unwrap();
+        std::fs::write(
+            invalid.path().join("v8project.yaml"),
+            "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            invalid_source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(invalid_source.join(".project"), "edt marker").unwrap();
+
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let mut admitted = Vec::new();
+        for (label, workspace) in [
+            ("empty", empty.path()),
+            ("edt", edt.path()),
+            ("invalid", invalid.path()),
+        ] {
+            let request = InvocationRequest::new(
+                ToolIdentity::View,
+                serde_json::json!({"at": "main:Catalog.Items"}),
+                std::fs::canonicalize(workspace).unwrap().to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            if bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline(),
+            )
+            .is_ok()
+            {
+                admitted.push(label);
+            }
+        }
+
+        assert!(
+            admitted.is_empty(),
+            "unproved source maps entered canonical Platform XML admission: {admitted:?}"
+        );
+    }
+
+    #[test]
+    pub(crate) fn actor_authenticated_source_profile_contract_is_complete() {
+        crate::infrastructure::workspace_actor::tests::same_name_root_changed_kind_rotates_actor_and_state_scope();
+        crate::infrastructure::workspace_actor::tests::same_name_root_changed_format_or_platform_profile_rotates_actor();
+        crate::infrastructure::workspace_actor::tests::workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots();
+        crate::infrastructure::workspace_actor::tests::duplicate_physical_root_names_are_rejected_as_ambiguous();
+        provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile();
+        subsequent_daemon_invocation_after_same_root_kind_change_gets_new_actor_identity();
+        v13_daemon_rejects_unproved_edt_invalid_or_empty_platform_fallback();
+        hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once();
+    }
+
     struct ManualInvocationClock(Mutex<Instant>);
 
     impl ManualInvocationClock {
@@ -1591,7 +1854,7 @@ pub(crate) mod actor_capacity_tests {
         let sibling_binding = invocation
             .read_sources
             .iter()
-            .find(|source| source.name == "dep")
+            .find(|source| source.binding.source_set_name() == "dep")
             .unwrap()
             .binding
             .clone();
@@ -2492,10 +2755,24 @@ pub(crate) mod actor_capacity_tests {
         runtime: &DaemonInvocationRuntime,
         request: InvocationRequest,
     ) -> Result<InvocationResponse, DaemonInvocationError> {
+        ensure_platform_xml_workspace(request.workspace_hint());
         let response_deadline = runtime
             .capture_response_deadline()
             .restrict_to_frontend_budget(Duration::from_millis(request.response_budget_ms()));
         runtime.submit(request, response_deadline)
+    }
+
+    fn ensure_platform_xml_workspace(workspace_hint: &str) {
+        let workspace = std::path::Path::new(workspace_hint);
+        let project = workspace.join("v8project.yaml");
+        if project.exists() {
+            return;
+        }
+        std::fs::write(
+            project,
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2939,7 +3216,17 @@ pub(crate) mod actor_capacity_tests {
             admissions.push(std::thread::spawn(move || {
                 barrier.wait();
                 registry
-                    .get_or_create(&context, [("main", &root)], "canonical-v0.13")
+                    .get_or_create(
+                        &context,
+                        [WorkspaceSourceSetInput::new(
+                            "main",
+                            &root,
+                            SourceSetKind::Configuration,
+                            SourceFormat::PlatformXml,
+                            SourceProfile::platform_xml_8_3_27_format_2_20(),
+                        )],
+                        "canonical-v0.13",
+                    )
                     .unwrap()
             }));
         }

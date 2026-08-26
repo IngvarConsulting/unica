@@ -1,6 +1,7 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
@@ -14,6 +15,7 @@ use crate::infrastructure::source_roots::{normalize_path_identity, source_genera
 use crate::infrastructure::workspace_actor::WorkspaceActorRuntimeTestProjection;
 use crate::infrastructure::workspace_actor::{
     ProviderRootBinding, WorkspaceActor, WorkspaceActorRuntimeProjection, WorkspaceIdentity,
+    WorkspaceSourceSetInput,
 };
 use crate::infrastructure::workspace_index::{
     ready_index_for_source_revision, rlm_generation_root, rlm_process_environment,
@@ -1600,7 +1602,13 @@ impl WorkspaceServiceRuntime {
         let requester_tasks = Arc::clone(&rlm_maintenance_tasks);
         let actor_identity = WorkspaceIdentity::new(
             &context,
-            [(LEGACY_WORKSPACE_SERVICE_SOURCE_SET, &identity.source_root)],
+            [WorkspaceSourceSetInput::new(
+                LEGACY_WORKSPACE_SERVICE_SOURCE_SET,
+                &identity.source_root,
+                SourceSetKind::Configuration,
+                SourceFormat::Unknown,
+                SourceProfile::legacy_workspace_service_compatibility(),
+            )],
             LEGACY_WORKSPACE_SERVICE_PROVIDER_PROFILE,
         )
         .expect("legacy workspace service identity is already canonical and contained");
