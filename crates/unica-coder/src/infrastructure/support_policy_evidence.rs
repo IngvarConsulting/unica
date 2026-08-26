@@ -348,6 +348,9 @@ impl RetainedSupportPolicyEvidence {
                 }
             }
         }
+        #[cfg(test)]
+        run_support_policy_capture_hook();
+        checkpoint(deadline, cancellation, "support-policy capture")?;
         Ok(Self {
             mode: SupportPolicyMode::Deny,
             candidates,

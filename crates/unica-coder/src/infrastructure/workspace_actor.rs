@@ -7198,6 +7198,59 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn apply_policy_all_absent_capture_rejects_terminal_cancellation_and_deadline_write_free() {
+        let mut observed = Vec::new();
+        for gate in ["cancelled", "deadline"] {
+            let container = temp_root(&format!("apply-policy-all-absent-capture-{gate}"));
+            let root = (0..24).fold(container.clone(), |path, index| {
+                path.join(format!("level-{index}"))
+            });
+            let source = root.join("src");
+            std::fs::create_dir_all(&source).unwrap();
+            let context = context(&root);
+            let identity =
+                WorkspaceIdentity::new(&context, [("src", source.as_path())], "test-provider")
+                    .unwrap();
+            let actor = super::WorkspaceActor::new(identity, context).unwrap();
+            let binding = actor.bind_provider_root("src", &source).unwrap();
+            let before = snapshot_tree(&root);
+            let cancellation = CancellationToken::new();
+            if gate == "cancelled" {
+                let cancel = cancellation.clone();
+                set_support_policy_capture_hook(move || cancel.cancel());
+            } else {
+                set_support_policy_capture_hook(|| {
+                    std::thread::sleep(Duration::from_millis(80));
+                });
+            }
+
+            let result = actor.admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(if gate == "deadline" {
+                    Duration::from_millis(50)
+                } else {
+                    Duration::from_secs(5)
+                }),
+                &cancellation,
+            );
+
+            observed.push(result.err());
+            assert_eq!(snapshot_tree(&root), before, "{gate}");
+            assert!(!root.join(".build/unica").exists(), "{gate}");
+            std::fs::remove_dir_all(container).unwrap();
+        }
+        assert_eq!(
+            observed,
+            [
+                Some("support-policy capture cancelled".to_string()),
+                Some("support-policy capture deadline exceeded".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn apply_policy_deadline_and_cancellation_during_final_validation_roll_back() {
         for gate in ["cancelled", "deadline"] {
             let fixture = actor_fixture(&format!("apply-policy-final-{gate}"), &["src"]);
@@ -7443,6 +7496,7 @@ pub(crate) mod tests {
         apply_policy_foreign_actor_and_sibling_worktree_replay_are_rejected();
         apply_policy_same_ancestor_can_govern_two_worktrees_without_authority_aliasing();
         apply_policy_deadline_and_cancellation_during_capture_are_write_free();
+        apply_policy_all_absent_capture_rejects_terminal_cancellation_and_deadline_write_free();
         apply_policy_deadline_and_cancellation_during_final_validation_roll_back();
         apply_policy_warn_off_deny_database_and_malformed_match_v12();
         crate::infrastructure::support_policy_evidence::tests::support_policy_database_paths_distinguish_nested_sources_from_prefix_siblings();
