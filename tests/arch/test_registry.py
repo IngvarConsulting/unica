@@ -1053,6 +1053,52 @@ class RetainedApplyEffectResultTests(unittest.TestCase):
         self.assertNotIn("CTR.", decision_text)
         self.assertNotIn("wire", invariant_text.lower())
 
+    def test_active_witness_invokes_real_effect_foreign_actor_and_late_gates(self) -> None:
+        source = (
+            REPO_ROOT / "crates/unica-coder/src/infrastructure/workspace_actor.rs"
+        ).read_bytes()
+        parser = Parser(Language(tree_sitter_rust.language()))
+        tree = parser.parse(source)
+        stack = [tree.root_node]
+        witness = None
+        while stack:
+            node = stack.pop()
+            if node.type == "function_item":
+                name = node.child_by_field_name("name")
+                if (
+                    name is not None
+                    and source[name.start_byte : name.end_byte]
+                    == b"retained_apply_effect_result_contract_is_complete"
+                ):
+                    witness = node.child_by_field_name("body")
+                    break
+            stack.extend(node.named_children)
+        self.assertIsNotNone(witness, "active retained-effect witness is absent")
+
+        calls = set()
+        stack = [witness]
+        while stack:
+            node = stack.pop()
+            if node.type == "call_expression":
+                function = node.child_by_field_name("function")
+                if function is not None and function.type == "identifier":
+                    calls.add(source[function.start_byte : function.end_byte].decode())
+            stack.extend(node.named_children)
+
+        required = {
+            "real_effect_foreign_actor_replay_preserves_both_actor_states",
+            "real_effect_mutation_lane_cancellation_preserves_exact_state",
+            "real_effect_mutation_lane_deadline_preserves_exact_state",
+            "real_effect_mid_scan_cancellation_preserves_exact_state",
+            "real_effect_mid_scan_deadline_preserves_exact_state",
+            "real_effect_after_all_postimages_cancellation_rolls_back_exact_state",
+            "real_effect_after_all_postimages_deadline_rolls_back_exact_state",
+        }
+        self.assertFalse(
+            required - calls,
+            f"active retained-effect witness is missing real-effect calls: {sorted(required - calls)}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -718,8 +718,8 @@ impl ApplyPublicationResult {
         &self.cleanup_diagnostics
     }
 
-    pub(crate) const fn effects(&self) -> Option<&ApplyEffectReceipt> {
-        Some(&self.effects)
+    pub(crate) const fn effects(&self) -> &ApplyEffectReceipt {
+        &self.effects
     }
 
     #[cfg(test)]
@@ -5462,9 +5462,7 @@ pub(crate) mod tests {
             .actor
             .publish_prepared_apply(admitted.prepare_with_effects(state, effects).unwrap())
             .unwrap();
-        let receipt = result
-            .effects()
-            .expect("planner effects were discarded at the terminal actor result");
+        let receipt = result.effects();
 
         assert_form_module_effect_subject(receipt, ApplyEffectDisposition::Projected);
         fixture.cleanup();
@@ -5504,9 +5502,7 @@ pub(crate) mod tests {
         let prepared = admitted.prepare_with_effects(state, effects).unwrap();
 
         let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
-        let receipt = result
-            .effects()
-            .expect("dry run discarded the prepared effect receipt");
+        let receipt = result.effects();
 
         assert_form_module_effect_subject(receipt, ApplyEffectDisposition::Projected);
         assert_eq!(result.rev(), admitted_rev);
@@ -5514,12 +5510,7 @@ pub(crate) mod tests {
         assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
         assert_eq!(snapshot_tree(&cache_root), cache_before);
         assert_eq!(service.machine_state_for_test(), machine_before);
-        assert!(std::ptr::eq(
-            receipt,
-            result
-                .effects()
-                .expect("receipt disappeared on repeated access")
-        ));
+        assert!(std::ptr::eq(receipt, result.effects()));
         assert!(
             !cache_root.exists(),
             "dry run created the absent cache root"
@@ -5559,9 +5550,7 @@ pub(crate) mod tests {
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
 
         let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
-        let receipt = result
-            .effects()
-            .expect("successful retained commit discarded its effect receipt");
+        let receipt = result.effects();
 
         assert_form_module_effect_subject(receipt, ApplyEffectDisposition::Committed);
         assert_ne!(result.rev(), admitted_rev);
@@ -5636,9 +5625,7 @@ pub(crate) mod tests {
                 .actor
                 .publish_prepared_apply(admitted.prepare_with_effects(state, effects).unwrap())
                 .unwrap();
-            let receipt = result.effects().unwrap_or_else(|| {
-                panic!("{name} planner effects were discarded by actor publication")
-            });
+            let receipt = result.effects();
             assert_eq!(
                 receipt
                     .events()
@@ -5685,7 +5672,7 @@ pub(crate) mod tests {
                 .actor
                 .publish_prepared_apply(admitted.prepare_with_effects(state, effects).unwrap())
                 .unwrap();
-            let receipt = result.effects().expect("parity receipt is absent");
+            let receipt = result.effects();
             subjects.push((
                 receipt.events().to_vec(),
                 receipt.cache().events.clone(),
@@ -5742,9 +5729,9 @@ pub(crate) mod tests {
                     .unwrap(),
             )
             .unwrap();
-        assert!(
-            control_result.effects().is_some(),
-            "actor path discarded effects before poisoned planning could be distinguished"
+        assert_form_module_effect_subject(
+            control_result.effects(),
+            ApplyEffectDisposition::Projected,
         );
         control.cleanup();
 
@@ -5840,15 +5827,9 @@ pub(crate) mod tests {
 
             let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
 
-            assert_error_has_no_effect_receipt(&error, &cache_root, name);
-            assert!(
-                !error.to_string().contains("FormChanged"),
-                "{name}: {error}"
-            );
-            assert!(
-                !error
-                    .to_string()
-                    .contains(&cache_root.display().to_string()),
+            assert_eq!(
+                error.kind(),
+                super::ApplyPublicationErrorKind::ProviderPostvalidation,
                 "{name}: {error}"
             );
             assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{name}");
@@ -5875,7 +5856,6 @@ pub(crate) mod tests {
         );
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
         assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
-        assert_error_has_no_effect_receipt(&error, &cache_root, "final-cancel");
         assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
         assert_eq!(snapshot_tree(&cache_root), cache_before);
         fixture.cleanup();
@@ -5908,11 +5888,6 @@ pub(crate) mod tests {
         assert_eq!(
             error.kind(),
             super::ApplyPublicationErrorKind::RollbackIncomplete
-        );
-        assert_error_has_no_effect_receipt(
-            &error,
-            &fixture.root.join(".build/unica"),
-            "rollback-incomplete",
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"foreign-form");
         assert!(
@@ -5963,11 +5938,6 @@ pub(crate) mod tests {
             error.kind(),
             super::ApplyPublicationErrorKind::ConcurrentRevision
         );
-        assert_error_has_no_effect_receipt(
-            &error,
-            &fixture.root.join(".build/unica"),
-            "revision-race",
-        );
         assert_eq!(
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
@@ -5996,11 +5966,6 @@ pub(crate) mod tests {
             error.kind(),
             super::ApplyPublicationErrorKind::ContainmentIdentity
         );
-        assert_error_has_no_effect_receipt(
-            &error,
-            &fixture.root.join(".build/unica"),
-            "source-root-race",
-        );
         assert_eq!(
             std::fs::read(fixture.roots[0].join("foreign.txt")).unwrap(),
             b"foreign"
@@ -6018,10 +5983,9 @@ pub(crate) mod tests {
         assert!(!prepared.effects.events.is_empty());
         std::fs::write(fixture.root.join(".build"), b"foreign-cache-parent").unwrap();
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-        assert_error_has_no_effect_receipt(
-            &error,
-            &fixture.root.join(".build/unica"),
-            "cache-root-race",
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
         );
         assert_eq!(
             std::fs::read(fixture.root.join(".build")).unwrap(),
@@ -6046,7 +6010,6 @@ pub(crate) mod tests {
                 prepared.deadline = ProviderDeadline::from_budget(Duration::ZERO);
             }
             let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-            assert_error_has_no_effect_receipt(&error, &fixture.root.join(".build/unica"), gate);
             assert_eq!(
                 error.kind(),
                 if gate == "cancelled" {
@@ -6071,7 +6034,6 @@ pub(crate) mod tests {
         set_apply_dry_run_after_confirmation_hook(move || cancel.cancel());
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
         assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
-        assert_error_has_no_effect_receipt(&error, &fixture.root.join(".build/unica"), "dry-final");
         fixture.cleanup();
 
         let fixture = actor_fixture("effect-race-trust-epoch", &["main"]);
@@ -6095,11 +6057,6 @@ pub(crate) mod tests {
             error.kind(),
             super::ApplyPublicationErrorKind::ConcurrentRevision
         );
-        assert_error_has_no_effect_receipt(
-            &error,
-            &fixture.root.join(".build/unica"),
-            "trust-epoch",
-        );
         assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
         assert_eq!(
             snapshot_tree(&fixture.root.join(".build/unica")),
@@ -6109,7 +6066,356 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn real_effect_foreign_actor_replay_preserves_both_actor_states() {
+        let first = actor_fixture("effect-foreign-actor-first", &["main"]);
+        let second = actor_fixture("effect-foreign-actor-second", &["main"]);
+        write_actor_event_fixture(&first.roots[0]);
+        write_actor_event_fixture(&second.roots[0]);
+        let first_binding = first
+            .actor
+            .bind_provider_root("main", &first.roots[0])
+            .unwrap();
+        let second_binding = second
+            .actor
+            .bind_provider_root("main", &second.roots[0])
+            .unwrap();
+        let first_service = first.actor.source_revision_service(&first_binding).unwrap();
+        let second_service = second
+            .actor
+            .source_revision_service(&second_binding)
+            .unwrap();
+        let prepared =
+            prepare_property_effect_batch(&first, &first_binding, false, &CancellationToken::new());
+        assert_prepared_form_module_effect_subject(&prepared);
+        let first_source_before = snapshot_tree(&first.roots[0]);
+        let first_cache_before = snapshot_tree(&first.root.join(".build/unica"));
+        let first_machine_before = first_service.machine_state_for_test();
+        let second_source_before = snapshot_tree(&second.roots[0]);
+        let second_cache_before = snapshot_tree(&second.root.join(".build/unica"));
+        let second_machine_before = second_service.machine_state_for_test();
+
+        let error = second.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Invariant);
+        assert!(error.contains("another workspace actor"), "{error}");
+        assert_eq!(snapshot_tree(&first.roots[0]), first_source_before);
+        assert_eq!(
+            snapshot_tree(&first.root.join(".build/unica")),
+            first_cache_before
+        );
+        assert_eq!(first_service.machine_state_for_test(), first_machine_before);
+        assert_eq!(snapshot_tree(&second.roots[0]), second_source_before);
+        assert_eq!(
+            snapshot_tree(&second.root.join(".build/unica")),
+            second_cache_before
+        );
+        assert_eq!(
+            second_service.machine_state_for_test(),
+            second_machine_before
+        );
+        first.cleanup();
+        second.cleanup();
+    }
+
+    #[test]
+    fn real_effect_mutation_lane_cancellation_preserves_exact_state() {
+        let fixture = actor_fixture("effect-late-lane-cancel", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let cancellation = CancellationToken::new();
+        let prepared = prepare_property_effect_batch(&fixture, &binding, false, &cancellation);
+        assert_prepared_form_module_effect_subject(&prepared);
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        let owner = fixture.actor.mutation_lane.hold_for_test();
+        let actor = Arc::clone(&fixture.actor);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let publisher = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(actor.publish_prepared_apply(prepared))
+                .unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            result_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "real-effect publication crossed the held mutation lane"
+        );
+        cancellation.cancel();
+
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("late cancellation did not stop real-effect lane wait")
+            .unwrap_err();
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
+        assert!(
+            crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events()
+                .is_empty(),
+            "lane cancellation reached retained publication"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        drop(owner);
+        publisher.join().unwrap();
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn real_effect_mutation_lane_deadline_preserves_exact_state() {
+        let fixture = actor_fixture("effect-late-lane-deadline", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let cancellation = CancellationToken::new();
+        let mut prepared = prepare_property_effect_batch(&fixture, &binding, false, &cancellation);
+        assert_prepared_form_module_effect_subject(&prepared);
+        prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(40));
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        let owner = fixture.actor.mutation_lane.hold_for_test();
+        let cancel_after_deadline = cancellation.clone();
+        crate::infrastructure::deadline_lock::set_after_deadline_error_hook_for_test(move || {
+            std::thread::spawn(move || cancel_after_deadline.cancel())
+                .join()
+                .unwrap();
+        });
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Deadline);
+        assert!(cancellation.is_cancelled());
+        assert!(
+            crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events()
+                .is_empty(),
+            "lane deadline reached retained publication"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        drop(owner);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn real_effect_mid_scan_cancellation_preserves_exact_state() {
+        use crate::infrastructure::source_revision::{
+            set_repeating_retained_scan_test_mutation, RetainedScanTestMutationPoint,
+        };
+
+        let fixture = actor_fixture("effect-mid-scan-cancel", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let cancellation = CancellationToken::new();
+        let prepared = prepare_property_effect_batch(&fixture, &binding, false, &cancellation);
+        assert_prepared_form_module_effect_subject(&prepared);
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        let scan_ran = Arc::new(AtomicBool::new(false));
+        let scan_observed = Arc::clone(&scan_ran);
+        let scan_count = Arc::new(AtomicUsize::new(0));
+        let scan_counter = Arc::clone(&scan_count);
+        let cancel_during_scan = cancellation.clone();
+        let _mutation = set_repeating_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
+            move || {
+                if scan_counter.fetch_add(1, Ordering::AcqRel) == 2 {
+                    scan_observed.store(true, Ordering::Release);
+                    cancel_during_scan.cancel();
+                }
+            },
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert!(scan_ran.load(Ordering::Acquire));
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
+        assert!(
+            crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events()
+                .is_empty(),
+            "mid-scan cancellation reached retained publication"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn real_effect_mid_scan_deadline_preserves_exact_state() {
+        use crate::infrastructure::source_revision::{
+            set_repeating_retained_scan_test_mutation, RetainedScanTestMutationPoint,
+        };
+
+        let fixture = actor_fixture("effect-mid-scan-deadline", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let mut prepared =
+            prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
+        assert_prepared_form_module_effect_subject(&prepared);
+        prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(200));
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        let scan_ran = Arc::new(AtomicBool::new(false));
+        let scan_observed = Arc::clone(&scan_ran);
+        let scan_count = Arc::new(AtomicUsize::new(0));
+        let scan_counter = Arc::clone(&scan_count);
+        let _mutation = set_repeating_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
+            move || {
+                if scan_counter.fetch_add(1, Ordering::AcqRel) == 2 {
+                    scan_observed.store(true, Ordering::Release);
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            },
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert!(scan_ran.load(Ordering::Acquire));
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Deadline);
+        assert!(
+            crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events()
+                .is_empty(),
+            "mid-scan deadline reached retained publication"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn real_effect_after_all_postimages_cancellation_rolls_back_exact_state() {
+        use crate::infrastructure::native_operations::compile_transaction::RetainedApplyObservedEvent;
+
+        let fixture = actor_fixture("effect-after-postimages-cancel", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let cancellation = CancellationToken::new();
+        let prepared = prepare_property_effect_batch(&fixture, &binding, false, &cancellation);
+        assert_prepared_form_module_effect_subject(&prepared);
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        let cancel_after_postimages = cancellation.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || cancel_after_postimages.cancel(),
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
+        let observed = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        assert!(observed
+            .iter()
+            .any(|event| matches!(event, RetainedApplyObservedEvent::StateMarker(_))));
+        assert!(
+            observed
+                .iter()
+                .any(|event| matches!(event, RetainedApplyObservedEvent::Rollback(_))),
+            "after-postimages cancellation did not roll back: {observed:?}"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn real_effect_after_all_postimages_deadline_rolls_back_exact_state() {
+        use crate::infrastructure::native_operations::compile_transaction::RetainedApplyObservedEvent;
+
+        let fixture = actor_fixture("effect-after-postimages-deadline", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let mut prepared =
+            prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
+        assert_prepared_form_module_effect_subject(&prepared);
+        prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(500));
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            || std::thread::sleep(Duration::from_millis(550)),
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Deadline);
+        let observed = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        assert!(observed
+            .iter()
+            .any(|event| matches!(event, RetainedApplyObservedEvent::StateMarker(_))));
+        assert!(
+            observed
+                .iter()
+                .any(|event| matches!(event, RetainedApplyObservedEvent::Rollback(_))),
+            "after-postimages deadline did not roll back: {observed:?}"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
     pub(crate) fn retained_apply_effect_result_contract_is_complete() {
+        let _total_effects_accessor: for<'a> fn(
+            &'a super::ApplyPublicationResult,
+        ) -> &'a ApplyEffectReceipt = super::ApplyPublicationResult::effects;
         prepared_apply_effects_are_retained_from_planner_to_result();
         prepared_apply_dry_run_returns_projected_effect_receipt_without_any_write();
         prepared_apply_success_returns_committed_effect_receipt_after_one_commit();
@@ -6117,6 +6423,13 @@ pub(crate) mod tests {
         event_implement_op_failure_returns_no_effect_receipt_and_preserves_all_state();
         retained_apply_effect_failure_matrix_rolls_back_and_returns_no_receipt();
         retained_apply_effect_races_never_publish_or_return_effects();
+        real_effect_foreign_actor_replay_preserves_both_actor_states();
+        real_effect_mutation_lane_cancellation_preserves_exact_state();
+        real_effect_mutation_lane_deadline_preserves_exact_state();
+        real_effect_mid_scan_cancellation_preserves_exact_state();
+        real_effect_mid_scan_deadline_preserves_exact_state();
+        real_effect_after_all_postimages_cancellation_rolls_back_exact_state();
+        real_effect_after_all_postimages_deadline_rolls_back_exact_state();
     }
 
     fn prepare_property_effect_batch(
@@ -6143,6 +6456,27 @@ pub(crate) mod tests {
         )
         .unwrap();
         admitted.prepare_with_effects(state, effects).unwrap()
+    }
+
+    fn assert_prepared_form_module_effect_subject(prepared: &PreparedApplyBatch) {
+        assert_eq!(
+            prepared.effects.events,
+            [
+                crate::domain::events::DomainEvent::new(
+                    DomainEventKind::FormChanged,
+                    "main:Catalog.Products.Form.Main",
+                ),
+                crate::domain::events::DomainEvent::new(
+                    DomainEventKind::ModuleChanged,
+                    "main:Catalog.Products.Form.Main.Module.Form",
+                ),
+            ]
+        );
+        assert_eq!(prepared.effects.cache.mode, "applied");
+        assert_eq!(
+            prepared.effects.cache.events,
+            ["FormChanged", "ModuleChanged"]
+        );
     }
 
     fn plan_actor_events(
@@ -6204,26 +6538,6 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(cache.refreshed, ["metadata_graph"]);
-    }
-
-    fn assert_error_has_no_effect_receipt(
-        error: &super::ApplyPublicationError,
-        cache_root: &Path,
-        case: &str,
-    ) {
-        let debug = format!("{error:?}");
-        let cache_root = cache_root.display().to_string();
-        for forbidden in [
-            "ApplyEffectReceipt",
-            "FormChanged",
-            "ModuleChanged",
-            cache_root.as_str(),
-        ] {
-            assert!(
-                !debug.contains(forbidden),
-                "{case}: error payload leaked prepared effect subject: {debug}"
-            );
-        }
     }
 
     fn write_actor_event_fixture(root: &Path) {
