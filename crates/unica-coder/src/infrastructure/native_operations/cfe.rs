@@ -5,6 +5,10 @@ use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::metadata_kinds::{
+    metadata_kind_requires_child_objects_8_3_27, supports_command_module,
+    supports_direct_module_role, supports_owner_module,
+};
 use crate::infrastructure::platform_xml_owner::root_version_literal;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -1338,6 +1342,7 @@ pub(crate) struct CfeBorrowIdentity {
     wrapper_uuid: Option<String>,
     this_node: Option<String>,
     generated_types: BTreeMap<String, (Option<String>, Option<String>)>,
+    property_states: Vec<(String, String)>,
 }
 
 impl CfeBorrowIdentity {
@@ -1371,6 +1376,24 @@ impl CfeBorrowIdentity {
                         meta_info_child_text(generated, "ValueId"),
                     ),
                 );
+            }
+            for property_state in internal_info
+                .children()
+                .filter(|node| node.has_tag_name((CFE_PATCH_XR_NAMESPACE, "PropertyState")))
+            {
+                let property = property_state
+                    .children()
+                    .find(|node| node.has_tag_name((CFE_PATCH_XR_NAMESPACE, "Property")))
+                    .and_then(|node| node.text());
+                let state = property_state
+                    .children()
+                    .find(|node| node.has_tag_name((CFE_PATCH_XR_NAMESPACE, "State")))
+                    .and_then(|node| node.text());
+                if let (Some(property), Some(state)) = (property, state) {
+                    identity
+                        .property_states
+                        .push((property.to_string(), state.to_string()));
+                }
             }
         }
         Ok(identity)
@@ -1483,7 +1506,7 @@ pub(crate) fn cfe_borrow_internal_info_xml(
             "Type '{type_name}' has no proven cfe.borrow InternalInfo profile for platform 1C 8.3.27"
         )
     })?;
-    if types.is_empty() {
+    if types.is_empty() && identity.property_states.is_empty() {
         return Ok(format!("{indent}<InternalInfo/>"));
     }
     let mut lines = vec![format!("{indent}<InternalInfo>")];
@@ -1505,6 +1528,18 @@ pub(crate) fn cfe_borrow_internal_info_xml(
         lines.push(format!("{indent}\t\t<xr:ValueId>{value_id}</xr:ValueId>"));
         lines.push(format!("{indent}\t</xr:GeneratedType>"));
     }
+    for (property, state) in &identity.property_states {
+        lines.push(format!("{indent}\t<xr:PropertyState>"));
+        lines.push(format!(
+            "{indent}\t\t<xr:Property>{}</xr:Property>",
+            escape_xml(property)
+        ));
+        lines.push(format!(
+            "{indent}\t\t<xr:State>{}</xr:State>",
+            escape_xml(state)
+        ));
+        lines.push(format!("{indent}\t</xr:PropertyState>"));
+    }
     lines.push(format!("{indent}</InternalInfo>"));
     Ok(lines.join("\n"))
 }
@@ -1516,22 +1551,7 @@ pub(crate) fn cfe_borrow_generated_types(
 }
 
 pub(crate) fn cfe_borrow_type_has_child_objects(type_name: &str) -> bool {
-    matches!(
-        type_name,
-        "Catalog"
-            | "Document"
-            | "ExchangePlan"
-            | "ChartOfAccounts"
-            | "ChartOfCharacteristicTypes"
-            | "ChartOfCalculationTypes"
-            | "BusinessProcess"
-            | "Task"
-            | "Enum"
-            | "InformationRegister"
-            | "AccumulationRegister"
-            | "AccountingRegister"
-            | "CalculationRegister"
-    )
+    metadata_kind_requires_child_objects_8_3_27(type_name).is_some_and(|required| required)
 }
 
 #[derive(Clone, Debug)]
@@ -4643,6 +4663,7 @@ pub(crate) fn cfe_validate_borrowed_objects(
     let mut check9_ok = true;
     let mut check10_ok = true;
     let mut sub_item_count = 0usize;
+    let mut module_count = 0usize;
     for child in child_obj_node.children().filter(|child| child.is_element()) {
         let type_name = child.tag_name().name();
         let child_name = child.text().unwrap_or("");
@@ -4666,10 +4687,22 @@ pub(crate) fn cfe_validate_borrowed_objects(
         let Some(obj_el) = doc.root_element().children().find(|node| node.is_element()) else {
             continue;
         };
+        let context = format!("{type_name}.{child_name}");
+        if cfe_borrow_type_has_child_objects(type_name) {
+            if !cfe_validate_has_exact_md_child(obj_el, "ChildObjects") {
+                report.error(format!("9. {context}: ChildObjects is required"));
+                check9_ok = false;
+            } else if !cfe_validate_md_child_follows(obj_el, "ChildObjects", "Properties") {
+                report.error(format!("9. {context}: ChildObjects must follow Properties"));
+                check9_ok = false;
+            }
+        }
         let Some(obj_props) = meta_info_child(obj_el, "Properties") else {
             continue;
         };
-        if meta_info_child_text(obj_props, "ObjectBelonging").as_deref() == Some("Adopted") {
+        let borrowed =
+            meta_info_child_text(obj_props, "ObjectBelonging").as_deref() == Some("Adopted");
+        if borrowed {
             borrowed_count += 1;
             let extended =
                 meta_info_child_text(obj_props, "ExtendedConfigurationObject").unwrap_or_default();
@@ -4686,9 +4719,67 @@ pub(crate) fn cfe_validate_borrowed_objects(
             } else {
                 borrowed_ok_count += 1;
             }
+            for property in [
+                "ObjectModule",
+                "ManagerModule",
+                "RecordSetModule",
+                "ValueManagerModule",
+            ] {
+                if !supports_direct_module_role(type_name, property) {
+                    continue;
+                }
+                let relative_module = format!("Ext/{property}.bsl");
+                if config_dir
+                    .join(dir_name)
+                    .join(child_name)
+                    .join(&relative_module)
+                    .is_file()
+                {
+                    module_count += 1;
+                    if !cfe_validate_has_extended_property_state(obj_el, property) {
+                        report.error(format!(
+                            "9. {context}: {relative_module} exists but PropertyState {property}=Extended is missing"
+                        ));
+                        check9_ok = false;
+                    }
+                }
+            }
+            if supports_owner_module(type_name) {
+                let relative_module = "Ext/Module.bsl";
+                if config_dir
+                    .join(dir_name)
+                    .join(child_name)
+                    .join(relative_module)
+                    .is_file()
+                {
+                    module_count += 1;
+                    if !cfe_validate_has_extended_property_state(obj_el, "Module") {
+                        report.error(format!(
+                            "9. {context}: {relative_module} exists but PropertyState Module=Extended is missing"
+                        ));
+                        check9_ok = false;
+                    }
+                }
+            }
+            if supports_command_module(type_name) {
+                let relative_module = "Ext/CommandModule.bsl";
+                if config_dir
+                    .join(dir_name)
+                    .join(child_name)
+                    .join(relative_module)
+                    .is_file()
+                {
+                    module_count += 1;
+                    if !cfe_validate_has_extended_property_state(obj_el, "CommandModule") {
+                        report.error(format!(
+                            "9. {context}: {relative_module} exists but PropertyState CommandModule=Extended is missing"
+                        ));
+                        check9_ok = false;
+                    }
+                }
+            }
         }
         if let Some(child_objects) = meta_info_child(obj_el, "ChildObjects") {
-            let context = format!("{type_name}.{child_name}");
             for sub_item in child_objects.children().filter(|node| node.is_element()) {
                 let sub_type = sub_item.tag_name().name();
                 if matches!(sub_type, "Attribute" | "TabularSection" | "EnumValue")
@@ -4735,7 +4826,7 @@ pub(crate) fn cfe_validate_borrowed_objects(
         report.ok("9. Borrowed objects: none found");
     } else if check9_ok {
         report.ok(format!(
-            "9. Borrowed objects: {borrowed_ok_count}/{borrowed_count} validated"
+            "9. Borrowed objects: {borrowed_ok_count}/{borrowed_count} validated; {module_count} module state(s) checked"
         ));
     }
     if sub_item_count == 0 {
@@ -4746,6 +4837,77 @@ pub(crate) fn cfe_validate_borrowed_objects(
         ));
     }
     forms
+}
+
+fn cfe_validate_has_extended_property_state(
+    object: roxmltree::Node<'_, '_>,
+    property: &str,
+) -> bool {
+    let internal_info = object
+        .children()
+        .filter(|node| node.has_tag_name((CFE_PATCH_MD_NAMESPACE, "InternalInfo")))
+        .collect::<Vec<_>>();
+    let [internal_info] = internal_info.as_slice() else {
+        return false;
+    };
+    let matching = internal_info
+        .children()
+        .filter(|node| node.has_tag_name((CFE_PATCH_XR_NAMESPACE, "PropertyState")))
+        .filter(|state| {
+            state.children().any(|node| {
+                node.has_tag_name((CFE_PATCH_XR_NAMESPACE, "Property"))
+                    && node.text() == Some(property)
+            })
+        })
+        .collect::<Vec<_>>();
+    let [matching] = matching.as_slice() else {
+        return false;
+    };
+    let children = matching
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .collect::<Vec<_>>();
+    let properties = children
+        .iter()
+        .filter(|node| node.has_tag_name((CFE_PATCH_XR_NAMESPACE, "Property")))
+        .collect::<Vec<_>>();
+    let states = children
+        .iter()
+        .filter(|node| node.has_tag_name((CFE_PATCH_XR_NAMESPACE, "State")))
+        .collect::<Vec<_>>();
+    children.len() == 2
+        && children[0].has_tag_name((CFE_PATCH_XR_NAMESPACE, "Property"))
+        && children[0].text() == Some(property)
+        && children[1].has_tag_name((CFE_PATCH_XR_NAMESPACE, "State"))
+        && children[1].text() == Some("Extended")
+        && properties.len() == 1
+        && states.len() == 1
+}
+
+fn cfe_validate_has_exact_md_child(object: roxmltree::Node<'_, '_>, local_name: &str) -> bool {
+    let matching = object
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == local_name)
+        .collect::<Vec<_>>();
+    matching.len() == 1 && matching[0].tag_name().namespace() == Some(CFE_PATCH_MD_NAMESPACE)
+}
+
+fn cfe_validate_md_child_follows(
+    object: roxmltree::Node<'_, '_>,
+    child_name: &str,
+    predecessor_name: &str,
+) -> bool {
+    let children = object
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .collect::<Vec<_>>();
+    let child = children
+        .iter()
+        .position(|node| node.has_tag_name((CFE_PATCH_MD_NAMESPACE, child_name)));
+    let predecessor = children
+        .iter()
+        .position(|node| node.has_tag_name((CFE_PATCH_MD_NAMESPACE, predecessor_name)));
+    matches!((predecessor, child), (Some(before), Some(after)) if before < after)
 }
 
 pub(crate) fn cfe_is_borrowed_sub_item(sub_item: roxmltree::Node<'_, '_>) -> bool {
@@ -7106,6 +7268,94 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn cfe_borrow_report_emits_required_empty_child_objects() {
+        let xml = cfe_borrow_object_xml(
+            "Report",
+            "PriceList",
+            "11111111-1111-1111-1111-111111111111",
+            None,
+            "2.20",
+            &CfeBorrowIdentity::default(),
+        )
+        .unwrap();
+
+        let generated = Document::parse(&xml).unwrap();
+        let report = generated
+            .descendants()
+            .find(|node| node.has_tag_name((CFE_PATCH_MD_NAMESPACE, "Report")))
+            .unwrap();
+        assert!(
+            meta_info_child(report, "ChildObjects").is_some(),
+            "8.3.27 requires ChildObjects even for a report without forms or templates: {xml}"
+        );
+    }
+
+    #[test]
+    fn cfe_borrow_emits_child_objects_for_every_proven_platform_kind() {
+        for type_name in [
+            "Subsystem",
+            "FilterCriterion",
+            "Sequence",
+            "SettingsStorage",
+            "DocumentJournal",
+            "HTTPService",
+            "WebService",
+            "IntegrationService",
+        ] {
+            let xml = cfe_borrow_object_xml(
+                type_name,
+                "Evidence",
+                "11111111-1111-1111-1111-111111111111",
+                None,
+                "2.20",
+                &CfeBorrowIdentity::default(),
+            )
+            .unwrap();
+
+            let generated = Document::parse(&xml).unwrap();
+            let object = generated
+                .root_element()
+                .children()
+                .find(roxmltree::Node::is_element)
+                .unwrap();
+            assert!(
+                object
+                    .children()
+                    .any(|node| { node.has_tag_name((CFE_PATCH_MD_NAMESPACE, "ChildObjects")) }),
+                "{type_name} must follow the proven 8.3.27 ChildObjects contract: {xml}"
+            );
+        }
+    }
+
+    #[test]
+    fn cfe_borrow_preserves_extended_module_property_states() {
+        let existing = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+<Report uuid="22222222-2222-2222-2222-222222222222"><InternalInfo>
+<xr:PropertyState><xr:Property>ObjectModule</xr:Property><xr:State>Extended</xr:State></xr:PropertyState>
+</InternalInfo><Properties><Name>PriceList</Name></Properties><ChildObjects/></Report></MetaDataObject>"#;
+        let identity = CfeBorrowIdentity::read(existing, "Report").unwrap();
+
+        let xml = cfe_borrow_object_xml(
+            "Report",
+            "PriceList",
+            "11111111-1111-1111-1111-111111111111",
+            None,
+            "2.20",
+            &identity,
+        )
+        .unwrap();
+
+        assert!(
+            xml.contains("<xr:Property>ObjectModule</xr:Property>"),
+            "re-borrow must not disconnect an existing object module: {xml}"
+        );
+        assert!(
+            xml.contains("<xr:State>Extended</xr:State>"),
+            "re-borrow must preserve the Extended state: {xml}"
+        );
+    }
+
+    #[test]
     fn cfe_borrow_has_complete_8_3_27_generated_type_profiles() {
         let profiles: &[(&str, &[(&str, &str)])] = &[
             (
@@ -9117,6 +9367,203 @@ pub(crate) mod tests {
 "#,
         );
         (descriptor, wrapper, form_xml)
+    }
+
+    #[test]
+    fn cfe_validate_rejects_report_without_required_child_objects() {
+        let context = temp_context("validate-report-child-objects");
+        write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+        register_borrowed_patch_object(&context, "Report", "PriceList", "");
+        let args = Map::from_iter([("ExtensionPath".to_string(), json!("ext"))]);
+
+        let outcome = validate_cfe(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("Report.PriceList: ChildObjects is required"),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn cfe_validate_rejects_foreign_child_objects_namespace() {
+        let context = temp_context("validate-child-objects-namespace");
+        write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+        register_borrowed_patch_object(
+            &context,
+            "Report",
+            "PriceList",
+            r#"<x:ChildObjects xmlns:x="urn:foreign"/>"#,
+        );
+        let args = Map::from_iter([("ExtensionPath".to_string(), json!("ext"))]);
+
+        let outcome = validate_cfe(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("Report.PriceList: ChildObjects is required"),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn cfe_validate_rejects_child_objects_before_properties() {
+        let context = temp_context("validate-child-objects-order");
+        write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+        let descriptor =
+            register_borrowed_patch_object(&context, "Report", "PriceList", "<ChildObjects/>");
+        let text = fs::read_to_string(&descriptor)
+            .unwrap()
+            .replacen(
+                "\t\t<Properties>",
+                "\t\t<ChildObjects/>\n\t\t<Properties>",
+                1,
+            )
+            .replacen("\n\t\t<ChildObjects/>\n\t</Report>", "\n\t</Report>", 1);
+        fs::write(&descriptor, text).unwrap();
+        let args = Map::from_iter([("ExtensionPath".to_string(), json!("ext"))]);
+
+        let outcome = validate_cfe(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("Report.PriceList: ChildObjects must follow Properties"),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn cfe_validate_rejects_module_file_without_extended_property_state() {
+        let context = temp_context("validate-module-property-state");
+        write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+        register_borrowed_patch_object(&context, "Catalog", "Items", "<ChildObjects/>");
+        write_file(
+            &context.cwd.join("ext/Catalogs/Items/Ext/ObjectModule.bsl"),
+            "&Before(\"Run\")\nProcedure GE_Run()\nEndProcedure\n",
+        );
+        let args = Map::from_iter([("ExtensionPath".to_string(), json!("ext"))]);
+
+        let outcome = validate_cfe(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("Catalog.Items: Ext/ObjectModule.bsl exists but PropertyState ObjectModule=Extended is missing"),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn cfe_validate_rejects_conflicting_extended_property_state_children() {
+        let context = temp_context("validate-conflicting-property-state");
+        write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+        let descriptor =
+            register_borrowed_patch_object(&context, "Catalog", "Items", "<ChildObjects/>");
+        let text = fs::read_to_string(&descriptor).unwrap().replacen(
+            "<InternalInfo/>",
+            r#"<InternalInfo><xr:PropertyState xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><xr:Property>ObjectModule</xr:Property><xr:State>Notify</xr:State><xr:State>Extended</xr:State></xr:PropertyState></InternalInfo>"#,
+            1,
+        );
+        fs::write(&descriptor, text).unwrap();
+        write_file(
+            &context.cwd.join("ext/Catalogs/Items/Ext/ObjectModule.bsl"),
+            "&Before(\"Run\")\nProcedure GE_Run()\nEndProcedure\n",
+        );
+        let args = Map::from_iter([("ExtensionPath".to_string(), json!("ext"))]);
+
+        let outcome = validate_cfe(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains(
+                "Catalog.Items: Ext/ObjectModule.bsl exists but PropertyState ObjectModule=Extended is missing"
+            ),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn cfe_validate_rejects_reversed_extended_property_state_children() {
+        let context = temp_context("validate-reversed-property-state");
+        write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+        let descriptor =
+            register_borrowed_patch_object(&context, "Catalog", "Items", "<ChildObjects/>");
+        let text = fs::read_to_string(&descriptor).unwrap().replacen(
+            "<InternalInfo/>",
+            r#"<InternalInfo><xr:PropertyState xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><xr:State>Extended</xr:State><xr:Property>ObjectModule</xr:Property></xr:PropertyState></InternalInfo>"#,
+            1,
+        );
+        fs::write(&descriptor, text).unwrap();
+        write_file(
+            &context.cwd.join("ext/Catalogs/Items/Ext/ObjectModule.bsl"),
+            "&Before(\"Run\")\nProcedure GE_Run()\nEndProcedure\n",
+        );
+        let args = Map::from_iter([("ExtensionPath".to_string(), json!("ext"))]);
+
+        let outcome = validate_cfe(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains(
+                "Catalog.Items: Ext/ObjectModule.bsl exists but PropertyState ObjectModule=Extended is missing"
+            ),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn cfe_validate_checks_every_platform_direct_and_owner_module_role() {
+        for (type_name, role) in [
+            ("SettingsStorage", "ManagerModule"),
+            ("Bot", "Module"),
+            ("HTTPService", "Module"),
+            ("WebService", "Module"),
+            ("IntegrationService", "Module"),
+            ("CommonCommand", "CommandModule"),
+        ] {
+            let context = temp_context(&format!("validate-{type_name}-{role}"));
+            write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+            register_borrowed_patch_object(&context, type_name, "Evidence", "<ChildObjects/>");
+            let dir_name = cf_validate_child_type_dir(type_name).unwrap();
+            write_file(
+                &context
+                    .cwd
+                    .join("ext")
+                    .join(dir_name)
+                    .join("Evidence/Ext")
+                    .join(format!("{role}.bsl")),
+                "Procedure Evidence()\nEndProcedure\n",
+            );
+            let args = Map::from_iter([("ExtensionPath".to_string(), json!("ext"))]);
+
+            let outcome = validate_cfe(&args, &context);
+
+            assert!(!outcome.ok, "{type_name}.{role}: {outcome:?}");
+            assert!(
+                outcome.errors.join("\n").contains(&format!(
+                    "{type_name}.Evidence: Ext/{role}.bsl exists but PropertyState {role}=Extended is missing"
+                )),
+                "{type_name}.{role}: {outcome:?}"
+            );
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
     }
 
     #[test]

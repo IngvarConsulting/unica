@@ -17,7 +17,9 @@ allowed-tools:
 - Execution path: call MCP `unica` tool `unica.cfe.borrow`; skill-local operation scripts are not part of the workflow.
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
 
-Заимствует объекты из основной конфигурации в расширение. Создаёт XML-файлы с `ObjectBelonging=Adopted` и `ExtendedConfigurationObject`, добавляет запись в ChildObjects расширения.
+Заимствует объекты из основной конфигурации в расширение. Создаёт XML-файлы с `ObjectBelonging=Adopted` и `ExtendedConfigurationObject`, добавляет запись в ChildObjects расширения. Объекты с дочерними коллекциями получают обязательный `ChildObjects`, даже когда коллекция пуста; повторное заимствование сохраняет существующие `xr:PropertyState` подключённых модулей.
+
+Само заимствование объекта не создаёт его `ObjectModule.bsl` или другой прямой модуль. Для перехвата метода после заимствования используй `unica.cfe.patch_method`: он атомарно создаёт BSL и ставит соответствующий `PropertyState=Extended`.
 
 ## Предусловие
 
@@ -73,7 +75,7 @@ allowed-tools:
 2. `/meta-edit` — добавить новый реквизит в объект расширения
 3. `/form-edit` — вывести реквизит на заимствованную форму
 
-**Защита существующих данных**: если зависимый объект уже заимствован с содержимым (реквизитами, формами) — скрипт не перезаписывает его, а добавляет только недостающее.
+**Защита существующих данных**: если зависимый объект уже заимствован с содержимым (реквизитами, формами) — инструмент не перезаписывает его, а добавляет только недостающее. При повторном заимствовании существующего объекта состояния его подключённых модулей сохраняются.
 
 ## MCP вызов
 

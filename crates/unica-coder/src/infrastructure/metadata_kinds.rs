@@ -101,6 +101,63 @@ pub(crate) fn metadata_kind_index(tag: &str) -> Option<usize> {
     METADATA_KINDS.iter().position(|kind| kind.tag == tag)
 }
 
+/// Whether platform 8.3.27 requires a root `ChildObjects` container for this
+/// physical metadata kind, including when the collection is empty.
+///
+/// `None` keeps an unknown future kind from being silently treated as
+/// childless. This profile covers the complete physical registry used by
+/// `cfe.borrow`, which is wider than the typed [`MetadataKind`] surface.
+pub(crate) fn metadata_kind_requires_child_objects_8_3_27(tag: &str) -> Option<bool> {
+    match tag {
+        "Subsystem"
+        | "FilterCriterion"
+        | "ExchangePlan"
+        | "WebService"
+        | "HTTPService"
+        | "SettingsStorage"
+        | "Catalog"
+        | "Document"
+        | "Sequence"
+        | "DocumentJournal"
+        | "Enum"
+        | "Report"
+        | "DataProcessor"
+        | "InformationRegister"
+        | "AccumulationRegister"
+        | "ChartOfCharacteristicTypes"
+        | "ChartOfAccounts"
+        | "AccountingRegister"
+        | "ChartOfCalculationTypes"
+        | "CalculationRegister"
+        | "BusinessProcess"
+        | "Task"
+        | "IntegrationService" => Some(true),
+        "Language"
+        | "StyleItem"
+        | "Style"
+        | "CommonPicture"
+        | "SessionParameter"
+        | "Role"
+        | "CommonTemplate"
+        | "CommonModule"
+        | "Bot"
+        | "CommonAttribute"
+        | "XDTOPackage"
+        | "WSReference"
+        | "EventSubscription"
+        | "ScheduledJob"
+        | "FunctionalOption"
+        | "FunctionalOptionsParameter"
+        | "DefinedType"
+        | "CommonCommand"
+        | "CommandGroup"
+        | "Constant"
+        | "CommonForm"
+        | "DocumentNumerator" => Some(false),
+        _ => None,
+    }
+}
+
 pub(crate) fn supports_direct_module_role(tag: &str, role: &str) -> bool {
     match role {
         "ObjectModule" => matches!(
@@ -148,6 +205,17 @@ pub(crate) fn supports_direct_module_role(tag: &str, role: &str) -> bool {
         "ValueManagerModule" => tag == "Constant",
         _ => false,
     }
+}
+
+pub(crate) fn supports_owner_module(tag: &str) -> bool {
+    matches!(
+        tag,
+        "CommonModule" | "Bot" | "HTTPService" | "WebService" | "IntegrationService"
+    )
+}
+
+pub(crate) fn supports_command_module(tag: &str) -> bool {
+    tag == "CommonCommand"
 }
 
 pub(crate) fn supports_nested_form_or_command(tag: &str) -> bool {
@@ -338,6 +406,17 @@ mod tests {
     }
 
     #[test]
+    fn every_physical_kind_has_a_child_objects_profile() {
+        for kind in METADATA_KINDS {
+            assert!(
+                metadata_kind_requires_child_objects_8_3_27(kind.tag).is_some(),
+                "{} has no 8.3.27 ChildObjects profile",
+                kind.tag
+            );
+        }
+    }
+
+    #[test]
     fn bot_registry_entry_models_known_platform_facts() {
         let bot = metadata_kind("Bot").expect("Bot must be registered");
         assert_eq!(bot.directory, "Bots");
@@ -447,5 +526,21 @@ mod tests {
                 "{kind} must not own {role}"
             );
         }
+    }
+
+    #[test]
+    fn fixed_top_level_module_layouts_match_the_platform_registry() {
+        for kind in [
+            "CommonModule",
+            "Bot",
+            "HTTPService",
+            "WebService",
+            "IntegrationService",
+        ] {
+            assert!(supports_owner_module(kind), "{kind}");
+        }
+        assert!(supports_command_module("CommonCommand"));
+        assert!(!supports_owner_module("CommonCommand"));
+        assert!(!supports_command_module("Bot"));
     }
 }
