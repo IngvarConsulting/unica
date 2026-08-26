@@ -1016,5 +1016,43 @@ class RetainedApplyFoundationTests(unittest.TestCase):
         self.assertIn("application dispatch", text.lower())
 
 
+class RetainedApplyEffectResultTests(unittest.TestCase):
+    def test_retained_effect_result_slice_has_exact_active_records_and_witness(self) -> None:
+        decision = (
+            ARCH_ROOT
+            / "decisions/2026-08-26-retained-apply-effect-publication-slice.md"
+        )
+        invariant = (
+            ARCH_ROOT
+            / "invariants/INV.CACHE.RETAINED-APPLY-EFFECT-RESULT.md"
+        )
+
+        self.assertTrue(
+            decision.is_file(),
+            "retained apply effect publication decision is absent",
+        )
+        self.assertTrue(
+            invariant.is_file(),
+            "retained apply effect result invariant is absent",
+        )
+        decision_text = decision.read_text(encoding="utf-8")
+        invariant_text = invariant.read_text(encoding="utf-8")
+        self.assertIn("status: active", decision_text)
+        self.assertIn(
+            "retained_apply_effect_result_contract_is_complete",
+            decision_text,
+        )
+        self.assertIn(
+            "decision: DEC.2026-08-26.RETAINED-APPLY-EFFECT-PUBLICATION-SLICE",
+            invariant_text,
+        )
+        self.assertIn(
+            "retained_apply_effect_result_contract_is_complete",
+            invariant_text,
+        )
+        self.assertNotIn("CTR.", decision_text)
+        self.assertNotIn("wire", invariant_text.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

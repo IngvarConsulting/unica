@@ -86,7 +86,7 @@ impl fmt::Display for EventPlanError {
 
 impl std::error::Error for EventPlanError {}
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct PlannedApplyEffects {
     events: Vec<DomainEvent>,
 }
@@ -94,6 +94,10 @@ pub(crate) struct PlannedApplyEffects {
 impl PlannedApplyEffects {
     pub(crate) fn events(&self) -> &[DomainEvent] {
         &self.events
+    }
+
+    pub(crate) fn into_events(self) -> Vec<DomainEvent> {
+        self.events
     }
 
     pub(crate) fn append(&mut self, event: DomainEvent) {

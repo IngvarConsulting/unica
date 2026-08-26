@@ -16,6 +16,7 @@ use crate::infrastructure::native_operations::apply::{
     ApplyStagedState, ApplyStagingError, ApplyStagingErrorKind,
 };
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
+use crate::infrastructure::native_operations::event::PlannedApplyEffects;
 use crate::infrastructure::platform::filesystem::{
     path_starts_with_host_root, stable_path_identity_bytes, RetainedChildCapability,
     RetainedDirectoryCapability,
@@ -401,14 +402,15 @@ impl ApplyAdmission {
         self,
         state: ApplyStagedState,
     ) -> Result<PreparedApplyBatch, ApplyStagingError> {
-        self.prepare_with_cache_effects(state, &[])
+        self.prepare_with_effects(state, PlannedApplyEffects::default())
     }
 
-    pub(crate) fn prepare_with_cache_effects(
+    pub(crate) fn prepare_with_effects(
         self,
         state: ApplyStagedState,
-        events: &[DomainEvent],
+        effects: PlannedApplyEffects,
     ) -> Result<PreparedApplyBatch, ApplyStagingError> {
+        let events = effects.into_events();
         apply_staging_checkpoint(self.deadline, &self.cancellation, "apply preparation")?;
         if state.retained_root_identity() != self.source_root.identity() {
             return Err(ApplyStagingError::new(
@@ -446,7 +448,7 @@ impl ApplyAdmission {
                     &mut cache_state,
                     &self.workspace_cache.relative_root,
                     &self.context,
-                    events,
+                    &events,
                     false,
                     CacheAccess::default(),
                 )?;
@@ -494,9 +496,27 @@ impl ApplyAdmission {
             transaction,
             writer_authority: self.writer_authority,
             workspace_cache: self.workspace_cache,
-            projected_cache_report,
+            effects: PreparedApplyEffectReceipt {
+                events,
+                cache: projected_cache_report,
+            },
             revision_reconciliation,
         })
+    }
+}
+
+#[cfg(test)]
+impl ApplyAdmission {
+    fn prepare_with_cache_effects(
+        self,
+        state: ApplyStagedState,
+        events: &[DomainEvent],
+    ) -> Result<PreparedApplyBatch, ApplyStagingError> {
+        let mut effects = PlannedApplyEffects::default();
+        for event in events {
+            effects.append(event.clone());
+        }
+        self.prepare_with_effects(state, effects)
     }
 }
 
@@ -513,8 +533,24 @@ pub(crate) struct PreparedApplyBatch {
     transaction: CompileTransaction,
     writer_authority: ApplyWriterAuthority,
     workspace_cache: WorkspaceCachePublicationAuthority,
-    projected_cache_report: crate::domain::cache::CacheReport,
+    effects: PreparedApplyEffectReceipt,
     revision_reconciliation: PreparedRevisionReconciliation,
+}
+
+#[derive(Debug)]
+struct PreparedApplyEffectReceipt {
+    events: Vec<DomainEvent>,
+    cache: crate::domain::cache::CacheReport,
+}
+
+impl PreparedApplyEffectReceipt {
+    fn into_terminal(self, disposition: ApplyEffectDisposition) -> ApplyEffectReceipt {
+        ApplyEffectReceipt {
+            disposition,
+            events: self.events,
+            cache: self.cache,
+        }
+    }
 }
 
 pub(in crate::infrastructure) struct RetainedApplyFinalGate<'a, R> {
@@ -595,8 +631,36 @@ impl ApplyCleanupDiagnostic {
 #[derive(Debug)]
 pub(crate) struct ApplyPublicationResult {
     rev: String,
+    effects: ApplyEffectReceipt,
     commit_count: usize,
     cleanup_diagnostics: Vec<ApplyCleanupDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApplyEffectDisposition {
+    Projected,
+    Committed,
+}
+
+#[derive(Debug)]
+pub(crate) struct ApplyEffectReceipt {
+    disposition: ApplyEffectDisposition,
+    events: Vec<DomainEvent>,
+    cache: crate::domain::cache::CacheReport,
+}
+
+impl ApplyEffectReceipt {
+    pub(crate) const fn disposition(&self) -> ApplyEffectDisposition {
+        self.disposition
+    }
+
+    pub(crate) fn events(&self) -> &[DomainEvent] {
+        &self.events
+    }
+
+    pub(crate) const fn cache(&self) -> &crate::domain::cache::CacheReport {
+        &self.cache
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -652,6 +716,10 @@ impl ApplyPublicationResult {
 
     pub(crate) fn cleanup_diagnostics(&self) -> &[ApplyCleanupDiagnostic] {
         &self.cleanup_diagnostics
+    }
+
+    pub(crate) const fn effects(&self) -> Option<&ApplyEffectReceipt> {
+        Some(&self.effects)
     }
 
     #[cfg(test)]
@@ -1055,7 +1123,6 @@ impl<R> WorkspaceActor<R> {
                     ),
                 )
             })?;
-        let _projected_cache_report = &prepared.projected_cache_report;
         prepared
             .revision_service
             .confirm_retained_observation_typed(
@@ -1091,6 +1158,9 @@ impl<R> WorkspaceActor<R> {
             )?;
             return Ok(ApplyPublicationResult {
                 rev: prepared.revision.revision_identity(),
+                effects: prepared
+                    .effects
+                    .into_terminal(ApplyEffectDisposition::Projected),
                 commit_count: 0,
                 cleanup_diagnostics: Vec::new(),
             });
@@ -1129,6 +1199,9 @@ impl<R> WorkspaceActor<R> {
                 "{}:{}:{}",
                 revision.algorithm, revision.generation, revision.digest
             ),
+            effects: prepared
+                .effects
+                .into_terminal(ApplyEffectDisposition::Committed),
             commit_count: 1,
             cleanup_diagnostics,
         })
@@ -1747,13 +1820,21 @@ impl WorkspaceActorRegistry {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        set_apply_dry_run_after_confirmation_hook, WorkspaceActorRegistry,
+        set_apply_dry_run_after_confirmation_hook, ApplyAdmission, ApplyEffectDisposition,
+        ApplyEffectReceipt, PreparedApplyBatch, WorkspaceActorRegistry,
         WorkspaceActorRegistryError, WorkspaceIdentity,
     };
+    use crate::domain::address::QualifiedAddress;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
+    use crate::domain::events::DomainEventKind;
+    use crate::domain::platform_profile::PlatformProfile;
+    use crate::domain::project_sources::SourceSetKind;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::apply::ApplyStagingErrorKind;
+    use crate::infrastructure::native_operations::event::{
+        plan_event_implement_batch, EventImplementArgs, EventPlanError, PlannedApplyEffects,
+    };
     use crate::infrastructure::platform::source_revision_fence::{
         expected_platform_fence_capability_for_test, FenceCapability, FenceOutcome,
         SourceRevisionFence,
@@ -5349,6 +5430,854 @@ pub(crate) mod tests {
             b"replacement-tree"
         );
         fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_effects_are_retained_from_planner_to_result() {
+        let fixture = actor_fixture("effect-receipt-retained", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let (state, effects) = plan_actor_events(
+            &admitted,
+            &[event_operation(
+                "main:Catalog.Products.Form.Main.Event.OnOpen",
+            )],
+        )
+        .unwrap();
+
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admitted.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        let receipt = result
+            .effects()
+            .expect("planner effects were discarded at the terminal actor result");
+
+        assert_form_module_effect_subject(receipt, ApplyEffectDisposition::Projected);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_dry_run_returns_projected_effect_receipt_without_any_write() {
+        let fixture = actor_fixture("effect-receipt-dry-run", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_root = fixture.root.join(".build/unica");
+        let cache_before = snapshot_tree(&cache_root);
+        let machine_before = service.machine_state_for_test();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let admitted_rev = admitted.revision_identity().to_string();
+        let (state, effects) = plan_actor_events(
+            &admitted,
+            &[event_operation(
+                "main:Catalog.Products.Form.Main.Event.OnOpen",
+            )],
+        )
+        .unwrap();
+        let prepared = admitted.prepare_with_effects(state, effects).unwrap();
+
+        let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
+        let receipt = result
+            .effects()
+            .expect("dry run discarded the prepared effect receipt");
+
+        assert_form_module_effect_subject(receipt, ApplyEffectDisposition::Projected);
+        assert_eq!(result.rev(), admitted_rev);
+        assert_eq!(result.commit_count_for_test(), 0);
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(snapshot_tree(&cache_root), cache_before);
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        assert!(std::ptr::eq(
+            receipt,
+            result
+                .effects()
+                .expect("receipt disappeared on repeated access")
+        ));
+        assert!(
+            !cache_root.exists(),
+            "dry run created the absent cache root"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn prepared_apply_success_returns_committed_effect_receipt_after_one_commit() {
+        use crate::infrastructure::native_operations::compile_transaction::RetainedApplyObservedEvent;
+
+        let fixture = actor_fixture("effect-receipt-commit", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let admitted_rev = admitted.revision_identity().to_string();
+        let (state, effects) = plan_actor_events(
+            &admitted,
+            &[event_operation(
+                "main:Catalog.Products.Form.Main.Event.OnOpen",
+            )],
+        )
+        .unwrap();
+        let prepared = admitted.prepare_with_effects(state, effects).unwrap();
+        let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+
+        let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
+        let receipt = result
+            .effects()
+            .expect("successful retained commit discarded its effect receipt");
+
+        assert_form_module_effect_subject(receipt, ApplyEffectDisposition::Committed);
+        assert_ne!(result.rev(), admitted_rev);
+        assert_eq!(result.commit_count_for_test(), 1);
+        assert!(fixture.roots[0]
+            .join("Catalogs/Products/Forms/Main/Ext/Form/Module.bsl")
+            .is_file());
+        let observed = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        assert!(
+            matches!(
+                observed.as_slice(),
+                [
+                    RetainedApplyObservedEvent::Source(_),
+                    RetainedApplyObservedEvent::Source(_),
+                    RetainedApplyObservedEvent::Source(_),
+                    RetainedApplyObservedEvent::Source(_),
+                    RetainedApplyObservedEvent::Source(_),
+                    RetainedApplyObservedEvent::EagerMetadata(_),
+                    RetainedApplyObservedEvent::RevisionRecord(_),
+                    RetainedApplyObservedEvent::StateMarker(_),
+                ]
+            ),
+            "receipt became committed outside the one retained publication: {observed:?}"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn event_implement_planner_integrates_with_actor_effect_publication_matrix() {
+        for (name, target, missing, expected) in [
+            (
+                "platform-available",
+                "main:Catalog.Products.Module.Object.Event.BeforeWrite",
+                false,
+                vec![DomainEventKind::ModuleChanged],
+            ),
+            (
+                "property-available",
+                "main:Catalog.Products.Form.Main.Event.OnOpen",
+                false,
+                vec![DomainEventKind::FormChanged, DomainEventKind::ModuleChanged],
+            ),
+            (
+                "property-missing",
+                "main:Catalog.Products.Form.Main.Event.OnOpen",
+                true,
+                vec![DomainEventKind::ModuleChanged],
+            ),
+        ] {
+            let fixture = actor_fixture(&format!("effect-matrix-{name}"), &["main"]);
+            write_actor_event_fixture(&fixture.roots[0]);
+            if missing {
+                write_missing_on_open_binding(&fixture.roots[0]);
+            }
+            let binding = fixture
+                .actor
+                .bind_provider_root("main", &fixture.roots[0])
+                .unwrap();
+            let admitted = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let (state, effects) =
+                plan_actor_events(&admitted, &[event_operation(target)]).unwrap();
+            let result = fixture
+                .actor
+                .publish_prepared_apply(admitted.prepare_with_effects(state, effects).unwrap())
+                .unwrap();
+            let receipt = result.effects().unwrap_or_else(|| {
+                panic!("{name} planner effects were discarded by actor publication")
+            });
+            assert_eq!(
+                receipt
+                    .events()
+                    .iter()
+                    .map(|event| event.kind)
+                    .collect::<Vec<_>>(),
+                expected,
+                "{name}"
+            );
+            fixture.cleanup();
+        }
+
+        let operations = [
+            event_operation("main:Catalog.Products.Form.Main.Event.OnOpen"),
+            event_operation("main:Catalog.Products.Form.Main.Event.OnClose"),
+        ];
+        let mut subjects = Vec::new();
+        for dry_run in [true, false] {
+            let fixture = actor_fixture(
+                if dry_run {
+                    "effect-matrix-dry-parity"
+                } else {
+                    "effect-matrix-real-parity"
+                },
+                &["main"],
+            );
+            write_actor_event_fixture(&fixture.roots[0]);
+            let binding = fixture
+                .actor
+                .bind_provider_root("main", &fixture.roots[0])
+                .unwrap();
+            let admitted = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    dry_run,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let (state, effects) = plan_actor_events(&admitted, &operations).unwrap();
+            let result = fixture
+                .actor
+                .publish_prepared_apply(admitted.prepare_with_effects(state, effects).unwrap())
+                .unwrap();
+            let receipt = result.effects().expect("parity receipt is absent");
+            subjects.push((
+                receipt.events().to_vec(),
+                receipt.cache().events.clone(),
+                receipt.cache().invalidated.clone(),
+                receipt.cache().refreshed.clone(),
+            ));
+            fixture.cleanup();
+        }
+        assert_eq!(
+            subjects[0], subjects[1],
+            "dry/real receipt subjects diverged"
+        );
+        assert_eq!(
+            subjects[0]
+                .0
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            vec![DomainEventKind::FormChanged, DomainEventKind::ModuleChanged],
+            "multi-op planner lost stable first-occurrence deduplication"
+        );
+    }
+
+    #[test]
+    fn event_implement_op_failure_returns_no_effect_receipt_and_preserves_all_state() {
+        let control = actor_fixture("effect-poison-control", &["main"]);
+        write_actor_event_fixture(&control.roots[0]);
+        let control_binding = control
+            .actor
+            .bind_provider_root("main", &control.roots[0])
+            .unwrap();
+        let control_admission = control
+            .actor
+            .admit_apply(
+                &control_binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let (control_state, control_effects) = plan_actor_events(
+            &control_admission,
+            &[event_operation(
+                "main:Catalog.Products.Form.Main.Event.OnOpen",
+            )],
+        )
+        .unwrap();
+        let control_result = control
+            .actor
+            .publish_prepared_apply(
+                control_admission
+                    .prepare_with_effects(control_state, control_effects)
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            control_result.effects().is_some(),
+            "actor path discarded effects before poisoned planning could be distinguished"
+        );
+        control.cleanup();
+
+        for dry_run in [true, false] {
+            let fixture = actor_fixture(
+                if dry_run {
+                    "effect-poison-dry"
+                } else {
+                    "effect-poison-real"
+                },
+                &["main"],
+            );
+            write_actor_event_fixture(&fixture.roots[0]);
+            let binding = fixture
+                .actor
+                .bind_provider_root("main", &fixture.roots[0])
+                .unwrap();
+            let service = fixture.actor.source_revision_service(&binding).unwrap();
+            let source_before = snapshot_tree(&fixture.roots[0]);
+            let cache_root = fixture.root.join(".build/unica");
+            let cache_before = snapshot_tree(&cache_root);
+            let machine_before = service.machine_state_for_test();
+            let admitted = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    dry_run,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let operations = [
+                event_operation("main:Catalog.Products.Form.Main.Event.OnOpen"),
+                event_operation("main:Catalog.Products.Form.Main.Event.DoesNotExist"),
+            ];
+
+            let error = plan_actor_events(&admitted, &operations)
+                .expect_err("poisoned operation batch unexpectedly reached preparation");
+
+            assert_eq!(
+                error.kind(),
+                crate::infrastructure::native_operations::event::EventPlanErrorKind::ProviderUnavailable
+            );
+            assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+            assert_eq!(snapshot_tree(&cache_root), cache_before);
+            assert_eq!(service.machine_state_for_test(), machine_before);
+            assert!(!cache_root.exists());
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn retained_apply_effect_failure_matrix_rolls_back_and_returns_no_receipt() {
+        use crate::infrastructure::native_operations::compile_transaction::RetainedApplyFailpoint;
+
+        for (name, failpoint) in [
+            ("second-source", RetainedApplyFailpoint::Source(2)),
+            ("eager-cache", RetainedApplyFailpoint::EagerMetadata(1)),
+            ("revision-record", RetainedApplyFailpoint::RevisionRecord),
+            ("state-marker", RetainedApplyFailpoint::StateMarker),
+            (
+                "final-validation",
+                RetainedApplyFailpoint::AfterAllPostimages,
+            ),
+        ] {
+            let fixture = actor_fixture(&format!("effect-failure-{name}"), &["main"]);
+            write_actor_event_fixture(&fixture.roots[0]);
+            let binding = fixture
+                .actor
+                .bind_provider_root("main", &fixture.roots[0])
+                .unwrap();
+            let service = fixture.actor.source_revision_service(&binding).unwrap();
+            let prepared =
+                prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
+            let prepared_receipt = &prepared.effects;
+            assert_eq!(
+                prepared_receipt
+                    .events
+                    .iter()
+                    .map(|event| event.kind)
+                    .collect::<Vec<_>>(),
+                [DomainEventKind::FormChanged, DomainEventKind::ModuleChanged]
+            );
+            assert_eq!(prepared_receipt.cache.mode, "applied");
+            let source_before = snapshot_tree(&fixture.roots[0]);
+            let cache_root = fixture.root.join(".build/unica");
+            let cache_before = snapshot_tree(&cache_root);
+            let machine_before = service.machine_state_for_test();
+            crate::infrastructure::native_operations::compile_transaction::set_retained_apply_failpoint(
+                failpoint,
+            );
+
+            let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+            assert_error_has_no_effect_receipt(&error, &cache_root, name);
+            assert!(
+                !error.to_string().contains("FormChanged"),
+                "{name}: {error}"
+            );
+            assert!(
+                !error
+                    .to_string()
+                    .contains(&cache_root.display().to_string()),
+                "{name}: {error}"
+            );
+            assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{name}");
+            assert_eq!(snapshot_tree(&cache_root), cache_before, "{name}");
+            assert_eq!(service.machine_state_for_test(), machine_before, "{name}");
+            fixture.cleanup();
+        }
+
+        let fixture = actor_fixture("effect-failure-final-cancel", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let prepared = prepare_property_effect_batch(&fixture, &binding, false, &cancellation);
+        assert!(!prepared.effects.events.is_empty());
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_root = fixture.root.join(".build/unica");
+        let cache_before = snapshot_tree(&cache_root);
+        let cancel_at_final_gate = cancellation.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || cancel_at_final_gate.cancel(),
+        );
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
+        assert_error_has_no_effect_receipt(&error, &cache_root, "final-cancel");
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(snapshot_tree(&cache_root), cache_before);
+        fixture.cleanup();
+
+        let fixture = actor_fixture("effect-failure-rollback-incomplete", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let prepared = prepare_property_effect_batch(&fixture, &binding, false, &cancellation);
+        assert!(!prepared.effects.events.is_empty());
+        let target = fixture.roots[0].join("Catalogs/Products/Forms/Main/Ext/Form.xml");
+        let moved =
+            fixture.roots[0].join("Catalogs/Products/Forms/Main/Ext/Form-published-moved.xml");
+        let raced_target = target.clone();
+        let raced_moved = moved.clone();
+        let cancel = cancellation.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || {
+                std::fs::rename(&raced_target, &raced_moved).unwrap();
+                std::fs::write(&raced_target, b"foreign-form").unwrap();
+                cancel.cancel();
+            },
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::RollbackIncomplete
+        );
+        assert_error_has_no_effect_receipt(
+            &error,
+            &fixture.root.join(".build/unica"),
+            "rollback-incomplete",
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"foreign-form");
+        assert!(
+            moved.is_file(),
+            "foreign replacement erased published evidence"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn retained_apply_effect_races_never_publish_or_return_effects() {
+        let stale = actor_fixture("effect-race-stale", &["main"]);
+        write_actor_event_fixture(&stale.roots[0]);
+        let stale_binding = stale
+            .actor
+            .bind_provider_root("main", &stale.roots[0])
+            .unwrap();
+        let stale_error = stale
+            .actor
+            .admit_apply(
+                &stale_binding,
+                Some("stale-revision"),
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert!(stale_error.contains("ifRev"));
+        assert!(!stale.root.join(".build/unica").exists());
+        stale.cleanup();
+
+        let fixture = actor_fixture("effect-race-revision", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let prepared =
+            prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
+        assert!(
+            !prepared.effects.events.is_empty(),
+            "racing prepared batch discarded the receipt subject before the gate"
+        );
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        std::fs::write(fixture.roots[0].join("Concurrent.bsl"), b"foreign").unwrap();
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ConcurrentRevision
+        );
+        assert_error_has_no_effect_receipt(
+            &error,
+            &fixture.root.join(".build/unica"),
+            "revision-race",
+        );
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Concurrent.bsl")).unwrap(),
+            b"foreign"
+        );
+        fixture.cleanup();
+
+        let fixture = actor_fixture("effect-race-source-root", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let prepared =
+            prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
+        assert!(!prepared.effects.events.is_empty());
+        let displaced = fixture.root.join("main-displaced");
+        std::fs::rename(&fixture.roots[0], &displaced).unwrap();
+        std::fs::create_dir_all(&fixture.roots[0]).unwrap();
+        std::fs::write(fixture.roots[0].join("foreign.txt"), b"foreign").unwrap();
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ContainmentIdentity
+        );
+        assert_error_has_no_effect_receipt(
+            &error,
+            &fixture.root.join(".build/unica"),
+            "source-root-race",
+        );
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("foreign.txt")).unwrap(),
+            b"foreign"
+        );
+        fixture.cleanup();
+
+        let fixture = actor_fixture("effect-race-cache-root", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let prepared =
+            prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
+        assert!(!prepared.effects.events.is_empty());
+        std::fs::write(fixture.root.join(".build"), b"foreign-cache-parent").unwrap();
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert_error_has_no_effect_receipt(
+            &error,
+            &fixture.root.join(".build/unica"),
+            "cache-root-race",
+        );
+        assert_eq!(
+            std::fs::read(fixture.root.join(".build")).unwrap(),
+            b"foreign-cache-parent"
+        );
+        fixture.cleanup();
+
+        for gate in ["cancelled", "deadline"] {
+            let fixture = actor_fixture(&format!("effect-race-{gate}"), &["main"]);
+            write_actor_event_fixture(&fixture.roots[0]);
+            let binding = fixture
+                .actor
+                .bind_provider_root("main", &fixture.roots[0])
+                .unwrap();
+            let cancellation = CancellationToken::new();
+            let mut prepared =
+                prepare_property_effect_batch(&fixture, &binding, false, &cancellation);
+            assert!(!prepared.effects.events.is_empty());
+            if gate == "cancelled" {
+                cancellation.cancel();
+            } else {
+                prepared.deadline = ProviderDeadline::from_budget(Duration::ZERO);
+            }
+            let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+            assert_error_has_no_effect_receipt(&error, &fixture.root.join(".build/unica"), gate);
+            assert_eq!(
+                error.kind(),
+                if gate == "cancelled" {
+                    super::ApplyPublicationErrorKind::Cancelled
+                } else {
+                    super::ApplyPublicationErrorKind::Deadline
+                }
+            );
+            fixture.cleanup();
+        }
+
+        let fixture = actor_fixture("effect-race-dry-final", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let prepared = prepare_property_effect_batch(&fixture, &binding, true, &cancellation);
+        assert!(!prepared.effects.events.is_empty());
+        let cancel = cancellation.clone();
+        set_apply_dry_run_after_confirmation_hook(move || cancel.cancel());
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
+        assert_error_has_no_effect_receipt(&error, &fixture.root.join(".build/unica"), "dry-final");
+        fixture.cleanup();
+
+        let fixture = actor_fixture("effect-race-trust-epoch", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let prepared =
+            prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
+        assert!(!prepared.effects.events.is_empty());
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let race_service = Arc::clone(&service);
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || race_service.mark_dirty(),
+        );
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ConcurrentRevision
+        );
+        assert_error_has_no_effect_receipt(
+            &error,
+            &fixture.root.join(".build/unica"),
+            "trust-epoch",
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    pub(crate) fn retained_apply_effect_result_contract_is_complete() {
+        prepared_apply_effects_are_retained_from_planner_to_result();
+        prepared_apply_dry_run_returns_projected_effect_receipt_without_any_write();
+        prepared_apply_success_returns_committed_effect_receipt_after_one_commit();
+        event_implement_planner_integrates_with_actor_effect_publication_matrix();
+        event_implement_op_failure_returns_no_effect_receipt_and_preserves_all_state();
+        retained_apply_effect_failure_matrix_rolls_back_and_returns_no_receipt();
+        retained_apply_effect_races_never_publish_or_return_effects();
+    }
+
+    fn prepare_property_effect_batch(
+        fixture: &ActorFixture,
+        binding: &super::ProviderRootBinding,
+        dry_run: bool,
+        cancellation: &CancellationToken,
+    ) -> PreparedApplyBatch {
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                binding,
+                None,
+                dry_run,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                cancellation,
+            )
+            .unwrap();
+        let (state, effects) = plan_actor_events(
+            &admitted,
+            &[event_operation(
+                "main:Catalog.Products.Form.Main.Event.OnOpen",
+            )],
+        )
+        .unwrap();
+        admitted.prepare_with_effects(state, effects).unwrap()
+    }
+
+    fn plan_actor_events(
+        admitted: &ApplyAdmission,
+        operations: &[EventImplementArgs],
+    ) -> Result<
+        (
+            crate::infrastructure::native_operations::apply::ApplyStagedState,
+            PlannedApplyEffects,
+        ),
+        EventPlanError,
+    > {
+        plan_event_implement_batch(
+            admitted.staged_state().map_err(|error| {
+                panic!("actor admission did not produce a plannable staged state: {error}")
+            })?,
+            "main",
+            SourceSetKind::Configuration,
+            PlatformProfile::v8_3_27(),
+            operations,
+        )
+    }
+
+    fn event_operation(at: &str) -> EventImplementArgs {
+        EventImplementArgs {
+            at: QualifiedAddress::parse(at).unwrap(),
+            call_type: None,
+        }
+    }
+
+    fn assert_form_module_effect_subject(
+        receipt: &ApplyEffectReceipt,
+        disposition: ApplyEffectDisposition,
+    ) {
+        assert_eq!(receipt.disposition(), disposition);
+        assert_eq!(
+            receipt.events(),
+            &[
+                crate::domain::events::DomainEvent::new(
+                    DomainEventKind::FormChanged,
+                    "main:Catalog.Products.Form.Main",
+                ),
+                crate::domain::events::DomainEvent::new(
+                    DomainEventKind::ModuleChanged,
+                    "main:Catalog.Products.Form.Main.Module.Form",
+                ),
+            ]
+        );
+        let cache = receipt.cache();
+        assert_eq!(cache.mode, "applied");
+        assert_eq!(cache.events, ["FormChanged", "ModuleChanged"]);
+        assert_eq!(
+            cache.invalidated,
+            [
+                "bsl_diagnostics",
+                "bsl_index",
+                "form_graph",
+                "metadata_graph"
+            ]
+        );
+        assert_eq!(cache.refreshed, ["metadata_graph"]);
+    }
+
+    fn assert_error_has_no_effect_receipt(
+        error: &super::ApplyPublicationError,
+        cache_root: &Path,
+        case: &str,
+    ) {
+        let debug = format!("{error:?}");
+        let cache_root = cache_root.display().to_string();
+        for forbidden in [
+            "ApplyEffectReceipt",
+            "FormChanged",
+            "ModuleChanged",
+            cache_root.as_str(),
+        ] {
+            assert!(
+                !debug.contains(forbidden),
+                "{case}: error payload leaked prepared effect subject: {debug}"
+            );
+        }
+    }
+
+    fn write_actor_event_fixture(root: &Path) {
+        const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+        std::fs::create_dir_all(root.join("Catalogs/Products/Forms/Main/Ext")).unwrap();
+        std::fs::write(
+            root.join("Configuration.xml"),
+            format!(
+                "<MetaDataObject xmlns=\"{MD}\" version=\"2.20\"><Configuration><Properties><Name>Fixture</Name></Properties><ChildObjects><Catalog>Products</Catalog></ChildObjects></Configuration></MetaDataObject>"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Catalogs/Products.xml"),
+            format!(
+                "<MetaDataObject xmlns=\"{MD}\" version=\"2.20\"><Catalog><Properties><Name>Products</Name></Properties><ChildObjects><Form>Main</Form></ChildObjects></Catalog></MetaDataObject>"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Catalogs/Products/Forms/Main.xml"),
+            format!(
+                "<MetaDataObject xmlns=\"{MD}\" version=\"2.20\"><Form><Properties><Name>Main</Name></Properties></Form></MetaDataObject>"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Catalogs/Products/Forms/Main/Ext/Form.xml"),
+            concat!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\r\n",
+                "\t<AutoCommandBar name=\"Bar\" id=\"-1\"/>\r\n",
+                "\t<ChildItems/>\r\n",
+                "\t<Commands/>\r\n",
+                "</Form>\r\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_missing_on_open_binding(root: &Path) {
+        std::fs::write(
+            root.join("Catalogs/Products/Forms/Main/Ext/Form.xml"),
+            concat!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\r\n",
+                "\t<AutoCommandBar name=\"Bar\" id=\"-1\"/>\r\n",
+                "\t<Events><Event name=\"OnOpen\">ПриОткрытии</Event></Events>\r\n",
+                "\t<ChildItems/>\r\n",
+                "\t<Commands/>\r\n",
+                "</Form>\r\n"
+            ),
+        )
+        .unwrap();
     }
 
     struct ActorFixture {
