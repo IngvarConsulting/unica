@@ -6404,11 +6404,11 @@ pub(crate) mod tests {
             ),
             (
                 "unica.meta.add",
-                entry("metadata:Add", "27646:331032f4d1cfefb7"),
+                entry("metadata:Add", "27667:4b02effe714fd5a3"),
             ),
             (
                 "unica.meta.edit",
-                entry("metadata:Edit", "28145:c93c0b516cc77cf1"),
+                entry("metadata:Edit", "28207:beb98e8e390227b2"),
             ),
             (
                 "unica.meta.remove",
