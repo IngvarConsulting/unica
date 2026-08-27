@@ -47,6 +47,7 @@ pub(crate) enum ApplyStagingErrorKind {
     Cancelled,
     Deadline,
     ContainmentIdentity,
+    MissingParent,
     AbsentChainOccupied,
     UnsupportedProvider,
     ConcurrentRevision,
@@ -290,6 +291,36 @@ impl ApplyStagedState {
         let relative = strict_relative(relative.as_ref())?;
         let index = self.ensure_loaded(&relative)?;
         let entry = &mut self.entries[index];
+        if entry.current != StagedFileState::Absent {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Invariant,
+                format!(
+                    "staged create target already exists: {}",
+                    relative.display()
+                ),
+            ));
+        }
+        entry.current = StagedFileState::Bytes(bytes);
+        Ok(())
+    }
+
+    /// Stages one absent terminal only when its immediate parent was retained
+    /// as an existing directory. Family planners that do not own topology
+    /// creation use this instead of the generic multi-component create path.
+    pub(crate) fn create_leaf_below_retained_parent(
+        &mut self,
+        relative: impl AsRef<Path>,
+        bytes: Vec<u8>,
+    ) -> Result<(), ApplyStagingError> {
+        let relative = strict_relative(relative.as_ref())?;
+        let index = self.ensure_loaded(&relative)?;
+        let entry = &mut self.entries[index];
+        if !entry.missing_parent_chain.is_empty() {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::MissingParent,
+                "staged leaf requires an already retained immediate parent",
+            ));
+        }
         if entry.current != StagedFileState::Absent {
             return Err(ApplyStagingError::new(
                 ApplyStagingErrorKind::Invariant,
@@ -1394,6 +1425,25 @@ pub(crate) mod tests {
 
         let error = state.read(Path::new("Ext/oversized.bin")).unwrap_err();
         assert_eq!(error.kind(), ApplyStagingErrorKind::UnsupportedProvider);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_parent_leaf_create_is_narrower_than_generic_topology_staging() {
+        let root = temp_root("retained-parent-leaf-create");
+        std::fs::create_dir_all(root.join("Existing")).unwrap();
+        let mut state = staged(&root);
+
+        state
+            .create_leaf_below_retained_parent("Existing/Module.bsl", b"leaf".to_vec())
+            .unwrap();
+        let error = state
+            .create_leaf_below_retained_parent("Missing/Module.bsl", b"leaf".to_vec())
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ApplyStagingErrorKind::MissingParent);
+        assert!(!root.join("Existing/Module.bsl").exists());
+        assert!(!root.join("Missing").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 

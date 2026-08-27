@@ -2491,6 +2491,13 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
         return None;
     }
     let data = fs::read(bin_path).ok()?;
+    parse_support_state_compat_bytes(Some(&data))
+}
+
+/// Parses already-read support marker bytes with the current V12 mutating
+/// guard semantics. Identity and no-follow proof remain the caller's job.
+pub(crate) fn parse_support_state_compat_bytes(data: Option<&[u8]>) -> Option<SupportState> {
+    let data = data?;
     if data.len() <= 32 {
         return Some(SupportState {
             global_editing_enabled: true,
@@ -2501,7 +2508,7 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
             vendors: Vec::new(),
         });
     }
-    let text = String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data));
+    let text = String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(data));
     let (global_flag, vendor_count) = parse_support_header(&text)?;
     if vendor_count == 0 {
         return Some(SupportState {
