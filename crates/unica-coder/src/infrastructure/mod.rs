@@ -48,6 +48,7 @@ pub(crate) mod runtime_build_preflight;
 pub(crate) mod runtime_jobs;
 pub(crate) mod source_revision;
 pub(crate) mod source_roots;
+mod source_selection_evidence;
 // The topology provider is introduced before both public consumers migrate to it.
 #[allow(dead_code)]
 pub(crate) mod subsystem_topology;

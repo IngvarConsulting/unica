@@ -11,9 +11,13 @@ use crate::infrastructure::platform::filesystem::{
     host_path_text, is_link_loop_error, open_absolute_directory_path_nofollow,
     open_any_child_nofollow, open_child_for_secure_tree_use, open_directory_child_nofollow,
     open_regular_child_nofollow, read_directory_names_bounded, OpenedChildKind,
+    RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_roots::{
     inspect_declared_source_root_route, normalize_contained_source_root, normalize_path_identity,
+};
+use crate::infrastructure::source_selection_evidence::{
+    RetainedDirectoryObservation, RetainedRegularObservation, RetainedSelectionPass,
 };
 use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -106,6 +110,10 @@ enum ExtensionLayoutShape {
 enum ProbeDirectory {
     Path(PathBuf),
     Retained(std::fs::File),
+    Actor {
+        relative: PathBuf,
+        directory: RetainedDirectoryCapability,
+    },
 }
 const EDT_SOURCE_MARKERS: &[&str] = &[
     ".project",
@@ -299,6 +307,7 @@ struct SourceMapDiscoveryState {
     remaining_format_evidence_entries: Option<usize>,
     remaining_format_evidence_bytes: Option<usize>,
     require_nofollow_source_probe_route: bool,
+    actor_pass: Option<RetainedSelectionPass>,
 }
 
 impl SourceMapDiscoveryState {
@@ -312,6 +321,7 @@ impl SourceMapDiscoveryState {
             remaining_format_evidence_entries: None,
             remaining_format_evidence_bytes: None,
             require_nofollow_source_probe_route: false,
+            actor_pass: None,
         }
     }
 
@@ -325,6 +335,7 @@ impl SourceMapDiscoveryState {
             remaining_format_evidence_entries: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
             remaining_format_evidence_bytes: Some(MAX_HEALTH_FORMAT_EVIDENCE_BYTES),
             require_nofollow_source_probe_route: true,
+            actor_pass: None,
         }
     }
 
@@ -338,6 +349,21 @@ impl SourceMapDiscoveryState {
             remaining_format_evidence_entries: None,
             remaining_format_evidence_bytes: None,
             require_nofollow_source_probe_route: false,
+            actor_pass: None,
+        }
+    }
+
+    fn actor(workspace: RetainedDirectoryCapability) -> Self {
+        Self {
+            provenance: None,
+            max_source_sets: Some(MAX_HEALTH_SOURCE_SETS),
+            max_input_bytes: Some(MAX_HEALTH_SOURCE_MAP_INPUT_BYTES),
+            format_evidence_entry_limit: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
+            format_evidence_byte_limit: Some(MAX_HEALTH_FORMAT_EVIDENCE_BYTES),
+            remaining_format_evidence_entries: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
+            remaining_format_evidence_bytes: Some(MAX_HEALTH_FORMAT_EVIDENCE_BYTES),
+            require_nofollow_source_probe_route: true,
+            actor_pass: Some(RetainedSelectionPass::new(workspace)),
         }
     }
 
@@ -362,6 +388,10 @@ impl SourceMapDiscoveryState {
 
     fn captures_provenance(&self) -> bool {
         self.provenance.is_some()
+    }
+
+    fn captures_actor_evidence(&self) -> bool {
+        self.actor_pass.is_some()
     }
 
     fn record_exact_file(&mut self, path: PathBuf, raw: &[u8]) -> Result<(), String> {
@@ -526,6 +556,21 @@ pub(crate) fn discover_project_source_map_with_provenance(
     ))
 }
 
+pub(in crate::infrastructure) fn discover_project_source_map_actor_pass(
+    workspace: RetainedDirectoryCapability,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(ProjectSourceMap, RetainedSelectionPass), String> {
+    let workspace_root = workspace.path().to_path_buf();
+    let mut state = SourceMapDiscoveryState::actor(workspace);
+    let source_map = discover_project_source_map_internal(&workspace_root, checkpoint, &mut state)?;
+    Ok((
+        source_map,
+        state
+            .actor_pass
+            .expect("actor source-map discovery retains its sealed evidence pass"),
+    ))
+}
+
 fn discover_project_source_map_internal(
     workspace_root: &Path,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
@@ -565,7 +610,12 @@ fn discover_project_source_map_internal(
     let (effective_source_set, effective_source_root, source_selection_error) =
         match select_default_source_set(&project_source_sets) {
             Ok(source_set) => {
-                match normalize_contained_source_root(workspace_root, &source_set.path) {
+                let normalized = if state.captures_actor_evidence() {
+                    retained_actor_source_root_path(workspace_root, &source_set.path)
+                } else {
+                    normalize_contained_source_root(workspace_root, &source_set.path)
+                };
+                match normalized {
                     Ok(root) => (
                         Some(source_set.name.clone()),
                         Some(root.display().to_string()),
@@ -586,6 +636,27 @@ fn discover_project_source_map_internal(
         source_selection_error,
         configured_format_raw,
     })
+}
+
+fn retained_actor_source_root_path(
+    workspace_root: &Path,
+    configured_path: &str,
+) -> Result<PathBuf, String> {
+    let mut relative = PathBuf::new();
+    for component in Path::new(configured_path).components() {
+        match component {
+            std::path::Component::Normal(name) => relative.push(name),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(format!(
+                    "configured source root is not a closed retained route: {configured_path}"
+                ));
+            }
+        }
+    }
+    Ok(workspace_root.join(relative))
 }
 
 fn read_config_source_sets(
@@ -1076,6 +1147,37 @@ fn snapshot_project_map_input(
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<Option<Vec<u8>>, String> {
     checkpoint()?;
+    if state.captures_actor_evidence() {
+        let limit = state
+            .max_input_bytes
+            .unwrap_or(MAX_HEALTH_SOURCE_MAP_INPUT_BYTES) as usize;
+        let actor_pass = state
+            .actor_pass
+            .as_mut()
+            .expect("actor discovery state has a retained pass");
+        let relative = path
+            .strip_prefix(actor_pass.workspace_path())
+            .map_err(|_| {
+                format!(
+                    "project source-map input escaped retained workspace: {}",
+                    path.display()
+                )
+            })?;
+        return match actor_pass.observe_regular(relative, limit, checkpoint)? {
+            RetainedRegularObservation::Exact(raw) => {
+                if read_contents {
+                    Ok(Some(raw))
+                } else {
+                    Ok(Some(Vec::new()))
+                }
+            }
+            RetainedRegularObservation::Absent => Ok(None),
+            RetainedRegularObservation::WrongKind => Err(format!(
+                "project source-map input is not a retained regular file: {}",
+                path.display()
+            )),
+        };
+    }
     if state.require_nofollow_source_probe_route {
         return snapshot_health_project_map_input(path, read_contents, state, checkpoint);
     }
@@ -1299,7 +1401,7 @@ fn autodetect_source_sets(
     let mut source_sets = Vec::new();
     for path in BASE_CONFIGURATION_LAYOUTS {
         checkpoint()?;
-        let Some(directory) = open_probe_directory(workspace_root, path, state)? else {
+        let Some(directory) = open_probe_directory(workspace_root, path, state, checkpoint)? else {
             continue;
         };
         if probe_source_root_markers(&directory, state, checkpoint)? {
@@ -1346,7 +1448,8 @@ fn autodetect_extension_source_sets(
     let mut extension_sets = Vec::new();
     for layout in EXTENSION_LAYOUTS {
         checkpoint()?;
-        let Some(container) = open_extension_container(workspace_root, layout.directory, state)?
+        let Some(container) =
+            open_extension_container(workspace_root, layout.directory, state, checkpoint)?
         else {
             state.record_directory_membership(
                 workspace_root.join(layout.directory),
@@ -1443,8 +1546,18 @@ fn push_autodetected_extension(
 fn open_probe_directory(
     workspace_root: &Path,
     relative: &str,
-    state: &SourceMapDiscoveryState,
+    state: &mut SourceMapDiscoveryState,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<Option<ProbeDirectory>, String> {
+    if let Some(actor_pass) = state.actor_pass.as_mut() {
+        return match actor_pass.observe_directory(Path::new(relative), checkpoint)? {
+            RetainedDirectoryObservation::Present(directory) => Ok(Some(ProbeDirectory::Actor {
+                relative: PathBuf::from(relative),
+                directory,
+            })),
+            RetainedDirectoryObservation::AbsentOrWrongKind => Ok(None),
+        };
+    }
     if state.require_nofollow_source_probe_route {
         Ok(health_source_directory(workspace_root, relative)?.map(ProbeDirectory::Retained))
     } else {
@@ -1467,8 +1580,18 @@ fn open_probe_directory(
 fn open_extension_container(
     workspace_root: &Path,
     relative: &str,
-    state: &SourceMapDiscoveryState,
+    state: &mut SourceMapDiscoveryState,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<Option<ProbeDirectory>, String> {
+    if let Some(actor_pass) = state.actor_pass.as_mut() {
+        return match actor_pass.observe_directory(Path::new(relative), checkpoint)? {
+            RetainedDirectoryObservation::Present(directory) => Ok(Some(ProbeDirectory::Actor {
+                relative: PathBuf::from(relative),
+                directory,
+            })),
+            RetainedDirectoryObservation::AbsentOrWrongKind => Ok(None),
+        };
+    }
     if !state.require_nofollow_source_probe_route {
         let path = workspace_root.join(relative);
         return match std::fs::symlink_metadata(&path) {
@@ -1508,6 +1631,19 @@ fn probe_source_root_markers(
     for marker in SOURCE_ROOT_MARKERS {
         checkpoint()?;
         match directory {
+            ProbeDirectory::Actor { relative, .. } => {
+                let marker = relative.join(marker);
+                let observed = state
+                    .actor_pass
+                    .as_mut()
+                    .expect("actor probe has retained evidence state")
+                    .observe_regular(
+                        &marker,
+                        MAX_HEALTH_SOURCE_MAP_INPUT_BYTES as usize,
+                        checkpoint,
+                    )?;
+                found |= matches!(observed, RetainedRegularObservation::Exact(_));
+            }
             ProbeDirectory::Retained(handle) => {
                 match secure_regular_file_exists(handle, Path::new(marker)) {
                     Ok(exists) => found |= exists,
@@ -1553,6 +1689,37 @@ fn enumerate_source_root_candidates(
 ) -> Result<Vec<(String, ProbeDirectory)>, String> {
     let container_path = workspace_root.join(container_relative);
     match container {
+        ProbeDirectory::Actor {
+            relative,
+            directory,
+        } => {
+            let limit = state
+                .max_source_sets
+                .unwrap_or(MAX_HEALTH_SOURCE_SETS)
+                .saturating_add(1);
+            let entries = state
+                .actor_pass
+                .as_mut()
+                .expect("actor container has retained evidence state")
+                .observe_membership(relative, directory, limit, checkpoint)?;
+            let mut candidates = Vec::new();
+            for entry in entries {
+                let Some(directory) = entry.directory else {
+                    continue;
+                };
+                let Ok(name) = entry.name.into_string() else {
+                    continue;
+                };
+                candidates.push((
+                    name.clone(),
+                    ProbeDirectory::Actor {
+                        relative: relative.join(&name),
+                        directory,
+                    },
+                ));
+            }
+            Ok(candidates)
+        }
         ProbeDirectory::Retained(handle) => {
             // `limit` bounds this enumeration's own I/O cost. The combined source-set
             // total is enforced by `autodetect_source_sets` once the base scan and every
@@ -1690,7 +1857,21 @@ fn detect_source_set_format(
 ) -> Result<ProjectSourceSet, String> {
     let source_root = workspace_root.join(&source_set.path);
     let mut format_probe_error = None;
-    let (platform_evidence, edt_evidence) = if state.require_nofollow_source_probe_route {
+    let (platform_evidence, edt_evidence) = if state.captures_actor_evidence() {
+        match actor_format_evidence(
+            workspace_root,
+            &source_root,
+            source_set.kind,
+            state,
+            checkpoint,
+        ) {
+            Ok(evidence) => evidence,
+            Err(reason) => {
+                format_probe_error = Some(reason);
+                (Vec::new(), Vec::new())
+            }
+        }
+    } else if state.require_nofollow_source_probe_route {
         match health_format_evidence(
             workspace_root,
             &source_root,
@@ -1759,6 +1940,128 @@ fn classify_source_format(
         (false, true) => SourceFormat::Edt,
         (false, false) => default_format.unwrap_or(SourceFormat::Unknown),
     }
+}
+
+fn actor_format_evidence(
+    workspace_root: &Path,
+    source_root: &Path,
+    kind: SourceSetKind,
+    state: &mut SourceMapDiscoveryState,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    checkpoint()?;
+    let configured_path = PathBuf::from(path_relative_to(workspace_root, source_root));
+    let source_directory = {
+        let actor_pass = state
+            .actor_pass
+            .as_mut()
+            .expect("actor format discovery has retained evidence state");
+        match actor_pass.observe_directory(&configured_path, checkpoint)? {
+            RetainedDirectoryObservation::Present(directory) => directory,
+            RetainedDirectoryObservation::AbsentOrWrongKind => {
+                return Ok((Vec::new(), Vec::new()));
+            }
+        }
+    };
+    let mut platform = Vec::new();
+    let mut edt = Vec::new();
+
+    let configuration = configured_path.join("Configuration.xml");
+    let observed = state
+        .actor_pass
+        .as_mut()
+        .expect("actor format discovery has retained evidence state")
+        .observe_regular(
+            &configuration,
+            MAX_HEALTH_SOURCE_MAP_INPUT_BYTES as usize,
+            checkpoint,
+        )?;
+    if matches!(observed, RetainedRegularObservation::Exact(_)) {
+        let evidence = path_relative_to(workspace_root, &workspace_root.join(&configuration));
+        state.record_format_evidence(&evidence)?;
+        platform.push(evidence);
+    }
+
+    for marker in EDT_SOURCE_MARKERS {
+        checkpoint()?;
+        let marker_path = configured_path.join(marker);
+        let observed = state
+            .actor_pass
+            .as_mut()
+            .expect("actor format discovery has retained evidence state")
+            .observe_regular(
+                &marker_path,
+                MAX_HEALTH_SOURCE_MAP_INPUT_BYTES as usize,
+                checkpoint,
+            )?;
+        if matches!(observed, RetainedRegularObservation::Exact(_)) {
+            let evidence = path_relative_to(workspace_root, &workspace_root.join(&marker_path));
+            state.record_format_evidence(&evidence)?;
+            edt.push(evidence);
+        }
+    }
+
+    if matches!(
+        kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        let limit = state
+            .remaining_format_evidence_entries
+            .unwrap_or(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES)
+            .saturating_add(1);
+        let entries = state
+            .actor_pass
+            .as_mut()
+            .expect("actor format discovery has retained evidence state")
+            .observe_membership(&configured_path, &source_directory, limit, checkpoint)?;
+        for entry in entries {
+            checkpoint()?;
+            let path = Path::new(&entry.name);
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+            {
+                continue;
+            }
+            let relative = configured_path.join(&entry.name);
+            let observed = state
+                .actor_pass
+                .as_mut()
+                .expect("actor format discovery has retained evidence state")
+                .observe_regular(
+                    &relative,
+                    MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES as usize,
+                    checkpoint,
+                )?;
+            let RetainedRegularObservation::Exact(bytes) = observed else {
+                continue;
+            };
+            if has_config_dump_info_filename(path)
+                && !matches!(
+                    (config_dump_info_xml_kind(&bytes), kind),
+                    (
+                        ConfigDumpInfoXmlKind::ExternalProcessor,
+                        SourceSetKind::ExternalProcessor
+                    ) | (
+                        ConfigDumpInfoXmlKind::ExternalReport,
+                        SourceSetKind::ExternalReport
+                    )
+                )
+            {
+                continue;
+            }
+            let evidence = path_relative_to(workspace_root, &workspace_root.join(&relative));
+            state.record_format_evidence(&evidence)?;
+            platform.push(evidence);
+        }
+    }
+    platform.sort();
+    platform.dedup();
+    edt.sort();
+    edt.dedup();
+    checkpoint()?;
+    Ok((platform, edt))
 }
 
 fn health_format_evidence(
@@ -3416,6 +3719,67 @@ source-set:
             SourceFormat::PlatformXml,
             &["erf/Report.XML"],
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn actor_admission_preserves_declared_external_processor_and_report_map() {
+        let root = temp_workspace("unica-source-map-actor-external-map");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+format: DESIGNER
+source-set:
+  - name: processors
+    type: EXTERNAL_DATA_PROCESSORS
+    path: epf
+  - name: reports
+    type: EXTERNAL_REPORTS
+    path: erf
+"#,
+        );
+        write(
+            &root.join("epf/PriceLoader.xml"),
+            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        );
+        write(
+            &root.join("erf/Sales.XML"),
+            "<MetaDataObject><ExternalReport/></MetaDataObject>",
+        );
+        let mut checkpoint = || Ok(());
+
+        let admission =
+            crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                &root,
+                &mut checkpoint,
+            )
+            .unwrap();
+
+        assert_source_set(
+            admission.map(),
+            "processors",
+            SourceSetKind::ExternalProcessor,
+            SourceFormat::PlatformXml,
+            &["epf/PriceLoader.xml"],
+        );
+        assert_source_set(
+            admission.map(),
+            "reports",
+            SourceSetKind::ExternalReport,
+            SourceFormat::PlatformXml,
+            &["erf/Sales.XML"],
+        );
+        assert!(admission.source_root_identity(Path::new("epf")).is_some());
+        assert!(admission.source_root_identity(Path::new("erf")).is_some());
+        admission
+            .into_evidence()
+            .validate(
+                crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                    std::time::Duration::from_secs(5),
+                ),
+                &crate::domain::cancellation::CancellationToken::new(),
+            )
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

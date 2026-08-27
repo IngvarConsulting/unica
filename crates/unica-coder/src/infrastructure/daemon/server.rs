@@ -23,9 +23,8 @@ use crate::domain::invocation::{
     DomainResult, InvocationFailure, InvocationOutcome, SafeIdentityHash,
 };
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
-use crate::infrastructure::source_roots::normalize_contained_source_root;
+use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
     IndexWorkIdentity, ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry,
@@ -512,6 +511,7 @@ struct DiscoveredActorSource {
     source_format: SourceFormat,
     source_profile: SourceProfile,
     root: std::path::PathBuf,
+    retained_identity: crate::infrastructure::platform::filesystem::FileIdentity,
 }
 
 fn bind_workspace_invocation_controlled(
@@ -523,21 +523,33 @@ fn bind_workspace_invocation_controlled(
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
     let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
         .map_err(|_| WorkspaceAdmissionError::Invalid)?;
-    let source_map = discover_project_source_map(&context.workspace_root)
-        .map_err(|_| WorkspaceAdmissionError::Invalid)?;
-    let mut admitted_sources = source_map
+    let mut checkpoint = || {
+        response_deadline
+            .checkpoint_actor_admission()
+            .map_err(str::to_string)
+    };
+    let source_admission =
+        discover_project_source_admission(&context.workspace_root, &mut checkpoint)
+            .map_err(|_| WorkspaceAdmissionError::Invalid)?;
+    let mut admitted_sources = source_admission
+        .map()
         .source_sets
-        .into_iter()
+        .iter()
         .filter(|source| source.source_format == SourceFormat::PlatformXml)
         .map(|source| {
-            let root = normalize_contained_source_root(&context.workspace_root, &source.path)
+            let relative = closed_daemon_source_relative_path(&source.path)
                 .map_err(|_| WorkspaceAdmissionError::Invalid)?;
+            let retained_identity = source_admission
+                .source_root_identity(&relative)
+                .ok_or(WorkspaceAdmissionError::Invalid)?;
+            let root = context.workspace_root.join(&relative);
             Ok(DiscoveredActorSource {
-                name: source.name,
+                name: source.name.clone(),
                 kind: source.kind,
                 source_format: source.source_format,
                 source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
                 root,
+                retained_identity,
             })
         })
         .collect::<Result<Vec<_>, WorkspaceAdmissionError>>()?;
@@ -570,7 +582,13 @@ fn bind_workspace_invocation_controlled(
         .map(|source| {
             actor
                 .bind_provider_root(&source.name, &source.root)
-                .map(|binding| ActorReadSourceBinding { binding })
+                .and_then(|binding| {
+                    if binding.retained_root().identity() != source.retained_identity {
+                        return Err("actor binding does not match retained source-map admission"
+                            .to_string());
+                    }
+                    Ok(ActorReadSourceBinding { binding })
+                })
                 .map_err(|_| WorkspaceAdmissionError::Invalid)
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -596,6 +614,22 @@ fn bind_workspace_invocation_controlled(
         runtime_resources: resources.runtime_resources,
         runtime_service: resources.runtime_service,
     })
+}
+
+fn closed_daemon_source_relative_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let mut relative = std::path::PathBuf::new();
+    for component in std::path::Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(name) => relative.push(name),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err("source-map route is not workspace-relative".to_string());
+            }
+        }
+    }
+    Ok(relative)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1569,8 +1603,8 @@ fn serialize_response_bounded(
 pub(crate) mod actor_capacity_tests {
     use super::*;
     use crate::application::invocation_store::{
-        NewInvocationRecord, SafeStatusMessage, StoredInvocationRecord, TaskTransition,
-        ToolIdentity,
+        NewInvocationRecord, SafeFailureReason, SafeStatusMessage, StoredInvocationRecord,
+        TaskTransition, ToolIdentity,
     };
     use crate::application::operation_descriptors::KnownLongReason;
     use crate::application::shared_work::{
@@ -3941,6 +3975,220 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    fn source_selection_read_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        (workspace, source)
+    }
+
+    #[test]
+    pub(crate) fn view_find_admitted_snapshot_may_finish_after_map_change() {
+        let task_root = tempfile::tempdir().unwrap();
+        let (workspace, source) = source_selection_read_fixture();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let request = |tool, arguments| {
+            InvocationRequest::new(
+                tool,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap()
+        };
+        let bind = |request: &InvocationRequest| {
+            bind_workspace_invocation(
+                request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline(),
+            )
+            .unwrap()
+        };
+        let view_request = request(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Items"}),
+        );
+        let find_request = request(ToolIdentity::Find, serde_json::json!({"query": "Items"}));
+        let view = bind(&view_request);
+        let find = bind(&find_request);
+        assert!(Arc::ptr_eq(&view.actor, &find.actor));
+        let admitted_actor = Arc::clone(&view.actor);
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: EXTENSION\n    path: src\n",
+        )
+        .unwrap();
+
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        for invocation in [view, find] {
+            let cancellation = CancellationToken::new();
+            let execution = invocation.begin_execution(&cancellation).unwrap();
+            let result = service
+                .execute(&execution, cancellation.clone())
+                .expect("already-admitted retained read execution");
+            let published = execution
+                .publish(Ok(result), &cancellation)
+                .unwrap()
+                .unwrap();
+            assert!(published.ok, "{:?}", published.diagnostics);
+        }
+
+        let subsequent = bind(&view_request);
+        assert!(
+            !Arc::ptr_eq(&admitted_actor, &subsequent.actor),
+            "a subsequent invocation ignored the changed map"
+        );
+        assert_eq!(
+            subsequent.provider_root.source_kind(),
+            SourceSetKind::Extension
+        );
+        assert!(source.join("Catalogs/Items.xml").exists());
+    }
+
+    #[test]
+    pub(crate) fn semantically_equivalent_map_edit_reuses_actor_identity() {
+        let task_root = tempfile::tempdir().unwrap();
+        let (workspace, _) = source_selection_read_fixture();
+        let dependency = workspace.path().join("dep");
+        std::fs::create_dir_all(&dependency).unwrap();
+        std::fs::write(
+            dependency.join("Configuration.xml"),
+            "<MetaDataObject><Configuration/></MetaDataObject>",
+        )
+        .unwrap();
+        let project = workspace.path().join("v8project.yaml");
+        std::fs::write(
+            &project,
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                "  - name: dep\n    type: CONFIGURATION\n    path: dep\n",
+            ),
+        )
+        .unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Items"}),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let bind = || {
+            bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline(),
+            )
+            .unwrap()
+        };
+        let first = bind();
+        std::fs::write(
+            &project,
+            concat!(
+                "# order and comments are semantically irrelevant\n",
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: dep\n    type: CONFIGURATION\n    path: dep\n",
+                "  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            ),
+        )
+        .unwrap();
+        let second = bind();
+
+        assert!(Arc::ptr_eq(&first.actor, &second.actor));
+        assert_eq!(
+            first.workspace_identity_hash, second.workspace_identity_hash,
+            "comments/order-only edit changed actor state scope"
+        );
+    }
+
+    #[test]
+    pub(crate) fn working_task_recovery_is_resume_unsupported_without_apply_reexecution() {
+        let task_root = tempfile::tempdir().unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let record = NewInvocationRecord::new(
+            crate::domain::invocation::InvocationId::new(),
+            ToolIdentity::Apply,
+            crate::domain::invocation::NormalizedArgumentsHash::from_sha256([0x91; 32]),
+            crate::domain::invocation::SafeIdentityHash::from_sha256([0x92; 32]),
+            SafeStatusMessage::Working,
+            250,
+            60_000,
+            Some(crate::domain::invocation::ResumeDescriptor::Delivery(
+                crate::domain::invocation::DeliveryResume::new(
+                    crate::domain::invocation::SafeIdentityHash::from_sha256([0x93; 32]),
+                ),
+            )),
+        );
+        let working = store.create_working(record).unwrap();
+        drop(store);
+        let apply_executions = AtomicUsize::new(0);
+
+        let (reopened, report) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let recovered = reopened.get(working.task_id).unwrap();
+
+        assert_eq!(recovered.status, InvocationStatus::Failed);
+        assert_eq!(
+            recovered.failure_reason,
+            Some(SafeFailureReason::ResumeUnsupported)
+        );
+        assert!(recovered.result.is_none());
+        assert_eq!(apply_executions.load(Ordering::SeqCst), 0);
+        assert!(report.classifications.iter().any(|classification| matches!(
+            classification,
+            crate::infrastructure::task_store::RecoveryClassification::UnsupportedResume { task_id }
+                if *task_id == working.task_id
+        )));
+    }
+
     #[test]
     pub(crate) fn v13_daemon_rejects_unproved_edt_invalid_or_empty_platform_fallback() {
         let task_root = tempfile::tempdir().unwrap();
@@ -5030,6 +5278,11 @@ struct ActorLogicalReadLease {"#,
         std::fs::write(
             project,
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("Configuration.xml"),
+            "<MetaDataObject><Configuration/></MetaDataObject>",
         )
         .unwrap();
     }

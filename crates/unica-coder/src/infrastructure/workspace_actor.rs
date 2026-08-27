@@ -27,6 +27,11 @@ use crate::infrastructure::source_revision::{
     RetainedRevisionLease, SourceRevisionService, WorkspaceStateScope,
 };
 use crate::infrastructure::source_roots::{normalize_path_identity, GENERATED_DIR_NAME};
+use crate::infrastructure::source_selection_evidence::{
+    discover_project_source_admission, ResolvedProjectSourceAdmission,
+    RetainedSourceSelectionEvidence, SourceSelectionEvidenceError,
+    SourceSelectionEvidenceErrorKind,
+};
 use crate::infrastructure::support_policy_evidence::{
     RetainedSupportPolicyEvidence, SupportPolicyEvidenceError, SupportPolicyEvidenceErrorKind,
     SupportPolicyMode,
@@ -103,6 +108,13 @@ macro_rules! assert_not_impl_production {
         };
     };
 }
+
+assert_not_impl_production!(ResolvedProjectSourceAdmission: Clone);
+assert_not_impl_production!(ResolvedProjectSourceAdmission: serde::Serialize);
+assert_not_impl_production!(ResolvedProjectSourceAdmission: serde::de::DeserializeOwned);
+assert_not_impl_production!(RetainedSourceSelectionEvidence: Clone);
+assert_not_impl_production!(RetainedSourceSelectionEvidence: serde::Serialize);
+assert_not_impl_production!(RetainedSourceSelectionEvidence: serde::de::DeserializeOwned);
 
 /// Exact daemon-local ownership key for mutable workspace state.
 ///
@@ -387,6 +399,7 @@ pub(crate) struct ApplyAdmission {
     writer_authority: ApplyWriterAuthority,
     workspace_cache: WorkspaceCachePublicationAuthority,
     support_policy: RetainedSupportPolicyEvidence,
+    source_selection: RetainedSourceSelectionEvidence,
     context: WorkspaceContext,
 }
 
@@ -565,6 +578,7 @@ impl ApplyAdmission {
             writer_authority: self.writer_authority,
             workspace_cache: self.workspace_cache,
             support_policy: self.support_policy,
+            source_selection: self.source_selection,
             effects: PreparedApplyEffectReceipt {
                 events,
                 cache: projected_cache_report,
@@ -603,6 +617,7 @@ pub(crate) struct PreparedApplyBatch {
     writer_authority: ApplyWriterAuthority,
     workspace_cache: WorkspaceCachePublicationAuthority,
     support_policy: RetainedSupportPolicyEvidence,
+    source_selection: RetainedSourceSelectionEvidence,
     effects: PreparedApplyEffectReceipt,
     revision_reconciliation: PreparedRevisionReconciliation,
 }
@@ -629,6 +644,7 @@ pub(in crate::infrastructure) struct RetainedApplyFinalGate<'a, R> {
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
     support_policy: RetainedSupportPolicyEvidence,
+    source_selection: RetainedSourceSelectionEvidence,
 }
 
 impl<R> RetainedApplyFinalGate<'_, R> {
@@ -656,7 +672,10 @@ impl<R> RetainedApplyFinalGate<'_, R> {
         self.checkpoint("prepared apply final gate")?;
         self.support_policy
             .validate(self.deadline, &self.cancellation)
-            .map_err(support_policy_publication_error)
+            .map_err(support_policy_publication_error)?;
+        self.source_selection
+            .validate_final(self.deadline, &self.cancellation)
+            .map_err(source_selection_publication_error)
     }
 }
 
@@ -744,6 +763,7 @@ pub(crate) enum ApplyPublicationErrorKind {
     ConcurrentRevision,
     ContainmentIdentity,
     ProviderPostvalidation,
+    SourceSelectionChanged,
     RollbackIncomplete,
     Invariant,
 }
@@ -1128,6 +1148,14 @@ impl<R> WorkspaceActor<R> {
                 if_rev.unwrap_or_default()
             ));
         }
+        let source_selection = {
+            let mut checkpoint =
+                || apply_checkpoint(deadline, cancellation, "apply source-map admission");
+            let resolved =
+                discover_project_source_admission(&self.context.workspace_root, &mut checkpoint)?;
+            self.validate_source_selection_admission(binding, &resolved)?;
+            resolved.into_evidence()
+        };
         let writer_authority = ApplyWriterAuthority::issue();
         let workspace_cache = retain_workspace_cache_publication_authority(
             &self.context,
@@ -1154,8 +1182,53 @@ impl<R> WorkspaceActor<R> {
             writer_authority,
             workspace_cache,
             support_policy,
+            source_selection,
             context: self.context.clone(),
         })
+    }
+
+    fn validate_source_selection_admission(
+        &self,
+        binding: &ProviderRootBinding,
+        admission: &ResolvedProjectSourceAdmission,
+    ) -> Result<(), String> {
+        let projection =
+            supported_actor_source_projection(&self.identity.workspace_root, admission.map())?;
+        if projection != self.identity.source_sets {
+            return Err(
+                "project source-map supported projection does not match the workspace actor"
+                    .to_string(),
+            );
+        }
+        let selected = projection
+            .iter()
+            .find(|source| source.name == binding.source_set.name)
+            .ok_or_else(|| {
+                "project source-map no longer contains the actor-selected source".to_string()
+            })?;
+        if selected != &binding.source_set {
+            return Err(
+                "project source-map selected row does not match the actor binding".to_string(),
+            );
+        }
+        let selected_row = admission
+            .map()
+            .source_sets
+            .iter()
+            .find(|source| {
+                source.name == selected.name
+                    && source.kind == selected.kind
+                    && source.source_format == selected.source_format
+            })
+            .ok_or_else(|| "project source-map selected semantic row is unavailable".to_string())?;
+        let relative = closed_source_selection_relative_path(&selected_row.path)?;
+        if admission.source_root_identity(&relative) != Some(binding.source_root.identity()) {
+            return Err(
+                "project source-map selected retained root does not match the actor binding"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     pub(crate) fn publish_prepared_apply(
@@ -1218,6 +1291,10 @@ impl<R> WorkspaceActor<R> {
             .support_policy
             .validate(prepared.deadline, &prepared.cancellation)
             .map_err(support_policy_publication_error)?;
+        prepared
+            .source_selection
+            .validate(prepared.deadline, &prepared.cancellation)
+            .map_err(source_selection_publication_error)?;
         if prepared.dry_run {
             prepared
                 .transaction
@@ -1238,6 +1315,10 @@ impl<R> WorkspaceActor<R> {
                 .support_policy
                 .validate(prepared.deadline, &prepared.cancellation)
                 .map_err(support_policy_publication_error)?;
+            prepared
+                .source_selection
+                .validate_dry_result(prepared.deadline, &prepared.cancellation)
+                .map_err(source_selection_publication_error)?;
             self.validate_binding(&binding).map_err(|error| {
                 ApplyPublicationError::new(ApplyPublicationErrorKind::ContainmentIdentity, error)
             })?;
@@ -1262,6 +1343,7 @@ impl<R> WorkspaceActor<R> {
             deadline: prepared.deadline,
             cancellation: prepared.cancellation.clone(),
             support_policy: prepared.support_policy,
+            source_selection: prepared.source_selection,
         };
         let (report, revision) = prepared.transaction.commit_retained_apply(
             prepared.writer_authority,
@@ -1554,6 +1636,47 @@ impl<R> WorkspaceActor<R> {
     }
 }
 
+fn supported_actor_source_projection(
+    workspace_root: &Path,
+    map: &crate::domain::project_sources::ProjectSourceMap,
+) -> Result<Vec<WorkspaceSourceSetIdentity>, String> {
+    let mut projection = map
+        .source_sets
+        .iter()
+        .filter(|source| source.source_format == SourceFormat::PlatformXml)
+        .map(|source| {
+            let relative = closed_source_selection_relative_path(&source.path)?;
+            Ok(WorkspaceSourceSetIdentity {
+                name: source.name.clone(),
+                root: workspace_root.join(relative),
+                kind: source.kind,
+                source_format: source.source_format,
+                source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    projection.sort();
+    Ok(projection)
+}
+
+fn closed_source_selection_relative_path(path: &str) -> Result<PathBuf, String> {
+    let mut relative = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(name) => relative.push(name),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(format!(
+                    "project source-map row is not a closed workspace-relative route: {path}"
+                ));
+            }
+        }
+    }
+    Ok(relative)
+}
+
 fn retain_workspace_cache_publication_authority(
     context: &WorkspaceContext,
     source_root: &RetainedDirectoryCapability,
@@ -1732,6 +1855,22 @@ fn support_policy_publication_error(error: SupportPolicyEvidenceError) -> ApplyP
             ApplyPublicationErrorKind::ContainmentIdentity
         }
         SupportPolicyEvidenceErrorKind::Provider => {
+            ApplyPublicationErrorKind::ProviderPostvalidation
+        }
+    };
+    ApplyPublicationError::new(kind, error.to_string())
+}
+
+fn source_selection_publication_error(
+    error: SourceSelectionEvidenceError,
+) -> ApplyPublicationError {
+    let kind = match error.kind() {
+        SourceSelectionEvidenceErrorKind::Cancelled => ApplyPublicationErrorKind::Cancelled,
+        SourceSelectionEvidenceErrorKind::Deadline => ApplyPublicationErrorKind::Deadline,
+        SourceSelectionEvidenceErrorKind::Changed => {
+            ApplyPublicationErrorKind::SourceSelectionChanged
+        }
+        SourceSelectionEvidenceErrorKind::Provider => {
             ApplyPublicationErrorKind::ProviderPostvalidation
         }
     };
@@ -3665,6 +3804,16 @@ pub(crate) mod tests {
         let source = root.join("cache/src");
         let cache = root.join("cache");
         std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: src\n    type: CONFIGURATION\n    path: cache/src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            "<MetaDataObject><Configuration/></MetaDataObject>",
+        )
+        .unwrap();
         let mut actor_context = context(&root);
         actor_context.cache_root = cache;
         let identity = WorkspaceIdentity::new(
@@ -3693,6 +3842,16 @@ pub(crate) mod tests {
     fn workspace_root_source_allows_exact_generated_cache_descendant() {
         let root = temp_root("workspace-root-source-cache-descendant");
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: src\n    type: CONFIGURATION\n    path: .\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Configuration.xml"),
+            "<MetaDataObject><Configuration/></MetaDataObject>",
+        )
+        .unwrap();
         std::fs::write(root.join("Module.bsl"), b"source").unwrap();
         let actor_context = context(&root);
         let identity = WorkspaceIdentity::new(
@@ -3729,6 +3888,16 @@ pub(crate) mod tests {
     fn source_role_rejects_platform_equivalent_generated_components() {
         let root = temp_root("platform-equivalent-generated-source");
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: src\n    type: CONFIGURATION\n    path: .\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Configuration.xml"),
+            "<MetaDataObject><Configuration/></MetaDataObject>",
+        )
+        .unwrap();
         let canonical_root = std::fs::canonicalize(&root).unwrap();
         if crate::infrastructure::platform::filesystem::host_filesystem_case_sensitive(
             &canonical_root,
@@ -3771,6 +3940,16 @@ pub(crate) mod tests {
     fn workspace_root_source_and_missing_cache_publish_through_disjoint_shared_anchor() {
         let root = temp_root("workspace-root-shared-cache-anchor");
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: src\n    type: CONFIGURATION\n    path: .\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Configuration.xml"),
+            "<MetaDataObject><Configuration/></MetaDataObject>",
+        )
+        .unwrap();
         std::fs::write(root.join("Module.bsl"), b"before").unwrap();
         let actor_context = context(&root);
         let identity = WorkspaceIdentity::new(
@@ -4963,6 +5142,582 @@ pub(crate) mod tests {
         assert_eq!(result.commit_count_for_test(), 1);
         assert!(result.cleanup_diagnostics().is_empty());
         fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_selection_rejects_v8project_kind_change_after_prepare() {
+        let fixture = actor_fixture("selection-kind-change", &["src/cf"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src/cf", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        std::fs::write(
+            fixture.root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: src/cf\n    type: EXTENSION\n    path: src/cf\n",
+        )
+        .unwrap();
+
+        let error = fixture
+            .actor
+            .publish_prepared_apply(prepared)
+            .expect_err("changed source-map kind published and returned a committed receipt");
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::SourceSelectionChanged
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_selection_rejects_v8project_absence_to_appearance_after_prepare() {
+        let fixture = actor_fixture_without_source_map("selection-map-appears", "src/cf");
+        std::fs::write(
+            fixture.roots[0].join("Configuration.xml"),
+            b"<MetaDataObject/>",
+        )
+        .unwrap();
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        std::fs::write(
+            fixture.root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src/cf\n",
+        )
+        .unwrap();
+
+        let error = fixture.actor.publish_prepared_apply(prepared).expect_err(
+            "an appearing semantically equivalent source map published and returned a receipt",
+        );
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::SourceSelectionChanged
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_selection_rejects_autodetected_extension_membership_change() {
+        let fixture = actor_fixture_without_source_map("selection-extension-membership", "src/cf");
+        std::fs::write(
+            fixture.roots[0].join("Configuration.xml"),
+            b"<MetaDataObject/>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(fixture.root.join("src/cfe")).unwrap();
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        std::fs::create_dir_all(fixture.root.join("src/cfe/late")).unwrap();
+        std::fs::write(
+            fixture.root.join("src/cfe/late/Configuration.xml"),
+            b"<MetaDataObject/>",
+        )
+        .unwrap();
+
+        let error = fixture.actor.publish_prepared_apply(prepared).expect_err(
+            "changed autodetection membership published and returned a committed receipt",
+        );
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::SourceSelectionChanged
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_selection_rejects_unselected_declared_parent_appearance() {
+        let fixture = actor_fixture_without_source_map("selection-parent-appears", "src/cf");
+        std::fs::write(
+            fixture.roots[0].join("Configuration.xml"),
+            b"<MetaDataObject/>",
+        )
+        .unwrap();
+        std::fs::write(
+            fixture.root.join("v8project.yaml"),
+            concat!(
+                "format: EDT\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src/cf\n",
+                "  - name: optional-edt\n",
+                "    type: CONFIGURATION\n",
+                "    path: optional/edt\n",
+            ),
+        )
+        .unwrap();
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        assert!(!fixture.root.join("optional").exists());
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        std::fs::create_dir_all(fixture.root.join("optional/edt")).unwrap();
+        std::fs::write(
+            fixture.root.join("optional/edt/Configuration.xml"),
+            b"<MetaDataObject/>",
+        )
+        .unwrap();
+        std::fs::write(fixture.root.join("optional/edt/.project"), b"project").unwrap();
+
+        let error = fixture
+            .actor
+            .publish_prepared_apply(prepared)
+            .expect_err("appearing intermediate full-map parent published and returned a receipt");
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::SourceSelectionChanged
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"before");
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_selection_rejects_unselected_non_platform_map_input_change() {
+        let fixture = actor_fixture_without_source_map("selection-unselected-edt", "src/cf");
+        std::fs::write(
+            fixture.roots[0].join("Configuration.xml"),
+            b"<MetaDataObject/>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(fixture.root.join("src/edt")).unwrap();
+        std::fs::write(fixture.root.join("src/edt/.project"), b"project").unwrap();
+        std::fs::write(
+            fixture.root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src/cf\n",
+                "  - name: edt\n",
+                "    type: CONFIGURATION\n",
+                "    path: src/edt\n",
+            ),
+        )
+        .unwrap();
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        std::fs::write(
+            fixture.root.join("src/edt/Configuration.xml"),
+            b"<MetaDataObject/>",
+        )
+        .unwrap();
+
+        let error = fixture.actor.publish_prepared_apply(prepared).expect_err(
+            "unselected EDT-to-invalid map change published and returned a committed receipt",
+        );
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::SourceSelectionChanged
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_selection_dry_run_rejects_late_map_change_without_receipt() {
+        let fixture = actor_fixture("selection-dry-late", &["src/cf"]);
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src/cf", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"projected".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let map = fixture.root.join("v8project.yaml");
+        set_apply_dry_run_after_confirmation_hook(move || {
+            std::fs::write(
+                map,
+                "format: DESIGNER\nsource-set:\n  - name: src/cf\n    type: EXTENSION\n    path: src/cf\n",
+            )
+            .unwrap();
+        });
+
+        let error = fixture
+            .actor
+            .publish_prepared_apply(prepared)
+            .expect_err("late dry-run source-map change returned a projected result and receipt");
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::SourceSelectionChanged
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_selection_late_change_rolls_back_source_cache_revision_and_receipt() {
+        let fixture = actor_fixture_without_source_map("selection-real-late", "src/cf");
+        std::fs::write(
+            fixture.roots[0].join("Configuration.xml"),
+            b"<MetaDataObject/>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(fixture.root.join("src/edt")).unwrap();
+        std::fs::write(fixture.root.join("src/edt/.project"), b"project").unwrap();
+        std::fs::write(
+            fixture.root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src/cf\n",
+                "  - name: edt\n",
+                "    type: CONFIGURATION\n",
+                "    path: src/edt\n",
+            ),
+        )
+        .unwrap();
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"published".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let late_marker = fixture.root.join("src/edt/Configuration.xml");
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || std::fs::write(late_marker, b"<MetaDataObject/>").unwrap(),
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).expect_err(
+            "late full-map change committed source/cache/revision and returned a receipt",
+        );
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::SourceSelectionChanged
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_selection_rejects_autodetection_container_identity_replacement() {
+        let fixture = actor_fixture_without_source_map("selection-container-swap", "src/cf");
+        std::fs::write(
+            fixture.roots[0].join("Configuration.xml"),
+            b"<MetaDataObject/>",
+        )
+        .unwrap();
+        let container = fixture.root.join("src/cfe");
+        std::fs::create_dir_all(&container).unwrap();
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        std::fs::rename(&container, fixture.root.join("src/cfe-displaced")).unwrap();
+        std::fs::create_dir(&container).unwrap();
+
+        let error = fixture.actor.publish_prepared_apply(prepared).expect_err(
+            "replacement container with identical membership published and returned a receipt",
+        );
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::SourceSelectionChanged
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    pub(crate) fn retained_source_selection_finality_contract_is_complete() {
+        apply_selection_rejects_v8project_kind_change_after_prepare();
+        apply_selection_rejects_v8project_absence_to_appearance_after_prepare();
+        apply_selection_rejects_autodetected_extension_membership_change();
+        apply_selection_rejects_unselected_declared_parent_appearance();
+        apply_selection_rejects_unselected_non_platform_map_input_change();
+        apply_selection_dry_run_rejects_late_map_change_without_receipt();
+        apply_selection_late_change_rolls_back_source_cache_revision_and_receipt();
+        apply_selection_rejects_autodetection_container_identity_replacement();
+        prepared_apply_root_and_actor_capabilities_cannot_be_redirected_or_replayed();
+        apply_policy_foreign_actor_and_sibling_worktree_replay_are_rejected();
+        retained_binding_rejects_a_same_path_directory_replacement();
+        active_alias_reuses_actor_and_dropped_actor_recreates_a_new_instance();
+        crate::infrastructure::daemon::server::actor_capacity_tests::restart_request_does_not_claim_noncooperative_actor_released_in_process();
+        crate::infrastructure::daemon::server::actor_capacity_tests::working_task_recovery_is_resume_unsupported_without_apply_reexecution();
+        crate::infrastructure::daemon::server::actor_capacity_tests::view_find_admitted_snapshot_may_finish_after_map_change();
+        crate::infrastructure::daemon::server::actor_capacity_tests::semantically_equivalent_map_edit_reuses_actor_identity();
     }
 
     #[test]
@@ -6832,6 +7587,16 @@ pub(crate) mod tests {
         let source = workspace.join("src");
         std::fs::create_dir_all(&source).unwrap();
         std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            "<MetaDataObject><Configuration/></MetaDataObject>",
+        )
+        .unwrap();
+        std::fs::write(
             container.join(".v8-project.json"),
             br#"{"editingAllowedCheck":"warn"}"#,
         )
@@ -7465,6 +8230,16 @@ pub(crate) mod tests {
             let workspace = container.join("worktrees").join(name);
             let source = workspace.join("src");
             std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(
+                workspace.join("v8project.yaml"),
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("Configuration.xml"),
+                "<MetaDataObject><Configuration/></MetaDataObject>",
+            )
+            .unwrap();
             let context = context(&workspace);
             let identity = WorkspaceIdentity::new(
                 &context,
@@ -7652,6 +8427,16 @@ pub(crate) mod tests {
             });
             let source = root.join("src");
             std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(
+                root.join("v8project.yaml"),
+                "format: DESIGNER\nsource-set:\n  - name: src\n    type: CONFIGURATION\n    path: src\n",
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("Configuration.xml"),
+                "<MetaDataObject><Configuration/></MetaDataObject>",
+            )
+            .unwrap();
             let context = context(&root);
             let identity = WorkspaceIdentity::new(
                 &context,
@@ -8193,6 +8978,7 @@ pub(crate) mod tests {
         for source_root in &roots {
             std::fs::create_dir_all(source_root).unwrap();
         }
+        write_actor_source_map(&root, relative_roots);
         let context = context(&root);
         let source_sets = relative_roots
             .iter()
@@ -8201,6 +8987,37 @@ pub(crate) mod tests {
         let identity = WorkspaceIdentity::new(&context, source_sets, "test-provider").unwrap();
         let actor = Arc::new(super::WorkspaceActor::new(identity, context).unwrap());
         ActorFixture { root, roots, actor }
+    }
+
+    fn actor_fixture_without_source_map(name: &str, relative_root: &str) -> ActorFixture {
+        let root = temp_root(name);
+        let source_root = root.join(relative_root);
+        std::fs::create_dir_all(&source_root).unwrap();
+        let context = context(&root);
+        let identity = WorkspaceIdentity::new(
+            &context,
+            [source_input("main", &source_root)],
+            "test-provider",
+        )
+        .unwrap();
+        let actor = Arc::new(super::WorkspaceActor::new(identity, context).unwrap());
+        ActorFixture {
+            root,
+            roots: vec![source_root],
+            actor,
+        }
+    }
+
+    fn write_actor_source_map(root: &Path, relative_roots: &[&str]) {
+        let mut yaml = String::from("format: DESIGNER\nsource-set:\n");
+        for relative in relative_roots {
+            yaml.push_str("  - name: ");
+            yaml.push_str(&serde_json::to_string(relative).unwrap());
+            yaml.push_str("\n    type: CONFIGURATION\n    path: ");
+            yaml.push_str(&serde_json::to_string(relative).unwrap());
+            yaml.push('\n');
+        }
+        std::fs::write(root.join("v8project.yaml"), yaml).unwrap();
     }
 
     fn context(root: &Path) -> WorkspaceContext {

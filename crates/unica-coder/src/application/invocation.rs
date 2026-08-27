@@ -96,6 +96,19 @@ impl InvocationResponseDeadline {
         self.clock.now()
     }
 
+    pub(crate) fn checkpoint_actor_admission(&self) -> Result<(), &'static str> {
+        let boundary = if self.handoff_at == self.receipt_at {
+            self.response_at
+        } else {
+            self.handoff_at
+        };
+        if self.now() >= boundary {
+            Err("daemon actor admission deadline exceeded")
+        } else {
+            Ok(())
+        }
+    }
+
     fn belongs_to(&self, clock: &Arc<dyn Clock>) -> bool {
         Arc::ptr_eq(&self.clock, clock)
     }
@@ -2223,6 +2236,67 @@ pub(crate) mod tests {
         let task_id = match outcome {
             InvocationOutcome::Task(snapshot) => snapshot.task_id,
             other => panic!("zero budget must hand off immediately: {other:?}"),
+        };
+        assert_eq!(
+            executor
+                .wait_task(task_id, Duration::from_secs(1))
+                .unwrap()
+                .status,
+            InvocationStatus::Completed
+        );
+    }
+
+    #[test]
+    fn actor_admission_checkpoint_uses_only_zero_budget_response_margin() {
+        let started = Instant::now();
+        let zero_clock = Arc::new(ManualClock::new(started));
+        let zero = response_deadline_from_clock(&zero_clock, Duration::ZERO);
+        assert!(
+            zero.checkpoint_actor_admission().is_ok(),
+            "zero-budget actor admission must be allowed at receipt"
+        );
+        zero_clock.advance(super::RESPONSE_SERIALIZATION_MARGIN);
+        assert!(
+            zero.checkpoint_actor_admission().is_err(),
+            "zero-budget actor admission exceeded the existing response boundary"
+        );
+
+        let nonzero_clock = Arc::new(ManualClock::new(started));
+        let nonzero = response_deadline_from_clock(&nonzero_clock, Duration::from_secs(7));
+        nonzero_clock.advance(Duration::from_secs(7));
+        assert!(
+            nonzero.checkpoint_actor_admission().is_err(),
+            "nonzero actor admission borrowed the serialization margin"
+        );
+    }
+
+    #[test]
+    fn zero_budget_actor_admission_preserves_durable_task_handoff() {
+        let started = Instant::now();
+        let clock = Arc::new(ManualClock::new(started));
+        let store = Arc::new(MemoryStore::default());
+        let executor = Arc::new(InvocationExecutor::new(store, clock));
+        let response_deadline = executor
+            .capture_response_deadline()
+            .restrict_to_frontend_budget(Duration::ZERO);
+        assert!(response_deadline.checkpoint_actor_admission().is_ok());
+        let prepared = PreparedDaemonInvocation::new(
+            ToolIdentity::Check,
+            NormalizedArgumentsHash::from_sha256([0x22; 32]),
+            SafeIdentityHash::from_sha256([0x33; 32]),
+            ExecutionClass::InlineCandidate,
+            response_deadline.clone(),
+        );
+
+        let outcome = executor
+            .submit_prepared(response_deadline, Ok(prepared), |_| {
+                Ok(result("zero-budget actor-admitted task"))
+            })
+            .unwrap();
+
+        let task_id = match outcome {
+            InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("actor admission changed zero-budget handoff: {other:?}"),
         };
         assert_eq!(
             executor
