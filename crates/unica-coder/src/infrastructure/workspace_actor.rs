@@ -22,7 +22,6 @@ use crate::infrastructure::platform::filesystem::{
     path_starts_with_host_root, stable_path_identity_bytes, RetainedChildCapability,
     RetainedDirectoryCapability,
 };
-use crate::infrastructure::revision_artifact_policy::RevisionArtifactPolicy;
 use crate::infrastructure::source_revision::{
     PreparedRevisionReconciliation, RetainedRevisionError, RetainedRevisionErrorKind,
     RetainedRevisionLease, SourceRevisionService, WorkspaceStateScope,
@@ -119,6 +118,9 @@ assert_not_impl_production!(RetainedSourceSelectionEvidence: serde::de::Deserial
 assert_not_impl_production!(CodeApplyAuthority<'static>: Clone);
 assert_not_impl_production!(CodeApplyAuthority<'static>: serde::Serialize);
 assert_not_impl_production!(CodeApplyAuthority<'static>: serde::de::DeserializeOwned);
+assert_not_impl_production!(ActorRevisionServiceAuthority: Clone);
+assert_not_impl_production!(ActorRevisionServiceAuthority: serde::Serialize);
+assert_not_impl_production!(ActorRevisionServiceAuthority: serde::de::DeserializeOwned);
 assert_not_impl_production!(PlannedApplyEffects: Clone);
 assert_not_impl_production!(PlannedApplyEffects: serde::Serialize);
 assert_not_impl_production!(PlannedApplyEffects: serde::de::DeserializeOwned);
@@ -345,6 +347,40 @@ impl ProviderRootBinding {
 
     pub(super) fn retained_root(&self) -> Arc<RetainedDirectoryCapability> {
         Arc::clone(&self.source_root)
+    }
+}
+
+/// One actor-issued construction authority for one scoped revision service.
+/// Its private fields bind the retained root, actor state namespace and source
+/// profile together; infrastructure consumers may use the proof but cannot
+/// assemble or replay a mismatched tuple.
+pub(in crate::infrastructure) struct ActorRevisionServiceAuthority {
+    source_root: Arc<RetainedDirectoryCapability>,
+    state_scope: WorkspaceStateScope,
+    source_kind: SourceSetKind,
+    source_format: SourceFormat,
+    source_profile: SourceProfile,
+}
+
+impl ActorRevisionServiceAuthority {
+    pub(super) fn source_root(&self) -> &Path {
+        self.source_root.path()
+    }
+
+    pub(super) fn state_scope(&self) -> &WorkspaceStateScope {
+        &self.state_scope
+    }
+
+    pub(super) const fn source_kind(&self) -> SourceSetKind {
+        self.source_kind
+    }
+
+    pub(super) const fn source_format(&self) -> SourceFormat {
+        self.source_format
+    }
+
+    pub(super) const fn source_profile(&self) -> SourceProfile {
+        self.source_profile
     }
 }
 
@@ -1687,19 +1723,30 @@ impl<R> WorkspaceActor<R> {
         }
         let service = Arc::new(match self.state_scope.scoped_digest() {
             None => SourceRevisionService::new(&self.context, binding.source_root.path())?,
-            Some(_) => SourceRevisionService::new_scoped(
+            Some(_) => SourceRevisionService::new_actor(
                 &self.context,
-                binding.source_root.path(),
-                self.state_scope.clone(),
-                RevisionArtifactPolicy::for_actor(
-                    binding.source_kind(),
-                    binding.source_format(),
-                    binding.source_profile(),
-                )?,
+                self.issue_revision_service_authority(binding)?,
             )?,
         });
         revisions.insert(binding.source_set.clone(), Arc::clone(&service));
         Ok(service)
+    }
+
+    fn issue_revision_service_authority(
+        &self,
+        binding: &ProviderRootBinding,
+    ) -> Result<ActorRevisionServiceAuthority, String> {
+        self.validate_binding(binding)?;
+        if self.state_scope.scoped_digest().is_none() {
+            return Err("actor revision authority requires a scoped actor state".to_string());
+        }
+        Ok(ActorRevisionServiceAuthority {
+            source_root: Arc::clone(&binding.source_root),
+            state_scope: self.state_scope.clone(),
+            source_kind: binding.source_kind(),
+            source_format: binding.source_format(),
+            source_profile: binding.source_profile(),
+        })
     }
 
     pub(crate) fn mark_source_revisions_dirty(&self) {
@@ -4433,6 +4480,55 @@ pub(crate) mod tests {
         let error = match admitted.prepare(state) {
             Err(error) => error,
             Ok(_) => panic!("unknown staged artifact crossed revision preparation"),
+        };
+
+        assert_eq!(error.kind(), ApplyStagingErrorKind::Invariant);
+        assert!(
+            error.to_string().contains("revision artifact policy"),
+            "{error}"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    pub(crate) fn actor_revision_lookalike_resource_is_rejected_before_publication() {
+        let fixture = actor_fixture("revision-lookalike-stage", &["src"]);
+        let relative = "Loose/Templates/Junk/Ext/Template.bin";
+        let target = fixture.roots[0].join(relative);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace(relative, b"before", b"after".to_vec())
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+
+        let error = match admitted.prepare(state) {
+            Err(error) => error,
+            Ok(_) => panic!("lookalike resource crossed revision preparation"),
         };
 
         assert_eq!(error.kind(), ApplyStagingErrorKind::Invariant);

@@ -19,6 +19,7 @@ use crate::infrastructure::platform::source_revision_fence::{
 use crate::infrastructure::revision_artifact_policy::{
     RevisionArtifactDisposition, RevisionArtifactPolicy,
 };
+use crate::infrastructure::workspace_actor::ActorRevisionServiceAuthority;
 // The corpus scan and the platform fence must prune the same directory: a
 // fence that reports what the manifest ignores can never converge.
 use crate::infrastructure::native_operations::apply::{StagedApplyChange, StagedFileState};
@@ -124,6 +125,13 @@ const MAX_RETAINED_SOURCE_ENTRIES: usize = 1_000_000;
 const MAX_RETAINED_SOURCE_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_RETAINED_SOURCE_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    static REVISION_SCAN_LIMITS_OVERRIDE: std::cell::Cell<Option<RetainedScanLimits>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceStateScope {
     /// v0.12 compatibility namespace: only canonical workspace/source paths
@@ -175,6 +183,11 @@ enum ManifestEntryKind {
 struct SourceEntryDigest {
     kind: ManifestEntryKind,
     digest: [u8; 32],
+    /// Bounded corpus accounting metadata. It deliberately does not
+    /// participate in `digest_source_manifest`, so the legacy revision digest
+    /// remains byte-for-byte stable while incremental updates can enforce the
+    /// same aggregate limit as full captures.
+    content_bytes: u64,
 }
 
 #[cfg(test)]
@@ -242,6 +255,30 @@ impl RetainedScanLimits {
     }
 }
 
+fn revision_scan_limits() -> RetainedScanLimits {
+    #[cfg(test)]
+    if let Some(limits) = REVISION_SCAN_LIMITS_OVERRIDE.with(std::cell::Cell::get) {
+        return limits;
+    }
+    RetainedScanLimits::PRODUCTION
+}
+
+#[cfg(test)]
+struct RevisionScanLimitsGuard(Option<RetainedScanLimits>);
+
+#[cfg(test)]
+impl Drop for RevisionScanLimitsGuard {
+    fn drop(&mut self) {
+        REVISION_SCAN_LIMITS_OVERRIDE.with(|slot| slot.set(self.0));
+    }
+}
+
+#[cfg(test)]
+fn set_revision_scan_limits_for_test(limits: RetainedScanLimits) -> RevisionScanLimitsGuard {
+    let previous = REVISION_SCAN_LIMITS_OVERRIDE.with(|slot| slot.replace(Some(limits)));
+    RevisionScanLimitsGuard(previous)
+}
+
 #[derive(Debug)]
 struct RetainedScanState {
     entries: usize,
@@ -267,6 +304,14 @@ struct RetainedScanContext<'a> {
     cancellation: &'a CancellationToken,
     limits: RetainedScanLimits,
     artifact_policy: RevisionArtifactPolicy,
+}
+
+#[derive(Clone, Copy)]
+struct AmbientScanContext<'a> {
+    root: &'a Path,
+    artifact_policy: RevisionArtifactPolicy,
+    limits: RetainedScanLimits,
+    should_stop: &'a (dyn Fn() -> bool + Sync),
 }
 
 #[derive(Debug, Clone)]
@@ -473,7 +518,7 @@ impl RetainedRevisionLease {
 }
 type SourceManifestScanner =
     dyn Fn(&Path, &(dyn Fn() -> bool + Sync)) -> Result<SourceManifest, String> + Send + Sync;
-type SourceFileReader = dyn Fn(&Path) -> Result<Vec<u8>, String> + Send + Sync;
+type SourceFileReader = dyn Fn(&Path) -> Result<Box<dyn Read + Send>, String> + Send + Sync;
 
 pub(crate) struct SourceRevisionService {
     workspace_root: PathBuf,
@@ -531,15 +576,13 @@ impl SourceRevisionService {
         )
     }
 
-    pub(crate) fn new_scoped(
+    pub(super) fn new_actor(
         context: &WorkspaceContext,
-        source_root: &Path,
-        state_scope: WorkspaceStateScope,
-        artifact_policy: RevisionArtifactPolicy,
+        authority: ActorRevisionServiceAuthority,
     ) -> Result<Self, String> {
-        if state_scope.scoped_digest().is_none() {
-            return Err("scoped source revision service requires an actor scope".to_string());
-        }
+        let artifact_policy = RevisionArtifactPolicy::from_authenticated_actor(&authority)?;
+        let state_scope = authority.state_scope().clone();
+        let source_root = authority.source_root();
         let canonical_source_root = fs::canonicalize(source_root)
             .map_err(|error| format!("source revision root cannot be normalized: {error}"))?;
         let fence = deferred_platform_fence(&canonical_source_root, &context.cache_root);
@@ -972,6 +1015,8 @@ impl SourceRevisionService {
                         SourceEntryDigest {
                             kind: ManifestEntryKind::Content,
                             digest: digest.finalize().into(),
+                            content_bytes: u64::try_from(bytes.len())
+                                .expect("staged source content length fits u64"),
                         },
                     );
                     let mut parent = change.relative_path.parent();
@@ -983,6 +1028,7 @@ impl SourceRevisionService {
                             SourceEntryDigest {
                                 kind: ManifestEntryKind::Directory,
                                 digest: [0; 32],
+                                content_bytes: 0,
                             },
                         );
                         parent = relative.parent();
@@ -1123,7 +1169,7 @@ impl SourceRevisionService {
             root,
             deadline,
             cancellation,
-            RetainedScanLimits::PRODUCTION,
+            revision_scan_limits(),
             self.artifact_policy,
         )
     }
@@ -1185,6 +1231,11 @@ impl SourceRevisionService {
         else {
             return Ok(false);
         };
+        let mut total_bytes = manifest.values().try_fold(0_u64, |total, entry| {
+            total
+                .checked_add(entry.content_bytes)
+                .ok_or_else(|| "source revision aggregate byte count overflowed".to_string())
+        })?;
         for _ in 0..3 {
             {
                 let mut machine = self
@@ -1204,7 +1255,14 @@ impl SourceRevisionService {
                         .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
                     return Err("source revision reconcile cancelled".to_string());
                 }
-                if !self.apply_changed_path(&mut manifest, &relative_path)? {
+                if !self.apply_changed_path(
+                    &mut manifest,
+                    &relative_path,
+                    revision_scan_limits(),
+                    &mut total_bytes,
+                    deadline,
+                    cancellation,
+                )? {
                     return Ok(false);
                 }
             }
@@ -1248,7 +1306,12 @@ impl SourceRevisionService {
         &self,
         manifest: &mut SourceManifest,
         relative_path: &Path,
+        limits: RetainedScanLimits,
+        total_bytes: &mut u64,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
     ) -> Result<bool, String> {
+        retained_revision_checkpoint(deadline, cancellation).map_err(|error| error.to_string())?;
         if relative_path.is_absolute()
             || relative_path.components().any(|component| {
                 matches!(
@@ -1274,7 +1337,7 @@ impl SourceRevisionService {
             .map_err(|error| {
                 format!("source revision component identity cannot be proven: {error}")
             })? {
-                manifest.remove(relative_path);
+                remove_manifest_entry(manifest, relative_path, total_bytes)?;
                 return Ok(true);
             }
         }
@@ -1282,7 +1345,7 @@ impl SourceRevisionService {
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                manifest.remove(relative_path);
+                remove_manifest_entry(manifest, relative_path, total_bytes)?;
                 return Ok(true);
             }
             Err(error) => {
@@ -1299,7 +1362,7 @@ impl SourceRevisionService {
                     relative_path.display()
                 ));
             }
-            manifest.remove(relative_path);
+            remove_manifest_entry(manifest, relative_path, total_bytes)?;
             return Ok(true);
         }
         if metadata.is_dir() {
@@ -1308,7 +1371,7 @@ impl SourceRevisionService {
         if !metadata.is_file()
             || self.artifact_policy.classify(relative_path) == RevisionArtifactDisposition::Ignored
         {
-            manifest.remove(relative_path);
+            remove_manifest_entry(manifest, relative_path, total_bytes)?;
             return Ok(true);
         }
         let canonical = fs::canonicalize(&path)
@@ -1318,22 +1381,43 @@ impl SourceRevisionService {
         }
         match self.artifact_policy.classify(relative_path) {
             RevisionArtifactDisposition::Content => {
-                let bytes =
+                let previous_bytes = manifest
+                    .get(relative_path)
+                    .map_or(0, |entry| entry.content_bytes);
+                *total_bytes = total_bytes.checked_sub(previous_bytes).ok_or_else(|| {
+                    "source revision aggregate byte accounting underflowed".to_string()
+                })?;
+                let mut reader =
                     (self.file_reader)(&path).inspect_err(|_| self.lose_incremental_trust())?;
+                retained_revision_checkpoint(deadline, cancellation)
+                    .inspect_err(|_| self.lose_incremental_trust())
+                    .map_err(|error| error.to_string())?;
+                let (digest, content_bytes) = hash_bounded_source_reader(
+                    reader.as_mut(),
+                    relative_path,
+                    limits,
+                    total_bytes,
+                    &mut || retained_revision_checkpoint(deadline, cancellation),
+                )
+                .inspect_err(|_| self.lose_incremental_trust())
+                .map_err(|error| error.to_string())?;
                 manifest.insert(
                     relative_path.to_path_buf(),
                     SourceEntryDigest {
                         kind: ManifestEntryKind::Content,
-                        digest: Sha256::digest(bytes).into(),
+                        digest,
+                        content_bytes,
                     },
                 );
             }
             RevisionArtifactDisposition::Presence => {
+                remove_manifest_entry(manifest, relative_path, total_bytes)?;
                 manifest.insert(
                     relative_path.to_path_buf(),
                     SourceEntryDigest {
                         kind: ManifestEntryKind::Presence,
                         digest: [0; 32],
+                        content_bytes: 0,
                     },
                 );
             }
@@ -1462,6 +1546,20 @@ fn update_identity_path(identity: &mut Sha256, path: &Path) {
     let bytes = path.as_os_str().as_encoded_bytes();
     identity.update((bytes.len() as u64).to_le_bytes());
     identity.update(bytes);
+}
+
+fn remove_manifest_entry(
+    manifest: &mut SourceManifest,
+    relative_path: &Path,
+    total_bytes: &mut u64,
+) -> Result<(), String> {
+    let removed_bytes = manifest
+        .remove(relative_path)
+        .map_or(0, |entry| entry.content_bytes);
+    *total_bytes = total_bytes
+        .checked_sub(removed_bytes)
+        .ok_or_else(|| "source revision aggregate byte accounting underflowed".to_string())?;
+    Ok(())
 }
 
 fn load_revision_record(
@@ -1717,6 +1815,7 @@ fn scan_retained_directory(
                     SourceEntryDigest {
                         kind: ManifestEntryKind::Directory,
                         digest: [0; 32],
+                        content_bytes: 0,
                     },
                 );
                 identities.insert(
@@ -1745,22 +1844,30 @@ fn scan_retained_directory(
                     != RevisionArtifactDisposition::Ignored =>
             {
                 let disposition = context.artifact_policy.classify(&relative);
-                let (kind, digest) = match disposition {
+                let (kind, digest, content_bytes) = match disposition {
                     RevisionArtifactDisposition::Content => {
                         #[cfg(test)]
                         run_retained_scan_test_mutation(
                             RetainedScanTestMutationPoint::BeforeFileHash,
                         );
-                        (
-                            ManifestEntryKind::Content,
-                            hash_retained_source_file(&file, &relative, context, state)?,
-                        )
+                        let (digest, content_bytes) =
+                            hash_retained_source_file(&file, &relative, context, state)?;
+                        (ManifestEntryKind::Content, digest, content_bytes)
                     }
-                    RevisionArtifactDisposition::Presence => (ManifestEntryKind::Presence, [0; 32]),
+                    RevisionArtifactDisposition::Presence => {
+                        (ManifestEntryKind::Presence, [0; 32], 0)
+                    }
                     RevisionArtifactDisposition::Ignored => unreachable!("guarded match arm"),
                 };
                 identities.insert(relative.clone(), (kind, file.identity()));
-                manifest.insert(relative, SourceEntryDigest { kind, digest });
+                manifest.insert(
+                    relative,
+                    SourceEntryDigest {
+                        kind,
+                        digest,
+                        content_bytes,
+                    },
+                );
                 if file.validate_named_identity().is_err() {
                     state.namespace_stable = false;
                 }
@@ -1838,7 +1945,7 @@ fn hash_retained_source_file(
     relative: &Path,
     context: RetainedScanContext<'_>,
     state: &mut RetainedScanState,
-) -> Result<[u8; 32], RetainedRevisionError> {
+) -> Result<([u8; 32], u64), RetainedRevisionError> {
     hash_retained_source_file_with_checkpoint(file, relative, context.limits, state, &mut || {
         retained_revision_checkpoint(context.deadline, context.cancellation)
     })
@@ -1850,7 +1957,7 @@ fn hash_retained_source_file_with_checkpoint(
     limits: RetainedScanLimits,
     state: &mut RetainedScanState,
     checkpoint: &mut dyn FnMut() -> Result<(), RetainedRevisionError>,
-) -> Result<[u8; 32], RetainedRevisionError> {
+) -> Result<([u8; 32], u64), RetainedRevisionError> {
     let mut reader = file.try_clone_file().map_err(|error| {
         RetainedRevisionError::new(
             RetainedRevisionErrorKind::Provider,
@@ -1869,6 +1976,29 @@ fn hash_retained_source_file_with_checkpoint(
             ),
         )
     })?;
+    let result = hash_bounded_source_reader(
+        &mut reader,
+        relative,
+        limits,
+        &mut state.total_bytes,
+        checkpoint,
+    )?;
+    #[cfg(test)]
+    run_retained_scan_test_mutation(RetainedScanTestMutationPoint::AfterFileHash);
+    Ok(result)
+}
+
+/// Hashes one Content artifact through the common revision budget. Every
+/// producer of a source manifest uses this routine, so ambient, retained and
+/// incremental captures cannot silently acquire different byte/cancellation
+/// semantics.
+fn hash_bounded_source_reader(
+    reader: &mut dyn Read,
+    relative: &Path,
+    limits: RetainedScanLimits,
+    total_bytes: &mut u64,
+    checkpoint: &mut dyn FnMut() -> Result<(), RetainedRevisionError>,
+) -> Result<([u8; 32], u64), RetainedRevisionError> {
     let mut digest = Sha256::new();
     let mut file_bytes = 0_u64;
     let mut chunk = [0_u8; RETAINED_HASH_CHUNK_BYTES];
@@ -1878,7 +2008,7 @@ fn hash_retained_source_file_with_checkpoint(
             RetainedRevisionError::new(
                 RetainedRevisionErrorKind::Provider,
                 format!(
-                    "retained source revision file cannot be read: {}: {error}",
+                    "source revision file cannot be read: {}: {error}",
                     relative.display()
                 ),
             )
@@ -1890,40 +2020,37 @@ fn hash_retained_source_file_with_checkpoint(
         file_bytes = file_bytes.checked_add(read).ok_or_else(|| {
             RetainedRevisionError::new(
                 RetainedRevisionErrorKind::Invariant,
-                "retained source revision file byte count overflowed",
+                "source revision file byte count overflowed",
             )
         })?;
         if file_bytes > limits.max_file_bytes {
             return Err(RetainedRevisionError::new(
                 RetainedRevisionErrorKind::Provider,
                 format!(
-                    "retained source revision file byte limit {} exceeded: {}",
+                    "source revision file byte limit {} exceeded: {}",
                     limits.max_file_bytes,
                     relative.display()
                 ),
             ));
         }
-        state.total_bytes = state.total_bytes.checked_add(read).ok_or_else(|| {
+        *total_bytes = total_bytes.checked_add(read).ok_or_else(|| {
             RetainedRevisionError::new(
                 RetainedRevisionErrorKind::Invariant,
-                "retained source revision aggregate byte count overflowed",
+                "source revision aggregate byte count overflowed",
             )
         })?;
-        if state.total_bytes > limits.max_total_bytes {
+        if *total_bytes > limits.max_total_bytes {
             return Err(RetainedRevisionError::new(
                 RetainedRevisionErrorKind::Provider,
                 format!(
-                    "retained source revision aggregate byte limit {} exceeded",
+                    "source revision aggregate byte limit {} exceeded",
                     limits.max_total_bytes
                 ),
             ));
         }
         digest.update(&chunk[..usize::try_from(read).expect("chunk length fits usize")]);
     }
-    let digest = digest.finalize().into();
-    #[cfg(test)]
-    run_retained_scan_test_mutation(RetainedScanTestMutationPoint::AfterFileHash);
-    Ok(digest)
+    Ok((digest.finalize().into(), file_bytes))
 }
 
 fn retained_revision_checkpoint(
@@ -1975,14 +2102,14 @@ fn scan_source_manifest_with_policy(
         return Err("source revision reconcile cancelled".to_string());
     }
     let mut manifest = BTreeMap::new();
-    scan_directory(
-        source_root,
-        source_root,
-        0,
+    let mut state = RetainedScanState::default();
+    let context = AmbientScanContext {
+        root: source_root,
         artifact_policy,
+        limits: revision_scan_limits(),
         should_stop,
-        &mut manifest,
-    )?;
+    };
+    scan_directory(source_root, 0, context, &mut state, &mut manifest)?;
     Ok(manifest)
 }
 
@@ -1999,31 +2126,48 @@ fn digest_source_manifest(manifest: &SourceManifest) -> Result<String, String> {
     Ok(format!("{:x}", corpus.finalize()))
 }
 
-fn read_source_file(path: &Path) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|error| format!("source revision file cannot be read: {error}"))
+fn read_source_file(path: &Path) -> Result<Box<dyn Read + Send>, String> {
+    fs::File::open(path)
+        .map(|file| Box::new(file) as Box<dyn Read + Send>)
+        .map_err(|error| format!("source revision file cannot be opened: {error}"))
 }
 
 fn scan_directory(
-    root: &Path,
     directory: &Path,
     depth: usize,
-    artifact_policy: RevisionArtifactPolicy,
-    should_stop: &(dyn Fn() -> bool + Sync),
+    context: AmbientScanContext<'_>,
+    state: &mut RetainedScanState,
     manifest: &mut SourceManifest,
 ) -> Result<(), String> {
-    if should_stop() {
+    if (context.should_stop)() {
         return Err("source revision reconcile cancelled".to_string());
     }
     if depth > MAX_SOURCE_DEPTH {
         return Err("source revision corpus exceeds maximum depth".to_string());
     }
-    let mut children = fs::read_dir(directory)
+    let mut children = Vec::new();
+    for child in fs::read_dir(directory)
         .map_err(|error| format!("source revision directory cannot be read: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("source revision entry cannot be read: {error}"))?;
+    {
+        if (context.should_stop)() {
+            return Err("source revision reconcile cancelled".to_string());
+        }
+        state.entries = state
+            .entries
+            .checked_add(1)
+            .filter(|entries| *entries <= context.limits.max_entries)
+            .ok_or_else(|| {
+                format!(
+                    "source revision entry limit {} exceeded",
+                    context.limits.max_entries
+                )
+            })?;
+        children
+            .push(child.map_err(|error| format!("source revision entry cannot be read: {error}"))?);
+    }
     children.sort_by_key(fs::DirEntry::file_name);
     for child in children {
-        if should_stop() {
+        if (context.should_stop)() {
             return Err("source revision reconcile cancelled".to_string());
         }
         let file_type = child
@@ -2031,11 +2175,11 @@ fn scan_directory(
             .map_err(|error| format!("source revision entry type cannot be read: {error}"))?;
         let path = child.path();
         let relative = path
-            .strip_prefix(root)
+            .strip_prefix(context.root)
             .map_err(|_| "source revision entry escaped its root".to_string())?
             .to_path_buf();
         if file_type.is_symlink() {
-            if artifact_policy.classify(&relative) != RevisionArtifactDisposition::Ignored {
+            if context.artifact_policy.classify(&relative) != RevisionArtifactDisposition::Ignored {
                 return Err(format!(
                     "source revision corpus contains an indexed symbolic link: {}",
                     relative.display()
@@ -2058,26 +2202,37 @@ fn scan_directory(
                 SourceEntryDigest {
                     kind: ManifestEntryKind::Directory,
                     digest: [0; 32],
+                    content_bytes: 0,
                 },
             );
-            scan_directory(
-                root,
-                &path,
-                depth + 1,
-                artifact_policy,
-                should_stop,
-                manifest,
-            )?;
+            scan_directory(&path, depth + 1, context, state, manifest)?;
         } else if file_type.is_file() {
-            match artifact_policy.classify(&relative) {
+            match context.artifact_policy.classify(&relative) {
                 RevisionArtifactDisposition::Content => {
-                    let bytes = read_source_file(&path)?;
-                    let digest: [u8; 32] = Sha256::digest(bytes).into();
+                    let mut reader = read_source_file(&path)?;
+                    let (digest, content_bytes) = hash_bounded_source_reader(
+                        reader.as_mut(),
+                        &relative,
+                        context.limits,
+                        &mut state.total_bytes,
+                        &mut || {
+                            if (context.should_stop)() {
+                                Err(RetainedRevisionError::new(
+                                    RetainedRevisionErrorKind::Cancelled,
+                                    "source revision reconcile cancelled",
+                                ))
+                            } else {
+                                Ok(())
+                            }
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
                     manifest.insert(
                         relative,
                         SourceEntryDigest {
                             kind: ManifestEntryKind::Content,
                             digest,
+                            content_bytes,
                         },
                     );
                 }
@@ -2087,6 +2242,7 @@ fn scan_directory(
                         SourceEntryDigest {
                             kind: ManifestEntryKind::Presence,
                             digest: [0; 32],
+                            content_bytes: 0,
                         },
                     );
                 }
@@ -2115,12 +2271,360 @@ pub(crate) mod tests {
     use tempfile::tempdir;
 
     fn platform_actor_policy() -> RevisionArtifactPolicy {
-        RevisionArtifactPolicy::for_actor(
+        RevisionArtifactPolicy::platform_xml_for_test(
             crate::domain::project_sources::SourceSetKind::Configuration,
-            crate::domain::project_sources::SourceFormat::PlatformXml,
-            crate::domain::project_sources::SourceProfile::platform_xml_8_3_27_format_2_20(),
         )
-        .unwrap()
+    }
+
+    fn actor_scan_test_service(
+        workspace: &Path,
+        source: &Path,
+        fence: Arc<dyn SourceRevisionFence>,
+        file_reader: Arc<SourceFileReader>,
+    ) -> SourceRevisionService {
+        let source = std::fs::canonicalize(source).unwrap();
+        let policy = platform_actor_policy();
+        SourceRevisionService {
+            workspace_root: std::fs::canonicalize(workspace).unwrap(),
+            source_root_identity: RetainedDirectoryCapability::open(&source)
+                .unwrap()
+                .identity(),
+            source_root: source,
+            record_path: workspace.join("revision-test.json"),
+            state_scope: WorkspaceStateScope::scoped_sha256("a".repeat(64)).unwrap(),
+            artifact_policy: policy,
+            machine: Mutex::new(SourceRevisionMachine::default()),
+            manifest: Mutex::new(None),
+            manifest_provenance: Mutex::new(None),
+            operation: DeadlineLock::default(),
+            fence,
+            scanner: Arc::new(move |root, should_stop| {
+                scan_source_manifest_with_policy(root, policy, should_stop)
+            }),
+            file_reader,
+            retained_scans: AtomicUsize::new(0),
+        }
+    }
+
+    fn proven_scan_fence(changed: Option<PathBuf>) -> Arc<dyn SourceRevisionFence> {
+        let mut outcomes = VecDeque::from([
+            FenceOutcome::Proven {
+                changed_paths: Vec::new(),
+            },
+            FenceOutcome::Proven {
+                changed_paths: Vec::new(),
+            },
+        ]);
+        if let Some(changed) = changed {
+            outcomes.push_back(FenceOutcome::Proven {
+                changed_paths: vec![changed],
+            });
+            outcomes.push_back(FenceOutcome::Proven {
+                changed_paths: Vec::new(),
+            });
+        }
+        Arc::new(ScriptedFence {
+            outcomes: Mutex::new(outcomes),
+        })
+    }
+
+    #[test]
+    fn actor_revision_ambient_targeted_content_uses_retained_bounds_and_checkpoints() {
+        let mut failures = Vec::new();
+        for (label, first, second, limits) in [
+            (
+                "per-file",
+                b"12345".as_slice(),
+                None,
+                RetainedScanLimits::new(64, 4, 64),
+            ),
+            (
+                "aggregate",
+                b"1234".as_slice(),
+                Some(b"5678".as_slice()),
+                RetainedScanLimits::new(64, 4, 7),
+            ),
+        ] {
+            let workspace = tempdir().unwrap();
+            let source = workspace.path().join("src");
+            let first_path = source.join("XDTOPackages/First/Ext/Package.bin");
+            std::fs::create_dir_all(first_path.parent().unwrap()).unwrap();
+            std::fs::write(&first_path, first).unwrap();
+            if let Some(second) = second {
+                let second_path = source.join("XDTOPackages/Second/Ext/Package.bin");
+                std::fs::create_dir_all(second_path.parent().unwrap()).unwrap();
+                std::fs::write(second_path, second).unwrap();
+            }
+            let service = actor_scan_test_service(
+                workspace.path(),
+                &source,
+                proven_scan_fence(None),
+                Arc::new(read_source_file),
+            );
+            let _limits = set_revision_scan_limits_for_test(limits);
+            if service
+                .snapshot(
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .is_ok()
+            {
+                failures.push(format!("{label} ambient scan returned success"));
+            }
+        }
+
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("src");
+        let package = source.join("XDTOPackages/First/Ext/Package.bin");
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(&package, b"1234").unwrap();
+        std::fs::write(source.join("scratch.bin"), vec![0_u8; 128]).unwrap();
+        let service = actor_scan_test_service(
+            workspace.path(),
+            &source,
+            proven_scan_fence(None),
+            Arc::new(read_source_file),
+        );
+        let _limits = set_revision_scan_limits_for_test(RetainedScanLimits::new(64, 4, 4));
+        if let Err(error) = service.snapshot(
+            ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+            &CancellationToken::new(),
+        ) {
+            failures.push(format!(
+                "ignored huge binary consumed ambient bytes: {error}"
+            ));
+        }
+
+        {
+            let workspace = tempdir().unwrap();
+            let source = workspace.path().join("src");
+            std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(
+                source.join("Configuration.xml"),
+                vec![7_u8; RETAINED_HASH_CHUNK_BYTES * 2],
+            )
+            .unwrap();
+            let checkpoints = AtomicUsize::new(0);
+            let cancellation = CancellationToken::new();
+            let cancel_during_content = cancellation.clone();
+            let result =
+                scan_source_manifest_with_policy(&source, platform_actor_policy(), &|| {
+                    if checkpoints.fetch_add(1, Ordering::AcqRel) >= 4 {
+                        cancel_during_content.cancel();
+                    }
+                    cancellation.is_cancelled()
+                });
+            if result.is_ok() {
+                failures.push("cancellation did not checkpoint during ambient content".to_string());
+            }
+        }
+        {
+            let workspace = tempdir().unwrap();
+            let source = workspace.path().join("src");
+            std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(
+                source.join("Configuration.xml"),
+                vec![7_u8; RETAINED_HASH_CHUNK_BYTES * 2],
+            )
+            .unwrap();
+            let checkpoints = AtomicUsize::new(0);
+            let deadline = ProviderDeadline::from_budget(std::time::Duration::from_millis(25));
+            let result =
+                scan_source_manifest_with_policy(&source, platform_actor_policy(), &|| {
+                    if checkpoints.fetch_add(1, Ordering::AcqRel) == 4 {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    deadline.remaining().is_zero()
+                });
+            if result.is_ok() {
+                failures.push("deadline did not checkpoint during ambient content".to_string());
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "ambient targeted content bypassed retained semantics: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn actor_revision_incremental_targeted_content_uses_retained_bounds_and_checkpoints() {
+        let mut failures = Vec::new();
+        for (label, initial, sibling, changed, limits) in [
+            (
+                "per-file",
+                b"1234".as_slice(),
+                None,
+                b"12345".as_slice(),
+                RetainedScanLimits::new(64, 4, 64),
+            ),
+            (
+                "aggregate",
+                b"123".as_slice(),
+                Some(b"456".as_slice()),
+                b"789".as_slice(),
+                RetainedScanLimits::new(64, 4, 5),
+            ),
+        ] {
+            let workspace = tempdir().unwrap();
+            let source = workspace.path().join("src");
+            let changed_relative = PathBuf::from("XDTOPackages/First/Ext/Package.bin");
+            let changed_path = source.join(&changed_relative);
+            std::fs::create_dir_all(changed_path.parent().unwrap()).unwrap();
+            std::fs::write(&changed_path, initial).unwrap();
+            if let Some(sibling) = sibling {
+                let sibling_path = source.join("XDTOPackages/Second/Ext/Package.bin");
+                std::fs::create_dir_all(sibling_path.parent().unwrap()).unwrap();
+                std::fs::write(sibling_path, sibling).unwrap();
+            }
+            let service = actor_scan_test_service(
+                workspace.path(),
+                &source,
+                proven_scan_fence(Some(changed_relative)),
+                Arc::new(read_source_file),
+            );
+            service
+                .snapshot(
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            std::fs::write(&changed_path, changed).unwrap();
+            let _limits = set_revision_scan_limits_for_test(limits);
+
+            if service
+                .snapshot(
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .is_ok()
+            {
+                failures.push(format!("{label} incremental scan returned success"));
+            }
+        }
+
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("src");
+        let changed_relative = PathBuf::from("XDTOPackages/First/Ext/Package.bin");
+        let changed_path = source.join(&changed_relative);
+        std::fs::create_dir_all(changed_path.parent().unwrap()).unwrap();
+        std::fs::write(&changed_path, b"1234").unwrap();
+        std::fs::write(source.join("scratch.bin"), vec![0_u8; 128]).unwrap();
+        let service = actor_scan_test_service(
+            workspace.path(),
+            &source,
+            proven_scan_fence(Some(changed_relative)),
+            Arc::new(read_source_file),
+        );
+        service
+            .snapshot(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        std::fs::write(&changed_path, b"5678").unwrap();
+        let _limits = set_revision_scan_limits_for_test(RetainedScanLimits::new(64, 4, 4));
+        if let Err(error) = service.snapshot(
+            ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+            &CancellationToken::new(),
+        ) {
+            failures.push(format!(
+                "ignored huge binary consumed incremental bytes: {error}"
+            ));
+        }
+
+        assert!(
+            failures.is_empty(),
+            "incremental targeted content bypassed retained bounds: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn actor_revision_incremental_targeted_content_honors_mid_read_stop() {
+        let mut failures = Vec::new();
+        {
+            let workspace = tempdir().unwrap();
+            let source = workspace.path().join("src");
+            let changed_relative = PathBuf::from("XDTOPackages/First/Ext/Package.bin");
+            let changed_path = source.join(&changed_relative);
+            std::fs::create_dir_all(changed_path.parent().unwrap()).unwrap();
+            std::fs::write(&changed_path, vec![1_u8; RETAINED_HASH_CHUNK_BYTES * 2]).unwrap();
+            let (started_tx, started_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let release_rx = Mutex::new(release_rx);
+            let service = Arc::new(actor_scan_test_service(
+                workspace.path(),
+                &source,
+                proven_scan_fence(Some(changed_relative)),
+                Arc::new(move |path| {
+                    started_tx.send(()).unwrap();
+                    release_rx.lock().unwrap().recv().unwrap();
+                    read_source_file(path)
+                }),
+            ));
+            service
+                .snapshot(
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            std::fs::write(&changed_path, vec![2_u8; RETAINED_HASH_CHUNK_BYTES * 2]).unwrap();
+            let cancellation = CancellationToken::new();
+            let worker_cancellation = cancellation.clone();
+            let worker_service = Arc::clone(&service);
+            let worker = thread::spawn(move || {
+                worker_service.snapshot(
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &worker_cancellation,
+                )
+            });
+            started_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap();
+            cancellation.cancel();
+            release_tx.send(()).unwrap();
+            if worker.join().unwrap().is_ok() {
+                failures.push("incremental cancellation returned success".to_string());
+            }
+        }
+        {
+            let workspace = tempdir().unwrap();
+            let source = workspace.path().join("src");
+            let changed_relative = PathBuf::from("XDTOPackages/First/Ext/Package.bin");
+            let changed_path = source.join(&changed_relative);
+            std::fs::create_dir_all(changed_path.parent().unwrap()).unwrap();
+            std::fs::write(&changed_path, vec![1_u8; RETAINED_HASH_CHUNK_BYTES * 2]).unwrap();
+            let service = actor_scan_test_service(
+                workspace.path(),
+                &source,
+                proven_scan_fence(Some(changed_relative)),
+                Arc::new(|path| {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    read_source_file(path)
+                }),
+            );
+            service
+                .snapshot(
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            std::fs::write(&changed_path, vec![2_u8; RETAINED_HASH_CHUNK_BYTES * 2]).unwrap();
+            if service
+                .snapshot(
+                    ProviderDeadline::from_budget(std::time::Duration::from_millis(100)),
+                    &CancellationToken::new(),
+                )
+                .is_ok()
+            {
+                failures.push("incremental deadline returned success".to_string());
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "incremental targeted content skipped mid-read stop: {failures:?}"
+        );
     }
 
     #[test]
@@ -2257,11 +2761,16 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn actor_revision_artifact_policy_contract_is_complete() {
         crate::infrastructure::revision_artifact_policy::tests::platform_xml_revision_artifact_profile_is_closed_and_legacy_is_unchanged();
+        crate::infrastructure::revision_artifact_policy::tests::actor_revision_policy_has_no_raw_issuer_or_scoped_service_bypass();
         projected_revision_artifacts_equal_retained_postpublication_capture();
+        crate::infrastructure::workspace_actor::tests::actor_revision_lookalike_resource_is_rejected_before_publication();
         crate::infrastructure::workspace_actor::tests::actor_revision_external_resource_drift_rotates_subsequent_admission();
         crate::infrastructure::workspace_actor::tests::actor_revision_policy_migrates_old_scoped_record_once_then_is_restart_stable();
         actor_revision_ignores_huge_unrelated_binary_while_bounding_targeted_resource();
         actor_revision_targeted_resources_honor_cancellation_deadline_and_limits();
+        actor_revision_ambient_targeted_content_uses_retained_bounds_and_checkpoints();
+        actor_revision_incremental_targeted_content_uses_retained_bounds_and_checkpoints();
+        actor_revision_incremental_targeted_content_honors_mid_read_stop();
         crate::infrastructure::workspace_actor::tests::actor_revision_platform_commit_preserves_legacy_and_surface_contracts();
     }
 
@@ -3093,6 +3602,7 @@ pub(crate) mod tests {
             SourceEntryDigest {
                 kind: ManifestEntryKind::Content,
                 digest: [7; 32],
+                content_bytes: 1,
             },
         );
 

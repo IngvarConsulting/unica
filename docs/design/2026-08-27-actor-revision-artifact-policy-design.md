@@ -21,11 +21,14 @@ hash unrelated or potentially multi-gigabyte artifacts.
 ## Approved design
 
 One typed `RevisionArtifactPolicy` belongs to the authenticated actor source
-binding. `WorkspaceActor` derives it from `SourceSetKind`, `SourceFormat` and
-`SourceProfile`; callers cannot construct it from wire input. The corresponding
-`SourceRevisionService` retains the policy and uses it for ambient capture,
-retained capture, incremental watcher reconciliation and retained-apply
-projection. The legacy constructor retains the exact v0.12 policy.
+binding. `WorkspaceActor` issues a non-cloneable, non-serializable authority
+which binds the retained source root and state scope to `SourceSetKind`,
+`SourceFormat` and `SourceProfile`. The policy and scoped
+`SourceRevisionService` can only be derived together from that authority; no
+production constructor accepts the raw tuples independently. The service uses
+the policy for ambient capture, retained capture, incremental watcher
+reconciliation and retained-apply projection. The legacy constructor retains
+the exact v0.12 policy.
 
 The policy has three dispositions:
 
@@ -50,12 +53,17 @@ source sets additionally classify:
 - direct `Ext/ParentConfigurations/<name>.cf` as `Presence`;
 - `XDTOPackages/<name>/Ext/Package.bin` as `Content`.
 
-All Platform XML source kinds classify `Template.bin`, `Template.txt` and files
-inside the `Template/` resource subtree beneath `Templates/<name>/Ext` as
-`Content`; files beneath an `Ext/Help/` resource subtree and beneath
-`Forms/<name>/Ext/Form/Items/` are also `Content`. Dynamic components are opaque
-native path components; fixed components are exact. Unrelated binaries remain
-ignored.
+Configuration and extension resources are rooted at either configuration
+`Ext/Help`, or an exact known metadata collection followed by its direct owner.
+Common-form and common-template owners admit only their respective direct
+resource tails. Other metadata owners admit `Ext/Help`, or exactly one
+`Forms/<name>` / `Templates/<name>` child with the matching form/help or template
+tail. External processor/report resources begin with exactly one direct opaque
+owner and then the same owner-help, named-form or named-template grammar.
+`Template.bin`, `Template.txt`, descendants of `Template/`, descendants of
+`Ext/Help/`, and descendants of `Ext/Form/Items/` at those exact locations are
+`Content`. Fixed components are exact; arbitrary prefixes and mixed recursive
+`Forms`/`Templates` chains remain ignored.
 
 Vendor `.cf` bytes are not semantic input to support planning. Adding,
 removing or renaming a direct member rotates the revision, while an in-place
@@ -77,10 +85,12 @@ support slice must project explicit topology through this policy.
 
 ## Bounds, restart and migration
 
-Content retains chunked hashing, cancellation/deadline checkpoints, no-follow
-identity evidence, per-file and aggregate byte limits. Presence proves a
+Ambient, retained and incremental content capture share one chunked hashing
+primitive with cancellation/deadline checkpoints plus identical per-file and
+aggregate byte limits. Per-entry content byte accounting is internal manifest
+metadata and does not enter the frozen digest encoding. Presence proves a
 regular no-follow file and retains identity without reading bytes. Ignored
-files consume only enumeration capacity.
+files consume only enumeration capacity and never aggregate byte budget.
 
 Actor state scope already includes source kind, format and profile. A rebuilt
 service therefore derives the same policy and record path. Its first live

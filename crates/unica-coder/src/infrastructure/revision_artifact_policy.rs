@@ -1,4 +1,6 @@
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+use crate::infrastructure::metadata_kinds::METADATA_KINDS;
+use crate::infrastructure::workspace_actor::ActorRevisionServiceAuthority;
 use std::ffi::OsStr;
 use std::path::Path;
 
@@ -37,7 +39,17 @@ impl RevisionArtifactPolicy {
         }
     }
 
-    pub(crate) fn for_actor(
+    pub(crate) fn from_authenticated_actor(
+        authority: &ActorRevisionServiceAuthority,
+    ) -> Result<Self, String> {
+        Self::from_actor_fields(
+            authority.source_kind(),
+            authority.source_format(),
+            authority.source_profile(),
+        )
+    }
+
+    fn from_actor_fields(
         source_kind: SourceSetKind,
         source_format: SourceFormat,
         source_profile: SourceProfile,
@@ -68,6 +80,16 @@ impl RevisionArtifactPolicy {
                 serialization_format: PlatformXmlSerializationFormat::Format2_20,
             },
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn platform_xml_for_test(source_kind: SourceSetKind) -> Self {
+        Self::from_actor_fields(
+            source_kind,
+            SourceFormat::PlatformXml,
+            SourceProfile::platform_xml_8_3_27_format_2_20(),
+        )
+        .expect("active test profile is supported")
     }
 
     pub(crate) fn classify(self, relative: &Path) -> RevisionArtifactDisposition {
@@ -107,10 +129,15 @@ impl RevisionArtifactPolicy {
         {
             return RevisionArtifactDisposition::Presence;
         }
-        if is_template_resource(&components)
-            || contains_fixed_subtree(&components, &["Ext", "Help"])
-            || is_form_item_resource(&components)
-        {
+        let owned_resource = match source_kind {
+            SourceSetKind::Configuration | SourceSetKind::Extension => {
+                is_configuration_resource(&components)
+            }
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
+                is_external_resource(&components)
+            }
+        };
+        if owned_resource {
             return RevisionArtifactDisposition::Content;
         }
         RevisionArtifactDisposition::Ignored
@@ -132,34 +159,74 @@ fn has_ascii_case_insensitive_extension(component: &OsStr, expected: &str) -> bo
         .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
 }
 
-fn is_template_resource(components: &[&OsStr]) -> bool {
-    components.windows(4).enumerate().any(|(index, window)| {
-        window[0] == OsStr::new("Templates")
-            && window[2] == OsStr::new("Ext")
-            && ((components.len() == index + 4
-                && matches!(window[3].to_str(), Some("Template.bin" | "Template.txt")))
-                || (window[3] == OsStr::new("Template") && components.len() > index + 4))
-    })
+fn is_configuration_resource(components: &[&OsStr]) -> bool {
+    if is_help_resource(components) {
+        return true;
+    }
+    let Some((owner_kind, owner_tail)) = configuration_owner_tail(components) else {
+        return false;
+    };
+    if is_help_resource(owner_tail) {
+        return true;
+    }
+    match owner_kind {
+        "CommonForm" => is_form_item_tail(owner_tail),
+        "CommonTemplate" => is_template_body_tail(owner_tail),
+        _ => is_named_form_resource(owner_tail) || is_named_template_resource(owner_tail),
+    }
 }
 
-fn contains_fixed_subtree(components: &[&OsStr], prefix: &[&str]) -> bool {
-    components.len() > prefix.len()
-        && components.windows(prefix.len()).any(|window| {
-            window
-                .iter()
-                .zip(prefix)
-                .all(|(component, expected)| *component == OsStr::new(expected))
-        })
+fn configuration_owner_tail<'a>(
+    components: &'a [&OsStr],
+) -> Option<(&'static str, &'a [&'a OsStr])> {
+    let owner_kind = METADATA_KINDS
+        .iter()
+        .find(|kind| components.first() == Some(&OsStr::new(kind.directory)))?;
+    components.get(1)?;
+    let mut tail = 2;
+    if components[0] == OsStr::new("Subsystems") {
+        while components.get(tail) == Some(&OsStr::new("Subsystems"))
+            && components.get(tail + 1).is_some()
+        {
+            tail += 2;
+        }
+    }
+    Some((owner_kind.tag, &components[tail..]))
 }
 
-fn is_form_item_resource(components: &[&OsStr]) -> bool {
-    components.windows(5).enumerate().any(|(index, window)| {
-        window[0] == OsStr::new("Forms")
-            && window[2] == OsStr::new("Ext")
-            && window[3] == OsStr::new("Form")
-            && window[4] == OsStr::new("Items")
-            && components.len() > index + 5
-    })
+fn is_external_resource(components: &[&OsStr]) -> bool {
+    components.len() >= 2
+        && (is_help_resource(&components[1..])
+            || is_named_form_resource(&components[1..])
+            || is_named_template_resource(&components[1..]))
+}
+
+fn is_named_form_resource(tail: &[&OsStr]) -> bool {
+    tail.len() >= 3
+        && tail[0] == OsStr::new("Forms")
+        && (is_help_resource(&tail[2..]) || is_form_item_tail(&tail[2..]))
+}
+
+fn is_named_template_resource(tail: &[&OsStr]) -> bool {
+    tail.len() >= 3 && tail[0] == OsStr::new("Templates") && is_template_body_tail(&tail[2..])
+}
+
+fn is_help_resource(tail: &[&OsStr]) -> bool {
+    tail.len() > 2 && tail[0] == OsStr::new("Ext") && tail[1] == OsStr::new("Help")
+}
+
+fn is_form_item_tail(tail: &[&OsStr]) -> bool {
+    tail.len() > 3
+        && tail[0] == OsStr::new("Ext")
+        && tail[1] == OsStr::new("Form")
+        && tail[2] == OsStr::new("Items")
+}
+
+fn is_template_body_tail(tail: &[&OsStr]) -> bool {
+    tail.len() >= 2
+        && tail[0] == OsStr::new("Ext")
+        && ((tail.len() == 2 && matches!(tail[1].to_str(), Some("Template.bin" | "Template.txt")))
+            || (tail[1] == OsStr::new("Template") && tail.len() > 2))
 }
 
 fn has_legacy_content_extension(path: &Path) -> bool {
@@ -196,7 +263,7 @@ pub(crate) mod tests {
             );
         }
 
-        let configuration = RevisionArtifactPolicy::for_actor(
+        let configuration = RevisionArtifactPolicy::from_actor_fields(
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
             SourceProfile::platform_xml_8_3_27_format_2_20(),
@@ -226,6 +293,13 @@ pub(crate) mod tests {
             "Loose/Package.bin",
             "Ext/Nested/ParentConfigurations/Vendor.cf",
             "XDTOPackages/Sample/Package.bin",
+            "Loose/Templates/Junk/Ext/Template.bin",
+            "Loose/Ext/Help/asset.bin",
+            "Loose/Forms/Junk/Ext/Form/Items/asset.bin",
+            "Documents/Order/Ext/Template.bin",
+            "Documents/Order/Forms/Main/Templates/Junk/Ext/Template.bin",
+            "CommonForms/Main/Ext/Template.bin",
+            "CommonTemplates/Logo/Ext/Form/Items/asset.bin",
             "Catalogs/Items/Templates/Binary/Ext/other.bin",
             "Catalogs/Items/Forms/Main/Ext/Items/icon.png",
         ] {
@@ -236,33 +310,82 @@ pub(crate) mod tests {
             );
         }
 
-        let external = RevisionArtifactPolicy::for_actor(
+        let extension = RevisionArtifactPolicy::from_actor_fields(
+            SourceSetKind::Extension,
+            SourceFormat::PlatformXml,
+            SourceProfile::platform_xml_8_3_27_format_2_20(),
+        )
+        .unwrap();
+        for content in [
+            "CommonTemplates/Logo/Ext/Template.bin",
+            "Documents/Order/Ext/Help/ru.html",
+            "Documents/Order/Forms/Main/Ext/Form/Items/icon.png",
+        ] {
+            assert_eq!(
+                extension.classify(Path::new(content)),
+                RevisionArtifactDisposition::Content,
+                "extension omitted owned resource {content}"
+            );
+        }
+
+        let external_processor = RevisionArtifactPolicy::from_actor_fields(
             SourceSetKind::ExternalProcessor,
             SourceFormat::PlatformXml,
             SourceProfile::platform_xml_8_3_27_format_2_20(),
         )
         .unwrap();
+        for content in [
+            "PriceLoader/Templates/Main/Ext/Template.bin",
+            "PriceLoader/Ext/Help/ru.html",
+            "PriceLoader/Forms/Main/Ext/Form/Items/icon.png",
+        ] {
+            assert_eq!(
+                external_processor.classify(Path::new(content)),
+                RevisionArtifactDisposition::Content,
+                "external processor omitted owned resource {content}"
+            );
+        }
         assert_eq!(
-            external.classify(Path::new("Templates/Main/Ext/Template.bin")),
-            RevisionArtifactDisposition::Content
-        );
-        assert_eq!(
-            external.classify(Path::new("XDTOPackages/Sample/Ext/Package.bin")),
+            external_processor.classify(Path::new(
+                "Loose/PriceLoader/Templates/Main/Ext/Template.bin"
+            )),
             RevisionArtifactDisposition::Ignored
         );
-        assert!(RevisionArtifactPolicy::for_actor(
+        assert_eq!(
+            external_processor.classify(Path::new("XDTOPackages/Sample/Ext/Package.bin")),
+            RevisionArtifactDisposition::Ignored
+        );
+
+        let external_report = RevisionArtifactPolicy::from_actor_fields(
+            SourceSetKind::ExternalReport,
+            SourceFormat::PlatformXml,
+            SourceProfile::platform_xml_8_3_27_format_2_20(),
+        )
+        .unwrap();
+        for content in [
+            "Sales/Templates/Main/Ext/Template.txt",
+            "Sales/Ext/Help/ru.html",
+            "Sales/Forms/Main/Ext/Form/Items/chart.png",
+        ] {
+            assert_eq!(
+                external_report.classify(Path::new(content)),
+                RevisionArtifactDisposition::Content,
+                "external report omitted owned resource {content}"
+            );
+        }
+        assert!(RevisionArtifactPolicy::from_actor_fields(
             SourceSetKind::Configuration,
             SourceFormat::Edt,
             SourceProfile::platform_xml_8_3_27_format_2_20(),
         )
         .is_err());
-        assert!(RevisionArtifactPolicy::for_actor(
+        assert!(RevisionArtifactPolicy::from_actor_fields(
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
             SourceProfile::legacy_workspace_service_compatibility(),
         )
         .is_err());
-        let synthetic_unsupported = RevisionArtifactPolicy::for_actor(
+        let synthetic_unsupported = RevisionArtifactPolicy::from_actor_fields(
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
             SourceProfile::TestPlatform8_3_28Format2_20,
@@ -271,6 +394,59 @@ pub(crate) mod tests {
         assert_eq!(
             synthetic_unsupported.classify(Path::new("XDTOPackages/Sample/Ext/Package.bin")),
             RevisionArtifactDisposition::Ignored
+        );
+    }
+
+    #[test]
+    pub(crate) fn actor_revision_policy_has_no_raw_issuer_or_scoped_service_bypass() {
+        fn inherent_methods(source: &str, target: &str) -> Vec<String> {
+            let file = syn::parse_file(source).expect("production Rust must parse");
+            file.items
+                .into_iter()
+                .filter_map(|item| match item {
+                    syn::Item::Impl(item) => Some(item),
+                    _ => None,
+                })
+                .filter(|item| {
+                    item.trait_.is_none()
+                        && matches!(
+                            item.self_ty.as_ref(),
+                            syn::Type::Path(path)
+                                if path.path.segments.last().is_some_and(|segment| segment.ident == target)
+                        )
+                })
+                .flat_map(|item| item.items)
+                .filter_map(|item| match item {
+                    syn::ImplItem::Fn(function) => Some(function.sig.ident.to_string()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        let policy_methods = inherent_methods(
+            include_str!("revision_artifact_policy.rs"),
+            "RevisionArtifactPolicy",
+        );
+        let service_methods =
+            inherent_methods(include_str!("source_revision.rs"), "SourceRevisionService");
+
+        assert!(
+            !policy_methods.iter().any(|method| method == "for_actor"),
+            "raw source kind/format/profile policy issuer remains available"
+        );
+        assert!(
+            !service_methods.iter().any(|method| method == "new_scoped"),
+            "raw scope/root/policy scoped-service bypass remains available"
+        );
+        assert!(
+            policy_methods
+                .iter()
+                .any(|method| method == "from_authenticated_actor"),
+            "policy is not issued from authenticated actor authority"
+        );
+        assert!(
+            service_methods.iter().any(|method| method == "new_actor"),
+            "scoped service is not constructed from one actor authority"
         );
     }
 }

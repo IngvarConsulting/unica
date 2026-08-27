@@ -11,15 +11,20 @@ design: docs/design/2026-08-27-actor-revision-artifact-policy-design.md
 
 # Actor владеет единым профилем артефактов ревизии
 
-**Решение.** Actor выводит закрытый `RevisionArtifactPolicy` из доказанных
-kind, format и profile выбранного source set. Один экземпляр политики определяет
-корпус initial ambient scan, retained scan, incremental reconciliation и
-retained-apply projection. Legacy-конструктор сохраняет прежний v0.12 корпус.
+**Решение.** Actor выдаёт одну неподделываемую authority, которая связывает
+retained root, state scope и доказанные kind, format и profile выбранного source
+set. Из неё одновременно строятся закрытый `RevisionArtifactPolicy` и scoped
+revision service; raw production-конструкторов этих частей нет. Одна политика
+определяет корпус initial ambient scan, retained scan, incremental reconciliation
+и retained-apply projection. Legacy-конструктор сохраняет прежний v0.12 корпус.
 
 Platform XML 8.3.27 format 2.20 включает содержимое известных XDTO, support,
 template, help и form-item ресурсов. Прямая membership поставок `.cf` влияет
 присутствием и именем без чтения payload. Неизвестный или presence-only staged
 файл отклоняется до публикации.
+
+Все три capture-фазы хешируют content общим bounded chunked механизмом с
+одинаковым per-file/aggregate accounting и cancellation/deadline checkpoints.
 
 Типизированные manifest kinds сохраняют старые значения directory/content и
 добавляют presence. Алгоритм, record schema, wire shape, transaction participants,
