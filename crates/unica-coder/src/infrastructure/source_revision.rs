@@ -7,6 +7,10 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::deadline_lock::{
     DeadlineLock, DeadlineLockError, DeadlineLockErrorKind, Recover,
 };
+use crate::infrastructure::native_operations::compile_transaction::{
+    RetainedApplyRevisionTransientError, RetainedApplyRevisionTransientErrorKind,
+    RetainedApplyRevisionTransients,
+};
 #[cfg(test)]
 use crate::infrastructure::platform::filesystem::supports_retained_root_replacement_test;
 use crate::infrastructure::platform::filesystem::{
@@ -26,7 +30,7 @@ use crate::infrastructure::native_operations::apply::{StagedApplyChange, StagedF
 use crate::infrastructure::source_roots::GENERATED_DIR_NAME;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
@@ -223,6 +227,7 @@ type SourceManifest = BTreeMap<PathBuf, SourceEntryDigest>;
 struct RetainedManifestCapture {
     manifest: SourceManifest,
     identities: BTreeMap<PathBuf, (ManifestEntryKind, FileIdentity)>,
+    enumerated_entries: usize,
     namespace_stable: bool,
 }
 
@@ -285,6 +290,8 @@ struct RetainedScanState {
     verification_entries: usize,
     total_bytes: u64,
     namespace_stable: bool,
+    transient_enumeration_parents: BTreeSet<FileIdentity>,
+    transient_verification_parents: BTreeSet<FileIdentity>,
 }
 
 impl Default for RetainedScanState {
@@ -294,16 +301,19 @@ impl Default for RetainedScanState {
             verification_entries: 0,
             total_bytes: 0,
             namespace_stable: true,
+            transient_enumeration_parents: BTreeSet::new(),
+            transient_verification_parents: BTreeSet::new(),
         }
     }
 }
 
 #[derive(Clone, Copy)]
-struct RetainedScanContext<'a> {
+struct RetainedScanContext<'a, 'journal> {
     deadline: ProviderDeadline,
     cancellation: &'a CancellationToken,
     limits: RetainedScanLimits,
     artifact_policy: RevisionArtifactPolicy,
+    transients: Option<&'a RetainedApplyRevisionTransients<'journal>>,
 }
 
 #[derive(Clone, Copy)]
@@ -366,6 +376,19 @@ impl fmt::Display for RetainedRevisionError {
 
 impl std::error::Error for RetainedRevisionError {}
 
+fn retained_apply_revision_transient_error(
+    error: RetainedApplyRevisionTransientError,
+) -> RetainedRevisionError {
+    let kind = match error.kind() {
+        RetainedApplyRevisionTransientErrorKind::ContainmentIdentity => {
+            RetainedRevisionErrorKind::ContainmentIdentity
+        }
+        RetainedApplyRevisionTransientErrorKind::Provider => RetainedRevisionErrorKind::Provider,
+        RetainedApplyRevisionTransientErrorKind::Invariant => RetainedRevisionErrorKind::Invariant,
+    };
+    RetainedRevisionError::new(kind, error.to_string())
+}
+
 pub(crate) struct PreparedRevisionReconciliation {
     service: Arc<SourceRevisionService>,
     root: Arc<RetainedDirectoryCapability>,
@@ -425,8 +448,31 @@ impl PreparedRevisionReconciliation {
 }
 
 impl ActiveRevisionReconciliation<'_> {
+    pub(crate) fn retained_root(&self) -> &RetainedDirectoryCapability {
+        &self.prepared.root
+    }
+
     pub(crate) fn validate_published_source(
         &self,
+        transients: &RetainedApplyRevisionTransients<'_>,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RetainedRevisionError> {
+        self.validate_published_source_inner(Some(transients), deadline, cancellation)
+    }
+
+    #[cfg(test)]
+    fn validate_published_source_without_transients_for_test(
+        &self,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RetainedRevisionError> {
+        self.validate_published_source_inner(None, deadline, cancellation)
+    }
+
+    fn validate_published_source_inner(
+        &self,
+        transients: Option<&RetainedApplyRevisionTransients<'_>>,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), RetainedRevisionError> {
@@ -443,14 +489,29 @@ impl ActiveRevisionReconciliation<'_> {
                 format!("retained source identity changed during revision reconciliation: {error}"),
             )
         })?;
-        let first =
-            self.prepared
-                .service
-                .capture_retained_manifest_typed(root, deadline, cancellation)?;
-        let second =
-            self.prepared
-                .service
-                .capture_retained_manifest_typed(root, deadline, cancellation)?;
+        if let Some(transients) = transients {
+            transients
+                .validate_root(root)
+                .map_err(retained_apply_revision_transient_error)?;
+        }
+        let first = self
+            .prepared
+            .service
+            .capture_retained_manifest_with_transients_typed(
+                root,
+                deadline,
+                cancellation,
+                transients,
+            )?;
+        let second = self
+            .prepared
+            .service
+            .capture_retained_manifest_with_transients_typed(
+                root,
+                deadline,
+                cancellation,
+                transients,
+            )?;
         if !first.namespace_stable
             || !second.namespace_stable
             || first.manifest != second.manifest
@@ -929,6 +990,7 @@ impl SourceRevisionService {
             || !second.namespace_stable
             || first.manifest != second.manifest
             || first.identities != second.identities
+            || first.enumerated_entries != second.enumerated_entries
         {
             return Err(RetainedRevisionError::new(
                 RetainedRevisionErrorKind::ConcurrentRevision,
@@ -999,6 +1061,7 @@ impl SourceRevisionService {
             || !second.namespace_stable
             || first.manifest != second.manifest
             || first.identities != second.identities
+            || first.enumerated_entries != second.enumerated_entries
         {
             return Err(RetainedRevisionError::new(
                 RetainedRevisionErrorKind::ConcurrentRevision,
@@ -1025,6 +1088,7 @@ impl SourceRevisionService {
         }
         let mut projected_manifest = second.manifest;
         let limits = revision_scan_limits();
+        let mut projected_entries = second.enumerated_entries;
         let mut total_bytes = projected_manifest
             .values()
             .try_fold(0_u64, |total, entry| {
@@ -1061,15 +1125,22 @@ impl SourceRevisionService {
                     ),
                 ));
             }
-            let removed_bytes = projected_manifest
-                .remove(&change.relative_path)
-                .map_or(0, |entry| entry.content_bytes);
+            let removed = projected_manifest.remove(&change.relative_path);
+            let removed_bytes = removed.as_ref().map_or(0, |entry| entry.content_bytes);
             total_bytes = total_bytes.checked_sub(removed_bytes).ok_or_else(|| {
                 RetainedRevisionError::new(
                     RetainedRevisionErrorKind::Invariant,
                     "source revision aggregate byte accounting underflowed",
                 )
             })?;
+            if removed.is_some() {
+                projected_entries = projected_entries.checked_sub(1).ok_or_else(|| {
+                    RetainedRevisionError::new(
+                        RetainedRevisionErrorKind::Invariant,
+                        "source revision entry accounting underflowed",
+                    )
+                })?;
+            }
         }
 
         for change in changes {
@@ -1077,6 +1148,19 @@ impl SourceRevisionService {
             match &change.current {
                 StagedFileState::Absent => {}
                 StagedFileState::Bytes(bytes) => {
+                    let parent_depth = change
+                        .relative_path
+                        .parent()
+                        .into_iter()
+                        .flat_map(Path::components)
+                        .filter(|component| matches!(component, std::path::Component::Normal(_)))
+                        .count();
+                    if parent_depth > MAX_SOURCE_DEPTH {
+                        return Err(RetainedRevisionError::new(
+                            RetainedRevisionErrorKind::Provider,
+                            "source revision corpus exceeds maximum depth",
+                        ));
+                    }
                     let mut reader = Cursor::new(bytes.as_slice());
                     let (digest, content_bytes) = hash_bounded_source_reader(
                         &mut reader,
@@ -1085,30 +1169,58 @@ impl SourceRevisionService {
                         &mut total_bytes,
                         &mut || retained_revision_checkpoint(deadline, cancellation),
                     )?;
-                    projected_manifest.insert(
-                        change.relative_path.clone(),
-                        SourceEntryDigest {
-                            kind: ManifestEntryKind::Content,
-                            digest,
-                            content_bytes,
-                        },
-                    );
+                    if projected_manifest
+                        .insert(
+                            change.relative_path.clone(),
+                            SourceEntryDigest {
+                                kind: ManifestEntryKind::Content,
+                                digest,
+                                content_bytes,
+                            },
+                        )
+                        .is_none()
+                    {
+                        projected_entries = projected_entries.checked_add(1).ok_or_else(|| {
+                            RetainedRevisionError::new(
+                                RetainedRevisionErrorKind::Invariant,
+                                "source revision entry accounting overflowed",
+                            )
+                        })?;
+                    }
                     let mut parent = change.relative_path.parent();
                     while let Some(relative) = parent {
                         if relative.as_os_str().is_empty() {
                             break;
                         }
-                        projected_manifest.entry(relative.to_path_buf()).or_insert(
-                            SourceEntryDigest {
+                        if let std::collections::btree_map::Entry::Vacant(entry) =
+                            projected_manifest.entry(relative.to_path_buf())
+                        {
+                            entry.insert(SourceEntryDigest {
                                 kind: ManifestEntryKind::Directory,
                                 digest: [0; 32],
                                 content_bytes: 0,
-                            },
-                        );
+                            });
+                            projected_entries =
+                                projected_entries.checked_add(1).ok_or_else(|| {
+                                    RetainedRevisionError::new(
+                                        RetainedRevisionErrorKind::Invariant,
+                                        "source revision entry accounting overflowed",
+                                    )
+                                })?;
+                        }
                         parent = relative.parent();
                     }
                 }
             }
+        }
+        if projected_entries > limits.max_entries {
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::Provider,
+                format!(
+                    "source revision entry limit {} exceeded",
+                    limits.max_entries
+                ),
+            ));
         }
         let candidate =
             expected_machine
@@ -1237,14 +1349,25 @@ impl SourceRevisionService {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<RetainedManifestCapture, RetainedRevisionError> {
+        self.capture_retained_manifest_with_transients_typed(root, deadline, cancellation, None)
+    }
+
+    fn capture_retained_manifest_with_transients_typed(
+        &self,
+        root: &RetainedDirectoryCapability,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        transients: Option<&RetainedApplyRevisionTransients<'_>>,
+    ) -> Result<RetainedManifestCapture, RetainedRevisionError> {
         #[cfg(test)]
         self.retained_scans.fetch_add(1, Ordering::Relaxed);
-        capture_retained_source_manifest_with_limits(
+        capture_retained_source_manifest_with_limits_and_transients(
             root,
             deadline,
             cancellation,
             revision_scan_limits(),
             self.artifact_policy,
+            transients,
         )
     }
 
@@ -1735,12 +1858,31 @@ fn scan_retained_source_manifest_with_limits(
     .map(|capture| capture.manifest)
 }
 
+#[cfg(test)]
 fn capture_retained_source_manifest_with_limits(
     root: &RetainedDirectoryCapability,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
     limits: RetainedScanLimits,
     artifact_policy: RevisionArtifactPolicy,
+) -> Result<RetainedManifestCapture, RetainedRevisionError> {
+    capture_retained_source_manifest_with_limits_and_transients(
+        root,
+        deadline,
+        cancellation,
+        limits,
+        artifact_policy,
+        None,
+    )
+}
+
+fn capture_retained_source_manifest_with_limits_and_transients(
+    root: &RetainedDirectoryCapability,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    limits: RetainedScanLimits,
+    artifact_policy: RevisionArtifactPolicy,
+    transients: Option<&RetainedApplyRevisionTransients<'_>>,
 ) -> Result<RetainedManifestCapture, RetainedRevisionError> {
     retained_revision_checkpoint(deadline, cancellation)?;
     let root_stable_before = root.validate_named_identity().is_ok();
@@ -1754,6 +1896,7 @@ fn capture_retained_source_manifest_with_limits(
         cancellation,
         limits,
         artifact_policy,
+        transients,
     };
     scan_retained_directory(
         root,
@@ -1764,11 +1907,20 @@ fn capture_retained_source_manifest_with_limits(
         &mut manifest,
         &mut identities,
     )?;
+    if let Some(transients) = transients {
+        transients
+            .validate_observed_parents(&state.transient_enumeration_parents)
+            .map_err(retained_apply_revision_transient_error)?;
+        transients
+            .validate_observed_parents(&state.transient_verification_parents)
+            .map_err(retained_apply_revision_transient_error)?;
+    }
     retained_revision_checkpoint(deadline, cancellation)?;
     let root_stable_after = root.validate_named_identity().is_ok();
     Ok(RetainedManifestCapture {
         manifest,
         identities,
+        enumerated_entries: state.entries,
         namespace_stable: root_stable_before && root_stable_after && state.namespace_stable,
     })
 }
@@ -1777,7 +1929,7 @@ fn scan_retained_directory(
     directory: &RetainedDirectoryCapability,
     relative_directory: &Path,
     depth: usize,
-    context: RetainedScanContext<'_>,
+    context: RetainedScanContext<'_, '_>,
     state: &mut RetainedScanState,
     manifest: &mut SourceManifest,
     identities: &mut BTreeMap<PathBuf, (ManifestEntryKind, FileIdentity)>,
@@ -1789,9 +1941,23 @@ fn scan_retained_directory(
             "source revision corpus exceeds maximum depth",
         ));
     }
+    let transient_entries = context
+        .transients
+        .map(|transients| transients.count_for_parent(directory))
+        .transpose()
+        .map_err(retained_apply_revision_transient_error)?
+        .unwrap_or(0);
     let remaining_entries = context.limits.max_entries.saturating_sub(state.entries);
+    let enumeration_limit = remaining_entries
+        .checked_add(transient_entries)
+        .ok_or_else(|| {
+            RetainedRevisionError::new(
+                RetainedRevisionErrorKind::Invariant,
+                "retained revision-transient enumeration allowance overflowed",
+            )
+        })?;
     let names = directory
-        .read_immediate_names_bounded(remaining_entries, || {
+        .read_immediate_names_bounded(enumeration_limit, || {
             retained_revision_checkpoint(context.deadline, context.cancellation)
                 .map_err(std::io::Error::other)
         })
@@ -1821,6 +1987,17 @@ fn scan_retained_directory(
                 )
             }
         })?;
+    let transient_names = context
+        .transients
+        .map(|transients| transients.validate_and_select_names(directory, &names))
+        .transpose()
+        .map_err(retained_apply_revision_transient_error)?
+        .unwrap_or_else(|| vec![false; names.len()]);
+    if transient_names.iter().any(|selected| *selected) {
+        state
+            .transient_enumeration_parents
+            .insert(directory.identity());
+    }
     #[cfg(test)]
     run_retained_scan_test_mutation(RetainedScanTestMutationPoint::AfterDirectoryEnumeration);
     let child_name_comparator = directory.child_name_comparator().map_err(|error| {
@@ -1829,8 +2006,11 @@ fn scan_retained_directory(
             format!("retained child-name policy cannot be proven: {error}"),
         )
     })?;
-    for name in &names {
+    for (index, name) in names.iter().enumerate() {
         retained_revision_checkpoint(context.deadline, context.cancellation)?;
+        if transient_names[index] {
+            continue;
+        }
         state.entries = state
             .entries
             .checked_add(1)
@@ -1964,8 +2144,20 @@ fn scan_retained_directory(
         }
     }
     retained_revision_checkpoint(context.deadline, context.cancellation)?;
+    let remaining_verification_entries = context
+        .limits
+        .max_entries
+        .saturating_sub(state.verification_entries);
+    let verification_limit = remaining_verification_entries
+        .checked_add(transient_entries)
+        .ok_or_else(|| {
+            RetainedRevisionError::new(
+                RetainedRevisionErrorKind::Invariant,
+                "retained revision-transient verification allowance overflowed",
+            )
+        })?;
     let verification_names = directory
-        .read_immediate_names_bounded(context.limits.max_entries, || {
+        .read_immediate_names_bounded(verification_limit, || {
             retained_revision_checkpoint(context.deadline, context.cancellation)
                 .map_err(std::io::Error::other)
         })
@@ -1995,9 +2187,27 @@ fn scan_retained_directory(
                 )
             }
         })?;
+    let verification_transient_names = context
+        .transients
+        .map(|transients| transients.validate_and_select_names(directory, &verification_names))
+        .transpose()
+        .map_err(retained_apply_revision_transient_error)?
+        .unwrap_or_else(|| vec![false; verification_names.len()]);
+    if verification_transient_names
+        .iter()
+        .any(|selected| *selected)
+    {
+        state
+            .transient_verification_parents
+            .insert(directory.identity());
+    }
+    let verified_final_entries = verification_transient_names
+        .iter()
+        .filter(|selected| !**selected)
+        .count();
     state.verification_entries = state
         .verification_entries
-        .checked_add(verification_names.len())
+        .checked_add(verified_final_entries)
         .filter(|entries| *entries <= context.limits.max_entries)
         .ok_or_else(|| {
             RetainedRevisionError::new(
@@ -2017,7 +2227,7 @@ fn scan_retained_directory(
 fn hash_retained_source_file(
     file: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
     relative: &Path,
-    context: RetainedScanContext<'_>,
+    context: RetainedScanContext<'_, '_>,
     state: &mut RetainedScanState,
 ) -> Result<([u8; 32], u64), RetainedRevisionError> {
     hash_retained_source_file_with_checkpoint(file, relative, context.limits, state, &mut || {
@@ -2832,6 +3042,7 @@ pub(crate) mod tests {
         crate::infrastructure::workspace_actor::tests::actor_revision_unknown_staged_artifact_is_rejected_before_publication();
         crate::infrastructure::workspace_actor::tests::actor_revision_late_failure_rolls_back_targeted_resource_without_receipt();
         actor_revision_projection_uses_capture_byte_limits_and_final_batch_accounting();
+        retained_apply_revision_transient_authority_preserves_projection_capture_bounds();
     }
 
     #[test]
@@ -3011,10 +3222,14 @@ pub(crate) mod tests {
                         &CancellationToken::new(),
                     ) {
                         Ok(active) => {
-                            if let Err(error) = active.validate_published_source(
-                                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
-                                &CancellationToken::new(),
-                            ) {
+                            if let Err(error) = active
+                                .validate_published_source_without_transients_for_test(
+                                    ProviderDeadline::from_budget(std::time::Duration::from_secs(
+                                        5,
+                                    )),
+                                    &CancellationToken::new(),
+                                )
+                            {
                                 failures.push(format!(
                                     "final bounded batch digest diverged from capture: {error}"
                                 ));
@@ -3034,6 +3249,440 @@ pub(crate) mod tests {
             failures.is_empty(),
             "projected content bypassed bounded capture semantics: {failures:?}"
         );
+    }
+
+    fn topology_projection_fixture(
+        label: &str,
+        files: &[(&str, &[u8])],
+        directories: &[&str],
+    ) -> (
+        tempfile::TempDir,
+        Arc<SourceRevisionService>,
+        Arc<RetainedDirectoryCapability>,
+    ) {
+        let workspace = tempfile::Builder::new().prefix(label).tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        for relative in directories {
+            std::fs::create_dir_all(source.join(relative)).unwrap();
+        }
+        for (relative, bytes) in files {
+            let path = source.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let service = Arc::new(actor_scan_test_service(
+            workspace.path(),
+            &source,
+            Arc::new(UnsupportedFence),
+            Arc::new(read_source_file),
+        ));
+        let root = Arc::new(
+            RetainedDirectoryCapability::open(&std::fs::canonicalize(source).unwrap()).unwrap(),
+        );
+        (workspace, service, root)
+    }
+
+    fn topology_projection_lease(
+        service: &SourceRevisionService,
+        root: &RetainedDirectoryCapability,
+    ) -> RetainedRevisionLease {
+        service
+            .observe_retained_operation(
+                root,
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+    }
+
+    fn topology_projection_change(
+        relative: impl Into<PathBuf>,
+        original: StagedFileState,
+        current: StagedFileState,
+    ) -> StagedApplyChange {
+        use crate::infrastructure::native_operations::apply::StagedChangeKind;
+
+        let kind = match (&original, &current) {
+            (StagedFileState::Absent, StagedFileState::Bytes(_)) => StagedChangeKind::Create,
+            (StagedFileState::Bytes(_), StagedFileState::Bytes(_)) => StagedChangeKind::Replace,
+            (StagedFileState::Bytes(_), StagedFileState::Absent) => StagedChangeKind::Remove,
+            (StagedFileState::Absent, StagedFileState::Absent) => {
+                panic!("an absent-to-absent change is not a staged mutation")
+            }
+        };
+        StagedApplyChange {
+            relative_path: relative.into(),
+            kind,
+            original,
+            current,
+        }
+    }
+
+    fn prepare_topology_projection(
+        service: &Arc<SourceRevisionService>,
+        root: &Arc<RetainedDirectoryCapability>,
+        changes: &[StagedApplyChange],
+    ) -> Result<PreparedRevisionReconciliation, RetainedRevisionError> {
+        let lease = topology_projection_lease(service, root);
+        service.prepare_retained_apply_reconciliation(
+            root,
+            &lease,
+            changes,
+            ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+            &CancellationToken::new(),
+        )
+    }
+
+    #[test]
+    fn actor_revision_projection_rejects_entry_overflow_before_publication() {
+        let (_workspace, service, root) = topology_projection_fixture(
+            "projection-entry-overflow",
+            &[("Catalogs/Items/Forms/Main/Ext/Form/Items/a.png", b"before")],
+            &[],
+        );
+        let _limits =
+            set_revision_scan_limits_for_test(RetainedScanLimits::new(8, u64::MAX, u64::MAX));
+        let result = prepare_topology_projection(
+            &service,
+            &root,
+            &[topology_projection_change(
+                "Catalogs/Items/Forms/Main/Ext/Form/Items/b.png",
+                StagedFileState::Absent,
+                StagedFileState::Bytes(b"created".to_vec()),
+            )],
+        );
+
+        match result {
+            Err(error)
+                if error.kind() == RetainedRevisionErrorKind::Provider
+                    && error.to_string().contains("entry limit 8 exceeded") => {}
+            Err(error) => panic!("entry overflow returned {:?}: {error}", error.kind()),
+            Ok(_) => panic!("entry overflow crossed revision preparation"),
+        }
+    }
+
+    #[test]
+    fn actor_revision_projection_preserves_final_entry_accounting() {
+        let form_item = "Catalogs/Items/Forms/Main/Ext/Form/Items/a.png";
+        let replacement = topology_projection_change(
+            form_item,
+            StagedFileState::Bytes(b"before".to_vec()),
+            StagedFileState::Bytes(b"after".to_vec()),
+        );
+        {
+            let (_workspace, service, root) = topology_projection_fixture(
+                "projection-replace-neutral",
+                &[(form_item, b"before")],
+                &[],
+            );
+            let _limits =
+                set_revision_scan_limits_for_test(RetainedScanLimits::new(8, u64::MAX, u64::MAX));
+            prepare_topology_projection(&service, &root, std::slice::from_ref(&replacement))
+                .expect("replacement must preserve the final entry count");
+        }
+        {
+            let (_workspace, service, root) = topology_projection_fixture(
+                "projection-remove-create-neutral",
+                &[(form_item, b"before")],
+                &[],
+            );
+            let _limits =
+                set_revision_scan_limits_for_test(RetainedScanLimits::new(8, u64::MAX, u64::MAX));
+            prepare_topology_projection(
+                &service,
+                &root,
+                &[
+                    topology_projection_change(
+                        form_item,
+                        StagedFileState::Bytes(b"before".to_vec()),
+                        StagedFileState::Absent,
+                    ),
+                    topology_projection_change(
+                        "Catalogs/Items/Forms/Main/Ext/Form/Items/b.png",
+                        StagedFileState::Absent,
+                        StagedFileState::Bytes(b"created".to_vec()),
+                    ),
+                ],
+            )
+            .expect("one removal must fund one creation in the final tree");
+        }
+        {
+            let (_workspace, service, root) = topology_projection_fixture(
+                "projection-ignored-entry-accounting",
+                &[(form_item, b"before"), ("scratch.bin", b"ignored")],
+                &[],
+            );
+            let _limits =
+                set_revision_scan_limits_for_test(RetainedScanLimits::new(9, u64::MAX, u64::MAX));
+            let result = prepare_topology_projection(
+                &service,
+                &root,
+                &[topology_projection_change(
+                    "Catalogs/Items/Forms/Main/Ext/Form/Items/b.png",
+                    StagedFileState::Absent,
+                    StagedFileState::Bytes(b"created".to_vec()),
+                )],
+            );
+            match result {
+                Err(error)
+                    if error.kind() == RetainedRevisionErrorKind::Provider
+                        && error.to_string().contains("entry limit 9 exceeded") => {}
+                Err(error) => panic!(
+                    "ignored-entry accounting returned {:?}: {error}",
+                    error.kind()
+                ),
+                Ok(_) => panic!("ignored captured entry did not consume projection capacity"),
+            }
+        }
+    }
+
+    #[test]
+    fn actor_revision_projection_counts_new_parent_topology() {
+        for (limit, should_succeed) in [(3, false), (4, true)] {
+            let (_workspace, service, root) = topology_projection_fixture(
+                &format!("projection-new-parent-{limit}"),
+                &[],
+                &["XDTOPackages"],
+            );
+            let _limits = set_revision_scan_limits_for_test(RetainedScanLimits::new(
+                limit,
+                u64::MAX,
+                u64::MAX,
+            ));
+            let result = prepare_topology_projection(
+                &service,
+                &root,
+                &[topology_projection_change(
+                    "XDTOPackages/New/Ext/Package.bin",
+                    StagedFileState::Absent,
+                    StagedFileState::Bytes(b"package".to_vec()),
+                )],
+            );
+            if should_succeed {
+                result.expect("two missing parents plus the file must consume three entries");
+            } else {
+                match result {
+                    Err(error)
+                        if error.kind() == RetainedRevisionErrorKind::Provider
+                            && error
+                                .to_string()
+                                .contains(&format!("entry limit {limit} exceeded")) => {}
+                    Err(error) => {
+                        panic!("new-parent accounting returned {:?}: {error}", error.kind())
+                    }
+                    Ok(_) => panic!("new parent directories did not consume projection capacity"),
+                }
+            }
+        }
+
+        let (_workspace, service, root) =
+            topology_projection_fixture("projection-shared-new-parent", &[], &[]);
+        let _limits =
+            set_revision_scan_limits_for_test(RetainedScanLimits::new(7, u64::MAX, u64::MAX));
+        prepare_topology_projection(
+            &service,
+            &root,
+            &[
+                topology_projection_change(
+                    "XDTOPackages/One/Ext/Package.bin",
+                    StagedFileState::Absent,
+                    StagedFileState::Bytes(b"one".to_vec()),
+                ),
+                topology_projection_change(
+                    "XDTOPackages/Two/Ext/Package.bin",
+                    StagedFileState::Absent,
+                    StagedFileState::Bytes(b"two".to_vec()),
+                ),
+            ],
+        )
+        .expect("a shared new parent must be charged once across the final batch");
+    }
+
+    #[test]
+    fn actor_revision_planning_requires_stable_ignored_entry_accounting() {
+        let form_item = "Catalogs/Items/Forms/Main/Ext/Form/Items/a.png";
+        let (_workspace, service, root) = topology_projection_fixture(
+            "projection-stable-ignored-accounting",
+            &[(form_item, b"before")],
+            &[],
+        );
+        let lease = topology_projection_lease(&service, &root);
+        let ignored = root.path().join("scratch.bin");
+        let scans = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&scans);
+        let _mutation = set_repeating_retained_scan_test_mutation(
+            RetainedScanTestMutationPoint::ScanStart,
+            move || {
+                if observed.fetch_add(1, Ordering::AcqRel) == 1 {
+                    std::fs::write(&ignored, b"ignored").unwrap();
+                }
+            },
+        );
+
+        let result = service.prepare_retained_apply_reconciliation(
+            &root,
+            &lease,
+            &[topology_projection_change(
+                form_item,
+                StagedFileState::Bytes(b"before".to_vec()),
+                StagedFileState::Bytes(b"after".to_vec()),
+            )],
+            ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+            &CancellationToken::new(),
+        );
+
+        match result {
+            Err(error) if error.kind() == RetainedRevisionErrorKind::ConcurrentRevision => {}
+            Err(error) => panic!(
+                "unstable ignored-entry accounting returned {:?}: {error}",
+                error.kind()
+            ),
+            Ok(_) => panic!("planning accepted captures with different enumeration counts"),
+        }
+    }
+
+    fn form_item_at_parent_depth(parent_depth: usize) -> PathBuf {
+        let mut path = PathBuf::from("Catalogs/Items/Forms/Main/Ext/Form/Items");
+        for index in 0..parent_depth.saturating_sub(7) {
+            path.push(format!("d{index}"));
+        }
+        path.push("leaf.png");
+        path
+    }
+
+    #[test]
+    fn actor_revision_projection_matches_capture_depth_boundary() {
+        let exact = form_item_at_parent_depth(MAX_SOURCE_DEPTH);
+        {
+            let (_workspace, service, root) =
+                topology_projection_fixture("projection-depth-exact", &[], &[]);
+            let _limits =
+                set_revision_scan_limits_for_test(RetainedScanLimits::new(128, u64::MAX, u64::MAX));
+            let prepared = prepare_topology_projection(
+                &service,
+                &root,
+                &[topology_projection_change(
+                    exact.clone(),
+                    StagedFileState::Absent,
+                    StagedFileState::Bytes(b"exact".to_vec()),
+                )],
+            )
+            .expect("a file whose parent is at MAX_SOURCE_DEPTH must remain valid");
+            let target = root.path().join(&exact);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(&target, b"exact").unwrap();
+            prepared
+                .activate(
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .validate_published_source_without_transients_for_test(
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .expect("the exact projection depth must reproduce live retained capture");
+        }
+
+        let over = form_item_at_parent_depth(MAX_SOURCE_DEPTH + 1);
+        let (_workspace, service, root) =
+            topology_projection_fixture("projection-depth-over", &[], &[]);
+        let _limits =
+            set_revision_scan_limits_for_test(RetainedScanLimits::new(128, u64::MAX, u64::MAX));
+        match prepare_topology_projection(
+            &service,
+            &root,
+            &[topology_projection_change(
+                over,
+                StagedFileState::Absent,
+                StagedFileState::Bytes(b"over".to_vec()),
+            )],
+        ) {
+            Err(error)
+                if error.kind() == RetainedRevisionErrorKind::Provider
+                    && error.to_string().contains("maximum depth") => {}
+            Err(error) => panic!("over-depth projection returned {:?}: {error}", error.kind()),
+            Ok(_) => panic!("over-depth topology crossed revision preparation"),
+        }
+    }
+
+    #[test]
+    fn actor_revision_replacement_commit_at_entry_limit_survives_owned_backup() {
+        let _limits =
+            set_revision_scan_limits_for_test(RetainedScanLimits::new(4, u64::MAX, u64::MAX));
+        crate::infrastructure::workspace_actor::tests::replacement_commit_at_entry_limit_survives_owned_backup();
+    }
+
+    #[test]
+    fn actor_revision_new_leaf_commit_at_entry_limit_survives_owned_backup() {
+        let _limits =
+            set_revision_scan_limits_for_test(RetainedScanLimits::new(9, u64::MAX, u64::MAX));
+        crate::infrastructure::workspace_actor::tests::new_leaf_commit_at_entry_limit_survives_owned_backup();
+    }
+
+    #[test]
+    fn actor_revision_multiple_recoveries_across_parents_preserve_exact_entry_limit() {
+        let _limits =
+            set_revision_scan_limits_for_test(RetainedScanLimits::new(13, u64::MAX, u64::MAX));
+        crate::infrastructure::workspace_actor::tests::multiple_recoveries_across_parents_preserve_exact_entry_limit();
+    }
+
+    #[test]
+    fn actor_revision_remove_create_batch_at_entry_limit_preserves_final_tree_accounting() {
+        let _limits =
+            set_revision_scan_limits_for_test(RetainedScanLimits::new(9, u64::MAX, u64::MAX));
+        crate::infrastructure::workspace_actor::tests::remove_create_batch_at_entry_limit_preserves_final_tree_accounting();
+    }
+
+    #[test]
+    fn actor_revision_exact_limit_late_failure_reaches_phase_and_rolls_back_without_receipt() {
+        let _limits =
+            set_revision_scan_limits_for_test(RetainedScanLimits::new(4, u64::MAX, u64::MAX));
+        crate::infrastructure::workspace_actor::tests::exact_limit_late_failure_reaches_phase_and_rolls_back_without_receipt();
+    }
+
+    #[test]
+    fn retained_apply_revision_transient_spoofs_still_consume_capacity() {
+        let _limits =
+            set_revision_scan_limits_for_test(RetainedScanLimits::new(4, u64::MAX, u64::MAX));
+        crate::infrastructure::workspace_actor::tests::revision_transient_spoofs_still_consume_capacity();
+    }
+
+    #[test]
+    fn retained_apply_revision_transient_create_only_and_restart_are_exact() {
+        let _limits =
+            set_revision_scan_limits_for_test(RetainedScanLimits::new(4, u64::MAX, u64::MAX));
+        crate::infrastructure::workspace_actor::tests::revision_transient_create_only_and_restart_are_exact();
+    }
+
+    #[test]
+    fn retained_apply_revision_transient_cleanup_failure_does_not_persist_authority() {
+        let _limits =
+            set_revision_scan_limits_for_test(RetainedScanLimits::new(4, u64::MAX, u64::MAX));
+        crate::infrastructure::workspace_actor::tests::revision_transient_cleanup_failure_does_not_persist_authority();
+    }
+
+    #[test]
+    pub(crate) fn retained_apply_revision_transient_authority_preserves_projection_capture_bounds()
+    {
+        actor_revision_projection_rejects_entry_overflow_before_publication();
+        actor_revision_projection_preserves_final_entry_accounting();
+        actor_revision_projection_counts_new_parent_topology();
+        actor_revision_planning_requires_stable_ignored_entry_accounting();
+        actor_revision_projection_matches_capture_depth_boundary();
+        actor_revision_replacement_commit_at_entry_limit_survives_owned_backup();
+        actor_revision_new_leaf_commit_at_entry_limit_survives_owned_backup();
+        crate::infrastructure::native_operations::compile_transaction::tests::retained_apply_revision_transient_authority_is_borrowed_sealed_and_single_issuer();
+        actor_revision_multiple_recoveries_across_parents_preserve_exact_entry_limit();
+        actor_revision_remove_create_batch_at_entry_limit_preserves_final_tree_accounting();
+        crate::infrastructure::workspace_actor::tests::actor_revision_recovery_identity_swap_is_rejected_before_revision_install();
+        crate::infrastructure::workspace_actor::tests::actor_revision_recovery_hard_link_alias_is_never_discounted_or_restored();
+        actor_revision_exact_limit_late_failure_reaches_phase_and_rolls_back_without_receipt();
+        retained_apply_revision_transient_spoofs_still_consume_capacity();
+        retained_apply_revision_transient_create_only_and_restart_are_exact();
+        retained_apply_revision_transient_cleanup_failure_does_not_persist_authority();
+        crate::infrastructure::workspace_actor::tests::revision_transient_stop_causes_preserve_rollback();
     }
 
     #[test]

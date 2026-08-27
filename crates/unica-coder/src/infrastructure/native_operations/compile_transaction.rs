@@ -30,7 +30,7 @@ use crate::infrastructure::platform::filesystem::{
     prepare_file_for_removal, remove_identity_bound_empty_directory_child,
     remove_identity_bound_regular_child, rename_identity_bound_regular_child_no_replace,
     rename_no_replace, retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
-    RetainedChildCapability, RetainedDirectoryCapability,
+    RetainedChildCapability, RetainedDirectoryCapability, RetainedRegularFileCapability,
 };
 use crate::infrastructure::source_revision::PreparedRevisionReconciliation;
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -274,6 +274,21 @@ fn retained_apply_publish_publication_error(
             ApplyPublicationErrorKind::ProviderPostvalidation
         }
         RetainedApplyPublishErrorKind::Invariant => ApplyPublicationErrorKind::Invariant,
+    };
+    ApplyPublicationError::new(kind, error.to_string())
+}
+
+fn retained_apply_revision_transient_publication_error(
+    error: RetainedApplyRevisionTransientError,
+) -> ApplyPublicationError {
+    let kind = match error.kind() {
+        RetainedApplyRevisionTransientErrorKind::ContainmentIdentity => {
+            ApplyPublicationErrorKind::ContainmentIdentity
+        }
+        RetainedApplyRevisionTransientErrorKind::Provider => {
+            ApplyPublicationErrorKind::ProviderPostvalidation
+        }
+        RetainedApplyRevisionTransientErrorKind::Invariant => ApplyPublicationErrorKind::Invariant,
     };
     ApplyPublicationError::new(kind, error.to_string())
 }
@@ -858,9 +873,22 @@ impl CompileTransaction {
                     })?;
                 }
             }
-            active_revision
-                .validate_published_source(final_gate.deadline(), final_gate.cancellation())
-                .map_err(retained_revision_publication_error)?;
+            #[cfg(test)]
+            run_retained_apply_before_revision_validation_hook();
+            {
+                let transients = RetainedApplyRevisionTransients::issue(
+                    active_revision.retained_root(),
+                    &published,
+                )
+                .map_err(retained_apply_revision_transient_publication_error)?;
+                active_revision
+                    .validate_published_source(
+                        &transients,
+                        final_gate.deadline(),
+                        final_gate.cancellation(),
+                    )
+                    .map_err(retained_revision_publication_error)?;
+            }
             for entry in &self.retained_apply[cache_start..] {
                 final_gate.checkpoint("prepared apply cache publication")?;
                 publish_retained_apply_change(entry, &mut published, &mut created_directories)
@@ -2452,6 +2480,310 @@ struct PublishedRetainedApplyChange {
     displaced: Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
 }
 
+pub(crate) struct RetainedApplyRevisionTransients<'journal> {
+    root: &'journal RetainedDirectoryCapability,
+    by_parent: BTreeMap<FileIdentity, Vec<RetainedApplyRevisionTransient<'journal>>>,
+}
+
+struct RetainedApplyRevisionTransient<'journal> {
+    parent: &'journal RetainedDirectoryCapability,
+    recovery_name: &'journal OsStr,
+    recovery: &'journal RetainedRegularFileCapability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetainedApplyRevisionTransientErrorKind {
+    ContainmentIdentity,
+    Provider,
+    Invariant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedApplyRevisionTransientError {
+    kind: RetainedApplyRevisionTransientErrorKind,
+    message: String,
+}
+
+impl RetainedApplyRevisionTransientError {
+    fn new(kind: RetainedApplyRevisionTransientErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> RetainedApplyRevisionTransientErrorKind {
+        self.kind
+    }
+}
+
+impl std::fmt::Display for RetainedApplyRevisionTransientError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RetainedApplyRevisionTransientError {}
+
+impl<'journal> RetainedApplyRevisionTransients<'journal> {
+    fn issue(
+        root: &'journal RetainedDirectoryCapability,
+        published: &'journal [PublishedRetainedApplyChange],
+    ) -> Result<Self, RetainedApplyRevisionTransientError> {
+        root.validate_named_identity().map_err(|error| {
+            RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                format!("retained revision-transient root identity changed: {error}"),
+            )
+        })?;
+        let mut by_parent: BTreeMap<FileIdentity, Vec<RetainedApplyRevisionTransient<'journal>>> =
+            BTreeMap::new();
+        for change in published {
+            let pair = match (&change.recovery_name, &change.displaced) {
+                (Some(name), Some(recovery)) => Some((name.as_os_str(), recovery)),
+                (None, None) => None,
+                _ => {
+                    return Err(RetainedApplyRevisionTransientError::new(
+                        RetainedApplyRevisionTransientErrorKind::Invariant,
+                        "retained apply journal recovery name/capability pair is incomplete",
+                    ))
+                }
+            };
+            let Some((recovery_name, recovery)) = pair else {
+                continue;
+            };
+            change.parent.validate_named_identity().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    format!("retained revision-transient parent identity changed: {error}"),
+                )
+            })?;
+            recovery.validate_named_identity().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    format!("retained revision-transient recovery identity changed: {error}"),
+                )
+            })?;
+            if recovery.hard_link_count().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Provider,
+                    format!("retained revision-transient hard-link count failed: {error}"),
+                )
+            })? != 1
+            {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    "retained revision-transient recovery gained a hard-link alias",
+                ));
+            }
+            let entries = by_parent.entry(change.parent.identity()).or_default();
+            if entries
+                .iter()
+                .any(|entry| entry.recovery_name == recovery_name)
+            {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Invariant,
+                    "retained revision-transient journal contains a duplicate recovery name",
+                ));
+            }
+            entries.push(RetainedApplyRevisionTransient {
+                parent: &change.parent,
+                recovery_name,
+                recovery,
+            });
+        }
+        Ok(RetainedApplyRevisionTransients { root, by_parent })
+    }
+
+    pub(crate) fn validate_root(
+        &self,
+        root: &RetainedDirectoryCapability,
+    ) -> Result<(), RetainedApplyRevisionTransientError> {
+        if self.root.identity() != root.identity() {
+            return Err(RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                "retained revision-transient authority belongs to another source root",
+            ));
+        }
+        self.root.validate_named_identity().map_err(|error| {
+            RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                format!("retained revision-transient root identity changed: {error}"),
+            )
+        })?;
+        root.validate_named_identity().map_err(|error| {
+            RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                format!("revision validation root identity changed: {error}"),
+            )
+        })
+    }
+
+    pub(crate) fn count_for_parent(
+        &self,
+        parent: &RetainedDirectoryCapability,
+    ) -> Result<usize, RetainedApplyRevisionTransientError> {
+        let Some(entries) = self.by_parent.get(&parent.identity()) else {
+            return Ok(0);
+        };
+        parent.validate_named_identity().map_err(|error| {
+            RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                format!("retained revision-transient parent identity changed: {error}"),
+            )
+        })?;
+        for entry in entries {
+            if entry.parent.identity() != parent.identity() {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Invariant,
+                    "retained revision-transient parent index is inconsistent",
+                ));
+            }
+            entry.parent.validate_named_identity().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    format!("retained revision-transient parent identity changed: {error}"),
+                )
+            })?;
+            entry.recovery.validate_named_identity().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    format!("retained revision-transient recovery identity changed: {error}"),
+                )
+            })?;
+            if entry.recovery.hard_link_count().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Provider,
+                    format!("retained revision-transient hard-link count failed: {error}"),
+                )
+            })? != 1
+            {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    "retained revision-transient recovery gained a hard-link alias",
+                ));
+            }
+        }
+        Ok(entries.len())
+    }
+
+    pub(crate) fn validate_and_select_names(
+        &self,
+        parent: &RetainedDirectoryCapability,
+        names: &[OsString],
+    ) -> Result<Vec<bool>, RetainedApplyRevisionTransientError> {
+        let Some(entries) = self.by_parent.get(&parent.identity()) else {
+            return Ok(vec![false; names.len()]);
+        };
+        let comparator = parent.child_name_comparator().map_err(|error| {
+            RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::Provider,
+                format!("retained revision-transient name policy cannot be proven: {error}"),
+            )
+        })?;
+        let exact_names = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.as_os_str(), index))
+            .collect::<BTreeMap<_, _>>();
+        let mut selected = vec![false; names.len()];
+        for entry in entries {
+            let exact = exact_names.get(entry.recovery_name).copied();
+            let index = if let Some(index) = exact {
+                index
+            } else {
+                let mut equivalent = None;
+                for (index, name) in names.iter().enumerate() {
+                    if comparator
+                        .names_equivalent(name, entry.recovery_name)
+                        .map_err(|error| {
+                            RetainedApplyRevisionTransientError::new(
+                                RetainedApplyRevisionTransientErrorKind::Provider,
+                                format!(
+                                    "retained revision-transient name identity cannot be proven: {error}"
+                                ),
+                            )
+                        })?
+                        && equivalent.replace(index).is_some()
+                    {
+                        return Err(RetainedApplyRevisionTransientError::new(
+                            RetainedApplyRevisionTransientErrorKind::Invariant,
+                            "retained revision-transient name has multiple equivalent children",
+                        ));
+                    }
+                }
+                equivalent.ok_or_else(|| {
+                    RetainedApplyRevisionTransientError::new(
+                        RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                        "retained revision-transient recovery disappeared from its parent",
+                    )
+                })?
+            };
+            if std::mem::replace(&mut selected[index], true) {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Invariant,
+                    "retained revision-transient journal entries alias one child name",
+                ));
+            }
+            let observed = parent
+                .retain_immediate_child_nofollow(&names[index])
+                .map_err(|error| {
+                    RetainedApplyRevisionTransientError::new(
+                        RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                        format!("retained revision-transient recovery cannot be retained: {error}"),
+                    )
+                })?;
+            let RetainedChildCapability::RegularFile(observed) = observed else {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    "retained revision-transient recovery is not a regular file",
+                ));
+            };
+            if observed.identity() != entry.recovery.identity() {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    "retained revision-transient recovery identity was replaced",
+                ));
+            }
+            observed.validate_named_identity().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    format!(
+                        "retained revision-transient named identity changed during scan: {error}"
+                    ),
+                )
+            })?;
+            if observed.hard_link_count().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Provider,
+                    format!("retained revision-transient hard-link count failed: {error}"),
+                )
+            })? != 1
+            {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    "retained revision-transient recovery gained a hard-link alias",
+                ));
+            }
+        }
+        Ok(selected)
+    }
+
+    pub(crate) fn validate_observed_parents(
+        &self,
+        observed: &BTreeSet<FileIdentity>,
+    ) -> Result<(), RetainedApplyRevisionTransientError> {
+        let expected = self.by_parent.keys().copied().collect::<BTreeSet<_>>();
+        if expected != *observed {
+            return Err(RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                "retained revision-transient parent was not observed exactly once by the source scan",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct CreatedRetainedApplyDirectory {
     parent: RetainedDirectoryCapability,
@@ -2838,6 +3170,22 @@ fn rollback_retained_apply(
             errors.push("published create capability is missing".to_string());
         }
         if let Some(displaced) = change.displaced.as_ref() {
+            match displaced.hard_link_count() {
+                Ok(1) => {}
+                Ok(_) => {
+                    errors.push(
+                        "displaced apply preimage gained a hard-link alias; recovery was preserved"
+                            .to_string(),
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    errors.push(format!(
+                        "displaced apply preimage hard-link count failed; recovery was preserved: {error}"
+                    ));
+                    continue;
+                }
+            }
             if let Err(error) = change
                 .parent
                 .restore_displaced_regular_child_no_replace(displaced, &change.name)
@@ -5441,6 +5789,9 @@ type RetainedApplyBeforeRollbackHook = Box<dyn FnOnce()>;
 type RetainedApplyBeforeProviderIoHook = Box<dyn FnOnce()>;
 
 #[cfg(test)]
+type RetainedApplyBeforeRevisionValidationHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
 thread_local! {
     static TEST_FAILPOINT: Cell<Option<CommitFailpoint>> = const { Cell::new(None) };
     static TEST_REGISTRATION_RECOVERY_PAUSE: RefCell<Option<RegistrationRecoveryPause>> = const { RefCell::new(None) };
@@ -5455,6 +5806,7 @@ thread_local! {
     static TEST_RETAINED_APPLY_BEFORE_POSTIMAGES_HOOK: RefCell<Option<RetainedApplyBeforePostimagesHook>> = const { RefCell::new(None) };
     static TEST_RETAINED_APPLY_BEFORE_ROLLBACK_HOOK: RefCell<Option<RetainedApplyBeforeRollbackHook>> = const { RefCell::new(None) };
     static TEST_RETAINED_APPLY_BEFORE_PROVIDER_IO_HOOK: RefCell<Option<RetainedApplyBeforeProviderIoHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_BEFORE_REVISION_VALIDATION_HOOK: RefCell<Option<RetainedApplyBeforeRevisionValidationHook>> = const { RefCell::new(None) };
     static TEST_RETAINED_APPLY_VALIDATION_PROVIDER_FAILURE: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -5492,9 +5844,25 @@ pub(crate) fn set_retained_apply_before_provider_io_hook(hook: impl FnOnce() + '
 }
 
 #[cfg(test)]
+pub(crate) fn set_retained_apply_before_revision_validation_hook(hook: impl FnOnce() + 'static) {
+    TEST_RETAINED_APPLY_BEFORE_REVISION_VALIDATION_HOOK.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
 fn run_retained_apply_before_provider_io_hook() {
     if let Some(hook) =
         TEST_RETAINED_APPLY_BEFORE_PROVIDER_IO_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn run_retained_apply_before_revision_validation_hook() {
+    if let Some(hook) =
+        TEST_RETAINED_APPLY_BEFORE_REVISION_VALIDATION_HOOK.with(|slot| slot.borrow_mut().take())
     {
         hook();
     }
@@ -5781,6 +6149,129 @@ pub(crate) mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    pub(crate) fn retained_apply_revision_transient_authority_is_borrowed_sealed_and_single_issuer()
+    {
+        use quote::ToTokens;
+        use syn::visit::Visit;
+
+        const AUTHORITY: &str = "RetainedApplyRevisionTransients";
+        const ENTRY: &str = "RetainedApplyRevisionTransient";
+        let transaction = syn::parse_file(include_str!("compile_transaction.rs"))
+            .expect("compile transaction production Rust must parse");
+        let revision = syn::parse_file(include_str!("../source_revision.rs"))
+            .expect("source revision production Rust must parse");
+        let authority = transaction
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == AUTHORITY => Some(item),
+                _ => None,
+            })
+            .expect("retained apply journal has no revision-transient authority");
+        let entry = transaction
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == ENTRY => Some(item),
+                _ => None,
+            })
+            .expect("revision-transient authority has no borrowed recovery entry");
+
+        assert!(
+            authority
+                .generics
+                .params
+                .iter()
+                .any(|parameter| matches!(parameter, syn::GenericParam::Lifetime(_))),
+            "revision-transient authority is not journal-lifetime-bound"
+        );
+        for item in [authority, entry] {
+            assert!(
+                item.fields
+                    .iter()
+                    .all(|field| matches!(field.vis, syn::Visibility::Inherited)),
+                "{} exposes forgeable fields",
+                item.ident
+            );
+            let derives = item
+                .attrs
+                .iter()
+                .filter(|attribute| attribute.path().is_ident("derive"))
+                .map(|attribute| attribute.meta.to_token_stream().to_string())
+                .collect::<String>();
+            assert!(
+                !["Clone", "Serialize", "Deserialize"]
+                    .iter()
+                    .any(|forbidden| derives.contains(forbidden)),
+                "{} acquired replay/serialization derives: {derives}",
+                item.ident
+            );
+        }
+        let entry_types = entry
+            .fields
+            .iter()
+            .map(|field| field.ty.to_token_stream().to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            entry_types
+                .iter()
+                .any(|field| field.contains("&") && field.contains("RetainedDirectoryCapability"))
+                && entry_types.iter().any(|field| {
+                    field.contains("&") && field.contains("RetainedRegularFileCapability")
+                }),
+            "revision-transient entry does not borrow exact parent and recovery capabilities"
+        );
+
+        struct ConstructionCounter {
+            count: usize,
+        }
+        impl<'ast> Visit<'ast> for ConstructionCounter {
+            fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
+                if expression
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "RetainedApplyRevisionTransients")
+                {
+                    self.count += 1;
+                }
+                syn::visit::visit_expr_struct(self, expression);
+            }
+        }
+        let mut constructions = ConstructionCounter { count: 0 };
+        constructions.visit_file(&transaction);
+        assert_eq!(
+            constructions.count, 1,
+            "revision-transient authority must have one production issuer"
+        );
+
+        let validation_requires_authority = revision.items.iter().any(|item| {
+            let syn::Item::Impl(item) = item else {
+                return false;
+            };
+            item.items.iter().any(|member| {
+                let syn::ImplItem::Fn(function) = member else {
+                    return false;
+                };
+                function.sig.ident == "validate_published_source"
+                    && function
+                        .sig
+                        .inputs
+                        .iter()
+                        .any(|input| input.to_token_stream().to_string().contains(AUTHORITY))
+            })
+        });
+        assert!(
+            validation_requires_authority,
+            "production revision validation can bypass journal authority"
+        );
+        assert!(
+            !include_str!("../source_revision.rs").contains(".unica-apply-"),
+            "source scanner trusts a raw retained-apply prefix"
+        );
+    }
 
     #[test]
     fn commit_failure_kind_does_not_depend_on_message_wording() {

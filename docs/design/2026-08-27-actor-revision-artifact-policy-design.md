@@ -56,10 +56,12 @@ source sets additionally classify:
 Configuration and extension resources are rooted at either configuration
 `Ext/Help`, or an exact known metadata collection followed by its direct owner.
 Common-form and common-template owners admit only their respective direct
-resource tails. Other metadata owners admit `Ext/Help`, or exactly one
-`Forms/<name>` / `Templates/<name>` child with the matching form/help or template
-tail. External processor/report resources begin with exactly one direct opaque
-owner and then the same owner-help, named-form or named-template grammar.
+resource tails. Only owners selected by the Platform owner-capability
+registries admit `Ext/Help`, or exactly one `Forms/<name>` / `Templates/<name>`
+child with the matching form/help or template tail; being a metadata owner by
+itself grants no resource capability. External processor/report resources begin
+with exactly one direct opaque owner and then the same owner-help, named-form or
+named-template grammar.
 `Template.bin`, `Template.txt`, descendants of `Template/`, descendants of
 `Ext/Help/`, and descendants of `Ext/Form/Items/` at those exact locations are
 `Content`. Fixed components are exact; arbitrary prefixes and mixed recursive

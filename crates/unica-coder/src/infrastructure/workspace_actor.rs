@@ -16,7 +16,9 @@ use crate::infrastructure::deadline_lock::{
 use crate::infrastructure::native_operations::apply::{
     ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, ApplyStagingError, ApplyStagingErrorKind,
 };
-use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
+use crate::infrastructure::native_operations::compile_transaction::{
+    CompileTransaction, RetainedApplyRevisionTransients,
+};
 use crate::infrastructure::native_operations::event::PlannedApplyEffects;
 use crate::infrastructure::platform::filesystem::{
     path_starts_with_host_root, stable_path_identity_bytes, RetainedChildCapability,
@@ -140,6 +142,9 @@ assert_not_impl_production!(CodeApplyAuthority<'static>: serde::de::DeserializeO
 assert_not_impl_production!(ActorRevisionServiceAuthority: Clone);
 assert_not_impl_production!(ActorRevisionServiceAuthority: serde::Serialize);
 assert_not_impl_production!(ActorRevisionServiceAuthority: serde::de::DeserializeOwned);
+assert_not_impl_production!(RetainedApplyRevisionTransients<'static>: Clone);
+assert_not_impl_production!(RetainedApplyRevisionTransients<'static>: serde::Serialize);
+assert_not_impl_production!(RetainedApplyRevisionTransients<'static>: serde::de::DeserializeOwned);
 assert_not_impl_production!(PlannedApplyEffects: Clone);
 assert_not_impl_production!(PlannedApplyEffects: serde::Serialize);
 assert_not_impl_production!(PlannedApplyEffects: serde::de::DeserializeOwned);
@@ -4394,6 +4399,687 @@ pub(crate) mod tests {
 
         assert_eq!(std::fs::read(package).unwrap(), b"package-after");
         assert_eq!(observed.revision_identity(), result.rev());
+        fixture.cleanup();
+    }
+
+    pub(crate) fn replacement_commit_at_entry_limit_survives_owned_backup() {
+        let fixture = actor_fixture("revision-replacement-entry-limit", &["src"]);
+        let relative = "XDTOPackages/Sample/Ext/Package.bin";
+        let package = fixture.roots[0].join(relative);
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(&package, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace(relative, b"before", b"after".to_vec())
+            .unwrap();
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admitted.prepare(state).unwrap())
+            .expect("journal-owned recovery must not consume final-tree entry capacity");
+        let reproduced = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                Some(result.rev()),
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(std::fs::read(package).unwrap(), b"after");
+        assert_eq!(reproduced.revision_identity(), result.rev());
+        fixture.cleanup();
+    }
+
+    pub(crate) fn new_leaf_commit_at_entry_limit_survives_owned_backup() {
+        let fixture = actor_fixture("revision-new-leaf-entry-limit", &["src"]);
+        let first = "Catalogs/Items/Forms/Main/Ext/Form/Items/a.png";
+        let second = "Catalogs/Items/Forms/Main/Ext/Form/Items/b.png";
+        let first_path = fixture.roots[0].join(first);
+        let second_path = fixture.roots[0].join(second);
+        std::fs::create_dir_all(first_path.parent().unwrap()).unwrap();
+        std::fs::write(&first_path, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state.replace(first, b"before", b"after".to_vec()).unwrap();
+        state.create(second, b"created".to_vec()).unwrap();
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admitted.prepare(state).unwrap())
+            .expect("owned recovery must not make an exact-limit replace/create batch fail");
+        let reproduced = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                Some(result.rev()),
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(std::fs::read(first_path).unwrap(), b"after");
+        assert_eq!(std::fs::read(second_path).unwrap(), b"created");
+        assert_eq!(reproduced.revision_identity(), result.rev());
+        fixture.cleanup();
+    }
+
+    pub(crate) fn multiple_recoveries_across_parents_preserve_exact_entry_limit() {
+        let fixture = actor_fixture("revision-multiple-recovery-entry-limit", &["src"]);
+        let paths = [
+            "Catalogs/Items/Forms/Main/Ext/Form/Items/a.png",
+            "Catalogs/Items/Forms/Main/Ext/Form/Items/b.png",
+            "XDTOPackages/Sample/Ext/Package.bin",
+        ];
+        for path in paths {
+            let target = fixture.roots[0].join(path);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, b"before").unwrap();
+        }
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        for path in paths {
+            state
+                .replace(path, b"before", format!("after-{path}").into_bytes())
+                .unwrap();
+        }
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admitted.prepare(state).unwrap())
+            .expect("three journal recoveries must preserve the exact final-tree limit");
+        let reproduced = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                Some(result.rev()),
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(reproduced.revision_identity(), result.rev());
+        fixture.cleanup();
+    }
+
+    pub(crate) fn remove_create_batch_at_entry_limit_preserves_final_tree_accounting() {
+        let fixture = actor_fixture("revision-remove-create-entry-limit", &["src"]);
+        let first = "Catalogs/Items/Forms/Main/Ext/Form/Items/a.png";
+        let second = "Catalogs/Items/Forms/Main/Ext/Form/Items/b.png";
+        let created = "Catalogs/Items/Forms/Main/Ext/Form/Items/c.png";
+        for path in [first, second] {
+            let target = fixture.roots[0].join(path);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, b"before").unwrap();
+        }
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state.remove(first, b"before").unwrap();
+        state.create(created, b"created".to_vec()).unwrap();
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admitted.prepare(state).unwrap())
+            .expect("one removal must fund one creation despite the live recovery sibling");
+        let reproduced = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                Some(result.rev()),
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert!(!fixture.roots[0].join(first).exists());
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join(created)).unwrap(),
+            b"created"
+        );
+        assert_eq!(reproduced.revision_identity(), result.rev());
+        fixture.cleanup();
+    }
+
+    fn retained_apply_recovery_path(parent: &Path) -> PathBuf {
+        std::fs::read_dir(parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|name| name.starts_with(".unica-apply-"))
+            })
+            .expect("source publication must retain one recovery sibling")
+    }
+
+    #[test]
+    pub(crate) fn actor_revision_recovery_identity_swap_is_rejected_before_revision_install() {
+        let fixture = actor_fixture("revision-recovery-identity-swap", &["src"]);
+        let relative = "XDTOPackages/Sample/Ext/Package.bin";
+        let target = fixture.roots[0].join(relative);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let machine_before = service.machine_state_for_test();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace(relative, b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let parent = target.parent().unwrap().to_path_buf();
+        let moved = parent.join("recovery-moved-aside");
+        let hook_parent = parent.clone();
+        let hook_moved = moved.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_revision_validation_hook(
+            move || {
+                let recovery = retained_apply_recovery_path(&hook_parent);
+                std::fs::rename(&recovery, &hook_moved).unwrap();
+                std::fs::write(&recovery, b"decoy").unwrap();
+            },
+        );
+
+        let error = fixture
+            .actor
+            .publish_prepared_apply(prepared)
+            .expect_err("a same-name recovery decoy returned a receipt");
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::RollbackIncomplete
+        );
+        assert!(error.contains("recovery"), "{error}");
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        assert!(
+            moved.exists(),
+            "identity-bound recovery evidence was erased"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    pub(crate) fn actor_revision_recovery_hard_link_alias_is_never_discounted_or_restored() {
+        let fixture = actor_fixture("revision-recovery-hard-link", &["src"]);
+        let relative = "XDTOPackages/Sample/Ext/Package.bin";
+        let target = fixture.roots[0].join(relative);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let machine_before = service.machine_state_for_test();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace(relative, b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let parent = target.parent().unwrap().to_path_buf();
+        let alias = fixture.root.join("recovery-alias.bin");
+        let hook_parent = parent.clone();
+        let hook_alias = alias.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_revision_validation_hook(
+            move || {
+                let recovery = retained_apply_recovery_path(&hook_parent);
+                std::fs::hard_link(recovery, &hook_alias).unwrap();
+            },
+        );
+
+        let error = fixture
+            .actor
+            .publish_prepared_apply(prepared)
+            .expect_err("a hard-linked recovery returned a receipt");
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::RollbackIncomplete
+        );
+        assert!(error.contains("hard-link"), "{error}");
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        assert_eq!(std::fs::read(alias).unwrap(), b"before");
+        fixture.cleanup();
+    }
+
+    pub(crate) fn exact_limit_late_failure_reaches_phase_and_rolls_back_without_receipt() {
+        use crate::infrastructure::native_operations::compile_transaction::RetainedApplyFailpoint;
+
+        for (label, failpoint) in [
+            ("revision-record", RetainedApplyFailpoint::RevisionRecord),
+            ("state-marker", RetainedApplyFailpoint::StateMarker),
+            (
+                "after-postimages",
+                RetainedApplyFailpoint::AfterAllPostimages,
+            ),
+        ] {
+            let fixture = actor_fixture(&format!("revision-exact-limit-late-{label}"), &["src"]);
+            let relative = "XDTOPackages/Sample/Ext/Package.bin";
+            let target = fixture.roots[0].join(relative);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(&target, b"before").unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let service = fixture.actor.source_revision_service(&binding).unwrap();
+            let admitted = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    false,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let mut state = admitted.staged_state().unwrap();
+            state
+                .replace(relative, b"before", b"after".to_vec())
+                .unwrap();
+            let prepared = admitted.prepare(state).unwrap();
+            let source_before = snapshot_tree(&fixture.roots[0]);
+            let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+            let machine_before = service.machine_state_for_test();
+            crate::infrastructure::native_operations::compile_transaction::set_retained_apply_failpoint(
+                failpoint,
+            );
+
+            let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+            assert!(
+                error.contains("injected retained apply failure"),
+                "{label} stopped before its selected late phase: {error}"
+            );
+            assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{label}");
+            assert_eq!(
+                snapshot_tree(&fixture.root.join(".build/unica")),
+                cache_before,
+                "{label}"
+            );
+            assert_eq!(service.machine_state_for_test(), machine_before, "{label}");
+            fixture.cleanup();
+        }
+    }
+
+    pub(crate) fn revision_transient_spoofs_still_consume_capacity() {
+        for foreign_name in [".unica-apply-spoof", "ordinary-ignored.bin"] {
+            let fixture = actor_fixture(
+                &format!("revision-transient-spoof-{foreign_name}"),
+                &["src"],
+            );
+            let relative = "XDTOPackages/Sample/Ext/Package.bin";
+            let target = fixture.roots[0].join(relative);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(&target, b"before").unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let admitted = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    false,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let mut state = admitted.staged_state().unwrap();
+            state
+                .replace(relative, b"before", b"after".to_vec())
+                .unwrap();
+            let prepared = admitted.prepare(state).unwrap();
+            let foreign = target.parent().unwrap().join(foreign_name);
+            let hook_foreign = foreign.clone();
+            crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_revision_validation_hook(
+                move || std::fs::write(hook_foreign, b"foreign").unwrap(),
+            );
+
+            let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+            assert_eq!(
+                error.kind(),
+                super::ApplyPublicationErrorKind::ProviderPostvalidation,
+                "{foreign_name}: {error}"
+            );
+            assert_eq!(std::fs::read(&target).unwrap(), b"before");
+            assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign");
+            fixture.cleanup();
+        }
+    }
+
+    pub(crate) fn revision_transient_create_only_and_restart_are_exact() {
+        let fixture = actor_fixture("revision-transient-create-only", &["src"]);
+        let relative = "XDTOPackages/Sample/Ext/Package.bin";
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state.create(relative, b"created".to_vec()).unwrap();
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admitted.prepare(state).unwrap())
+            .expect("create-only publication must issue no recovery allowance");
+
+        let restart_context = context(&fixture.root);
+        let restart_identity = WorkspaceIdentity::new(
+            &restart_context,
+            [source_input("src", &fixture.roots[0])],
+            "test-provider",
+        )
+        .unwrap();
+        let restarted = super::WorkspaceActor::new(restart_identity, restart_context).unwrap();
+        let restarted_binding = restarted
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let reproduced = restarted
+            .admit_apply(
+                &restarted_binding,
+                Some(result.rev()),
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(reproduced.revision_identity(), result.rev());
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join(relative)).unwrap(),
+            b"created"
+        );
+        fixture.cleanup();
+    }
+
+    pub(crate) fn revision_transient_cleanup_failure_does_not_persist_authority() {
+        let fixture = actor_fixture("revision-transient-cleanup-lifetime", &["src"]);
+        let relative = "XDTOPackages/Sample/Ext/Package.bin";
+        let target = fixture.roots[0].join(relative);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace(relative, b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let parent = target.parent().unwrap().to_path_buf();
+        let moved = parent.join("recovery-left-after-cleanup");
+        let hook_parent = parent.clone();
+        let hook_moved = moved.clone();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+            move || {
+                let recovery = retained_apply_recovery_path(&hook_parent);
+                std::fs::rename(&recovery, &hook_moved).unwrap();
+                std::fs::write(recovery, b"decoy").unwrap();
+            },
+        );
+
+        let result = fixture
+            .actor
+            .publish_prepared_apply(prepared)
+            .expect("cleanup failure occurs after revision installation");
+
+        assert_eq!(result.cleanup_diagnostics().len(), 1);
+        assert!(moved.exists());
+        assert!(fixture
+            .actor
+            .admit_apply(
+                &binding,
+                Some(result.rev()),
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .is_err());
+
+        let restart_context = context(&fixture.root);
+        let restart_identity = WorkspaceIdentity::new(
+            &restart_context,
+            [source_input("src", &fixture.roots[0])],
+            "test-provider",
+        )
+        .unwrap();
+        let restarted = super::WorkspaceActor::new(restart_identity, restart_context).unwrap();
+        let restarted_binding = restarted
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        assert!(restarted
+            .admit_apply(
+                &restarted_binding,
+                Some(result.rev()),
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .is_err());
+        fixture.cleanup();
+    }
+
+    #[test]
+    pub(crate) fn revision_transient_stop_causes_preserve_rollback() {
+        for phase in [
+            "before-enumeration",
+            "after-enumeration",
+            "between-captures",
+        ] {
+            let fixture = actor_fixture(&format!("revision-transient-cancel-{phase}"), &["src"]);
+            let relative = "XDTOPackages/Sample/Ext/Package.bin";
+            let target = fixture.roots[0].join(relative);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(&target, b"before").unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let service = fixture.actor.source_revision_service(&binding).unwrap();
+            let cancellation = CancellationToken::new();
+            let admitted = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    false,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &cancellation,
+                )
+                .unwrap();
+            let mut state = admitted.staged_state().unwrap();
+            state
+                .replace(relative, b"before", b"after".to_vec())
+                .unwrap();
+            let prepared = admitted.prepare(state).unwrap();
+            let source_before = snapshot_tree(&fixture.roots[0]);
+            let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+            let machine_before = service.machine_state_for_test();
+            let _scan_guard = match phase {
+                "before-enumeration" => {
+                    let cancel = cancellation.clone();
+                    crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_revision_validation_hook(
+                        move || cancel.cancel(),
+                    );
+                    None
+                }
+                "after-enumeration" => {
+                    let cancel = cancellation.clone();
+                    Some(crate::infrastructure::source_revision::set_retained_scan_test_mutation(
+                        crate::infrastructure::source_revision::RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
+                        move || cancel.cancel(),
+                    ))
+                }
+                "between-captures" => {
+                    let cancel = cancellation.clone();
+                    let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                    let observed = Arc::clone(&scans);
+                    Some(crate::infrastructure::source_revision::set_repeating_retained_scan_test_mutation(
+                        crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
+                        move || {
+                            if observed.fetch_add(1, Ordering::AcqRel) == 1 {
+                                cancel.cancel();
+                            }
+                        },
+                    ))
+                }
+                _ => unreachable!(),
+            };
+
+            let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+            assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
+            assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{phase}");
+            assert_eq!(
+                snapshot_tree(&fixture.root.join(".build/unica")),
+                cache_before,
+                "{phase}"
+            );
+            assert_eq!(service.machine_state_for_test(), machine_before, "{phase}");
+            fixture.cleanup();
+        }
+
+        let fixture = actor_fixture("revision-transient-deadline", &["src"]);
+        let relative = "XDTOPackages/Sample/Ext/Package.bin";
+        let target = fixture.roots[0].join(relative);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace(relative, b"before", b"after".to_vec())
+            .unwrap();
+        let mut prepared = admitted.prepare(state).unwrap();
+        prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(100));
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        let _scan_guard = crate::infrastructure::source_revision::set_retained_scan_test_mutation(
+            crate::infrastructure::source_revision::RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
+            || std::thread::sleep(Duration::from_millis(150)),
+        );
+
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Deadline);
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
