@@ -22,6 +22,7 @@ use crate::infrastructure::platform::filesystem::{
     path_starts_with_host_root, stable_path_identity_bytes, RetainedChildCapability,
     RetainedDirectoryCapability,
 };
+use crate::infrastructure::revision_artifact_policy::RevisionArtifactPolicy;
 use crate::infrastructure::source_revision::{
     PreparedRevisionReconciliation, RetainedRevisionError, RetainedRevisionErrorKind,
     RetainedRevisionLease, SourceRevisionService, WorkspaceStateScope,
@@ -1690,6 +1691,11 @@ impl<R> WorkspaceActor<R> {
                 &self.context,
                 binding.source_root.path(),
                 self.state_scope.clone(),
+                RevisionArtifactPolicy::for_actor(
+                    binding.source_kind(),
+                    binding.source_format(),
+                    binding.source_profile(),
+                )?,
             )?,
         });
         revisions.insert(binding.source_set.clone(), Arc::clone(&service));
@@ -4114,6 +4120,492 @@ pub(crate) mod tests {
     }
 
     #[test]
+    pub(crate) fn actor_revision_platform_resource_projection_matches_live_capture() {
+        let fixture = actor_fixture("revision-package-projection", &["src"]);
+        let package = fixture.roots[0].join("XDTOPackages/Sample/Ext/Package.bin");
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(&package, b"package-before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace(
+                "XDTOPackages/Sample/Ext/Package.bin",
+                b"package-before",
+                b"package-after".to_vec(),
+            )
+            .unwrap();
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admitted.prepare(state).unwrap())
+            .expect("classified Platform resource must publish through retained equality");
+        let observed = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                Some(result.rev()),
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(std::fs::read(package).unwrap(), b"package-after");
+        assert_eq!(observed.revision_identity(), result.rev());
+        fixture.cleanup();
+    }
+
+    #[test]
+    pub(crate) fn actor_revision_external_resource_drift_rotates_subsequent_admission() {
+        let content_rows = [
+            ("xdto", "XDTOPackages/Sample/Ext/Package.bin"),
+            ("support", "Ext/ParentConfigurations.bin"),
+            (
+                "template-bin",
+                "Catalogs/Items/Templates/Print/Ext/Template.bin",
+            ),
+            (
+                "template-txt",
+                "Catalogs/Items/Templates/Text/Ext/Template.txt",
+            ),
+            ("help-html", "Catalogs/Items/Ext/Help/ru.html"),
+            (
+                "form-png",
+                "Catalogs/Items/Forms/Main/Ext/Form/Items/logo.png",
+            ),
+            ("dcs-xml", "Reports/Sales/Templates/Dcs/Ext/Template.xml"),
+            ("mxl-xml", "Reports/Sales/Templates/Print/Ext/Template.xml"),
+            ("form-xml", "Catalogs/Items/Forms/Main/Ext/Form.xml"),
+            ("form-bsl", "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl"),
+            ("role-xml", "Roles/Seller/Ext/Rights.xml"),
+        ];
+        let mut unchanged = Vec::new();
+        for (label, relative) in content_rows {
+            let fixture = actor_fixture(&format!("revision-drift-{label}"), &["src"]);
+            let path = fixture.roots[0].join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"before").unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let before = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .revision_identity();
+            std::fs::write(&path, b"after").unwrap();
+            let after = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .revision_identity();
+            if before == after {
+                unchanged.push(label);
+            }
+            fixture.cleanup();
+        }
+
+        for (label, initially_present) in [("vendor-add", false), ("vendor-remove", true)] {
+            let fixture = actor_fixture(&format!("revision-drift-{label}"), &["src"]);
+            let vendor = fixture.roots[0].join("Ext/ParentConfigurations/Vendor.cf");
+            std::fs::create_dir_all(vendor.parent().unwrap()).unwrap();
+            if initially_present {
+                std::fs::write(&vendor, b"vendor bytes are not hashed").unwrap();
+            }
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let before = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .revision_identity();
+            if initially_present {
+                std::fs::write(&vendor, b"different vendor bytes are still not hashed").unwrap();
+                let after_byte_rewrite = fixture
+                    .actor
+                    .admit_apply(
+                        &binding,
+                        None,
+                        true,
+                        ProviderDeadline::from_budget(Duration::from_secs(5)),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap()
+                    .revision_identity();
+                assert_eq!(
+                    before, after_byte_rewrite,
+                    "presence-only vendor bytes rotated the revision"
+                );
+                std::fs::remove_file(&vendor).unwrap();
+            } else {
+                std::fs::write(&vendor, b"vendor bytes are not hashed").unwrap();
+            }
+            let after = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .revision_identity();
+            if before == after {
+                unchanged.push(label);
+            }
+            fixture.cleanup();
+        }
+
+        assert!(
+            unchanged.is_empty(),
+            "resource drift omitted from actor revision: {unchanged:?}"
+        );
+    }
+
+    #[test]
+    pub(crate) fn actor_revision_policy_migrates_old_scoped_record_once_then_is_restart_stable() {
+        let fixture = actor_fixture("revision-record-migration", &["src"]);
+        let package = fixture.roots[0].join("XDTOPackages/Sample/Ext/Package.bin");
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(&package, b"package-before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let old = crate::infrastructure::source_revision::seed_observed_revision_record_for_test(
+            &fixture.actor.source_revision_service(&binding).unwrap(),
+            &binding.retained_root(),
+        )
+        .unwrap();
+
+        let rebuilt_identity = WorkspaceIdentity::new(
+            &context(&fixture.root),
+            [source_input("src", &fixture.roots[0])],
+            "test-provider",
+        )
+        .unwrap();
+        let rebuilt =
+            Arc::new(super::WorkspaceActor::new(rebuilt_identity, context(&fixture.root)).unwrap());
+        let rebuilt_binding = rebuilt
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let migrated = rebuilt
+            .admit_apply(
+                &rebuilt_binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .revision_identity();
+
+        let admitted = rebuilt
+            .admit_apply(
+                &rebuilt_binding,
+                Some(&migrated),
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace(
+                "XDTOPackages/Sample/Ext/Package.bin",
+                b"package-before",
+                b"package-after".to_vec(),
+            )
+            .unwrap();
+        let committed = rebuilt
+            .publish_prepared_apply(admitted.prepare(state).unwrap())
+            .map(|result| result.rev().to_string());
+
+        let mut failures = Vec::new();
+        if migrated == old {
+            failures.push(
+                "old scoped record did not rotate for newly classified Package.bin".to_string(),
+            );
+        }
+        match committed {
+            Ok(committed) => {
+                let final_identity = WorkspaceIdentity::new(
+                    &context(&fixture.root),
+                    [source_input("src", &fixture.roots[0])],
+                    "test-provider",
+                )
+                .unwrap();
+                let final_actor = Arc::new(
+                    super::WorkspaceActor::new(final_identity, context(&fixture.root)).unwrap(),
+                );
+                let final_binding = final_actor
+                    .bind_provider_root("src", &fixture.roots[0])
+                    .unwrap();
+                let after_restart = final_actor
+                    .admit_apply(
+                        &final_binding,
+                        None,
+                        true,
+                        ProviderDeadline::from_budget(Duration::from_secs(5)),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap()
+                    .revision_identity();
+                if committed != after_restart {
+                    failures.push(format!(
+                        "committed revision was not restart-stable: {committed} != {after_restart}"
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!("classified Package.bin commit failed: {error}")),
+        }
+
+        assert!(
+            failures.is_empty(),
+            "revision migration failures: {failures:?}"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    pub(crate) fn actor_revision_unknown_staged_artifact_is_rejected_before_publication() {
+        let fixture = actor_fixture("revision-unknown-stage", &["src"]);
+        let target = fixture.roots[0].join("Loose/random.bin");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Loose/random.bin", b"before", b"after".to_vec())
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+
+        let error = match admitted.prepare(state) {
+            Err(error) => error,
+            Ok(_) => panic!("unknown staged artifact crossed revision preparation"),
+        };
+
+        assert_eq!(error.kind(), ApplyStagingErrorKind::Invariant);
+        assert!(
+            error.to_string().contains("revision artifact policy"),
+            "{error}"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    pub(crate) fn actor_revision_late_failure_rolls_back_targeted_resource_without_receipt() {
+        use crate::infrastructure::native_operations::compile_transaction::RetainedApplyFailpoint;
+
+        let mut failures = Vec::new();
+        for (label, failpoint) in [
+            ("revision-record", RetainedApplyFailpoint::RevisionRecord),
+            ("state-marker", RetainedApplyFailpoint::StateMarker),
+            (
+                "after-postimages",
+                RetainedApplyFailpoint::AfterAllPostimages,
+            ),
+        ] {
+            let fixture = actor_fixture(&format!("revision-targeted-rollback-{label}"), &["src"]);
+            let package = fixture.roots[0].join("XDTOPackages/Sample/Ext/Package.bin");
+            std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+            std::fs::write(&package, b"before").unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let service = fixture.actor.source_revision_service(&binding).unwrap();
+            let admitted = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    false,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let mut state = admitted.staged_state().unwrap();
+            state
+                .replace(
+                    "XDTOPackages/Sample/Ext/Package.bin",
+                    b"before",
+                    b"after".to_vec(),
+                )
+                .unwrap();
+            let prepared = admitted.prepare(state).unwrap();
+            let source_before = snapshot_tree(&fixture.roots[0]);
+            let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+            let machine_before = service.machine_state_for_test();
+            crate::infrastructure::native_operations::compile_transaction::set_retained_apply_failpoint(
+                failpoint,
+            );
+
+            let error = match fixture.actor.publish_prepared_apply(prepared) {
+                Err(error) => error,
+                Ok(_) => panic!("{label} late failure returned a receipt"),
+            };
+            if !error.contains("injected retained apply failure") {
+                failures.push(format!(
+                    "{label} stopped before selected late phase: {error}"
+                ));
+            }
+            assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{label}");
+            assert_eq!(
+                snapshot_tree(&fixture.root.join(".build/unica")),
+                cache_before,
+                "{label}"
+            );
+            assert_eq!(service.machine_state_for_test(), machine_before, "{label}");
+            fixture.cleanup();
+        }
+
+        assert!(
+            failures.is_empty(),
+            "targeted rollback phase failures: {failures:?}"
+        );
+    }
+
+    #[test]
+    pub(crate) fn actor_revision_platform_commit_preserves_legacy_and_surface_contracts() {
+        let fixture = actor_fixture("revision-platform-compatibility", &["src"]);
+        let package = fixture.roots[0].join("XDTOPackages/Sample/Ext/Package.bin");
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(&package, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace(
+                "XDTOPackages/Sample/Ext/Package.bin",
+                b"before",
+                b"after".to_vec(),
+            )
+            .unwrap();
+        let platform_commit = fixture
+            .actor
+            .publish_prepared_apply(admitted.prepare(state).unwrap());
+
+        let legacy_root = temp_root("revision-legacy-compatibility");
+        let legacy_source = legacy_root.join("src");
+        std::fs::create_dir_all(&legacy_source).unwrap();
+        std::fs::write(legacy_source.join("Module.bsl"), b"module").unwrap();
+        std::fs::write(legacy_source.join("scratch.bin"), b"one").unwrap();
+        let legacy_context = context(&legacy_root);
+        let legacy_service = SourceRevisionService::new(&legacy_context, &legacy_source).unwrap();
+        let retained =
+            crate::infrastructure::platform::filesystem::RetainedDirectoryCapability::open(
+                &std::fs::canonicalize(&legacy_source).unwrap(),
+            )
+            .unwrap();
+        let legacy_before = legacy_service
+            .observe_retained_operation(
+                &retained,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .revision_identity();
+        std::fs::write(legacy_source.join("scratch.bin"), b"two").unwrap();
+        let legacy_after = legacy_service
+            .observe_retained_operation(
+                &retained,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .revision_identity();
+        assert_eq!(
+            legacy_before, legacy_after,
+            "legacy V12 digest widened to .bin"
+        );
+
+        let result = platform_commit
+            .expect("classified Platform resource commit must precede compatibility guards");
+        let replay = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                Some(result.rev()),
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(replay.revision_identity(), result.rev());
+        let _ = std::fs::remove_dir_all(legacy_root);
+        fixture.cleanup();
+    }
+
+    #[test]
     fn prepared_apply_observer_sees_source_eager_revision_and_state_marker_order() {
         let fixture = actor_fixture("prepared-apply-publication-order", &["src"]);
         std::fs::write(fixture.roots[0].join("Module.bsl"), b"original").unwrap();
@@ -6511,7 +7003,7 @@ pub(crate) mod tests {
     #[test]
     fn prepared_apply_create_post_rename_failure_rolls_back_the_published_name() {
         let fixture = actor_fixture("prepared-create-post-rename-failure", &["src"]);
-        let target = fixture.roots[0].join("created.txt");
+        let target = fixture.roots[0].join("created.bsl");
         let binding = fixture
             .actor
             .bind_provider_root("src", &fixture.roots[0])
@@ -6527,7 +7019,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         let mut state = admitted.staged_state().unwrap();
-        state.create("created.txt", b"published".to_vec()).unwrap();
+        state.create("created.bsl", b"published".to_vec()).unwrap();
         let prepared = admitted.prepare(state).unwrap();
         crate::infrastructure::platform::filesystem::inject_post_rename_sync_failure_for_test();
 

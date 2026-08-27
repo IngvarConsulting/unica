@@ -42,6 +42,7 @@ pub mod plugin_runtime;
 pub(crate) mod project_health;
 pub(crate) mod project_sources;
 pub(crate) mod redaction;
+mod revision_artifact_policy;
 pub(crate) mod rlm_navigation;
 pub(crate) mod runtime_build_fallback;
 pub(crate) mod runtime_build_preflight;
