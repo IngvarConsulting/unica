@@ -164,6 +164,22 @@ impl std::fmt::Display for ApplyPlanError {
 
 impl std::error::Error for ApplyPlanError {}
 
+pub(super) fn empty_apply_family_batch() -> ApplyPlanError {
+    ApplyPlanError::new(
+        ApplyPlanErrorKind::BadValue,
+        "apply family batch must contain at least one operation",
+    )
+    .at_path("ops")
+}
+
+pub(super) fn hidden_apply_family_unimplemented(op_index: usize) -> ApplyPlanError {
+    ApplyPlanError::new(
+        ApplyPlanErrorKind::ProviderUnavailable,
+        "hidden v0.13 apply family is not implemented",
+    )
+    .at_path(format!("ops[{op_index}].op"))
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct PlannedApplyEffects {
     events: Vec<DomainEvent>,

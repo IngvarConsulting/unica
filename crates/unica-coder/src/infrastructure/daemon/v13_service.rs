@@ -2,11 +2,14 @@ use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocati
 use crate::application::invocation_store::ToolIdentity;
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::ViewCursorStore;
+use crate::application::v13::apply::parse_request as parse_apply_request;
 use crate::application::v13::find::FindRequest;
 use crate::application::v13::view::{ViewRequest, ViewService};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, InvocationFailure};
+use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
+use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder};
 use serde_json::Value;
 use std::sync::Arc;
@@ -33,7 +36,9 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
         invocation: &ActorBoundInvocation,
     ) -> Result<ExecutionClass, Box<DomainResult>> {
         match invocation.tool() {
-            ToolIdentity::View | ToolIdentity::Find => Ok(ExecutionClass::InlineCandidate),
+            ToolIdentity::View | ToolIdentity::Apply | ToolIdentity::Find => {
+                Ok(ExecutionClass::InlineCandidate)
+            }
             tool => Err(Box::new(error_result(
                 None,
                 "provider_unavailable",
@@ -54,6 +59,7 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
             ToolIdentity::View => Ok(invocation
                 .rejected_logical_read_result()
                 .unwrap_or_else(|| self.execute_view(invocation, &cancellation))),
+            ToolIdentity::Apply => Ok(self.execute_apply(invocation, &cancellation)),
             ToolIdentity::Find => Ok(self.execute_find(invocation, &cancellation)),
             tool => Ok(error_result(
                 None,
@@ -68,6 +74,46 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
 }
 
 impl CanonicalV13ReadService {
+    fn execute_apply(
+        &self,
+        invocation: &ActorBoundExecution,
+        cancellation: &CancellationToken,
+    ) -> DomainResult {
+        let source_sets = invocation.admitted_source_set_names();
+        let request = match parse_apply_request(invocation.arguments(), &source_sets) {
+            Ok(request) => request,
+            Err(error) => {
+                return error_result(
+                    Some(error.location().to_string()),
+                    error.code(),
+                    error.to_string(),
+                )
+            }
+        };
+        let (binding, admission) = match invocation.admit_apply(&request, cancellation) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                return error_result(
+                    Some(request.at().to_string()),
+                    "provider_unavailable",
+                    error,
+                )
+            }
+        };
+        match plan_hidden_v13_apply(&request, &binding, &admission) {
+            Err(error) => error_result(
+                error.path().map(str::to_string),
+                apply_plan_error_code(error.kind()),
+                error.to_string(),
+            ),
+            Ok(_) => error_result(
+                Some("ops".to_string()),
+                "provider_unavailable",
+                "hidden v0.13 apply publication is not implemented",
+            ),
+        }
+    }
+
     fn execute_view(
         &self,
         invocation: &ActorBoundExecution,
@@ -220,6 +266,18 @@ impl CanonicalV13ReadService {
         );
         result.rev = Some(built.revision);
         result
+    }
+}
+
+fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> &'static str {
+    match kind {
+        ApplyPlanErrorKind::BadValue => "bad_value",
+        ApplyPlanErrorKind::NotFound => "not_found",
+        ApplyPlanErrorKind::ProviderUnavailable => "provider_unavailable",
+        ApplyPlanErrorKind::InvalidState => "invalid_state",
+        ApplyPlanErrorKind::InvalidSource => "invalid_source",
+        ApplyPlanErrorKind::Staging(_) => "provider_unavailable",
+        ApplyPlanErrorKind::Postcondition => "postcondition_failed",
     }
 }
 

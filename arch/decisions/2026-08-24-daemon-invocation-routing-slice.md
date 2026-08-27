@@ -24,7 +24,7 @@ result становится тем же Task, а запись ответа ог�
 deadline и внутренним safety cap 10 секунд.
 Daemon захватывает один deadline с exact private `Arc<Clock>` executor authority до validation/admission/prepare; wire budget только сужает его, ActorBound/Prepared/writer сохраняют authority и не перезапускают clock, а TaskId после final deadline потребует будущий invocation token.
 
-Построенный в этом срезе daemon protocol v2 принимает `SubmitInvocation`, `GetTask`, `WaitTask`,
+Построенный в этом срезе daemon protocol v3 принимает `SubmitInvocation`, `GetTask`, `WaitTask`,
 `CancelTask`. После schema-проверки вызов получает opaque capability точного
 `WorkspaceActor`; handler не видит `workspaceHint`, чтение и публикация проходят
 через retained root и revision fence. Weak registry допускает 64 живых actor,

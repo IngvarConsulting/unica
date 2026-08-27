@@ -1436,6 +1436,96 @@ mod tests {
     }
 
     #[test]
+    fn hidden_v13_apply_dispatch_reaches_all_three_compiled_family_stubs_without_v12_fallback() {
+        let daemon_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let main = workspace.path().join("main");
+        let secondary = workspace.path().join("secondary");
+        for source in [&main, &secondary] {
+            std::fs::create_dir_all(source).unwrap();
+            std::fs::write(
+                source.join("Configuration.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n    type: CONFIGURATION\n    path: main\n",
+                "  - name: secondary\n    type: CONFIGURATION\n    path: secondary\n",
+            ),
+        )
+        .unwrap();
+
+        let identity = CoreIdentity::production();
+        let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
+            .with_invocation_service(Arc::new(CanonicalV13ReadService::default()));
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(daemon_root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical_root(daemon_root.path()),
+            identity,
+        ));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+        let legacy_calls = AtomicUsize::new(0);
+        let secondary_before = std::fs::read(secondary.join("Configuration.xml")).unwrap();
+
+        for operation in ["object.create", "form.create", "dcs.set", "code.insert"] {
+            let response = owner
+                .submit_invocation(
+                    InvocationRequest::new(
+                        ToolIdentity::Apply,
+                        serde_json::json!({
+                            "at": "secondary:Configuration",
+                            "ops": [{"op": operation, "args": {}}],
+                            "dryRun": false,
+                        }),
+                        physical_root(workspace.path()).to_string_lossy(),
+                        7_000,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let InvocationResponse::Direct(result) = response else {
+                panic!("hidden W0 apply stub must complete inline")
+            };
+            assert!(!result.ok, "{operation} unexpectedly succeeded");
+            assert_eq!(result.at.as_deref(), Some("ops[0].op"), "{operation}");
+            assert_eq!(
+                result.diagnostics[0]["code"], "provider_unavailable",
+                "{operation}"
+            );
+            assert_eq!(
+                result.summary, "hidden v0.13 apply family is not implemented",
+                "{operation}"
+            );
+        }
+
+        assert_eq!(
+            std::fs::read(secondary.join("Configuration.xml")).unwrap(),
+            secondary_before,
+            "W0 hidden apply dispatch mutated the admitted source before W2 publication"
+        );
+        assert!(
+            !workspace.path().join(".build/unica/state.json").exists(),
+            "W0 hidden apply dispatch published workspace cache state"
+        );
+        assert_eq!(
+            legacy_calls.load(Ordering::SeqCst),
+            0,
+            "explicit hidden V13 apply dispatch reached a legacy V12 handler"
+        );
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn daemon_default_keeps_the_hidden_v13_service_dormant_before_task22() {
         let daemon_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();

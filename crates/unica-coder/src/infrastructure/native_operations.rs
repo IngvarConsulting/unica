@@ -1,6 +1,8 @@
 //! Thin facade over family-owned native XML/DSL operations.
 #[allow(dead_code)]
 pub(crate) mod apply;
+#[allow(dead_code)] // hidden V13 seam until W2 closes the real route
+pub(crate) mod apply_families;
 pub(crate) mod cf;
 pub(crate) mod cfe;
 // The pure C1 code planner is intentionally not actor-routed until C13/15D.

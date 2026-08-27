@@ -17,6 +17,7 @@ use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::composition::open_daemon_invocation_store_from_directory;
 use crate::domain::address::QualifiedAddress;
+use crate::domain::apply::ApplyRequest;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{
@@ -27,7 +28,7 @@ use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwne
 use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
-    IndexWorkIdentity, ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry,
+    ApplyAdmission, IndexWorkIdentity, ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry,
     WorkspaceActorRegistryError, WorkspaceLogicalReadFence, WorkspaceRevisionFence,
     WorkspaceSourceSetInput,
 };
@@ -287,6 +288,39 @@ impl ActorBoundExecution {
     #[allow(dead_code)]
     pub(crate) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
         self.invocation.workspace_identity_hash()
+    }
+
+    pub(super) fn admitted_source_set_names(&self) -> Vec<&str> {
+        self.invocation
+            .read_sources
+            .iter()
+            .map(|source| source.binding.source_set_name())
+            .collect()
+    }
+
+    pub(super) fn admit_apply(
+        &self,
+        request: &ApplyRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<(ProviderRootBinding, ApplyAdmission), String> {
+        let binding = self
+            .invocation
+            .read_sources
+            .iter()
+            .find(|source| source.binding.source_set_name() == request.at().source_set())
+            .map(|source| source.binding.clone())
+            .ok_or_else(|| {
+                "apply source set was not admitted by the workspace actor".to_string()
+            })?;
+        self.invocation.actor.validate_binding(&binding)?;
+        let admission = self.invocation.actor.admit_apply(
+            &binding,
+            request.if_rev(),
+            request.dry_run(),
+            ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
+            cancellation,
+        )?;
+        Ok((binding, admission))
     }
 
     #[allow(dead_code)]

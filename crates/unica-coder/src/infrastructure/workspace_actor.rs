@@ -142,6 +142,15 @@ assert_not_impl_production!(CodeApplyAuthority<'static>: serde::de::DeserializeO
 assert_not_impl_production!(XdtoApplyAuthority<'static>: Clone);
 assert_not_impl_production!(XdtoApplyAuthority<'static>: serde::Serialize);
 assert_not_impl_production!(XdtoApplyAuthority<'static>: serde::de::DeserializeOwned);
+assert_not_impl_production!(MetadataApplyAuthority<'static>: Clone);
+assert_not_impl_production!(MetadataApplyAuthority<'static>: serde::Serialize);
+assert_not_impl_production!(MetadataApplyAuthority<'static>: serde::de::DeserializeOwned);
+assert_not_impl_production!(FormResourceApplyAuthority<'static>: Clone);
+assert_not_impl_production!(FormResourceApplyAuthority<'static>: serde::Serialize);
+assert_not_impl_production!(FormResourceApplyAuthority<'static>: serde::de::DeserializeOwned);
+assert_not_impl_production!(DcsMxlApplyAuthority<'static>: Clone);
+assert_not_impl_production!(DcsMxlApplyAuthority<'static>: serde::Serialize);
+assert_not_impl_production!(DcsMxlApplyAuthority<'static>: serde::de::DeserializeOwned);
 assert_not_impl_production!(ActorRevisionServiceAuthority: Clone);
 assert_not_impl_production!(ActorRevisionServiceAuthority: serde::Serialize);
 assert_not_impl_production!(ActorRevisionServiceAuthority: serde::de::DeserializeOwned);
@@ -512,6 +521,64 @@ pub(crate) struct XdtoApplyAuthority<'a> {
     support_policy: SupportPolicyMode,
 }
 
+struct PlatformXmlApplyAuthority<'a> {
+    binding: &'a ProviderRootBinding,
+    writer_authority: &'a ApplyWriterAuthority,
+    profile: crate::domain::platform_profile::PlatformProfile,
+    expected_format: &'static str,
+    support_policy: SupportPolicyMode,
+}
+
+/// Admission-sealed authority for dormant metadata/property planning.
+pub(crate) struct MetadataApplyAuthority<'a>(PlatformXmlApplyAuthority<'a>);
+
+/// Admission-sealed authority for dormant form/resource planning.
+pub(crate) struct FormResourceApplyAuthority<'a>(PlatformXmlApplyAuthority<'a>);
+
+/// Admission-sealed authority for dormant DCS/MXL planning.
+pub(crate) struct DcsMxlApplyAuthority<'a>(PlatformXmlApplyAuthority<'a>);
+
+impl PlatformXmlApplyAuthority<'_> {
+    fn owns_staged_state(&self, staged: &ApplyStagedState) -> bool {
+        staged.retained_root_identity() == self.binding.source_root.identity()
+            && staged.has_writer_authority(self.writer_authority)
+    }
+}
+
+macro_rules! impl_platform_xml_apply_authority {
+    ($authority:ident) => {
+        impl $authority<'_> {
+            pub(crate) fn source_set_name(&self) -> &str {
+                self.0.binding.source_set_name()
+            }
+
+            pub(crate) const fn source_kind(&self) -> SourceSetKind {
+                self.0.binding.source_kind()
+            }
+
+            pub(crate) const fn profile(&self) -> crate::domain::platform_profile::PlatformProfile {
+                self.0.profile
+            }
+
+            pub(crate) const fn expected_format(&self) -> &str {
+                self.0.expected_format
+            }
+
+            pub(crate) const fn support_policy_mode(&self) -> SupportPolicyMode {
+                self.0.support_policy
+            }
+
+            pub(crate) fn owns_staged_state(&self, staged: &ApplyStagedState) -> bool {
+                self.0.owns_staged_state(staged)
+            }
+        }
+    };
+}
+
+impl_platform_xml_apply_authority!(MetadataApplyAuthority);
+impl_platform_xml_apply_authority!(FormResourceApplyAuthority);
+impl_platform_xml_apply_authority!(DcsMxlApplyAuthority);
+
 impl XdtoApplyAuthority<'_> {
     pub(crate) fn source_set_name(&self) -> &str {
         self.binding.source_set_name()
@@ -730,6 +797,81 @@ impl ApplyAdmission {
             expected_format,
             support_policy: self.support_policy.mode(),
         })
+    }
+
+    fn platform_xml_family_authority<'a>(
+        &'a self,
+        binding: &'a ProviderRootBinding,
+        family: &str,
+    ) -> Result<PlatformXmlApplyAuthority<'a>, ApplyPlanError> {
+        if binding.actor_identity != self.actor_identity
+            || binding.actor_instance != self.actor_instance
+            || binding.source_set != self.source_set
+            || binding.source_root.path() != self.source_root.path()
+            || binding.source_root.identity() != self.source_root.identity()
+        {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                format!("{family} planning binding does not belong to this apply admission"),
+            ));
+        }
+        if binding.source_format() != SourceFormat::PlatformXml
+            || !matches!(
+                binding.source_kind(),
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+        {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::ProviderUnavailable,
+                format!("admitted source does not provide writable Platform XML {family}"),
+            ));
+        }
+        let profile = binding.source_profile().platform_profile().ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::ProviderUnavailable,
+                "admitted source has no supported Platform XML profile",
+            )
+        })?;
+        let expected_format = binding
+            .source_profile()
+            .serialization_format()
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::ProviderUnavailable,
+                    "admitted source has no exact serialization profile",
+                )
+            })?;
+        Ok(PlatformXmlApplyAuthority {
+            binding,
+            writer_authority: &self.writer_authority,
+            profile,
+            expected_format,
+            support_policy: self.support_policy.mode(),
+        })
+    }
+
+    pub(crate) fn metadata_planning_authority<'a>(
+        &'a self,
+        binding: &'a ProviderRootBinding,
+    ) -> Result<MetadataApplyAuthority<'a>, ApplyPlanError> {
+        self.platform_xml_family_authority(binding, "metadata")
+            .map(MetadataApplyAuthority)
+    }
+
+    pub(crate) fn form_resource_planning_authority<'a>(
+        &'a self,
+        binding: &'a ProviderRootBinding,
+    ) -> Result<FormResourceApplyAuthority<'a>, ApplyPlanError> {
+        self.platform_xml_family_authority(binding, "form/resource")
+            .map(FormResourceApplyAuthority)
+    }
+
+    pub(crate) fn dcs_mxl_planning_authority<'a>(
+        &'a self,
+        binding: &'a ProviderRootBinding,
+    ) -> Result<DcsMxlApplyAuthority<'a>, ApplyPlanError> {
+        self.platform_xml_family_authority(binding, "DCS/MXL")
+            .map(DcsMxlApplyAuthority)
     }
 
     pub(crate) fn prepare(
