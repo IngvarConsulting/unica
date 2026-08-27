@@ -2659,10 +2659,6 @@ mod tests {
 
     #[cfg(windows)]
     impl ChildCleanupGuard {
-        fn child(&self) -> &Child {
-            self.0.as_ref().unwrap()
-        }
-
         fn child_mut(&mut self) -> &mut Child {
             self.0.as_mut().unwrap()
         }
