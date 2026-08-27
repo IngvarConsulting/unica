@@ -1615,6 +1615,12 @@ pub(crate) mod actor_capacity_tests {
             )
         }
 
+        fn meta_list_is_exact_ident(list: &syn::MetaList, expected: &str) -> bool {
+            syn::parse2::<syn::Path>(list.tokens.clone()).is_ok_and(|path| {
+                path.leading_colon.is_none() && path.segments.len() == 1 && path.is_ident(expected)
+            })
+        }
+
         fn is_exact_dead_code_allow(attributes: &[syn::Attribute]) -> bool {
             matches!(
                 attributes,
@@ -1622,7 +1628,7 @@ pub(crate) mod actor_capacity_tests {
                     if attribute.path().is_ident("allow")
                         && matches!(
                             &attribute.meta,
-                            syn::Meta::List(list) if list.tokens.to_string() == "dead_code"
+                            syn::Meta::List(list) if meta_list_is_exact_ident(list, "dead_code")
                         )
             )
         }
@@ -1793,12 +1799,128 @@ pub(crate) mod actor_capacity_tests {
 
         fn is_exact_cfg_test(attributes: &[syn::Attribute]) -> bool {
             attributes.iter().any(|attribute| {
-                attribute.path().is_ident("cfg")
-                    && matches!(
-                        &attribute.meta,
-                        syn::Meta::List(list) if list.tokens.to_string() == "test"
-                    )
+                attribute.path().leading_colon.is_none()
+                    && attribute.path().segments.len() == 1
+                    && attribute.path().is_ident("cfg")
+                    && matches!(&attribute.meta, syn::Meta::List(list) if cfg_predicate_is(list, "test"))
             })
+        }
+
+        fn cfg_predicate_is(list: &syn::MetaList, expected: &str) -> bool {
+            let Ok(predicate) = syn::parse2::<syn::Meta>(list.tokens.clone()) else {
+                return false;
+            };
+            match (expected, predicate) {
+                ("test", syn::Meta::Path(path)) => {
+                    path.leading_colon.is_none()
+                        && path.segments.len() == 1
+                        && path.is_ident("test")
+                }
+                ("not(test)", syn::Meta::List(not)) => {
+                    not.path.leading_colon.is_none()
+                        && not.path.segments.len() == 1
+                        && not.path.is_ident("not")
+                        && syn::parse2::<syn::Path>(not.tokens).is_ok_and(|path| {
+                            path.leading_colon.is_none()
+                                && path.segments.len() == 1
+                                && path.is_ident("test")
+                        })
+                }
+                _ => false,
+            }
+        }
+
+        fn derive_payload_is_proven_builtin(list: &syn::MetaList) -> bool {
+            use syn::parse::Parser;
+
+            let parser = syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated;
+            let Ok(paths) = parser.parse2(list.tokens.clone()) else {
+                return false;
+            };
+            if paths.is_empty() || paths.trailing_punct() {
+                return false;
+            }
+            let names = paths
+                .iter()
+                .map(|path| {
+                    (path.leading_colon.is_none() && path.segments.len() == 1)
+                        .then(|| path.segments.first())
+                        .flatten()
+                        .filter(|segment| matches!(segment.arguments, syn::PathArguments::None))
+                        .map(|segment| segment.ident.to_string())
+                })
+                .collect::<Option<Vec<_>>>();
+            let Some(names) = names else {
+                return false;
+            };
+            const PROVEN_DERIVE_PAYLOADS: [&[&str]; 4] = [
+                &["Clone"],
+                &["Debug"],
+                &["Default"],
+                &["Debug", "Clone", "Copy", "PartialEq", "Eq"],
+            ];
+            PROVEN_DERIVE_PAYLOADS.iter().any(|expected| {
+                names
+                    .iter()
+                    .map(String::as_str)
+                    .eq(expected.iter().copied())
+            })
+        }
+
+        fn attribute_is_proven_builtin(attribute: &syn::Attribute) -> bool {
+            let path = attribute.path();
+            if path.leading_colon.is_some() || path.segments.len() != 1 {
+                return false;
+            }
+            match (
+                &attribute.meta,
+                path.segments.first().map(|segment| &segment.ident),
+            ) {
+                (syn::Meta::List(list), Some(name)) if name == "allow" => {
+                    meta_list_is_exact_ident(list, "dead_code")
+                }
+                (syn::Meta::List(list), Some(name)) if name == "derive" => {
+                    derive_payload_is_proven_builtin(list)
+                }
+                (syn::Meta::List(list), Some(name)) if name == "cfg" => {
+                    cfg_predicate_is(list, "test") || cfg_predicate_is(list, "not(test)")
+                }
+                (syn::Meta::NameValue(value), Some(name)) if name == "doc" => {
+                    matches!(&value.value, syn::Expr::Lit(literal) if matches!(literal.lit, syn::Lit::Str(_)))
+                }
+                _ => false,
+            }
+        }
+
+        fn use_tree_can_shadow_proven_attribute(tree: &syn::UseTree) -> bool {
+            const PROVEN_ATTRIBUTE_NAMES: [&str; 10] = [
+                "allow",
+                "cfg",
+                "derive",
+                "doc",
+                "Clone",
+                "Copy",
+                "Debug",
+                "Default",
+                "Eq",
+                "PartialEq",
+            ];
+            let is_proven_name =
+                |name: &syn::Ident| PROVEN_ATTRIBUTE_NAMES.contains(&name.to_string().as_str());
+            match tree {
+                syn::UseTree::Name(name) => is_proven_name(&name.ident),
+                syn::UseTree::Rename(rename) => {
+                    is_proven_name(&rename.ident) || is_proven_name(&rename.rename)
+                }
+                syn::UseTree::Path(path) => {
+                    is_proven_name(&path.ident)
+                        || use_tree_can_shadow_proven_attribute(path.tree.as_ref())
+                }
+                syn::UseTree::Group(group) => {
+                    group.items.iter().any(use_tree_can_shadow_proven_attribute)
+                }
+                syn::UseTree::Glob(_) => true,
+            }
         }
 
         #[derive(Default)]
@@ -1919,6 +2041,7 @@ pub(crate) mod actor_capacity_tests {
             implementations: Vec<&'ast syn::ItemImpl>,
             aliases: Vec<String>,
             macro_references: Vec<String>,
+            attribute_references: Vec<String>,
             item_references: Vec<String>,
             function_references: Vec<CapabilityFunctionReference>,
             constructions: Vec<CapabilityConstruction<'ast>>,
@@ -2064,7 +2187,43 @@ pub(crate) mod actor_capacity_tests {
                 if use_tree_can_shadow_inert_macro(&item.tree) {
                     self.macro_references.push(tokens(item));
                 }
+                if use_tree_can_shadow_proven_attribute(&item.tree) {
+                    self.attribute_references.push(tokens(item));
+                }
                 syn::visit::visit_item_use(self, item);
+            }
+
+            fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
+                }
+                const PROVEN_ATTRIBUTE_NAMES: [&str; 10] = [
+                    "allow",
+                    "cfg",
+                    "derive",
+                    "doc",
+                    "Clone",
+                    "Copy",
+                    "Debug",
+                    "Default",
+                    "Eq",
+                    "PartialEq",
+                ];
+                if PROVEN_ATTRIBUTE_NAMES.contains(&item.ident.to_string().as_str())
+                    || item.rename.as_ref().is_some_and(|(_, rename)| {
+                        PROVEN_ATTRIBUTE_NAMES.contains(&rename.to_string().as_str())
+                    })
+                {
+                    self.attribute_references.push(tokens(item));
+                }
+                syn::visit::visit_item_extern_crate(self, item);
+            }
+
+            fn visit_attribute(&mut self, attribute: &'ast syn::Attribute) {
+                if !attribute_is_proven_builtin(attribute) {
+                    self.attribute_references.push(tokens(attribute));
+                }
+                syn::visit::visit_attribute(self, attribute);
             }
 
             fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
@@ -2126,6 +2285,12 @@ pub(crate) mod actor_capacity_tests {
             .map_err(|error| format!("actor capability source must parse as Rust AST: {error}"))?;
         let mut found = CapabilityItems::default();
         found.visit_file(&file);
+        if !found.attribute_references.is_empty() {
+            return Err(format!(
+                "opaque, path-qualified or shadowed production attributes could generate actor read capability: {:?}",
+                found.attribute_references
+            ));
+        }
         if !found.macro_references.is_empty() {
             return Err(format!(
                 "opaque production macros or shadowing imports could generate actor read capability: {:?}",
@@ -2401,6 +2566,10 @@ pub(crate) mod actor_capacity_tests {
         actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros();
         actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist();
         actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow();
+        review_audit_rejects_opaque_attribute_macro_invocation();
+        actor_read_source_capability_ast_audit_rejects_custom_derive_macro();
+        actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes();
+        actor_read_source_capability_procedural_macros_can_reopen_sibling_api();
         actor_read_source_capability_ast_audit_rejects_type_alias_impl();
         actor_read_source_capability_ast_audit_rejects_defaulted_generic_alias_impl();
         actor_read_source_capability_ast_audit_rejects_sibling_visible_free_factory();
@@ -2870,6 +3039,191 @@ struct ActorLogicalReadLease {"#,
         assert!(
             accepted.is_empty(),
             "imports could impersonate allowlisted standard macros: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn review_audit_rejects_opaque_attribute_macro_invocation() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            "#[external_reopen_capability]\nconst ATTRIBUTE_MACRO_TRIGGER: () = ();\n\nstruct ActorLogicalReadLease {",
+            1,
+        );
+        assert_ne!(
+            hostile, source,
+            "hostile attribute fixture was not inserted"
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "an opaque procedural attribute could generate a sibling capability API"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_custom_derive_macro() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            "#[derive(ExternalReopenCapability)]\nstruct DERIVE_MACRO_TRIGGER;\n\nstruct ActorLogicalReadLease {",
+            1,
+        );
+        assert_ne!(hostile, source, "hostile derive fixture was not inserted");
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "a custom derive could generate a sibling capability API"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes() {
+        let source = include_str!("server.rs");
+        let hostile_items = [
+            "#[hostile_attr::external_reopen_capability]\nconst ATTRIBUTE_MACRO_TRIGGER: () = ();\n\n",
+            "#[cfg_attr(not(test), external_reopen_capability)]\nconst ATTRIBUTE_MACRO_TRIGGER: () = ();\n\n",
+            "#[derive(Clone, ExternalReopenCapability)]\nstruct DERIVE_MACRO_TRIGGER;\n\n",
+        ];
+        let hostile_imports = [
+            "use hostile_attr::ExternalReopenCapability as Clone;\n",
+            "use hostile_attr::*;\n",
+        ];
+        let mut accepted = Vec::new();
+        for item in hostile_items {
+            let hostile = source.replacen(
+                "struct ActorLogicalReadLease {",
+                &format!("{item}struct ActorLogicalReadLease {{"),
+                1,
+            );
+            if audit_actor_read_source_capability_api(&hostile).is_ok() {
+                accepted.push(item);
+            }
+        }
+        for import in hostile_imports {
+            let hostile = source.replacen(
+                "use super::identity::{CoreIdentity, DaemonStateDirectory};",
+                &format!("{import}use super::identity::{{CoreIdentity, DaemonStateDirectory}};"),
+                1,
+            );
+            if audit_actor_read_source_capability_api(&hostile).is_ok() {
+                accepted.push(import);
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "attribute macro evasion shapes escaped the capability audit: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_procedural_macros_can_reopen_sibling_api() {
+        let directory = tempfile::tempdir().unwrap();
+        let proc_macro_source = directory.path().join("hostile_attr.rs");
+        let proc_macro_library = directory.path().join(format!(
+            "{}hostile_attr{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+        std::fs::write(
+            &proc_macro_source,
+            r#"
+extern crate proc_macro;
+use proc_macro::TokenStream;
+
+#[proc_macro_attribute]
+pub fn external_reopen_capability(_attribute: TokenStream, item: TokenStream) -> TokenStream {
+    let mut output = item.to_string();
+    output.push_str(
+        "impl ActorReadSourceCapability { pub(super) fn forge_from_attribute() -> Self { Self } }",
+    );
+    output.parse().unwrap()
+}
+
+#[proc_macro_derive(ExternalReopenCapability)]
+pub fn external_reopen_capability_derive(_item: TokenStream) -> TokenStream {
+    "impl ActorReadSourceCapability { pub(super) fn forge_from_derive() -> Self { Self } }"
+        .parse()
+        .unwrap()
+}
+"#,
+        )
+        .unwrap();
+        let proc_macro_compile = std::process::Command::new("rustc")
+            .arg("--edition=2021")
+            .arg("--crate-type=proc-macro")
+            .arg("--crate-name")
+            .arg("hostile_attr")
+            .arg(&proc_macro_source)
+            .arg("-o")
+            .arg(&proc_macro_library)
+            .output()
+            .expect("rustc is available to compile the hostile procedural-macro crate");
+        assert!(
+            proc_macro_compile.status.success(),
+            "hostile procedural-macro crate did not compile: {}",
+            String::from_utf8_lossy(&proc_macro_compile.stderr)
+        );
+
+        let main_source = directory.path().join("main.rs");
+        let binary = directory
+            .path()
+            .join(format!("proc-macro-probe{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(
+            &main_source,
+            r#"
+use hostile_attr::ExternalReopenCapability as Clone;
+
+mod daemon {
+    mod owner {
+        use super::super::Clone;
+
+        pub(super) struct ActorReadSourceCapability;
+
+        #[hostile_attr::external_reopen_capability]
+        const ATTRIBUTE_MACRO_TRIGGER: () = ();
+
+        #[derive(Clone)]
+        struct DeriveMacroTrigger;
+    }
+
+    mod sibling {
+        pub(super) fn call_generated_apis() {
+            let _ = super::owner::ActorReadSourceCapability::forge_from_attribute();
+            let _ = super::owner::ActorReadSourceCapability::forge_from_derive();
+        }
+    }
+
+    pub(super) fn run() {
+        sibling::call_generated_apis();
+    }
+}
+
+fn main() {
+    daemon::run();
+}
+"#,
+        )
+        .unwrap();
+        let main_compile = std::process::Command::new("rustc")
+            .arg("--edition=2021")
+            .arg(&main_source)
+            .arg("--extern")
+            .arg(format!("hostile_attr={}", proc_macro_library.display()))
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("rustc is available to compile the sibling-call probe crate");
+        assert!(
+            main_compile.status.success(),
+            "procedural-macro sibling-call probe did not compile: {}",
+            String::from_utf8_lossy(&main_compile.stderr)
+        );
+        let run = std::process::Command::new(&binary)
+            .output()
+            .expect("procedural-macro sibling-call probe starts");
+        assert!(
+            run.status.success(),
+            "procedural-macro sibling-call probe failed: {}",
+            String::from_utf8_lossy(&run.stderr)
         );
     }
 
