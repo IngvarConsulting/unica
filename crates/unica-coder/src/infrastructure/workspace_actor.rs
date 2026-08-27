@@ -139,6 +139,9 @@ assert_not_impl_production!(RetainedSourceSelectionEvidence: serde::de::Deserial
 assert_not_impl_production!(CodeApplyAuthority<'static>: Clone);
 assert_not_impl_production!(CodeApplyAuthority<'static>: serde::Serialize);
 assert_not_impl_production!(CodeApplyAuthority<'static>: serde::de::DeserializeOwned);
+assert_not_impl_production!(XdtoApplyAuthority<'static>: Clone);
+assert_not_impl_production!(XdtoApplyAuthority<'static>: serde::Serialize);
+assert_not_impl_production!(XdtoApplyAuthority<'static>: serde::de::DeserializeOwned);
 assert_not_impl_production!(ActorRevisionServiceAuthority: Clone);
 assert_not_impl_production!(ActorRevisionServiceAuthority: serde::Serialize);
 assert_not_impl_production!(ActorRevisionServiceAuthority: serde::de::DeserializeOwned);
@@ -499,6 +502,39 @@ pub(crate) struct CodeApplyAuthority<'a> {
     support_policy: SupportPolicyMode,
 }
 
+/// Admission-sealed authority for dormant XDTO planning. It binds the same
+/// retained source, writer token, exact Platform XML profile and support
+/// evidence as the staged state it is allowed to plan.
+pub(crate) struct XdtoApplyAuthority<'a> {
+    binding: &'a ProviderRootBinding,
+    writer_authority: &'a ApplyWriterAuthority,
+    expected_format: &'static str,
+    support_policy: SupportPolicyMode,
+}
+
+impl XdtoApplyAuthority<'_> {
+    pub(crate) fn source_set_name(&self) -> &str {
+        self.binding.source_set_name()
+    }
+
+    pub(crate) const fn source_kind(&self) -> SourceSetKind {
+        self.binding.source_kind()
+    }
+
+    pub(crate) const fn expected_format(&self) -> &str {
+        self.expected_format
+    }
+
+    pub(crate) const fn support_policy_mode(&self) -> SupportPolicyMode {
+        self.support_policy
+    }
+
+    pub(crate) fn owns_staged_state(&self, staged: &ApplyStagedState) -> bool {
+        staged.retained_root_identity() == self.binding.source_root.identity()
+            && staged.has_writer_authority(self.writer_authority)
+    }
+}
+
 impl CodeApplyAuthority<'_> {
     pub(crate) fn source_set_name(&self) -> &str {
         self.binding.source_set_name()
@@ -647,6 +683,51 @@ impl ApplyAdmission {
             binding,
             writer_authority: &self.writer_authority,
             profile,
+            expected_format,
+            support_policy: self.support_policy.mode(),
+        })
+    }
+
+    pub(crate) fn xdto_planning_authority<'a>(
+        &'a self,
+        binding: &'a ProviderRootBinding,
+    ) -> Result<XdtoApplyAuthority<'a>, ApplyPlanError> {
+        if binding.actor_identity != self.actor_identity
+            || binding.actor_instance != self.actor_instance
+            || binding.source_set != self.source_set
+            || binding.source_root.path() != self.source_root.path()
+            || binding.source_root.identity() != self.source_root.identity()
+        {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                "XDTO planning binding does not belong to this apply admission",
+            ));
+        }
+        if binding.source_format() != SourceFormat::PlatformXml
+            || !matches!(
+                binding.source_kind(),
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+            || binding.source_profile()
+                != SourceProfile::platform_xml_8_3_27_format_2_20()
+        {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::ProviderUnavailable,
+                "admitted source does not provide writable Platform XML XDTO",
+            ));
+        }
+        let expected_format = binding
+            .source_profile()
+            .serialization_format()
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::ProviderUnavailable,
+                    "admitted source has no exact serialization profile",
+                )
+            })?;
+        Ok(XdtoApplyAuthority {
+            binding,
+            writer_authority: &self.writer_authority,
             expected_format,
             support_policy: self.support_policy.mode(),
         })

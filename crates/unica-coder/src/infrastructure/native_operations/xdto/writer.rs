@@ -76,18 +76,98 @@ pub(super) struct WriterFinding {
     pub(super) location: WriterFindingLocation,
 }
 
-pub(super) fn plan(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum WriterErrorCause {
+    BadValue,
+    NotFound,
+    AmbiguousTarget,
+    InvalidSource,
+    Postcondition,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum WriterErrorField {
+    Source,
+    TypeTarget,
+    PropertyPath,
+    PropertyName,
+}
+
+#[derive(Debug)]
+pub(super) struct WriterError {
+    cause: WriterErrorCause,
+    field: WriterErrorField,
+    legacy_message: String,
+}
+
+impl WriterError {
+    fn new(
+        cause: WriterErrorCause,
+        field: WriterErrorField,
+        legacy_message: impl Into<String>,
+    ) -> Self {
+        Self {
+            cause,
+            field,
+            legacy_message: legacy_message.into(),
+        }
+    }
+
+    pub(super) const fn cause(&self) -> WriterErrorCause {
+        self.cause
+    }
+
+    pub(super) const fn field(&self) -> WriterErrorField {
+        self.field
+    }
+}
+
+impl std::fmt::Display for WriterError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.legacy_message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for WriterError {}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum TypedWriterOperation<'a> {
+    AddValueType {
+        name: &'a str,
+        base: &'a str,
+    },
+    AddObjectType {
+        name: &'a str,
+    },
+    AddProperty {
+        type_name: &'a str,
+        name: &'a str,
+        type_ref: &'a str,
+        min_occurs: Option<u64>,
+        property_path: Option<&'a str>,
+    },
+    RemoveType {
+        name: &'a str,
+    },
+    RemoveProperty {
+        type_name: &'a str,
+        name: &'a str,
+        property_path: Option<&'a str>,
+    },
+}
+
+pub(super) fn plan_typed(
     before: &str,
-    args: &Map<String, Value>,
-    operation: &str,
-) -> Result<WriterPlan, String> {
-    let document = super::parse(before)?;
+    operation: TypedWriterOperation<'_>,
+) -> Result<WriterPlan, WriterError> {
+    let document = super::parse(before)
+        .map_err(|error| {
+            WriterError::new(WriterErrorCause::InvalidSource, WriterErrorField::Source, error)
+        })?;
     let root = document.root_element();
     let mut finding = None;
     let edit = match operation {
-        "add-value-type" => {
-            let name = super::required(args, "name")?;
-            let base = super::required(args, "base")?;
+        TypedWriterOperation::AddValueType { name, base } => {
             let desired_base = desired_qname(root, root, base);
             let existing = named_types(root, name);
             if !existing.is_empty() {
@@ -101,18 +181,21 @@ pub(super) fn plan(
                 ));
                 None
             } else {
-                let element_name = lexical_xdto_child_name(before, root, "valueType")?;
+                let element_name = lexical_xdto_child_name(before, root, "valueType")
+                    .map_err(writer_invalid_source)?;
                 let fragment = format!(
                     "<{element_name}{} name=\"{}\" base=\"{}\"/>",
                     desired_base.namespace_declaration(),
                     escape_attribute(name),
                     escape_attribute(&desired_base.raw)
                 );
-                Some(insert_top_level(before, root, TopLevelInsert::ValueType, &fragment)?)
+                Some(
+                    insert_top_level(before, root, TopLevelInsert::ValueType, &fragment)
+                        .map_err(writer_invalid_source)?,
+                )
             }
         }
-        "add-object-type" => {
-            let name = super::required(args, "name")?;
+        TypedWriterOperation::AddObjectType { name } => {
             let existing = named_types(root, name);
             if !existing.is_empty() {
                 let exact = existing.len() == 1 && compatible_empty_object_type(existing[0]);
@@ -124,29 +207,25 @@ pub(super) fn plan(
                 ));
                 None
             } else {
-                let element_name = lexical_xdto_child_name(before, root, "objectType")?;
+                let element_name = lexical_xdto_child_name(before, root, "objectType")
+                    .map_err(writer_invalid_source)?;
                 let fragment = format!("<{element_name} name=\"{}\"/>", escape_attribute(name));
-                Some(insert_top_level(before, root, TopLevelInsert::ObjectType, &fragment)?)
+                Some(
+                    insert_top_level(before, root, TopLevelInsert::ObjectType, &fragment)
+                        .map_err(writer_invalid_source)?,
+                )
             }
         }
-        "add-property" => {
-            let type_name = super::required(args, "typeName")?;
-            let property = args
-                .get("property")
-                .and_then(Value::as_object)
-                .ok_or_else(|| "property must be an object".to_string())?;
-            let name = object_string(property, "name")?;
-            let type_name_value = object_string(property, "type")?;
-            let target = property_target(
-                root,
-                type_name,
-                args.get("propertyPath").and_then(Value::as_str),
-            )?;
-            let desired_qname = desired_qname(root, target, type_name_value);
-            let desired_lower = property
-                .get("minOccurs")
-                .and_then(Value::as_u64)
-                .map_or_else(|| "1".to_string(), |value| value.to_string());
+        TypedWriterOperation::AddProperty {
+            type_name,
+            name,
+            type_ref,
+            min_occurs,
+            property_path,
+        } => {
+            let target = property_target(root, type_name, property_path)?;
+            let desired_qname = desired_qname(root, target, type_ref);
+            let desired_lower = min_occurs.map_or_else(|| "1".to_string(), |value| value.to_string());
             let existing = direct_named_properties(target, name);
             if !existing.is_empty() {
                 let exact = existing.len() == 1
@@ -159,49 +238,116 @@ pub(super) fn plan(
                 ));
                 None
             } else {
-                let lower = property
-                    .get("minOccurs")
-                    .and_then(Value::as_u64)
+                let lower = min_occurs
                     .map(|value| format!(" lowerBound=\"{value}\""))
                     .unwrap_or_default();
-                let element_name = lexical_xdto_child_name(before, target, "property")?;
+                let element_name = lexical_xdto_child_name(before, target, "property")
+                    .map_err(writer_invalid_source)?;
                 let fragment = format!(
                     "<{element_name}{} name=\"{}\" type=\"{}\"{lower}/>",
                     desired_qname.namespace_declaration(),
                     escape_attribute(name),
                     escape_attribute(&desired_qname.raw)
                 );
-                Some(insert_child(before, target, &fragment)?)
+                Some(insert_child(before, target, &fragment).map_err(writer_invalid_source)?)
             }
         }
-        "remove-type" => {
-            let name = super::required(args, "name")?;
-            let matches = named_types(root, name);
-            let node = exactly_one(matches, "type")?;
-            Some(remove_node(before, node))
-        }
-        "remove-property" => {
-            let target = property_target(
-                root,
-                super::required(args, "typeName")?,
-                args.get("propertyPath").and_then(Value::as_str),
+        TypedWriterOperation::RemoveType { name } => {
+            let node = exactly_one(
+                named_types(root, name),
+                "type",
+                WriterErrorField::TypeTarget,
             )?;
-            let name = super::required(args, "name")?;
-            let matches = direct_named_properties(target, name);
-            let node = exactly_one(matches, "property")?;
             Some(remove_node(before, node))
         }
-        _ => {
-            return Err("unsupported_node: supported operations are add-value-type, add-object-type, add-property, remove-type, remove-property".to_string())
+        TypedWriterOperation::RemoveProperty {
+            type_name,
+            name,
+            property_path,
+        } => {
+            let target = property_target(root, type_name, property_path)?;
+            let node = exactly_one(
+                direct_named_properties(target, name),
+                "property",
+                WriterErrorField::PropertyName,
+            )?;
+            Some(remove_node(before, node))
         }
     };
     let edits = edit.into_iter().collect::<Vec<_>>();
-    let after = apply_edits(before, &edits)?;
+    let after = apply_edits(before, &edits).map_err(writer_postcondition)?;
     Ok(WriterPlan {
         after,
         edits,
         finding,
     })
+}
+
+pub(super) fn plan(
+    before: &str,
+    args: &Map<String, Value>,
+    operation: &str,
+) -> Result<WriterPlan, String> {
+    let typed = match operation {
+        "add-value-type" => {
+            let name = super::required(args, "name")?;
+            let base = super::required(args, "base")?;
+            TypedWriterOperation::AddValueType { name, base }
+        }
+        "add-object-type" => {
+            let name = super::required(args, "name")?;
+            TypedWriterOperation::AddObjectType { name }
+        }
+        "add-property" => {
+            let type_name = super::required(args, "typeName")?;
+            let property = args
+                .get("property")
+                .and_then(Value::as_object)
+                .ok_or_else(|| "property must be an object".to_string())?;
+            let name = object_string(property, "name")?;
+            let type_ref = object_string(property, "type")?;
+            TypedWriterOperation::AddProperty {
+                type_name,
+                name,
+                type_ref,
+                min_occurs: property.get("minOccurs").and_then(Value::as_u64),
+                property_path: args.get("propertyPath").and_then(Value::as_str),
+            }
+        }
+        "remove-type" => {
+            let name = super::required(args, "name")?;
+            TypedWriterOperation::RemoveType { name }
+        }
+        "remove-property" => {
+            let type_name = super::required(args, "typeName")?;
+            let name = super::required(args, "name")?;
+            TypedWriterOperation::RemoveProperty {
+                type_name,
+                name,
+                property_path: args.get("propertyPath").and_then(Value::as_str),
+            }
+        }
+        _ => {
+            return Err("unsupported_node: supported operations are add-value-type, add-object-type, add-property, remove-type, remove-property".to_string())
+        }
+    };
+    plan_typed(before, typed).map_err(|error| error.to_string())
+}
+
+fn writer_postcondition(message: String) -> WriterError {
+    WriterError::new(
+        WriterErrorCause::Postcondition,
+        WriterErrorField::Source,
+        message,
+    )
+}
+
+fn writer_invalid_source(message: String) -> WriterError {
+    WriterError::new(
+        WriterErrorCause::InvalidSource,
+        WriterErrorField::Source,
+        message,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -648,35 +794,69 @@ fn property_target<'a>(
     root: Node<'a, 'a>,
     type_name: &str,
     property_path: Option<&str>,
-) -> Result<Node<'a, 'a>, String> {
+) -> Result<Node<'a, 'a>, WriterError> {
     let matching = named_types(root, type_name);
     let mut target = match matching.as_slice() {
-        [] => return Err("target_not_found: type does not exist".to_string()),
+        [] => {
+            return Err(WriterError::new(
+                WriterErrorCause::NotFound,
+                WriterErrorField::TypeTarget,
+                "target_not_found: type does not exist",
+            ))
+        }
         [node] if node.has_tag_name((XDTO_NS, "objectType")) => *node,
         [node] if node.has_tag_name((XDTO_NS, "valueType")) => {
-            return Err("unsupported_node: properties can be added only to objectType".to_string())
+            return Err(WriterError::new(
+                WriterErrorCause::BadValue,
+                WriterErrorField::TypeTarget,
+                "unsupported_node: properties can be added only to objectType",
+            ))
         }
-        [_] => return Err("unsupported_node: property target kind is unsupported".to_string()),
-        _ => return Err("unsupported_node: named type identity is ambiguous".to_string()),
+        [_] => {
+            return Err(WriterError::new(
+                WriterErrorCause::InvalidSource,
+                WriterErrorField::TypeTarget,
+                "unsupported_node: property target kind is unsupported",
+            ))
+        }
+        _ => {
+            return Err(WriterError::new(
+                WriterErrorCause::AmbiguousTarget,
+                WriterErrorField::TypeTarget,
+                "unsupported_node: named type identity is ambiguous",
+            ))
+        }
     };
     let segments = strict_property_path(property_path)?;
     for segment in segments {
         let properties = direct_named_properties(target, &segment);
-        let property = exactly_one(properties, "property path segment")?;
+        let property = exactly_one(
+            properties,
+            "property path segment",
+            WriterErrorField::PropertyPath,
+        )?;
         let type_defs = property
             .children()
             .filter(|child| child.has_tag_name((XDTO_NS, "typeDef")))
             .collect::<Vec<_>>();
         target = match type_defs.as_slice() {
             [] => {
-                return Err(format!(
-                    "target_not_found: property path segment `{segment}` has no nested typeDef:ObjectType"
+                return Err(WriterError::new(
+                    WriterErrorCause::NotFound,
+                    WriterErrorField::PropertyPath,
+                    format!(
+                        "target_not_found: property path segment `{segment}` has no nested typeDef:ObjectType"
+                    ),
                 ))
             }
             [type_def] if type_def.attribute((XSI_NS, "type")) == Some("ObjectType") => *type_def,
             _ => {
-                return Err(format!(
-                    "unsupported_node: property path segment `{segment}` must own exactly one typeDef with xsi:type=\"ObjectType\""
+                return Err(WriterError::new(
+                    WriterErrorCause::InvalidSource,
+                    WriterErrorField::PropertyPath,
+                    format!(
+                        "unsupported_node: property path segment `{segment}` must own exactly one typeDef with xsi:type=\"ObjectType\""
+                    ),
                 ))
             }
         };
@@ -684,14 +864,15 @@ fn property_target<'a>(
     Ok(target)
 }
 
-fn strict_property_path(property_path: Option<&str>) -> Result<Vec<String>, String> {
+fn strict_property_path(property_path: Option<&str>) -> Result<Vec<String>, WriterError> {
     let Some(path) = property_path else {
         return Ok(Vec::new());
     };
-    let invalid = || {
-        "property_path_invalid: propertyPath must contain dot-separated XML NCNames and escape literal dots as `\\.`"
-            .to_string()
-    };
+    let invalid = || WriterError::new(
+        WriterErrorCause::BadValue,
+        WriterErrorField::PropertyPath,
+        "property_path_invalid: propertyPath must contain dot-separated XML NCNames and escape literal dots as `\\.`",
+    );
     if path.is_empty() {
         return Err(invalid());
     }
@@ -741,11 +922,23 @@ fn direct_named_properties<'a>(target: Node<'a, 'a>, name: &str) -> Vec<Node<'a,
         .collect()
 }
 
-fn exactly_one<'a>(nodes: Vec<Node<'a, 'a>>, noun: &str) -> Result<Node<'a, 'a>, String> {
+fn exactly_one<'a>(
+    nodes: Vec<Node<'a, 'a>>,
+    noun: &str,
+    field: WriterErrorField,
+) -> Result<Node<'a, 'a>, WriterError> {
     match nodes.as_slice() {
-        [] => Err(format!("target_not_found: {noun} does not exist")),
+        [] => Err(WriterError::new(
+            WriterErrorCause::NotFound,
+            field,
+            format!("target_not_found: {noun} does not exist"),
+        )),
         [node] => Ok(*node),
-        _ => Err(format!("unsupported_node: {noun} identity is ambiguous")),
+        _ => Err(WriterError::new(
+            WriterErrorCause::AmbiguousTarget,
+            field,
+            format!("unsupported_node: {noun} identity is ambiguous"),
+        )),
     }
 }
 
