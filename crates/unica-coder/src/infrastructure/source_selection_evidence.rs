@@ -21,6 +21,7 @@ const MAX_ACTOR_ROUTE_AND_NAME_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Clone, Copy)]
 struct SelectionEvidenceBudgets {
     exact_bytes: usize,
+    exact_work_bytes: usize,
     evidence_records: usize,
     enumerated_members: usize,
     unique_directories: usize,
@@ -31,6 +32,7 @@ impl SelectionEvidenceBudgets {
     fn actor_admission() -> Self {
         let production = Self {
             exact_bytes: MAX_ACTOR_EXACT_RETAINED_BYTES,
+            exact_work_bytes: MAX_ACTOR_EXACT_RETAINED_BYTES,
             evidence_records: MAX_ACTOR_EVIDENCE_RECORDS,
             enumerated_members: MAX_ACTOR_ENUMERATED_MEMBERS,
             unique_directories: MAX_ACTOR_UNIQUE_RETAINED_DIRECTORIES,
@@ -40,6 +42,7 @@ impl SelectionEvidenceBudgets {
         if let Some(test) = actor_selection_test_budgets() {
             return Self {
                 exact_bytes: test.exact_bytes,
+                exact_work_bytes: test.exact_work_bytes,
                 evidence_records: test.evidence_records,
                 enumerated_members: test.enumerated_members,
                 unique_directories: test.unique_directories,
@@ -52,7 +55,8 @@ impl SelectionEvidenceBudgets {
 
 struct SelectionEvidenceUsage {
     budgets: SelectionEvidenceBudgets,
-    exact_bytes: usize,
+    exact_retained_bytes: usize,
+    exact_work_bytes: usize,
     evidence_records: usize,
     enumerated_members: usize,
     unique_directories: usize,
@@ -63,7 +67,8 @@ impl SelectionEvidenceUsage {
     fn actor_admission() -> Self {
         Self {
             budgets: SelectionEvidenceBudgets::actor_admission(),
-            exact_bytes: 0,
+            exact_retained_bytes: 0,
+            exact_work_bytes: 0,
             evidence_records: 0,
             enumerated_members: 0,
             unique_directories: 0,
@@ -73,7 +78,7 @@ impl SelectionEvidenceUsage {
 
     fn ensure_exact_bytes(&self, bytes: usize) -> Result<(), String> {
         ensure_budget(
-            self.exact_bytes,
+            self.exact_retained_bytes,
             bytes,
             self.budgets.exact_bytes,
             "project source-map actor exact-byte budget",
@@ -82,7 +87,19 @@ impl SelectionEvidenceUsage {
     }
 
     fn commit_exact_bytes(&mut self, bytes: usize) {
-        self.exact_bytes += bytes;
+        self.exact_retained_bytes += bytes;
+    }
+
+    fn charge_exact_work(&mut self, bytes: usize) -> Result<(), String> {
+        ensure_budget(
+            self.exact_work_bytes,
+            bytes,
+            self.budgets.exact_work_bytes,
+            "project source-map actor exact-work budget",
+            "bytes",
+        )?;
+        self.exact_work_bytes += bytes;
+        Ok(())
     }
 
     fn ensure_records(&self, records: usize) -> Result<(), String> {
@@ -117,6 +134,24 @@ impl SelectionEvidenceUsage {
         self.budgets
             .enumerated_members
             .saturating_sub(self.enumerated_members)
+    }
+
+    fn remaining_records(&self) -> usize {
+        self.budgets
+            .evidence_records
+            .saturating_sub(self.evidence_records)
+    }
+
+    fn remaining_directories(&self) -> usize {
+        self.budgets
+            .unique_directories
+            .saturating_sub(self.unique_directories)
+    }
+
+    fn remaining_route_and_name_bytes(&self) -> usize {
+        self.budgets
+            .route_and_name_bytes
+            .saturating_sub(self.route_and_name_bytes)
     }
 
     fn ensure_directory(&self, route_bytes: usize) -> Result<(), String> {
@@ -180,6 +215,7 @@ fn retained_name_bytes(name: &std::ffi::OsStr) -> usize {
 #[derive(Clone, Copy)]
 struct ActorSelectionTestBudgets {
     exact_bytes: usize,
+    exact_work_bytes: usize,
     evidence_records: usize,
     enumerated_members: usize,
     unique_directories: usize,
@@ -191,6 +227,7 @@ impl ActorSelectionTestBudgets {
     const fn generous() -> Self {
         Self {
             exact_bytes: usize::MAX,
+            exact_work_bytes: usize::MAX,
             evidence_records: usize::MAX,
             enumerated_members: usize::MAX,
             unique_directories: usize::MAX,
@@ -208,6 +245,24 @@ thread_local! {
         std::cell::RefCell::new(None)
     };
     static REGULAR_PATH_CHILD_OPEN_ATTEMPTS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+    static REGULAR_EXACT_READ_ATTEMPTS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+    static REGULAR_EXACT_READ_BYTES: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+    static REGULAR_EXACT_MAX_BUFFER_BYTES: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+    static REGULAR_EXACT_AFTER_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
+        std::cell::RefCell::new(None)
+    };
+    static MEMBERSHIP_ENUMERATION_ATTEMPTS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+    static MEMBERSHIP_CHILD_OPEN_ATTEMPTS: std::cell::Cell<usize> = const {
         std::cell::Cell::new(0)
     };
 }
@@ -283,6 +338,92 @@ fn regular_path_child_open_attempts() -> usize {
     REGULAR_PATH_CHILD_OPEN_ATTEMPTS.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
+fn reset_regular_exact_read_metrics() {
+    REGULAR_EXACT_READ_ATTEMPTS.with(|attempts| attempts.set(0));
+    REGULAR_EXACT_READ_BYTES.with(|bytes| bytes.set(0));
+    REGULAR_EXACT_MAX_BUFFER_BYTES.with(|bytes| bytes.set(0));
+}
+
+#[cfg(test)]
+fn record_regular_exact_read_attempt() {
+    REGULAR_EXACT_READ_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+}
+
+#[cfg(test)]
+fn record_regular_exact_read_bytes(bytes: usize) {
+    REGULAR_EXACT_READ_BYTES.with(|observed| observed.set(observed.get() + bytes));
+}
+
+#[cfg(test)]
+fn record_regular_exact_buffer_bytes(bytes: usize) {
+    REGULAR_EXACT_MAX_BUFFER_BYTES.with(|observed| observed.set(observed.get().max(bytes)));
+}
+
+#[cfg(test)]
+fn regular_exact_read_metrics() -> (usize, usize, usize) {
+    (
+        REGULAR_EXACT_READ_ATTEMPTS.with(std::cell::Cell::get),
+        REGULAR_EXACT_READ_BYTES.with(std::cell::Cell::get),
+        REGULAR_EXACT_MAX_BUFFER_BYTES.with(std::cell::Cell::get),
+    )
+}
+
+#[cfg(test)]
+struct RegularExactAfterReadHookGuard;
+
+#[cfg(test)]
+impl Drop for RegularExactAfterReadHookGuard {
+    fn drop(&mut self) {
+        REGULAR_EXACT_AFTER_READ_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+#[cfg(test)]
+fn install_regular_exact_after_read_hook(
+    hook: impl FnOnce() + 'static,
+) -> RegularExactAfterReadHookGuard {
+    REGULAR_EXACT_AFTER_READ_HOOK.with(|slot| {
+        assert!(slot.borrow_mut().replace(Box::new(hook)).is_none());
+    });
+    RegularExactAfterReadHookGuard
+}
+
+#[cfg(test)]
+fn run_regular_exact_after_read_hook() {
+    REGULAR_EXACT_AFTER_READ_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn reset_membership_test_metrics() {
+    MEMBERSHIP_ENUMERATION_ATTEMPTS.with(|attempts| attempts.set(0));
+    MEMBERSHIP_CHILD_OPEN_ATTEMPTS.with(|attempts| attempts.set(0));
+}
+
+#[cfg(test)]
+fn record_membership_enumeration_attempt() {
+    MEMBERSHIP_ENUMERATION_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+}
+
+#[cfg(test)]
+fn record_membership_child_open_attempt() {
+    MEMBERSHIP_CHILD_OPEN_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+}
+
+#[cfg(test)]
+fn membership_test_metrics() -> (usize, usize) {
+    (
+        MEMBERSHIP_ENUMERATION_ATTEMPTS.with(std::cell::Cell::get),
+        MEMBERSHIP_CHILD_OPEN_ATTEMPTS.with(std::cell::Cell::get),
+    )
+}
+
 pub(in crate::infrastructure) struct ResolvedProjectSourceAdmission {
     map: ProjectSourceMap,
     evidence: RetainedSourceSelectionEvidence,
@@ -323,6 +464,12 @@ enum RetainedPathObservation {
         name: OsString,
         identity: FileIdentity,
         bytes: Option<Arc<[u8]>>,
+    },
+    OversizedRegularFile {
+        parent: PathBuf,
+        name: OsString,
+        identity: FileIdentity,
+        maximum: usize,
     },
     UnresolvedRoute {
         ancestor: PathBuf,
@@ -366,6 +513,12 @@ enum SnapshotPathObservation {
         identity: FileIdentity,
         bytes: Option<Arc<[u8]>>,
     },
+    OversizedRegularFile {
+        parent: PathBuf,
+        name: OsString,
+        identity: FileIdentity,
+        maximum: usize,
+    },
     UnresolvedRoute {
         ancestor: PathBuf,
         route: Vec<OsString>,
@@ -376,6 +529,7 @@ enum SnapshotPathObservation {
 pub(in crate::infrastructure) enum RetainedRegularObservation {
     Exact(Arc<[u8]>),
     Present,
+    Oversized,
     Absent,
     WrongKind,
 }
@@ -628,6 +782,34 @@ impl RetainedSelectionPass {
                     )
                 })?;
                 let parent = relative_prefix(&components, parents.len());
+                let identity = file.identity();
+                let (existing_bytes, existing_oversized) = match self.paths.get(relative) {
+                    Some(RetainedPathObservation::RegularFile {
+                        parent: expected_parent,
+                        name: expected_name,
+                        identity: expected_identity,
+                        bytes,
+                    }) if *expected_parent == parent
+                        && *expected_name == *name
+                        && *expected_identity == identity =>
+                    {
+                        (Some(bytes.clone()), false)
+                    }
+                    Some(RetainedPathObservation::OversizedRegularFile {
+                        parent: expected_parent,
+                        name: expected_name,
+                        identity: expected_identity,
+                        maximum,
+                    }) if *expected_parent == parent
+                        && *expected_name == *name
+                        && *expected_identity == identity
+                        && *maximum == max_bytes =>
+                    {
+                        (None, true)
+                    }
+                    Some(_) => return Err(observation_changed(relative)),
+                    None => (None, false),
+                };
                 let bytes = if capture_bytes {
                     let file_bytes = usize::try_from(
                         file.try_clone_file()
@@ -646,17 +828,43 @@ impl RetainedSelectionPass {
                             relative.display()
                         )
                     })?;
+                    self.usage.charge_exact_work(file_bytes)?;
                     if file_bytes > max_bytes {
-                        return Err(format!(
-                            "project source-map input exceeds {max_bytes} bytes"
-                        ));
+                        file.validate_named_identity().map_err(|error| {
+                            format!(
+                                "project source-map input {} identity changed after length probe: {error}",
+                                relative.display()
+                            )
+                        })?;
+                        drop(file);
+                        self.record_oversized_regular(
+                            relative,
+                            parent,
+                            name.clone(),
+                            identity,
+                            max_bytes,
+                        )?;
+                        return Ok(RetainedRegularObservation::Oversized);
                     }
-                    if !self.paths.contains_key(relative) {
+                    if existing_oversized {
+                        return Err(observation_changed(relative));
+                    }
+                    if let Some(Some(canonical)) = existing_bytes {
+                        if !stream_regular_exact_matches(
+                            &file,
+                            canonical.as_ref(),
+                            max_bytes,
+                            checkpoint,
+                        )? {
+                            return Err(observation_changed(relative));
+                        }
+                        Some(canonical)
+                    } else {
                         self.usage.ensure_exact_bytes(file_bytes)?;
+                        Some(Arc::<[u8]>::from(read_regular_exact(
+                            &file, max_bytes, checkpoint,
+                        )?))
                     }
-                    Some(Arc::<[u8]>::from(read_regular_exact(
-                        &file, max_bytes, checkpoint,
-                    )?))
                 } else {
                     None
                 };
@@ -666,7 +874,6 @@ impl RetainedSelectionPass {
                         relative.display()
                     )
                 })?;
-                let identity = file.identity();
                 drop(file);
                 self.record_regular(
                     relative,
@@ -789,20 +996,25 @@ impl RetainedSelectionPass {
         })?;
         let new_membership = !self.memberships.contains_key(relative);
         if new_membership {
-            self.usage.ensure_records(1)?;
-            self.usage
-                .ensure_route_bytes(retained_route_bytes(relative))?;
+            let requested_records = 1_usize.saturating_add(limit);
+            if requested_records > self.usage.remaining_records() {
+                self.usage.ensure_records(requested_records)?;
+            }
+            let minimum_requested_route_bytes =
+                retained_route_bytes(relative).saturating_add(limit);
+            if minimum_requested_route_bytes > self.usage.remaining_route_and_name_bytes() {
+                self.usage
+                    .ensure_route_bytes(minimum_requested_route_bytes)?;
+            }
         }
         let remaining_members = self.usage.remaining_members();
-        if remaining_members == 0 {
-            return Err(format!(
-                "project source-map actor enumerated-member budget exceeds {} entries",
-                self.usage.budgets.enumerated_members
-            ));
+        if limit > remaining_members {
+            self.usage.ensure_members(limit)?;
         }
-        let global_bounded_limit = remaining_members.saturating_add(1);
-        let enumeration_limit = limit.min(global_bounded_limit);
+        let enumeration_limit = limit.saturating_add(1);
         let mut checkpoint_error = None;
+        #[cfg(test)]
+        record_membership_enumeration_attempt();
         let names =
             directory.read_immediate_names_bounded(enumeration_limit, || match checkpoint() {
                 Ok(()) => Ok(()),
@@ -818,7 +1030,7 @@ impl RetainedSelectionPass {
             return Err(reason);
         }
         let names = names.map_err(|error| {
-            if global_bounded_limit <= limit {
+            if limit == remaining_members {
                 format!(
                     "project source-map actor enumerated-member budget exceeds {} entries",
                     self.usage.budgets.enumerated_members
@@ -846,9 +1058,18 @@ impl RetainedSelectionPass {
         let mut result = Vec::with_capacity(names.len());
         for name in names {
             checkpoint()?;
+            let child_route = relative.join(&name);
+            if !self.directories.contains_key(&child_route)
+                && self.usage.remaining_directories() == 0
+            {
+                self.usage
+                    .ensure_directory(retained_route_bytes(&child_route))?;
+            }
+            #[cfg(test)]
+            record_membership_child_open_attempt();
             let (kind, child_directory) = match directory.retain_immediate_child_nofollow(&name) {
                 Ok(RetainedChildCapability::Directory(child)) => {
-                    self.record_directory(relative.join(&name), child.clone())?;
+                    self.record_directory(child_route, child.clone())?;
                     (SelectionMemberKind::Directory, Some(child))
                 }
                 Ok(RetainedChildCapability::RegularFile(_)) => {
@@ -1054,6 +1275,51 @@ impl RetainedSelectionPass {
         }
     }
 
+    fn record_oversized_regular(
+        &mut self,
+        relative: &Path,
+        parent: PathBuf,
+        name: OsString,
+        identity: FileIdentity,
+        maximum: usize,
+    ) -> Result<(), String> {
+        let existing_matches = matches!(
+            self.paths.get(relative),
+            Some(RetainedPathObservation::OversizedRegularFile {
+                parent: expected_parent,
+                name: expected_name,
+                identity: expected_identity,
+                maximum: expected_maximum,
+            }) if *expected_parent == parent
+                && *expected_name == name
+                && *expected_identity == identity
+                && *expected_maximum == maximum
+        );
+        match self.paths.get(relative) {
+            Some(_) if existing_matches => Ok(()),
+            Some(_) => Err(observation_changed(relative)),
+            None => {
+                let route_bytes = retained_route_bytes(relative)
+                    .saturating_add(retained_route_bytes(&parent))
+                    .saturating_add(retained_name_bytes(&name));
+                self.usage.ensure_records(1)?;
+                self.usage.ensure_route_bytes(route_bytes)?;
+                self.paths.insert(
+                    relative.to_path_buf(),
+                    RetainedPathObservation::OversizedRegularFile {
+                        parent,
+                        name,
+                        identity,
+                        maximum,
+                    },
+                );
+                self.usage.commit_records(1);
+                self.usage.commit_route_bytes(route_bytes);
+                Ok(())
+            }
+        }
+    }
+
     fn into_snapshot(self) -> SelectionPassSnapshot {
         SelectionPassSnapshot {
             workspace: self.workspace.identity(),
@@ -1078,6 +1344,17 @@ impl RetainedSelectionPass {
                             identity,
                             bytes,
                         },
+                        RetainedPathObservation::OversizedRegularFile {
+                            parent,
+                            name,
+                            identity,
+                            maximum,
+                        } => SnapshotPathObservation::OversizedRegularFile {
+                            parent,
+                            name,
+                            identity,
+                            maximum,
+                        },
                         RetainedPathObservation::UnresolvedRoute {
                             ancestor,
                             route,
@@ -1101,7 +1378,8 @@ impl RetainedSelectionPass {
             .paths
             .values()
             .fold((0, 0), |counts, input| match input {
-                RetainedPathObservation::RegularFile { .. } => (counts.0 + 1, counts.1),
+                RetainedPathObservation::RegularFile { .. }
+                | RetainedPathObservation::OversizedRegularFile { .. } => (counts.0 + 1, counts.1),
                 RetainedPathObservation::UnresolvedRoute { .. } => (counts.0, counts.1 + 1),
             });
         (
@@ -1289,6 +1567,27 @@ fn snapshot_path_matches(
             }
         }
         (
+            SnapshotPathObservation::OversizedRegularFile {
+                parent: left_parent,
+                name: left_name,
+                identity: left_identity,
+                maximum: left_maximum,
+            },
+            RetainedPathObservation::OversizedRegularFile {
+                parent: right_parent,
+                name: right_name,
+                identity: right_identity,
+                maximum: right_maximum,
+            },
+        ) => Ok(*left_identity == *right_identity
+            && *left_maximum == *right_maximum
+            && checkpointed_path_equal(left_parent, right_parent, checkpoint)?
+            && checkpointed_bytes_equal(
+                left_name.as_encoded_bytes(),
+                right_name.as_encoded_bytes(),
+                checkpoint,
+            )?),
+        (
             SnapshotPathObservation::UnresolvedRoute {
                 ancestor: left_ancestor,
                 route: left_route,
@@ -1442,6 +1741,59 @@ impl RetainedSourceSelectionEvidence {
                     }
                     if let Some(bytes) = bytes {
                         validate_regular_bytes(&file, bytes, deadline, cancellation)?;
+                    }
+                    file.validate_named_identity_relative()
+                        .map_err(changed_identity)?;
+                    drop(file);
+                    parent.validate_named_identity().map_err(changed_identity)?;
+                }
+                RetainedPathObservation::OversizedRegularFile {
+                    parent,
+                    name,
+                    identity,
+                    maximum,
+                } => {
+                    let parent = self.directories.get(parent).ok_or_else(|| {
+                        SourceSelectionEvidenceError::provider(
+                            "project source-map retained oversized-file parent authority is unavailable",
+                        )
+                    })?;
+                    parent.validate_named_identity().map_err(changed_identity)?;
+                    let file = match parent.retain_immediate_child_nofollow(name) {
+                        Ok(RetainedChildCapability::RegularFile(file)) => file,
+                        Ok(_) => {
+                            return Err(SourceSelectionEvidenceError::changed(
+                                "project source-map oversized terminal file kind changed",
+                            ));
+                        }
+                        Err(error)
+                            if error.kind() == ErrorKind::NotFound
+                                || open_error_is_wrong_kind(&error) =>
+                        {
+                            return Err(SourceSelectionEvidenceError::changed(
+                                "project source-map oversized terminal file changed",
+                            ));
+                        }
+                        Err(error) => {
+                            return Err(SourceSelectionEvidenceError::provider(format!(
+                                "project source-map oversized terminal file cannot be reopened: {error}"
+                            )));
+                        }
+                    };
+                    if file.identity() != *identity {
+                        return Err(SourceSelectionEvidenceError::changed(
+                            "project source-map oversized terminal file identity changed",
+                        ));
+                    }
+                    let current_length = file
+                        .try_clone_file()
+                        .and_then(|file| file.metadata())
+                        .map_err(changed_identity)?
+                        .len();
+                    if current_length <= *maximum as u64 {
+                        return Err(SourceSelectionEvidenceError::changed(
+                            "project source-map oversized terminal classification changed",
+                        ));
                     }
                     file.validate_named_identity_relative()
                         .map_err(changed_identity)?;
@@ -1641,11 +1993,45 @@ fn open_error_is_wrong_kind(error: &std::io::Error) -> bool {
     ) || is_link_loop_error(error)
 }
 
+fn stream_regular_exact_matches(
+    file: &RetainedRegularFileCapability,
+    expected: &[u8],
+    max_bytes: usize,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<bool, String> {
+    let mut file = file
+        .try_clone_file()
+        .map_err(|error| format!("project source-map input cannot be cloned: {error}"))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("project source-map input cannot be rewound: {error}"))?;
+    let mut chunk = [0_u8; SELECTION_READ_CHUNK_BYTES];
+    let mut offset = 0_usize;
+    loop {
+        checkpoint()?;
+        let read = file
+            .read(&mut chunk)
+            .map_err(|error| format!("project source-map input cannot be read: {error}"))?;
+        if read == 0 {
+            return Ok(offset == expected.len());
+        }
+        let Some(end) = offset.checked_add(read) else {
+            return Ok(false);
+        };
+        if end > max_bytes || end > expected.len() || chunk[..read] != expected[offset..end] {
+            return Ok(false);
+        }
+        offset = end;
+        checkpoint()?;
+    }
+}
+
 fn read_regular_exact(
     file: &RetainedRegularFileCapability,
     max_bytes: usize,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<Vec<u8>, String> {
+    #[cfg(test)]
+    record_regular_exact_read_attempt();
     let mut file = file
         .try_clone_file()
         .map_err(|error| format!("project source-map input cannot be cloned: {error}"))?;
@@ -1661,12 +2047,23 @@ fn read_regular_exact(
         if read == 0 {
             break;
         }
-        bytes.extend_from_slice(&chunk[..read]);
-        if bytes.len() > max_bytes {
+        #[cfg(test)]
+        {
+            record_regular_exact_read_bytes(read);
+            run_regular_exact_after_read_hook();
+        }
+        let next_len = bytes
+            .len()
+            .checked_add(read)
+            .ok_or_else(|| format!("project source-map input exceeds {max_bytes} bytes"))?;
+        if next_len > max_bytes {
             return Err(format!(
                 "project source-map input exceeds {max_bytes} bytes"
             ));
         }
+        bytes.extend_from_slice(&chunk[..read]);
+        #[cfg(test)]
+        record_regular_exact_buffer_bytes(bytes.len());
         checkpoint()?;
     }
     Ok(bytes)
@@ -1825,6 +2222,43 @@ pub(crate) mod tests {
     }
 
     #[test]
+    pub(crate) fn actor_admission_charges_repeated_exact_work_before_second_read() {
+        let root = tempfile::tempdir().unwrap();
+        let config = concat!(
+            "format: EDT\n",
+            "source-set:\n",
+            "  - name: first\n    type: EXTERNAL_DATA_PROCESSORS\n    path: shared\n",
+            "  - name: second\n    type: EXTERNAL_DATA_PROCESSORS\n    path: shared\n",
+        );
+        write(&root.path().join("v8project.yaml"), config);
+        write(&root.path().join("shared/ConfigDumpInfo.xml"), b"12345678");
+        let exact_work_limit = config.len() + 8;
+        let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
+            exact_work_bytes: exact_work_limit,
+            ..ActorSelectionTestBudgets::generous()
+        });
+        reset_regular_exact_read_metrics();
+        let mut checkpoint = || Ok(());
+
+        let error = discover_project_source_admission(root.path(), &mut checkpoint)
+            .expect_err("second source-set exact observation escaped the pass-global work budget");
+
+        assert_eq!(
+            error,
+            format!("project source-map actor exact-work budget exceeds {exact_work_limit} bytes")
+        );
+        let (attempts, bytes, _) = regular_exact_read_metrics();
+        assert_eq!(
+            attempts, 2,
+            "second exact observation started a content read"
+        );
+        assert_eq!(
+            bytes, exact_work_limit,
+            "second exact observation read content before work-budget rejection"
+        );
+    }
+
+    #[test]
     pub(crate) fn actor_admission_bounds_unique_retained_directories_without_ulimit() {
         let root = tempfile::tempdir().unwrap();
         write(
@@ -1974,6 +2408,134 @@ pub(crate) mod tests {
             "project source-map actor evidence-record budget exceeds 1 entries"
         );
         assert_eq!(checkpoints, 0, "membership was enumerated before rejection");
+    }
+
+    #[test]
+    pub(crate) fn retained_selection_pass_checks_remaining_record_capacity_before_enumeration() {
+        let root = tempfile::tempdir().unwrap();
+        write(&root.path().join("a"), b"a");
+        write(&root.path().join("b"), b"b");
+        let workspace =
+            RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
+                .unwrap();
+        let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
+            evidence_records: 2,
+            ..ActorSelectionTestBudgets::generous()
+        });
+        let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
+        reset_membership_test_metrics();
+        let mut checkpoint = || Ok(());
+
+        let error = pass
+            .observe_membership(Path::new(""), &workspace, 2, &mut checkpoint)
+            .err()
+            .expect("membership enumerated with only its record header slot remaining");
+
+        assert_eq!(
+            error,
+            "project source-map actor evidence-record budget exceeds 2 entries"
+        );
+        assert_eq!(
+            membership_test_metrics().0,
+            0,
+            "membership was enumerated before its full requested record cost was admitted"
+        );
+    }
+
+    #[test]
+    pub(crate) fn retained_selection_pass_checks_remaining_name_capacity_before_enumeration() {
+        let root = tempfile::tempdir().unwrap();
+        write(&root.path().join("a"), b"a");
+        write(&root.path().join("b"), b"b");
+        let workspace =
+            RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
+                .unwrap();
+        let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
+            route_and_name_bytes: 1,
+            ..ActorSelectionTestBudgets::generous()
+        });
+        let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
+        reset_membership_test_metrics();
+        let mut checkpoint = || Ok(());
+
+        let error = pass
+            .observe_membership(Path::new(""), &workspace, 2, &mut checkpoint)
+            .err()
+            .expect("membership enumerated beyond its requested route/name capacity");
+
+        assert_eq!(
+            error,
+            "project source-map actor route/name budget exceeds 1 bytes"
+        );
+        assert_eq!(
+            membership_test_metrics().0,
+            0,
+            "membership was enumerated before its requested name capacity was admitted"
+        );
+    }
+
+    #[test]
+    pub(crate) fn retained_selection_pass_rejects_before_unseen_member_child_open() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("child")).unwrap();
+        let workspace =
+            RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
+                .unwrap();
+        let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
+            unique_directories: 1,
+            ..ActorSelectionTestBudgets::generous()
+        });
+        let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
+        reset_membership_test_metrics();
+        let mut checkpoint = || Ok(());
+
+        let error = pass
+            .observe_membership(Path::new(""), &workspace, 1, &mut checkpoint)
+            .err()
+            .expect("membership opened a child after unique-directory capacity was exhausted");
+
+        assert_eq!(
+            error,
+            "project source-map actor unique-directory budget exceeds 1 entries"
+        );
+        assert_eq!(
+            membership_test_metrics().1,
+            0,
+            "an unseen member child capability was opened before directory admission"
+        );
+    }
+
+    #[test]
+    pub(crate) fn retained_exact_read_never_appends_a_growth_chunk_past_the_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("marker.xml");
+        write(&marker, b"1234");
+        let workspace =
+            RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
+                .unwrap();
+        let mut pass = RetainedSelectionPass::new(workspace).unwrap();
+        reset_regular_exact_read_metrics();
+        let grow_marker = marker.clone();
+        let _hook = install_regular_exact_after_read_hook(move || {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(grow_marker)
+                .unwrap();
+            std::io::Write::write_all(&mut file, b"5678").unwrap();
+        });
+        let mut checkpoint = || Ok(());
+
+        let error = pass
+            .observe_regular(Path::new("marker.xml"), 4, &mut checkpoint)
+            .err()
+            .expect("concurrent file growth escaped the exact-read maximum");
+
+        assert_eq!(error, "project source-map input exceeds 4 bytes");
+        assert_eq!(
+            regular_exact_read_metrics().2,
+            4,
+            "a concurrent growth chunk was appended before the exact-read limit check"
+        );
     }
 
     #[test]

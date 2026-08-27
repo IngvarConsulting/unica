@@ -5496,6 +5496,88 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn apply_selection_rejects_repaired_oversized_unselected_external_descriptor() {
+        let fixture =
+            actor_fixture_without_source_map("selection-repaired-oversized-external", "src/cf");
+        std::fs::write(
+            fixture.roots[0].join("Configuration.xml"),
+            b"<MetaDataObject/>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(fixture.root.join("epf")).unwrap();
+        std::fs::write(
+            fixture.root.join("v8project.yaml"),
+            concat!(
+                "format: EDT\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src/cf\n",
+                "  - name: unselected-processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+            ),
+        )
+        .unwrap();
+        let descriptor = fixture.root.join("epf/ConfigDumpInfo.xml");
+        std::fs::write(&descriptor, vec![b'x'; 8 * 1024 * 1024 + 1]).unwrap();
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = fixture.actor.source_revision_service(&binding).unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let machine_before = service.machine_state_for_test();
+        std::fs::write(
+            descriptor,
+            b"<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        )
+        .unwrap();
+
+        let error = fixture.actor.publish_prepared_apply(prepared).expect_err(
+            "repaired oversized unselected descriptor published and returned a receipt",
+        );
+
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::SourceSelectionChanged
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert_eq!(service.machine_state_for_test(), machine_before);
+        fixture.cleanup();
+    }
+
+    #[test]
     fn apply_selection_dry_run_rejects_late_map_change_without_receipt() {
         let fixture = actor_fixture("selection-dry-late", &["src/cf"]);
         let target = fixture.roots[0].join("Module.bsl");
@@ -5703,12 +5785,17 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn retained_source_selection_finality_contract_is_complete() {
         crate::infrastructure::source_selection_evidence::tests::actor_admission_rejects_aggregate_exact_byte_budget();
+        crate::infrastructure::source_selection_evidence::tests::actor_admission_charges_repeated_exact_work_before_second_read();
         crate::infrastructure::source_selection_evidence::tests::actor_admission_bounds_unique_retained_directories_without_ulimit();
         crate::infrastructure::source_selection_evidence::tests::actor_admission_bounds_global_membership_across_external_source_sets();
         crate::infrastructure::source_selection_evidence::tests::actor_admission_counts_repeated_membership_enumeration_globally();
         crate::infrastructure::source_selection_evidence::tests::actor_admission_rejects_total_evidence_record_budget();
         crate::infrastructure::source_selection_evidence::tests::actor_admission_rejects_route_and_name_byte_budget();
         crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_membership_budget_before_enumeration();
+        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_remaining_record_capacity_before_enumeration();
+        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_remaining_name_capacity_before_enumeration();
+        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_before_unseen_member_child_open();
+        crate::infrastructure::source_selection_evidence::tests::retained_exact_read_never_appends_a_growth_chunk_past_the_limit();
         crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_record_budget_before_regular_open();
         crate::infrastructure::source_selection_evidence::tests::actor_admission_comparison_honors_cancellation();
         crate::infrastructure::source_selection_evidence::tests::actor_admission_comparison_honors_deadline();
@@ -5716,12 +5803,12 @@ pub(crate) mod tests {
         crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_inconsistent_regular_repeat();
         crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_inconsistent_directory_repeat();
         crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_inconsistent_membership_repeat();
-        crate::infrastructure::project_sources::tests::reset_external_actor_witness_runs();
         apply_selection_rejects_v8project_kind_change_after_prepare();
         apply_selection_rejects_v8project_absence_to_appearance_after_prepare();
         apply_selection_rejects_autodetected_extension_membership_change();
         apply_selection_rejects_unselected_declared_parent_appearance();
         apply_selection_rejects_unselected_non_platform_map_input_change();
+        apply_selection_rejects_repaired_oversized_unselected_external_descriptor();
         apply_selection_dry_run_rejects_late_map_change_without_receipt();
         apply_selection_late_change_rolls_back_source_cache_revision_and_receipt();
         apply_selection_rejects_autodetection_container_identity_replacement();
@@ -5736,11 +5823,7 @@ pub(crate) mod tests {
         crate::infrastructure::project_sources::tests::actor_admission_preserves_declared_external_processor_and_report_map();
         crate::infrastructure::project_sources::tests::actor_admission_external_config_dump_info_content_change_invalidates_evidence();
         crate::infrastructure::project_sources::tests::actor_admission_external_descriptor_absence_to_appearance_invalidates_evidence();
-        assert_eq!(
-            crate::infrastructure::project_sources::tests::external_actor_witness_runs(),
-            1,
-            "aggregate did not execute the declared external processor/report positive witness"
-        );
+        crate::infrastructure::project_sources::tests::external_actor_positive_witness_uses_no_process_global_counter();
     }
 
     #[test]

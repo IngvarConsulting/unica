@@ -1181,6 +1181,9 @@ fn snapshot_project_map_input(
                 "project source-map input bytes were not retained: {}",
                 path.display()
             )),
+            RetainedRegularObservation::Oversized => {
+                Err(format!("project source-map input exceeds {limit} bytes"))
+            }
             RetainedRegularObservation::Absent => Ok(None),
             RetainedRegularObservation::WrongKind => Err(format!(
                 "project source-map input is not a retained regular file: {}",
@@ -1702,10 +1705,7 @@ fn enumerate_source_root_candidates(
             relative,
             directory,
         } => {
-            let limit = state
-                .max_source_sets
-                .unwrap_or(MAX_HEALTH_SOURCE_SETS)
-                .saturating_add(1);
+            let limit = state.max_source_sets.unwrap_or(MAX_HEALTH_SOURCE_SETS);
             let entries = state
                 .actor_pass
                 .as_mut()
@@ -1875,13 +1875,11 @@ fn detect_source_set_format(
             checkpoint,
         ) {
             Ok(evidence) => evidence,
-            Err(reason) => {
-                if reason.starts_with("project source-map actor ") {
-                    return Err(reason);
-                }
+            Err(ActorFormatEvidenceFailure::RecoverableTerminal(reason)) => {
                 format_probe_error = Some(reason);
                 (Vec::new(), Vec::new())
             }
+            Err(ActorFormatEvidenceFailure::Admission(reason)) => return Err(reason),
         }
     } else if state.require_nofollow_source_probe_route {
         match health_format_evidence(
@@ -1954,13 +1952,24 @@ fn classify_source_format(
     }
 }
 
+enum ActorFormatEvidenceFailure {
+    RecoverableTerminal(String),
+    Admission(String),
+}
+
+impl From<String> for ActorFormatEvidenceFailure {
+    fn from(reason: String) -> Self {
+        Self::Admission(reason)
+    }
+}
+
 fn actor_format_evidence(
     workspace_root: &Path,
     source_root: &Path,
     kind: SourceSetKind,
     state: &mut SourceMapDiscoveryState,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
-) -> Result<(Vec<String>, Vec<String>), String> {
+) -> Result<(Vec<String>, Vec<String>), ActorFormatEvidenceFailure> {
     checkpoint()?;
     let configured_path = PathBuf::from(path_relative_to(workspace_root, source_root));
     let source_directory = {
@@ -2017,8 +2026,7 @@ fn actor_format_evidence(
     ) {
         let limit = state
             .remaining_format_evidence_entries
-            .unwrap_or(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES)
-            .saturating_add(1);
+            .unwrap_or(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES);
         let entries = state
             .actor_pass
             .as_mut()
@@ -2071,10 +2079,18 @@ fn actor_format_evidence(
                     }
                 }
                 RetainedRegularObservation::Present if !config_dump_info => {}
+                RetainedRegularObservation::Oversized if config_dump_info => {
+                    return Err(ActorFormatEvidenceFailure::RecoverableTerminal(format!(
+                        "project source-map input exceeds {} bytes",
+                        MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES
+                    )));
+                }
                 RetainedRegularObservation::Absent | RetainedRegularObservation::WrongKind => {
                     continue;
                 }
-                RetainedRegularObservation::Present => continue,
+                RetainedRegularObservation::Present | RetainedRegularObservation::Oversized => {
+                    continue;
+                }
             }
             let evidence = path_relative_to(workspace_root, &workspace_root.join(&relative));
             state.record_format_evidence(&evidence)?;
@@ -2594,18 +2610,24 @@ pub(crate) mod tests {
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_WORKSPACE_NONCE: AtomicU64 = AtomicU64::new(0);
-    static EXTERNAL_ACTOR_WITNESS_RUNS: AtomicUsize = AtomicUsize::new(0);
 
-    pub(crate) fn reset_external_actor_witness_runs() {
-        EXTERNAL_ACTOR_WITNESS_RUNS.store(0, Ordering::SeqCst);
-    }
-
-    pub(crate) fn external_actor_witness_runs() -> usize {
-        EXTERNAL_ACTOR_WITNESS_RUNS.load(Ordering::SeqCst)
+    #[test]
+    pub(crate) fn external_actor_positive_witness_uses_no_process_global_counter() {
+        let source = include_str!("project_sources.rs");
+        for forbidden in [
+            ["EXTERNAL_ACTOR_", "WITNESS_RUNS"].concat(),
+            ["reset_external_actor_", "witness_runs"].concat(),
+            ["external_actor_", "witness_runs"].concat(),
+        ] {
+            assert!(
+                !source.contains(&forbidden),
+                "external-positive aggregate still depends on process-global state: {forbidden}"
+            );
+        }
     }
 
     #[test]
@@ -3758,7 +3780,6 @@ source-set:
 
     #[test]
     pub(crate) fn actor_admission_preserves_declared_external_processor_and_report_map() {
-        EXTERNAL_ACTOR_WITNESS_RUNS.fetch_add(1, Ordering::SeqCst);
         let root = temp_workspace("unica-source-map-actor-external-map");
         write(
             &root.join("v8project.yaml"),
