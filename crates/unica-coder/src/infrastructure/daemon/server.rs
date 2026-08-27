@@ -1607,10 +1607,6 @@ pub(crate) mod actor_capacity_tests {
             node.to_token_stream().to_string()
         }
 
-        fn mentions_capability(node: &impl ToTokens) -> bool {
-            tokens(node).contains(CAPABILITY)
-        }
-
         fn is_pub_super(visibility: &syn::Visibility) -> bool {
             matches!(
                 visibility,
@@ -1723,13 +1719,22 @@ pub(crate) mod actor_capacity_tests {
                     "platform profile must be derived from the bound source profile".to_string(),
                 );
             };
+            let Some(error_closure) = to_result.args.first() else {
+                return Err("platform profile requires one exact error closure".to_string());
+            };
             if from_profile.method != "platform_profile"
                 || !from_profile.args.is_empty()
                 || !expression_is(from_profile.receiver.as_ref(), "source_profile")
-                || !matches!(to_result.args.first(), Some(syn::Expr::Closure(_)))
+                || !expression_is(
+                    error_closure,
+                    r#"|| {
+                        "actor-bound logical source has no supported platform profile".to_string()
+                    }"#,
+                )
             {
                 return Err(
-                    "platform profile must be derived only from `source_profile`".to_string(),
+                    "platform profile must use the bound profile and exact side-effect-free error"
+                        .to_string(),
                 );
             }
 
@@ -1786,29 +1791,154 @@ pub(crate) mod actor_capacity_tests {
             Ok(())
         }
 
+        fn is_exact_cfg_test(attributes: &[syn::Attribute]) -> bool {
+            attributes.iter().any(|attribute| {
+                attribute.path().is_ident("cfg")
+                    && matches!(
+                        &attribute.meta,
+                        syn::Meta::List(list) if list.tokens.to_string() == "test"
+                    )
+            })
+        }
+
+        #[derive(Default)]
+        struct CapabilityPathFinder {
+            found: bool,
+        }
+
+        impl<'ast> Visit<'ast> for CapabilityPathFinder {
+            fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
+                if segment.ident == CAPABILITY {
+                    self.found = true;
+                }
+                syn::visit::visit_path_segment(self, segment);
+            }
+        }
+
+        fn type_mentions_capability(node: &syn::Type) -> bool {
+            let mut finder = CapabilityPathFinder::default();
+            finder.visit_type(node);
+            finder.found
+        }
+
+        fn signature_mentions_capability(node: &syn::Signature) -> bool {
+            let mut finder = CapabilityPathFinder::default();
+            finder.visit_signature(node);
+            finder.found
+        }
+
+        fn item_type_mentions_capability(node: &syn::ItemType) -> bool {
+            let mut finder = CapabilityPathFinder::default();
+            finder.visit_item_type(node);
+            finder.found
+        }
+
+        fn use_tree_mentions_capability(tree: &syn::UseTree) -> bool {
+            match tree {
+                syn::UseTree::Name(name) => name.ident == CAPABILITY,
+                syn::UseTree::Rename(rename) => {
+                    rename.ident == CAPABILITY || rename.rename == CAPABILITY
+                }
+                syn::UseTree::Path(path) => {
+                    path.ident == CAPABILITY || use_tree_mentions_capability(path.tree.as_ref())
+                }
+                syn::UseTree::Group(group) => group.items.iter().any(use_tree_mentions_capability),
+                syn::UseTree::Glob(_) => false,
+            }
+        }
+
+        fn use_tree_can_shadow_inert_macro(tree: &syn::UseTree) -> bool {
+            const INERT_MACROS: [&str; 3] = ["format", "matches", "vec"];
+            match tree {
+                syn::UseTree::Name(name) => INERT_MACROS.contains(&name.ident.to_string().as_str()),
+                syn::UseTree::Rename(rename) => {
+                    INERT_MACROS.contains(&rename.ident.to_string().as_str())
+                        || INERT_MACROS.contains(&rename.rename.to_string().as_str())
+                }
+                syn::UseTree::Path(path) => {
+                    INERT_MACROS.contains(&path.ident.to_string().as_str())
+                        || use_tree_can_shadow_inert_macro(path.tree.as_ref())
+                }
+                syn::UseTree::Group(group) => {
+                    group.items.iter().any(use_tree_can_shadow_inert_macro)
+                }
+                syn::UseTree::Glob(_) => true,
+            }
+        }
+
+        fn inert_macro_payload_is_closed(mac: &syn::Macro) -> bool {
+            const FORBIDDEN_IDENTIFIERS: [&str; 14] = [
+                CAPABILITY,
+                "const",
+                "enum",
+                "extern",
+                "fn",
+                "impl",
+                "macro",
+                "macro_rules",
+                "pub",
+                "static",
+                "struct",
+                "trait",
+                "type",
+                "use",
+            ];
+            let payload = tokens(&mac.tokens);
+            !payload.contains('!')
+                && !payload
+                    .split_whitespace()
+                    .any(|token| FORBIDDEN_IDENTIFIERS.contains(&token))
+        }
+
+        fn macro_is_proven_inert(mac: &syn::Macro) -> bool {
+            mac.path.leading_colon.is_none()
+                && mac.path.segments.len() == 1
+                && matches!(
+                    mac.path.segments.first(),
+                    Some(segment)
+                        if matches!(segment.ident.to_string().as_str(), "format" | "matches" | "vec")
+                            && matches!(segment.arguments, syn::PathArguments::None)
+                )
+                && inert_macro_payload_is_closed(mac)
+        }
+
+        struct CapabilityConstruction<'ast> {
+            expression: &'ast syn::ExprStruct,
+            owner_impl: Option<String>,
+            function: Option<String>,
+        }
+
+        struct CapabilityFunctionReference {
+            owner_impl: Option<String>,
+            signature: String,
+        }
+
         #[derive(Default)]
         struct CapabilityItems<'ast> {
             declarations: Vec<&'ast syn::ItemStruct>,
             implementations: Vec<&'ast syn::ItemImpl>,
             aliases: Vec<String>,
             macro_references: Vec<String>,
+            item_references: Vec<String>,
+            function_references: Vec<CapabilityFunctionReference>,
+            constructions: Vec<CapabilityConstruction<'ast>>,
+            capability_path_references: usize,
+            current_impl: Option<String>,
+            current_function: Option<String>,
+            item_macro_depth: usize,
         }
 
         impl<'ast> Visit<'ast> for CapabilityItems<'ast> {
             fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
-                let test_only = item.attrs.iter().any(|attribute| {
-                    attribute.path().is_ident("cfg")
-                        && matches!(
-                            &attribute.meta,
-                            syn::Meta::List(list) if list.tokens.to_string() == "test"
-                        )
-                });
-                if !test_only {
+                if !is_exact_cfg_test(&item.attrs) {
                     syn::visit::visit_item_mod(self, item);
                 }
             }
 
             fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
+                }
                 if item.ident == CAPABILITY {
                     self.declarations.push(item);
                 }
@@ -1816,40 +1946,179 @@ pub(crate) mod actor_capacity_tests {
             }
 
             fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
-                if mentions_capability(item.self_ty.as_ref()) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
+                }
+                let owner = tokens(item.self_ty.as_ref());
+                if type_mentions_capability(item.self_ty.as_ref()) {
                     self.implementations.push(item);
                 }
+                let previous = self.current_impl.replace(owner);
                 syn::visit::visit_item_impl(self, item);
+                self.current_impl = previous;
             }
 
-            fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
-                self.macro_references.push(tokens(item));
+            fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
+                }
+                if signature_mentions_capability(&item.sig) {
+                    self.function_references.push(CapabilityFunctionReference {
+                        owner_impl: None,
+                        signature: tokens(&item.sig),
+                    });
+                }
+                let previous = self.current_function.replace(item.sig.ident.to_string());
+                syn::visit::visit_item_fn(self, item);
+                self.current_function = previous;
+            }
+
+            fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
+                }
+                if signature_mentions_capability(&item.sig) {
+                    self.function_references.push(CapabilityFunctionReference {
+                        owner_impl: self.current_impl.clone(),
+                        signature: tokens(&item.sig),
+                    });
+                }
+                let previous = self.current_function.replace(item.sig.ident.to_string());
+                syn::visit::visit_impl_item_fn(self, item);
+                self.current_function = previous;
+            }
+
+            fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
+                }
+                if signature_mentions_capability(&item.sig) {
+                    self.function_references.push(CapabilityFunctionReference {
+                        owner_impl: None,
+                        signature: tokens(&item.sig),
+                    });
+                }
+                syn::visit::visit_trait_item_fn(self, item);
+            }
+
+            fn visit_foreign_item_fn(&mut self, item: &'ast syn::ForeignItemFn) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
+                }
+                if signature_mentions_capability(&item.sig) {
+                    self.function_references.push(CapabilityFunctionReference {
+                        owner_impl: None,
+                        signature: tokens(&item.sig),
+                    });
+                }
+                syn::visit::visit_foreign_item_fn(self, item);
+            }
+
+            fn visit_field(&mut self, field: &'ast syn::Field) {
+                if is_exact_cfg_test(&field.attrs) {
+                    return;
+                }
+                if type_mentions_capability(&field.ty) {
+                    self.item_references.push(tokens(field));
+                }
+                syn::visit::visit_field(self, field);
+            }
+
+            fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
+                }
+                if type_mentions_capability(&item.ty) {
+                    self.item_references.push(tokens(item));
+                }
+                syn::visit::visit_item_const(self, item);
+            }
+
+            fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
+                }
+                if type_mentions_capability(&item.ty) {
+                    self.item_references.push(tokens(item));
+                }
+                syn::visit::visit_item_static(self, item);
             }
 
             fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
-                if mentions_capability(item.ty.as_ref()) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
+                }
+                if item_type_mentions_capability(item) {
                     self.aliases.push(tokens(item));
                 }
                 syn::visit::visit_item_type(self, item);
             }
 
             fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
-                if mentions_capability(item) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
+                }
+                if use_tree_mentions_capability(&item.tree) {
                     self.aliases.push(tokens(item));
+                }
+                if use_tree_can_shadow_inert_macro(&item.tree) {
+                    self.macro_references.push(tokens(item));
                 }
                 syn::visit::visit_item_use(self, item);
             }
 
-            fn visit_stmt_macro(&mut self, statement: &'ast syn::StmtMacro) {
-                if !statement.mac.path.is_ident("assert")
-                    && !statement.mac.path.is_ident("assert_eq")
-                    && !statement.mac.path.is_ident("assert_ne")
-                    && !statement.mac.path.is_ident("debug_assert")
-                    && !statement.mac.path.is_ident("debug_assert_eq")
-                    && !statement.mac.path.is_ident("debug_assert_ne")
-                {
-                    self.macro_references.push(tokens(statement));
+            fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+                if is_exact_cfg_test(&item.attrs) {
+                    return;
                 }
+                self.item_macro_depth += 1;
+                self.visit_macro(&item.mac);
+                self.item_macro_depth -= 1;
+            }
+
+            fn visit_stmt_macro(&mut self, statement: &'ast syn::StmtMacro) {
+                if !is_exact_cfg_test(&statement.attrs) {
+                    self.visit_macro(&statement.mac);
+                }
+            }
+
+            fn visit_expr_macro(&mut self, expression: &'ast syn::ExprMacro) {
+                if !is_exact_cfg_test(&expression.attrs) {
+                    self.visit_macro(&expression.mac);
+                }
+            }
+
+            fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+                if self.item_macro_depth != 0 || !macro_is_proven_inert(mac) {
+                    self.macro_references.push(tokens(mac));
+                }
+            }
+
+            fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
+                let path_mentions = expression
+                    .path
+                    .segments
+                    .iter()
+                    .any(|segment| segment.ident == CAPABILITY);
+                let qualified_mentions = expression
+                    .qself
+                    .as_ref()
+                    .is_some_and(|qualified| type_mentions_capability(qualified.ty.as_ref()));
+                if path_mentions || qualified_mentions {
+                    self.constructions.push(CapabilityConstruction {
+                        expression,
+                        owner_impl: self.current_impl.clone(),
+                        function: self.current_function.clone(),
+                    });
+                }
+                syn::visit::visit_expr_struct(self, expression);
+            }
+
+            fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
+                if segment.ident == CAPABILITY {
+                    self.capability_path_references += 1;
+                }
+                syn::visit::visit_path_segment(self, segment);
             }
         }
 
@@ -1859,7 +2128,7 @@ pub(crate) mod actor_capacity_tests {
         found.visit_file(&file);
         if !found.macro_references.is_empty() {
             return Err(format!(
-                "production item-position macros could generate actor read capability: {:?}",
+                "opaque production macros or shadowing imports could generate actor read capability: {:?}",
                 found.macro_references
             ));
         }
@@ -1867,6 +2136,99 @@ pub(crate) mod actor_capacity_tests {
             return Err(format!(
                 "actor read capability must not be reopened through a type/use alias: {:?}",
                 found.aliases
+            ));
+        }
+        if found.capability_path_references != 3 {
+            return Err(format!(
+                "actor read capability must have exactly three production path references (impl, read_sources return, singleton construction), found {}",
+                found.capability_path_references
+            ));
+        }
+        if !found.item_references.is_empty() {
+            return Err(format!(
+                "actor read capability must not escape through another production item: {:?}",
+                found.item_references
+            ));
+        }
+        let expected_read_sources_signature = tokens(
+            &syn::parse_str::<syn::Signature>(
+                "fn read_sources(&self) -> Result<Vec<ActorReadSourceCapability>, String>",
+            )
+            .expect("the one actor capability return signature parses"),
+        );
+        let [read_sources_reference] = found.function_references.as_slice() else {
+            return Err(format!(
+                "actor read capability must appear in exactly one production function signature, found {}",
+                found.function_references.len()
+            ));
+        };
+        if read_sources_reference.owner_impl.as_deref() != Some("ActorBoundExecution")
+            || read_sources_reference.signature != expected_read_sources_signature
+        {
+            return Err(format!(
+                "only ActorBoundExecution::read_sources may return the capability; found owner={:?}, signature=`{}`",
+                read_sources_reference.owner_impl, read_sources_reference.signature
+            ));
+        }
+
+        let [construction] = found.constructions.as_slice() else {
+            return Err(format!(
+                "actor read capability must have exactly one production construction, found {}",
+                found.constructions.len()
+            ));
+        };
+        let expression = construction.expression;
+        if construction.owner_impl.as_deref() != Some("ActorBoundExecution")
+            || construction.function.as_deref() != Some("read_sources")
+            || expression.qself.is_some()
+            || !expression.path.is_ident(CAPABILITY)
+            || !expression.attrs.is_empty()
+            || expression.rest.is_some()
+        {
+            return Err(format!(
+                "only ActorBoundExecution::read_sources may construct the capability; found owner={:?}, function={:?}, expression=`{}`",
+                construction.owner_impl,
+                construction.function,
+                tokens(expression)
+            ));
+        }
+        let mut construction_fields = std::collections::BTreeMap::new();
+        for field in &expression.fields {
+            let syn::Member::Named(name) = &field.member else {
+                return Err("actor capability construction permits named fields only".to_string());
+            };
+            if field.attrs.is_empty()
+                && field.colon_token.is_some()
+                && construction_fields
+                    .insert(name.to_string(), &field.expr)
+                    .is_none()
+            {
+                continue;
+            }
+            return Err(
+                "actor capability construction fields must be unique, explicit and attribute-free"
+                    .to_string(),
+            );
+        }
+        let expected_construction_fields = std::collections::BTreeMap::from([
+            ("binding", "source.binding.clone()"),
+            ("deadline", "lease.deadline"),
+            ("fence", "source.fence.clone()"),
+            (
+                "identity",
+                "format!(\"{}:{}\", self.invocation.workspace_identity_hash.as_str(), source.binding.source_set_name())",
+            ),
+        ]);
+        if construction_fields.len() != expected_construction_fields.len()
+            || expected_construction_fields.iter().any(|(name, expected)| {
+                construction_fields
+                    .get(*name)
+                    .is_none_or(|actual| !expression_is(actual, expected))
+            })
+        {
+            return Err(format!(
+                "actor capability construction must use exact binding/identity/fence/deadline dataflow; found `{}`",
+                tokens(expression)
             ));
         }
         let [declaration] = found.declarations.as_slice() else {
@@ -2034,10 +2396,24 @@ pub(crate) mod actor_capacity_tests {
         actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl();
         actor_read_source_capability_ast_audit_rejects_macro_generated_api();
         actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation();
+        actor_read_source_capability_ast_audit_rejects_opaque_const_expression_macro();
+        actor_read_source_capability_ast_audit_rejects_no_arg_opaque_const_expression_macro();
+        actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros();
+        actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist();
+        actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow();
         actor_read_source_capability_ast_audit_rejects_type_alias_impl();
+        actor_read_source_capability_ast_audit_rejects_defaulted_generic_alias_impl();
+        actor_read_source_capability_ast_audit_rejects_sibling_visible_free_factory();
+        actor_read_source_capability_ast_audit_rejects_nested_production_factory();
+        actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape();
+        actor_read_source_capability_ast_audit_rejects_associated_type_escape();
+        actor_read_source_capability_ast_audit_rejects_item_field_escape();
         actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile();
         actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind();
         actor_read_source_capability_ast_audit_rejects_replenished_deadline();
+        actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure();
+        actor_read_source_capability_ast_audit_rejects_substituted_construction_fields();
+        actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope();
     }
 
     #[test]
@@ -2091,6 +2467,35 @@ fn main() {{}}
             !output.status.success() && stderr.contains("E0616") && stderr.contains("binding"),
             "a sibling module accessed the audited private binding; status={:?}, stderr={stderr}",
             output.status.code()
+        );
+    }
+
+    fn assert_rustc_fixture_compiles_and_runs(name: &str, fixture: &str) {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture_path = directory.path().join(format!("{name}.rs"));
+        let binary_path = directory
+            .path()
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&fixture_path, fixture).unwrap();
+        let compile = std::process::Command::new("rustc")
+            .arg("--edition=2021")
+            .arg("-o")
+            .arg(&binary_path)
+            .arg(&fixture_path)
+            .output()
+            .expect("rustc is available to the Rust test suite");
+        assert!(
+            compile.status.success(),
+            "hostile Rust fixture `{name}` did not compile: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new(&binary_path)
+            .output()
+            .expect("the hostile Rust fixture binary starts");
+        assert!(
+            run.status.success(),
+            "hostile Rust fixture `{name}` was not sibling-callable: {}",
+            String::from_utf8_lossy(&run.stderr)
         );
     }
 
@@ -2282,6 +2687,193 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
+    fn actor_read_source_capability_ast_audit_rejects_opaque_const_expression_macro() {
+        assert_rustc_fixture_compiles_and_runs(
+            "actor-capability-opaque-const-macro",
+            r#"
+macro_rules! external_reopen_capability {
+    ($capability:ty) => {{
+        impl $capability {
+            pub(super) fn forge() -> Self {
+                Self {
+                    binding: ProviderRootBinding,
+                    identity: String::new(),
+                    fence: WorkspaceLogicalReadFence,
+                    deadline: ProviderDeadline,
+                }
+            }
+        }
+        ()
+    }};
+}
+mod daemon {
+    mod owner {
+        pub(super) struct ProviderRootBinding;
+        pub(super) struct WorkspaceLogicalReadFence;
+        pub(super) struct ProviderDeadline;
+        pub(super) struct ActorReadSourceCapability {
+            binding: ProviderRootBinding,
+            identity: String,
+            fence: WorkspaceLogicalReadFence,
+            deadline: ProviderDeadline,
+        }
+        const _: () = external_reopen_capability!(ActorReadSourceCapability);
+    }
+    mod sibling {
+        pub(super) fn call_forge() {
+            let _ = super::owner::ActorReadSourceCapability::forge();
+        }
+    }
+    pub(super) fn run() {
+        sibling::call_forge();
+    }
+}
+fn main() {
+    daemon::run();
+}
+"#,
+        );
+
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            "const _: () = external_reopen_capability!(ActorReadSourceCapability);\n\nstruct ActorLogicalReadLease {",
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "an opaque const-expression macro generated a sibling capability forge"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_no_arg_opaque_const_expression_macro() {
+        assert_rustc_fixture_compiles_and_runs(
+            "actor-capability-no-arg-opaque-const-macro",
+            r#"
+macro_rules! external_reopen_capability {
+    () => {{
+        impl ActorReadSourceCapability {
+            pub(super) fn forge() -> Self {
+                Self {
+                    binding: ProviderRootBinding,
+                    identity: String::new(),
+                    fence: WorkspaceLogicalReadFence,
+                    deadline: ProviderDeadline,
+                }
+            }
+        }
+        ()
+    }};
+}
+mod daemon {
+    mod owner {
+        pub(super) struct ProviderRootBinding;
+        pub(super) struct WorkspaceLogicalReadFence;
+        pub(super) struct ProviderDeadline;
+        pub(super) struct ActorReadSourceCapability {
+            binding: ProviderRootBinding,
+            identity: String,
+            fence: WorkspaceLogicalReadFence,
+            deadline: ProviderDeadline,
+        }
+        const _: () = external_reopen_capability!();
+    }
+    mod sibling {
+        pub(super) fn call_forge() {
+            let _ = super::owner::ActorReadSourceCapability::forge();
+        }
+    }
+    pub(super) fn run() {
+        sibling::call_forge();
+    }
+}
+fn main() {
+    daemon::run();
+}
+"#,
+        );
+
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            "const _: () = external_reopen_capability!();\n\nstruct ActorLogicalReadLease {",
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "a no-argument opaque const-expression macro generated a sibling capability forge"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros() {
+        let source = include_str!("server.rs");
+        let hostile_shapes = [
+            "static OPAQUE: () = external_reopen_capability!();\n\n",
+            "fn opaque_statement() { external_reopen_capability!(); }\n\n",
+        ];
+        let mut accepted = Vec::new();
+        for shape in hostile_shapes {
+            let hostile = source.replacen(
+                "struct ActorLogicalReadLease {",
+                &format!("{shape}struct ActorLogicalReadLease {{"),
+                1,
+            );
+            if audit_actor_read_source_capability_api(&hostile).is_ok() {
+                accepted.push(shape);
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "opaque static/statement macros escaped the capability audit: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"fn nested_opaque_macro() {
+    let _ = format!("{}", external_reopen_capability!());
+}
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "an opaque macro hid inside the inert standard-macro allowlist"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow() {
+        let source = include_str!("server.rs");
+        let hostile_imports = [
+            "use hostile_macros::reopen as format;\n",
+            "use hostile_macros::matches;\n",
+            "use hostile_macros::*;\n",
+        ];
+        let mut accepted = Vec::new();
+        for import in hostile_imports {
+            let hostile = source.replacen(
+                "use super::identity::{CoreIdentity, DaemonStateDirectory};",
+                &format!("{import}use super::identity::{{CoreIdentity, DaemonStateDirectory}};"),
+                1,
+            );
+            if audit_actor_read_source_capability_api(&hostile).is_ok() {
+                accepted.push(import);
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "imports could impersonate allowlisted standard macros: {accepted:?}"
+        );
+    }
+
+    #[test]
     fn actor_read_source_capability_ast_audit_rejects_type_alias_impl() {
         let source = include_str!("server.rs");
         let hostile = source.replacen(
@@ -2304,6 +2896,323 @@ struct ActorLogicalReadLease {"#,
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "a type alias reopened the sealed capability outside the enumerated impl"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_defaulted_generic_alias_impl() {
+        assert_rustc_fixture_compiles_and_runs(
+            "actor-capability-defaulted-generic-alias",
+            r#"
+mod daemon {
+    mod owner {
+        pub(super) struct ProviderRootBinding;
+        pub(super) struct WorkspaceLogicalReadFence;
+        pub(super) struct ProviderDeadline;
+        pub(super) struct ActorReadSourceCapability {
+            binding: ProviderRootBinding,
+            identity: String,
+            fence: WorkspaceLogicalReadFence,
+            deadline: ProviderDeadline,
+        }
+        type CapabilityAlias<T = ActorReadSourceCapability> = T;
+        impl CapabilityAlias {
+            pub(super) fn forge() -> Self {
+                Self {
+                    binding: ProviderRootBinding,
+                    identity: String::new(),
+                    fence: WorkspaceLogicalReadFence,
+                    deadline: ProviderDeadline,
+                }
+            }
+        }
+    }
+    mod sibling {
+        pub(super) fn call_forge() {
+            let _ = super::owner::ActorReadSourceCapability::forge();
+        }
+    }
+    pub(super) fn run() {
+        sibling::call_forge();
+    }
+}
+fn main() {
+    daemon::run();
+}
+"#,
+        );
+
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"type CapabilityAlias<T = ActorReadSourceCapability> = T;
+    impl CapabilityAlias {
+        pub(super) fn forge_alias(
+            binding: ProviderRootBinding,
+            identity: String,
+            fence: WorkspaceLogicalReadFence,
+            deadline: ProviderDeadline,
+        ) -> Self {
+            Self { binding, identity, fence, deadline }
+        }
+    }
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "a defaulted generic alias reopened the sealed capability"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_sibling_visible_free_factory() {
+        assert_rustc_fixture_compiles_and_runs(
+            "actor-capability-sibling-free-factory",
+            r#"
+mod daemon {
+    mod owner {
+        pub(super) struct ProviderRootBinding;
+        pub(super) struct WorkspaceLogicalReadFence;
+        pub(super) struct ProviderDeadline;
+        pub(super) struct ActorReadSourceCapability {
+            binding: ProviderRootBinding,
+            identity: String,
+            fence: WorkspaceLogicalReadFence,
+            deadline: ProviderDeadline,
+        }
+        pub(super) fn forge(
+            binding: ProviderRootBinding,
+            identity: String,
+            fence: WorkspaceLogicalReadFence,
+            deadline: ProviderDeadline,
+        ) -> ActorReadSourceCapability {
+            ActorReadSourceCapability { binding, identity, fence, deadline }
+        }
+    }
+    mod sibling {
+        pub(super) fn call_forge() {
+            let _ = super::owner::forge(
+                super::owner::ProviderRootBinding,
+                String::new(),
+                super::owner::WorkspaceLogicalReadFence,
+                super::owner::ProviderDeadline,
+            );
+        }
+    }
+    pub(super) fn run() {
+        sibling::call_forge();
+    }
+}
+fn main() {
+    daemon::run();
+}
+"#,
+        );
+
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"pub(super) fn forge_actor_read_source_capability(
+    binding: ProviderRootBinding,
+    identity: String,
+    fence: WorkspaceLogicalReadFence,
+    deadline: ProviderDeadline,
+) -> ActorReadSourceCapability {
+    ActorReadSourceCapability { binding, identity, fence, deadline }
+}
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "a sibling-visible owner-module free factory escaped the capability audit"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_nested_production_factory() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"mod nested_factory {
+    pub(super) fn forge(
+        binding: super::ProviderRootBinding,
+        identity: String,
+        fence: super::WorkspaceLogicalReadFence,
+        deadline: ProviderDeadline,
+    ) -> super::ActorReadSourceCapability {
+        super::ActorReadSourceCapability { binding, identity, fence, deadline }
+    }
+}
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "a nested production module exported a capability factory"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"struct CapabilityExporter;
+impl CapabilityExporter {
+    pub(super) fn export(
+        &self,
+        capability: ActorReadSourceCapability,
+    ) -> ActorReadSourceCapability {
+        capability
+    }
+}
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "a foreign impl accepted and returned the capability"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_associated_type_escape() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"trait CapabilityCarrier {
+    type Capability;
+}
+struct CapabilityCarrierImpl;
+impl CapabilityCarrier for CapabilityCarrierImpl {
+    type Capability = ActorReadSourceCapability;
+}
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "an associated type exported the capability outside the closed surface"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_item_field_escape() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"pub(super) struct CapabilityEscape {
+    pub(super) capability: ActorReadSourceCapability,
+}
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "a sibling-visible item field exported the capability"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            r#"|| {
+            "actor-bound logical source has no supported platform profile".to_string()
+        }"#,
+            r#"|| {
+            PROFILE_ERROR_SIDE_EFFECT.store(true, Ordering::SeqCst);
+            "actor-bound logical source has no supported platform profile".to_string()
+        }"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "a side-effecting unsupported-profile closure escaped the exact builder audit"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_substituted_construction_fields() {
+        let source = include_str!("server.rs");
+        let hostile_fields = [
+            (
+                "Ok(ActorReadSourceCapability {\n                    binding: source.binding.clone(),",
+                "Ok(ActorReadSourceCapability {\n                    binding: self.invocation.provider_root.clone(),",
+            ),
+            (
+                r#"identity: format!(
+                        "{}:{}",
+                        self.invocation.workspace_identity_hash.as_str(),
+                        source.binding.source_set_name()
+                    ),"#,
+                "identity: String::from(\"caller-supplied\"),",
+            ),
+            (
+                "fence: source.fence.clone(),",
+                "fence: lease.sources[0].fence.clone(),",
+            ),
+            (
+                "deadline: lease.deadline,",
+                "deadline: ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),",
+            ),
+        ];
+        let mut accepted = Vec::new();
+        for (original, substituted) in hostile_fields {
+            let hostile = source.replacen(original, substituted, 1);
+            assert_ne!(
+                hostile, source,
+                "hostile construction fixture did not replace `{original}`"
+            );
+            if audit_actor_read_source_capability_api(&hostile).is_ok() {
+                accepted.push(substituted);
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "substituted actor capability construction fields escaped: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope() {
+        let source = include_str!("server.rs");
+        let exact_test_only = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"#[cfg(test)]
+mod test_only_escape {
+    pub(super) fn forge(
+        binding: super::ProviderRootBinding,
+        identity: String,
+        fence: super::WorkspaceLogicalReadFence,
+        deadline: ProviderDeadline,
+    ) -> super::ActorReadSourceCapability {
+        super::ActorReadSourceCapability { binding, identity, fence, deadline }
+    }
+}
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        audit_actor_read_source_capability_api(&exact_test_only)
+            .expect("the production audit deliberately excludes exact cfg(test) modules");
+
+        let partly_production = exact_test_only.replacen(
+            "#[cfg(test)]\nmod test_only_escape",
+            "#[cfg(any(test, feature = \"hostile-production\"))]\nmod test_only_escape",
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&partly_production).is_err(),
+            "a module that can compile outside cfg(test) escaped the production audit"
         );
     }
 
