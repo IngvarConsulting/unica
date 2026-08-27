@@ -3,6 +3,8 @@
 pub(crate) mod apply;
 pub(crate) mod cf;
 pub(crate) mod cfe;
+// The pure C1 code planner is intentionally not actor-routed until C13/15D.
+#[allow(dead_code)]
 pub(crate) mod code;
 pub(crate) mod common;
 pub(crate) mod compile_transaction;

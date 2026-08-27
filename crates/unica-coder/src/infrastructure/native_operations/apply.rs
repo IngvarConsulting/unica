@@ -1,5 +1,6 @@
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
+use crate::domain::events::DomainEvent;
 use crate::infrastructure::native_operations::compile_transaction::{
     CompileTransaction, RetainedApplyChangeBinding, RetainedApplyValidationError,
     RetainedApplyValidationErrorKind,
@@ -104,6 +105,88 @@ impl std::fmt::Display for ApplyStagingError {
 }
 
 impl std::error::Error for ApplyStagingError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApplyPlanErrorKind {
+    BadValue,
+    NotFound,
+    ProviderUnavailable,
+    InvalidState,
+    InvalidSource,
+    Staging(ApplyStagingErrorKind),
+    Postcondition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApplyPlanError {
+    kind: ApplyPlanErrorKind,
+    path: Option<String>,
+    message: String,
+}
+
+impl ApplyPlanError {
+    pub(crate) fn new(kind: ApplyPlanErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            path: None,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) const fn kind(&self) -> ApplyPlanErrorKind {
+        self.kind
+    }
+
+    pub(crate) fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+
+    pub(crate) fn at_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub(crate) fn staging(error: ApplyStagingError, path: impl Into<String>) -> Self {
+        Self::new(
+            ApplyPlanErrorKind::Staging(error.kind()),
+            "staged source evidence is unavailable",
+        )
+        .at_path(path)
+    }
+}
+
+impl std::fmt::Display for ApplyPlanError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for ApplyPlanError {}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct PlannedApplyEffects {
+    events: Vec<DomainEvent>,
+}
+
+impl PlannedApplyEffects {
+    pub(crate) fn events(&self) -> &[DomainEvent] {
+        &self.events
+    }
+
+    pub(crate) fn into_events(self) -> Vec<DomainEvent> {
+        self.events
+    }
+
+    pub(crate) fn append(&mut self, event: DomainEvent) {
+        if !self
+            .events
+            .iter()
+            .any(|current| current.kind == event.kind && current.artifact == event.artifact)
+        {
+            self.events.push(event);
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StagedFileState {

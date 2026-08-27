@@ -12,6 +12,7 @@ use crate::infrastructure::logical_event_source::{
     platform_event_owner_evidence, resolve_event_source, resolve_event_source_for_form_evidence,
     EventOwnerDescriptorProof, EventOwnerEvidencePlan, LogicalEventSource, PropertyEventSource,
 };
+pub(crate) use crate::infrastructure::native_operations::apply::PlannedApplyEffects;
 use crate::infrastructure::native_operations::apply::{
     ApplyStagedState, ApplyStagingError, ApplyStagingErrorKind,
 };
@@ -85,31 +86,6 @@ impl fmt::Display for EventPlanError {
 }
 
 impl std::error::Error for EventPlanError {}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct PlannedApplyEffects {
-    events: Vec<DomainEvent>,
-}
-
-impl PlannedApplyEffects {
-    pub(crate) fn events(&self) -> &[DomainEvent] {
-        &self.events
-    }
-
-    pub(crate) fn into_events(self) -> Vec<DomainEvent> {
-        self.events
-    }
-
-    pub(crate) fn append(&mut self, event: DomainEvent) {
-        if !self
-            .events
-            .iter()
-            .any(|current| current.kind == event.kind && current.artifact == event.artifact)
-        {
-            self.events.push(event);
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModuleInsertionPlan {
