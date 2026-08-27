@@ -1436,25 +1436,30 @@ mod tests {
     }
 
     #[test]
-    fn hidden_v13_apply_dispatch_reaches_all_three_compiled_family_stubs_without_v12_fallback() {
+    fn hidden_v13_apply_dispatch_uses_targeted_secondary_admission_and_reaches_all_three_compiled_family_stubs(
+    ) {
         let daemon_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let main = workspace.path().join("main");
         let secondary = workspace.path().join("secondary");
-        for source in [&main, &secondary] {
-            std::fs::create_dir_all(source).unwrap();
-            std::fs::write(
-                source.join("Configuration.xml"),
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
-            )
-            .unwrap();
-        }
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::write(
+            main.join("ConfigDumpInfo.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor><Properties><Name>MainProcessor</Name></Properties><ChildObjects/></ExternalDataProcessor></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(&secondary).unwrap();
+        std::fs::write(
+            secondary.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Secondary</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
         std::fs::write(
             workspace.path().join("v8project.yaml"),
             concat!(
                 "format: DESIGNER\n",
                 "source-set:\n",
-                "  - name: main\n    type: CONFIGURATION\n    path: main\n",
+                "  - name: main\n    type: EXTERNAL_DATA_PROCESSORS\n    path: main\n",
                 "  - name: secondary\n    type: CONFIGURATION\n    path: secondary\n",
             ),
         )
@@ -1473,9 +1478,11 @@ mod tests {
             ExistingDaemon::Connected(owner) => owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
-        let legacy_calls = AtomicUsize::new(0);
         let secondary_before = std::fs::read(secondary.join("Configuration.xml")).unwrap();
 
+        // Regression oracle: replacing the targeted read_sources lookup in
+        // ActorBoundExecution::admit_apply with provider_root must fail with the
+        // external processor's exact-profile diagnostic before a lane stub runs.
         for operation in ["object.create", "form.create", "dcs.set", "code.insert"] {
             let response = owner
                 .submit_invocation(
@@ -1515,11 +1522,6 @@ mod tests {
         assert!(
             !workspace.path().join(".build/unica/state.json").exists(),
             "W0 hidden apply dispatch published workspace cache state"
-        );
-        assert_eq!(
-            legacy_calls.load(Ordering::SeqCst),
-            0,
-            "explicit hidden V13 apply dispatch reached a legacy V12 handler"
         );
         drop(owner);
         server.join().unwrap().unwrap();
