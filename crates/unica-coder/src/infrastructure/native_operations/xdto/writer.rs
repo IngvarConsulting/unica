@@ -160,10 +160,13 @@ pub(super) fn plan_typed(
     before: &str,
     operation: TypedWriterOperation<'_>,
 ) -> Result<WriterPlan, WriterError> {
-    let document = super::parse(before)
-        .map_err(|error| {
-            WriterError::new(WriterErrorCause::InvalidSource, WriterErrorField::Source, error)
-        })?;
+    let document = super::parse(before).map_err(|error| {
+        WriterError::new(
+            WriterErrorCause::InvalidSource,
+            WriterErrorField::Source,
+            error,
+        )
+    })?;
     let root = document.root_element();
     let mut finding = None;
     let edit = match operation {
@@ -225,7 +228,8 @@ pub(super) fn plan_typed(
         } => {
             let target = property_target(root, type_name, property_path)?;
             let desired_qname = desired_qname(root, target, type_ref);
-            let desired_lower = min_occurs.map_or_else(|| "1".to_string(), |value| value.to_string());
+            let desired_lower =
+                min_occurs.map_or_else(|| "1".to_string(), |value| value.to_string());
             let existing = direct_named_properties(target, name);
             if !existing.is_empty() {
                 let exact = existing.len() == 1
@@ -868,11 +872,13 @@ fn strict_property_path(property_path: Option<&str>) -> Result<Vec<String>, Writ
     let Some(path) = property_path else {
         return Ok(Vec::new());
     };
-    let invalid = || WriterError::new(
+    let invalid = || {
+        WriterError::new(
         WriterErrorCause::BadValue,
         WriterErrorField::PropertyPath,
         "property_path_invalid: propertyPath must contain dot-separated XML NCNames and escape literal dots as `\\.`",
-    );
+    )
+    };
     if path.is_empty() {
         return Err(invalid());
     }

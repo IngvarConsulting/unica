@@ -708,8 +708,7 @@ impl ApplyAdmission {
                 binding.source_kind(),
                 SourceSetKind::Configuration | SourceSetKind::Extension
             )
-            || binding.source_profile()
-                != SourceProfile::platform_xml_8_3_27_format_2_20()
+            || binding.source_profile() != SourceProfile::platform_xml_8_3_27_format_2_20()
         {
             return Err(ApplyPlanError::new(
                 ApplyPlanErrorKind::ProviderUnavailable,

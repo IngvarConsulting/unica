@@ -1765,7 +1765,7 @@ mod tests {
         ] {
             assert!(
                 !wire.contains(forbidden),
-                "persisted forbidden text: {forbidden}"
+                "persisted record contains forbidden text"
             );
         }
         let record: crate::application::invocation_store::StoredInvocationRecord =

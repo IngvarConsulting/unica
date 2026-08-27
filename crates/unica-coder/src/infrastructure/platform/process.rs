@@ -2663,6 +2663,10 @@ mod tests {
             self.0.as_ref().unwrap()
         }
 
+        fn child_mut(&mut self) -> &mut Child {
+            self.0.as_mut().unwrap()
+        }
+
         fn wait(mut self) {
             self.0.as_mut().unwrap().wait().unwrap();
             self.0 = None;
@@ -4088,12 +4092,12 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut process_tree = ProcessTree::prepare(&mut command).unwrap();
-        let child = ChildCleanupGuard(Some(command.spawn().unwrap()));
+        let mut child = ChildCleanupGuard(Some(command.spawn().unwrap()));
 
         thread::sleep(Duration::from_millis(500));
         assert!(!marker.exists(), "child ran before process-tree attachment");
 
-        process_tree.attach(child.child()).unwrap();
+        process_tree.attach(child.child_mut()).unwrap();
         let started = Instant::now();
         while !marker.exists() && started.elapsed() < Duration::from_secs(2) {
             thread::sleep(Duration::from_millis(25));

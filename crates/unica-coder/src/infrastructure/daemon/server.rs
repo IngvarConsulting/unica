@@ -4060,7 +4060,7 @@ struct ActorLogicalReadLease {"#,
                 .publish(Ok(result), &cancellation)
                 .unwrap()
                 .unwrap();
-            assert!(published.ok, "{:?}", published.diagnostics);
+            assert!(published.ok, "retained read publication must succeed");
         }
 
         let subsequent = bind(&view_request);
@@ -4401,7 +4401,7 @@ struct ActorLogicalReadLease {"#,
         let result = service
             .execute(&execution, cancellation.clone())
             .expect("hidden V13 execution");
-        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        assert!(result.ok, "hidden V13 execution must succeed");
         let actor = Arc::clone(&execution.invocation.actor);
         let legacy_fence = actor
             .capture_revision(&execution.invocation.provider_root, deadline, &cancellation)
@@ -4467,7 +4467,7 @@ struct ActorLogicalReadLease {"#,
         let find_result = service
             .execute(&find_execution, cancellation.clone())
             .expect("hidden V13 find execution");
-        assert!(find_result.ok, "{:?}", find_result.diagnostics);
+        assert!(find_result.ok, "hidden V13 find execution must succeed");
         let find_actor = Arc::clone(&find_execution.invocation.actor);
         let legacy_fence = find_actor
             .capture_revision(
