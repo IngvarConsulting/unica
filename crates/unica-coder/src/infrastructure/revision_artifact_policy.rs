@@ -1,5 +1,6 @@
+use crate::domain::metadata::{metadata_kind_collections, MetaCollection, MetadataKind};
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-use crate::infrastructure::metadata_kinds::METADATA_KINDS;
+use crate::infrastructure::metadata_kinds::{supports_nested_form_or_command, METADATA_KINDS};
 use crate::infrastructure::workspace_actor::ActorRevisionServiceAuthority;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -166,13 +167,39 @@ fn is_configuration_resource(components: &[&OsStr]) -> bool {
     let Some((owner_kind, owner_tail)) = configuration_owner_tail(components) else {
         return false;
     };
-    if is_help_resource(owner_tail) {
+    let capabilities = configuration_owner_capabilities(owner_kind);
+    if capabilities.help && is_help_resource(owner_tail) {
         return true;
     }
     match owner_kind {
-        "CommonForm" => is_form_item_tail(owner_tail),
-        "CommonTemplate" => is_template_body_tail(owner_tail),
-        _ => is_named_form_resource(owner_tail) || is_named_template_resource(owner_tail),
+        "CommonForm" => capabilities.forms && is_form_item_tail(owner_tail),
+        "CommonTemplate" => capabilities.templates && is_template_body_tail(owner_tail),
+        _ => {
+            (capabilities.forms && is_named_form_resource(owner_tail))
+                || (capabilities.templates && is_named_template_resource(owner_tail))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ConfigurationOwnerCapabilities {
+    forms: bool,
+    templates: bool,
+    help: bool,
+}
+
+fn configuration_owner_capabilities(owner_kind: &str) -> ConfigurationOwnerCapabilities {
+    let metadata_kind = MetadataKind::parse(owner_kind).ok();
+    ConfigurationOwnerCapabilities {
+        forms: owner_kind == "CommonForm" || supports_nested_form_or_command(owner_kind),
+        templates: owner_kind == "CommonTemplate"
+            || metadata_kind.is_some_and(|kind| {
+                metadata_kind_collections(kind).contains(&MetaCollection::Templates)
+            }),
+        // The typed metadata registry is the closed set whose XML owners carry
+        // Ext/Help. Subsystems and the direct CommonForm layout are the two
+        // established non-typed owners with the same capability.
+        help: metadata_kind.is_some() || matches!(owner_kind, "Subsystem" | "CommonForm"),
     }
 }
 
@@ -325,6 +352,12 @@ pub(crate) mod tests {
         // every known collection is exercised, including all impossible
         // owners, so adding a metadata kind cannot silently grant it Forms,
         // Templates or Help by sharing the same physical prefix shape.
+        let extension = RevisionArtifactPolicy::from_actor_fields(
+            SourceSetKind::Extension,
+            SourceFormat::PlatformXml,
+            SourceProfile::platform_xml_8_3_27_format_2_20(),
+        )
+        .unwrap();
         const FORM_OWNER_DIRECTORIES: &[&str] = &[
             "Catalogs",
             "Documents",
@@ -365,6 +398,8 @@ pub(crate) mod tests {
             "DocumentJournals",
         ];
         const HELP_OWNER_DIRECTORIES: &[&str] = &[
+            "Subsystems",
+            "CommonForms",
             "Catalogs",
             "Documents",
             "Enums",
@@ -389,49 +424,45 @@ pub(crate) mod tests {
             "WebServices",
             "DefinedTypes",
         ];
-        for owner in METADATA_KINDS {
-            let directory = owner.directory;
-            let form = format!("{directory}/Owner/Forms/Main/Ext/Form/Items/icon.png");
-            let template = format!("{directory}/Owner/Templates/Main/Ext/Template.bin");
-            let help = format!("{directory}/Owner/Ext/Help/ru.html");
-            assert_eq!(
-                configuration.classify(Path::new(&form)),
-                if FORM_OWNER_DIRECTORIES.contains(&directory) {
-                    RevisionArtifactDisposition::Content
-                } else {
-                    RevisionArtifactDisposition::Ignored
-                },
-                "wrong Form capability for {}",
-                owner.tag
-            );
-            assert_eq!(
-                configuration.classify(Path::new(&template)),
-                if TEMPLATE_OWNER_DIRECTORIES.contains(&directory) {
-                    RevisionArtifactDisposition::Content
-                } else {
-                    RevisionArtifactDisposition::Ignored
-                },
-                "wrong Template capability for {}",
-                owner.tag
-            );
-            assert_eq!(
-                configuration.classify(Path::new(&help)),
-                if HELP_OWNER_DIRECTORIES.contains(&directory) {
-                    RevisionArtifactDisposition::Content
-                } else {
-                    RevisionArtifactDisposition::Ignored
-                },
-                "wrong Help capability for {}",
-                owner.tag
-            );
+        for (source_label, policy) in [("configuration", configuration), ("extension", extension)] {
+            for owner in METADATA_KINDS {
+                let directory = owner.directory;
+                let form = format!("{directory}/Owner/Forms/Main/Ext/Form/Items/icon.png");
+                let template = format!("{directory}/Owner/Templates/Main/Ext/Template.bin");
+                let help = format!("{directory}/Owner/Ext/Help/ru.html");
+                assert_eq!(
+                    policy.classify(Path::new(&form)),
+                    if FORM_OWNER_DIRECTORIES.contains(&directory) {
+                        RevisionArtifactDisposition::Content
+                    } else {
+                        RevisionArtifactDisposition::Ignored
+                    },
+                    "wrong {source_label} Form capability for {}",
+                    owner.tag
+                );
+                assert_eq!(
+                    policy.classify(Path::new(&template)),
+                    if TEMPLATE_OWNER_DIRECTORIES.contains(&directory) {
+                        RevisionArtifactDisposition::Content
+                    } else {
+                        RevisionArtifactDisposition::Ignored
+                    },
+                    "wrong {source_label} Template capability for {}",
+                    owner.tag
+                );
+                assert_eq!(
+                    policy.classify(Path::new(&help)),
+                    if HELP_OWNER_DIRECTORIES.contains(&directory) {
+                        RevisionArtifactDisposition::Content
+                    } else {
+                        RevisionArtifactDisposition::Ignored
+                    },
+                    "wrong {source_label} Help capability for {}",
+                    owner.tag
+                );
+            }
         }
 
-        let extension = RevisionArtifactPolicy::from_actor_fields(
-            SourceSetKind::Extension,
-            SourceFormat::PlatformXml,
-            SourceProfile::platform_xml_8_3_27_format_2_20(),
-        )
-        .unwrap();
         for content in [
             "CommonTemplates/Logo/Ext/Template.bin",
             "Documents/Order/Ext/Help/ru.html",

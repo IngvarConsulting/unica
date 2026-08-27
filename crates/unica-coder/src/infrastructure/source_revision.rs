@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -524,6 +524,7 @@ pub(crate) struct SourceRevisionService {
     workspace_root: PathBuf,
     source_root: PathBuf,
     source_root_identity: FileIdentity,
+    actor_source_root: Option<Arc<RetainedDirectoryCapability>>,
     record_path: PathBuf,
     state_scope: WorkspaceStateScope,
     artifact_policy: RevisionArtifactPolicy,
@@ -573,6 +574,7 @@ impl SourceRevisionService {
             WorkspaceStateScope::LegacyPhysical,
             RevisionArtifactPolicy::legacy_v12(),
             fence,
+            None,
         )
     }
 
@@ -581,17 +583,21 @@ impl SourceRevisionService {
         authority: ActorRevisionServiceAuthority,
     ) -> Result<Self, String> {
         let artifact_policy = RevisionArtifactPolicy::from_authenticated_actor(&authority)?;
-        let state_scope = authority.state_scope().clone();
-        let source_root = authority.source_root();
-        let canonical_source_root = fs::canonicalize(source_root)
-            .map_err(|error| format!("source revision root cannot be normalized: {error}"))?;
-        let fence = deferred_platform_fence(&canonical_source_root, &context.cache_root);
+        let (actor_source_root, state_scope, _, _, _) = authority.into_parts();
+        actor_source_root
+            .validate_named_identity()
+            .map_err(|error| {
+                format!("actor revision root identity changed after admission: {error}")
+            })?;
+        let source_root = actor_source_root.path().to_path_buf();
+        let fence = deferred_platform_fence(&source_root, &context.cache_root);
         Self::with_fence(
             context,
-            &canonical_source_root,
+            &source_root,
             state_scope,
             artifact_policy,
             fence,
+            Some(actor_source_root),
         )
     }
 
@@ -606,6 +612,7 @@ impl SourceRevisionService {
             WorkspaceStateScope::LegacyPhysical,
             RevisionArtifactPolicy::legacy_v12(),
             Arc::new(ReconcileEverySnapshotFence::default()),
+            None,
         )
     }
 
@@ -622,6 +629,7 @@ impl SourceRevisionService {
             state_scope,
             RevisionArtifactPolicy::legacy_v12(),
             fence,
+            None,
         )
     }
 
@@ -631,14 +639,27 @@ impl SourceRevisionService {
         state_scope: WorkspaceStateScope,
         artifact_policy: RevisionArtifactPolicy,
         fence: Arc<dyn SourceRevisionFence>,
+        actor_source_root: Option<Arc<RetainedDirectoryCapability>>,
     ) -> Result<Self, String> {
         let workspace_root = fs::canonicalize(&context.workspace_root)
             .map_err(|error| format!("workspace revision root cannot be normalized: {error}"))?;
-        let source_root = fs::canonicalize(source_root)
-            .map_err(|error| format!("source revision root cannot be normalized: {error}"))?;
-        let source_root_identity = RetainedDirectoryCapability::open(&source_root)
-            .map_err(|error| format!("source revision root cannot be retained: {error}"))?
-            .identity();
+        let (source_root, source_root_identity) = match actor_source_root.as_ref() {
+            Some(root) => {
+                root.validate_named_identity().map_err(|error| {
+                    format!("actor revision root identity changed during construction: {error}")
+                })?;
+                (root.path().to_path_buf(), root.identity())
+            }
+            None => {
+                let source_root = fs::canonicalize(source_root).map_err(|error| {
+                    format!("source revision root cannot be normalized: {error}")
+                })?;
+                let source_root_identity = RetainedDirectoryCapability::open(&source_root)
+                    .map_err(|error| format!("source revision root cannot be retained: {error}"))?
+                    .identity();
+                (source_root, source_root_identity)
+            }
+        };
         let mut identity = Sha256::new();
         if let WorkspaceStateScope::Scoped(digest) = &state_scope {
             identity.update(b"unica-source-revision-state-v1\0");
@@ -661,10 +682,16 @@ impl SourceRevisionService {
         )
         .and_then(|revision| SourceRevisionMachine::from_revision(revision).ok())
         .unwrap_or_default();
+        if let Some(root) = actor_source_root.as_ref() {
+            root.validate_named_identity().map_err(|error| {
+                format!("actor revision root identity changed during construction: {error}")
+            })?;
+        }
         Ok(Self {
             workspace_root,
             source_root,
             source_root_identity,
+            actor_source_root,
             record_path,
             state_scope,
             artifact_policy,
@@ -759,6 +786,12 @@ impl SourceRevisionService {
     }
 
     fn ambient_root_identity(&self) -> Result<FileIdentity, String> {
+        if let Some(root) = self.actor_source_root.as_ref() {
+            root.validate_named_identity().map_err(|error| {
+                format!("actor revision root identity changed after admission: {error}")
+            })?;
+            return Ok(root.identity());
+        }
         RetainedDirectoryCapability::open(&self.source_root)
             .map(|root| root.identity())
             .map_err(|error| format!("ambient source revision root cannot be retained: {error}"))
@@ -991,7 +1024,32 @@ impl SourceRevisionService {
             ));
         }
         let mut projected_manifest = second.manifest;
+        let limits = revision_scan_limits();
+        let mut total_bytes = projected_manifest
+            .values()
+            .try_fold(0_u64, |total, entry| {
+                total.checked_add(entry.content_bytes).ok_or_else(|| {
+                    RetainedRevisionError::new(
+                        RetainedRevisionErrorKind::Invariant,
+                        "source revision aggregate byte count overflowed",
+                    )
+                })
+            })?;
+        if total_bytes > limits.max_total_bytes {
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::Provider,
+                format!(
+                    "source revision aggregate byte limit {} exceeded",
+                    limits.max_total_bytes
+                ),
+            ));
+        }
+
+        // Apply every old-postimage removal before hashing new postimages. The
+        // limit is defined over the final manifest, so one sequential batch may
+        // replace a file and free bytes elsewhere regardless of lexical order.
         for change in changes {
+            retained_revision_checkpoint(deadline, cancellation)?;
             if self.artifact_policy.classify(&change.relative_path)
                 != RevisionArtifactDisposition::Content
             {
@@ -1003,20 +1061,36 @@ impl SourceRevisionService {
                     ),
                 ));
             }
+            let removed_bytes = projected_manifest
+                .remove(&change.relative_path)
+                .map_or(0, |entry| entry.content_bytes);
+            total_bytes = total_bytes.checked_sub(removed_bytes).ok_or_else(|| {
+                RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Invariant,
+                    "source revision aggregate byte accounting underflowed",
+                )
+            })?;
+        }
+
+        for change in changes {
+            retained_revision_checkpoint(deadline, cancellation)?;
             match &change.current {
-                StagedFileState::Absent => {
-                    projected_manifest.remove(&change.relative_path);
-                }
+                StagedFileState::Absent => {}
                 StagedFileState::Bytes(bytes) => {
-                    let mut digest = Sha256::new();
-                    digest.update(bytes);
+                    let mut reader = Cursor::new(bytes.as_slice());
+                    let (digest, content_bytes) = hash_bounded_source_reader(
+                        &mut reader,
+                        &change.relative_path,
+                        limits,
+                        &mut total_bytes,
+                        &mut || retained_revision_checkpoint(deadline, cancellation),
+                    )?;
                     projected_manifest.insert(
                         change.relative_path.clone(),
                         SourceEntryDigest {
                             kind: ManifestEntryKind::Content,
-                            digest: digest.finalize().into(),
-                            content_bytes: u64::try_from(bytes.len())
-                                .expect("staged source content length fits u64"),
+                            digest,
+                            content_bytes,
                         },
                     );
                     let mut parent = change.relative_path.parent();
@@ -2289,6 +2363,7 @@ pub(crate) mod tests {
             source_root_identity: RetainedDirectoryCapability::open(&source)
                 .unwrap()
                 .identity(),
+            actor_source_root: None,
             source_root: source,
             record_path: workspace.join("revision-test.json"),
             state_scope: WorkspaceStateScope::scoped_sha256("a".repeat(64)).unwrap(),
@@ -2965,7 +3040,10 @@ pub(crate) mod tests {
     pub(crate) fn actor_revision_artifact_policy_contract_is_complete() {
         crate::infrastructure::revision_artifact_policy::tests::platform_xml_revision_artifact_profile_is_closed_and_legacy_is_unchanged();
         crate::infrastructure::revision_artifact_policy::tests::actor_revision_policy_has_no_raw_issuer_or_scoped_service_bypass();
+        crate::infrastructure::workspace_actor::tests::active_platform_actor_cannot_select_the_legacy_revision_corpus();
+        crate::infrastructure::workspace_actor::tests::actor_revision_service_construction_retains_the_validated_root_across_substitution();
         projected_revision_artifacts_equal_retained_postpublication_capture();
+        actor_revision_projection_uses_capture_byte_limits_and_final_batch_accounting();
         crate::infrastructure::workspace_actor::tests::actor_revision_lookalike_resource_is_rejected_before_publication();
         crate::infrastructure::workspace_actor::tests::actor_revision_external_resource_drift_rotates_subsequent_admission();
         crate::infrastructure::workspace_actor::tests::actor_revision_policy_migrates_old_scoped_record_once_then_is_restart_stable();
@@ -3052,6 +3130,7 @@ pub(crate) mod tests {
             )
             .unwrap()
             .identity(),
+            actor_source_root: None,
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             artifact_policy: RevisionArtifactPolicy::legacy_v12(),
@@ -3291,6 +3370,7 @@ pub(crate) mod tests {
             )
             .unwrap()
             .identity(),
+            actor_source_root: None,
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             artifact_policy: RevisionArtifactPolicy::legacy_v12(),
@@ -3363,6 +3443,7 @@ pub(crate) mod tests {
             )
             .unwrap()
             .identity(),
+            actor_source_root: None,
             record_path: record_parent.join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             artifact_policy: RevisionArtifactPolicy::legacy_v12(),
@@ -3407,6 +3488,7 @@ pub(crate) mod tests {
             )
             .unwrap()
             .identity(),
+            actor_source_root: None,
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             artifact_policy: RevisionArtifactPolicy::legacy_v12(),
@@ -3462,6 +3544,7 @@ pub(crate) mod tests {
             )
             .unwrap()
             .identity(),
+            actor_source_root: None,
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             artifact_policy: RevisionArtifactPolicy::legacy_v12(),
@@ -3546,6 +3629,7 @@ pub(crate) mod tests {
             )
             .unwrap()
             .identity(),
+            actor_source_root: None,
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             artifact_policy: RevisionArtifactPolicy::legacy_v12(),
@@ -3664,6 +3748,7 @@ pub(crate) mod tests {
             )
             .unwrap()
             .identity(),
+            actor_source_root: None,
             record_path: workspace.path().join("revision.json"),
             state_scope: WorkspaceStateScope::LegacyPhysical,
             artifact_policy: RevisionArtifactPolicy::legacy_v12(),

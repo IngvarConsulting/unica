@@ -401,6 +401,24 @@ impl ActorRevisionServiceAuthority {
     pub(super) const fn source_profile(&self) -> SourceProfile {
         self.source_profile
     }
+
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        Arc<RetainedDirectoryCapability>,
+        WorkspaceStateScope,
+        SourceSetKind,
+        SourceFormat,
+        SourceProfile,
+    ) {
+        (
+            self.source_root,
+            self.state_scope,
+            self.source_kind,
+            self.source_format,
+            self.source_profile,
+        )
+    }
 }
 
 /// Unforgeable admission token for the retained apply publisher. Low-level
@@ -1072,6 +1090,24 @@ impl WorkspaceActor<()> {
     }
 }
 
+fn validate_legacy_workspace_identity(identity: &WorkspaceIdentity) -> Result<(), String> {
+    let [source_set] = identity.source_sets.as_slice() else {
+        return Err(
+            "legacy workspace actor requires exactly one compatibility source set".to_string(),
+        );
+    };
+    if source_set.kind != SourceSetKind::Configuration
+        || source_set.source_format != SourceFormat::Unknown
+        || source_set.source_profile != SourceProfile::legacy_workspace_service_compatibility()
+    {
+        return Err(
+            "legacy workspace actor requires Configuration/Unknown/legacy-compatibility identity"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 impl<R> WorkspaceActor<R> {
     pub(crate) fn with_runtime(
         identity: WorkspaceIdentity,
@@ -1087,6 +1123,7 @@ impl<R> WorkspaceActor<R> {
         context: WorkspaceContext,
         runtime: R,
     ) -> Result<Self, String> {
+        validate_legacy_workspace_identity(&identity)?;
         Self::with_runtime_scope(
             identity,
             context,
@@ -4189,7 +4226,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn active_platform_actor_cannot_select_the_legacy_revision_corpus() {
+    pub(crate) fn active_platform_actor_cannot_select_the_legacy_revision_corpus() {
         let fixture = actor_fixture("revision-active-legacy-bypass", &["src"]);
         let source = &fixture.roots[0];
         let package = source.join("XDTOPackages/Sample/Ext/Package.bin");
@@ -4236,7 +4273,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn actor_revision_service_construction_retains_the_validated_root_across_substitution() {
+    pub(crate) fn actor_revision_service_construction_retains_the_validated_root_across_substitution(
+    ) {
         if !can_swap_named_child_behind_retained_handle_for_test() {
             return;
         }
@@ -4269,26 +4307,25 @@ pub(crate) mod tests {
         }
 
         match fixture.actor.source_revision_service(&binding) {
-            Ok(_) if raced.is_err() => {
-                let before = fixture
-                    .actor
-                    .capture_revision(
-                        &binding,
+            Ok(service) if raced.is_err() => {
+                let root = binding.retained_root();
+                let before = service
+                    .observe_retained_operation(
+                        &root,
                         ProviderDeadline::from_budget(Duration::from_secs(5)),
                         &CancellationToken::new(),
                     )
                     .unwrap()
-                    .revision;
+                    .revision_identity();
                 std::fs::write(&package, b"after").unwrap();
-                let after = fixture
-                    .actor
-                    .capture_revision(
-                        &binding,
+                let after = service
+                    .observe_retained_operation(
+                        &root,
                         ProviderDeadline::from_budget(Duration::from_secs(5)),
                         &CancellationToken::new(),
                     )
                     .unwrap()
-                    .revision;
+                    .revision_identity();
                 if before == after {
                     failures.push(
                         "restored actor service omitted Package.bin from its exact corpus"
