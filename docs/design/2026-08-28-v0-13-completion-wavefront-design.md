@@ -346,10 +346,13 @@ plan_<family>_batch(
 ) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError>
 ```
 
-Общая validation seam создаётся в
-`crates/unica-coder/src/domain/validation.rs` как `ValidationView` с двумя
-закрытыми вариантами: persisted actor snapshot и staged `ApplyStagedState`.
-Конкретный validator получает view и не открывает filesystem самостоятельно.
+`crates/unica-coder/src/domain/validation.rs` хранит только типы target,
+finding и failure. Общая read seam создаётся в
+`crates/unica-coder/src/application/validation.rs` как порт `ValidationView`,
+читающий типизированные логические узлы. Infrastructure реализует два adapter:
+persisted actor snapshot и staged `ApplyStagedState`. Поэтому domain не зависит
+от infrastructure, а конкретный validator получает view и не открывает
+filesystem самостоятельно.
 
 Worker меняет только своё семейство, новый isolated handler и собственные
 fixtures/tests. Если нужен shared seam, worker отдаёт integrator падающий тест,
