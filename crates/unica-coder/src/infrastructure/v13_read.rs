@@ -211,6 +211,16 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self.read.configuration_payload_read_count()
     }
 
+    #[cfg(test)]
+    pub(crate) const fn source_set_kind_for_test(&self) -> SourceSetKind {
+        self.read.source_set_kind()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn deadline_for_test(&self) -> ProviderDeadline {
+        self.deadline
+    }
+
     fn typed_payload(&self, route: &LogicalTreeRoute) -> Result<Value, ViewError> {
         let admitted = ViewSourceSnapshot {
             source_set_identity: self.read.source_set_identity().to_string(),

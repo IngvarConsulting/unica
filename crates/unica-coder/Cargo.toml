@@ -60,3 +60,5 @@ cap-fs-ext.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true
+quote.workspace = true
+syn.workspace = true

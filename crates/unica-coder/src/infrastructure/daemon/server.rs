@@ -104,14 +104,15 @@ impl ActorReadSourceCapability {
         &self,
         cancellation: &'a CancellationToken,
     ) -> Result<crate::infrastructure::v13_read::LogicalViewReadAuthority<'a>, String> {
-        let platform_profile = self.source_profile().platform_profile().ok_or_else(|| {
+        let source_profile = self.binding.source_profile();
+        let platform_profile = source_profile.platform_profile().ok_or_else(|| {
             "actor-bound logical source has no supported platform profile".to_string()
         })?;
         let read =
             crate::infrastructure::v13_read_port::ProviderReadAuthority::new_with_revision_lease(
-                self.source_set_name(),
+                self.binding.source_set_name(),
                 self.identity.clone(),
-                self.source_kind(),
+                self.binding.source_kind(),
                 self.binding.retained_root(),
                 self.fence.revision(),
             );
@@ -1597,113 +1598,425 @@ pub(crate) mod actor_capacity_tests {
     }
 
     fn audit_actor_read_source_capability_api(source: &str) -> Result<(), String> {
-        let lines = source.lines().collect::<Vec<_>>();
-        let declarations = lines
-            .iter()
-            .enumerate()
-            .filter(|(_, line)| line.trim() == "pub(super) struct ActorReadSourceCapability {")
-            .collect::<Vec<_>>();
-        if declarations.len() != 1 {
-            return Err(format!(
-                "actor read capability must have exactly one sibling-visible declaration, found {}",
-                declarations.len()
-            ));
-        }
-        let declaration_line = declarations[0].0;
-        let mut attribute_line = declaration_line;
-        while attribute_line > 0 && lines[attribute_line - 1].trim().starts_with("#[") {
-            attribute_line -= 1;
-        }
-        if lines[attribute_line..declaration_line]
-            .iter()
-            .any(|line| line.contains("Clone"))
-        {
-            return Err("actor read capability must not implement Clone".to_string());
+        use quote::ToTokens;
+        use syn::visit::Visit;
+
+        const CAPABILITY: &str = "ActorReadSourceCapability";
+
+        fn tokens(node: &impl ToTokens) -> String {
+            node.to_token_stream().to_string()
         }
 
-        let (_, after_declaration) = source
-            .split_once("pub(super) struct ActorReadSourceCapability {")
-            .expect("the unique declaration was found above");
-        let (body, _) = after_declaration.split_once("\n}").ok_or_else(|| {
-            "actor read capability declaration remains structurally bounded".to_string()
-        })?;
-        let mut fields = body
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>();
-        let mut expected_fields = vec![
-            "binding: ProviderRootBinding,",
-            "identity: String,",
-            "fence: WorkspaceLogicalReadFence,",
-            "deadline: ProviderDeadline,",
-        ];
-        fields.sort_unstable();
-        expected_fields.sort_unstable();
-        if fields != expected_fields {
-            return Err(format!(
-                "actor read capability fields must remain the exact private sealed shape; found {fields:?}"
-            ));
+        fn mentions_capability(node: &impl ToTokens) -> bool {
+            tokens(node).contains(CAPABILITY)
         }
 
-        let impl_declarations = lines
-            .iter()
-            .filter(|line| line.trim() == "impl ActorReadSourceCapability {")
-            .count();
-        let other_impls = lines
-            .iter()
-            .filter(|line| {
-                let line = line.trim();
-                line.starts_with("impl ")
-                    && line.contains("ActorReadSourceCapability")
-                    && line != "impl ActorReadSourceCapability {"
-            })
-            .map(|line| line.trim())
-            .collect::<Vec<_>>();
-        if impl_declarations != 1 || !other_impls.is_empty() {
-            return Err(format!(
-                "actor read capability must have exactly one inherent impl and no trait/extra impls; inherent={impl_declarations}, extra={other_impls:?}"
-            ));
+        fn is_pub_super(visibility: &syn::Visibility) -> bool {
+            matches!(
+                visibility,
+                syn::Visibility::Restricted(restricted)
+                    if restricted.in_token.is_none() && restricted.path.is_ident("super")
+            )
         }
 
-        let (_, after_impl) = source
-            .split_once("impl ActorReadSourceCapability {\n")
-            .expect("the unique inherent impl was found above");
-        let (impl_body, _) = after_impl
-            .split_once("\n}\n\nstruct ActorLogicalReadSourceLease")
-            .ok_or_else(|| {
-                "actor read capability implementation remains structurally bounded".to_string()
-            })?;
-        let mut sibling_items = Vec::new();
-        let impl_lines = impl_body.lines().collect::<Vec<_>>();
-        let mut line_index = 0;
-        while line_index < impl_lines.len() {
-            let line = impl_lines[line_index].trim();
-            if line.starts_with("pub(") || line.starts_with("pub ") {
-                let mut declaration = line.to_string();
-                while !declaration.contains('{') && !declaration.ends_with(';') {
-                    line_index += 1;
-                    let continuation = impl_lines.get(line_index).ok_or_else(|| {
-                        "sibling-visible capability item has no body or terminator".to_string()
-                    })?;
-                    declaration.push(' ');
-                    declaration.push_str(continuation.trim());
-                }
-                sibling_items.push(declaration.split_whitespace().collect::<Vec<_>>().join(" "));
+        fn is_exact_dead_code_allow(attributes: &[syn::Attribute]) -> bool {
+            matches!(
+                attributes,
+                [attribute]
+                    if attribute.path().is_ident("allow")
+                        && matches!(
+                            &attribute.meta,
+                            syn::Meta::List(list) if list.tokens.to_string() == "dead_code"
+                        )
+            )
+        }
+
+        fn expression_is(expression: &syn::Expr, expected: &str) -> bool {
+            let expected = syn::parse_str::<syn::Expr>(expected)
+                .expect("the closed authority expression fixture parses");
+            tokens(expression) == tokens(&expected)
+        }
+
+        fn signature_is(signature: &syn::Signature, expected: &str) -> bool {
+            let expected = syn::parse_str::<syn::Signature>(expected)
+                .expect("the closed capability signature fixture parses");
+            tokens(signature) == tokens(&expected)
+        }
+
+        fn local_initializer<'a>(
+            statement: &'a syn::Stmt,
+            expected_name: &str,
+        ) -> Result<&'a syn::Expr, String> {
+            let syn::Stmt::Local(local) = statement else {
+                return Err(format!(
+                    "`{expected_name}` must be a local authority binding"
+                ));
+            };
+            let syn::Pat::Ident(pattern) = &local.pat else {
+                return Err(format!(
+                    "`{expected_name}` must use an exact identifier pattern"
+                ));
+            };
+            if pattern.ident != expected_name
+                || pattern.by_ref.is_some()
+                || pattern.mutability.is_some()
+            {
+                return Err(format!("unexpected authority local `{}`", pattern.ident));
             }
-            line_index += 1;
+            let Some(initializer) = &local.init else {
+                return Err(format!("`{expected_name}` has no initializer"));
+            };
+            if initializer.diverge.is_some() {
+                return Err(format!(
+                    "`{expected_name}` must not carry a let-else fallback"
+                ));
+            }
+            Ok(initializer.expr.as_ref())
         }
 
-        let mut expected_sibling_items = vec![
-            "pub(super) fn source_set_name(&self) -> &str {".to_string(),
-            "pub(super) const fn deadline(&self) -> ProviderDeadline {".to_string(),
-            "pub(super) fn logical_view_read_authority<'a>( &self, cancellation: &'a CancellationToken, ) -> Result<crate::infrastructure::v13_read::LogicalViewReadAuthority<'a>, String> {".to_string(),
-        ];
-        sibling_items.sort_unstable();
-        expected_sibling_items.sort_unstable();
-        if sibling_items != expected_sibling_items {
+        fn call_arguments<'a>(
+            expression: &'a syn::Expr,
+            expected_function: &str,
+        ) -> Result<&'a syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>, String> {
+            let syn::Expr::Call(call) = expression else {
+                return Err(format!(
+                    "authority dataflow must call `{expected_function}`"
+                ));
+            };
+            if !expression_is(call.func.as_ref(), expected_function) {
+                return Err(format!(
+                    "authority dataflow called `{}` instead of `{expected_function}`",
+                    tokens(call.func.as_ref())
+                ));
+            }
+            Ok(&call.args)
+        }
+
+        fn audit_builder_body(method: &syn::ImplItemFn) -> Result<(), String> {
+            if method.block.stmts.len() != 4 {
+                return Err(format!(
+                    "logical authority builder must have four closed dataflow statements, found {}",
+                    method.block.stmts.len()
+                ));
+            }
+            let source_profile = local_initializer(&method.block.stmts[0], "source_profile")?;
+            if !expression_is(source_profile, "self.binding.source_profile()") {
+                return Err(
+                    "source profile must come directly from the private binding".to_string()
+                );
+            }
+
+            let platform_profile = local_initializer(&method.block.stmts[1], "platform_profile")?;
+            let syn::Expr::Try(platform_profile) = platform_profile else {
+                return Err("platform profile must fail closed with `?`".to_string());
+            };
+            let syn::Expr::MethodCall(to_result) = platform_profile.expr.as_ref() else {
+                return Err("platform profile must fail closed through `ok_or_else`".to_string());
+            };
+            if to_result.method != "ok_or_else" || to_result.args.len() != 1 {
+                return Err(
+                    "platform profile must fail closed through exact `ok_or_else`".to_string(),
+                );
+            }
+            let syn::Expr::MethodCall(from_profile) = to_result.receiver.as_ref() else {
+                return Err(
+                    "platform profile must be derived from the bound source profile".to_string(),
+                );
+            };
+            if from_profile.method != "platform_profile"
+                || !from_profile.args.is_empty()
+                || !expression_is(from_profile.receiver.as_ref(), "source_profile")
+                || !matches!(to_result.args.first(), Some(syn::Expr::Closure(_)))
+            {
+                return Err(
+                    "platform profile must be derived only from `source_profile`".to_string(),
+                );
+            }
+
+            let read = local_initializer(&method.block.stmts[2], "read")?;
+            let read_args = call_arguments(
+                read,
+                "crate::infrastructure::v13_read_port::ProviderReadAuthority::new_with_revision_lease",
+            )?;
+            let expected_read_args = [
+                "self.binding.source_set_name()",
+                "self.identity.clone()",
+                "self.binding.source_kind()",
+                "self.binding.retained_root()",
+                "self.fence.revision()",
+            ];
+            if read_args.len() != expected_read_args.len()
+                || read_args
+                    .iter()
+                    .zip(expected_read_args)
+                    .any(|(actual, expected)| !expression_is(actual, expected))
+            {
+                return Err(format!(
+                    "provider read authority must use exact binding/identity/fence dataflow; found `{}`",
+                    tokens(read)
+                ));
+            }
+
+            let syn::Stmt::Expr(result, None) = &method.block.stmts[3] else {
+                return Err("logical authority builder must return one exact authority".to_string());
+            };
+            let ok_args = call_arguments(result, "Ok")?;
+            let Some(authority) = ok_args.first().filter(|_| ok_args.len() == 1) else {
+                return Err(
+                    "logical authority builder must return exactly one `Ok` value".to_string(),
+                );
+            };
+            let authority_args = call_arguments(
+                authority,
+                "crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority",
+            )?;
+            let expected_authority_args =
+                ["cancellation", "read", "platform_profile", "self.deadline"];
+            if authority_args.len() != expected_authority_args.len()
+                || authority_args
+                    .iter()
+                    .zip(expected_authority_args)
+                    .any(|(actual, expected)| !expression_is(actual, expected))
+            {
+                return Err(format!(
+                    "logical authority must preserve cancellation/read/profile/deadline exactly; found `{}`",
+                    tokens(authority)
+                ));
+            }
+            Ok(())
+        }
+
+        #[derive(Default)]
+        struct CapabilityItems<'ast> {
+            declarations: Vec<&'ast syn::ItemStruct>,
+            implementations: Vec<&'ast syn::ItemImpl>,
+            aliases: Vec<String>,
+            macro_references: Vec<String>,
+        }
+
+        impl<'ast> Visit<'ast> for CapabilityItems<'ast> {
+            fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+                let test_only = item.attrs.iter().any(|attribute| {
+                    attribute.path().is_ident("cfg")
+                        && matches!(
+                            &attribute.meta,
+                            syn::Meta::List(list) if list.tokens.to_string() == "test"
+                        )
+                });
+                if !test_only {
+                    syn::visit::visit_item_mod(self, item);
+                }
+            }
+
+            fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+                if item.ident == CAPABILITY {
+                    self.declarations.push(item);
+                }
+                syn::visit::visit_item_struct(self, item);
+            }
+
+            fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+                if mentions_capability(item.self_ty.as_ref()) {
+                    self.implementations.push(item);
+                }
+                syn::visit::visit_item_impl(self, item);
+            }
+
+            fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+                self.macro_references.push(tokens(item));
+            }
+
+            fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+                if mentions_capability(item.ty.as_ref()) {
+                    self.aliases.push(tokens(item));
+                }
+                syn::visit::visit_item_type(self, item);
+            }
+
+            fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+                if mentions_capability(item) {
+                    self.aliases.push(tokens(item));
+                }
+                syn::visit::visit_item_use(self, item);
+            }
+
+            fn visit_stmt_macro(&mut self, statement: &'ast syn::StmtMacro) {
+                if !statement.mac.path.is_ident("assert")
+                    && !statement.mac.path.is_ident("assert_eq")
+                    && !statement.mac.path.is_ident("assert_ne")
+                    && !statement.mac.path.is_ident("debug_assert")
+                    && !statement.mac.path.is_ident("debug_assert_eq")
+                    && !statement.mac.path.is_ident("debug_assert_ne")
+                {
+                    self.macro_references.push(tokens(statement));
+                }
+            }
+        }
+
+        let file = syn::parse_file(source)
+            .map_err(|error| format!("actor capability source must parse as Rust AST: {error}"))?;
+        let mut found = CapabilityItems::default();
+        found.visit_file(&file);
+        if !found.macro_references.is_empty() {
             return Err(format!(
-                "actor read capability sibling API must be the exact read-only allowlist; found {sibling_items:?}"
+                "production item-position macros could generate actor read capability: {:?}",
+                found.macro_references
+            ));
+        }
+        if !found.aliases.is_empty() {
+            return Err(format!(
+                "actor read capability must not be reopened through a type/use alias: {:?}",
+                found.aliases
+            ));
+        }
+        let [declaration] = found.declarations.as_slice() else {
+            return Err(format!(
+                "actor read capability must have exactly one named declaration, found {}",
+                found.declarations.len()
+            ));
+        };
+        if !is_pub_super(&declaration.vis)
+            || !declaration.generics.params.is_empty()
+            || declaration.generics.where_clause.is_some()
+            || !is_exact_dead_code_allow(&declaration.attrs)
+        {
+            return Err("actor read capability declaration must be exact `pub(super)` with no derives or generics".to_string());
+        }
+        let syn::Fields::Named(named) = &declaration.fields else {
+            return Err("actor read capability must have four named private fields".to_string());
+        };
+        let mut actual_fields = std::collections::BTreeMap::new();
+        for field in &named.named {
+            if !matches!(field.vis, syn::Visibility::Inherited) || !field.attrs.is_empty() {
+                return Err(
+                    "actor read capability fields must be private and attribute-free".to_string(),
+                );
+            }
+            let Some(name) = &field.ident else {
+                return Err("actor read capability field has no identifier".to_string());
+            };
+            actual_fields.insert(name.to_string(), tokens(&field.ty));
+        }
+        let expected_fields = std::collections::BTreeMap::from([
+            ("binding".to_string(), "ProviderRootBinding".to_string()),
+            ("deadline".to_string(), "ProviderDeadline".to_string()),
+            ("fence".to_string(), "WorkspaceLogicalReadFence".to_string()),
+            ("identity".to_string(), "String".to_string()),
+        ]);
+        if actual_fields != expected_fields {
+            return Err(format!(
+                "actor read capability fields must remain the exact private typed shape; found {actual_fields:?}"
+            ));
+        }
+
+        let [implementation] = found.implementations.as_slice() else {
+            return Err(format!(
+                "actor read capability must have exactly one inherent impl and no trait/extra impls, found {}",
+                found.implementations.len()
+            ));
+        };
+        if implementation.trait_.is_some()
+            || implementation.defaultness.is_some()
+            || implementation.unsafety.is_some()
+            || !implementation.generics.params.is_empty()
+            || implementation.generics.where_clause.is_some()
+            || !is_exact_dead_code_allow(&implementation.attrs)
+        {
+            return Err("actor read capability permits one exact inherent impl and no trait/default/unsafe/generic impl".to_string());
+        }
+
+        let expected_methods = std::collections::BTreeMap::from([
+            (
+                "source_set_name",
+                (
+                    true,
+                    "fn source_set_name(&self) -> &str",
+                    "self.binding.source_set_name()",
+                ),
+            ),
+            (
+                "source_kind",
+                (
+                    false,
+                    "const fn source_kind(&self) -> SourceSetKind",
+                    "self.binding.source_kind()",
+                ),
+            ),
+            (
+                "source_format",
+                (
+                    false,
+                    "const fn source_format(&self) -> SourceFormat",
+                    "self.binding.source_format()",
+                ),
+            ),
+            (
+                "source_profile",
+                (
+                    false,
+                    "const fn source_profile(&self) -> SourceProfile",
+                    "self.binding.source_profile()",
+                ),
+            ),
+            (
+                "deadline",
+                (
+                    true,
+                    "const fn deadline(&self) -> ProviderDeadline",
+                    "self.deadline",
+                ),
+            ),
+            (
+                "logical_view_read_authority",
+                (
+                    true,
+                    "fn logical_view_read_authority<'a>(&self, cancellation: &'a CancellationToken,) -> Result<crate::infrastructure::v13_read::LogicalViewReadAuthority<'a>, String>",
+                    "",
+                ),
+            ),
+        ]);
+        let mut seen_methods = std::collections::BTreeSet::new();
+        for item in &implementation.items {
+            let syn::ImplItem::Fn(method) = item else {
+                return Err("actor read capability inherent impl permits methods only".to_string());
+            };
+            let name = method.sig.ident.to_string();
+            let Some((sibling_visible, expected_signature, expected_body)) =
+                expected_methods.get(name.as_str())
+            else {
+                return Err(format!(
+                    "actor read capability has unapproved method `{name}`"
+                ));
+            };
+            if !seen_methods.insert(name.clone())
+                || !method.attrs.is_empty()
+                || (*sibling_visible && !is_pub_super(&method.vis))
+                || (!*sibling_visible && !matches!(method.vis, syn::Visibility::Inherited))
+                || !signature_is(&method.sig, expected_signature)
+            {
+                return Err(format!(
+                    "actor read capability method `{name}` has unapproved visibility/signature/attributes; found `{}`, expected `{expected_signature}`",
+                    tokens(&method.sig)
+                ));
+            }
+            if name == "logical_view_read_authority" {
+                audit_builder_body(method)?;
+            } else {
+                let [syn::Stmt::Expr(expression, None)] = method.block.stmts.as_slice() else {
+                    return Err(format!(
+                        "actor capability accessor `{name}` must be one expression"
+                    ));
+                };
+                if !expression_is(expression, expected_body) {
+                    return Err(format!(
+                        "actor capability accessor `{name}` detached from its private authority field"
+                    ));
+                }
+            }
+        }
+        if seen_methods.len() != expected_methods.len() {
+            return Err(format!(
+                "actor read capability method set is incomplete: found {seen_methods:?}"
             ));
         }
         Ok(())
@@ -1713,6 +2026,72 @@ pub(crate) mod actor_capacity_tests {
     pub(crate) fn actor_read_source_capability_is_sealed_after_binding() {
         let source = include_str!("server.rs");
         audit_actor_read_source_capability_api(source).unwrap_or_else(|error| panic!("{error}"));
+        actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc();
+        actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator();
+        actor_read_source_capability_ast_audit_rejects_split_sibling_visibility();
+        actor_read_source_capability_ast_audit_rejects_multiline_derive_clone();
+        actor_read_source_capability_ast_audit_rejects_multiline_manual_clone();
+        actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl();
+        actor_read_source_capability_ast_audit_rejects_macro_generated_api();
+        actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation();
+        actor_read_source_capability_ast_audit_rejects_type_alias_impl();
+        actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile();
+        actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind();
+        actor_read_source_capability_ast_audit_rejects_replenished_deadline();
+    }
+
+    #[test]
+    fn actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc() {
+        use quote::ToTokens;
+
+        let source = include_str!("server.rs");
+        audit_actor_read_source_capability_api(source).unwrap_or_else(|error| panic!("{error}"));
+        let file = syn::parse_file(source).expect("the audited production source parses");
+        let declaration = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == "ActorReadSourceCapability" => Some(item),
+                _ => None,
+            })
+            .expect("the audited production declaration is present")
+            .to_token_stream()
+            .to_string();
+        let fixture = format!(
+            r#"
+mod daemon {{
+    mod owner {{
+        struct ProviderRootBinding;
+        struct WorkspaceLogicalReadFence;
+        struct ProviderDeadline;
+        {declaration}
+    }}
+    mod sibling {{
+        fn inspect(capability: &super::owner::ActorReadSourceCapability) {{
+            let _ = &capability.binding;
+        }}
+    }}
+}}
+fn main() {{}}
+"#
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let fixture_path = directory.path().join("actor-capability-sibling-privacy.rs");
+        std::fs::write(&fixture_path, fixture).unwrap();
+        let output = std::process::Command::new("rustc")
+            .arg("--edition=2021")
+            .arg("--emit=metadata")
+            .arg("--out-dir")
+            .arg(directory.path())
+            .arg(&fixture_path)
+            .output()
+            .expect("rustc is available to the Rust test suite");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success() && stderr.contains("E0616") && stderr.contains("binding"),
+            "a sibling module accessed the audited private binding; status={:?}, stderr={stderr}",
+            output.status.code()
+        );
     }
 
     #[test]
@@ -1774,6 +2153,320 @@ pub(crate) mod actor_capacity_tests {
     }
 
     #[test]
+    fn actor_read_source_capability_ast_audit_rejects_split_sibling_visibility() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "impl ActorReadSourceCapability {",
+            r#"impl ActorReadSourceCapability {
+    pub
+    (super) fn forge(
+        binding: ProviderRootBinding,
+        identity: String,
+        fence: WorkspaceLogicalReadFence,
+        deadline: ProviderDeadline,
+    ) -> Self {
+        Self { binding, identity, fence, deadline }
+    }"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "split `pub (super)` visibility escaped the capability API audit"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_multiline_derive_clone() {
+        let source = include_str!("server.rs");
+        let multiline_derive = source.replacen(
+            "#[allow(dead_code)]\npub(super) struct ActorReadSourceCapability {",
+            "#[allow(dead_code)]\n#[derive(\n    Clone\n)]\npub(super) struct ActorReadSourceCapability {",
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&multiline_derive).is_err(),
+            "multiline derive Clone escaped the capability API audit"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_multiline_manual_clone() {
+        let source = include_str!("server.rs");
+        let manual_clone = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"impl
+    Clone
+    for ActorReadSourceCapability {
+        fn clone(&self) -> Self {
+            panic!("hostile clone")
+        }
+    }
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&manual_clone).is_err(),
+            "multiline manual Clone escaped the capability API audit"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"impl
+    ActorReadSourceCapability {
+        pub(super) fn forge_from_parts(
+            binding: ProviderRootBinding,
+            identity: String,
+            fence: WorkspaceLogicalReadFence,
+            deadline: ProviderDeadline,
+        ) -> Self {
+            Self { binding, identity, fence, deadline }
+        }
+    }
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "multiline extra inherent impl escaped the capability API audit"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_macro_generated_api() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"macro_rules! add_actor_capability_api {
+        ($capability:ty) => {
+            impl $capability {
+                pub(super) fn forge_from_macro(
+                    binding: ProviderRootBinding,
+                    identity: String,
+                    fence: WorkspaceLogicalReadFence,
+                    deadline: ProviderDeadline,
+                ) -> Self {
+                    Self { binding, identity, fence, deadline }
+                }
+            }
+        };
+    }
+    add_actor_capability_api!(ActorReadSourceCapability);
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "macro-generated sibling API escaped the capability API audit"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            "reopen_sealed_capability!();\n\nstruct ActorLogicalReadLease {",
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "an opaque item-position macro could generate a sibling capability API"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_type_alias_impl() {
+        let source = include_str!("server.rs");
+        let hostile = source.replacen(
+            "struct ActorLogicalReadLease {",
+            r#"type CapabilityAlias = ActorReadSourceCapability;
+    impl CapabilityAlias {
+        pub(super) fn forge_alias(
+            binding: ProviderRootBinding,
+            identity: String,
+            fence: WorkspaceLogicalReadFence,
+            deadline: ProviderDeadline,
+        ) -> Self {
+            Self { binding, identity, fence, deadline }
+        }
+    }
+
+struct ActorLogicalReadLease {"#,
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hostile).is_err(),
+            "a type alias reopened the sealed capability outside the enumerated impl"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile() {
+        let source = include_str!("server.rs");
+        let hardcoded_profile = source.replacen(
+            "source_profile.platform_profile()",
+            "SourceProfile::platform_xml_8_3_27_format_2_20().platform_profile()",
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hardcoded_profile).is_err(),
+            "hardcoded platform profile escaped the authority-construction dataflow audit"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind() {
+        let source = include_str!("server.rs");
+        let hardcoded_kind = source.replacen(
+            "self.binding.source_kind(),\n                self.binding.retained_root(),",
+            "SourceSetKind::Configuration,\n                self.binding.retained_root(),",
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&hardcoded_kind).is_err(),
+            "hardcoded source kind escaped the authority-construction dataflow audit"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_replenished_deadline() {
+        let source = include_str!("server.rs");
+        let replenished_deadline = source.replacen(
+            "platform_profile,\n                self.deadline,",
+            "platform_profile,\n                ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),",
+            1,
+        );
+        assert!(
+            audit_actor_read_source_capability_api(&replenished_deadline).is_err(),
+            "replenished deadline escaped the authority-construction dataflow audit"
+        );
+    }
+
+    fn actor_issued_read_capability(
+        kind: SourceSetKind,
+        profile: SourceProfile,
+        deadline: ProviderDeadline,
+    ) -> (
+        tempfile::TempDir,
+        Arc<WorkspaceActor>,
+        ActorReadSourceCapability,
+    ) {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let context = discover_workspace(Some(workspace.path().to_path_buf())).unwrap();
+        let actor = WorkspaceActorRegistry::default()
+            .get_or_create(
+                &context,
+                [WorkspaceSourceSetInput::new(
+                    "main",
+                    &source,
+                    kind,
+                    SourceFormat::PlatformXml,
+                    profile,
+                )],
+                "canonical-v0.13",
+            )
+            .unwrap();
+        let binding = actor.bind_provider_root("main", &source).unwrap();
+        let cancellation = CancellationToken::new();
+        let fence = actor
+            .capture_logical_read_revision(&binding, deadline, &cancellation)
+            .unwrap();
+        let identity = format!(
+            "{}:{}",
+            actor.safe_identity_hash().unwrap().as_str(),
+            binding.source_set_name()
+        );
+        let capability = ActorReadSourceCapability {
+            binding,
+            identity,
+            fence,
+            deadline,
+        };
+        (workspace, actor, capability)
+    }
+
+    #[test]
+    fn actor_read_authority_builder_rejects_actor_bound_unsupported_profile() {
+        let (_workspace, _actor, capability) = actor_issued_read_capability(
+            SourceSetKind::Configuration,
+            SourceProfile::TestPlatform8_3_28Format2_20,
+            ProviderDeadline::from_budget(Duration::from_secs(30)),
+        );
+        let cancellation = CancellationToken::new();
+        let error = capability
+            .logical_view_read_authority(&cancellation)
+            .err()
+            .expect("an unsupported actor-bound profile must fail closed");
+        assert_eq!(
+            error,
+            "actor-bound logical source has no supported platform profile"
+        );
+    }
+
+    #[test]
+    fn actor_read_authority_builder_preserves_actor_bound_source_kind() {
+        let (_workspace, _actor, capability) = actor_issued_read_capability(
+            SourceSetKind::Extension,
+            SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ProviderDeadline::from_budget(Duration::from_secs(30)),
+        );
+        let cancellation = CancellationToken::new();
+        let authority = capability
+            .logical_view_read_authority(&cancellation)
+            .expect("the supported actor-bound profile builds a reader");
+        assert_eq!(
+            authority.source_set_kind_for_test(),
+            SourceSetKind::Extension,
+            "the built reader detached source kind from its actor-issued binding"
+        );
+    }
+
+    #[test]
+    fn actor_read_authority_builder_preserves_non_replenishing_deadline() {
+        let started = Instant::now();
+        set_logical_read_now(started);
+        let deadline =
+            ProviderDeadline::with_clock(started + Duration::from_secs(30), logical_read_now);
+        let (_workspace, _actor, capability) = actor_issued_read_capability(
+            SourceSetKind::Configuration,
+            SourceProfile::platform_xml_8_3_27_format_2_20(),
+            deadline,
+        );
+        set_logical_read_now(started + Duration::from_secs(11));
+        let cancellation = CancellationToken::new();
+        let authority = capability
+            .logical_view_read_authority(&cancellation)
+            .expect("the supported actor-bound profile builds a reader");
+        assert_eq!(authority.deadline_for_test(), deadline);
+        assert_eq!(
+            authority.deadline_for_test().remaining(),
+            Duration::from_secs(19),
+            "the authority builder replenished the captured operation deadline"
+        );
+    }
+
+    #[test]
+    fn actor_read_authority_builder_uses_only_actor_bound_semantics() {
+        actor_read_authority_builder_rejects_actor_bound_unsupported_profile();
+        actor_read_authority_builder_preserves_actor_bound_source_kind();
+        actor_read_authority_builder_preserves_non_replenishing_deadline();
+    }
+
+    #[test]
     pub(crate) fn actor_authenticated_source_architecture_names_complete_witnesses() {
         fn front_matter_value<'a>(document: &'a str, key: &str) -> &'a str {
             document
@@ -1825,6 +2518,28 @@ pub(crate) mod actor_capacity_tests {
         assert!(
             aggregate.contains("duplicate_source_set_names_with_distinct_roots_are_rejected();"),
             "decision aggregate omits duplicate source-set name rejection"
+        );
+
+        let capability_aggregate_declaration = [
+            "pub(crate) fn actor_authenticated_source_capability_contract_is_complete",
+            "()",
+        ]
+        .concat();
+        let (_, after_capability_aggregate) = source
+            .split_once(&capability_aggregate_declaration)
+            .expect("capability aggregate remains available to the architecture witness");
+        let (capability_aggregate, _) = after_capability_aggregate
+            .split_once("\n    }\n")
+            .expect("capability aggregate remains structurally bounded");
+        assert!(
+            capability_aggregate
+                .contains("actor_read_source_capability_is_sealed_after_binding();"),
+            "capability aggregate omits the complete AST and sibling-privacy witness"
+        );
+        assert!(
+            capability_aggregate
+                .contains("actor_read_authority_builder_uses_only_actor_bound_semantics();"),
+            "capability aggregate omits bound profile/kind/deadline behavior"
         );
     }
 
@@ -2052,6 +2767,7 @@ pub(crate) mod actor_capacity_tests {
     #[test]
     pub(crate) fn actor_authenticated_source_capability_contract_is_complete() {
         actor_read_source_capability_is_sealed_after_binding();
+        actor_read_authority_builder_uses_only_actor_bound_semantics();
         provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile();
         crate::infrastructure::workspace_actor::tests::capabilities_do_not_cross_distinct_actor_instances_with_equal_identity();
         crate::infrastructure::workspace_actor::tests::workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication();
