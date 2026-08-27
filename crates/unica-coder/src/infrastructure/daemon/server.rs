@@ -1596,49 +1596,179 @@ pub(crate) mod actor_capacity_tests {
         LOGICAL_READ_NOW.with(|current| *current.borrow_mut() = Some(now));
     }
 
+    fn audit_actor_read_source_capability_api(source: &str) -> Result<(), String> {
+        let lines = source.lines().collect::<Vec<_>>();
+        let declarations = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.trim() == "pub(super) struct ActorReadSourceCapability {")
+            .collect::<Vec<_>>();
+        if declarations.len() != 1 {
+            return Err(format!(
+                "actor read capability must have exactly one sibling-visible declaration, found {}",
+                declarations.len()
+            ));
+        }
+        let declaration_line = declarations[0].0;
+        let mut attribute_line = declaration_line;
+        while attribute_line > 0 && lines[attribute_line - 1].trim().starts_with("#[") {
+            attribute_line -= 1;
+        }
+        if lines[attribute_line..declaration_line]
+            .iter()
+            .any(|line| line.contains("Clone"))
+        {
+            return Err("actor read capability must not implement Clone".to_string());
+        }
+
+        let (_, after_declaration) = source
+            .split_once("pub(super) struct ActorReadSourceCapability {")
+            .expect("the unique declaration was found above");
+        let (body, _) = after_declaration.split_once("\n}").ok_or_else(|| {
+            "actor read capability declaration remains structurally bounded".to_string()
+        })?;
+        let mut fields = body
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        let mut expected_fields = vec![
+            "binding: ProviderRootBinding,",
+            "identity: String,",
+            "fence: WorkspaceLogicalReadFence,",
+            "deadline: ProviderDeadline,",
+        ];
+        fields.sort_unstable();
+        expected_fields.sort_unstable();
+        if fields != expected_fields {
+            return Err(format!(
+                "actor read capability fields must remain the exact private sealed shape; found {fields:?}"
+            ));
+        }
+
+        let impl_declarations = lines
+            .iter()
+            .filter(|line| line.trim() == "impl ActorReadSourceCapability {")
+            .count();
+        let other_impls = lines
+            .iter()
+            .filter(|line| {
+                let line = line.trim();
+                line.starts_with("impl ")
+                    && line.contains("ActorReadSourceCapability")
+                    && line != "impl ActorReadSourceCapability {"
+            })
+            .map(|line| line.trim())
+            .collect::<Vec<_>>();
+        if impl_declarations != 1 || !other_impls.is_empty() {
+            return Err(format!(
+                "actor read capability must have exactly one inherent impl and no trait/extra impls; inherent={impl_declarations}, extra={other_impls:?}"
+            ));
+        }
+
+        let (_, after_impl) = source
+            .split_once("impl ActorReadSourceCapability {\n")
+            .expect("the unique inherent impl was found above");
+        let (impl_body, _) = after_impl
+            .split_once("\n}\n\nstruct ActorLogicalReadSourceLease")
+            .ok_or_else(|| {
+                "actor read capability implementation remains structurally bounded".to_string()
+            })?;
+        let mut sibling_items = Vec::new();
+        let impl_lines = impl_body.lines().collect::<Vec<_>>();
+        let mut line_index = 0;
+        while line_index < impl_lines.len() {
+            let line = impl_lines[line_index].trim();
+            if line.starts_with("pub(") || line.starts_with("pub ") {
+                let mut declaration = line.to_string();
+                while !declaration.contains('{') && !declaration.ends_with(';') {
+                    line_index += 1;
+                    let continuation = impl_lines.get(line_index).ok_or_else(|| {
+                        "sibling-visible capability item has no body or terminator".to_string()
+                    })?;
+                    declaration.push(' ');
+                    declaration.push_str(continuation.trim());
+                }
+                sibling_items.push(declaration.split_whitespace().collect::<Vec<_>>().join(" "));
+            }
+            line_index += 1;
+        }
+
+        let mut expected_sibling_items = vec![
+            "pub(super) fn source_set_name(&self) -> &str {".to_string(),
+            "pub(super) const fn deadline(&self) -> ProviderDeadline {".to_string(),
+            "pub(super) fn logical_view_read_authority<'a>( &self, cancellation: &'a CancellationToken, ) -> Result<crate::infrastructure::v13_read::LogicalViewReadAuthority<'a>, String> {".to_string(),
+        ];
+        sibling_items.sort_unstable();
+        expected_sibling_items.sort_unstable();
+        if sibling_items != expected_sibling_items {
+            return Err(format!(
+                "actor read capability sibling API must be the exact read-only allowlist; found {sibling_items:?}"
+            ));
+        }
+        Ok(())
+    }
+
     #[test]
     pub(crate) fn actor_read_source_capability_is_sealed_after_binding() {
         let source = include_str!("server.rs");
-        let (_, after_declaration) = source
-            .split_once("pub(super) struct ActorReadSourceCapability {")
-            .expect("actor read capability declaration remains available to the witness");
-        let (body, _) = after_declaration
-            .split_once("\n}")
-            .expect("actor read capability declaration remains structurally bounded");
-        let exposed_fields = body
-            .lines()
-            .map(str::trim)
-            .filter(|line| line.starts_with("pub"))
-            .collect::<Vec<_>>();
+        audit_actor_read_source_capability_api(source).unwrap_or_else(|error| panic!("{error}"));
+    }
 
-        assert!(
-            exposed_fields.is_empty(),
-            "post-binding actor capability exposes forgeable fields: {exposed_fields:?}"
-        );
-        assert!(
-            body.contains("binding: ProviderRootBinding"),
-            "capability detached the actor-issued provider binding"
-        );
-        assert!(
-            body.contains("fence: WorkspaceLogicalReadFence"),
-            "capability detached the actor-issued revision fence"
-        );
-        for detached_authority in [
-            "name:",
-            "kind:",
-            "source_format:",
-            "source_profile:",
-            "platform_profile:",
-            "retained_root:",
-            "revision:",
-        ] {
+    #[test]
+    fn actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator() {
+        let source = include_str!("server.rs");
+        let inject_method = |hostile_method: &str| {
+            source.replacen(
+                "impl ActorReadSourceCapability {",
+                &format!("impl ActorReadSourceCapability {{{hostile_method}"),
+                1,
+            )
+        };
+        let hostile_sources = [
+            inject_method(
+            r#"
+    pub(super) fn forge(
+        binding: ProviderRootBinding,
+        identity: String,
+        fence: WorkspaceLogicalReadFence,
+        deadline: ProviderDeadline,
+    ) -> Self {
+        Self { binding, identity, fence, deadline }
+    }
+"#,
+            ),
+            inject_method(
+            r#"
+    pub(super) fn replace_fence(&mut self, fence: WorkspaceLogicalReadFence) {
+        self.fence = fence;
+    }
+"#,
+            ),
+            inject_method(
+                r#"
+    pub(super) fn into_parts(
+        self,
+    ) -> (ProviderRootBinding, String, WorkspaceLogicalReadFence, ProviderDeadline) {
+        (self.binding, self.identity, self.fence, self.deadline)
+    }
+"#,
+            ),
+            source.replacen(
+                "#[allow(dead_code)]\npub(super) struct ActorReadSourceCapability {",
+                "#[allow(dead_code)]\n#[derive(Clone)]\npub(super) struct ActorReadSourceCapability {",
+                1,
+            ),
+            source.replacen(
+                "pub(super) const fn deadline(&self) -> ProviderDeadline {",
+                "pub(super) const fn deadline(&mut self) -> ProviderDeadline {",
+                1,
+            ),
+        ];
+        for hostile in hostile_sources {
             assert!(
-                !body.lines().any(|line| {
-                    line.trim()
-                        .trim_start_matches("pub(crate) ")
-                        .starts_with(detached_authority)
-                }),
-                "capability detached recombinable authority field `{detached_authority}`"
+                audit_actor_read_source_capability_api(&hostile).is_err(),
+                "hostile sibling-visible capability shape escaped the closed API audit"
             );
         }
     }
@@ -1691,6 +1821,10 @@ pub(crate) mod actor_capacity_tests {
                 "remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state();"
             ),
             "decision aggregate omits actor state-scope separation"
+        );
+        assert!(
+            aggregate.contains("duplicate_source_set_names_with_distinct_roots_are_rejected();"),
+            "decision aggregate omits duplicate source-set name rejection"
         );
     }
 
@@ -1907,6 +2041,7 @@ pub(crate) mod actor_capacity_tests {
         crate::infrastructure::workspace_actor::tests::same_name_root_changed_format_or_platform_profile_rotates_actor();
         crate::infrastructure::workspace_actor::tests::workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots();
         crate::infrastructure::workspace_actor::tests::duplicate_physical_root_names_are_rejected_as_ambiguous();
+        crate::infrastructure::workspace_actor::tests::duplicate_source_set_names_with_distinct_roots_are_rejected();
         actor_authenticated_source_capability_contract_is_complete();
         crate::infrastructure::workspace_actor::tests::remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state();
         subsequent_daemon_invocation_after_same_root_kind_change_gets_new_actor_identity();

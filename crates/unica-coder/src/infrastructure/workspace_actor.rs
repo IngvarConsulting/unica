@@ -3025,6 +3025,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    pub(crate) fn duplicate_source_set_names_with_distinct_roots_are_rejected() {
+        let root = temp_root("duplicate-source-set-name");
+        let first_source = root.join("first");
+        let second_source = root.join("second");
+        std::fs::create_dir_all(&first_source).unwrap();
+        std::fs::create_dir_all(&second_source).unwrap();
+        let context = context(&root);
+
+        let result = WorkspaceIdentity::new(
+            &context,
+            [
+                source_input("main", &first_source),
+                source_input("main", &second_source),
+            ],
+            "profile",
+        );
+
+        assert!(
+            result.is_err(),
+            "duplicate source-set name with distinct retained roots was accepted"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     pub(crate) fn remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state() {
         let root = temp_root("state-scope-separation");
         let source = root.join("src");
