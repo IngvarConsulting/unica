@@ -1127,7 +1127,11 @@ impl<R> WorkspacePublicationLease<'_, R> {
         cancellation: &CancellationToken,
     ) -> Result<T, String> {
         self.actor.validate_binding(&self.binding)?;
-        let current = self.revision_service.snapshot(deadline, cancellation);
+        let current = self.revision_service.snapshot_retained(
+            &self.binding.source_root,
+            deadline,
+            cancellation,
+        );
         self.actor.validate_binding(&self.binding)?;
         let current = current?;
         if current != self.issued_revision {
@@ -1364,9 +1368,9 @@ impl<R> WorkspaceActor<R> {
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceRevisionFence, String> {
         self.validate_binding(binding)?;
-        let revision = self
-            .source_revision_service(binding)
-            .and_then(|service| service.snapshot(deadline, cancellation));
+        let revision = self.source_revision_service(binding).and_then(|service| {
+            service.snapshot_retained(&binding.source_root, deadline, cancellation)
+        });
         self.validate_binding(binding)?;
         let revision = revision?;
         Ok(WorkspaceRevisionFence {
@@ -1746,7 +1750,8 @@ impl<R> WorkspaceActor<R> {
             return Err("actor-owned index work identity is invalid".to_string());
         }
         let revision_service = self.source_revision_service(binding)?;
-        let current = revision_service.snapshot(
+        let current = revision_service.snapshot_retained(
+            &binding.source_root,
             ProviderDeadline::from_budget(INDEX_FENCE_BUDGET),
             &CancellationToken::new(),
         );
@@ -1778,7 +1783,8 @@ impl<R> WorkspaceActor<R> {
                     .validate_named_identity()
                     .map_err(|_| LongWorkFailure::Invalidated)?;
                 let current = producer_revision_service
-                    .snapshot(
+                    .snapshot_retained(
+                        &retained_root,
                         ProviderDeadline::from_budget(INDEX_FENCE_BUDGET),
                         &CancellationToken::new(),
                     )
@@ -1823,7 +1829,8 @@ impl<R> WorkspaceActor<R> {
         };
         self.validate_binding(&binding)?;
         let revision_service = self.source_revision_service(&binding)?;
-        let current = revision_service.snapshot(deadline, cancellation);
+        let current =
+            revision_service.snapshot_retained(&binding.source_root, deadline, cancellation);
         self.validate_binding(&binding)?;
         let current = current?;
         if current != fence.revision {
@@ -2886,6 +2893,116 @@ pub(crate) mod tests {
                 changed_paths: Vec::new(),
             })
         }
+    }
+
+    struct UnsupportedActorFence {
+        flush_calls: Arc<AtomicUsize>,
+    }
+
+    impl SourceRevisionFence for UnsupportedActorFence {
+        fn capability(&self) -> FenceCapability {
+            FenceCapability::Unsupported
+        }
+
+        fn flush(
+            &self,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<FenceOutcome, String> {
+            self.flush_calls.fetch_add(1, Ordering::AcqRel);
+            Err("unsupported actor fence must never be flushed".to_string())
+        }
+    }
+
+    #[test]
+    fn actor_owned_legacy_revision_lifecycle_uses_retained_fallback_when_platform_fence_is_unsupported(
+    ) {
+        let fixture = actor_fixture("unsupported-actor-revision-fence", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), "test").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let flush_calls = Arc::new(AtomicUsize::new(0));
+        let revision_service = Arc::new(
+            SourceRevisionService::new_with_fence_for_test(
+                fixture.actor.context(),
+                &fixture.roots[0],
+                fixture.actor.state_scope.clone(),
+                Arc::new(UnsupportedActorFence {
+                    flush_calls: Arc::clone(&flush_calls),
+                }),
+            )
+            .unwrap(),
+        );
+        fixture
+            .actor
+            .install_source_revision_service_for_test(&binding, revision_service)
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let revision = fixture
+            .actor
+            .capture_revision(
+                &binding,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+
+        let (producer_entered, producer_entered_wait) = mpsc::channel();
+        let (_, index_work) = fixture
+            .actor
+            .join_index_work(&binding, &revision, "rlm", "bsl-1", move |_| {
+                producer_entered.send(()).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        producer_entered_wait
+            .recv_timeout(Duration::from_secs(2))
+            .expect("retained index producer must start within the bounded wait");
+        assert!(matches!(
+            index_work.wait_timeout(Duration::from_secs(2)),
+            crate::application::shared_work::SharedWorkSnapshot::Ready(_)
+        ));
+
+        let publication = fixture
+            .actor
+            .begin_publication(
+                &revision,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        assert_eq!(
+            publication
+                .publish(
+                    "retained-publication",
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &cancellation,
+                )
+                .unwrap(),
+            "retained-publication"
+        );
+
+        let second = super::WorkspaceActor::new(
+            fixture.actor.identity.clone(),
+            fixture.actor.context.clone(),
+        )
+        .unwrap();
+        assert!(second.read(&binding, |_| Ok(())).is_err());
+        assert!(second
+            .begin_publication(
+                &revision,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .is_err());
+        assert_eq!(
+            flush_calls.load(Ordering::Acquire),
+            0,
+            "an unsupported fence must not be flushed as a source of trust"
+        );
+        fixture.cleanup();
     }
 
     #[test]

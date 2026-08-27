@@ -1133,7 +1133,9 @@ mod tests {
             other => panic!("known-long request did not return a task: {other:?}"),
         };
         let task_id = initial.task_id;
-        entered_wait.recv().unwrap();
+        entered_wait
+            .recv_timeout(INTEGRATION_COORDINATION_TIMEOUT)
+            .expect("canonical invocation must enter the service within the bounded wait");
         let observed = owner.get_task(task_id).unwrap();
         assert_eq!(observed.status, InvocationStatus::Working);
         assert_eq!(observed.created_at_epoch_ms, initial.created_at_epoch_ms);
