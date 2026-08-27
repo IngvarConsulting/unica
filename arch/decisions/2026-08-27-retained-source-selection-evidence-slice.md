@@ -15,12 +15,29 @@ workspace capability и два полных descriptor-relative no-follow про
 Admission принимается, когда полная каноническая семантика карты и физическое
 evidence обоих проходов совпали; сохраняется evidence второго прохода.
 
-Evidence охватывает exact bytes конфигурации, named absence и wrong-kind от
-ближайшего существующего retained ancestor, identity всех пройденных каталогов,
-полный детерминированный membership использованных контейнеров и marker inputs
-каждой строки карты, включая неподдерживаемые и невыбранные строки. Оно не
-сериализуется, не клонируется, не хранится в durable task и не является actor
-key или digest.
+Evidence охватывает exact bytes `v8project.yaml` и каждого содержательно
+классифицируемого `ConfigDumpInfo.xml`, named absence и wrong-kind от ближайшего
+существующего retained ancestor, identity всех пройденных каталогов, полный
+детерминированный membership использованных контейнеров и marker inputs каждой
+строки карты, включая неподдерживаемые и невыбранные строки. Маркер, семантика
+которого использует только существование, удерживает retained parent, имя и
+`FileIdentity`: replacement или wrong-kind отвергается, но in-place смена его
+неиспользуемых bytes не объявляется сменой карты. Оно не сериализуется, не
+клонируется, не хранится в durable task и не является actor key или digest.
+
+Один проход канонически дедуплицирует повторные наблюдения и отвергает
+противоречивые повторы. Его совокупные пределы: 32 MiB exact bytes, 65 536
+evidence records, 16 384 перечисленных членов по всем external source sets
+(включая не XML и wrong-kind), 128 retained directory capabilities и 8 MiB
+route/name bytes. Это actor-authority envelope поверх parser/output limits в
+1 024 source sets и 16 384 format-evidence rows, а не их умножение. Новая
+уникальная запись проверяет доступную квоту до открытия и аллокации, насколько
+тип наблюдения позволяет это сделать, и возвращает стабильную provider error.
+Первый проход преобразуется в handle-free snapshot до второго; retained evidence
+второго держит не более 128 directory handles, а regular-file handle закрывается
+сразу после capture. Сравнение проходит по заимствованному каноническому evidence
+без клонирования bytes и проверяет deadline/cancellation до и внутри линейной по
+records/bytes работы.
 
 Daemon создаёт actor из полного поддерживаемого Platform XML projection этого
 admission. Каждый apply admission заново получает resolved admission, сверяет

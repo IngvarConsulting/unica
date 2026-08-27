@@ -353,8 +353,8 @@ impl SourceMapDiscoveryState {
         }
     }
 
-    fn actor(workspace: RetainedDirectoryCapability) -> Self {
-        Self {
+    fn actor(workspace: RetainedDirectoryCapability) -> Result<Self, String> {
+        Ok(Self {
             provenance: None,
             max_source_sets: Some(MAX_HEALTH_SOURCE_SETS),
             max_input_bytes: Some(MAX_HEALTH_SOURCE_MAP_INPUT_BYTES),
@@ -363,8 +363,8 @@ impl SourceMapDiscoveryState {
             remaining_format_evidence_entries: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
             remaining_format_evidence_bytes: Some(MAX_HEALTH_FORMAT_EVIDENCE_BYTES),
             require_nofollow_source_probe_route: true,
-            actor_pass: Some(RetainedSelectionPass::new(workspace)),
-        }
+            actor_pass: Some(RetainedSelectionPass::new(workspace)?),
+        })
     }
 
     #[cfg(test)]
@@ -561,7 +561,7 @@ pub(in crate::infrastructure) fn discover_project_source_map_actor_pass(
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<(ProjectSourceMap, RetainedSelectionPass), String> {
     let workspace_root = workspace.path().to_path_buf();
-    let mut state = SourceMapDiscoveryState::actor(workspace);
+    let mut state = SourceMapDiscoveryState::actor(workspace)?;
     let source_map = discover_project_source_map_internal(&workspace_root, checkpoint, &mut state)?;
     Ok((
         source_map,
@@ -1163,14 +1163,24 @@ fn snapshot_project_map_input(
                     path.display()
                 )
             })?;
-        return match actor_pass.observe_regular(relative, limit, checkpoint)? {
+        let observed = if read_contents {
+            actor_pass.observe_regular(relative, limit, checkpoint)?
+        } else {
+            actor_pass.observe_regular_presence(relative, checkpoint)?
+        };
+        return match observed {
             RetainedRegularObservation::Exact(raw) => {
                 if read_contents {
-                    Ok(Some(raw))
+                    Ok(Some(raw.as_ref().to_vec()))
                 } else {
                     Ok(Some(Vec::new()))
                 }
             }
+            RetainedRegularObservation::Present if !read_contents => Ok(Some(Vec::new())),
+            RetainedRegularObservation::Present => Err(format!(
+                "project source-map input bytes were not retained: {}",
+                path.display()
+            )),
             RetainedRegularObservation::Absent => Ok(None),
             RetainedRegularObservation::WrongKind => Err(format!(
                 "project source-map input is not a retained regular file: {}",
@@ -1637,12 +1647,11 @@ fn probe_source_root_markers(
                     .actor_pass
                     .as_mut()
                     .expect("actor probe has retained evidence state")
-                    .observe_regular(
-                        &marker,
-                        MAX_HEALTH_SOURCE_MAP_INPUT_BYTES as usize,
-                        checkpoint,
-                    )?;
-                found |= matches!(observed, RetainedRegularObservation::Exact(_));
+                    .observe_regular_presence(&marker, checkpoint)?;
+                found |= matches!(
+                    observed,
+                    RetainedRegularObservation::Exact(_) | RetainedRegularObservation::Present
+                );
             }
             ProbeDirectory::Retained(handle) => {
                 match secure_regular_file_exists(handle, Path::new(marker)) {
@@ -1867,6 +1876,9 @@ fn detect_source_set_format(
         ) {
             Ok(evidence) => evidence,
             Err(reason) => {
+                if reason.starts_with("project source-map actor ") {
+                    return Err(reason);
+                }
                 format_probe_error = Some(reason);
                 (Vec::new(), Vec::new())
             }
@@ -1971,12 +1983,11 @@ fn actor_format_evidence(
         .actor_pass
         .as_mut()
         .expect("actor format discovery has retained evidence state")
-        .observe_regular(
-            &configuration,
-            MAX_HEALTH_SOURCE_MAP_INPUT_BYTES as usize,
-            checkpoint,
-        )?;
-    if matches!(observed, RetainedRegularObservation::Exact(_)) {
+        .observe_regular_presence(&configuration, checkpoint)?;
+    if matches!(
+        observed,
+        RetainedRegularObservation::Exact(_) | RetainedRegularObservation::Present
+    ) {
         let evidence = path_relative_to(workspace_root, &workspace_root.join(&configuration));
         state.record_format_evidence(&evidence)?;
         platform.push(evidence);
@@ -1989,12 +2000,11 @@ fn actor_format_evidence(
             .actor_pass
             .as_mut()
             .expect("actor format discovery has retained evidence state")
-            .observe_regular(
-                &marker_path,
-                MAX_HEALTH_SOURCE_MAP_INPUT_BYTES as usize,
-                checkpoint,
-            )?;
-        if matches!(observed, RetainedRegularObservation::Exact(_)) {
+            .observe_regular_presence(&marker_path, checkpoint)?;
+        if matches!(
+            observed,
+            RetainedRegularObservation::Exact(_) | RetainedRegularObservation::Present
+        ) {
             let evidence = path_relative_to(workspace_root, &workspace_root.join(&marker_path));
             state.record_format_evidence(&evidence)?;
             edt.push(evidence);
@@ -2025,31 +2035,46 @@ fn actor_format_evidence(
                 continue;
             }
             let relative = configured_path.join(&entry.name);
-            let observed = state
-                .actor_pass
-                .as_mut()
-                .expect("actor format discovery has retained evidence state")
-                .observe_regular(
-                    &relative,
-                    MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES as usize,
-                    checkpoint,
-                )?;
-            let RetainedRegularObservation::Exact(bytes) = observed else {
-                continue;
+            let config_dump_info = has_config_dump_info_filename(path);
+            let observed = if config_dump_info {
+                state
+                    .actor_pass
+                    .as_mut()
+                    .expect("actor format discovery has retained evidence state")
+                    .observe_regular(
+                        &relative,
+                        MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES as usize,
+                        checkpoint,
+                    )?
+            } else {
+                state
+                    .actor_pass
+                    .as_mut()
+                    .expect("actor format discovery has retained evidence state")
+                    .observe_regular_presence(&relative, checkpoint)?
             };
-            if has_config_dump_info_filename(path)
-                && !matches!(
-                    (config_dump_info_xml_kind(&bytes), kind),
-                    (
-                        ConfigDumpInfoXmlKind::ExternalProcessor,
-                        SourceSetKind::ExternalProcessor
-                    ) | (
-                        ConfigDumpInfoXmlKind::ExternalReport,
-                        SourceSetKind::ExternalReport
-                    )
-                )
-            {
-                continue;
+            match observed {
+                RetainedRegularObservation::Exact(bytes) => {
+                    if config_dump_info
+                        && !matches!(
+                            (config_dump_info_xml_kind(&bytes), kind),
+                            (
+                                ConfigDumpInfoXmlKind::ExternalProcessor,
+                                SourceSetKind::ExternalProcessor
+                            ) | (
+                                ConfigDumpInfoXmlKind::ExternalReport,
+                                SourceSetKind::ExternalReport
+                            )
+                        )
+                    {
+                        continue;
+                    }
+                }
+                RetainedRegularObservation::Present if !config_dump_info => {}
+                RetainedRegularObservation::Absent | RetainedRegularObservation::WrongKind => {
+                    continue;
+                }
+                RetainedRegularObservation::Present => continue,
             }
             let evidence = path_relative_to(workspace_root, &workspace_root.join(&relative));
             state.record_format_evidence(&evidence)?;
@@ -2562,17 +2587,26 @@ fn yaml_mapping_get<'a>(value: &'a YamlValue, key: &str) -> Option<&'a YamlValue
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::infrastructure::source_roots::resolve_source_root;
     use crate::infrastructure::workspace::discover_workspace;
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_WORKSPACE_NONCE: AtomicU64 = AtomicU64::new(0);
+    static EXTERNAL_ACTOR_WITNESS_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn reset_external_actor_witness_runs() {
+        EXTERNAL_ACTOR_WITNESS_RUNS.store(0, Ordering::SeqCst);
+    }
+
+    pub(crate) fn external_actor_witness_runs() -> usize {
+        EXTERNAL_ACTOR_WITNESS_RUNS.load(Ordering::SeqCst)
+    }
 
     #[test]
     fn source_map_input_read_honors_cooperative_checkpoint_between_chunks() {
@@ -3723,7 +3757,8 @@ source-set:
     }
 
     #[test]
-    fn actor_admission_preserves_declared_external_processor_and_report_map() {
+    pub(crate) fn actor_admission_preserves_declared_external_processor_and_report_map() {
+        EXTERNAL_ACTOR_WITNESS_RUNS.fetch_add(1, Ordering::SeqCst);
         let root = temp_workspace("unica-source-map-actor-external-map");
         write(
             &root.join("v8project.yaml"),
@@ -3780,6 +3815,96 @@ source-set:
                 &crate::domain::cancellation::CancellationToken::new(),
             )
             .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    pub(crate) fn actor_admission_external_config_dump_info_content_change_invalidates_evidence() {
+        let root = temp_workspace("unica-source-map-actor-external-content-change");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+format: DESIGNER
+source-set:
+  - name: processors
+    type: EXTERNAL_DATA_PROCESSORS
+    path: epf
+"#,
+        );
+        let descriptor = root.join("epf/ConfigDumpInfo.xml");
+        write(
+            &descriptor,
+            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        );
+        let mut checkpoint = || Ok(());
+        let admission =
+            crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                &root,
+                &mut checkpoint,
+            )
+            .unwrap();
+        write(
+            &descriptor,
+            "<MetaDataObject><ExternalReport/></MetaDataObject>",
+        );
+
+        let error = admission
+            .into_evidence()
+            .validate(
+                crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                    std::time::Duration::from_secs(5),
+                ),
+                &crate::domain::cancellation::CancellationToken::new(),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind::Changed
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    pub(crate) fn actor_admission_external_descriptor_absence_to_appearance_invalidates_evidence() {
+        let root = temp_workspace("unica-source-map-actor-external-absence-change");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+format: DESIGNER
+source-set:
+  - name: reports
+    type: EXTERNAL_REPORTS
+    path: erf
+"#,
+        );
+        fs::create_dir_all(root.join("erf")).unwrap();
+        let mut checkpoint = || Ok(());
+        let admission =
+            crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                &root,
+                &mut checkpoint,
+            )
+            .unwrap();
+        write(
+            &root.join("erf/Appeared.xml"),
+            "<MetaDataObject><ExternalReport/></MetaDataObject>",
+        );
+
+        let error = admission
+            .into_evidence()
+            .validate(
+                crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                    std::time::Duration::from_secs(5),
+                ),
+                &crate::domain::cancellation::CancellationToken::new(),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind::Changed
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

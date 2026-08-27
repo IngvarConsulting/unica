@@ -5702,6 +5702,21 @@ pub(crate) mod tests {
 
     #[test]
     pub(crate) fn retained_source_selection_finality_contract_is_complete() {
+        crate::infrastructure::source_selection_evidence::tests::actor_admission_rejects_aggregate_exact_byte_budget();
+        crate::infrastructure::source_selection_evidence::tests::actor_admission_bounds_unique_retained_directories_without_ulimit();
+        crate::infrastructure::source_selection_evidence::tests::actor_admission_bounds_global_membership_across_external_source_sets();
+        crate::infrastructure::source_selection_evidence::tests::actor_admission_counts_repeated_membership_enumeration_globally();
+        crate::infrastructure::source_selection_evidence::tests::actor_admission_rejects_total_evidence_record_budget();
+        crate::infrastructure::source_selection_evidence::tests::actor_admission_rejects_route_and_name_byte_budget();
+        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_membership_budget_before_enumeration();
+        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_record_budget_before_regular_open();
+        crate::infrastructure::source_selection_evidence::tests::actor_admission_comparison_honors_cancellation();
+        crate::infrastructure::source_selection_evidence::tests::actor_admission_comparison_honors_deadline();
+        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_deduplicates_repeated_observations();
+        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_inconsistent_regular_repeat();
+        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_inconsistent_directory_repeat();
+        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_inconsistent_membership_repeat();
+        crate::infrastructure::project_sources::tests::reset_external_actor_witness_runs();
         apply_selection_rejects_v8project_kind_change_after_prepare();
         apply_selection_rejects_v8project_absence_to_appearance_after_prepare();
         apply_selection_rejects_autodetected_extension_membership_change();
@@ -5718,6 +5733,14 @@ pub(crate) mod tests {
         crate::infrastructure::daemon::server::actor_capacity_tests::working_task_recovery_is_resume_unsupported_without_apply_reexecution();
         crate::infrastructure::daemon::server::actor_capacity_tests::view_find_admitted_snapshot_may_finish_after_map_change();
         crate::infrastructure::daemon::server::actor_capacity_tests::semantically_equivalent_map_edit_reuses_actor_identity();
+        crate::infrastructure::project_sources::tests::actor_admission_preserves_declared_external_processor_and_report_map();
+        crate::infrastructure::project_sources::tests::actor_admission_external_config_dump_info_content_change_invalidates_evidence();
+        crate::infrastructure::project_sources::tests::actor_admission_external_descriptor_absence_to_appearance_invalidates_evidence();
+        assert_eq!(
+            crate::infrastructure::project_sources::tests::external_actor_witness_runs(),
+            1,
+            "aggregate did not execute the declared external processor/report positive witness"
+        );
     }
 
     #[test]
