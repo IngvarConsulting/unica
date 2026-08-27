@@ -142,12 +142,6 @@ impl SelectionEvidenceUsage {
             .saturating_sub(self.evidence_records)
     }
 
-    fn remaining_directories(&self) -> usize {
-        self.budgets
-            .unique_directories
-            .saturating_sub(self.unique_directories)
-    }
-
     fn remaining_route_and_name_bytes(&self) -> usize {
         self.budgets
             .route_and_name_bytes
@@ -263,6 +257,9 @@ thread_local! {
         std::cell::Cell::new(0)
     };
     static MEMBERSHIP_CHILD_OPEN_ATTEMPTS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+    static MEMBERSHIP_MAX_HELPER_RESULT_LENGTH: std::cell::Cell<usize> = const {
         std::cell::Cell::new(0)
     };
 }
@@ -404,6 +401,7 @@ fn run_regular_exact_after_read_hook() {
 fn reset_membership_test_metrics() {
     MEMBERSHIP_ENUMERATION_ATTEMPTS.with(|attempts| attempts.set(0));
     MEMBERSHIP_CHILD_OPEN_ATTEMPTS.with(|attempts| attempts.set(0));
+    MEMBERSHIP_MAX_HELPER_RESULT_LENGTH.with(|length| length.set(0));
 }
 
 #[cfg(test)]
@@ -417,10 +415,16 @@ fn record_membership_child_open_attempt() {
 }
 
 #[cfg(test)]
-fn membership_test_metrics() -> (usize, usize) {
+fn record_membership_helper_result_length(length: usize) {
+    MEMBERSHIP_MAX_HELPER_RESULT_LENGTH.with(|observed| observed.set(observed.get().max(length)));
+}
+
+#[cfg(test)]
+fn membership_test_metrics() -> (usize, usize, usize) {
     (
         MEMBERSHIP_ENUMERATION_ATTEMPTS.with(std::cell::Cell::get),
         MEMBERSHIP_CHILD_OPEN_ATTEMPTS.with(std::cell::Cell::get),
+        MEMBERSHIP_MAX_HELPER_RESULT_LENGTH.with(std::cell::Cell::get),
     )
 }
 
@@ -1008,24 +1012,25 @@ impl RetainedSelectionPass {
             }
         }
         let remaining_members = self.usage.remaining_members();
+        if remaining_members == 0 {
+            self.usage.ensure_members(1)?;
+        }
         if limit > remaining_members {
             self.usage.ensure_members(limit)?;
         }
-        let enumeration_limit = limit.saturating_add(1);
         let mut checkpoint_error = None;
         #[cfg(test)]
         record_membership_enumeration_attempt();
-        let names =
-            directory.read_immediate_names_bounded(enumeration_limit, || match checkpoint() {
-                Ok(()) => Ok(()),
-                Err(reason) => {
-                    checkpoint_error = Some(reason);
-                    Err(std::io::Error::new(
-                        ErrorKind::Interrupted,
-                        "project source-map checkpoint stopped enumeration",
-                    ))
-                }
-            });
+        let names = directory.read_immediate_names_bounded(limit, || match checkpoint() {
+            Ok(()) => Ok(()),
+            Err(reason) => {
+                checkpoint_error = Some(reason);
+                Err(std::io::Error::new(
+                    ErrorKind::Interrupted,
+                    "project source-map checkpoint stopped enumeration",
+                ))
+            }
+        });
         if let Some(reason) = checkpoint_error {
             return Err(reason);
         }
@@ -1042,6 +1047,8 @@ impl RetainedSelectionPass {
                 )
             }
         })?;
+        #[cfg(test)]
+        record_membership_helper_result_length(names.len());
         self.usage.ensure_members(names.len())?;
         let membership_records = 1_usize.saturating_add(names.len());
         let membership_route_bytes = retained_route_bytes(relative).saturating_add(
@@ -1054,16 +1061,29 @@ impl RetainedSelectionPass {
             self.usage.ensure_records(membership_records)?;
             self.usage.ensure_route_bytes(membership_route_bytes)?;
         }
+        let pending_membership_records = if new_membership {
+            membership_records
+        } else {
+            0
+        };
+        let pending_membership_route_bytes = if new_membership {
+            membership_route_bytes
+        } else {
+            0
+        };
         let mut members = Vec::with_capacity(names.len());
         let mut result = Vec::with_capacity(names.len());
         for name in names {
             checkpoint()?;
             let child_route = relative.join(&name);
-            if !self.directories.contains_key(&child_route)
-                && self.usage.remaining_directories() == 0
-            {
+            if !self.directories.contains_key(&child_route) {
+                let child_route_bytes = retained_route_bytes(&child_route);
+                self.usage.ensure_directory(child_route_bytes)?;
                 self.usage
-                    .ensure_directory(retained_route_bytes(&child_route))?;
+                    .ensure_records(pending_membership_records.saturating_add(1))?;
+                self.usage.ensure_route_bytes(
+                    pending_membership_route_bytes.saturating_add(child_route_bytes),
+                )?;
             }
             #[cfg(test)]
             record_membership_child_open_attempt();
@@ -2502,6 +2522,135 @@ pub(crate) mod tests {
             membership_test_metrics().1,
             0,
             "an unseen member child capability was opened before directory admission"
+        );
+    }
+
+    #[test]
+    pub(crate) fn membership_overflow_probe_never_retains_more_names_than_charged() {
+        let root = tempfile::tempdir().unwrap();
+        write(&root.path().join("a"), b"a");
+        write(&root.path().join("b"), b"b");
+        let workspace =
+            RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
+                .unwrap();
+        let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
+            enumerated_members: 1,
+            ..ActorSelectionTestBudgets::generous()
+        });
+        let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
+        reset_membership_test_metrics();
+        let mut checkpoint = || Ok(());
+
+        let error = pass
+            .observe_membership(Path::new(""), &workspace, 1, &mut checkpoint)
+            .err()
+            .expect("membership overflow probe escaped its charged helper-vector bound");
+
+        assert_eq!(
+            error,
+            "project source-map actor enumerated-member budget exceeds 1 entries"
+        );
+        assert!(
+            membership_test_metrics().2 <= 1,
+            "bounded helper returned more names than the one charged member slot"
+        );
+    }
+
+    #[test]
+    pub(crate) fn membership_zero_work_rejects_before_enumeration() {
+        let root = tempfile::tempdir().unwrap();
+        write(&root.path().join("member"), b"member");
+        let workspace =
+            RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
+                .unwrap();
+        let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
+            enumerated_members: 0,
+            ..ActorSelectionTestBudgets::generous()
+        });
+        let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
+        reset_membership_test_metrics();
+        let mut checkpoint = || Ok(());
+
+        let error = pass
+            .observe_membership(Path::new(""), &workspace, 0, &mut checkpoint)
+            .err()
+            .expect("zero member work invoked enumeration");
+
+        assert_eq!(
+            error,
+            "project source-map actor enumerated-member budget exceeds 0 entries"
+        );
+        assert_eq!(
+            membership_test_metrics().0,
+            0,
+            "zero member work attempted directory enumeration"
+        );
+    }
+
+    #[test]
+    pub(crate) fn membership_child_record_cost_is_preflighted_before_open() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("child")).unwrap();
+        let workspace =
+            RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
+                .unwrap();
+        let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
+            evidence_records: 3,
+            enumerated_members: 1,
+            unique_directories: 2,
+            ..ActorSelectionTestBudgets::generous()
+        });
+        let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
+        reset_membership_test_metrics();
+        let mut checkpoint = || Ok(());
+
+        let error = pass
+            .observe_membership(Path::new(""), &workspace, 1, &mut checkpoint)
+            .err()
+            .expect("unseen member opened before its possible directory record was admitted");
+
+        assert_eq!(
+            error,
+            "project source-map actor evidence-record budget exceeds 3 entries"
+        );
+        assert_eq!(
+            membership_test_metrics().1,
+            0,
+            "unseen membership child opened before directory record preflight"
+        );
+    }
+
+    #[test]
+    pub(crate) fn membership_child_route_cost_is_preflighted_before_open() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("child")).unwrap();
+        let workspace =
+            RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
+                .unwrap();
+        let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
+            evidence_records: 4,
+            enumerated_members: 1,
+            unique_directories: 2,
+            route_and_name_bytes: 5,
+            ..ActorSelectionTestBudgets::generous()
+        });
+        let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
+        reset_membership_test_metrics();
+        let mut checkpoint = || Ok(());
+
+        let error = pass
+            .observe_membership(Path::new(""), &workspace, 1, &mut checkpoint)
+            .err()
+            .expect("unseen member opened before its possible directory route was admitted");
+
+        assert_eq!(
+            error,
+            "project source-map actor route/name budget exceeds 5 bytes"
+        );
+        assert_eq!(
+            membership_test_metrics().1,
+            0,
+            "unseen membership child opened before directory route preflight"
         );
     }
 

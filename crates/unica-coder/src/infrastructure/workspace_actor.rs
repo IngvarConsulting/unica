@@ -5795,6 +5795,10 @@ pub(crate) mod tests {
         crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_remaining_record_capacity_before_enumeration();
         crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_remaining_name_capacity_before_enumeration();
         crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_before_unseen_member_child_open();
+        crate::infrastructure::source_selection_evidence::tests::membership_overflow_probe_never_retains_more_names_than_charged();
+        crate::infrastructure::source_selection_evidence::tests::membership_zero_work_rejects_before_enumeration();
+        crate::infrastructure::source_selection_evidence::tests::membership_child_record_cost_is_preflighted_before_open();
+        crate::infrastructure::source_selection_evidence::tests::membership_child_route_cost_is_preflighted_before_open();
         crate::infrastructure::source_selection_evidence::tests::retained_exact_read_never_appends_a_growth_chunk_past_the_limit();
         crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_record_budget_before_regular_open();
         crate::infrastructure::source_selection_evidence::tests::actor_admission_comparison_honors_cancellation();
