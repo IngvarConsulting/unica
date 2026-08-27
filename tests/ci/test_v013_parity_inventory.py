@@ -1,0 +1,1003 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+import posixpath
+import re
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Test expectations are intentionally literal rather than imported from the
+# validator. A wrong validator catalog must not rewrite the test oracle.
+EXPECTED_SHARDS = (
+    "tests/fixtures/v013/domain-parity/view-find.json",
+    "tests/fixtures/v013/domain-parity/apply-metadata.json",
+    "tests/fixtures/v013/domain-parity/apply-form-resource.json",
+    "tests/fixtures/v013/domain-parity/apply-dcs-mxl.json",
+    "tests/fixtures/v013/domain-parity/check-diff.json",
+    "tests/fixtures/v013/domain-parity/search-docs.json",
+    "tests/fixtures/v013/domain-parity/run.json",
+)
+
+IMMUTABLE_BASELINE_NAMES = (
+    "unica.build.dump",
+    "unica.build.load",
+    "unica.build.make",
+    "unica.build.run",
+    "unica.build.update",
+    "unica.cf.edit",
+    "unica.cf.info",
+    "unica.cf.init",
+    "unica.cf.validate",
+    "unica.cfe.borrow",
+    "unica.cfe.diff",
+    "unica.cfe.init",
+    "unica.cfe.patch_method",
+    "unica.cfe.validate",
+    "unica.code.definition",
+    "unica.code.diagnostics",
+    "unica.code.graph",
+    "unica.code.outline",
+    "unica.code.patch",
+    "unica.code.search",
+    "unica.dcs.compile",
+    "unica.dcs.edit",
+    "unica.dcs.info",
+    "unica.dcs.validate",
+    "unica.documentation.get",
+    "unica.documentation.search",
+    "unica.epf.init",
+    "unica.erf.init",
+    "unica.form.add",
+    "unica.form.compile",
+    "unica.form.edit",
+    "unica.form.info",
+    "unica.form.remove",
+    "unica.form.validate",
+    "unica.help.add",
+    "unica.interface.edit",
+    "unica.interface.validate",
+    "unica.meta.add",
+    "unica.meta.edit",
+    "unica.meta.info",
+    "unica.meta.remove",
+    "unica.mxl.compile",
+    "unica.mxl.decompile",
+    "unica.mxl.info",
+    "unica.mxl.validate",
+    "unica.project.map",
+    "unica.project.status",
+    "unica.role.compile",
+    "unica.role.edit",
+    "unica.role.info",
+    "unica.role.validate",
+    "unica.runtime.execute",
+    "unica.runtime.job.cancel",
+    "unica.runtime.job.list",
+    "unica.runtime.job.logs",
+    "unica.runtime.job.start",
+    "unica.runtime.job.status",
+    "unica.runtime.job.wait",
+    "unica.source.children",
+    "unica.source.locate",
+    "unica.source.read",
+    "unica.source.resolve",
+    "unica.source.resources",
+    "unica.standards.explain",
+    "unica.standards.search",
+    "unica.subsystem.compile",
+    "unica.subsystem.edit",
+    "unica.subsystem.info",
+    "unica.subsystem.validate",
+    "unica.support.edit",
+    "unica.template.add",
+    "unica.template.remove",
+    "unica.xdto.edit",
+    "unica.xdto.info",
+)
+
+IMMUTABLE_RUNTIME_JOB_NAMES = {
+    "unica.runtime.job.cancel",
+    "unica.runtime.job.list",
+    "unica.runtime.job.logs",
+    "unica.runtime.job.start",
+    "unica.runtime.job.status",
+    "unica.runtime.job.wait",
+}
+
+
+class InventoryError(ValueError):
+    pass
+
+
+PARITY_SHARDS = (
+    "tests/fixtures/v013/domain-parity/view-find.json",
+    "tests/fixtures/v013/domain-parity/apply-metadata.json",
+    "tests/fixtures/v013/domain-parity/apply-form-resource.json",
+    "tests/fixtures/v013/domain-parity/apply-dcs-mxl.json",
+    "tests/fixtures/v013/domain-parity/check-diff.json",
+    "tests/fixtures/v013/domain-parity/search-docs.json",
+    "tests/fixtures/v013/domain-parity/run.json",
+)
+
+TOP_LEVEL_KEYS = {
+    "schemaVersion",
+    "complete",
+    "baselineDispositions",
+    "cases",
+}
+NATIVE_ENTRIES = {"view", "apply", "find", "search", "check", "diff", "run", "docs"}
+DISPOSITIONS = {"mapped", "absorbed", "transport-replaced", "removed"}
+RUNTIME_JOB_NAMES = {
+    "unica.runtime.job.cancel",
+    "unica.runtime.job.list",
+    "unica.runtime.job.logs",
+    "unica.runtime.job.start",
+    "unica.runtime.job.status",
+    "unica.runtime.job.wait",
+}
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise InventoryError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def load_json_document(path: Path) -> object:
+    try:
+        with path.open(encoding="utf-8") as source:
+            return json.load(source, object_pairs_hook=_unique_json_object)
+    except InventoryError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise InventoryError(f"cannot load JSON document {path}: {error}") from error
+
+
+def _require_exact_keys(value: object, expected: set[str], label: str) -> dict[str, object]:
+    if type(value) is not dict:
+        raise InventoryError(f"{label} must be an object")
+    actual = set(value)
+    if actual != expected:
+        raise InventoryError(
+            f"{label} must have exact keys {sorted(expected)}; got {sorted(actual)}"
+        )
+    return value
+
+
+def _require_nonempty_string(value: object, label: str) -> str:
+    if type(value) is not str or not value:
+        raise InventoryError(f"{label} must be a non-empty string")
+    return value
+
+
+def _validate_baseline_names(baseline_names: object) -> tuple[str, ...]:
+    if type(baseline_names) not in (list, tuple):
+        raise InventoryError("immutable baseline names must be a list or tuple")
+    names = tuple(baseline_names)
+    if len(names) != 74:
+        raise InventoryError(f"immutable baseline must contain 74 names; got {len(names)}")
+    if any(type(name) is not str or not name for name in names):
+        raise InventoryError("immutable baseline names must be non-empty strings")
+    if len(set(names)) != 74:
+        raise InventoryError("immutable baseline must contain 74 unique names")
+    runtime_jobs = {name for name in names if name.startswith("unica.runtime.job.")}
+    if runtime_jobs != RUNTIME_JOB_NAMES:
+        raise InventoryError(
+            "immutable baseline must contain the exact six runtime job names"
+        )
+    return names
+
+
+def load_immutable_baseline_names(path: Path) -> tuple[str, ...]:
+    document = load_json_document(path)
+    if type(document) is not dict:
+        raise InventoryError("immutable baseline document must be an object")
+    schema_version = document.get("schemaVersion")
+    if type(schema_version) is not int or schema_version != 1:
+        raise InventoryError("immutable baseline schemaVersion must be integer 1")
+    wire = document.get("wire")
+    if type(wire) is not dict:
+        raise InventoryError("immutable baseline wire must be an object")
+    tool_count = wire.get("toolCount")
+    if type(tool_count) is not int or tool_count != 74:
+        raise InventoryError("immutable baseline wire.toolCount must be integer 74")
+    names = _validate_baseline_names(wire.get("toolNames"))
+    if tool_count != len(names):
+        raise InventoryError("immutable baseline toolCount must match toolNames")
+    return names
+
+
+def tracked_repository_paths(repo_root: Path) -> frozenset[str]:
+    completed = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    )
+    return frozenset(
+        os.fsdecode(raw_path)
+        for raw_path in completed.stdout.split(b"\0")
+        if raw_path
+    )
+
+
+def load_repository_inputs(
+    repo_root: Path,
+) -> tuple[dict[str, object], tuple[str, ...], frozenset[str]]:
+    documents: dict[str, object] = {}
+    for relative in PARITY_SHARDS:
+        path = repo_root.joinpath(*relative.split("/"))
+        if not path.exists():
+            raise InventoryError(f"missing parity shard: {relative}")
+        documents[relative] = load_json_document(path)
+
+    tracked_paths = tracked_repository_paths(repo_root)
+    untracked_shards = [path for path in PARITY_SHARDS if path not in tracked_paths]
+    if untracked_shards:
+        raise InventoryError(f"parity shard must be tracked: {untracked_shards[0]}")
+
+    baseline_names = load_immutable_baseline_names(
+        repo_root / "tests/fixtures/migration/v0.12.3-baseline.json"
+    )
+    return documents, baseline_names, tracked_paths
+
+
+def _validate_successor(value: object, label: str) -> None:
+    if type(value) is not dict:
+        raise InventoryError(f"{label} successor must be an object")
+    entry = _require_nonempty_string(value.get("entry"), f"{label} successor entry")
+    if entry not in NATIVE_ENTRIES:
+        raise InventoryError(f"{label} successor entry must be one of the eight native entries")
+    expected_keys = {"entry", "operation"} if entry == "apply" else {"entry"}
+    _require_exact_keys(value, expected_keys, f"{label} successor")
+    if entry == "apply":
+        _require_nonempty_string(value["operation"], f"{label} successor operation")
+
+
+def _projection_identity(value: object, label: str) -> tuple[str, str]:
+    if type(value) is not dict:
+        raise InventoryError(f"{label} projection must be an object")
+    kind = _require_nonempty_string(value.get("kind"), f"{label} projection kind")
+    if kind == "native-task":
+        _require_exact_keys(value, {"kind", "method"}, f"{label} projection")
+        method = _require_nonempty_string(value["method"], f"{label} projection method")
+        if method not in {"tasks/get", "tasks/cancel"}:
+            raise InventoryError(f"{label} projection has unsupported native Task method")
+        return kind, method
+    if kind == "compatibility-tool":
+        _require_exact_keys(value, {"kind", "tool"}, f"{label} projection")
+        tool = _require_nonempty_string(value["tool"], f"{label} projection tool")
+        if tool not in {"unica.task.get", "unica.task.result", "unica.task.cancel"}:
+            raise InventoryError(f"{label} projection has unsupported compatibility tool")
+        return kind, tool
+    raise InventoryError(f"{label} projection has unsupported kind")
+
+
+def _validate_fixture_path(
+    fixture: str,
+    *,
+    repo_root: Path,
+    tracked_paths: set[str] | frozenset[str],
+    label: str,
+) -> None:
+    if "\\" in fixture:
+        raise InventoryError(f"{label} fixture must use canonical POSIX separators")
+    if fixture.startswith("/") or re.match(r"^[A-Za-z]:", fixture):
+        raise InventoryError(f"{label} fixture must be repository-relative")
+    parts = fixture.split("/")
+    if not fixture or any(part in {"", ".", ".."} for part in parts):
+        raise InventoryError(f"{label} fixture must be a normalized non-empty path")
+    if posixpath.normpath(fixture) != fixture:
+        raise InventoryError(f"{label} fixture must be a normalized POSIX path")
+
+    root = repo_root.resolve()
+    candidate = root
+    for part in parts:
+        candidate = candidate / part
+        if candidate.is_symlink():
+            raise InventoryError(f"{label} fixture path contains a symlink")
+
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise InventoryError(f"{label} fixture escapes the repository root") from error
+    if not candidate.exists():
+        raise InventoryError(f"{label} fixture does not exist")
+    if not candidate.is_file():
+        raise InventoryError(f"{label} fixture must be a regular file")
+    if fixture not in tracked_paths:
+        raise InventoryError(f"{label} fixture must be tracked by git")
+
+
+def validate_inventory(
+    documents: object,
+    *,
+    repo_root: Path,
+    baseline_names: object,
+    tracked_paths: set[str] | frozenset[str],
+) -> None:
+    if type(documents) is not dict or set(documents) != set(PARITY_SHARDS):
+        raise InventoryError("inventory must contain the exact parity shard set")
+    names = _validate_baseline_names(baseline_names)
+    baseline_set = set(names)
+
+    complete_values: list[bool] = []
+    seen_legacy_tools: set[str] = set()
+    seen_case_ids: set[str] = set()
+    case_entries: set[str] = set()
+
+    for shard in PARITY_SHARDS:
+        document = _require_exact_keys(documents[shard], TOP_LEVEL_KEYS, shard)
+        schema_version = document["schemaVersion"]
+        if type(schema_version) is not int:
+            raise InventoryError(f"{shard} schemaVersion must be an integer")
+        if schema_version != 1:
+            raise InventoryError(f"{shard} schemaVersion must be 1")
+        complete = document["complete"]
+        if type(complete) is not bool:
+            raise InventoryError(f"{shard} complete must be a boolean")
+        complete_values.append(complete)
+
+        dispositions = document["baselineDispositions"]
+        if type(dispositions) is not list:
+            raise InventoryError(f"{shard} baselineDispositions must be an array")
+        for index, raw_row in enumerate(dispositions):
+            label = f"{shard} baselineDispositions[{index}]"
+            if type(raw_row) is not dict:
+                raise InventoryError(f"{label} disposition row object is required")
+            legacy_tool = _require_nonempty_string(
+                raw_row.get("legacyTool"), f"{label} legacyTool"
+            )
+            if legacy_tool not in baseline_set:
+                raise InventoryError(f"{label} legacyTool is not in the immutable baseline")
+            if legacy_tool in seen_legacy_tools:
+                raise InventoryError(f"duplicate legacyTool across parity shards: {legacy_tool}")
+            seen_legacy_tools.add(legacy_tool)
+
+            disposition = _require_nonempty_string(
+                raw_row.get("disposition"), f"{label} disposition"
+            )
+            if disposition not in DISPOSITIONS:
+                raise InventoryError(f"{label} has unsupported disposition")
+            if disposition in {"mapped", "absorbed"}:
+                _require_exact_keys(
+                    raw_row,
+                    {"legacyTool", "disposition", "successor"},
+                    label,
+                )
+                _validate_successor(raw_row["successor"], label)
+            elif disposition == "transport-replaced":
+                _require_exact_keys(
+                    raw_row,
+                    {"legacyTool", "disposition", "projections"},
+                    label,
+                )
+                projections = raw_row["projections"]
+                if type(projections) is not list or not projections:
+                    raise InventoryError(f"{label} projections must be a non-empty array")
+                projection_ids: set[tuple[str, str]] = set()
+                for projection_index, projection in enumerate(projections):
+                    projection_id = _projection_identity(
+                        projection, f"{label} projections[{projection_index}]"
+                    )
+                    if projection_id in projection_ids:
+                        raise InventoryError(f"{label} has duplicate projection")
+                    projection_ids.add(projection_id)
+            else:
+                _require_exact_keys(
+                    raw_row,
+                    {"legacyTool", "disposition", "rejectionEvidence"},
+                    label,
+                )
+                _require_nonempty_string(
+                    raw_row["rejectionEvidence"], f"{label} rejectionEvidence"
+                )
+
+        cases = document["cases"]
+        if type(cases) is not list:
+            raise InventoryError(f"{shard} cases must be an array")
+        for index, raw_case in enumerate(cases):
+            label = f"{shard} cases[{index}]"
+            case = _require_exact_keys(
+                raw_case,
+                {"caseId", "entry", "mode", "fixture", "expected"},
+                label,
+            )
+            case_id = _require_nonempty_string(case["caseId"], f"{label} caseId")
+            if case_id in seen_case_ids:
+                raise InventoryError(f"duplicate caseId across parity shards: {case_id}")
+            seen_case_ids.add(case_id)
+            entry = _require_nonempty_string(case["entry"], f"{label} entry")
+            if entry not in NATIVE_ENTRIES:
+                raise InventoryError(f"{label} entry must be one of the eight native entries")
+            case_entries.add(entry)
+            _require_nonempty_string(case["mode"], f"{label} mode")
+            fixture = _require_nonempty_string(case["fixture"], f"{label} fixture")
+            expected = case["expected"]
+            if type(expected) is not dict or not expected:
+                raise InventoryError(f"{label} expected must be a non-empty object")
+            _validate_fixture_path(
+                fixture,
+                repo_root=repo_root,
+                tracked_paths=tracked_paths,
+                label=label,
+            )
+
+    if len(set(complete_values)) != 1:
+        raise InventoryError("parity shards have mixed complete values")
+    if complete_values[0]:
+        missing_runtime_jobs = RUNTIME_JOB_NAMES - seen_legacy_tools
+        if missing_runtime_jobs:
+            raise InventoryError(
+                "complete inventory is missing runtime job dispositions: "
+                + ", ".join(sorted(missing_runtime_jobs))
+            )
+        if len(seen_legacy_tools) != 74 or seen_legacy_tools != baseline_set:
+            raise InventoryError("complete inventory must account for all 74 baseline names")
+        if case_entries != NATIVE_ENTRIES:
+            raise InventoryError("complete inventory must cover all eight native entries")
+
+
+class V013ParityInventoryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.documents = {
+            shard: {
+                "schemaVersion": 1,
+                "complete": False,
+                "baselineDispositions": [],
+                "cases": [],
+            }
+            for shard in EXPECTED_SHARDS
+        }
+        self.tracked_paths: set[str] = set()
+        self.fixture = "fixtures/case.json"
+        self._write_fixture(self.fixture)
+
+    def _write_fixture(self, relative: str, *, tracked: bool = True) -> Path:
+        path = self.root.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n", encoding="utf-8")
+        if tracked:
+            self.tracked_paths.add(relative)
+        return path
+
+    def _validate(self, documents: dict[str, object] | None = None) -> None:
+        validate_inventory(
+            documents if documents is not None else self.documents,
+            repo_root=self.root,
+            baseline_names=IMMUTABLE_BASELINE_NAMES,
+            tracked_paths=self.tracked_paths,
+        )
+
+    def _one_mapped_row(self) -> dict[str, object]:
+        return {
+            "legacyTool": "unica.meta.add",
+            "disposition": "mapped",
+            "successor": {"entry": "apply", "operation": "object.create"},
+        }
+
+    def _one_case(self) -> dict[str, object]:
+        return {
+            "caseId": "meta-object-create-basic",
+            "entry": "apply",
+            "mode": "fast",
+            "fixture": self.fixture,
+            "expected": {"outcome": "changed"},
+        }
+
+    def _set_first_row(self, row: object) -> None:
+        self.documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
+
+    def _set_first_case(self, case: object) -> None:
+        self.documents[EXPECTED_SHARDS[0]]["cases"] = [case]
+
+    def _complete_documents(self) -> dict[str, object]:
+        documents = copy.deepcopy(self.documents)
+        for shard in EXPECTED_SHARDS:
+            documents[shard]["complete"] = True
+
+        rows: list[dict[str, object]] = []
+        for legacy_tool in IMMUTABLE_BASELINE_NAMES:
+            if legacy_tool == "unica.runtime.job.status":
+                rows.append(
+                    {
+                        "legacyTool": legacy_tool,
+                        "disposition": "transport-replaced",
+                        "projections": [
+                            {"kind": "native-task", "method": "tasks/get"},
+                            {
+                                "kind": "compatibility-tool",
+                                "tool": "unica.task.get",
+                            },
+                        ],
+                    }
+                )
+            elif legacy_tool == "unica.meta.add":
+                rows.append(
+                    {
+                        "legacyTool": legacy_tool,
+                        "disposition": "mapped",
+                        "successor": {
+                            "entry": "apply",
+                            "operation": "object.create",
+                        },
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "legacyTool": legacy_tool,
+                        "disposition": "absorbed",
+                        "successor": {"entry": "view"},
+                    }
+                )
+        documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = rows
+
+        documents[EXPECTED_SHARDS[1]]["cases"] = [
+            {
+                "caseId": f"representative-{entry}",
+                "entry": entry,
+                "mode": "direct",
+                "fixture": self.fixture,
+                "expected": {"outcome": "ok"},
+            }
+            for entry in (
+                "view",
+                "apply",
+                "find",
+                "search",
+                "check",
+                "diff",
+                "run",
+                "docs",
+            )
+        ]
+        return documents
+
+    def test_repository_inventory_is_valid_and_uses_exact_seven_shards(self) -> None:
+        documents, baseline_names, tracked_paths = load_repository_inputs(REPO_ROOT)
+        self.assertEqual(tuple(documents), EXPECTED_SHARDS)
+        validate_inventory(
+            documents,
+            repo_root=REPO_ROOT,
+            baseline_names=baseline_names,
+            tracked_paths=tracked_paths,
+        )
+
+    def test_exact_empty_w0_skeleton_is_valid_synthetic_input(self) -> None:
+        self._validate()
+
+    def test_valid_partial_inventory_can_remain_incomplete(self) -> None:
+        self._set_first_row(self._one_mapped_row())
+        self._set_first_case(self._one_case())
+        self._validate()
+
+    def test_loader_rejects_duplicate_json_keys_at_any_nesting_level(self) -> None:
+        duplicate_json = self.root / "duplicate.json"
+        duplicate_json.write_text(
+            '{"schemaVersion":1,"complete":false,'
+            '"baselineDispositions":[],"cases":['
+            '{"caseId":"one","caseId":"two"}]}\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(InventoryError, "duplicate JSON key: caseId"):
+            load_json_document(duplicate_json)
+
+    def test_top_level_shape_and_strict_types_are_enforced(self) -> None:
+        mutations = (
+            ("must be an object", []),
+            (
+                "must have exact keys",
+                {
+                    "schemaVersion": 1,
+                    "complete": False,
+                    "baselineDispositions": [],
+                    "cases": [],
+                    "owner": "worker",
+                },
+            ),
+            (
+                "schemaVersion must be an integer",
+                {
+                    "schemaVersion": True,
+                    "complete": False,
+                    "baselineDispositions": [],
+                    "cases": [],
+                },
+            ),
+            (
+                "schemaVersion must be 1",
+                {
+                    "schemaVersion": 2,
+                    "complete": False,
+                    "baselineDispositions": [],
+                    "cases": [],
+                },
+            ),
+            (
+                "complete must be a boolean",
+                {
+                    "schemaVersion": 1,
+                    "complete": 0,
+                    "baselineDispositions": [],
+                    "cases": [],
+                },
+            ),
+            (
+                "baselineDispositions must be an array",
+                {
+                    "schemaVersion": 1,
+                    "complete": False,
+                    "baselineDispositions": {},
+                    "cases": [],
+                },
+            ),
+            (
+                "cases must be an array",
+                {
+                    "schemaVersion": 1,
+                    "complete": False,
+                    "baselineDispositions": [],
+                    "cases": {},
+                },
+            ),
+        )
+        for message, replacement in mutations:
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]] = replacement
+            with self.subTest(message=message), self.assertRaisesRegex(
+                InventoryError, message
+            ):
+                self._validate(documents)
+
+    def test_shard_set_is_exact(self) -> None:
+        documents = copy.deepcopy(self.documents)
+        documents.pop(EXPECTED_SHARDS[-1])
+        with self.assertRaisesRegex(InventoryError, "exact parity shard set"):
+            self._validate(documents)
+
+        documents = copy.deepcopy(self.documents)
+        documents["tests/fixtures/v013/domain-parity/extra.json"] = copy.deepcopy(
+            documents[EXPECTED_SHARDS[0]]
+        )
+        with self.assertRaisesRegex(InventoryError, "exact parity shard set"):
+            self._validate(documents)
+
+    def test_disposition_requires_known_unique_legacy_tool(self) -> None:
+        row = self._one_mapped_row()
+        row["legacyTool"] = "unica.unknown"
+        self._set_first_row(row)
+        with self.assertRaisesRegex(InventoryError, "immutable baseline"):
+            self._validate()
+
+        duplicate = self._one_mapped_row()
+        self.documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [duplicate]
+        self.documents[EXPECTED_SHARDS[1]]["baselineDispositions"] = [
+            copy.deepcopy(duplicate)
+        ]
+        with self.assertRaisesRegex(InventoryError, "duplicate legacyTool"):
+            self._validate()
+
+    def test_disposition_variants_have_exact_key_sets(self) -> None:
+        invalid_rows = (
+            {
+                "legacyTool": "unica.meta.add",
+                "disposition": "unsupported",
+            },
+            {
+                "legacyTool": "unica.meta.add",
+                "disposition": "mapped",
+            },
+            {
+                "legacyTool": "unica.meta.add",
+                "disposition": "absorbed",
+                "successor": {"entry": "view"},
+                "projections": [],
+            },
+            {
+                "legacyTool": "unica.meta.add",
+                "disposition": "transport-replaced",
+                "projections": [],
+            },
+            {
+                "legacyTool": "unica.meta.add",
+                "disposition": "transport-replaced",
+                "projections": [
+                    {"kind": "native-task", "method": "tasks/get"}
+                ],
+                "successor": {"entry": "view"},
+            },
+            {
+                "legacyTool": "unica.meta.add",
+                "disposition": "removed",
+                "rejectionEvidence": "",
+            },
+            {
+                "legacyTool": "unica.meta.add",
+                "disposition": "removed",
+                "rejectionEvidence": "tests/rejects_removed",
+                "successor": {"entry": "view"},
+            },
+        )
+        for row in invalid_rows:
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
+            with self.subTest(row=row), self.assertRaises(InventoryError):
+                self._validate(documents)
+
+    def test_disposition_rows_are_objects(self) -> None:
+        self._set_first_row("unica.meta.add")
+        with self.assertRaisesRegex(InventoryError, "disposition row object"):
+            self._validate()
+
+    def test_nested_discriminators_reject_non_string_json_values_cleanly(self) -> None:
+        invalid_documents = []
+
+        documents = copy.deepcopy(self.documents)
+        row = self._one_mapped_row()
+        row["disposition"] = []
+        documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
+        invalid_documents.append(documents)
+
+        documents = copy.deepcopy(self.documents)
+        row = self._one_mapped_row()
+        row["successor"] = {"entry": []}
+        documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
+        invalid_documents.append(documents)
+
+        documents = copy.deepcopy(self.documents)
+        documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [
+            {
+                "legacyTool": "unica.runtime.job.status",
+                "disposition": "transport-replaced",
+                "projections": [
+                    {"kind": "native-task", "method": []},
+                ],
+            }
+        ]
+        invalid_documents.append(documents)
+
+        documents = copy.deepcopy(self.documents)
+        case = self._one_case()
+        case["entry"] = []
+        documents[EXPECTED_SHARDS[0]]["cases"] = [case]
+        invalid_documents.append(documents)
+
+        for documents in invalid_documents:
+            with self.subTest(documents=documents), self.assertRaises(InventoryError):
+                self._validate(documents)
+
+    def test_successor_shape_depends_on_entry(self) -> None:
+        invalid_successors = (
+            {"entry": "apply"},
+            {"entry": "apply", "operation": ""},
+            {"entry": "view", "operation": "object.create"},
+            {"entry": "unknown"},
+            {"entry": "view", "owner": "worker"},
+            "view",
+        )
+        for successor in invalid_successors:
+            row = self._one_mapped_row()
+            row["successor"] = successor
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
+            with self.subTest(successor=successor), self.assertRaises(InventoryError):
+                self._validate(documents)
+
+    def test_exact_projection_enum_and_duplicates_are_enforced(self) -> None:
+        invalid_projection_lists = (
+            [{"kind": "native-task", "method": "tasks/result"}],
+            [{"kind": "compatibility-tool", "tool": "unica.task.unknown"}],
+            [{"kind": "native-task", "method": "tasks/get", "extra": True}],
+            [{"kind": "unknown", "method": "tasks/get"}],
+            ["tasks/get"],
+            [
+                {"kind": "native-task", "method": "tasks/get"},
+                {"kind": "native-task", "method": "tasks/get"},
+            ],
+        )
+        for projections in invalid_projection_lists:
+            row = {
+                "legacyTool": "unica.runtime.job.status",
+                "disposition": "transport-replaced",
+                "projections": projections,
+            }
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
+            with self.subTest(projections=projections), self.assertRaises(
+                InventoryError
+            ):
+                self._validate(documents)
+
+    def test_all_five_projection_spellings_are_accepted(self) -> None:
+        valid_projections = (
+            {"kind": "native-task", "method": "tasks/get"},
+            {"kind": "native-task", "method": "tasks/cancel"},
+            {"kind": "compatibility-tool", "tool": "unica.task.get"},
+            {"kind": "compatibility-tool", "tool": "unica.task.result"},
+            {"kind": "compatibility-tool", "tool": "unica.task.cancel"},
+        )
+        for projection in valid_projections:
+            row = {
+                "legacyTool": "unica.runtime.job.status",
+                "disposition": "transport-replaced",
+                "projections": [projection],
+            }
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
+            with self.subTest(projection=projection):
+                self._validate(documents)
+
+    def test_case_has_exact_keys_and_strict_nonempty_fields(self) -> None:
+        valid = self._one_case()
+        invalid_cases: list[object] = [
+            "meta-object-create-basic",
+            {key: value for key, value in valid.items() if key != "expected"},
+            {**valid, "owner": "worker"},
+            {**valid, "caseId": ""},
+            {**valid, "caseId": 1},
+            {**valid, "entry": "unknown"},
+            {**valid, "mode": ""},
+            {**valid, "mode": False},
+            {**valid, "fixture": ""},
+            {**valid, "fixture": 1},
+            {**valid, "expected": {}},
+            {**valid, "expected": []},
+        ]
+        for case in invalid_cases:
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]]["cases"] = [case]
+            with self.subTest(case=case), self.assertRaises(InventoryError):
+                self._validate(documents)
+
+    def test_case_ids_are_globally_unique(self) -> None:
+        case = self._one_case()
+        self.documents[EXPECTED_SHARDS[0]]["cases"] = [case]
+        self.documents[EXPECTED_SHARDS[1]]["cases"] = [copy.deepcopy(case)]
+        with self.assertRaisesRegex(InventoryError, "duplicate caseId"):
+            self._validate()
+
+    def test_fixture_lexical_path_safety(self) -> None:
+        unsafe_paths = (
+            "",
+            "/tmp/case.json",
+            "C:/case.json",
+            "C:\\case.json",
+            "//server/share/case.json",
+            "\\\\server\\share\\case.json",
+            "./fixtures/case.json",
+            "fixtures/./case.json",
+            "fixtures/../case.json",
+            "../case.json",
+            "fixtures//case.json",
+            "fixtures/case.json/",
+        )
+        for fixture in unsafe_paths:
+            case = self._one_case()
+            case["fixture"] = fixture
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]]["cases"] = [case]
+            with self.subTest(fixture=fixture), self.assertRaises(InventoryError):
+                self._validate(documents)
+
+    def test_fixture_must_exist_be_regular_and_be_tracked(self) -> None:
+        invalid_paths = (
+            "fixtures/missing.json",
+            "fixtures",
+            "fixtures/untracked.json",
+        )
+        self._write_fixture("fixtures/untracked.json", tracked=False)
+        for fixture in invalid_paths:
+            case = self._one_case()
+            case["fixture"] = fixture
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]]["cases"] = [case]
+            with self.subTest(fixture=fixture), self.assertRaises(InventoryError):
+                self._validate(documents)
+
+    def test_fixture_final_symlink_is_rejected(self) -> None:
+        target = self._write_fixture("fixtures/target.json")
+        link = self.root / "fixtures/link.json"
+        try:
+            link.symlink_to(target)
+        except OSError as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        self.tracked_paths.add("fixtures/link.json")
+        case = self._one_case()
+        case["fixture"] = "fixtures/link.json"
+        self._set_first_case(case)
+        with self.assertRaisesRegex(InventoryError, "symlink"):
+            self._validate()
+
+    def test_fixture_symlink_ancestor_and_escape_are_rejected(self) -> None:
+        outside = self.root.parent / f"{self.root.name}-outside"
+        outside.mkdir()
+        self.addCleanup(outside.rmdir)
+        (outside / "case.json").write_text("{}\n", encoding="utf-8")
+        self.addCleanup((outside / "case.json").unlink)
+        link = self.root / "linked"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        self.tracked_paths.add("linked/case.json")
+        case = self._one_case()
+        case["fixture"] = "linked/case.json"
+        self._set_first_case(case)
+        with self.assertRaisesRegex(InventoryError, "symlink|escapes"):
+            self._validate()
+
+    def test_complete_is_one_uniform_distributed_gate(self) -> None:
+        self.documents[EXPECTED_SHARDS[0]]["complete"] = True
+        with self.assertRaisesRegex(InventoryError, "mixed complete"):
+            self._validate()
+
+    def test_all_true_rejects_incomplete_baseline_accounting(self) -> None:
+        for document in self.documents.values():
+            document["complete"] = True
+        self._set_first_row(self._one_mapped_row())
+        with self.assertRaisesRegex(InventoryError, "runtime job|74 baseline"):
+            self._validate()
+
+    def test_all_true_rejects_duplicate_baseline_accounting(self) -> None:
+        documents = self._complete_documents()
+        rows = documents[EXPECTED_SHARDS[0]]["baselineDispositions"]
+        rows[-1]["legacyTool"] = rows[0]["legacyTool"]
+        with self.assertRaisesRegex(InventoryError, "duplicate legacyTool"):
+            self._validate(documents)
+
+    def test_all_true_rejects_missing_native_entry_case(self) -> None:
+        documents = self._complete_documents()
+        documents[EXPECTED_SHARDS[1]]["cases"] = documents[
+            EXPECTED_SHARDS[1]
+        ]["cases"][:-1]
+        with self.assertRaisesRegex(InventoryError, "all eight native entries"):
+            self._validate(documents)
+
+    def test_all_true_still_rejects_invalid_transport_projection(self) -> None:
+        documents = self._complete_documents()
+        transport_row = next(
+            row
+            for row in documents[EXPECTED_SHARDS[0]]["baselineDispositions"]
+            if row["disposition"] == "transport-replaced"
+        )
+        transport_row["projections"] = [
+            {"kind": "native-task", "method": "tasks/result"}
+        ]
+        with self.assertRaisesRegex(InventoryError, "projection"):
+            self._validate(documents)
+
+    def test_valid_synthetic_74_name_eight_entry_completion_passes(self) -> None:
+        self._validate(self._complete_documents())
+
+    def test_immutable_release_baseline_has_74_unique_names_and_six_jobs(self) -> None:
+        names = load_immutable_baseline_names(
+            REPO_ROOT / "tests/fixtures/migration/v0.12.3-baseline.json"
+        )
+        self.assertEqual(names, IMMUTABLE_BASELINE_NAMES)
+        self.assertEqual(len(names), 74)
+        self.assertEqual(len(set(names)), 74)
+        self.assertEqual(
+            {name for name in names if name.startswith("unica.runtime.job.")},
+            IMMUTABLE_RUNTIME_JOB_NAMES,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
