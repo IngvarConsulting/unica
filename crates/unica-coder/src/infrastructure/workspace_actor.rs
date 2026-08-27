@@ -54,6 +54,9 @@ thread_local! {
     static APPLY_DRY_RUN_AFTER_CONFIRMATION_HOOK: std::cell::RefCell<
         Option<Box<dyn FnOnce()>>,
     > = std::cell::RefCell::new(None);
+    static REVISION_SERVICE_AFTER_BINDING_VALIDATION_HOOK: std::cell::RefCell<
+        Option<Box<dyn FnOnce()>>,
+    > = std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -82,6 +85,22 @@ fn set_apply_dry_run_after_confirmation_hook(hook: impl FnOnce() + 'static) {
 #[cfg(test)]
 fn run_apply_dry_run_after_confirmation_hook() {
     APPLY_DRY_RUN_AFTER_CONFIRMATION_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn set_revision_service_after_binding_validation_hook(hook: impl FnOnce() + 'static) {
+    REVISION_SERVICE_AFTER_BINDING_VALIDATION_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_revision_service_after_binding_validation_hook() {
+    REVISION_SERVICE_AFTER_BINDING_VALIDATION_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
         }
@@ -1723,10 +1742,12 @@ impl<R> WorkspaceActor<R> {
         }
         let service = Arc::new(match self.state_scope.scoped_digest() {
             None => SourceRevisionService::new(&self.context, binding.source_root.path())?,
-            Some(_) => SourceRevisionService::new_actor(
-                &self.context,
-                self.issue_revision_service_authority(binding)?,
-            )?,
+            Some(_) => {
+                let authority = self.issue_revision_service_authority(binding)?;
+                #[cfg(test)]
+                run_revision_service_after_binding_validation_hook();
+                SourceRevisionService::new_actor(&self.context, authority)?
+            }
         });
         revisions.insert(binding.source_set.clone(), Arc::clone(&service));
         Ok(service)
@@ -2209,7 +2230,8 @@ impl WorkspaceActorRegistry {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        set_apply_dry_run_after_confirmation_hook, ApplyAdmission, ApplyEffectDisposition,
+        set_apply_dry_run_after_confirmation_hook,
+        set_revision_service_after_binding_validation_hook, ApplyAdmission, ApplyEffectDisposition,
         ApplyEffectReceipt, PreparedApplyBatch, WorkspaceActorRegistry,
         WorkspaceActorRegistryError, WorkspaceIdentity, WorkspaceSourceSetInput,
     };
@@ -4162,6 +4184,130 @@ pub(crate) mod tests {
         assert_eq!(
             service.fence_capability_for_test(),
             expected_platform_fence_capability_for_test(&fixture.roots[0])
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn active_platform_actor_cannot_select_the_legacy_revision_corpus() {
+        let fixture = actor_fixture("revision-active-legacy-bypass", &["src"]);
+        let source = &fixture.roots[0];
+        let package = source.join("XDTOPackages/Sample/Ext/Package.bin");
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(&package, b"before").unwrap();
+        let identity = WorkspaceIdentity::new(
+            &context(&fixture.root),
+            [source_input("src", source)],
+            "test-provider",
+        )
+        .unwrap();
+
+        let bypass =
+            super::WorkspaceActor::with_legacy_runtime(identity, context(&fixture.root), ());
+        let mut failure = None;
+        if let Ok(actor) = bypass {
+            let binding = actor.bind_provider_root("src", source).unwrap();
+            let service = actor.source_revision_service(&binding).unwrap();
+            let root = binding.retained_root();
+            let before = service
+                .observe_retained_operation(
+                    &root,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .revision_identity();
+            std::fs::write(&package, b"after").unwrap();
+            let after = service
+                .observe_retained_operation(
+                    &root,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .revision_identity();
+            failure = Some(format!(
+                "active Platform actor selected LegacyV12: Package.bin revisions {before} / {after}"
+            ));
+        }
+
+        assert!(failure.is_none(), "{}", failure.unwrap_or_default());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn actor_revision_service_construction_retains_the_validated_root_across_substitution() {
+        if !can_swap_named_child_behind_retained_handle_for_test() {
+            return;
+        }
+        let fixture = actor_fixture("revision-service-root-substitution", &["src"]);
+        let source = fixture.roots[0].clone();
+        let displaced = fixture.root.join("src-displaced");
+        let package_relative = Path::new("XDTOPackages/Sample/Ext/Package.bin");
+        let package = source.join(package_relative);
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(&package, b"before").unwrap();
+        let binding = fixture.actor.bind_provider_root("src", &source).unwrap();
+
+        let source_for_race = source.clone();
+        let displaced_for_race = displaced.clone();
+        set_revision_service_after_binding_validation_hook(move || {
+            std::fs::rename(&source_for_race, &displaced_for_race).unwrap();
+            std::fs::create_dir_all(&source_for_race).unwrap();
+            std::fs::write(source_for_race.join("Configuration.xml"), b"<replacement/>").unwrap();
+        });
+        let raced = fixture.actor.source_revision_service(&binding);
+
+        std::fs::remove_dir_all(&source).unwrap();
+        std::fs::rename(&displaced, &source).unwrap();
+        let mut failures = Vec::new();
+        if raced.is_ok() {
+            failures.push(
+                "root substitution registered a service for ambient replacement identity"
+                    .to_string(),
+            );
+        }
+
+        match fixture.actor.source_revision_service(&binding) {
+            Ok(_) if raced.is_err() => {
+                let before = fixture
+                    .actor
+                    .capture_revision(
+                        &binding,
+                        ProviderDeadline::from_budget(Duration::from_secs(5)),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap()
+                    .revision;
+                std::fs::write(&package, b"after").unwrap();
+                let after = fixture
+                    .actor
+                    .capture_revision(
+                        &binding,
+                        ProviderDeadline::from_budget(Duration::from_secs(5)),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap()
+                    .revision;
+                if before == after {
+                    failures.push(
+                        "restored actor service omitted Package.bin from its exact corpus"
+                            .to_string(),
+                    );
+                }
+            }
+            Ok(_) => failures.push(
+                "raced service remained registered after the original root was restored"
+                    .to_string(),
+            ),
+            Err(error) => failures.push(format!(
+                "validated retained root could not construct a service after restoration: {error}"
+            )),
+        }
+
+        assert!(
+            failures.is_empty(),
+            "actor revision root authority failures: {failures:?}"
         );
         fixture.cleanup();
     }

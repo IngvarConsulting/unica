@@ -270,6 +270,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         for content in [
+            "Ext/Help/ru.html",
             "Ext/ParentConfigurations.bin",
             "XDTOPackages/Sample/Ext/Package.bin",
             "Catalogs/Items/Templates/Binary/Ext/Template.bin",
@@ -277,6 +278,10 @@ pub(crate) mod tests {
             "Catalogs/Items/Templates/Html/Ext/Template/page.html",
             "Catalogs/Items/Ext/Help/ru.html",
             "Catalogs/Items/Forms/Main/Ext/Form/Items/icon.png",
+            "CommonForms/Main/Ext/Form/Items/icon.png",
+            "CommonForms/Main/Ext/Help/ru.html",
+            "CommonTemplates/Logo/Ext/Template.bin",
+            "Subsystems/Sales/Subsystems/Retail/Ext/Help/ru.html",
         ] {
             assert_eq!(
                 configuration.classify(Path::new(content)),
@@ -300,6 +305,12 @@ pub(crate) mod tests {
             "Documents/Order/Forms/Main/Templates/Junk/Ext/Template.bin",
             "CommonForms/Main/Ext/Template.bin",
             "CommonTemplates/Logo/Ext/Form/Items/asset.bin",
+            "CommonTemplates/Logo/Ext/Help/ru.html",
+            "Roles/Seller/Templates/Fake/Ext/Template.bin",
+            "Roles/Seller/Forms/Fake/Ext/Form/Items/icon.png",
+            "Roles/Seller/Ext/Help/ru.html",
+            "Languages/Russian/Templates/Fake/Ext/Template.bin",
+            "XDTOPackages/Sample/Forms/Fake/Ext/Form/Items/icon.png",
             "Catalogs/Items/Templates/Binary/Ext/other.bin",
             "Catalogs/Items/Forms/Main/Ext/Items/icon.png",
         ] {
@@ -307,6 +318,111 @@ pub(crate) mod tests {
                 configuration.classify(Path::new(ignored)),
                 RevisionArtifactDisposition::Ignored,
                 "profile admitted unclassified resource {ignored}"
+            );
+        }
+
+        // Hand-derived from the active Platform owner capability registries:
+        // every known collection is exercised, including all impossible
+        // owners, so adding a metadata kind cannot silently grant it Forms,
+        // Templates or Help by sharing the same physical prefix shape.
+        const FORM_OWNER_DIRECTORIES: &[&str] = &[
+            "Catalogs",
+            "Documents",
+            "Constants",
+            "Enums",
+            "Reports",
+            "DataProcessors",
+            "InformationRegisters",
+            "AccumulationRegisters",
+            "AccountingRegisters",
+            "CalculationRegisters",
+            "ChartsOfAccounts",
+            "ChartsOfCharacteristicTypes",
+            "ChartsOfCalculationTypes",
+            "ExchangePlans",
+            "BusinessProcesses",
+            "Tasks",
+            "DocumentJournals",
+            "Sequences",
+            "DocumentNumerators",
+        ];
+        const TEMPLATE_OWNER_DIRECTORIES: &[&str] = &[
+            "Catalogs",
+            "Documents",
+            "Enums",
+            "Reports",
+            "DataProcessors",
+            "InformationRegisters",
+            "AccumulationRegisters",
+            "AccountingRegisters",
+            "CalculationRegisters",
+            "ChartsOfAccounts",
+            "ChartsOfCharacteristicTypes",
+            "ChartsOfCalculationTypes",
+            "ExchangePlans",
+            "BusinessProcesses",
+            "Tasks",
+            "DocumentJournals",
+        ];
+        const HELP_OWNER_DIRECTORIES: &[&str] = &[
+            "Catalogs",
+            "Documents",
+            "Enums",
+            "Constants",
+            "Reports",
+            "DataProcessors",
+            "InformationRegisters",
+            "AccumulationRegisters",
+            "AccountingRegisters",
+            "CalculationRegisters",
+            "ChartsOfAccounts",
+            "ChartsOfCharacteristicTypes",
+            "ChartsOfCalculationTypes",
+            "ExchangePlans",
+            "BusinessProcesses",
+            "Tasks",
+            "DocumentJournals",
+            "CommonModules",
+            "ScheduledJobs",
+            "EventSubscriptions",
+            "HTTPServices",
+            "WebServices",
+            "DefinedTypes",
+        ];
+        for owner in METADATA_KINDS {
+            let directory = owner.directory;
+            let form = format!("{directory}/Owner/Forms/Main/Ext/Form/Items/icon.png");
+            let template = format!("{directory}/Owner/Templates/Main/Ext/Template.bin");
+            let help = format!("{directory}/Owner/Ext/Help/ru.html");
+            assert_eq!(
+                configuration.classify(Path::new(&form)),
+                if FORM_OWNER_DIRECTORIES.contains(&directory) {
+                    RevisionArtifactDisposition::Content
+                } else {
+                    RevisionArtifactDisposition::Ignored
+                },
+                "wrong Form capability for {}",
+                owner.tag
+            );
+            assert_eq!(
+                configuration.classify(Path::new(&template)),
+                if TEMPLATE_OWNER_DIRECTORIES.contains(&directory) {
+                    RevisionArtifactDisposition::Content
+                } else {
+                    RevisionArtifactDisposition::Ignored
+                },
+                "wrong Template capability for {}",
+                owner.tag
+            );
+            assert_eq!(
+                configuration.classify(Path::new(&help)),
+                if HELP_OWNER_DIRECTORIES.contains(&directory) {
+                    RevisionArtifactDisposition::Content
+                } else {
+                    RevisionArtifactDisposition::Ignored
+                },
+                "wrong Help capability for {}",
+                owner.tag
             );
         }
 
@@ -399,6 +515,8 @@ pub(crate) mod tests {
 
     #[test]
     pub(crate) fn actor_revision_policy_has_no_raw_issuer_or_scoped_service_bypass() {
+        use quote::ToTokens as _;
+
         fn inherent_methods(source: &str, target: &str) -> Vec<String> {
             let file = syn::parse_file(source).expect("production Rust must parse");
             file.items
@@ -429,6 +547,50 @@ pub(crate) mod tests {
         );
         let service_methods =
             inherent_methods(include_str!("source_revision.rs"), "SourceRevisionService");
+        let service_file = syn::parse_file(include_str!("source_revision.rs"))
+            .expect("source revision production Rust must parse");
+        let actor_file = syn::parse_file(include_str!("workspace_actor.rs"))
+            .expect("workspace actor production Rust must parse");
+        let service_root_capability = service_file.items.iter().any(|item| {
+            let syn::Item::Struct(item) = item else {
+                return false;
+            };
+            item.ident == "SourceRevisionService"
+                && item.fields.iter().any(|field| {
+                    let ty = field.ty.to_token_stream().to_string();
+                    ty.contains("Arc < RetainedDirectoryCapability >")
+                })
+        });
+        let new_actor_body = service_file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Impl(item) if item.trait_.is_none() => Some(item),
+                _ => None,
+            })
+            .flat_map(|item| item.items.iter())
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(function) if function.sig.ident == "new_actor" => {
+                    Some(function.block.to_token_stream().to_string())
+                }
+                _ => None,
+            })
+            .expect("actor service constructor must exist");
+        let legacy_body = actor_file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Impl(item) if item.trait_.is_none() => Some(item),
+                _ => None,
+            })
+            .flat_map(|item| item.items.iter())
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(function) if function.sig.ident == "with_legacy_runtime" => {
+                    Some(function.block.to_token_stream().to_string())
+                }
+                _ => None,
+            })
+            .expect("legacy adapter must exist");
 
         assert!(
             !policy_methods.iter().any(|method| method == "for_actor"),
@@ -447,6 +609,19 @@ pub(crate) mod tests {
         assert!(
             service_methods.iter().any(|method| method == "new_actor"),
             "scoped service is not constructed from one actor authority"
+        );
+        assert!(
+            service_root_capability,
+            "actor service discards its exact retained root capability"
+        );
+        assert!(
+            !new_actor_body.contains("fs :: canonicalize")
+                && !new_actor_body.contains("RetainedDirectoryCapability :: open"),
+            "actor service constructor reopens the ambient root instead of consuming authority"
+        );
+        assert!(
+            legacy_body.contains("validate_legacy_workspace_identity"),
+            "legacy actor adapter does not prove the exact legacy source tuple"
         );
     }
 }

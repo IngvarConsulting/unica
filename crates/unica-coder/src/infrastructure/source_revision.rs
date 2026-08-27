@@ -2756,6 +2756,209 @@ pub(crate) mod tests {
         crate::infrastructure::workspace_actor::tests::actor_revision_platform_resource_projection_matches_live_capture();
         crate::infrastructure::workspace_actor::tests::actor_revision_unknown_staged_artifact_is_rejected_before_publication();
         crate::infrastructure::workspace_actor::tests::actor_revision_late_failure_rolls_back_targeted_resource_without_receipt();
+        actor_revision_projection_uses_capture_byte_limits_and_final_batch_accounting();
+    }
+
+    #[test]
+    fn actor_revision_projection_uses_capture_byte_limits_and_final_batch_accounting() {
+        use crate::infrastructure::native_operations::apply::StagedChangeKind;
+
+        fn change(relative: &str, original: &[u8], current: StagedFileState) -> StagedApplyChange {
+            StagedApplyChange {
+                relative_path: PathBuf::from(relative),
+                kind: match &current {
+                    StagedFileState::Bytes(_) => StagedChangeKind::Replace,
+                    StagedFileState::Absent => StagedChangeKind::Remove,
+                },
+                original: StagedFileState::Bytes(original.to_vec()),
+                current,
+            }
+        }
+
+        fn fixture(
+            label: &str,
+            files: &[(&str, &[u8])],
+        ) -> (
+            tempfile::TempDir,
+            Arc<SourceRevisionService>,
+            Arc<RetainedDirectoryCapability>,
+        ) {
+            let workspace = tempfile::Builder::new().prefix(label).tempdir().unwrap();
+            let source = workspace.path().join("src");
+            for (relative, bytes) in files {
+                let path = source.join(relative);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, bytes).unwrap();
+            }
+            let service = Arc::new(actor_scan_test_service(
+                workspace.path(),
+                &source,
+                Arc::new(UnsupportedFence),
+                Arc::new(read_source_file),
+            ));
+            let root = Arc::new(
+                RetainedDirectoryCapability::open(&std::fs::canonicalize(source).unwrap()).unwrap(),
+            );
+            (workspace, service, root)
+        }
+
+        fn lease(
+            service: &SourceRevisionService,
+            root: &RetainedDirectoryCapability,
+        ) -> RetainedRevisionLease {
+            service
+                .observe_retained_operation(
+                    root,
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+        }
+
+        let mut failures = Vec::new();
+
+        {
+            let (_workspace, service, root) = fixture(
+                "projection-file-bound",
+                &[("XDTOPackages/A/Ext/Package.bin", b"1234")],
+            );
+            let _limits = set_revision_scan_limits_for_test(RetainedScanLimits::new(64, 4, 64));
+            let admitted = lease(&service, &root);
+            let machine_before = service.machine_state_for_test();
+            let source_before =
+                std::fs::read(root.path().join("XDTOPackages/A/Ext/Package.bin")).unwrap();
+            match service.prepare_retained_apply_reconciliation(
+                &root,
+                &admitted,
+                &[change(
+                    "XDTOPackages/A/Ext/Package.bin",
+                    b"1234",
+                    StagedFileState::Bytes(b"12345".to_vec()),
+                )],
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            ) {
+                Err(error)
+                    if error.kind() == RetainedRevisionErrorKind::Provider
+                        && error.to_string().contains("file byte limit 4 exceeded") => {}
+                Err(error) => {
+                    failures.push(format!("per-file returned {:?}: {error}", error.kind()))
+                }
+                Ok(_) => failures.push(
+                    "per-file projection returned a publishable candidate/receipt authority"
+                        .to_string(),
+                ),
+            }
+            assert_eq!(
+                std::fs::read(root.path().join("XDTOPackages/A/Ext/Package.bin")).unwrap(),
+                source_before,
+                "failed projection published source bytes"
+            );
+            assert_eq!(service.machine_state_for_test(), machine_before);
+            assert!(
+                !service.record_path.exists(),
+                "failed projection wrote a revision record"
+            );
+        }
+
+        {
+            let (_workspace, service, root) = fixture(
+                "projection-aggregate-bound",
+                &[
+                    ("XDTOPackages/A/Ext/Package.bin", b"1234"),
+                    ("XDTOPackages/B/Ext/Package.bin", b"5678"),
+                ],
+            );
+            let _limits = set_revision_scan_limits_for_test(RetainedScanLimits::new(64, 8, 8));
+            let admitted = lease(&service, &root);
+            match service.prepare_retained_apply_reconciliation(
+                &root,
+                &admitted,
+                &[change(
+                    "XDTOPackages/A/Ext/Package.bin",
+                    b"1234",
+                    StagedFileState::Bytes(b"12345".to_vec()),
+                )],
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            ) {
+                Err(error)
+                    if error.kind() == RetainedRevisionErrorKind::Provider
+                        && error
+                            .to_string()
+                            .contains("aggregate byte limit 8 exceeded") => {}
+                Err(error) => {
+                    failures.push(format!("aggregate returned {:?}: {error}", error.kind()))
+                }
+                Ok(_) => failures.push(
+                    "aggregate projection returned a candidate no bounded capture can accept"
+                        .to_string(),
+                ),
+            }
+        }
+
+        {
+            let (_workspace, service, root) = fixture(
+                "projection-final-batch",
+                &[
+                    ("XDTOPackages/A/Ext/Package.bin", b"1234"),
+                    ("XDTOPackages/B/Ext/Package.bin", b"5678"),
+                ],
+            );
+            let _limits = set_revision_scan_limits_for_test(RetainedScanLimits::new(64, 5, 8));
+            let admitted = lease(&service, &root);
+            let prepared = service.prepare_retained_apply_reconciliation(
+                &root,
+                &admitted,
+                &[
+                    change(
+                        "XDTOPackages/A/Ext/Package.bin",
+                        b"1234",
+                        StagedFileState::Bytes(b"12345".to_vec()),
+                    ),
+                    change(
+                        "XDTOPackages/B/Ext/Package.bin",
+                        b"5678",
+                        StagedFileState::Absent,
+                    ),
+                ],
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            );
+            match prepared {
+                Ok(prepared) => {
+                    std::fs::write(root.path().join("XDTOPackages/A/Ext/Package.bin"), b"12345")
+                        .unwrap();
+                    std::fs::remove_file(root.path().join("XDTOPackages/B/Ext/Package.bin"))
+                        .unwrap();
+                    match prepared.activate(
+                        ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                        &CancellationToken::new(),
+                    ) {
+                        Ok(active) => {
+                            if let Err(error) = active.validate_published_source(
+                                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                                &CancellationToken::new(),
+                            ) {
+                                failures.push(format!(
+                                    "final bounded batch digest diverged from capture: {error}"
+                                ));
+                            }
+                        }
+                        Err(error) => failures
+                            .push(format!("final bounded batch could not activate: {error}")),
+                    }
+                }
+                Err(error) => failures.push(format!(
+                    "removal did not free aggregate bytes before replacement: {error}"
+                )),
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "projected content bypassed bounded capture semantics: {failures:?}"
+        );
     }
 
     #[test]
