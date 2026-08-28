@@ -448,12 +448,17 @@ impl ServerResponse {
     }
 }
 
-fn read_bounded_json_line_with_limit<R: BufRead>(
+fn read_bounded_json_line_with_limit<R: BufRead, F>(
     reader: &mut R,
     max_bytes: usize,
-) -> io::Result<Vec<u8>> {
+    mut before_fill: F,
+) -> io::Result<Vec<u8>>
+where
+    F: FnMut(&R) -> io::Result<()>,
+{
     let mut line = Vec::new();
     loop {
+        before_fill(reader)?;
         let buffer = match reader.fill_buf() {
             Ok(buffer) => buffer,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -501,11 +506,31 @@ fn read_bounded_json_line_with_limit<R: BufRead>(
 }
 
 pub(crate) fn read_bounded_request_line<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
-    read_bounded_json_line_with_limit(reader, MAX_DAEMON_REQUEST_LINE_BYTES)
+    read_bounded_json_line_with_limit(reader, MAX_DAEMON_REQUEST_LINE_BYTES, |_| Ok(()))
+}
+
+pub(crate) fn read_bounded_request_line_before<R: BufRead, F>(
+    reader: &mut R,
+    before_fill: F,
+) -> io::Result<Vec<u8>>
+where
+    F: FnMut(&R) -> io::Result<()>,
+{
+    read_bounded_json_line_with_limit(reader, MAX_DAEMON_REQUEST_LINE_BYTES, before_fill)
 }
 
 pub(crate) fn read_bounded_response_line<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
-    read_bounded_json_line_with_limit(reader, MAX_DAEMON_RESPONSE_LINE_BYTES)
+    read_bounded_json_line_with_limit(reader, MAX_DAEMON_RESPONSE_LINE_BYTES, |_| Ok(()))
+}
+
+pub(crate) fn read_bounded_response_line_before<R: BufRead, F>(
+    reader: &mut R,
+    before_fill: F,
+) -> io::Result<Vec<u8>>
+where
+    F: FnMut(&R) -> io::Result<()>,
+{
+    read_bounded_json_line_with_limit(reader, MAX_DAEMON_RESPONSE_LINE_BYTES, before_fill)
 }
 
 #[cfg(test)]

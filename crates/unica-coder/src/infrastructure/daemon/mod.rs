@@ -304,6 +304,34 @@ mod tests {
         stream.flush().unwrap();
     }
 
+    fn stream_closed_without_response(stream: &mut TcpStream) -> bool {
+        if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(1))) {
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::InvalidInput,
+                "configure handshake close observation: {error}"
+            );
+        }
+        let mut byte = [0_u8; 1];
+        match stream.read(&mut byte) {
+            Ok(0) => true,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::NotConnected
+                        | io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                true
+            }
+            Ok(_) => false,
+            Err(error) => panic!("handshake connection did not close silently: {error}"),
+        }
+    }
+
     fn connect_raw_owner(
         record: &EndpointRecord,
         identity: &CoreIdentity,
@@ -2193,6 +2221,190 @@ mod tests {
     }
 
     #[test]
+    fn complete_malformed_handshake_is_invalid_request() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = CoreIdentity::production();
+        let config = server_config(root.path().to_path_buf(), identity.clone());
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, record) = wait_for_record(root.path(), &identity);
+        let mut stream = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
+
+        stream.write_all(b"{not-json}\n").unwrap();
+        stream.flush().unwrap();
+        let response: ServerResponse =
+            serde_json::from_slice(&read_bounded_json_line(&mut BufReader::new(&stream)).unwrap())
+                .unwrap();
+
+        assert_eq!(response.error_code(), Some(DaemonErrorCode::InvalidRequest));
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn truncated_handshake_transport_closes_without_a_protocol_response() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = CoreIdentity::production();
+        let config = server_config(root.path().to_path_buf(), identity.clone());
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, record) = wait_for_record(root.path(), &identity);
+        let mut stream = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
+
+        stream.write_all(b"{\"kind\":\"hello\"").unwrap();
+        stream.flush().unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+
+        assert!(
+            stream_closed_without_response(&mut stream),
+            "a truncated transport was mislabeled as invalid_request"
+        );
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn established_handshake_transport_failure_reopens_the_endpoint() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let peer_record = record.clone();
+        let fake_peer = thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            let first_hello = read_bounded_json_line(&mut BufReader::new(&first)).unwrap();
+            assert!(matches!(
+                super::protocol::parse_request(&first_hello).unwrap(),
+                ClientRequest::Hello { .. }
+            ));
+            drop(first);
+
+            let (mut second, _) = listener.accept().unwrap();
+            let second_hello = read_bounded_json_line(&mut BufReader::new(&second));
+            if second_hello.is_err() {
+                return false;
+            }
+            write_json_line(&mut second, &ServerResponse::ready(&peer_record));
+            true
+        });
+        let config = DaemonClientConfig::existing_only(physical, identity)
+            .with_connect_timeout_for_test(Duration::from_secs(1));
+        let client = DaemonClient::new(config);
+
+        let connection = client.connect_existing();
+        if connection.is_err() {
+            let _ = TcpStream::connect(record.loopback_addr().unwrap());
+        }
+        let served_retry = fake_peer.join().unwrap();
+
+        assert!(
+            matches!(connection, Ok(ExistingDaemon::Connected(_))),
+            "established handshake transport failure was not retried: {connection:?}"
+        );
+        assert!(served_retry, "retry did not use a fresh connection");
+    }
+
+    #[test]
+    fn peer_handshake_transport_failure_reopens_under_the_original_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let peer_record = record.clone();
+        let fake_peer = thread::spawn(move || {
+            let (mut anchor, _) = listener.accept().unwrap();
+            let _anchor_hello = read_bounded_json_line(&mut BufReader::new(&anchor)).unwrap();
+            write_json_line(&mut anchor, &ServerResponse::ready(&peer_record));
+
+            let (first_peer, _) = listener.accept().unwrap();
+            let _first_hello = read_bounded_json_line(&mut BufReader::new(&first_peer)).unwrap();
+            drop(first_peer);
+
+            let (mut second_peer, _) = listener.accept().unwrap();
+            let second_hello = read_bounded_json_line(&mut BufReader::new(&second_peer));
+            if second_hello.is_err() {
+                return false;
+            }
+            write_json_line(&mut second_peer, &ServerResponse::ready(&peer_record));
+            true
+        });
+        let config = DaemonClientConfig::existing_only(physical, identity)
+            .with_connect_timeout_for_test(Duration::from_secs(1));
+        let client = DaemonClient::new(config);
+        let anchor = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("fake endpoint must connect"),
+        };
+
+        let peer = anchor.connect_peer(Duration::from_secs(1));
+        if peer.is_err() {
+            let _ = TcpStream::connect(record.loopback_addr().unwrap());
+        }
+        let served_retry = fake_peer.join().unwrap();
+
+        if let Err(error) = &peer {
+            panic!("peer handshake transport was not retried: {error}");
+        }
+        assert!(served_retry, "peer retry did not use a fresh connection");
+    }
+
+    #[test]
+    fn invalid_request_handshake_rejection_is_never_retried() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let fake_peer = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let (mut first, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "client did not connect");
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("accept first handshake: {error}"),
+                }
+            };
+            first.set_nonblocking(false).unwrap();
+            let _hello = read_bounded_json_line(&mut BufReader::new(&first)).unwrap();
+            write_json_line(
+                &mut first,
+                &ServerResponse::error(DaemonErrorCode::InvalidRequest),
+            );
+            drop(first);
+            let retry_deadline = Instant::now() + Duration::from_millis(150);
+            loop {
+                match listener.accept() {
+                    Ok(_) => return true,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= retry_deadline {
+                            return false;
+                        }
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("observe handshake retry: {error}"),
+                }
+            }
+        });
+        let config = DaemonClientConfig::existing_only(physical, identity)
+            .with_connect_timeout_for_test(Duration::from_secs(1));
+        let client = DaemonClient::new(config);
+
+        let error = client.connect_existing().unwrap_err();
+        let retried = fake_peer.join().unwrap();
+
+        assert_eq!(error, "daemon handshake rejected: invalid_request");
+        assert!(!retried, "invalid_request opened a second connection");
+    }
+
+    #[test]
     fn fake_peer_error_code_is_closed_and_never_reaches_client_diagnostic() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
@@ -2642,6 +2854,69 @@ mod tests {
         assert!(ready.matches_record(&record));
         drop(reader);
         write_json_line(&mut stream, &ClientRequest::Release {});
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn preauth_deadline_starts_before_the_handler_thread_runs() {
+        let pause = install_handshake_pause();
+        let root = tempfile::tempdir().unwrap();
+        let identity = CoreIdentity::production();
+        let config =
+            server_config(root.path().to_path_buf(), identity.clone()).with_handshake_pause(&pause);
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, record) = wait_for_record(root.path(), &identity);
+        let mut stream = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
+        let hello = ClientRequest::hello(
+            DAEMON_PROTOCOL_VERSION,
+            record.token().to_string(),
+            identity,
+        );
+        write_json_line(&mut stream, &hello);
+        pause.wait_until_entered();
+
+        thread::sleep(Duration::from_millis(2_100));
+        pause.release();
+
+        assert!(
+            stream_closed_without_response(&mut stream),
+            "handler scheduling replenished the preauthentication deadline"
+        );
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn partial_handshake_bytes_cannot_replenish_the_preauth_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = CoreIdentity::production();
+        let config = server_config(root.path().to_path_buf(), identity.clone());
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, record) = wait_for_record(root.path(), &identity);
+        let mut stream = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
+        let hello = ClientRequest::hello(
+            DAEMON_PROTOCOL_VERSION,
+            record.token().to_string(),
+            identity,
+        );
+        let mut bytes = serde_json::to_vec(&hello).unwrap();
+        bytes.push(b'\n');
+        let first = bytes.len() / 3;
+        let second = first * 2;
+
+        stream.write_all(&bytes[..first]).unwrap();
+        stream.flush().unwrap();
+        thread::sleep(Duration::from_millis(1_100));
+        stream.write_all(&bytes[first..second]).unwrap();
+        stream.flush().unwrap();
+        thread::sleep(Duration::from_millis(1_100));
+        let _ = stream.write_all(&bytes[second..]);
+        let _ = stream.flush();
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+
+        assert!(
+            stream_closed_without_response(&mut stream),
+            "partial reads replenished the two-second preauthentication deadline"
+        );
         server.join().unwrap().unwrap();
     }
 

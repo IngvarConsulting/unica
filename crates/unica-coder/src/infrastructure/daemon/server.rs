@@ -1,7 +1,8 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory};
 use super::protocol::{
-    parse_request, read_bounded_request_line, ClientRequest, DaemonErrorCode, DaemonTaskSnapshot,
-    EndpointRecord, InvocationRequest, InvocationResponse, ServerResponse, DAEMON_PROTOCOL_VERSION,
+    parse_request, read_bounded_request_line, read_bounded_request_line_before, ClientRequest,
+    DaemonErrorCode, DaemonTaskSnapshot, EndpointRecord, InvocationRequest, InvocationResponse,
+    ServerResponse, DAEMON_PROTOCOL_VERSION,
 };
 use crate::application::invocation::{
     normalized_arguments_hash, InvocationExecutor, InvocationExecutorError,
@@ -1228,9 +1229,13 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
     loop {
         match listener.accept() {
             Ok((stream, address)) if address.ip().is_loopback() => {
+                let connection = AcceptedConnection {
+                    stream,
+                    handshake_deadline: Instant::now() + HANDSHAKE_READ_TIMEOUT,
+                };
                 match ConnectionSlot::acquire(Arc::clone(&admitted_connections)) {
                     Some(slot) => handlers.push(spawn_connection_handler(
-                        stream,
+                        connection,
                         record.clone(),
                         Arc::clone(&active_leases),
                         Arc::clone(&shutting_down),
@@ -1239,7 +1244,7 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
                         #[cfg(test)]
                         config.handshake_pause.clone(),
                     )),
-                    None => reject_overloaded_connection(stream),
+                    None => reject_overloaded_connection(connection),
                 }
             }
             Ok((_stream, _)) => {}
@@ -1283,8 +1288,13 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn spawn_connection_handler(
+struct AcceptedConnection {
     stream: TcpStream,
+    handshake_deadline: Instant,
+}
+
+fn spawn_connection_handler(
+    connection: AcceptedConnection,
     record: EndpointRecord,
     active_leases: Arc<LeaseRegistry>,
     shutting_down: Arc<AtomicBool>,
@@ -1296,7 +1306,8 @@ fn spawn_connection_handler(
         #[cfg(test)]
         pause_test_thread_if_configured(handshake_pause);
         let _ = handle_connection(
-            stream,
+            connection.stream,
+            connection.handshake_deadline,
             &record,
             &active_leases,
             &shutting_down,
@@ -1306,35 +1317,62 @@ fn spawn_connection_handler(
     })
 }
 
+enum HandshakeRequestError {
+    Invalid,
+    Transport,
+}
+
+fn read_handshake_request(
+    reader: &mut BufReader<TcpStream>,
+    handshake_deadline: Instant,
+) -> Result<ClientRequest, HandshakeRequestError> {
+    let bytes = read_bounded_request_line_before(reader, |reader| {
+        let remaining = handshake_deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
+        reader.get_ref().set_read_timeout(Some(remaining))
+    });
+    if Instant::now() >= handshake_deadline {
+        return Err(HandshakeRequestError::Transport);
+    }
+    let request = match bytes {
+        Ok(bytes) => parse_request(&bytes).map_err(|_| HandshakeRequestError::Invalid),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            Err(HandshakeRequestError::Invalid)
+        }
+        Err(_) => Err(HandshakeRequestError::Transport),
+    };
+    if Instant::now() >= handshake_deadline {
+        return Err(HandshakeRequestError::Transport);
+    }
+    request
+}
+
 fn handle_connection(
     mut stream: TcpStream,
+    handshake_deadline: Instant,
     record: &EndpointRecord,
     active_leases: &Arc<LeaseRegistry>,
     shutting_down: &AtomicBool,
     invocation_runtime: &DaemonInvocationRuntime,
     handshake_slot: ConnectionSlot,
 ) -> Result<(), String> {
-    stream
-        .set_read_timeout(Some(HANDSHAKE_READ_TIMEOUT))
-        .map_err(|error| daemon_io_error("configure daemon handshake timeout", error))?;
-    stream
-        .set_write_timeout(Some(HANDSHAKE_READ_TIMEOUT))
-        .map_err(|error| daemon_io_error("configure daemon response timeout", error))?;
     let reader_stream = stream
         .try_clone()
         .map_err(|error| daemon_io_error("clone daemon client stream", error))?;
     let mut reader = BufReader::new(reader_stream);
-    let request = match read_bounded_request_line(&mut reader).and_then(|bytes| {
-        parse_request(&bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-    }) {
+    let request = match read_handshake_request(&mut reader, handshake_deadline) {
         Ok(request) => request,
-        Err(_) => {
-            write_response(
+        Err(HandshakeRequestError::Invalid) => {
+            write_response_before(
                 &mut stream,
                 &ServerResponse::error(DaemonErrorCode::InvalidRequest),
+                handshake_deadline,
             )?;
             return Ok(());
         }
+        Err(HandshakeRequestError::Transport) => return Ok(()),
     };
 
     let ClientRequest::Hello {
@@ -1344,30 +1382,34 @@ fn handle_connection(
         owner_lease,
     } = request
     else {
-        write_response(
+        write_response_before(
             &mut stream,
             &ServerResponse::error(DaemonErrorCode::HandshakeRequired),
+            handshake_deadline,
         )?;
         return Ok(());
     };
     if protocol_version != DAEMON_PROTOCOL_VERSION {
-        write_response(
+        write_response_before(
             &mut stream,
             &ServerResponse::error(DaemonErrorCode::ProtocolMismatch),
+            handshake_deadline,
         )?;
         return Ok(());
     }
     if core_identity != *record.core_identity() {
-        write_response(
+        write_response_before(
             &mut stream,
             &ServerResponse::error(DaemonErrorCode::CoreMismatch),
+            handshake_deadline,
         )?;
         return Ok(());
     }
     if !tokens_equal(&token, record.token()) {
-        write_response(
+        write_response_before(
             &mut stream,
             &ServerResponse::error(DaemonErrorCode::Unauthorized),
+            handshake_deadline,
         )?;
         return Ok(());
     }
@@ -1375,16 +1417,18 @@ fn handle_connection(
     let _owner = match active_leases.acquire(owner_lease)? {
         LeaseAdmission::Acquired(owner) => owner,
         LeaseAdmission::Duplicate => {
-            write_response(
+            write_response_before(
                 &mut stream,
                 &ServerResponse::error(DaemonErrorCode::DuplicateLease),
+                handshake_deadline,
             )?;
             return Ok(());
         }
         LeaseAdmission::Capacity => {
-            write_response(
+            write_response_before(
                 &mut stream,
                 &ServerResponse::error(DaemonErrorCode::OwnerCapacity),
+                handshake_deadline,
             )?;
             return Ok(());
         }
@@ -1392,7 +1436,11 @@ fn handle_connection(
     // The owner lease becomes the lifecycle fence before the pre-authentication admission
     // permit is released, so idle shutdown observes at least one of them throughout handoff.
     drop(handshake_slot);
-    write_response(&mut stream, &ServerResponse::ready(record))?;
+    write_response_before(
+        &mut stream,
+        &ServerResponse::ready(record),
+        handshake_deadline,
+    )?;
     stream
         .set_write_timeout(Some(OWNER_RESPONSE_WRITE_TIMEOUT))
         .map_err(|error| daemon_io_error("configure daemon owner response timeout", error))?;
@@ -6159,11 +6207,14 @@ impl Drop for ConnectionSlot {
     }
 }
 
-fn reject_overloaded_connection(mut stream: TcpStream) {
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
-    let _ = write_response(
+fn reject_overloaded_connection(connection: AcceptedConnection) {
+    let mut stream = connection.stream;
+    let _ = write_response_before(
         &mut stream,
         &ServerResponse::error(DaemonErrorCode::Overloaded),
+        connection
+            .handshake_deadline
+            .min(Instant::now() + Duration::from_millis(100)),
     );
 }
 

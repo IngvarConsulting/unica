@@ -1,8 +1,8 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory};
 use super::protocol::{
-    parse_response, read_bounded_response_line, ClientRequest, DaemonErrorCode, DaemonTaskSnapshot,
-    EndpointRecord, InvocationRequest, InvocationResponse, ServerResponse, DAEMON_PROTOCOL_VERSION,
-    MAX_DAEMON_REQUEST_LINE_BYTES,
+    parse_response, read_bounded_response_line, read_bounded_response_line_before, ClientRequest,
+    DaemonErrorCode, DaemonTaskSnapshot, EndpointRecord, InvocationRequest, InvocationResponse,
+    ServerResponse, DAEMON_PROTOCOL_VERSION, MAX_DAEMON_REQUEST_LINE_BYTES,
 };
 use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN_MS;
 use crate::infrastructure::platform::ManagedStartupChild;
@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+const HANDSHAKE_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 const INVOCATION_RESPONSE_MARGIN: Duration =
     Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS);
 
@@ -453,10 +454,35 @@ impl DaemonOwner {
         exchange_budget: Duration,
         clock: Arc<dyn DaemonClientClock>,
     ) -> Result<Self, ConnectFailure> {
-        let address = record.loopback_addr().map_err(ConnectFailure::Rejected)?;
+        loop {
+            match Self::connect_once(record, deadline, exchange_budget, Arc::clone(&clock)) {
+                Ok(owner) => return Ok(owner),
+                Err(HandshakeAttemptFailure::Terminal(failure)) => return Err(failure),
+                Err(HandshakeAttemptFailure::RetryableTransport) => {
+                    let remaining = deadline
+                        .remaining("handshake response")
+                        .map_err(ConnectFailure::Rejected)?;
+                    std::thread::sleep(HANDSHAKE_RETRY_INTERVAL.min(remaining));
+                    deadline
+                        .checkpoint("handshake response")
+                        .map_err(ConnectFailure::Rejected)?;
+                }
+            }
+        }
+    }
+
+    fn connect_once(
+        record: &EndpointRecord,
+        deadline: &DaemonDeadline,
+        exchange_budget: Duration,
+        clock: Arc<dyn DaemonClientClock>,
+    ) -> Result<Self, HandshakeAttemptFailure> {
+        let address = record
+            .loopback_addr()
+            .map_err(|error| HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(error)))?;
         let connect_budget = deadline
             .remaining("endpoint connect")
-            .map_err(ConnectFailure::Rejected)?;
+            .map_err(|error| HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(error)))?;
         let mut writer = match TcpStream::connect_timeout(&address.into(), connect_budget) {
             Ok(writer) => writer,
             Err(error)
@@ -468,45 +494,49 @@ impl DaemonOwner {
                         | io::ErrorKind::TimedOut
                 ) =>
             {
-                deadline
-                    .checkpoint("endpoint connect")
-                    .map_err(ConnectFailure::Rejected)?;
-                return Err(ConnectFailure::Absent);
+                deadline.checkpoint("endpoint connect").map_err(|error| {
+                    HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(error))
+                })?;
+                return Err(HandshakeAttemptFailure::Terminal(ConnectFailure::Absent));
             }
             Err(error) => {
-                return Err(ConnectFailure::Rejected(format!(
-                    "connect daemon endpoint: {error}"
+                return Err(HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(
+                    format!("connect daemon endpoint: {error}"),
                 )))
             }
         };
         deadline
             .checkpoint("endpoint connect")
-            .map_err(ConnectFailure::Rejected)?;
-        let reader_stream = writer
-            .try_clone()
-            .map_err(|error| ConnectFailure::Rejected(format!("clone daemon stream: {error}")))?;
+            .map_err(|error| HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(error)))?;
+        let reader_stream = writer.try_clone().map_err(|error| {
+            HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(format!(
+                "clone daemon stream: {error}"
+            )))
+        })?;
         let mut reader = BufReader::new(reader_stream);
         let hello = ClientRequest::hello(
             DAEMON_PROTOCOL_VERSION,
             record.token().to_string(),
             record.core_identity().clone(),
         );
-        write_request(&mut writer, &hello, deadline, "handshake request")
-            .map_err(ConnectFailure::Rejected)?;
-        let response = read_response(&mut reader, deadline, "handshake response")
-            .map_err(ConnectFailure::Rejected)?;
+        write_handshake_request(&mut writer, &hello, deadline)?;
+        let response = read_handshake_response(&mut reader, deadline)?;
         if !response.matches_record(record) {
-            return Err(match response.error_code() {
-                Some(
-                    code @ (DaemonErrorCode::Overloaded
-                    | DaemonErrorCode::OwnerCapacity
-                    | DaemonErrorCode::WorkspaceCapacity),
-                ) => ConnectFailure::RetryLater(code),
-                Some(code) => {
-                    ConnectFailure::Rejected(format!("daemon handshake rejected: {code}"))
-                }
-                None => ConnectFailure::Rejected("daemon handshake identity mismatch".to_string()),
-            });
+            return Err(HandshakeAttemptFailure::Terminal(
+                match response.error_code() {
+                    Some(
+                        code @ (DaemonErrorCode::Overloaded
+                        | DaemonErrorCode::OwnerCapacity
+                        | DaemonErrorCode::WorkspaceCapacity),
+                    ) => ConnectFailure::RetryLater(code),
+                    Some(code) => {
+                        ConnectFailure::Rejected(format!("daemon handshake rejected: {code}"))
+                    }
+                    None => {
+                        ConnectFailure::Rejected("daemon handshake identity mismatch".to_string())
+                    }
+                },
+            ));
         }
         Ok(Self {
             writer,
@@ -784,6 +814,11 @@ enum ConnectFailure {
     Rejected(String),
 }
 
+enum HandshakeAttemptFailure {
+    RetryableTransport,
+    Terminal(ConnectFailure),
+}
+
 fn retry_later_diagnostic(code: DaemonErrorCode) -> String {
     match code {
         DaemonErrorCode::Overloaded => "daemon handshake capacity reached; retry later".to_string(),
@@ -793,6 +828,99 @@ fn retry_later_diagnostic(code: DaemonErrorCode) -> String {
         }
         _ => "daemon temporarily unavailable; retry later".to_string(),
     }
+}
+
+fn retryable_handshake_transport(error: &io::Error) -> bool {
+    !matches!(
+        error.kind(),
+        io::ErrorKind::InvalidData
+            | io::ErrorKind::InvalidInput
+            | io::ErrorKind::PermissionDenied
+            | io::ErrorKind::Unsupported
+            | io::ErrorKind::OutOfMemory
+    )
+}
+
+fn write_handshake_request(
+    stream: &mut TcpStream,
+    request: &ClientRequest,
+    deadline: &DaemonDeadline,
+) -> Result<(), HandshakeAttemptFailure> {
+    let mut bytes = serde_json::to_vec(request).map_err(|_| {
+        HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(
+            "daemon request could not be serialized".to_string(),
+        ))
+    })?;
+    debug_assert!(
+        super::protocol::parse_request(&bytes).is_ok(),
+        "locally constructed daemon request must satisfy the strict protocol"
+    );
+    bytes.push(b'\n');
+    if bytes.len() > MAX_DAEMON_REQUEST_LINE_BYTES {
+        return Err(HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(
+            "daemon request exceeds the byte limit".to_string(),
+        )));
+    }
+    let remaining = deadline
+        .remaining("handshake request")
+        .map_err(|_| HandshakeAttemptFailure::RetryableTransport)?;
+    stream.set_write_timeout(Some(remaining)).map_err(|error| {
+        HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(format!(
+            "configure daemon write timeout: {error}"
+        )))
+    })?;
+    let result = stream
+        .write_all(&bytes)
+        .and_then(|_| stream.flush())
+        .map_err(|error| {
+            if retryable_handshake_transport(&error) {
+                HandshakeAttemptFailure::RetryableTransport
+            } else {
+                HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(format!(
+                    "write daemon request: {error}"
+                )))
+            }
+        });
+    deadline
+        .checkpoint("handshake request")
+        .map_err(|_| HandshakeAttemptFailure::RetryableTransport)?;
+    result
+}
+
+fn read_handshake_response(
+    reader: &mut BufReader<TcpStream>,
+    deadline: &DaemonDeadline,
+) -> Result<ServerResponse, HandshakeAttemptFailure> {
+    let bytes = read_bounded_response_line_before(reader, |reader| {
+        let remaining = deadline
+            .remaining("handshake response")
+            .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?;
+        reader.get_ref().set_read_timeout(Some(remaining))
+    });
+    #[cfg(test)]
+    deadline.clock.response_read_completed();
+    deadline
+        .checkpoint("handshake response")
+        .map_err(|_| HandshakeAttemptFailure::RetryableTransport)?;
+    #[cfg(test)]
+    deadline.clock.response_parse_started();
+    let response = match bytes {
+        Ok(bytes) => parse_response(&bytes)
+            .map_err(|error| HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(error))),
+        Err(error) => {
+            if retryable_handshake_transport(&error) {
+                Err(HandshakeAttemptFailure::RetryableTransport)
+            } else {
+                Err(HandshakeAttemptFailure::Terminal(ConnectFailure::Rejected(
+                    format!("read daemon response: {error}"),
+                )))
+            }
+        }
+    };
+    deadline
+        .checkpoint("handshake response")
+        .map_err(|_| HandshakeAttemptFailure::RetryableTransport)?;
+    response
 }
 
 fn write_request(
