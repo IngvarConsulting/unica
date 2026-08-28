@@ -2263,7 +2263,9 @@ pub(crate) fn find_uses_each_typed_readers_real_export_path_without_publishing_i
     let index = WorkspaceFindIndexBuilder::default()
         .build(
             &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
             &fixture.cancellation,
         )
         .unwrap();
@@ -2603,7 +2605,9 @@ pub(crate) fn one_find_reads_each_module_source_once_per_actor_revision() {
     WorkspaceFindIndexBuilder::default()
         .build(
             &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
             &fixture.cancellation,
         )
         .unwrap();
@@ -2627,7 +2631,9 @@ pub(crate) fn one_find_reads_each_module_source_once_per_actor_revision() {
     WorkspaceFindIndexBuilder::default()
         .build(
             &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
             &fixture.cancellation,
         )
         .unwrap();
@@ -2642,7 +2648,9 @@ pub(crate) fn one_find_reads_each_module_source_once_per_actor_revision() {
     WorkspaceFindIndexBuilder::default()
         .build(
             &[ActorFindSource::new("main", &second_authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
             &fixture.cancellation,
         )
         .unwrap();
