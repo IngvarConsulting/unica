@@ -3151,7 +3151,7 @@ fn rollback_retained_apply(
     created_directories: &mut Vec<CreatedRetainedApplyDirectory>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    while let Some(change) = published.pop() {
+    while let Some(mut change) = published.pop() {
         #[cfg(test)]
         RETAINED_APPLY_OBSERVED_EVENTS.with(|events| {
             events
@@ -3160,10 +3160,14 @@ fn rollback_retained_apply(
                     change.relative_path.clone(),
                 ));
         });
-        if let Some(file) = change.published.as_ref() {
-            if let Err(error) =
-                file.remove_named_identity_relative_for_retained_apply(&retained_apply_stage_name())
-            {
+        if let Some(file) = change.published.take() {
+            let removal = file
+                .remove_named_identity_relative_for_retained_apply(&retained_apply_stage_name());
+            // Windows completes a handle-based delete only after every handle to the
+            // delete-pending file is closed.  Release the journal's retained handle
+            // before attempting to restore a displaced preimage at the same name.
+            drop(file);
+            if let Err(error) = removal {
                 errors.push(format!("published apply child was preserved: {error}"));
             }
         } else if change.kind == PlannedChangeKind::Create {
@@ -6285,6 +6289,32 @@ pub(crate) mod tests {
 
         let rollback = with_rollback_diagnostics(provider, vec!["cleanup failed".into()]);
         assert_eq!(rollback.kind(), CommitFailureKind::RollbackFailed);
+    }
+
+    #[test]
+    fn retained_apply_rollback_releases_published_capability_before_preimage_restore() {
+        let source = include_str!("compile_transaction.rs");
+        let rollback = source
+            .split_once("fn rollback_retained_apply(")
+            .expect("retained apply rollback must exist")
+            .1
+            .split_once("fn finalize_retained_apply_recovery(")
+            .expect("retained apply rollback must precede recovery finalization")
+            .0;
+        let take = rollback
+            .find("change.published.take()")
+            .expect("rollback must take ownership of the published capability");
+        let release = rollback
+            .find("drop(file)")
+            .expect("rollback must explicitly release the published capability");
+        let restore = rollback
+            .find("restore_displaced_regular_child_no_replace")
+            .expect("rollback must restore the displaced preimage");
+
+        assert!(
+            take < release && release < restore,
+            "a delete-pending Windows publication handle must close before same-name preimage restoration"
+        );
     }
 
     fn temp_root(name: &str) -> PathBuf {

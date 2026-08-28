@@ -4578,15 +4578,17 @@ pub(super) mod tests {
             Some(CodeSelector::Method("Base".to_string())),
             Some(CodePosition::After),
         )];
-        let admission = staged_code_admission(&staged, true);
-        let (mut state, effects) = plan_admitted_code(&admission, &staged.binding, &operation)
-            .expect("placeholder planner cannot produce the V12 parity postimage");
         let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
-        assert_eq!(
-            state.read(relative).unwrap().unwrap(),
-            fs::read(v12.source.join(relative)).unwrap()
-        );
-        assert_eq!(effects.events().len(), 1);
+        {
+            let admission = staged_code_admission(&staged, true);
+            let (mut state, effects) = plan_admitted_code(&admission, &staged.binding, &operation)
+                .expect("placeholder planner cannot produce the V12 parity postimage");
+            assert_eq!(
+                state.read(relative).unwrap().unwrap(),
+                fs::read(v12.source.join(relative)).unwrap()
+            );
+            assert_eq!(effects.events().len(), 1);
+        }
 
         let invalid_v12 = patch_inner(
             &patch_args(
@@ -4605,13 +4607,15 @@ pub(super) mod tests {
             Some(CodeSelector::Method("Missing".to_string())),
             Some(CodePosition::After),
         )];
-        let invalid_admission = staged_code_admission(&staged, true);
-        assert_eq!(
-            plan_admitted_code(&invalid_admission, &staged.binding, &invalid_operation)
-                .unwrap_err()
-                .kind(),
-            ApplyPlanErrorKind::NotFound
-        );
+        {
+            let invalid_admission = staged_code_admission(&staged, true);
+            assert_eq!(
+                plan_admitted_code(&invalid_admission, &staged.binding, &invalid_operation)
+                    .unwrap_err()
+                    .kind(),
+                ApplyPlanErrorKind::NotFound
+            );
+        }
 
         let repeated_v12 = patch_inner(&v12_args, &v12_context, PatchMode::Apply);
         assert!(repeated_v12.outcome.ok);

@@ -6630,21 +6630,38 @@ pub(crate) mod tests {
             .unwrap();
         let state = admitted.staged_state().unwrap();
         let prepared = admitted.prepare(state).unwrap();
-        std::fs::rename(&cache_root, fixture.root.join("cache-displaced")).unwrap();
-        std::fs::create_dir_all(&cache_root).unwrap();
+        let displaced = fixture.root.join("cache-displaced");
+        let retained_identity = path_identity_for_test(&cache_root)
+            .unwrap()
+            .expect("cache root identity must be available on supported CI platforms");
+        match attempt_retained_directory_replacement_for_test(&cache_root, &displaced).unwrap() {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                std::fs::create_dir_all(&cache_root).unwrap();
+                let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
 
-        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-
-        assert_eq!(
-            error.kind(),
-            super::ApplyPublicationErrorKind::ContainmentIdentity
-        );
-        assert!(
-            !error
-                .to_string()
-                .contains(&cache_root.display().to_string()),
-            "cache authority diagnostic exposed its absolute root: {error}"
-        );
+                assert_eq!(
+                    error.kind(),
+                    super::ApplyPublicationErrorKind::ContainmentIdentity
+                );
+                assert!(
+                    !error
+                        .to_string()
+                        .contains(&cache_root.display().to_string()),
+                    "cache authority diagnostic exposed its absolute root: {error}"
+                );
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                eprintln!(
+                    "[SKIPPED FIXTURE] cache-root replacement is prevented by its retained handle"
+                );
+                assert_eq!(
+                    path_identity_for_test(&cache_root).unwrap().as_deref(),
+                    Some(retained_identity.as_str())
+                );
+                assert!(!displaced.exists());
+                fixture.actor.publish_prepared_apply(prepared).unwrap();
+            }
+        }
         fixture.cleanup();
     }
 
@@ -8215,28 +8232,58 @@ pub(crate) mod tests {
         let named_root = fixture.roots[0].clone();
         let displaced = fixture.root.join("src-race-displaced");
         let hook_displaced = displaced.clone();
+        let retained_identity = path_identity_for_test(&named_root)
+            .unwrap()
+            .expect("source root identity must be available on supported CI platforms");
+        let (replacement_tx, replacement_rx) = mpsc::sync_channel(1);
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
             move || {
-                std::fs::rename(&named_root, &hook_displaced).unwrap();
-                std::fs::create_dir_all(&named_root).unwrap();
-                std::fs::write(named_root.join("Module.bsl"), b"replacement-tree").unwrap();
+                let replacement = attempt_retained_directory_replacement_for_test(
+                    &named_root,
+                    &hook_displaced,
+                )
+                .unwrap();
+                if replacement == RetainedDirectoryReplacementOutcome::Replaced {
+                    std::fs::create_dir_all(&named_root).unwrap();
+                    std::fs::write(named_root.join("Module.bsl"), b"replacement-tree").unwrap();
+                }
+                replacement_tx.send(replacement).unwrap();
             },
         );
 
-        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-        assert!(
-            error.contains("physical identity")
-                || error.contains("identity changed after admission"),
-            "{error}"
-        );
-        assert_eq!(
-            std::fs::read(displaced.join("Module.bsl")).unwrap(),
-            b"original"
-        );
-        assert_eq!(
-            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
-            b"replacement-tree"
-        );
+        let publication = fixture.actor.publish_prepared_apply(prepared);
+        let replacement = replacement_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("post-validation replacement hook did not report its platform outcome");
+        match replacement {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                let error = publication.unwrap_err();
+                assert!(
+                    error.contains("physical identity")
+                        || error.contains("identity changed after admission"),
+                    "{error}"
+                );
+                assert_eq!(
+                    std::fs::read(displaced.join("Module.bsl")).unwrap(),
+                    b"original"
+                );
+                assert_eq!(
+                    std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+                    b"replacement-tree"
+                );
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&fixture.roots[0])
+                        .unwrap()
+                        .as_deref(),
+                    Some(retained_identity.as_str())
+                );
+                assert!(!displaced.exists());
+                publication.unwrap();
+                assert_eq!(std::fs::read(&target).unwrap(), b"published-postimage");
+            }
+        }
         fixture.cleanup();
     }
 
@@ -8267,28 +8314,57 @@ pub(crate) mod tests {
         let named_root = fixture.roots[0].clone();
         let displaced = fixture.root.join("typed-postimage-root-displaced");
         let hook_displaced = displaced.clone();
+        let retained_identity = path_identity_for_test(&named_root)
+            .unwrap()
+            .expect("source root identity must be available on supported CI platforms");
+        let (replacement_tx, replacement_rx) = mpsc::sync_channel(1);
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_postimages_hook(
             move || {
-                std::fs::rename(&named_root, &hook_displaced).unwrap();
-                std::fs::create_dir_all(&named_root).unwrap();
-                std::fs::write(named_root.join("foreign.txt"), b"foreign").unwrap();
+                let replacement = attempt_retained_directory_replacement_for_test(
+                    &named_root,
+                    &hook_displaced,
+                )
+                .unwrap();
+                if replacement == RetainedDirectoryReplacementOutcome::Replaced {
+                    std::fs::create_dir_all(&named_root).unwrap();
+                    std::fs::write(named_root.join("foreign.txt"), b"foreign").unwrap();
+                }
+                replacement_tx.send(replacement).unwrap();
             },
         );
 
-        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-
-        assert_eq!(
-            error.kind(),
-            super::ApplyPublicationErrorKind::ContainmentIdentity
-        );
-        assert_eq!(
-            std::fs::read(displaced.join("Module.bsl")).unwrap(),
-            b"original"
-        );
-        assert_eq!(
-            std::fs::read(fixture.roots[0].join("foreign.txt")).unwrap(),
-            b"foreign"
-        );
+        let publication = fixture.actor.publish_prepared_apply(prepared);
+        let replacement = replacement_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("postimage replacement hook did not report its platform outcome");
+        match replacement {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                let error = publication.unwrap_err();
+                assert_eq!(
+                    error.kind(),
+                    super::ApplyPublicationErrorKind::ContainmentIdentity
+                );
+                assert_eq!(
+                    std::fs::read(displaced.join("Module.bsl")).unwrap(),
+                    b"original"
+                );
+                assert_eq!(
+                    std::fs::read(fixture.roots[0].join("foreign.txt")).unwrap(),
+                    b"foreign"
+                );
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&fixture.roots[0])
+                        .unwrap()
+                        .as_deref(),
+                    Some(retained_identity.as_str())
+                );
+                assert!(!displaced.exists());
+                publication.unwrap();
+                assert_eq!(std::fs::read(&target).unwrap(), b"published");
+            }
+        }
         fixture.cleanup();
     }
 
@@ -8318,33 +8394,65 @@ pub(crate) mod tests {
         let displaced = fixture.roots[0].join("Nested-displaced");
         let hook_nested = nested.clone();
         let hook_displaced = displaced.clone();
+        let (replacement_tx, replacement_rx) = mpsc::sync_channel(1);
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_postimages_hook(
             move || {
-                std::fs::rename(&hook_nested, &hook_displaced).unwrap();
-                std::fs::create_dir_all(&hook_nested).unwrap();
-                std::fs::write(hook_nested.join("foreign.txt"), b"foreign").unwrap();
-            },
-        );
-        let rollback_nested = nested.clone();
-        let rollback_displaced = displaced.clone();
-        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_rollback_hook(
-            move || {
-                std::fs::remove_dir_all(&rollback_nested).unwrap();
-                std::fs::rename(&rollback_displaced, &rollback_nested).unwrap();
+                let retained_identity = path_identity_for_test(&hook_nested)
+                    .unwrap()
+                    .expect("created parent identity must be available on supported CI platforms");
+                let replacement = attempt_retained_directory_replacement_for_test(
+                    &hook_nested,
+                    &hook_displaced,
+                )
+                .unwrap();
+                if replacement == RetainedDirectoryReplacementOutcome::Replaced {
+                    std::fs::create_dir_all(&hook_nested).unwrap();
+                    std::fs::write(hook_nested.join("foreign.txt"), b"foreign").unwrap();
+                    let rollback_nested = hook_nested.clone();
+                    let rollback_displaced = hook_displaced.clone();
+                    crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_rollback_hook(
+                        move || {
+                            std::fs::remove_dir_all(&rollback_nested).unwrap();
+                            std::fs::rename(&rollback_displaced, &rollback_nested).unwrap();
+                        },
+                    );
+                }
+                replacement_tx
+                    .send((replacement, retained_identity))
+                    .unwrap();
             },
         );
 
-        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-
-        assert_eq!(
-            error.kind(),
-            super::ApplyPublicationErrorKind::ContainmentIdentity
-        );
-        assert!(
-            !nested.exists(),
-            "transaction-created parent was not rolled back"
-        );
-        assert!(!displaced.exists(), "test race recovery name leaked");
+        let publication = fixture.actor.publish_prepared_apply(prepared);
+        let (replacement, retained_identity) = replacement_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("absent-chain replacement hook did not report its platform outcome");
+        match replacement {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                let error = publication.unwrap_err();
+                assert_eq!(
+                    error.kind(),
+                    super::ApplyPublicationErrorKind::ContainmentIdentity
+                );
+                assert!(
+                    !nested.exists(),
+                    "transaction-created parent was not rolled back"
+                );
+                assert!(!displaced.exists(), "test race recovery name leaked");
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&nested).unwrap().as_deref(),
+                    Some(retained_identity.as_str())
+                );
+                assert!(!displaced.exists());
+                publication.unwrap();
+                assert_eq!(
+                    std::fs::read(nested.join("Module.bsl")).unwrap(),
+                    b"published"
+                );
+            }
+        }
         fixture.cleanup();
     }
 

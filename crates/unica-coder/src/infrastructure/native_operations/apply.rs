@@ -1092,7 +1092,19 @@ pub(crate) mod tests {
                             b"must not redirect".to_vec(),
                         )
                         .unwrap();
-                    assert_eq!(raced.finalize().unwrap().planned_changes().len(), 1);
+                    let changes = raced.planned_changes();
+                    assert_eq!(changes.len(), 1);
+                    assert_eq!(changes[0].relative_path, PathBuf::from("Race/Module.bsl"));
+                    assert_eq!(changes[0].kind, StagedChangeKind::Replace);
+                    assert_eq!(
+                        changes[0].original,
+                        StagedFileState::Bytes(b"original race bytes".to_vec())
+                    );
+                    assert_eq!(
+                        changes[0].current,
+                        StagedFileState::Bytes(b"must not redirect".to_vec())
+                    );
+                    raced.finalize().unwrap();
                     assert_eq!(
                         std::fs::read(race_root.join("Module.bsl")).unwrap(),
                         b"original race bytes"
