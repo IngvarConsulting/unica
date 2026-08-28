@@ -5370,7 +5370,6 @@ struct ActorLogicalReadLease {"#,
         )
     }
 
-    #[test]
     pub(crate) fn daemon_receipt_deadline_is_not_replenished_after_delayed_prepare() {
         for delay in [Duration::from_millis(110), Duration::from_millis(226)] {
             let task_root = tempfile::tempdir().unwrap();

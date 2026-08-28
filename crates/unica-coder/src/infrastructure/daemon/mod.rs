@@ -650,7 +650,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn core_identity_is_closed_compile_time_abi_protocol_digest() {
         use sha2::{Digest, Sha256};
 
@@ -879,13 +878,11 @@ mod tests {
         task_server.join().unwrap().unwrap();
     }
 
-    #[test]
     fn response_limit_round_trips_results_above_request_cap_and_near_canonical_cap() {
         round_trip_sized_result(32 * 1024);
         round_trip_sized_result(MAX_CANONICAL_RESULT_BYTES - 4_096);
     }
 
-    #[test]
     fn result_over_canonical_cap_fails_closed_for_direct_and_task() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
@@ -1015,14 +1012,12 @@ mod tests {
         fake_peer.join().unwrap();
     }
 
-    #[test]
     fn hostile_oversized_response_closes_owner_session_before_a_second_request() {
         let mut hostile = vec![b'x'; MAX_DAEMON_RESPONSE_LINE_BYTES + 1];
         hostile.push(b'\n');
         assert_hostile_response_closes_owner_session(hostile, "byte limit");
     }
 
-    #[test]
     fn malformed_and_truncated_responses_close_owner_sessions_before_reuse() {
         assert_hostile_response_closes_owner_session(b"{not-json}\n".to_vec(), "strict versioned");
         assert_hostile_response_closes_owner_session(
@@ -1051,7 +1046,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn backpressured_response_uses_the_original_session_margin_without_reset() {
         let started = Instant::now();
         let now = Arc::new(Mutex::new(started));
@@ -1079,8 +1073,7 @@ mod tests {
         assert_eq!(*now.lock().unwrap(), started + Duration::from_millis(180));
     }
 
-    #[test]
-    fn daemon_invocation_receipt_deadline_is_single_and_never_replenished() {
+    fn server_captures_one_invocation_deadline_before_delayed_prepare_and_response_write() {
         for (delay, response_is_deliverable) in [
             (Duration::from_millis(110), true),
             (Duration::from_millis(226), false),
@@ -1157,6 +1150,24 @@ mod tests {
             drop(owner);
             server.join().unwrap().unwrap();
         }
+    }
+
+    fn daemon_result_size_and_session_bounds_are_enforced() {
+        response_limit_round_trips_results_above_request_cap_and_near_canonical_cap();
+        result_over_canonical_cap_fails_closed_for_direct_and_task();
+        hostile_oversized_response_closes_owner_session_before_a_second_request();
+        malformed_and_truncated_responses_close_owner_sessions_before_reuse();
+        backpressured_response_uses_the_original_session_margin_without_reset();
+        server_captures_one_invocation_deadline_before_delayed_prepare_and_response_write();
+    }
+
+    #[test]
+    fn daemon_invocation_receipt_deadline_is_single_and_never_replenished() {
+        crate::application::invocation::tests::canonical_handoff_boundary_is_direct_before_7000_and_durable_at_or_before_deadline();
+        crate::application::invocation::tests::every_known_long_reason_materializes_before_execution_and_invalid_preparation_is_direct();
+        super::server::actor_capacity_tests::daemon_receipt_deadline_is_not_replenished_after_delayed_prepare();
+        server_captures_one_invocation_deadline_before_delayed_prepare_and_response_write();
+        backpressured_response_uses_the_original_session_margin_without_reset();
     }
 
     #[test]
@@ -1236,10 +1247,12 @@ mod tests {
         ] {
             assert!(super::protocol::parse_request(invalid).is_err());
         }
+        core_identity_is_closed_compile_time_abi_protocol_digest();
+        daemon_result_size_and_session_bounds_are_enforced();
+        assert_daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it();
     }
 
-    #[test]
-    fn daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it() {
+    fn assert_daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
         let workspace_hint = physical.to_string_lossy().into_owned();
@@ -1338,6 +1351,11 @@ mod tests {
         );
         drop(owner);
         restarted.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it() {
+        assert_daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it();
     }
 
     #[test]

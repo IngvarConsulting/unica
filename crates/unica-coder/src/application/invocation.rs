@@ -2146,7 +2146,6 @@ pub(crate) mod tests {
         InvocationResponseDeadline::capture(clock).restrict_to_frontend_budget(budget)
     }
 
-    #[test]
     fn foreign_deadline_clock_is_rejected_before_store_or_execution() {
         let started = Instant::now();
         let executor_clock = Arc::new(ManualClock::new(started));
@@ -2185,7 +2184,6 @@ pub(crate) mod tests {
         assert_eq!(executions.load(Ordering::SeqCst), 0);
     }
 
-    #[test]
     fn foreign_deadline_clock_is_rejected_before_invalid_direct_disclosure() {
         let started = Instant::now();
         let executor_clock = Arc::new(ManualClock::new(started));
@@ -2220,7 +2218,6 @@ pub(crate) mod tests {
         assert_eq!(executions.load(Ordering::SeqCst), 0);
     }
 
-    #[test]
     fn changed_deadline_boundary_is_rejected_before_store_or_execution() {
         let executor_clock = Arc::new(ManualClock::new(Instant::now()));
         let store = Arc::new(MemoryStore::default());
@@ -2255,7 +2252,6 @@ pub(crate) mod tests {
         assert_eq!(executions.load(Ordering::SeqCst), 0);
     }
 
-    #[test]
     fn fake_clock_6999_is_direct_and_7000_is_already_a_durable_task() {
         let started = Instant::now();
 
@@ -2335,7 +2331,6 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
     fn zero_budget_is_materialized_before_execution_and_never_returns_direct() {
         let store = Arc::new(MemoryStore::default());
         let executor = Arc::new(InvocationExecutor::new(
@@ -3144,9 +3139,9 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn late_large_result_uses_the_same_durable_invocation_before_transport_margin() {
-        const LATE_RESULT_BYTES: usize = MAX_CANONICAL_RESULT_BYTES - 4_096;
+    fn late_result_uses_the_same_durable_invocation_before_transport_margin(
+        late_result_bytes: usize,
+    ) {
         let store = Arc::new(MemoryStore::default());
         let clock = Arc::new(ManualClock::new(Instant::now()));
         let executor = Arc::new(InvocationExecutor::new(store, clock.clone()));
@@ -3160,7 +3155,7 @@ pub(crate) mod tests {
                 move |_| {
                     execution_count.fetch_add(1, Ordering::SeqCst);
                     execution_clock.advance(Duration::from_millis(6_999));
-                    Ok(DomainResult::success("L".repeat(LATE_RESULT_BYTES)))
+                    Ok(DomainResult::success("L".repeat(late_result_bytes)))
                 },
             )
             .unwrap();
@@ -3171,7 +3166,7 @@ pub(crate) mod tests {
         let terminal = executor.wait_task(task_id, Duration::from_secs(1)).unwrap();
 
         assert_eq!(terminal.status, InvocationStatus::Completed);
-        assert_eq!(terminal.result.unwrap().summary.len(), LATE_RESULT_BYTES);
+        assert_eq!(terminal.result.unwrap().summary.len(), late_result_bytes);
         assert_eq!(executions.load(Ordering::SeqCst), 1);
     }
 
@@ -3638,7 +3633,9 @@ pub(crate) mod tests {
         terminal_reconciliation_uses_bounded_exponential_backoff();
         terminal_deadline_starts_before_worker_scheduling_and_blocks_late_store_calls();
         canonical_result_limit_rejects_direct_and_task_bytes_without_persisting_them();
-        late_large_result_uses_the_same_durable_invocation_before_transport_margin();
+        late_result_uses_the_same_durable_invocation_before_transport_margin(
+            MAX_CANONICAL_RESULT_BYTES - 4_096,
+        );
         permanent_terminal_failure_uses_bounded_policy_then_requires_restart();
         cancel_faults_keep_the_live_owner_until_cancellation_is_durable();
         cancel_returns_the_exact_completed_or_failed_terminal_winner();
@@ -3648,7 +3645,6 @@ pub(crate) mod tests {
         actor_resource_capability_is_retained_through_terminal_reconciliation();
     }
 
-    #[test]
     fn simultaneous_completion_and_handoff_publish_one_terminal_result_from_one_execution() {
         let clock = Arc::new(ManualClock::new(Instant::now()));
         let executor = Arc::new(InvocationExecutor::new(
@@ -3693,7 +3689,6 @@ pub(crate) mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
     fn completion_staged_at_the_7000_boundary_is_a_durable_terminal_task_not_direct() {
         let clock = Arc::new(ManualClock::new(Instant::now()));
         let executor = Arc::new(InvocationExecutor::new(
@@ -3733,7 +3728,6 @@ pub(crate) mod tests {
         assert_eq!(terminal.result.unwrap().summary, "boundary terminal");
     }
 
-    #[test]
     pub(crate) fn canonical_handoff_boundary_is_direct_before_7000_and_durable_at_or_before_deadline(
     ) {
         foreign_deadline_clock_is_rejected_before_store_or_execution();
@@ -3743,7 +3737,7 @@ pub(crate) mod tests {
         zero_budget_is_materialized_before_execution_and_never_returns_direct();
         simultaneous_completion_and_handoff_publish_one_terminal_result_from_one_execution();
         completion_staged_at_the_7000_boundary_is_a_durable_terminal_task_not_direct();
-        late_large_result_uses_the_same_durable_invocation_before_transport_margin();
+        late_result_uses_the_same_durable_invocation_before_transport_margin(32 * 1024);
     }
 
     pub(crate) fn assert_operation_budget_survives_handoff_and_completes_once(
@@ -3806,7 +3800,6 @@ pub(crate) mod tests {
         assert_eq!(executions.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
     pub(crate) fn every_known_long_reason_materializes_before_execution_and_invalid_preparation_is_direct(
     ) {
         for reason in [
