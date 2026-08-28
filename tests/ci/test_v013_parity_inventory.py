@@ -303,17 +303,18 @@ def _validate_fixture_path(
         raise InventoryError(f"{label} fixture must be a normalized POSIX path")
 
     root = repo_root.resolve()
-    candidate = root
-    for part in parts:
-        candidate = candidate / part
-        if candidate.is_symlink():
-            raise InventoryError(f"{label} fixture path contains a symlink")
-
+    candidate = root.joinpath(*parts)
     resolved = candidate.resolve(strict=False)
     try:
         resolved.relative_to(root)
     except ValueError as error:
         raise InventoryError(f"{label} fixture escapes the repository root") from error
+
+    current = root
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            raise InventoryError(f"{label} fixture path contains a symlink")
     if not candidate.exists():
         raise InventoryError(f"{label} fixture does not exist")
     if not candidate.is_file():
@@ -579,6 +580,31 @@ class V013ParityInventoryTest(unittest.TestCase):
             baseline_names=baseline_names,
             tracked_paths=tracked_paths,
         )
+
+    def test_repository_adapter_preserves_newline_in_tracked_filename(self) -> None:
+        repository = self.root / "repository"
+        repository.mkdir()
+        subprocess.run(
+            ["git", "init", "--quiet"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+        relative = "fixtures/line\nbreak.json"
+        try:
+            path = repository.joinpath(*relative.split("/"))
+            path.parent.mkdir()
+            path.write_text("{}\n", encoding="utf-8")
+        except OSError as error:
+            self.skipTest(f"filenames containing newlines are unavailable: {error}")
+        subprocess.run(
+            ["git", "add", "--", relative],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(tracked_repository_paths(repository), {relative})
 
     def test_exact_empty_w0_skeleton_is_valid_synthetic_input(self) -> None:
         self._validate()
@@ -875,40 +901,45 @@ class V013ParityInventoryTest(unittest.TestCase):
 
     def test_fixture_lexical_path_safety(self) -> None:
         unsafe_paths = (
-            "",
-            "/tmp/case.json",
-            "C:/case.json",
-            "C:\\case.json",
-            "//server/share/case.json",
-            "\\\\server\\share\\case.json",
-            "./fixtures/case.json",
-            "fixtures/./case.json",
-            "fixtures/../case.json",
-            "../case.json",
-            "fixtures//case.json",
-            "fixtures/case.json/",
+            ("", "fixture must be a non-empty string"),
+            ("/tmp/case.json", "repository-relative"),
+            ("C:/case.json", "repository-relative"),
+            ("C:\\case.json", "canonical POSIX separators"),
+            ("//server/share/case.json", "repository-relative"),
+            ("\\\\server\\share\\case.json", "canonical POSIX separators"),
+            ("./fixtures/case.json", "normalized non-empty path"),
+            ("fixtures/./case.json", "normalized non-empty path"),
+            ("fixtures/../case.json", "normalized non-empty path"),
+            ("../case.json", "normalized non-empty path"),
+            ("fixtures//case.json", "normalized non-empty path"),
+            ("fixtures/case.json/", "normalized non-empty path"),
         )
-        for fixture in unsafe_paths:
+        for fixture, error_pattern in unsafe_paths:
             case = self._one_case()
             case["fixture"] = fixture
             documents = copy.deepcopy(self.documents)
             documents[EXPECTED_SHARDS[0]]["cases"] = [case]
-            with self.subTest(fixture=fixture), self.assertRaises(InventoryError):
+            with self.subTest(fixture=fixture), self.assertRaisesRegex(
+                InventoryError, error_pattern
+            ):
                 self._validate(documents)
 
     def test_fixture_must_exist_be_regular_and_be_tracked(self) -> None:
-        invalid_paths = (
-            "fixtures/missing.json",
-            "fixtures",
-            "fixtures/untracked.json",
-        )
         self._write_fixture("fixtures/untracked.json", tracked=False)
-        for fixture in invalid_paths:
+        self.tracked_paths.add("fixtures")
+        invalid_paths = (
+            ("fixtures/missing.json", "does not exist"),
+            ("fixtures", "regular file"),
+            ("fixtures/untracked.json", "tracked by git"),
+        )
+        for fixture, error_pattern in invalid_paths:
             case = self._one_case()
             case["fixture"] = fixture
             documents = copy.deepcopy(self.documents)
             documents[EXPECTED_SHARDS[0]]["cases"] = [case]
-            with self.subTest(fixture=fixture), self.assertRaises(InventoryError):
+            with self.subTest(fixture=fixture), self.assertRaisesRegex(
+                InventoryError, error_pattern
+            ):
                 self._validate(documents)
 
     def test_fixture_final_symlink_is_rejected(self) -> None:
@@ -925,7 +956,23 @@ class V013ParityInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(InventoryError, "symlink"):
             self._validate()
 
-    def test_fixture_symlink_ancestor_and_escape_are_rejected(self) -> None:
+    def test_fixture_symlink_ancestor_inside_repository_is_rejected(self) -> None:
+        self._write_fixture("fixtures/internal-target/case.json")
+        link = self.root / "linked-inside"
+        try:
+            link.symlink_to(
+                self.root / "fixtures/internal-target", target_is_directory=True
+            )
+        except OSError as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        self.tracked_paths.add("linked-inside/case.json")
+        case = self._one_case()
+        case["fixture"] = "linked-inside/case.json"
+        self._set_first_case(case)
+        with self.assertRaisesRegex(InventoryError, "symlink"):
+            self._validate()
+
+    def test_fixture_resolution_escape_is_rejected_independently(self) -> None:
         outside = self.root.parent / f"{self.root.name}-outside"
         outside.mkdir()
         self.addCleanup(outside.rmdir)
@@ -940,7 +987,7 @@ class V013ParityInventoryTest(unittest.TestCase):
         case = self._one_case()
         case["fixture"] = "linked/case.json"
         self._set_first_case(case)
-        with self.assertRaisesRegex(InventoryError, "symlink|escapes"):
+        with self.assertRaisesRegex(InventoryError, "escapes"):
             self._validate()
 
     def test_complete_is_one_uniform_distributed_gate(self) -> None:
@@ -952,8 +999,17 @@ class V013ParityInventoryTest(unittest.TestCase):
         for document in self.documents.values():
             document["complete"] = True
         self._set_first_row(self._one_mapped_row())
-        with self.assertRaisesRegex(InventoryError, "runtime job|74 baseline"):
+        with self.assertRaisesRegex(InventoryError, "missing runtime job dispositions"):
             self._validate()
+
+    def test_all_true_rejects_missing_non_job_baseline_accounting(self) -> None:
+        documents = self._complete_documents()
+        rows = documents[EXPECTED_SHARDS[0]]["baselineDispositions"]
+        documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [
+            row for row in rows if row["legacyTool"] != "unica.xdto.info"
+        ]
+        with self.assertRaisesRegex(InventoryError, "all 74 baseline names"):
+            self._validate(documents)
 
     def test_all_true_rejects_duplicate_baseline_accounting(self) -> None:
         documents = self._complete_documents()
