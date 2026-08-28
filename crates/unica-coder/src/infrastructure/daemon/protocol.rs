@@ -22,13 +22,25 @@ pub(crate) const MAX_TASK_WAIT_MS: u64 = 7_000;
 
 /// One canonical v0.13 call submitted to the daemon. Raw arguments exist only
 /// on this authenticated live connection; durable state receives their digest.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct InvocationRequest {
     tool: ToolIdentity,
     arguments: Map<String, Value>,
     workspace_hint: String,
     response_budget_ms: u64,
+}
+
+impl std::fmt::Debug for InvocationRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InvocationRequest")
+            .field("tool", &self.tool)
+            .field("arguments", &"<redacted>")
+            .field("workspace_hint", &"<redacted>")
+            .field("response_budget_ms", &self.response_budget_ms)
+            .finish()
+    }
 }
 
 impl InvocationRequest {
@@ -138,7 +150,7 @@ pub(crate) enum InvocationResponse {
     Task(DaemonTaskSnapshot),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct EndpointRecord {
     schema_version: u32,
@@ -149,6 +161,22 @@ pub(crate) struct EndpointRecord {
     port: u16,
     token: String,
     instance_id: String,
+}
+
+impl std::fmt::Debug for EndpointRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EndpointRecord")
+            .field("schema_version", &self.schema_version)
+            .field("protocol_version", &self.protocol_version)
+            .field("core_identity", &self.core_identity)
+            .field("pid", &self.pid)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("token", &"<redacted>")
+            .field("instance_id", &"<redacted>")
+            .finish()
+    }
 }
 
 impl EndpointRecord {
@@ -226,7 +254,7 @@ fn validate_uuid_v4(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ClientRequest {
     Hello {
@@ -257,6 +285,43 @@ pub(crate) enum ClientRequest {
         #[serde(rename = "taskId")]
         task_id: TaskId,
     },
+}
+
+impl std::fmt::Debug for ClientRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hello {
+                protocol_version,
+                core_identity,
+                ..
+            } => formatter
+                .debug_struct("Hello")
+                .field("protocol_version", protocol_version)
+                .field("token", &"<redacted>")
+                .field("core_identity", core_identity)
+                .field("owner_lease", &"<redacted>")
+                .finish(),
+            Self::Ping {} => formatter.write_str("Ping"),
+            Self::Release {} => formatter.write_str("Release"),
+            Self::SubmitInvocation { invocation } => formatter
+                .debug_struct("SubmitInvocation")
+                .field("invocation", invocation)
+                .finish(),
+            Self::GetTask { task_id } => formatter
+                .debug_struct("GetTask")
+                .field("task_id", task_id)
+                .finish(),
+            Self::WaitTask { task_id, wait_ms } => formatter
+                .debug_struct("WaitTask")
+                .field("task_id", task_id)
+                .field("wait_ms", wait_ms)
+                .finish(),
+            Self::CancelTask { task_id } => formatter
+                .debug_struct("CancelTask")
+                .field("task_id", task_id)
+                .finish(),
+        }
+    }
 }
 
 impl ClientRequest {

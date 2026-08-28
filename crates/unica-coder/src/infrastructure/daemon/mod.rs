@@ -2239,6 +2239,52 @@ mod tests {
     }
 
     #[test]
+    fn secret_bearing_daemon_protocol_debug_is_redacted() {
+        let identity = CoreIdentity::production();
+        let record = EndpointRecord::new(identity.clone(), 4321);
+        let endpoint_token = record.token().to_string();
+        let endpoint_instance = record.instance_id().to_string();
+        let record_debug = format!("{record:?}");
+        assert!(!record_debug.contains(&endpoint_token));
+        assert!(!record_debug.contains(&endpoint_instance));
+        assert!(record_debug.contains("EndpointRecord"));
+        assert_eq!(record_debug.matches("<redacted>").count(), 2);
+
+        let owner_lease = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        let hello = ClientRequest::hello_with_owner_for_test(
+            endpoint_token.clone(),
+            identity,
+            owner_lease.to_string(),
+        );
+        let hello_debug = format!("{hello:?}");
+        assert!(!hello_debug.contains(&endpoint_token));
+        assert!(!hello_debug.contains(owner_lease));
+        assert!(hello_debug.contains("Hello"));
+        assert_eq!(hello_debug.matches("<redacted>").count(), 2);
+
+        let argument_secret = "daemon-debug-argument-secret";
+        let workspace_secret = "/private/daemon-debug-workspace-secret";
+        let invocation = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({"password": argument_secret}),
+            workspace_secret,
+            0,
+        )
+        .unwrap();
+        let invocation_debug = format!("{invocation:?}");
+        assert!(!invocation_debug.contains(argument_secret));
+        assert!(!invocation_debug.contains(workspace_secret));
+        assert!(invocation_debug.contains("InvocationRequest"));
+        assert_eq!(invocation_debug.matches("<redacted>").count(), 2);
+
+        let submit_debug = format!("{:?}", ClientRequest::submit_invocation(invocation));
+        assert!(!submit_debug.contains(argument_secret));
+        assert!(!submit_debug.contains(workspace_secret));
+        assert!(submit_debug.contains("SubmitInvocation"));
+        assert_eq!(submit_debug.matches("<redacted>").count(), 2);
+    }
+
+    #[test]
     fn complete_malformed_handshake_is_invalid_request() {
         let root = tempfile::tempdir().unwrap();
         let identity = CoreIdentity::production();
