@@ -299,6 +299,8 @@ struct ProducerSignal {
     cancelled: AtomicBool,
     changed: Mutex<()>,
     wake: Condvar,
+    #[cfg(test)]
+    before_cancel_wait: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
 }
 
 impl ProducerSignal {
@@ -307,12 +309,21 @@ impl ProducerSignal {
             cancelled: AtomicBool::new(false),
             changed: Mutex::new(()),
             wake: Condvar::new(),
+            #[cfg(test)]
+            before_cancel_wait: Mutex::new(None),
         }
     }
 
     fn cancel(&self) {
+        // The predicate write and notification must share the waiter's mutex;
+        // otherwise cancellation can land after its check but before it sleeps.
+        let changed = self
+            .changed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.cancelled.store(true, Ordering::Release);
         self.wake.notify_all();
+        drop(changed);
     }
 }
 
@@ -335,6 +346,16 @@ impl SharedWorkProducer {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         while !self.is_cancelled() {
+            #[cfg(test)]
+            if let Some(hook) = self
+                .signal
+                .before_cancel_wait
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
+                hook();
+            }
             changed = self
                 .signal
                 .wake
@@ -1145,6 +1166,77 @@ mod tests {
     }
 
     #[test]
+    fn owner_cancellation_cannot_be_lost_between_predicate_check_and_wait() {
+        let work = SharedWork::<usize, &'static str>::new(SharedWorkLifetime::OwnerBound);
+        let (gap_entered_tx, gap_entered_rx) = mpsc::channel();
+        let (release_gap_tx, release_gap_rx) = mpsc::channel();
+        let (producer_done_tx, producer_done_rx) = mpsc::channel();
+        let (producer_retired_tx, producer_retired_rx) = mpsc::channel();
+        let (rescue_tx, rescue_rx) = mpsc::channel();
+        let key = delivery(&"4".repeat(64));
+        let owner = work.join_or_start(key, move |producer| {
+            let rescue_signal = Arc::clone(&producer.signal);
+            let rescue = std::thread::spawn(move || {
+                rescue_rx.recv().unwrap();
+                rescue_signal.wake.notify_all();
+            });
+            *producer
+                .signal
+                .before_cancel_wait
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(move || {
+                gap_entered_tx.send(()).unwrap();
+                release_gap_rx.recv().unwrap();
+            }));
+            producer.wait_cancelled();
+            producer_done_tx.send(()).unwrap();
+            rescue.join().unwrap();
+            producer_retired_tx.send(()).unwrap();
+            Err("cancelled")
+        });
+        gap_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("producer reached the cancellation check/wait gap");
+
+        let (drop_started_tx, drop_started_rx) = mpsc::channel();
+        let (drop_done_tx, drop_done_rx) = mpsc::channel();
+        let cancel = std::thread::spawn(move || {
+            drop_started_tx.send(()).unwrap();
+            drop(owner);
+            drop_done_tx.send(()).unwrap();
+        });
+        drop_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("owner cancellation started");
+        let cancellation_completed_in_gap =
+            drop_done_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+
+        release_gap_tx.send(()).unwrap();
+        let producer_finished_without_rescue = producer_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .is_ok();
+        rescue_tx.send(()).unwrap();
+        if !producer_finished_without_rescue {
+            producer_done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("rescue notification releases the buggy waiter");
+        }
+        producer_retired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("producer cleanup completed before the test returned");
+        cancel.join().unwrap();
+
+        assert!(
+            !cancellation_completed_in_gap,
+            "owner cancellation must serialize with the predicate-to-wait transition",
+        );
+        assert!(
+            producer_finished_without_rescue,
+            "owner cancellation notification was lost between the predicate check and wait",
+        );
+    }
+
+    #[test]
     fn terminal_retirement_cannot_remove_an_entry_while_a_new_owner_attaches() {
         let work = Arc::new(SharedWork::<usize, &'static str>::new(
             SharedWorkLifetime::OwnerBound,
@@ -1239,6 +1331,7 @@ mod tests {
         owner_bound_work_is_cancelled_when_the_last_owner_leaves();
         owner_attach_racing_last_owner_drop_observes_one_retiring_producer();
         cancelled_attempt_retires_before_a_replacement_producer_starts();
+        owner_cancellation_cannot_be_lost_between_predicate_check_and_wait();
         terminal_retirement_cannot_remove_an_entry_while_a_new_owner_attaches();
         joining_shared_work_never_waits_with_an_admission_permit();
     }
