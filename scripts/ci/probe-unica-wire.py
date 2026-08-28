@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 _CLEANUP_GRACE_SECONDS = 0.5
+_WINDOWS_CREATE_SUSPENDED = 0x00000004
 
 
 class ProcessIdentity:
@@ -57,9 +58,31 @@ class ProcessIdentity:
         )
 
 
+class ProcessCleanupResult:
+    """Bounded cleanup evidence, including failures that prevent a clean claim."""
+
+    __slots__ = ("survivors", "incomplete", "active_processes")
+
+    def __init__(
+        self,
+        survivors: set[ProcessIdentity],
+        incomplete: tuple[str, ...] = (),
+        active_processes: int | None = None,
+    ) -> None:
+        self.survivors = survivors
+        self.incomplete = incomplete
+        self.active_processes = active_processes
+
+    @property
+    def complete(self) -> bool:
+        return not self.survivors and not self.incomplete
+
+
 class ProcessOwnership:
     """Tracks one spawned session and identities registered before escape.
 
+    Windows ownership is a retained Job Object assigned while the leader is
+    suspended; numeric identities there are diagnostics, never kill authority.
     An unregistered process that calls ``setsid()`` has intentionally left the
     only ownership boundary available to an unprivileged POSIX parent. It is
     never rediscovered from a late bare PID. Callers that intentionally create
@@ -71,19 +94,30 @@ class ProcessOwnership:
         process: subprocess.Popen[str],
         public_identity: ProcessIdentity | None,
         session_id: int | None,
+        windows_job: object | None = None,
     ) -> None:
         self.process = process
         self.public_identity = public_identity
         self.session_id = session_id
+        self.windows_job = windows_job
 
     @classmethod
-    def capture(cls, process: subprocess.Popen[str]) -> ProcessOwnership:
+    def capture(
+        cls,
+        process: subprocess.Popen[str],
+        cleanup_deadline: float | None = None,
+    ) -> ProcessOwnership:
         pid = getattr(process, "pid", 0)
+        windows_job = (
+            _attach_windows_process_job(process, deadline=cleanup_deadline)
+            if os.name == "nt"
+            else None
+        )
         identity = _current_process_identity(pid)
         session_id = pid if os.name == "posix" and pid > 0 else None
         if identity is not None and identity.session_id is not None:
             session_id = identity.session_id
-        return cls(process, identity, session_id)
+        return cls(process, identity, session_id, windows_job)
 
     def snapshot(
         self, additional_identities: set[ProcessIdentity] | None = None
@@ -165,37 +199,73 @@ class ProcessOwnership:
         self,
         identities: set[ProcessIdentity],
         timeout_seconds: float = _CLEANUP_GRACE_SECONDS,
-    ) -> set[ProcessIdentity]:
-        cleanup_deadline = time.monotonic() + max(0.0, timeout_seconds)
+    ) -> ProcessCleanupResult:
+        cleanup_timeout = max(0.0, timeout_seconds)
+        cleanup_deadline = time.monotonic() + cleanup_timeout
+        if os.name == "nt":
+            incomplete: list[str] = []
+            active_processes: int | None = None
+            job = getattr(self, "windows_job", None)
+            if job is None:
+                incomplete.append("Windows Job Object ownership is unavailable")
+            else:
+                termination_error = job.terminate()
+                if termination_error is not None:
+                    incomplete.append(termination_error)
+                incomplete.extend(job.wait_for_leader_and_release(cleanup_deadline))
+                while True:
+                    active_processes, query_error = job.active_process_count()
+                    if query_error is not None:
+                        incomplete.append(query_error)
+                        break
+                    if active_processes == 0:
+                        break
+                    remaining = cleanup_deadline - time.monotonic()
+                    if remaining <= 0:
+                        incomplete.append(
+                            "Windows Job Object still owns "
+                            f"{active_processes} active process(es)"
+                        )
+                        break
+                    time.sleep(min(0.01, remaining))
+                close_error = job.close()
+                if close_error is not None:
+                    incomplete.append(close_error)
+            survivors = self.wait(
+                identities, max(0.0, cleanup_deadline - time.monotonic())
+            )
+            return ProcessCleanupResult(
+                survivors,
+                tuple(dict.fromkeys(incomplete)),
+                active_processes,
+            )
+
         survivors = self.survivors(identities)
         if survivors:
-            if os.name == "nt":
-                for identity in sorted(survivors, key=lambda item: item.pid):
-                    if identity.identifies(_current_process_identity(identity.pid)):
-                        _taskkill_process_tree(identity.pid)
-            else:
-                self.signal(survivors, signal.SIGTERM)
-                survivors = self.wait(
-                    survivors,
-                    min(0.1, max(0.0, cleanup_deadline - time.monotonic())),
-                )
-                if survivors:
-                    self.signal(survivors, signal.SIGKILL)
+            self.signal(survivors, signal.SIGTERM)
+            survivors = self.wait(
+                survivors,
+                min(0.1, max(0.0, cleanup_deadline - time.monotonic())),
+            )
+            if survivors:
+                self.signal(survivors, signal.SIGKILL)
         try:
             self.process.wait(
                 timeout=max(0.0, cleanup_deadline - time.monotonic())
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
-        return self.wait(
-            survivors, max(0.0, cleanup_deadline - time.monotonic())
+        return ProcessCleanupResult(
+            self.wait(
+                survivors, max(0.0, cleanup_deadline - time.monotonic())
+            )
         )
 
     def terminate(
         self,
         additional_identities: set[ProcessIdentity] | None = None,
         timeout_seconds: float = _CLEANUP_GRACE_SECONDS,
-    ) -> set[ProcessIdentity]:
+    ) -> ProcessCleanupResult:
         return self.quiesce(
             self.snapshot(additional_identities), timeout_seconds
         )
@@ -226,8 +296,11 @@ class JsonRpcSession:
         popen_options = {}
         if os.name == "posix":
             popen_options["start_new_session"] = True
-        elif os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-            popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        elif os.name == "nt":
+            popen_options["creationflags"] = (
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | _WINDOWS_CREATE_SUSPENDED
+            )
         self.process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -239,7 +312,40 @@ class JsonRpcSession:
             cwd=cwd,
             **popen_options,
         )
-        self.process_ownership = ProcessOwnership.capture(self.process)
+        attach_cleanup_deadline = min(
+            deadline, time.monotonic() + _CLEANUP_GRACE_SECONDS
+        )
+        try:
+            self.process_ownership = ProcessOwnership.capture(
+                self.process, attach_cleanup_deadline
+            )
+        except BaseException as error:
+            cleanup_errors: list[str] = []
+            if os.name != "nt" or getattr(self.process, "_handle", None) is not None:
+                try:
+                    self.process.terminate()
+                except OSError as cleanup_error:
+                    cleanup_errors.append(
+                        f"fallback process termination failed: {cleanup_error}"
+                    )
+                try:
+                    self.process.wait(
+                        timeout=max(
+                            0.0,
+                            attach_cleanup_deadline - time.monotonic(),
+                        )
+                    )
+                except (OSError, subprocess.TimeoutExpired) as cleanup_error:
+                    cleanup_errors.append(
+                        f"fallback process wait failed: {cleanup_error}"
+                    )
+            cleanup_errors.extend(self._close_streams())
+            if cleanup_errors:
+                raise RuntimeError(
+                    f"{error}; constructor cleanup incomplete: "
+                    + "; ".join(cleanup_errors)
+                ) from error
+            raise
         assert self.process.stdin is not None
         assert self.process.stdout is not None
         assert self.process.stderr is not None
@@ -401,7 +507,8 @@ class JsonRpcSession:
             self.process_ownership = ownership
         return ownership
 
-    def _close_streams(self) -> None:
+    def _close_streams(self) -> tuple[str, ...]:
+        errors: list[str] = []
         streams = (
             (getattr(self.process, "stdin", None), None),
             (getattr(self.process, "stdout", None), getattr(self, "reader", None)),
@@ -413,8 +520,9 @@ class JsonRpcSession:
             if stream is not None and not stream.closed:
                 try:
                     stream.close()
-                except (OSError, ValueError):
-                    pass
+                except (OSError, ValueError) as error:
+                    errors.append(f"stdio close failed: {error}")
+        return tuple(errors)
 
 
 class WireProbe:
@@ -590,18 +698,445 @@ def _require_result(response: dict, method: str) -> dict:
     return result
 
 
-def _taskkill_process_tree(pid: int) -> None:
-    try:
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=_CLEANUP_GRACE_SECONDS,
-            check=False,
+class _WindowsApi:
+    """Small checked Win32 facade; tests inject the same operation surface."""
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class LargeInteger(ctypes.Structure):
+            _fields_ = [("QuadPart", ctypes.c_longlong)]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class JobBasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", LargeInteger),
+                ("PerJobUserTimeLimit", LargeInteger),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class JobExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JobBasicLimitInformation),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        class JobBasicAccountingInformation(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_longlong),
+                ("TotalKernelTime", ctypes.c_longlong),
+                ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                ("TotalPageFaultCount", wintypes.DWORD),
+                ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD),
+                ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
+        class ThreadEntry32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        self.ctypes = ctypes
+        self.wintypes = wintypes
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.JobExtendedLimitInformation = JobExtendedLimitInformation
+        self.JobBasicAccountingInformation = JobBasicAccountingInformation
+        self.ThreadEntry32 = ThreadEntry32
+
+        signatures = (
+            ("CreateJobObjectW", [ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
+            (
+                "SetInformationJobObject",
+                [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD],
+                wintypes.BOOL,
+            ),
+            (
+                "AssignProcessToJobObject",
+                [wintypes.HANDLE, wintypes.HANDLE],
+                wintypes.BOOL,
+            ),
+            ("TerminateJobObject", [wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+            ("TerminateProcess", [wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+            (
+                "WaitForSingleObject",
+                [wintypes.HANDLE, wintypes.DWORD],
+                wintypes.DWORD,
+            ),
+            ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
+            (
+                "CreateToolhelp32Snapshot",
+                [wintypes.DWORD, wintypes.DWORD],
+                wintypes.HANDLE,
+            ),
+            (
+                "Thread32First",
+                [wintypes.HANDLE, ctypes.POINTER(ThreadEntry32)],
+                wintypes.BOOL,
+            ),
+            (
+                "Thread32Next",
+                [wintypes.HANDLE, ctypes.POINTER(ThreadEntry32)],
+                wintypes.BOOL,
+            ),
+            (
+                "OpenThread",
+                [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD],
+                wintypes.HANDLE,
+            ),
+            ("ResumeThread", [wintypes.HANDLE], wintypes.DWORD),
+            (
+                "QueryInformationJobObject",
+                [
+                    wintypes.HANDLE,
+                    ctypes.c_int,
+                    ctypes.c_void_p,
+                    wintypes.DWORD,
+                    ctypes.POINTER(wintypes.DWORD),
+                ],
+                wintypes.BOOL,
+            ),
         )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+        for name, argtypes, restype in signatures:
+            function = getattr(self.kernel32, name)
+            function.argtypes = argtypes
+            function.restype = restype
+
+    def _failure(self, operation: str) -> RuntimeError:
+        return RuntimeError(
+            f"{operation} failed with Windows error {self.ctypes.get_last_error()}"
+        )
+
+    def create_job(self) -> object:
+        handle = self.kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise self._failure("CreateJobObjectW")
+        return handle
+
+    def set_kill_on_job_close(self, job: object) -> None:
+        limits = self.JobExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000
+        if not self.kernel32.SetInformationJobObject(
+            job,
+            9,
+            self.ctypes.byref(limits),
+            self.ctypes.sizeof(limits),
+        ):
+            raise self._failure("SetInformationJobObject")
+
+    def assign_process(self, job: object, process_handle: object) -> None:
+        if not self.kernel32.AssignProcessToJobObject(job, process_handle):
+            raise self._failure("AssignProcessToJobObject")
+
+    def create_thread_snapshot(self) -> object:
+        handle = self.kernel32.CreateToolhelp32Snapshot(0x00000004, 0)
+        if handle == self.ctypes.c_void_p(-1).value:
+            raise self._failure("CreateToolhelp32Snapshot")
+        return handle
+
+    def open_primary_thread(self, snapshot: object, pid: int) -> object:
+        entry = self.ThreadEntry32()
+        entry.dwSize = self.ctypes.sizeof(entry)
+        if not self.kernel32.Thread32First(snapshot, self.ctypes.byref(entry)):
+            raise self._failure("Thread32First")
+        while True:
+            if entry.th32OwnerProcessID == pid:
+                handle = self.kernel32.OpenThread(
+                    0x0002, False, entry.th32ThreadID
+                )
+                if not handle:
+                    raise self._failure("OpenThread")
+                return handle
+            if not self.kernel32.Thread32Next(
+                snapshot, self.ctypes.byref(entry)
+            ):
+                error = self.ctypes.get_last_error()
+                if error == 18:
+                    raise RuntimeError(
+                        f"OpenThread found no primary thread for process {pid}"
+                    )
+                raise self._failure("Thread32Next")
+
+    def resume_thread(self, thread: object) -> int:
+        suspend_count = int(self.kernel32.ResumeThread(thread))
+        if suspend_count == 0xFFFFFFFF:
+            raise self._failure("ResumeThread")
+        return suspend_count
+
+    def terminate_process(self, process_handle: object) -> None:
+        if not self.kernel32.TerminateProcess(process_handle, 1):
+            raise self._failure("TerminateProcess")
+
+    def terminate_job(self, job: object) -> None:
+        if not self.kernel32.TerminateJobObject(job, 1):
+            raise self._failure("TerminateJobObject")
+
+    def wait_for_single_object(
+        self, handle: object, timeout_seconds: float
+    ) -> bool:
+        milliseconds = min(
+            0xFFFFFFFE, int(max(0.0, timeout_seconds) * 1000)
+        )
+        result = int(self.kernel32.WaitForSingleObject(handle, milliseconds))
+        if result == 0:
+            return True
+        if result == 0x00000102:
+            return False
+        if result == 0xFFFFFFFF:
+            raise self._failure("WaitForSingleObject")
+        raise RuntimeError(
+            f"WaitForSingleObject returned unexpected status {result}"
+        )
+
+    def close_popen_handle(self, process: subprocess.Popen[str]) -> None:
+        handle = getattr(process, "_handle", None)
+        if not handle:
+            return
+        try:
+            close = getattr(handle, "Close", None)
+            if close is None:
+                self.close_handle(handle)
+            else:
+                close()
+        except (OSError, RuntimeError) as error:
+            raise RuntimeError(f"CloseHandle(process) failed: {error}") from error
+        process._handle = None
+        if getattr(process, "returncode", None) is None:
+            process.returncode = 1
+
+    def close_handle(self, handle: object) -> None:
+        if not self.kernel32.CloseHandle(handle):
+            raise self._failure("CloseHandle")
+
+    def active_process_count(self, job: object) -> int:
+        information = self.JobBasicAccountingInformation()
+        if not self.kernel32.QueryInformationJobObject(
+            job,
+            1,
+            self.ctypes.byref(information),
+            self.ctypes.sizeof(information),
+            None,
+        ):
+            raise self._failure("QueryInformationJobObject")
+        return int(information.ActiveProcesses)
+
+
+class _WindowsProcessJob:
+    """A handle-bound Windows process tree created before the leader runs."""
+
+    __slots__ = ("handle", "api", "process")
+
+    def __init__(
+        self,
+        handle: object,
+        api: object,
+        process: subprocess.Popen[str],
+    ) -> None:
+        self.handle = handle
+        self.api = api
+        self.process = process
+
+    def terminate(self) -> str | None:
+        if not self.handle:
+            return "Windows Job Object handle is closed"
+        try:
+            self.api.terminate_job(self.handle)
+        except (OSError, RuntimeError) as error:
+            return str(error)
+        return None
+
+    def wait_for_leader_and_release(self, deadline: float) -> tuple[str, ...]:
+        errors: list[str] = []
+        handle = getattr(self.process, "_handle", None)
+        if handle:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                if not self.api.wait_for_single_object(handle, remaining):
+                    errors.append(
+                        "WaitForSingleObject timed out before the spawned "
+                        "Windows process exited"
+                    )
+            except (OSError, RuntimeError) as error:
+                errors.append(str(error))
+            try:
+                self.api.close_popen_handle(self.process)
+            except (OSError, RuntimeError) as error:
+                errors.append(str(error))
+        elif getattr(self.process, "returncode", None) is None:
+            errors.append("spawned Windows process handle is unavailable")
+        return tuple(errors)
+
+    def active_process_count(self) -> tuple[int | None, str | None]:
+        if not self.handle:
+            return None, "Windows Job Object handle is closed"
+        try:
+            return self.api.active_process_count(self.handle), None
+        except (OSError, RuntimeError) as error:
+            return None, str(error)
+
+    def close(self) -> str | None:
+        if not self.handle:
+            return None
+        try:
+            self.api.close_handle(self.handle)
+        except (OSError, RuntimeError) as error:
+            return str(error)
+        self.handle = None
+        return None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def _rollback_windows_process_job_attach(
+    process: subprocess.Popen[str],
+    process_handle: object,
+    job_handle: object | None,
+    assigned_to_job: bool,
+    resource_handles: list[tuple[str, object]],
+    deadline: float,
+    api: object,
+) -> tuple[str, ...]:
+    errors: list[str] = []
+
+    try:
+        api.terminate_process(process_handle)
+    except (OSError, RuntimeError) as error:
+        errors.append(str(error))
+    if job_handle is not None and assigned_to_job:
+        try:
+            api.terminate_job(job_handle)
+        except (OSError, RuntimeError) as error:
+            errors.append(str(error))
+    try:
+        remaining = max(0.0, deadline - time.monotonic())
+        if not api.wait_for_single_object(process_handle, remaining):
+            errors.append("WaitForSingleObject timed out during Windows attach rollback")
+    except (OSError, RuntimeError) as error:
+        errors.append(str(error))
+    try:
+        api.close_popen_handle(process)
+    except (OSError, RuntimeError) as error:
+        errors.append(str(error))
+
+    for label, handle in resource_handles:
+        try:
+            api.close_handle(handle)
+        except (OSError, RuntimeError) as error:
+            errors.append(f"CloseHandle({label}) failed: {error}")
+    if job_handle is not None:
+        try:
+            api.close_handle(job_handle)
+        except (OSError, RuntimeError) as error:
+            errors.append(f"CloseHandle(job) failed: {error}")
+    return tuple(errors)
+
+
+def _attach_windows_process_job(
+    process: subprocess.Popen[str],
+    *,
+    deadline: float | None = None,
+    api: object | None = None,
+) -> _WindowsProcessJob:
+    """Assign a suspended process to a kill-on-close job, then resume it."""
+
+    cleanup_deadline = (
+        time.monotonic() + _CLEANUP_GRACE_SECONDS
+        if deadline is None
+        else deadline
+    )
+    windows_api = api if api is not None else _WindowsApi()
+    process_handle = getattr(process, "_handle", None)
+    if not process_handle:
+        raise RuntimeError("spawned Windows process has no retained process handle")
+
+    job_handle: object | None = None
+    snapshot: object | None = None
+    thread_handle: object | None = None
+    assigned_to_job = False
+    failure: BaseException | None = None
+    try:
+        job_handle = windows_api.create_job()
+        windows_api.set_kill_on_job_close(job_handle)
+        windows_api.assign_process(job_handle, process_handle)
+        assigned_to_job = True
+        snapshot = windows_api.create_thread_snapshot()
+        thread_handle = windows_api.open_primary_thread(snapshot, process.pid)
+        previous_suspend_count = windows_api.resume_thread(thread_handle)
+        if previous_suspend_count != 1:
+            raise RuntimeError(
+                "unexpected primary thread suspend count: "
+                f"{previous_suspend_count}"
+            )
+    except BaseException as error:
+        failure = error
+
+    resource_handles = [
+        (label, handle)
+        for label, handle in (
+            ("thread", thread_handle),
+            ("snapshot", snapshot),
+        )
+        if handle is not None
+    ]
+    if failure is None:
+        close_errors: list[str] = []
+        unclosed: list[tuple[str, object]] = []
+        for label, handle in resource_handles:
+            try:
+                windows_api.close_handle(handle)
+            except (OSError, RuntimeError) as error:
+                close_errors.append(f"CloseHandle({label}) failed: {error}")
+                unclosed.append((label, handle))
+        if not close_errors:
+            assert job_handle is not None
+            return _WindowsProcessJob(job_handle, windows_api, process)
+        failure = RuntimeError("; ".join(close_errors))
+        resource_handles = unclosed
+
+    rollback_errors = _rollback_windows_process_job_attach(
+        process,
+        process_handle,
+        job_handle,
+        assigned_to_job,
+        resource_handles,
+        cleanup_deadline,
+        windows_api,
+    )
+    details = [str(failure), *rollback_errors]
+    raise RuntimeError(
+        "Windows Job Object attach failed: " + "; ".join(details)
+    ) from failure
 
 
 def _posix_process_snapshot() -> dict[int, ProcessIdentity]:
@@ -635,7 +1170,9 @@ def _posix_process_snapshot() -> dict[int, ProcessIdentity]:
     return processes
 
 
-def _windows_process_identity(pid: int) -> ProcessIdentity | None:
+def _windows_process_state(
+    pid: int,
+) -> tuple[ProcessIdentity | None, bool, str | None]:
     try:
         import ctypes
         from ctypes import wintypes
@@ -656,9 +1193,22 @@ def _windows_process_identity(pid: int) -> ProcessIdentity | None:
         close_handle = kernel32.CloseHandle
         close_handle.argtypes = [wintypes.HANDLE]
         close_handle.restype = wintypes.BOOL
-        handle = open_process(0x1000, False, pid)
+        wait_for_single_object = kernel32.WaitForSingleObject
+        wait_for_single_object.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        wait_for_single_object.restype = wintypes.DWORD
+        process_query_limited_information = 0x1000
+        synchronize = 0x00100000
+        wait_object_0 = 0
+        wait_timeout = 0x00000102
+        wait_failed = 0xFFFFFFFF
+        handle = open_process(
+            process_query_limited_information | synchronize, False, pid
+        )
         if not handle:
-            return None
+            error = ctypes.get_last_error()
+            if error in {0, 87, 1168}:
+                return None, False, None
+            return None, True, f"OpenProcess({pid}) failed with Windows error {error}"
         creation = wintypes.FILETIME()
         exit_time = wintypes.FILETIME()
         kernel_time = wintypes.FILETIME()
@@ -671,17 +1221,44 @@ def _windows_process_identity(pid: int) -> ProcessIdentity | None:
                 ctypes.byref(kernel_time),
                 ctypes.byref(user_time),
             ):
-                return None
+                error = ctypes.get_last_error()
+                return (
+                    None,
+                    True,
+                    f"GetProcessTimes({pid}) failed with Windows error {error}",
+                )
+            wait_result = wait_for_single_object(handle, 0)
+            if wait_result == wait_failed:
+                error = ctypes.get_last_error()
+                return (
+                    None,
+                    True,
+                    f"WaitForSingleObject({pid}) failed with Windows error {error}",
+                )
         finally:
             close_handle(handle)
-        return ProcessIdentity(
+        identity = ProcessIdentity(
             pid=pid,
             parent_pid=None,
             session_id=None,
             start_identity=f"{creation.dwHighDateTime:08x}{creation.dwLowDateTime:08x}",
         )
-    except (AttributeError, ImportError, OSError):
-        return None
+        if wait_result == wait_timeout:
+            return identity, True, None
+        if wait_result == wait_object_0:
+            return identity, False, None
+        return (
+            identity,
+            True,
+            f"WaitForSingleObject({pid}) returned unexpected status {wait_result}",
+        )
+    except (AttributeError, ImportError, OSError) as error:
+        return None, True, f"Windows process query is unavailable: {error}"
+
+
+def _windows_process_identity(pid: int) -> ProcessIdentity | None:
+    identity, _, _ = _windows_process_state(pid)
+    return identity
 
 
 def _current_process_identity(pid: int) -> ProcessIdentity | None:
@@ -710,6 +1287,9 @@ def _process_is_running(pid: int) -> bool:
         except (OSError, subprocess.SubprocessError):
             status = ""
         return bool(status) and not status.startswith("Z")
+    if os.name == "nt":
+        _, running, _ = _windows_process_state(pid)
+        return running
     try:
         os.kill(pid, 0)
     except OSError:

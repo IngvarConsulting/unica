@@ -29,6 +29,92 @@ def load_module():
     return module
 
 
+class FakeWindowsProcess:
+    pid = 99
+
+    def __init__(self) -> None:
+        self._handle = "process"
+        self.returncode = None
+        self.stdin = io.StringIO()
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
+
+
+class FakeWindowsApi:
+    """Fault-injectable handle ledger for Windows ownership tests."""
+
+    def __init__(
+        self,
+        *failures: str,
+        active_counts: tuple[int, ...] = (0,),
+        wait_signaled: bool = True,
+    ) -> None:
+        self.failures = list(failures)
+        self.active_counts = list(active_counts)
+        self.wait_signaled = wait_signaled
+        self.events: list[str] = []
+        self.open_handles = {"process"}
+
+    def _record(self, operation: str) -> None:
+        self.events.append(operation)
+        if operation in self.failures:
+            self.failures.remove(operation)
+            raise RuntimeError(f"{operation} injected failure")
+
+    def create_job(self):
+        self._record("CreateJobObjectW")
+        self.open_handles.add("job")
+        return "job"
+
+    def set_kill_on_job_close(self, job) -> None:
+        self._record("SetInformationJobObject")
+
+    def assign_process(self, job, process_handle) -> None:
+        self._record("AssignProcessToJobObject")
+
+    def create_thread_snapshot(self):
+        self._record("CreateToolhelp32Snapshot")
+        self.open_handles.add("snapshot")
+        return "snapshot"
+
+    def open_primary_thread(self, snapshot, pid):
+        self._record("OpenThread")
+        self.open_handles.add("thread")
+        return "thread"
+
+    def resume_thread(self, thread) -> int:
+        self._record("ResumeThread")
+        return 1
+
+    def terminate_process(self, process_handle) -> None:
+        self._record("TerminateProcess")
+
+    def terminate_job(self, job) -> None:
+        self._record("TerminateJobObject")
+
+    def wait_for_single_object(self, handle, timeout_seconds: float) -> bool:
+        self._record("WaitForSingleObject")
+        return self.wait_signaled
+
+    def close_popen_handle(self, process) -> None:
+        self._record("CloseHandle(process)")
+        self.open_handles.remove("process")
+        process._handle = None
+        if process.returncode is None:
+            process.returncode = 1
+
+    def close_handle(self, handle) -> None:
+        operation = f"CloseHandle({handle})"
+        self._record(operation)
+        self.open_handles.remove(handle)
+
+    def active_process_count(self, job) -> int:
+        self._record("QueryInformationJobObject")
+        if len(self.active_counts) > 1:
+            return self.active_counts.pop(0)
+        return self.active_counts[0]
+
+
 class SmokeUnicaMcpTests(unittest.TestCase):
     def expected_tools(self) -> set[str]:
         module = load_module()
@@ -515,64 +601,507 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertIs(module.ProcessOwnership, module._WIRE_PROBE.ProcessOwnership)
         self.assertTrue(issubclass(module.McpSession, module._WIRE_PROBE.JsonRpcSession))
 
-    def test_windows_tree_cleanup_continues_after_one_taskkill_timeout(self) -> None:
+    def test_windows_liveness_probe_never_calls_os_kill(self) -> None:
+        module = load_module()
+        identity = module.ProcessIdentity(41, None, None, "start-41")
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE,
+            "_windows_process_state",
+            return_value=(identity, True, None),
+            create=True,
+        ), mock.patch.object(
+            module._WIRE_PROBE.os,
+            "kill",
+            side_effect=AssertionError("Windows liveness probe called os.kill"),
+        ):
+            running = module._WIRE_PROBE._process_is_running(identity.pid)
+
+        self.assertTrue(running)
+
+    def test_windows_session_starts_suspended_before_ownership_capture(self) -> None:
+        module = load_module()
+        creation_flags: list[int] = []
+
+        class Process:
+            pid = 99
+            stdin = io.StringIO()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+        class Reader:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self) -> None:
+                pass
+
+        process = Process()
+
+        def popen(*args, **kwargs):
+            creation_flags.append(kwargs["creationflags"])
+            return process
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE.subprocess,
+            "CREATE_NEW_PROCESS_GROUP",
+            0x200,
+            create=True,
+        ), mock.patch.object(
+            module._WIRE_PROBE.subprocess, "Popen", side_effect=popen
+        ), mock.patch.object(
+            module._WIRE_PROBE.ProcessOwnership,
+            "capture",
+            return_value=object(),
+        ), mock.patch.object(
+            module._WIRE_PROBE.threading, "Thread", Reader
+        ):
+            module._WIRE_PROBE.JsonRpcSession(
+                ["unica"], {}, cwd=Path("."), deadline=1.0
+            )
+
+        self.assertEqual(creation_flags, [0x204])
+
+    def test_windows_capture_attaches_the_suspended_process_to_a_job_handle(self) -> None:
+        module = load_module()
+        identity = module.ProcessIdentity(99, None, None, "start-99")
+        job = object()
+
+        class Process:
+            pid = 99
+            _handle = object()
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=identity,
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_attach_windows_process_job",
+            return_value=job,
+            create=True,
+        ) as attach:
+            ownership = module.ProcessOwnership.capture(Process())
+
+        attach.assert_called_once()
+        self.assertIs(ownership.windows_job, job)
+
+    def test_windows_job_attach_rolls_back_every_acquired_handle(self) -> None:
+        module = load_module()
+        failure_cases = (
+            "CreateJobObjectW",
+            "SetInformationJobObject",
+            "AssignProcessToJobObject",
+            "CreateToolhelp32Snapshot",
+            "OpenThread",
+            "ResumeThread",
+        )
+
+        for failed_operation in failure_cases:
+            with self.subTest(failed_operation=failed_operation):
+                process = FakeWindowsProcess()
+                api = FakeWindowsApi(failed_operation)
+
+                with self.assertRaisesRegex(RuntimeError, failed_operation):
+                    module._WIRE_PROBE._attach_windows_process_job(
+                        process,
+                        deadline=time.monotonic() + 0.5,
+                        api=api,
+                    )
+
+                self.assertEqual(api.open_handles, set(), api.events)
+                self.assertLess(
+                    api.events.index("TerminateProcess"),
+                    api.events.index("WaitForSingleObject"),
+                    api.events,
+                )
+                self.assertLess(
+                    api.events.index("WaitForSingleObject"),
+                    api.events.index("CloseHandle(process)"),
+                    api.events,
+                )
+                for handle in ("thread", "snapshot", "job"):
+                    if handle in {
+                        event.removeprefix("CloseHandle(").removesuffix(")")
+                        for event in api.events
+                        if event.startswith("CloseHandle(")
+                    }:
+                        self.assertNotIn(handle, api.open_handles)
+
+    def test_windows_job_attach_reports_cleanup_failures_without_skipping_later_cleanup(
+        self,
+    ) -> None:
+        module = load_module()
+        cleanup_failures = (
+            "TerminateProcess",
+            "TerminateJobObject",
+            "WaitForSingleObject",
+            "CloseHandle(process)",
+            "CloseHandle(thread)",
+            "CloseHandle(snapshot)",
+            "CloseHandle(job)",
+        )
+
+        for cleanup_failure in cleanup_failures:
+            with self.subTest(cleanup_failure=cleanup_failure):
+                process = FakeWindowsProcess()
+                primary_failure = (
+                    "ResumeThread"
+                    if cleanup_failure == "CloseHandle(thread)"
+                    else "OpenThread"
+                )
+                api = FakeWindowsApi(primary_failure, cleanup_failure)
+
+                with self.assertRaises(RuntimeError) as raised:
+                    module._WIRE_PROBE._attach_windows_process_job(
+                        process,
+                        deadline=time.monotonic() + 0.5,
+                        api=api,
+                    )
+
+                self.assertIn(cleanup_failure, str(raised.exception))
+
+                self.assertIn("TerminateProcess", api.events)
+                self.assertIn("WaitForSingleObject", api.events)
+                self.assertIn("CloseHandle(process)", api.events)
+                self.assertIn("CloseHandle(snapshot)", api.events)
+                self.assertIn("CloseHandle(job)", api.events)
+                expected_leaks = {
+                    event.removeprefix("CloseHandle(").removesuffix(")")
+                    for event in (cleanup_failure,)
+                    if event.startswith("CloseHandle(")
+                }
+                self.assertEqual(api.open_handles, expected_leaks, api.events)
+
+    def test_windows_job_attach_cleanup_uses_the_passed_deadline(self) -> None:
+        module = load_module()
+
+        class ClockedApi(FakeWindowsApi):
+            def wait_for_single_object(self, handle, timeout_seconds: float) -> bool:
+                self._record("WaitForSingleObject")
+                Clock.now += timeout_seconds
+                return False
+
+        class Clock:
+            now = 10.0
+
+            @classmethod
+            def monotonic(cls) -> float:
+                return cls.now
+
+        process = FakeWindowsProcess()
+        api = ClockedApi("OpenThread")
+        with mock.patch.object(
+            module._WIRE_PROBE.time, "monotonic", side_effect=Clock.monotonic
+        ):
+            with self.assertRaisesRegex(RuntimeError, "WaitForSingleObject timed out"):
+                module._WIRE_PROBE._attach_windows_process_job(
+                    process,
+                    deadline=10.125,
+                    api=api,
+                )
+
+        self.assertEqual(Clock.now, 10.125)
+        self.assertEqual(api.open_handles, set())
+
+    def test_windows_job_attach_failure_closes_suspended_process_pipes(self) -> None:
         module = load_module()
 
         class Process:
             pid = 99
+            _handle = object()
 
-            def poll(self):
-                return 0
+            def __init__(self) -> None:
+                self.stdin = io.StringIO()
+                self.stdout = io.StringIO()
+                self.stderr = io.StringIO()
+                self.terminated = False
 
-            def wait(self, timeout):
-                return 0
+            def terminate(self) -> None:
+                self.terminated = True
 
-        session = module.McpSession.__new__(module.McpSession)
-        session.process = Process()
-        identities = {
-            module.ProcessIdentity(pid, None, None, f"start-{pid}")
-            for pid in (41, 42, 99)
-        }
-        session.process_ownership = module.ProcessOwnership(
-            session.process,
-            next(identity for identity in identities if identity.pid == 99),
-            None,
-        )
-        session._service_identities = {
-            identity.pid: identity
-            for identity in identities
-            if identity.pid in {41, 42}
-        }
-        calls: list[int] = []
+            @staticmethod
+            def wait(timeout):
+                return 1
 
-        def taskkill(command, **kwargs):
-            calls.append(int(command[2]))
-            if len(calls) == 1:
-                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
-            return subprocess.CompletedProcess(command, 0)
-
+        process = Process()
         with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
-            module, "_workspace_service_pids", return_value={41, 42}
+            module._WIRE_PROBE.subprocess, "Popen", return_value=process
         ), mock.patch.object(
             module._WIRE_PROBE,
-            "_current_process_identity",
-            side_effect=lambda pid: next(
-                identity for identity in identities if identity.pid == pid
-            ),
-        ), mock.patch.object(
-            module._WIRE_PROBE.subprocess, "run", side_effect=taskkill
-        ), mock.patch.object(
-            session.process_ownership,
-            "survivors",
-            return_value=identities,
-        ), mock.patch.object(
-            session.process_ownership,
-            "wait",
-            return_value=set(),
+            "_attach_windows_process_job",
+            side_effect=RuntimeError("job attach failed"),
         ):
-            session.terminate_tree(Path("cache"))
+            with self.assertRaisesRegex(RuntimeError, "job attach failed"):
+                module._WIRE_PROBE.JsonRpcSession(
+                    ["unica"], {}, cwd=Path("."), deadline=1.0
+                )
 
-        self.assertEqual(calls, [41, 42, 99])
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+        self.assertTrue(process.terminated)
+
+    def test_windows_job_cleanup_waits_and_closes_exact_root_before_job_zero(self) -> None:
+        module = load_module()
+        process = FakeWindowsProcess()
+        api = FakeWindowsApi(active_counts=(0,))
+        job = module._WIRE_PROBE._WindowsProcessJob("job", api, process)
+        api.open_handles.add("job")
+        identity = module.ProcessIdentity(99, None, None, "start-99")
+        ownership = module.ProcessOwnership(process, identity, None, job)
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=None,
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_process_is_running",
+            return_value=False,
+        ):
+            result = ownership.quiesce({identity}, 0.5)
+
+        self.assertTrue(result.complete, result.incomplete)
+        self.assertEqual(result.active_processes, 0)
+        self.assertEqual(api.open_handles, set())
+        self.assertLess(
+            api.events.index("TerminateJobObject"),
+            api.events.index("WaitForSingleObject"),
+            api.events,
+        )
+        self.assertLess(
+            api.events.index("WaitForSingleObject"),
+            api.events.index("CloseHandle(process)"),
+            api.events,
+        )
+        self.assertLess(
+            api.events.index("CloseHandle(process)"),
+            api.events.index("QueryInformationJobObject"),
+            api.events,
+        )
+        self.assertLess(
+            api.events.index("QueryInformationJobObject"),
+            api.events.index("CloseHandle(job)"),
+            api.events,
+        )
+
+    def test_windows_job_cleanup_is_handle_bound_and_uses_one_deadline(self) -> None:
+        module = load_module()
+
+        class Clock:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls) -> float:
+                return cls.now
+
+            @classmethod
+            def sleep(cls, duration: float) -> None:
+                cls.now += duration
+
+        class Api(FakeWindowsApi):
+            def terminate_job(self, job) -> None:
+                super().terminate_job(job)
+                Clock.sleep(0.3)
+
+            def wait_for_single_object(
+                self, handle, timeout_seconds: float
+            ) -> bool:
+                self._record("WaitForSingleObject")
+                Clock.sleep(timeout_seconds)
+                return False
+
+            def active_process_count(self, job) -> int:
+                self._record("QueryInformationJobObject")
+                return 0 if Clock.now >= 0.58 else 1
+
+        original = module.ProcessIdentity(99, None, None, "original-start")
+        replacement = module.ProcessIdentity(99, None, None, "replacement-start")
+        process = FakeWindowsProcess()
+        api = Api()
+        api.open_handles.add("job")
+        job = module._WIRE_PROBE._WindowsProcessJob("job", api, process)
+        ownership = module.ProcessOwnership(process, original, None, job)
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=replacement,
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_process_is_running",
+            return_value=True,
+        ), mock.patch.object(
+            module._WIRE_PROBE.time, "monotonic", side_effect=Clock.monotonic
+        ), mock.patch.object(
+            module._WIRE_PROBE.time, "sleep", side_effect=Clock.sleep
+        ):
+            result = ownership.quiesce({original}, 0.5)
+
+        self.assertIn("TerminateJobObject", api.events)
+        self.assertFalse(result.complete)
+        self.assertEqual(result.survivors, set())
+        self.assertEqual(result.active_processes, 1)
+        self.assertTrue(
+            any("1 active process" in detail for detail in result.incomplete),
+            result.incomplete,
+        )
+        self.assertLessEqual(Clock.now, 0.5)
+
+    def test_windows_job_timeout_reports_incomplete_descendant_evidence(self) -> None:
+        module = load_module()
+
+        class Clock:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls) -> float:
+                return cls.now
+
+            @classmethod
+            def sleep(cls, duration: float) -> None:
+                cls.now += duration
+
+        original = module.ProcessIdentity(99, None, None, "original-start")
+        process = FakeWindowsProcess()
+        api = FakeWindowsApi(active_counts=(1,))
+        api.open_handles.add("job")
+        job = module._WIRE_PROBE._WindowsProcessJob("job", api, process)
+        ownership = module.ProcessOwnership(process, original, None, job)
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=None,
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_process_is_running",
+            return_value=False,
+        ), mock.patch.object(
+            module._WIRE_PROBE.time, "monotonic", side_effect=Clock.monotonic
+        ), mock.patch.object(
+            module._WIRE_PROBE.time, "sleep", side_effect=Clock.sleep
+        ):
+            result = ownership.quiesce({original}, 0.5)
+
+        self.assertFalse(result.complete)
+        self.assertEqual(result.survivors, set())
+        self.assertEqual(result.active_processes, 1)
+        self.assertTrue(
+            any("1 active process" in detail for detail in result.incomplete),
+            result.incomplete,
+        )
+        self.assertLessEqual(Clock.now, 0.5)
+
+    def test_windows_job_api_errors_remain_incomplete_after_root_exit(self) -> None:
+        module = load_module()
+
+        original = module.ProcessIdentity(99, None, None, "original-start")
+        for expected in ("TerminateJobObject", "QueryInformationJobObject"):
+            with self.subTest(expected=expected):
+                process = FakeWindowsProcess()
+                api = FakeWindowsApi(expected)
+                api.open_handles.add("job")
+                job = module._WIRE_PROBE._WindowsProcessJob(
+                    "job", api, process
+                )
+                ownership = module.ProcessOwnership(
+                    process, original, None, job
+                )
+                with mock.patch.object(
+                    module._WIRE_PROBE.os, "name", "nt"
+                ), mock.patch.object(
+                    module._WIRE_PROBE,
+                    "_current_process_identity",
+                    return_value=None,
+                ), mock.patch.object(
+                    module._WIRE_PROBE,
+                    "_process_is_running",
+                    return_value=False,
+                ):
+                    result = ownership.quiesce({original}, 0.5)
+
+                self.assertFalse(result.complete)
+                self.assertTrue(
+                    any(expected in detail for detail in result.incomplete),
+                    result.incomplete,
+                )
+
+    def test_smoke_rejects_incomplete_job_cleanup_evidence(self) -> None:
+        module = load_module()
+
+        class Result:
+            survivors = set()
+            incomplete = ("Windows Job Object still owns 1 active process",)
+            active_processes = 1
+
+        class Ownership:
+            @staticmethod
+            def quiesce(identities, timeout):
+                return Result()
+
+        with self.assertRaisesRegex(
+            SystemExit, "cleanup evidence is incomplete.*1 active process"
+        ):
+            module._quiesce_owned_processes(
+                Ownership(),
+                {module.ProcessIdentity(99, None, None, "start-99")},
+                0.5,
+            )
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object integration")
+    def test_windows_job_object_reaps_root_and_child(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pid_path = root / "job-pids.txt"
+            server = root / "job-root.py"
+            server.write_text(
+                textwrap.dedent(
+                    """
+                    import os
+                    import subprocess
+                    import sys
+                    import time
+                    from pathlib import Path
+
+                    child = subprocess.Popen(
+                        [sys.executable, "-c", "import time; time.sleep(60)"]
+                    )
+                    Path(sys.argv[1]).write_text(
+                        f"{os.getpid()} {child.pid}", encoding="utf-8"
+                    )
+                    time.sleep(60)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            session = module.McpSession(
+                [sys.executable, str(server), str(pid_path)],
+                os.environ.copy(),
+                2.0,
+                cwd=root,
+            )
+            try:
+                deadline = time.monotonic() + 2.0
+                while not pid_path.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(pid_path.exists(), "job fixture did not start")
+                pids = {
+                    int(value)
+                    for value in pid_path.read_text(encoding="utf-8").split()
+                }
+
+                result = session.process_ownership.terminate(timeout_seconds=1.0)
+
+                self.assertTrue(result.complete, result.incomplete)
+                self.assertEqual(result.active_processes, 0)
+                self.assertFalse(
+                    any(module._WIRE_PROBE._process_is_running(pid) for pid in pids)
+                )
+            finally:
+                session.terminate_tree(root)
 
     def test_posix_tree_cleanup_continues_after_one_signal_error(self) -> None:
         module = load_module()
@@ -899,7 +1428,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
             def quiesce(self, owned, timeout):
                 events.append(("quiesce", owned, timeout))
-                return set()
+                return module.ProcessCleanupResult(set())
 
         ownership = Ownership()
 

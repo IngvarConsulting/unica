@@ -344,6 +344,13 @@ jobs:
           # файлы той же target-сборки. Доставку проверяют bootstrap-пробы.
           cp -R ".build/tool-bundles/${{ matrix.target }}/bin/${{ matrix.target }}/." \
             "$runtime_root/bin/${{ matrix.target }}/"
+      - name: Verify Windows Job Object root and child cleanup
+        if: matrix.target == 'win-x64'
+        shell: bash
+        timeout-minutes: 1
+        run: >-
+          python tests/ci/test_smoke_unica_mcp.py
+          SmokeUnicaMcpTests.test_windows_job_object_reaps_root_and_child
       - name: Smoke packaged Unica MCP
         shell: bash
         timeout-minutes: 3

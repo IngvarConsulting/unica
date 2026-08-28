@@ -30,6 +30,7 @@ def _load_wire_probe_module():
 
 _WIRE_PROBE = _load_wire_probe_module()
 ProcessIdentity = _WIRE_PROBE.ProcessIdentity
+ProcessCleanupResult = _WIRE_PROBE.ProcessCleanupResult
 ProcessOwnership = _WIRE_PROBE.ProcessOwnership
 
 
@@ -1600,15 +1601,20 @@ def _quiesce_owned_processes(
     owned_processes: set[ProcessIdentity],
     timeout_seconds: float,
 ) -> None:
-    if ownership is None or not owned_processes:
+    if ownership is None:
         return
-    survivors = ownership.quiesce(
+    result = ownership.quiesce(
         owned_processes, min(_WIRE_PROBE._CLEANUP_GRACE_SECONDS, timeout_seconds)
     )
-    if survivors:
+    if result.incomplete:
+        raise SystemExit(
+            "Unica MCP owned process cleanup evidence is incomplete: "
+            + "; ".join(result.incomplete)
+        )
+    if result.survivors:
         rendered = ", ".join(
             str(identity.pid)
-            for identity in sorted(survivors, key=lambda item: item.pid)
+            for identity in sorted(result.survivors, key=lambda item: item.pid)
         )
         raise SystemExit(
             "Unica MCP owned provider processes survived smoke cleanup: "
