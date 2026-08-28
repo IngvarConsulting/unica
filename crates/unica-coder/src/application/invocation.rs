@@ -242,6 +242,8 @@ struct LiveInvocation {
     changed: Condvar,
     cancellation: crate::domain::cancellation::CancellationToken,
     resource_lease: Mutex<Option<Arc<dyn Send + Sync>>>,
+    #[cfg(test)]
+    task_waiter_gate: Mutex<Option<TaskWaiterGate>>,
 }
 
 impl LiveInvocation {
@@ -251,12 +253,39 @@ impl LiveInvocation {
             changed: Condvar::new(),
             cancellation: crate::domain::cancellation::CancellationToken::new(),
             resource_lease: Mutex::new(resource_lease),
+            #[cfg(test)]
+            task_waiter_gate: Mutex::new(None),
         }
     }
 
     fn release_resource_lease(&self) {
         if let Ok(mut lease) = self.resource_lease.lock() {
             lease.take();
+        }
+    }
+
+    #[cfg(test)]
+    fn install_task_waiter_gate_for_test(
+        &self,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        *self.task_waiter_gate.lock().expect("task waiter gate lock") = Some(TaskWaiterGate {
+            entered,
+            release: Mutex::new(release),
+        });
+    }
+
+    #[cfg(test)]
+    fn wait_at_task_waiter_gate_for_test(&self) {
+        let gate = self
+            .task_waiter_gate
+            .lock()
+            .ok()
+            .and_then(|mut gate| gate.take());
+        if let Some(gate) = gate {
+            let _ = gate.entered.send(());
+            let _ = gate.release.lock().map(|release| release.recv());
         }
     }
 }
@@ -318,6 +347,12 @@ enum DurableTerminalOutcome {
 
 #[cfg(test)]
 struct TerminalWorkerGate {
+    entered: std::sync::mpsc::Sender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+#[cfg(test)]
+struct TaskWaiterGate {
     entered: std::sync::mpsc::Sender<()>,
     release: Mutex<std::sync::mpsc::Receiver<()>>,
 }
@@ -1090,12 +1125,24 @@ impl InvocationExecutor {
                 .state
                 .lock()
                 .map_err(|_| InvocationExecutorError::StatePoisoned)?;
+            #[cfg(test)]
+            live.wait_at_task_waiter_gate_for_test();
             let _ = live
                 .changed
-                .wait_timeout(state, wait)
+                .wait_timeout_while(state, wait, |state| {
+                    matches!(
+                        state,
+                        LiveInvocationState::Running { .. }
+                            | LiveInvocationState::Materializing { .. }
+                    ) && !live.cancellation.is_cancelled()
+                })
                 .map_err(|_| InvocationExecutorError::StatePoisoned)?;
         }
-        self.get_task_before(task_id, deadline, &cancellation)
+        let current = self.get_task_before(task_id, deadline, &cancellation)?;
+        if current.status == InvocationStatus::Working {
+            self.ensure_healthy()?;
+        }
+        Ok(current)
     }
 
     pub(crate) fn cancel_task(
@@ -2017,6 +2064,71 @@ pub(crate) mod tests {
 
     fn prepared(class: ExecutionClass, budget: Duration) -> PreparedDaemonInvocation {
         prepared_at(Instant::now(), class, budget)
+    }
+
+    fn submit_blocked_wait_test_task(
+        executor: &Arc<InvocationExecutor>,
+        completion_summary: &'static str,
+    ) -> (TaskId, mpsc::Sender<()>) {
+        let (execution_started, execution_started_wait) = mpsc::channel();
+        let (execution_release, execution_release_wait) = mpsc::channel();
+        let task_id = match executor
+            .submit(
+                prepared(
+                    ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                    Duration::ZERO,
+                ),
+                move |_| {
+                    execution_started.send(()).unwrap();
+                    execution_release_wait.recv().unwrap();
+                    Ok(result(completion_summary))
+                },
+            )
+            .unwrap()
+        {
+            InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("expected task: {other:?}"),
+        };
+        execution_started_wait
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        (task_id, execution_release)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn start_gated_task_wait(
+        executor: &Arc<InvocationExecutor>,
+        task_id: TaskId,
+        wait: Duration,
+    ) -> (
+        Arc<super::LiveInvocation>,
+        mpsc::Sender<()>,
+        mpsc::Receiver<
+            Result<crate::domain::invocation::TaskSnapshot, super::InvocationExecutorError>,
+        >,
+        std::thread::JoinHandle<()>,
+    ) {
+        let live = executor
+            .live_tasks
+            .lock()
+            .unwrap()
+            .get(&task_id)
+            .cloned()
+            .unwrap();
+        let (wait_entered, wait_entered_wait) = mpsc::channel();
+        let (wait_release, wait_release_wait) = mpsc::channel();
+        live.install_task_waiter_gate_for_test(wait_entered, wait_release_wait);
+        let (wait_done, wait_done_wait) = mpsc::channel();
+        let waiting = {
+            let executor = Arc::clone(executor);
+            std::thread::spawn(move || {
+                wait_done.send(executor.wait_task(task_id, wait)).unwrap();
+            })
+        };
+        wait_entered_wait
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        (live, wait_release, wait_done_wait, waiting)
     }
 
     fn response_deadline_from_clock(
@@ -3799,6 +3911,122 @@ pub(crate) mod tests {
             executor.get_task(task_id).unwrap().status,
             InvocationStatus::Cancelled
         );
+    }
+
+    #[test]
+    fn task_wait_ignores_non_terminal_notifications_until_terminal_or_deadline() {
+        let executor = Arc::new(InvocationExecutor::new(
+            Arc::new(MemoryStore::default()),
+            Arc::new(ManualClock::new(Instant::now())),
+        ));
+        let (task_id, execution_release) = submit_blocked_wait_test_task(
+            &executor,
+            "completed after the non-terminal notification",
+        );
+        let (live, wait_release, wait_done_wait, waiting) =
+            start_gated_task_wait(&executor, task_id, Duration::from_secs(5));
+        let (notification_sent, notification_sent_wait) = mpsc::channel();
+        let notifying = std::thread::spawn(move || {
+            let _state = live.state.lock().unwrap();
+            live.changed.notify_all();
+            notification_sent.send(()).unwrap();
+        });
+        wait_release.send(()).unwrap();
+        notification_sent_wait
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+
+        // The synchronized notification carries no state change. A correct waiter therefore
+        // remains pending until the execution below publishes a durable terminal record.
+        let premature = wait_done_wait.recv_timeout(Duration::from_millis(250));
+        execution_release.send(()).unwrap();
+        let observed = match premature {
+            Ok(observed) => observed,
+            Err(mpsc::RecvTimeoutError::Timeout) => wait_done_wait
+                .recv_timeout(Duration::from_secs(5))
+                .expect("terminal publication must release the task waiter"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("task waiter disconnected before publishing an outcome")
+            }
+        };
+        notifying.join().unwrap();
+        waiting.join().unwrap();
+
+        assert_eq!(
+            observed.unwrap().status,
+            InvocationStatus::Completed,
+            "a non-terminal wake must not shorten the requested wait"
+        );
+    }
+
+    #[test]
+    fn task_wait_observes_cancellation_when_notification_precedes_condvar_wait() {
+        let executor = Arc::new(InvocationExecutor::new(
+            Arc::new(MemoryStore::default()),
+            Arc::new(ManualClock::new(Instant::now())),
+        ));
+        let (task_id, execution_release) = submit_blocked_wait_test_task(
+            &executor,
+            "noncooperative completion loses to cancellation",
+        );
+        let (_, wait_release, wait_done_wait, waiting) =
+            start_gated_task_wait(&executor, task_id, Duration::from_secs(30));
+
+        assert_eq!(
+            executor.cancel_task(task_id).unwrap().status,
+            InvocationStatus::Cancelled
+        );
+        wait_release.send(()).unwrap();
+        let observed = wait_done_wait.recv_timeout(Duration::from_secs(2));
+        execution_release.send(()).unwrap();
+        if observed.is_err() {
+            wait_done_wait
+                .recv_timeout(Duration::from_secs(5))
+                .expect("cleanup terminal notification must release the old waiter")
+                .unwrap();
+        }
+        waiting.join().unwrap();
+
+        assert_eq!(
+            observed
+                .expect("committed cancellation must release the waiter without a lost wake")
+                .unwrap()
+                .status,
+            InvocationStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn task_wait_reports_restart_requested_when_fail_stop_begins_during_wait() {
+        let executor = Arc::new(InvocationExecutor::new(
+            Arc::new(MemoryStore::default()),
+            Arc::new(ManualClock::new(Instant::now())),
+        ));
+        let (task_id, execution_release) =
+            submit_blocked_wait_test_task(&executor, "must remain hidden after fail-stop");
+        let (_, wait_release, wait_done_wait, waiting) =
+            start_gated_task_wait(&executor, task_id, Duration::from_secs(5));
+        let restarting = {
+            let executor = Arc::clone(&executor);
+            std::thread::spawn(move || executor.request_restart())
+        };
+        let restart_deadline = Instant::now() + Duration::from_secs(5);
+        while !executor.restart_requested() && Instant::now() < restart_deadline {
+            std::thread::yield_now();
+        }
+        assert!(executor.restart_requested());
+        wait_release.send(()).unwrap();
+        let observed = wait_done_wait
+            .recv_timeout(Duration::from_secs(5))
+            .expect("fail-stop notification must release the task waiter");
+        restarting.join().unwrap();
+        execution_release.send(()).unwrap();
+        waiting.join().unwrap();
+
+        assert!(matches!(
+            observed,
+            Err(super::InvocationExecutorError::RestartRequested)
+        ));
     }
 
     #[test]
