@@ -28,8 +28,10 @@
 
 ## Снимок исходного состояния
 
-План построен для head PR #631 `e143ba02ad0baf7caaaf1f036c96e5dad2dd8edc`.
-На этом снимке:
+Исходный архитектурный снимок был снят с PR #631 на
+`e143ba02ad0baf7caaaf1f036c96e5dad2dd8edc`. Это baseline проектирования, а не
+указатель на текущий head: изменяемые W0 evidence и SHA ведутся в PR #631 и
+issue #581. На исходном снимке:
 
 - PR остаётся draft и blocked;
 - production-конструктор stdio выбирает `SurfaceRelease::V12`;
@@ -250,12 +252,30 @@ private per-user, protocol/core-ABI daemon
 
 ## Wavefront
 
-### W0: stabilize and freeze
+### W0: stabilize and bound
 
 PR #631 получает зелёные macOS, Linux и Windows gates. В этой волне закрываются
 текущие defect failures по TDD, устраняется v2/v3 contradiction, фиксируется
-internal SPI для family planners, validation и canonical result. Публичный V12
-не меняется.
+internal SPI отдельных family planners, validation и canonical result.
+Request-level apply router не считается замороженным, пока W2a не докажет
+глобальные индексы, порядок и effects от финального postimage. Публичный V12 не
+меняется.
+
+### W2a: request router и ранние seams
+
+Сразу после S1 integrator закрывает shared seam до первого W1 merge. Router
+парсит request один раз, сохраняет исходный `ops[i]`, передаёт XDTO, Code и
+Event только через их admission-sealed authorities и выводит domain events из
+финального postimage всего request, а не суммирует промежуточные singleton
+результаты. Здесь же компилируются стабильные W3 seams. Только после aggregate
+тестов на inverse operations, interleaved families, global error index и poison
+rollback family SPI считается frozen для fan-out.
+
+Effect finalizer сначала отбрасывает path-bound candidates без изменения в
+финальном postimage и только затем выполняет stable first-surviving-occurrence
+dedup по `DEC.2026-08-26.RETAINED-APPLY-EFFECT-PUBLICATION-SLICE`. Обратный
+порядок ошибочен: transient первый duplicate не должен поглотить surviving
+второй.
 
 ### W1: закрыть измеренный registry apply
 
@@ -268,27 +288,31 @@ parity inventory обнаружит пропуск, сначала исправ�
 Каждый slice несёт writer parity fixture, RED/GREEN staged transaction proof и
 отдельное ревью.
 
-### W2: dispatcher and daemon apply
+### W2b: dispatcher and daemon apply
 
 Integrator использует уже существующий `OperationRegistry::closed()` как один
 implementation source для `view.can[]`, parse и dispatch, подключает family
 planners к WorkspaceActor и устанавливает real `apply` handler в canonical
-daemon service. W2 выполняется по мере поступления W1 slices и не добавляется к
-календарю отдельной последовательной фазой.
+daemon service. W2b выполняется по мере поступления W1 slices и не добавляется к
+календарю отдельной последовательной фазой. Он расширяет уже доказанный W2a
+router, а не возвращает singleton dispatch.
 
 ### W3: remaining entry points
 
-После своей apply-family workers переходят к `search` + `docs`, `check` +
-`diff` и `run`. Integrator один регистрирует handlers в daemon и MCP shared
-files.
+После завершения собственной apply-линии каждый worker сразу переходит к
+`search` + `docs`, `check` + `diff` или `run`, не ожидая две другие линии.
+Исключение — B8 (`apply(dryRun)` parity): он ждёт финальную интеграцию apply в
+W2b. Integrator один регистрирует handlers в daemon и MCP shared files.
 
 ### W4: continuous parity and skills
 
 Parity matrix создаётся в W0 и заполняется каждым vertical slice. В конце
 остаётся aggregate gate, а не поздняя отдельная wiring task. Параллельно три
 workers готовят migration mapping, fixtures и непубликуемые patch series для 73
-skills по непересекающимся диапазонам каталогов. Эти patches не сливаются в
-ветку с package-selected V12 и применяются только внутри atomic G6.
+skills. Владелец каждого skill фиксируется в manifest; исходное распределение
+строится детерминированным LPT по размеру отслеживаемого `SKILL.md`, а не по
+неравным буквенным диапазонам. Эти patches не сливаются в ветку с
+package-selected V12 и применяются только внутри atomic G6.
 
 ### W5: hidden V13 integration readiness
 
@@ -333,17 +357,22 @@ Integrator единолично владеет:
 - `crates/unica-coder/src/interfaces/task_projection.rs`;
 - surface/version manifests, architecture registry и aggregate tests.
 
-W0 замораживает crate-private SPI, уже начатый текущим кодом:
+W0 ограничивает family-level часть crate-private SPI, уже начатую текущим
+кодом; W2a замораживает request-level wrapper и final-effect reconciliation:
 
 ```text
 ApplyRequest + ApplyOp + OperationRegistry
-ApplyStagedState + PlannedApplyEffects + ApplyPlanError
+ApplyStagedState + ProvisionalApplyEffects + PlannedApplyEffects + ApplyPlanError
 parse_<family>_plan_operation(...)
+IndexedPlanOperation<T> { request_index, operation }
+ProvisionalApplyEffect { event, touched_paths }
 plan_<family>_batch(
     ApplyStagedState,
     actor-issued <Family>ApplyAuthority,
-    &[<Family>PlanOperation],
-) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError>
+    &[IndexedPlanOperation<FamilyPlanOperation>],
+) -> Result<(ApplyStagedState, ProvisionalApplyEffects), ApplyPlanError>
+finalize_request_effects(&ApplyStagedState, ProvisionalApplyEffects)
+    -> PlannedApplyEffects
 ```
 
 `crates/unica-coder/src/domain/validation.rs` хранит только типы target,
@@ -405,12 +434,15 @@ fixtures/tests. Если нужен shared seam, worker отдаёт integrator 
 
 ## Оценка
 
-Остаток оценивается в 73–117 person-days. При одном integrator и трёх workers
+Остаток на исходном снимке оценивается в 73–117 person-days. При одном
+integrator и трёх workers
 реалистичный срок до stable составляет 7–10 недель. Оптимистичная граница в
 6 недель достижима только без semantic rework, host delays и release failures.
 
-Параллелизм уменьшает календарь, но не последовательные gates W0, shared
-dispatcher, aggregate parity и G6/G7.
+Ранний W2a и переход каждого worker к собственной W3-линии убирают общий
+барьер примерно на 2–4 календарных дня, но не уменьшают person-days.
+Параллелизм не отменяет последовательные gates W0/W2a, aggregate parity и
+G6/G7.
 
 ## Артефакты исполнения
 
