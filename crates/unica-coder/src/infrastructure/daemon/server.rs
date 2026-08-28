@@ -4950,6 +4950,7 @@ struct ActorLogicalReadLease {"#,
 
     struct SharedDeliveryService {
         key: DeliveryWorkKey,
+        ready_root: std::path::PathBuf,
         producers: Arc<AtomicUsize>,
         producer_entered: mpsc::Sender<()>,
         joined: mpsc::Sender<usize>,
@@ -5133,6 +5134,7 @@ struct ActorLogicalReadLease {"#,
             let producers = Arc::clone(&self.producers);
             let producer_entered = self.producer_entered.clone();
             let release = Arc::clone(&self.release);
+            let ready_root = self.ready_root.clone();
             let lease = desk.join(self.key.clone(), move |_| {
                 producers.fetch_add(1, Ordering::SeqCst);
                 producer_entered.send(()).expect("producer observation");
@@ -5141,7 +5143,7 @@ struct ActorLogicalReadLease {"#,
                 while !*released {
                     released = wake.wait(released).expect("delivery release wait");
                 }
-                ArtifactReady::new(key, std::path::PathBuf::from("/cache/shared-daemon"))
+                ArtifactReady::new(key, ready_root)
             });
             self.joined
                 .send(desk as *const crate::infrastructure::engine_delivery::DeliveryDesk as usize)
@@ -5441,6 +5443,7 @@ struct ActorLogicalReadLease {"#,
                 DeliveryFormIdentity::Archive,
             )
             .unwrap(),
+            ready_root: workspace_parent.path().join("shared-daemon-cache"),
             producers: Arc::clone(&producers),
             producer_entered,
             joined,

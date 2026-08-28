@@ -246,7 +246,10 @@ impl RuntimeProcessTreeTestScenario {
                         }
                     }
                 }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound
+                        || (cfg!(windows)
+                            && matches!(error.raw_os_error(), Some(32) | Some(33))) => {}
                 Err(error) => return Err(error),
             }
             if started.elapsed() >= timeout {
@@ -374,9 +377,14 @@ fn runtime_process_pid_alive_for_test(_process_id: u32) -> io::Result<bool> {
 
 #[cfg(all(test, windows))]
 pub(crate) fn assert_windows_runtime_process_tree_semantics_for_test() -> io::Result<()> {
-    let mut command = Command::new("cmd.exe");
+    let mut command = Command::new("powershell.exe");
     command
-        .args(["/D", "/S", "/C", "start \"\" /B ping -n 20 127.0.0.1 >NUL"])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Process -WindowStyle Hidden ping.exe -ArgumentList @('-n','20','127.0.0.1') | Out-Null",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

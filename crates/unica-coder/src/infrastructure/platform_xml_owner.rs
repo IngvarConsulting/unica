@@ -1144,16 +1144,15 @@ pub(crate) mod tests {
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_ROOT_NONCE: AtomicU64 = AtomicU64::new(0);
 
     fn temp_context(name: &str) -> WorkspaceContext {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock must follow epoch")
-            .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "unica-platform-xml-owner-{name}-{}-{nanos}",
-            std::process::id()
+            "unica-platform-xml-owner-{name}-{}-{}",
+            std::process::id(),
+            TEST_ROOT_NONCE.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&root).expect("temporary workspace must be created");
         WorkspaceContext {

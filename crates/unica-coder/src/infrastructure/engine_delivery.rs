@@ -379,6 +379,12 @@ mod tests {
         DeliveryDesk::default()
     }
 
+    fn absolute_install_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("unica-engine-delivery-{name}"));
+        assert!(root.is_absolute(), "test install root must be absolute");
+        root
+    }
+
     fn environment(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<std::ffi::OsString> {
         let entries = pairs
             .iter()
@@ -481,7 +487,7 @@ mod tests {
                     while !release.load(Ordering::SeqCst) {
                         thread::yield_now();
                     }
-                    ArtifactReady::new(key, PathBuf::from("/cache/progress"))
+                    ArtifactReady::new(key, absolute_install_root("progress"))
                 }
             },
             Duration::from_millis(20),
@@ -535,7 +541,7 @@ mod tests {
                             );
                             thread::yield_now();
                         }
-                        ArtifactReady::new(key, PathBuf::from("/cache/owner"))
+                        ArtifactReady::new(key, absolute_install_root("owner"))
                     },
                     WIDE,
                     &CancellationToken::new(),
@@ -588,7 +594,7 @@ mod tests {
                         producers.fetch_add(1, Ordering::SeqCst);
                         started_tx.send(()).unwrap();
                         release_rx.recv().unwrap();
-                        ArtifactReady::new(key, PathBuf::from("/cache/pre-cancelled"))
+                        ArtifactReady::new(key, absolute_install_root("pre-cancelled"))
                     },
                     WIDE,
                     &cancelled,
@@ -651,7 +657,7 @@ mod tests {
                         while !release.load(Ordering::SeqCst) {
                             thread::yield_now();
                         }
-                        ArtifactReady::new(key, PathBuf::from("/cache/from-worktree-a"))
+                        ArtifactReady::new(key, absolute_install_root("from-worktree-a"))
                     },
                     WIDE,
                     &CancellationToken::new(),
@@ -690,7 +696,7 @@ mod tests {
                 let producers = Arc::clone(&producers);
                 move |_| {
                     producers.fetch_add(1, Ordering::SeqCst);
-                    ArtifactReady::new(exact_delivery_key('b'), PathBuf::from("/cache/b"))
+                    ArtifactReady::new(exact_delivery_key('b'), absolute_install_root("b"))
                 }
             },
             WIDE,
@@ -703,7 +709,7 @@ mod tests {
                 let producers = Arc::clone(&producers);
                 move |_| {
                     producers.fetch_add(1, Ordering::SeqCst);
-                    ArtifactReady::new(exact_delivery_key('c'), PathBuf::from("/cache/c"))
+                    ArtifactReady::new(exact_delivery_key('c'), absolute_install_root("c"))
                 }
             },
             WIDE,
@@ -756,7 +762,7 @@ mod tests {
             .expect_err("a runtime key must not enter delivery");
         let mismatched = desk.request(
             expected.clone(),
-            move |_| ArtifactReady::new(wrong, PathBuf::from("/cache/wrong")),
+            move |_| ArtifactReady::new(wrong, absolute_install_root("wrong-identity")),
             WIDE,
             &CancellationToken::new(),
             &NoopProgressSink,
