@@ -2,6 +2,7 @@
 
 - `index.html` — primary long-form Brand Canvas
 - `logos/` — background-specific SVGs, transparent SVGs, alpha PNG logo sizes, and PNG mark sizes
+- `logos/unica-logo-letter-transparent-paper-mark.svg` — SVG-only web-hero variant with a transparent canvas, the original white `U` tile, and the paper wordmark
 - `wallpapers/`, `ads/`, `social/` — ready placements and full-bleed social avatars
 - `unica-visual-kit.pdf` — printable export of the same canvas
 - `unica-visual-assets.zip` — SVG and ready-placement download used by the page

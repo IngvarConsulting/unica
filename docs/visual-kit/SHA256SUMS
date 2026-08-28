@@ -1,4 +1,4 @@
-02a6734bc5ffc3158cf33e0d3adc8daa9d1fb0180888cbccdc1f5266af064eaf  ./README.md
+768509960dccc1e0791324b7c31f4c164c22be7443b42400c7e963d9a66fa3fc  ./README.md
 3ff6838f23882eff0aabb8ee452a31b782356ada1b3d7d4829326aa87ce73522  ./ads/unica-ad-1080x1080.png
 95dbc380eb93e450958db47737bf5226fc1370240c49d63195cbe4abb504c33f  ./ads/unica-ad-1200x628.png
 6bba28a6581d43bcd0bf7417a919cd673061d829e1734e6490845af00ae0e7bb  ./ads/unica-ad-160x600.png
@@ -45,6 +45,7 @@ e96c0c018e295045012d992993c20424343323288817a1359a08204098fe7202  ./logos/unica-
 c4a1134413d42fa5f1c40887e096722612b1ab0392ede6c25d47173fc0e42291  ./logos/unica-logo-letter-transparent-blue.svg
 31db7b6cd7b297d4306ba4aba9a70442bc1b46fce0ba223f6e1f03342768b463  ./logos/unica-logo-letter-transparent-ink.svg
 c6fda9543f86af0be434a7ab3273076362a67e75cb5d353debc5c76db3030067  ./logos/unica-logo-letter-transparent-paper.svg
+ee9c26263f8d10cbaff57665fd709c4d746ab8cef55d9b4ec539bc652db1c2f1  ./logos/unica-logo-letter-transparent-paper-mark.svg
 616493aae4bd25d8d558bc77e516913d05970cb50d857081974e5e1ddc3e4510  ./logos/unica-mark-blue.svg
 6e31e4c79a7609071981b1979922bea24650d1fa6ab21e9ba2ebff7d706a3e83  ./logos/unica-mark-ink.svg
 3c7ded3ebffaeb390a741f3949fe12ff5285f3e2f7751f6a6f24ffe8073386c7  ./logos/unica-mark-mono.svg
@@ -77,7 +78,7 @@ dd624317dfbc0e45e2b5cd7ef11d97ca0283c5a030f58b98d6d3cbee46d1c5e8  ./social/unica
 f9362c8151c7f7670130354ea90fa1ad827028fad2c800b72cdef0f31dab66e6  ./social/unica-avatar-blue-512.png
 5305b27a511a7fb19a44991a0f098d81b684391c280505568b8b24f14868949b  ./social/unica-avatar-blue.svg
 c35cde43f53910e47be82e9bb89ee7f0da581bd5f40f47b0bec7be059aadb1bb  ./social/unica-social-card.png
-abf888b61a459ae44e8a1984869da061f7cb42c5c586ac753a9ef75e4ddbe397  ./unica-visual-assets.zip
+d4d09f6776788f075af4cd53b0c74882129036fbf59d47af9f2e3d1dd79400b7  ./unica-visual-assets.zip
 adb04bb12b4a88654a5695cd42b0569cd47c7c7d6acc053e9e4cedb8a1190c95  ./unica-visual-kit-desktop.png
 5baeeb155196ba302ffeaa887c31271f97f68383fd3d87fcc0267ba6f4270b44  ./unica-visual-kit-mobile.png
 c3a585fdff5cc52c8a0caf8dd16c7e718e1d2ac962c3178bcc6621db3d52da24  ./unica-visual-kit.pdf
