@@ -135,6 +135,22 @@ TOP_LEVEL_KEYS = {
     "cases",
 }
 NATIVE_ENTRIES = {"view", "apply", "find", "search", "check", "diff", "run", "docs"}
+OPERATION_ENTRIES = {"apply", "run"}
+RUN_OPERATIONS = {
+    "source.create",
+    "source.attach",
+    "infobase.create",
+    "infobase.build",
+    "source.dump",
+    "source.convert",
+    "artifact.make",
+    "artifact.load",
+    "syntax.check",
+    "test.run",
+    "client.run",
+    "extension.sync",
+    "query.execute",
+}
 DISPOSITIONS = {"mapped", "absorbed", "transport-replaced", "removed"}
 RUNTIME_JOB_NAMES = {
     "unica.runtime.job.cancel",
@@ -254,16 +270,39 @@ def load_repository_inputs(
     return documents, baseline_names, tracked_paths
 
 
-def _validate_successor(value: object, label: str) -> None:
+def _validate_operation(entry: str, value: object, label: str) -> str | None:
+    if entry not in OPERATION_ENTRIES:
+        return None
+    operation = _require_nonempty_string(value, f"{label} operation")
+    if entry == "run" and operation not in RUN_OPERATIONS:
+        raise InventoryError(f"{label} operation is not in the exact run dictionary")
+    return operation
+
+
+def _validate_successor(value: object, label: str) -> tuple[str, str | None]:
     if type(value) is not dict:
         raise InventoryError(f"{label} successor must be an object")
     entry = _require_nonempty_string(value.get("entry"), f"{label} successor entry")
     if entry not in NATIVE_ENTRIES:
         raise InventoryError(f"{label} successor entry must be one of the eight native entries")
-    expected_keys = {"entry", "operation"} if entry == "apply" else {"entry"}
+    expected_keys = {"entry", "operation"} if entry in OPERATION_ENTRIES else {"entry"}
     _require_exact_keys(value, expected_keys, f"{label} successor")
-    if entry == "apply":
-        _require_nonempty_string(value["operation"], f"{label} successor operation")
+    operation = _validate_operation(entry, value.get("operation"), f"{label} successor")
+    return entry, operation
+
+
+def _validate_case_ids(value: object, label: str) -> tuple[str, ...]:
+    if type(value) is not list or not value:
+        raise InventoryError(f"{label} caseIds must be a non-empty array")
+    case_ids: list[str] = []
+    for index, raw_case_id in enumerate(value):
+        case_id = _require_nonempty_string(
+            raw_case_id, f"{label} caseIds[{index}]"
+        )
+        if case_id in case_ids:
+            raise InventoryError(f"{label} caseIds must be unique")
+        case_ids.append(case_id)
+    return tuple(case_ids)
 
 
 def _projection_identity(value: object, label: str) -> tuple[str, str]:
@@ -339,6 +378,8 @@ def validate_inventory(
     seen_legacy_tools: set[str] = set()
     seen_case_ids: set[str] = set()
     case_entries: set[str] = set()
+    case_references: dict[str, tuple[tuple[str, str | None], str]] = {}
+    case_identities: dict[str, tuple[str, str | None]] = {}
 
     for shard in PARITY_SHARDS:
         document = _require_exact_keys(documents[shard], TOP_LEVEL_KEYS, shard)
@@ -376,10 +417,17 @@ def validate_inventory(
             if disposition in {"mapped", "absorbed"}:
                 _require_exact_keys(
                     raw_row,
-                    {"legacyTool", "disposition", "successor"},
+                    {"legacyTool", "disposition", "successor", "caseIds"},
                     label,
                 )
-                _validate_successor(raw_row["successor"], label)
+                successor_identity = _validate_successor(raw_row["successor"], label)
+                for case_id in _validate_case_ids(raw_row["caseIds"], label):
+                    previous = case_references.get(case_id)
+                    if previous is not None:
+                        raise InventoryError(
+                            f"caseId {case_id} is referenced by multiple dispositions"
+                        )
+                    case_references[case_id] = (successor_identity, label)
             elif disposition == "transport-replaced":
                 _require_exact_keys(
                     raw_row,
@@ -412,19 +460,26 @@ def validate_inventory(
             raise InventoryError(f"{shard} cases must be an array")
         for index, raw_case in enumerate(cases):
             label = f"{shard} cases[{index}]"
+            if type(raw_case) is not dict:
+                raise InventoryError(f"{label} must be an object")
+            entry = _require_nonempty_string(raw_case.get("entry"), f"{label} entry")
+            if entry not in NATIVE_ENTRIES:
+                raise InventoryError(f"{label} entry must be one of the eight native entries")
+            expected_keys = {"caseId", "entry", "mode", "fixture", "expected"}
+            if entry in OPERATION_ENTRIES:
+                expected_keys.add("operation")
             case = _require_exact_keys(
                 raw_case,
-                {"caseId", "entry", "mode", "fixture", "expected"},
+                expected_keys,
                 label,
             )
             case_id = _require_nonempty_string(case["caseId"], f"{label} caseId")
             if case_id in seen_case_ids:
                 raise InventoryError(f"duplicate caseId across parity shards: {case_id}")
             seen_case_ids.add(case_id)
-            entry = _require_nonempty_string(case["entry"], f"{label} entry")
-            if entry not in NATIVE_ENTRIES:
-                raise InventoryError(f"{label} entry must be one of the eight native entries")
+            operation = _validate_operation(entry, case.get("operation"), label)
             case_entries.add(entry)
+            case_identities[case_id] = (entry, operation)
             _require_nonempty_string(case["mode"], f"{label} mode")
             fixture = _require_nonempty_string(case["fixture"], f"{label} fixture")
             expected = case["expected"]
@@ -435,6 +490,15 @@ def validate_inventory(
                 repo_root=repo_root,
                 tracked_paths=tracked_paths,
                 label=label,
+            )
+
+    for case_id, (successor_identity, label) in case_references.items():
+        case_identity = case_identities.get(case_id)
+        if case_identity is None:
+            raise InventoryError(f"{label} references unknown caseId {case_id}")
+        if case_identity != successor_identity:
+            raise InventoryError(
+                f"{label} caseId {case_id} does not match successor identity"
             )
 
     if len(set(complete_values)) != 1:
@@ -450,6 +514,12 @@ def validate_inventory(
             raise InventoryError("complete inventory must account for all 74 baseline names")
         if case_entries != NATIVE_ENTRIES:
             raise InventoryError("complete inventory must cover all eight native entries")
+        unowned_cases = set(case_identities) - set(case_references)
+        if unowned_cases:
+            raise InventoryError(
+                "complete inventory contains unowned executable case: "
+                + sorted(unowned_cases)[0]
+            )
 
 
 class V013ParityInventoryTest(unittest.TestCase):
@@ -491,12 +561,14 @@ class V013ParityInventoryTest(unittest.TestCase):
             "legacyTool": "unica.meta.add",
             "disposition": "mapped",
             "successor": {"entry": "apply", "operation": "object.create"},
+            "caseIds": ["meta-object-create-basic"],
         }
 
     def _one_case(self) -> dict[str, object]:
         return {
             "caseId": "meta-object-create-basic",
             "entry": "apply",
+            "operation": "object.create",
             "mode": "fast",
             "fixture": self.fixture,
             "expected": {"outcome": "changed"},
@@ -514,7 +586,18 @@ class V013ParityInventoryTest(unittest.TestCase):
             documents[shard]["complete"] = True
 
         rows: list[dict[str, object]] = []
-        for legacy_tool in IMMUTABLE_BASELINE_NAMES:
+        cases: list[dict[str, object]] = []
+        entries = (
+            "view",
+            "apply",
+            "find",
+            "search",
+            "check",
+            "diff",
+            "run",
+            "docs",
+        )
+        for index, legacy_tool in enumerate(IMMUTABLE_BASELINE_NAMES):
             if legacy_tool == "unica.runtime.job.status":
                 rows.append(
                     {
@@ -529,46 +612,39 @@ class V013ParityInventoryTest(unittest.TestCase):
                         ],
                     }
                 )
-            elif legacy_tool == "unica.meta.add":
-                rows.append(
-                    {
-                        "legacyTool": legacy_tool,
-                        "disposition": "mapped",
-                        "successor": {
-                            "entry": "apply",
-                            "operation": "object.create",
-                        },
-                    }
-                )
             else:
+                entry = entries[index % len(entries)]
+                operation = None
+                if entry == "apply":
+                    operation = "object.create"
+                elif entry == "run":
+                    operation = "source.create"
+                successor = {"entry": entry}
+                if operation is not None:
+                    successor["operation"] = operation
+                case_id = f"legacy-{index:02d}"
                 rows.append(
                     {
                         "legacyTool": legacy_tool,
-                        "disposition": "absorbed",
-                        "successor": {"entry": "view"},
+                        "disposition": (
+                            "mapped" if legacy_tool == "unica.meta.add" else "absorbed"
+                        ),
+                        "successor": successor,
+                        "caseIds": [case_id],
                     }
                 )
+                case = {
+                    "caseId": case_id,
+                    "entry": entry,
+                    "mode": "direct",
+                    "fixture": self.fixture,
+                    "expected": {"outcome": "ok"},
+                }
+                if operation is not None:
+                    case["operation"] = operation
+                cases.append(case)
         documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = rows
-
-        documents[EXPECTED_SHARDS[1]]["cases"] = [
-            {
-                "caseId": f"representative-{entry}",
-                "entry": entry,
-                "mode": "direct",
-                "fixture": self.fixture,
-                "expected": {"outcome": "ok"},
-            }
-            for entry in (
-                "view",
-                "apply",
-                "find",
-                "search",
-                "check",
-                "diff",
-                "run",
-                "docs",
-            )
-        ]
+        documents[EXPECTED_SHARDS[1]]["cases"] = cases
         return documents
 
     def test_repository_inventory_is_valid_and_uses_exact_seven_shards(self) -> None:
@@ -813,6 +889,9 @@ class V013ParityInventoryTest(unittest.TestCase):
         invalid_successors = (
             {"entry": "apply"},
             {"entry": "apply", "operation": ""},
+            {"entry": "run"},
+            {"entry": "run", "operation": ""},
+            {"entry": "run", "operation": "arbitrary.command"},
             {"entry": "view", "operation": "object.create"},
             {"entry": "unknown"},
             {"entry": "view", "owner": "worker"},
@@ -825,6 +904,67 @@ class V013ParityInventoryTest(unittest.TestCase):
             documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
             with self.subTest(successor=successor), self.assertRaises(InventoryError):
                 self._validate(documents)
+
+    def test_run_successor_accepts_only_an_exact_typed_operation(self) -> None:
+        row = self._one_mapped_row()
+        row["successor"] = {"entry": "run", "operation": "source.create"}
+        case = self._one_case()
+        case["entry"] = "run"
+        case["operation"] = "source.create"
+        self._set_first_row(row)
+        self._set_first_case(case)
+        self._validate()
+
+    def test_all_thirteen_run_operations_are_the_literal_test_oracle(self) -> None:
+        expected = (
+            "source.create",
+            "source.attach",
+            "infobase.create",
+            "infobase.build",
+            "source.dump",
+            "source.convert",
+            "artifact.make",
+            "artifact.load",
+            "syntax.check",
+            "test.run",
+            "client.run",
+            "extension.sync",
+            "query.execute",
+        )
+        self.assertEqual(RUN_OPERATIONS, set(expected))
+        for operation in expected:
+            row = self._one_mapped_row()
+            row["successor"] = {"entry": "run", "operation": operation}
+            case = self._one_case()
+            case["entry"] = "run"
+            case["operation"] = operation
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
+            documents[EXPECTED_SHARDS[0]]["cases"] = [case]
+            with self.subTest(operation=operation):
+                self._validate(documents)
+
+    def test_apply_and_run_cases_require_their_exact_operation_identity(self) -> None:
+        for entry in ("apply", "run"):
+            case = self._one_case()
+            case["entry"] = entry
+            case.pop("operation")
+            self._set_first_case(case)
+            with self.subTest(entry=entry), self.assertRaisesRegex(
+                InventoryError, "operation"
+            ):
+                self._validate()
+
+        for entry, operation in (
+            ("apply", "object.create"),
+            ("run", "source.create"),
+        ):
+            case = self._one_case()
+            case["entry"] = entry
+            case["operation"] = operation
+            self._set_first_case(case)
+            with self.subTest(entry=entry, operation=operation):
+                self._validate()
 
     def test_exact_projection_enum_and_duplicates_are_enforced(self) -> None:
         invalid_projection_lists = (
@@ -879,6 +1019,7 @@ class V013ParityInventoryTest(unittest.TestCase):
             {**valid, "caseId": ""},
             {**valid, "caseId": 1},
             {**valid, "entry": "unknown"},
+            {**valid, "entry": "view"},
             {**valid, "mode": ""},
             {**valid, "mode": False},
             {**valid, "fixture": ""},
@@ -898,6 +1039,43 @@ class V013ParityInventoryTest(unittest.TestCase):
         self.documents[EXPECTED_SHARDS[1]]["cases"] = [copy.deepcopy(case)]
         with self.assertRaisesRegex(InventoryError, "duplicate caseId"):
             self._validate()
+
+    def test_mapped_and_absorbed_rows_require_nonempty_unique_case_ids(self) -> None:
+        for case_ids in (None, [], [""], ["meta-object-create-basic"] * 2):
+            row = self._one_mapped_row()
+            if case_ids is None:
+                row.pop("caseIds")
+            else:
+                row["caseIds"] = case_ids
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
+            documents[EXPECTED_SHARDS[0]]["cases"] = [self._one_case()]
+            with self.subTest(case_ids=case_ids), self.assertRaisesRegex(
+                InventoryError, "caseIds"
+            ):
+                self._validate(documents)
+
+    def test_each_referenced_case_exists_matches_successor_and_has_one_owner(self) -> None:
+        documents = copy.deepcopy(self.documents)
+        row = self._one_mapped_row()
+        documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
+        documents[EXPECTED_SHARDS[0]]["cases"] = []
+        with self.assertRaisesRegex(InventoryError, "unknown caseId"):
+            self._validate(documents)
+
+        documents[EXPECTED_SHARDS[0]]["cases"] = [
+            {**self._one_case(), "entry": "view", "operation": None}
+        ]
+        documents[EXPECTED_SHARDS[0]]["cases"][0].pop("operation")
+        with self.assertRaisesRegex(InventoryError, "successor identity"):
+            self._validate(documents)
+
+        documents[EXPECTED_SHARDS[0]]["cases"] = [self._one_case()]
+        second = copy.deepcopy(row)
+        second["legacyTool"] = "unica.meta.edit"
+        documents[EXPECTED_SHARDS[1]]["baselineDispositions"] = [second]
+        with self.assertRaisesRegex(InventoryError, "referenced by multiple"):
+            self._validate(documents)
 
     def test_fixture_lexical_path_safety(self) -> None:
         unsafe_paths = (
@@ -999,6 +1177,7 @@ class V013ParityInventoryTest(unittest.TestCase):
         for document in self.documents.values():
             document["complete"] = True
         self._set_first_row(self._one_mapped_row())
+        self._set_first_case(self._one_case())
         with self.assertRaisesRegex(InventoryError, "missing runtime job dispositions"):
             self._validate()
 
@@ -1020,10 +1199,39 @@ class V013ParityInventoryTest(unittest.TestCase):
 
     def test_all_true_rejects_missing_native_entry_case(self) -> None:
         documents = self._complete_documents()
-        documents[EXPECTED_SHARDS[1]]["cases"] = documents[
-            EXPECTED_SHARDS[1]
-        ]["cases"][:-1]
+        docs_case_ids = {
+            case["caseId"]
+            for case in documents[EXPECTED_SHARDS[1]]["cases"]
+            if case["entry"] == "docs"
+        }
+        for case in documents[EXPECTED_SHARDS[1]]["cases"]:
+            if case["caseId"] in docs_case_ids:
+                case["entry"] = "view"
+        for row in documents[EXPECTED_SHARDS[0]]["baselineDispositions"]:
+            if row.get("caseIds", [None])[0] in docs_case_ids:
+                row["successor"] = {"entry": "view"}
         with self.assertRaisesRegex(InventoryError, "all eight native entries"):
+            self._validate(documents)
+
+    def test_all_true_cross_links_exact_successor_operation_to_a_case(self) -> None:
+        documents = self._complete_documents()
+        row = next(
+            row
+            for row in documents[EXPECTED_SHARDS[0]]["baselineDispositions"]
+            if row["disposition"] == "absorbed"
+        )
+        row["successor"] = {"entry": "run", "operation": "query.execute"}
+        with self.assertRaisesRegex(
+            InventoryError, "successor identity"
+        ):
+            self._validate(documents)
+
+    def test_all_true_rejects_unowned_executable_cases(self) -> None:
+        documents = self._complete_documents()
+        extra = self._one_case()
+        extra["caseId"] = "unowned-extra"
+        documents[EXPECTED_SHARDS[1]]["cases"].append(extra)
+        with self.assertRaisesRegex(InventoryError, "unowned executable case"):
             self._validate(documents)
 
     def test_all_true_still_rejects_invalid_transport_projection(self) -> None:

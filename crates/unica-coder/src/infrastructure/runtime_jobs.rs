@@ -3601,7 +3601,7 @@ fn run_worker_request(
     handoff: WorkerStartRequest,
     runner: Arc<dyn RuntimeJobRunner>,
 ) -> Result<(), String> {
-    run_worker_request_with_quarantine_hook(handoff, runner, None::<fn()>)
+    run_worker_request_with_lifecycle_hooks(handoff, runner, None::<fn()>, None::<fn()>)
 }
 
 /// The hook runs after the worker has durably published `Lost` and immediately
@@ -3613,12 +3613,33 @@ fn run_worker_request_after_quarantine_persisted(
     runner: Arc<dyn RuntimeJobRunner>,
     after_quarantine_persisted: impl FnMut(),
 ) -> Result<(), String> {
-    run_worker_request_with_quarantine_hook(handoff, runner, Some(after_quarantine_persisted))
+    run_worker_request_with_lifecycle_hooks(
+        handoff,
+        runner,
+        None::<fn()>,
+        Some(after_quarantine_persisted),
+    )
 }
 
-fn run_worker_request_with_quarantine_hook(
+#[cfg(test)]
+fn run_worker_request_after_activation_and_quarantine_persisted(
     handoff: WorkerStartRequest,
     runner: Arc<dyn RuntimeJobRunner>,
+    after_activation_persisted: impl FnMut(),
+    after_quarantine_persisted: impl FnMut(),
+) -> Result<(), String> {
+    run_worker_request_with_lifecycle_hooks(
+        handoff,
+        runner,
+        Some(after_activation_persisted),
+        Some(after_quarantine_persisted),
+    )
+}
+
+fn run_worker_request_with_lifecycle_hooks(
+    handoff: WorkerStartRequest,
+    runner: Arc<dyn RuntimeJobRunner>,
+    mut after_activation_persisted: Option<impl FnMut()>,
     mut after_quarantine_persisted: Option<impl FnMut()>,
 ) -> Result<(), String> {
     let job_id = canonical_job_id(&handoff.job_id)?;
@@ -3638,6 +3659,9 @@ fn run_worker_request_with_quarantine_hook(
             return service.supervise_quarantine(&job_id);
         }
         return Err(error);
+    }
+    if let Some(hook) = &mut after_activation_persisted {
+        hook();
     }
 
     loop {
@@ -6730,53 +6754,68 @@ pub(crate) mod tests {
             state: Arc::clone(&state),
         });
         let (finished_tx, finished_rx) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            finished_tx
-                .send(run_worker_request(handoff, runner))
-                .expect("send worker result");
-        });
-        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
-        let running_deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if store
-                .read_record(&queued.id)
-                .is_ok_and(|record| record.phase == RuntimeJobPhase::Running)
+        let (activation_tx, activation_rx) = mpsc::sync_channel(1);
+        let (quarantine_tx, quarantine_rx) = mpsc::sync_channel(1);
+        thread::scope(|scope| {
+            // Preserve the primary assertion on slow Windows runners: any
+            // unwind first makes the controlled process terminal, and the
+            // scoped thread is joined before TestCache audits its owner.
+            let _terminal_proof_on_unwind = ObservationFailureTerminalProof { state: &state };
+            let worker = scope.spawn(move || {
+                finished_tx
+                    .send(
+                        run_worker_request_after_activation_and_quarantine_persisted(
+                            handoff,
+                            runner,
+                            || activation_tx.send(()).expect("announce durable activation"),
+                            || quarantine_tx.send(()).expect("announce durable quarantine"),
+                        ),
+                    )
+                    .expect("send worker result");
+            });
+            activation_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("worker did not publish durable activation");
+            let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
             {
-                break;
+                let _lifecycle = store.acquire_active_lifecycle_lock().unwrap();
+                let mut record = store.read_record(&queued.id).unwrap();
+                assert_eq!(record.phase, RuntimeJobPhase::Running);
+                record.heartbeat_at_ms = Some(0);
+                store.write_record(&record).unwrap();
             }
-            assert!(Instant::now() < running_deadline, "worker never activated");
-            thread::yield_now();
-        }
-        {
-            let _lifecycle = store.acquire_active_lifecycle_lock().unwrap();
-            let mut record = store.read_record(&queued.id).unwrap();
-            record.heartbeat_at_ms = Some(0);
-            store.write_record(&record).unwrap();
-        }
-        wait_for_lost_record(&store, &queued.id);
+            quarantine_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("worker did not publish durable stale quarantine");
+            assert_eq!(
+                store.read_record(&queued.id).unwrap().phase,
+                RuntimeJobPhase::Lost,
+                "quarantine event preceded the durable Lost publication"
+            );
 
-        assert!(
-            matches!(
-                finished_rx.recv_timeout(Duration::from_millis(100)),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ),
-            "stale polling let the canonical worker return with live authority"
-        );
-        assert!(
-            !state.dropped.load(Ordering::Acquire),
-            "stale polling dropped the retained process capability"
-        );
-        assert_replacement_refused(&cache, &request);
+            assert!(
+                matches!(
+                    finished_rx.recv_timeout(Duration::from_millis(100)),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                ),
+                "stale polling let the canonical worker return with live authority"
+            );
+            assert!(
+                !state.dropped.load(Ordering::Acquire),
+                "stale polling dropped the retained process capability"
+            );
+            assert_replacement_refused(&cache, &request);
 
-        state.terminal.store(true, Ordering::Release);
-        finished_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("worker did not finish stale-process supervision")
-            .expect("terminal proof completes stale-process supervision");
-        worker.join().expect("join worker");
-        assert!(state.dropped.load(Ordering::Acquire));
-        assert!(!store.active_lock_path().exists());
-        assert_replacement_available(&cache, &request);
+            state.terminal.store(true, Ordering::Release);
+            finished_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("worker did not finish stale-process supervision")
+                .expect("terminal proof completes stale-process supervision");
+            worker.join().expect("join worker");
+            assert!(state.dropped.load(Ordering::Acquire));
+            assert!(!store.active_lock_path().exists());
+            assert_replacement_available(&cache, &request);
+        });
     }
 
     fn assert_worker_supervises_post_spawn_record_failure(
