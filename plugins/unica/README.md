@@ -261,7 +261,7 @@ scripts/dev/install-local-unica.sh
 ```
 
 On native Windows x64, run the script from **Git Bash** included with 64-bit Git
-for Windows. The local build requires Python 3.10 or newer, stable Rust with the
+for Windows. The local build requires Python 3.12 or newer, stable Rust with the
 native MSVC toolchain, Microsoft C++ Build Tools, and the Windows SDK. A current
 Codex CLI is required for the install and fresh-prompt verification steps.
 
