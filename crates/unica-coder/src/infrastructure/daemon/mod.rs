@@ -24,6 +24,7 @@ mod tests {
         MAX_OWNER_SESSIONS,
     };
     use super::v13_service::CanonicalV13ReadService;
+    use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN_MS;
     use crate::application::invocation_store::{
         InvocationStore, InvocationStoreError, NewInvocationRecord, SafeFailureReason,
         SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
@@ -1191,21 +1192,35 @@ mod tests {
         entered_wait
             .recv_timeout(INTEGRATION_COORDINATION_TIMEOUT)
             .expect("canonical invocation must enter the service within the bounded wait");
-        let observed = owner.get_task(task_id).unwrap();
+        let task_deadline = owner
+            .begin_task_deadline(Duration::from_millis(
+                INTEGRATION_TASK_WAIT_MS + RESPONSE_SERIALIZATION_MARGIN_MS,
+            ))
+            .unwrap();
+        let observed = owner.get_task_before(task_id, &task_deadline).unwrap();
         assert_eq!(observed.status, InvocationStatus::Working);
         assert_eq!(observed.created_at_epoch_ms, initial.created_at_epoch_ms);
         assert_eq!(observed.updated_at_epoch_ms, initial.updated_at_epoch_ms);
         assert_eq!(observed.ttl_ms, initial.ttl_ms);
         assert_eq!(
-            owner.wait_task(task_id, 0).unwrap().status,
+            owner
+                .wait_task_before(task_id, 0, &task_deadline)
+                .unwrap()
+                .status,
             InvocationStatus::Working
         );
-        let cancelled = owner.cancel_task(task_id).unwrap();
+        let cancelled = owner.cancel_task_before(task_id, &task_deadline).unwrap();
         assert_eq!(cancelled.status, InvocationStatus::Cancelled);
         assert_eq!(cancelled.created_at_epoch_ms, initial.created_at_epoch_ms);
         assert!(cancelled.updated_at_epoch_ms >= initial.updated_at_epoch_ms);
-        assert_eq!(owner.cancel_task(task_id).unwrap(), cancelled);
-        assert_eq!(owner.get_task(task_id).unwrap(), cancelled);
+        assert_eq!(
+            owner.cancel_task_before(task_id, &task_deadline).unwrap(),
+            cancelled
+        );
+        assert_eq!(
+            owner.get_task_before(task_id, &task_deadline).unwrap(),
+            cancelled
+        );
         assert_eq!(executions.load(Ordering::SeqCst), 1);
 
         drop(owner);
@@ -1222,7 +1237,15 @@ mod tests {
             ExistingDaemon::Connected(owner) => owner,
             ExistingDaemon::Absent => panic!("restarted daemon must connect"),
         };
-        assert_eq!(owner.get_task(task_id).unwrap(), cancelled);
+        let task_deadline = owner
+            .begin_task_deadline(Duration::from_millis(
+                INTEGRATION_TASK_WAIT_MS + RESPONSE_SERIALIZATION_MARGIN_MS,
+            ))
+            .unwrap();
+        assert_eq!(
+            owner.get_task_before(task_id, &task_deadline).unwrap(),
+            cancelled
+        );
         drop(owner);
         restarted.join().unwrap().unwrap();
     }
@@ -2132,12 +2155,11 @@ mod tests {
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
         directory.write_endpoint_record_for_test(&record).unwrap();
         let clock = ManualDaemonClientClock::new();
-        let peer_clock = clock.clone();
+        clock.advance_after_next_response_read(Duration::from_secs(5));
         let peer_record = record.clone();
         let fake_peer = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let _hello = read_bounded_json_line(&mut BufReader::new(&stream)).unwrap();
-            peer_clock.advance(Duration::from_secs(5));
             write_json_line(&mut stream, &ServerResponse::ready(&peer_record));
         });
         let config = DaemonClientConfig::existing_only(physical, identity)
@@ -2161,11 +2183,10 @@ mod tests {
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
         directory.write_endpoint_record_for_test(&record).unwrap();
         let clock = ManualDaemonClientClock::new();
-        let peer_clock = clock.clone();
+        clock.advance_after_next_response_read(Duration::from_secs(5));
         let fake_peer = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let _hello = read_bounded_json_line(&mut BufReader::new(&stream)).unwrap();
-            peer_clock.advance(Duration::from_secs(5));
             write_json_line(
                 &mut stream,
                 &serde_json::json!({"kind": "error", "code": "future_code"}),
@@ -2192,11 +2213,10 @@ mod tests {
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
         directory.write_endpoint_record_for_test(&record).unwrap();
         let clock = ManualDaemonClientClock::new();
-        let peer_clock = clock.clone();
+        clock.advance_after_next_response_read(Duration::from_secs(5));
         let fake_peer = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let _hello = read_bounded_json_line(&mut BufReader::new(&stream)).unwrap();
-            peer_clock.advance(Duration::from_secs(5));
         });
         let config = DaemonClientConfig::existing_only(physical, identity)
             .with_clock_for_test(clock)
@@ -2219,7 +2239,6 @@ mod tests {
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
         directory.write_endpoint_record_for_test(&record).unwrap();
         let clock = ManualDaemonClientClock::new();
-        let peer_clock = clock.clone();
         let peer_record = record.clone();
         let fake_peer = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -2231,17 +2250,17 @@ mod tests {
                 serde_json::from_slice::<ClientRequest>(&ping).unwrap(),
                 ClientRequest::Ping {}
             );
-            peer_clock.advance(Duration::from_secs(5));
             write_json_line(&mut stream, &ServerResponse::Pong);
         });
         let config = DaemonClientConfig::existing_only(physical, identity)
-            .with_clock_for_test(clock)
+            .with_clock_for_test(clock.clone())
             .with_connect_timeout_for_test(Duration::from_secs(5));
         let client = DaemonClient::new(config);
         let mut owner = match client.connect_existing().unwrap() {
             ExistingDaemon::Connected(owner) => owner,
             ExistingDaemon::Absent => panic!("fake endpoint must connect"),
         };
+        clock.advance_after_next_response_read(Duration::from_secs(5));
 
         let error = owner.ping().unwrap_err();
         fake_peer.join().unwrap();

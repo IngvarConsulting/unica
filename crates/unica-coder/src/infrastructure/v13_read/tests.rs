@@ -26,7 +26,6 @@ use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 fn configuration_payload(
     reader: &ProviderReadAuthority,
@@ -2383,7 +2382,9 @@ fn real_external_sources_are_traversable_without_configuration_xml_and_hide_root
                 ActorFindSource::new("artifact_processor", &epf),
                 ActorFindSource::new("artifact_report", &erf),
             ],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(7)),
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
             &fixture.cancellation,
         )
         .unwrap();

@@ -23,6 +23,9 @@ trait DaemonClientClock: Send + Sync {
     fn now(&self) -> Instant;
 
     #[cfg(test)]
+    fn response_read_completed(&self) {}
+
+    #[cfg(test)]
     fn response_parse_started(&self) {}
 }
 
@@ -46,6 +49,7 @@ pub(crate) struct ManualDaemonClientClock {
     origin: Instant,
     elapsed: Arc<std::sync::Mutex<Duration>>,
     advance_before_next_sample: Arc<std::sync::Mutex<Option<Duration>>>,
+    advance_after_next_response_read: Arc<std::sync::Mutex<Option<Duration>>>,
     advance_during_next_response_parse: Arc<std::sync::Mutex<Option<Duration>>>,
 }
 
@@ -60,6 +64,7 @@ impl ManualDaemonClientClock {
             origin,
             elapsed: Arc::default(),
             advance_before_next_sample: Arc::default(),
+            advance_after_next_response_read: Arc::default(),
             advance_during_next_response_parse: Arc::default(),
         }
     }
@@ -74,6 +79,13 @@ impl ManualDaemonClientClock {
             .advance_before_next_sample
             .lock()
             .expect("manual daemon client sample pause") = Some(amount);
+    }
+
+    pub(crate) fn advance_after_next_response_read(&self, amount: Duration) {
+        *self
+            .advance_after_next_response_read
+            .lock()
+            .expect("manual daemon client response read pause") = Some(amount);
     }
 
     pub(crate) fn advance_during_next_response_parse(&self, amount: Duration) {
@@ -97,6 +109,17 @@ impl DaemonClientClock for ManualDaemonClientClock {
             *elapsed = elapsed.saturating_add(pause);
         }
         self.origin + *elapsed
+    }
+
+    fn response_read_completed(&self) {
+        let pause = self
+            .advance_after_next_response_read
+            .lock()
+            .expect("manual daemon client response read pause")
+            .take();
+        if let Some(pause) = pause {
+            self.advance(pause);
+        }
     }
 
     fn response_parse_started(&self) {
@@ -811,6 +834,8 @@ fn read_response(
         .set_read_timeout(Some(remaining))
         .map_err(|error| format!("configure daemon read timeout: {error}"))?;
     let bytes = read_bounded_response_line(reader);
+    #[cfg(test)]
+    deadline.clock.response_read_completed();
     deadline.checkpoint(stage)?;
     #[cfg(test)]
     deadline.clock.response_parse_started();

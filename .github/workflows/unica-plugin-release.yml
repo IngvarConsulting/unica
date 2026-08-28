@@ -129,12 +129,6 @@ jobs:
         run: cargo fmt --all -- --check
       - if: matrix.runner == 'macos-14'
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Diagnose exact Windows long-work ownership contract
-        if: matrix.runner == 'windows-latest'
-        run: >-
-          cargo test -p unica-coder
-          infrastructure::daemon::server::actor_capacity_tests::daemon_exact_long_work_ownership_contract
-          -- --exact --nocapture --test-threads=1
       - run: cargo test --workspace -- --test-threads=1
 
   test-search-integration:
