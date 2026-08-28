@@ -1,4 +1,5 @@
 use super::protocol::{parse_endpoint_record, EndpointRecord, MAX_ENDPOINT_RECORD_BYTES};
+use crate::application::receipt_ledger::CoreIdentityDigest;
 use crate::infrastructure::platform::filesystem::{
     create_owner_only_directory_child, create_owner_only_file_child, file_identity,
     open_directory_child_nofollow, open_directory_ownership_lock,
@@ -25,8 +26,23 @@ const DAEMON_PROTOCOL_IDENTITY_PREFIX: &str = "unica-daemon-jsonl-";
 const ENDPOINT_FILE_NAME: &str = "endpoint.json";
 const SPAWN_LOCK_NAME: &str = ".daemon-spawn.lock";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DaemonProtocolIdentity {
+    V3,
+    V5,
+}
+
+impl DaemonProtocolIdentity {
+    pub(crate) const fn protocol_version(self) -> u32 {
+        match self {
+            Self::V3 => 3,
+            Self::V5 => 5,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct CoreIdentity(String);
+pub(crate) struct CoreIdentity(CoreIdentityDigest);
 
 impl CoreIdentity {
     pub(crate) fn production() -> Self {
@@ -39,17 +55,44 @@ impl CoreIdentity {
                 .to_string()
                 .as_bytes(),
         );
-        Self(hex_digest(digest.finalize().as_slice()))
+        Self(CoreIdentityDigest::from_sha256(digest.finalize().into()))
+    }
+
+    pub(crate) fn production_v5() -> Self {
+        let mut digest = Sha256::new();
+        digest.update(CORE_ABI_IDENTITY.as_bytes());
+        digest.update(b"\0");
+        digest.update(DAEMON_PROTOCOL_IDENTITY_PREFIX.as_bytes());
+        digest.update(
+            DaemonProtocolIdentity::V5
+                .protocol_version()
+                .to_string()
+                .as_bytes(),
+        );
+        Self(CoreIdentityDigest::from_sha256(digest.finalize().into()))
+    }
+
+    pub(crate) fn protocol_identity(&self) -> DaemonProtocolIdentity {
+        if self == &Self::production_v5() {
+            DaemonProtocolIdentity::V5
+        } else {
+            DaemonProtocolIdentity::V3
+        }
     }
 
     pub(crate) fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    #[allow(dead_code)] // Consumed by the injected v5 runtime before W0c selects it by default.
+    pub(crate) fn digest(&self) -> &CoreIdentityDigest {
         &self.0
     }
 }
 
 impl fmt::Display for CoreIdentity {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -57,14 +100,10 @@ impl FromStr for CoreIdentity {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.len() != 64
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err("core identity must be exactly 64 lowercase hexadecimal bytes".to_string());
-        }
-        Ok(Self(value.to_string()))
+        value
+            .parse::<CoreIdentityDigest>()
+            .map(Self)
+            .map_err(|_| "core identity must be exactly 64 lowercase hexadecimal bytes".to_string())
     }
 }
 
@@ -73,7 +112,7 @@ impl Serialize for CoreIdentity {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&self.0)
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -85,16 +124,6 @@ impl<'de> Deserialize<'de> for CoreIdentity {
         let value = String::deserialize(deserializer)?;
         value.parse().map_err(serde::de::Error::custom)
     }
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    encoded
 }
 
 #[derive(Debug)]
@@ -110,7 +139,7 @@ impl DaemonStateDirectory {
     pub(crate) fn path_for(state_root: &Path, core_identity: &CoreIdentity) -> PathBuf {
         state_root.join(format!(
             "daemon-p{}-{}",
-            super::protocol::DAEMON_PROTOCOL_VERSION,
+            core_identity.protocol_identity().protocol_version(),
             core_identity.as_str()
         ))
     }
@@ -123,7 +152,7 @@ impl DaemonStateDirectory {
             .map_err(|error| daemon_io_error("open or create daemon provider state root", error))?;
         let child_name = format!(
             "daemon-p{}-{}",
-            super::protocol::DAEMON_PROTOCOL_VERSION,
+            core_identity.protocol_identity().protocol_version(),
             core_identity.as_str()
         );
         let directory = match open_directory_child_nofollow(&parent, OsStr::new(&child_name)) {
@@ -375,4 +404,67 @@ fn lock_is_contended(error: &io::Error) -> bool {
 
 fn daemon_io_error(operation: &str, error: io::Error) -> String {
     format!("{operation}: {error}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_v5_has_its_frozen_protocol_identity_without_changing_v3_default() {
+        let production_v3 = CoreIdentity::production();
+        let production_v5 = CoreIdentity::production_v5();
+
+        assert_eq!(
+            production_v3.as_str(),
+            "2f4dd5713d11e5211a92c5fa01b1ec5722dc3a3160b9b1e0b667f8d8da3d9c28"
+        );
+        assert_eq!(
+            production_v5.as_str(),
+            "884b76181583ce34907a2a9758e2b493e5b40883e7cbb0d7f88dcec0e468cfa0"
+        );
+        assert_eq!(production_v3.digest().as_str(), production_v3.as_str());
+        assert_eq!(production_v5.digest().as_str(), production_v5.as_str());
+        assert_eq!(
+            production_v3.protocol_identity(),
+            DaemonProtocolIdentity::V3
+        );
+        assert_eq!(
+            production_v5.protocol_identity(),
+            DaemonProtocolIdentity::V5
+        );
+    }
+
+    #[test]
+    fn arbitrary_canonical_core_identity_keeps_the_v3_selector_and_state_path() {
+        let state_root = Path::new("/provider-state");
+        for encoded in [
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "b1966ce0792d157e8716a0f29a386a2d8efe801b0abb752c342014bc6eec2d77",
+        ] {
+            let arbitrary = CoreIdentity::from_str(encoded).unwrap();
+
+            assert_eq!(arbitrary.protocol_identity(), DaemonProtocolIdentity::V3);
+            assert_eq!(
+                DaemonStateDirectory::path_for(state_root, &arbitrary),
+                state_root.join(format!("daemon-p3-{}", arbitrary.as_str()))
+            );
+        }
+    }
+
+    #[test]
+    fn exact_production_v5_identity_forks_the_state_selector_from_v3() {
+        let state_root = Path::new("/provider-state");
+        let production_v3 = CoreIdentity::production();
+        let production_v5 = CoreIdentity::production_v5();
+
+        assert_eq!(
+            DaemonStateDirectory::path_for(state_root, &production_v5),
+            state_root.join(format!("daemon-p5-{}", production_v5.as_str()))
+        );
+        assert_ne!(
+            DaemonStateDirectory::path_for(state_root, &production_v3),
+            DaemonStateDirectory::path_for(state_root, &production_v5)
+        );
+    }
 }
