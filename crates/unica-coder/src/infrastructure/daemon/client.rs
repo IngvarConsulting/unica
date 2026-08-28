@@ -617,6 +617,17 @@ impl DaemonOwner {
         self.task_exchange(ClientRequest::get_task(task_id), Duration::from_millis(125))
     }
 
+    pub(crate) fn get_task_before(
+        &mut self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: &DaemonTaskDeadline,
+    ) -> Result<DaemonTaskSnapshot, DaemonTaskExchangeError> {
+        if !deadline.matches_clock(&self.clock) {
+            return Err(DaemonTaskExchangeError::Transport);
+        }
+        self.task_exchange_before(ClientRequest::get_task(task_id), &deadline.deadline)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn wait_task(
         &mut self,
@@ -664,6 +675,17 @@ impl DaemonOwner {
             ClientRequest::cancel_task(task_id),
             Duration::from_millis(125),
         )
+    }
+
+    pub(crate) fn cancel_task_before(
+        &mut self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: &DaemonTaskDeadline,
+    ) -> Result<DaemonTaskSnapshot, DaemonTaskExchangeError> {
+        if !deadline.matches_clock(&self.clock) {
+            return Err(DaemonTaskExchangeError::Transport);
+        }
+        self.task_exchange_before(ClientRequest::cancel_task(task_id), &deadline.deadline)
     }
 
     fn task_exchange(

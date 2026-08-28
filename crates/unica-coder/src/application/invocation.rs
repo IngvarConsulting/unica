@@ -2754,12 +2754,79 @@ pub(crate) mod tests {
         }
 
         assert!(executor.restart_requested());
-        assert!(!executor.has_active_invocations());
         assert_eq!(executions.load(Ordering::SeqCst), 1);
         assert!(store.update_attempts.load(Ordering::SeqCst) <= 10);
         let persisted = store.records.lock().unwrap()[&task_id].clone();
         assert_eq!(persisted.status, InvocationStatus::Working);
         assert!(persisted.result.is_none());
+        let cleanup_deadline = Instant::now() + Duration::from_secs(10);
+        while (executor.has_active_invocations() || lease_drops.load(Ordering::SeqCst) == 0)
+            && Instant::now() < cleanup_deadline
+        {
+            std::thread::yield_now();
+        }
+        assert!(!executor.has_active_invocations());
+        assert_eq!(lease_drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn restart_closes_admission_before_blocking_resource_lease_cleanup_finishes() {
+        struct BlockingLease {
+            entered: mpsc::Sender<()>,
+            release: Mutex<mpsc::Receiver<()>>,
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl Drop for BlockingLease {
+            fn drop(&mut self) {
+                self.entered.send(()).unwrap();
+                self.release.get_mut().unwrap().recv().unwrap();
+                self.drops.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let executor = Arc::new(InvocationExecutor::new(
+            Arc::new(MemoryStore::default()),
+            Arc::new(ManualClock::new(Instant::now())),
+        ));
+        let task_id = TaskId::new();
+        let (lease_entered, lease_entered_wait) = mpsc::channel();
+        let (lease_release, lease_release_wait) = mpsc::channel();
+        let lease_drops = Arc::new(AtomicUsize::new(0));
+        let live = Arc::new(super::LiveInvocation::new(
+            Some(task_id),
+            Some(Arc::new(BlockingLease {
+                entered: lease_entered,
+                release: Mutex::new(lease_release_wait),
+                drops: Arc::clone(&lease_drops),
+            })),
+        ));
+        executor.insert_live(task_id, live).unwrap();
+
+        let requesting = {
+            let executor = Arc::clone(&executor);
+            std::thread::spawn(move || executor.request_restart())
+        };
+        lease_entered_wait
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        let restart_visible_before_release = executor.restart_requested();
+        let admission_during_release = executor.ensure_healthy();
+        let drops_before_release = lease_drops.load(Ordering::SeqCst);
+        lease_release.send(()).unwrap();
+        requesting.join().unwrap();
+
+        assert!(matches!(
+            admission_during_release,
+            Err(super::InvocationExecutorError::RestartRequested)
+        ));
+        assert!(
+            restart_visible_before_release,
+            "daemon fail-stop must not wait for in-process resource cleanup"
+        );
+        assert_eq!(drops_before_release, 0);
+        assert!(executor.restart_requested());
+        assert!(!executor.has_active_invocations());
         assert_eq!(lease_drops.load(Ordering::SeqCst), 1);
     }
 

@@ -63,6 +63,7 @@ type CanonicalToolCallHandler = dyn Fn(
 
 type CanonicalTaskHandler = dyn Fn(
         crate::domain::invocation::TaskId,
+        FrontendInvocationDeadline,
     ) -> Result<
         crate::infrastructure::daemon::protocol::DaemonTaskSnapshot,
         crate::infrastructure::daemon::client::DaemonTaskExchangeError,
@@ -252,7 +253,7 @@ impl UnicaServer {
 
     #[cfg(test)]
     fn with_canonical_v13(handler: Arc<CanonicalToolCallHandler>) -> Self {
-        let unavailable: Arc<CanonicalTaskHandler> = Arc::new(|_| {
+        let unavailable: Arc<CanonicalTaskHandler> = Arc::new(|_, _| {
             Err(crate::infrastructure::daemon::client::DaemonTaskExchangeError::Transport)
         });
         Self::with_canonical_v13_tasks(handler, Arc::clone(&unavailable), unavailable)
@@ -265,7 +266,8 @@ impl UnicaServer {
         cancel: Arc<CanonicalTaskHandler>,
     ) -> Self {
         let wait_get = Arc::clone(&get);
-        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, _, _| wait_get(task_id));
+        let wait: Arc<CanonicalTaskWaitHandler> =
+            Arc::new(move |task_id, _, deadline| wait_get(task_id, deadline));
         Self::with_canonical_v13_task_handlers(call, get, wait, cancel)
     }
 
@@ -381,12 +383,12 @@ fn execute_compatibility_task_tool(
         Err(error) => return crate::application::v13::task_tools::task_tool_error_result(error),
     };
     let exchange = match request.action {
-        TaskToolAction::Get => (router.get)(request.task_id),
+        TaskToolAction::Get => (router.get)(request.task_id, deadline),
         TaskToolAction::Result { wait_ms } => {
             let bounded = bounded_compatibility_wait_ms(wait_ms, deadline, Instant::now());
             (router.wait)(request.task_id, bounded, deadline)
         }
-        TaskToolAction::Cancel => (router.cancel)(request.task_id),
+        TaskToolAction::Cancel => (router.cancel)(request.task_id, deadline),
     };
     let snapshot = match exchange {
         Ok(snapshot) if snapshot.task_id == request.task_id => snapshot,
@@ -510,13 +512,10 @@ fn canonical_daemon_router(
                 .map_err(|message| (TOOL_EXECUTION_ERROR, message))
         });
     let get_anchor = Arc::clone(&anchor);
-    let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
-        let mut owner = get_anchor
-            .connect_peer(Duration::from_millis(125))
-            .map_err(|_| {
-                crate::infrastructure::daemon::client::DaemonTaskExchangeError::Transport
-            })?;
-        owner.get_task(task_id)
+    let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, deadline| {
+        let task_deadline = get_anchor.begin_task_deadline_at(deadline.transport_cutoff())?;
+        let mut owner = get_anchor.connect_peer_before(&task_deadline)?;
+        owner.get_task_before(task_id, &task_deadline)
     });
     let wait_anchor = Arc::clone(&anchor);
     let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, wait_ms, deadline| {
@@ -526,13 +525,10 @@ fn canonical_daemon_router(
         let mut owner = wait_anchor.connect_peer_before(&task_deadline)?;
         owner.wait_task_before(task_id, wait_ms, &task_deadline)
     });
-    let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
-        let mut owner = anchor
-            .connect_peer(Duration::from_millis(125))
-            .map_err(|_| {
-                crate::infrastructure::daemon::client::DaemonTaskExchangeError::Transport
-            })?;
-        owner.cancel_task(task_id)
+    let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, deadline| {
+        let task_deadline = anchor.begin_task_deadline_at(deadline.transport_cutoff())?;
+        let mut owner = anchor.connect_peer_before(&task_deadline)?;
+        owner.cancel_task_before(task_id, &task_deadline)
     });
     CanonicalV13Router {
         call,
@@ -926,10 +922,12 @@ impl ServerHandler for UnicaServer {
         request: GetTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, ErrorData> {
+        let received_at = Instant::now();
         ensure_native_task_protocol(&context)?;
         let task_id = parse_task_id(&request.task_id)?;
         let handler = canonical_task_router(&self.router)?.get;
-        let snapshot = tokio::task::spawn_blocking(move || handler(task_id))
+        let deadline = FrontendInvocationDeadline::new(received_at, None);
+        let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
             .await
             .map_err(|_| task_internal_error("task_worker_failed"))?
             .map_err(project_task_exchange_error)?;
@@ -944,13 +942,15 @@ impl ServerHandler for UnicaServer {
         request: UpdateTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        let received_at = Instant::now();
         ensure_native_task_protocol(&context)?;
         let task_id = parse_task_id(&request.task_id)?;
         let handler = canonical_task_router(&self.router)?.get;
         // v0.13 never enters input_required. Still prove the task is a current
         // daemon-owned identity before returning the stable unsupported-input
         // classification; unknown and expired identities retain their codes.
-        let snapshot = tokio::task::spawn_blocking(move || handler(task_id))
+        let deadline = FrontendInvocationDeadline::new(received_at, None);
+        let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
             .await
             .map_err(|_| task_internal_error("task_worker_failed"))?
             .map_err(project_task_exchange_error)?;
@@ -966,10 +966,12 @@ impl ServerHandler for UnicaServer {
         request: CancelTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        let received_at = Instant::now();
         ensure_native_task_protocol(&context)?;
         let task_id = parse_task_id(&request.task_id)?;
         let handler = canonical_task_router(&self.router)?.cancel;
-        let snapshot = tokio::task::spawn_blocking(move || handler(task_id))
+        let deadline = FrontendInvocationDeadline::new(received_at, None);
+        let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
             .await
             .map_err(|_| task_internal_error("task_worker_failed"))?
             .map_err(project_task_exchange_error)?;
@@ -2107,7 +2109,7 @@ mod tests {
                 None,
             )))
         });
-        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_| {
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
             Ok(canonical_snapshot(
                 task_id,
                 crate::domain::invocation::InvocationStatus::Working,
@@ -2263,13 +2265,13 @@ mod tests {
         });
         let gets = Arc::new(AtomicUsize::new(0));
         let get_observed = Arc::clone(&gets);
-        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_| {
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
             get_observed.fetch_add(1, Ordering::SeqCst);
             Ok(canonical_snapshot(task_id, InvocationStatus::Working, None))
         });
         let cancellations = Arc::new(AtomicUsize::new(0));
         let cancel_observed = Arc::clone(&cancellations);
-        let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_| {
+        let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
             cancel_observed.fetch_add(1, Ordering::SeqCst);
             Ok(canonical_snapshot(
                 task_id,
@@ -2417,7 +2419,7 @@ mod tests {
             }
         });
         let get: Arc<CanonicalTaskHandler> =
-            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
         let waits = Arc::new(Mutex::new(Vec::<u64>::new()));
         let waits_observed = Arc::clone(&waits);
         let wait_subject = subject.clone();
@@ -2524,7 +2526,7 @@ mod tests {
         });
         let get_calls = Arc::new(AtomicUsize::new(0));
         let get_observed = Arc::clone(&get_calls);
-        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, _| {
             get_observed.fetch_add(1, Ordering::SeqCst);
             if task_id == unknown {
                 Err(DaemonTaskExchangeError::Protocol(
@@ -2799,7 +2801,7 @@ mod tests {
         let after_restart = second.receive().await;
         assert_eq!(
             after_restart["result"]["structuredContent"]["data"]["task"], before_task,
-            "task identity, status, timestamps, and TTL must survive daemon restart"
+            "task identity, status, timestamps, and TTL must survive daemon restart: {after_restart}"
         );
         second
             .send(json!({
@@ -3027,6 +3029,134 @@ mod tests {
             0,
             "an expired absolute cutoff must stop before operation admission"
         );
+    }
+
+    fn compatibility_immediate_task_deadline_case(
+        tool_name: &'static str,
+        host_budget: Duration,
+        handshake_elapsed: Duration,
+        response_elapsed: Duration,
+    ) -> crate::domain::invocation::DomainResult {
+        use crate::infrastructure::daemon::client::{
+            DaemonClient, DaemonClientConfig, ExistingDaemon, ManualDaemonClientClock,
+        };
+        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
+        use crate::infrastructure::daemon::protocol::{
+            read_bounded_json_line, ClientRequest, DaemonTaskSnapshot, EndpointRecord,
+            ServerResponse,
+        };
+        use std::io::{BufReader as StdBufReader, Write};
+        use std::net::{Ipv4Addr, TcpListener};
+        use std::thread;
+
+        fn write_line(stream: &mut std::net::TcpStream, response: &ServerResponse) {
+            serde_json::to_writer(&mut *stream, response).unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        }
+
+        let state = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(state.path()).unwrap();
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let task_id = crate::domain::invocation::TaskId::new();
+        let received = Instant::now();
+        let clock = ManualDaemonClientClock::new_at(received);
+        let peer_clock = clock.clone();
+        let peer_record = record.clone();
+        let fake_peer = thread::spawn(move || {
+            let (mut anchor, _) = listener.accept().unwrap();
+            let _hello = read_bounded_json_line(&mut StdBufReader::new(&anchor)).unwrap();
+            write_line(&mut anchor, &ServerResponse::ready(&peer_record));
+
+            let (mut operation, _) = listener.accept().unwrap();
+            let mut operation_reader = StdBufReader::new(operation.try_clone().unwrap());
+            let _hello = read_bounded_json_line(&mut operation_reader).unwrap();
+            peer_clock.advance(handshake_elapsed);
+            write_line(&mut operation, &ServerResponse::ready(&peer_record));
+
+            let Ok(bytes) = read_bounded_json_line(&mut operation_reader) else {
+                return;
+            };
+            let request = crate::infrastructure::daemon::protocol::parse_request(&bytes).unwrap();
+            let expected = match tool_name {
+                "unica.task.get" => ClientRequest::get_task(task_id),
+                "unica.task.cancel" => ClientRequest::cancel_task(task_id),
+                other => panic!("unexpected immediate compatibility tool {other}"),
+            };
+            assert_eq!(request, expected);
+            peer_clock.advance(response_elapsed);
+            write_line(
+                &mut operation,
+                &ServerResponse::task(DaemonTaskSnapshot::working_for_test(task_id)),
+            );
+        });
+        let client = DaemonClient::new(
+            DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
+        );
+        let owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
+        };
+        let router = SurfaceToolRouter::CanonicalV13(canonical_daemon_router(
+            owner,
+            "/workspace".to_string(),
+        ));
+        let arguments = json!({"taskId": task_id.to_string()})
+            .as_object()
+            .unwrap()
+            .clone();
+        let outcome = execute_surface_tool(
+            &router,
+            tool_name,
+            &arguments,
+            CancellationToken::new(),
+            Arc::new(NoopProgressSink),
+            FrontendInvocationDeadline::new(received, Some(host_budget)),
+            false,
+        )
+        .unwrap();
+        let SurfaceToolOutcome::Canonical(result) = outcome else {
+            panic!("compatibility task tools must return canonical results");
+        };
+        fake_peer.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn compatibility_get_and_cancel_do_not_replace_open_frontend_cutoff_with_125ms() {
+        for tool_name in ["unica.task.get", "unica.task.cancel"] {
+            let result = compatibility_immediate_task_deadline_case(
+                tool_name,
+                Duration::from_millis(500),
+                Duration::from_millis(130),
+                Duration::ZERO,
+            );
+            assert!(
+                result.ok,
+                "{tool_name} replaced the open frontend cutoff: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compatibility_get_and_cancel_share_one_absolute_cutoff_across_connect_and_exchange() {
+        for tool_name in ["unica.task.get", "unica.task.cancel"] {
+            let result = compatibility_immediate_task_deadline_case(
+                tool_name,
+                Duration::from_millis(200),
+                Duration::from_millis(110),
+                Duration::from_millis(110),
+            );
+            assert_eq!(
+                result.data.as_ref().and_then(|data| data["code"].as_str()),
+                Some("task_transport_failed"),
+                "{tool_name} reopened its transport budget after connect: {result:?}"
+            );
+        }
     }
 
     fn compatibility_wait_post_parse_cutoff_case(valid_near_limit: bool) {
@@ -3290,7 +3420,7 @@ mod tests {
                     });
                     let get_snapshot = hostile.clone();
                     let get: Arc<CanonicalTaskHandler> =
-                        Arc::new(move |_| Ok(get_snapshot.clone()));
+                        Arc::new(move |_, _| Ok(get_snapshot.clone()));
                     let wait_snapshot = hostile.clone();
                     let wait: Arc<CanonicalTaskWaitHandler> =
                         Arc::new(move |_, _, _| Ok(wait_snapshot.clone()));
@@ -3347,7 +3477,7 @@ mod tests {
             "/private/failure-secret bearer-failure",
         ));
         let get_failed = failed.clone();
-        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_| Ok(get_failed.clone()));
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| Ok(get_failed.clone()));
         let wait_failed = failed.clone();
         let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, _, _| Ok(wait_failed.clone()));
         let cancel = Arc::clone(&get);
@@ -3430,7 +3560,7 @@ mod tests {
             )))
         });
         let get: Arc<CanonicalTaskHandler> =
-            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
         let cancel = Arc::clone(&get);
 
         let server = UnicaServer::with_canonical_v13_tasks(call, get, cancel);
@@ -3468,7 +3598,7 @@ mod tests {
             )))
         });
         let get: Arc<CanonicalTaskHandler> =
-            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
         let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
         let (mut client, _) = spawn_unica_server(server);
         client
@@ -3499,7 +3629,7 @@ mod tests {
             )))
         });
         let get: Arc<CanonicalTaskHandler> =
-            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
         let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
         let (mut client, _) = spawn_unica_server(server);
         client
@@ -3554,7 +3684,7 @@ mod tests {
             )))
         });
         let get: Arc<CanonicalTaskHandler> =
-            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
         let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
         let (mut client, _) = spawn_unica_server(server);
         client
@@ -3624,7 +3754,7 @@ mod tests {
             )))
         });
         let get: Arc<CanonicalTaskHandler> =
-            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
         let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
         let (mut client, _) = spawn_unica_server(server);
         client
@@ -3668,7 +3798,7 @@ mod tests {
             }
         });
         let get_expected = expected.clone();
-        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_| {
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
             Ok(canonical_snapshot(
                 task_id,
                 InvocationStatus::Completed,
@@ -3719,7 +3849,7 @@ mod tests {
         let call_snapshot = reversed.clone();
         let call: Arc<CanonicalToolCallHandler> =
             Arc::new(move |_, _, _, _| Ok(InvocationResponse::Task(call_snapshot.clone())));
-        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_| Ok(reversed.clone()));
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| Ok(reversed.clone()));
         let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
         let (mut client, _) = spawn_unica_server(server);
 
@@ -3789,7 +3919,7 @@ mod tests {
         });
         let get_near = near.clone();
         let get_over = over.clone();
-        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, _| {
             Ok(if task_id == near_task {
                 canonical_snapshot(
                     near_task,
@@ -3895,7 +4025,7 @@ mod tests {
         let mismatched = TaskId::new();
         let lookup_count = Arc::new(AtomicUsize::new(0));
         let lookup_observed = Arc::clone(&lookup_count);
-        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, _| {
             lookup_observed.fetch_add(1, Ordering::SeqCst);
             if task_id == unknown {
                 Err(DaemonTaskExchangeError::Protocol(
@@ -3911,7 +4041,7 @@ mod tests {
         });
         let cancellations = Arc::new(AtomicUsize::new(0));
         let cancellation_observed = Arc::clone(&cancellations);
-        let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_| {
+        let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
             cancellation_observed.fetch_add(1, Ordering::SeqCst);
             Ok(canonical_snapshot(known, InvocationStatus::Cancelled, None))
         });
