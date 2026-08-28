@@ -1052,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn server_captures_one_invocation_deadline_before_delayed_prepare_and_response_write() {
+    fn daemon_invocation_receipt_deadline_is_single_and_never_replenished() {
         for (delay, response_is_deliverable) in [
             (Duration::from_millis(110), true),
             (Duration::from_millis(226), false),
@@ -1132,25 +1132,6 @@ mod tests {
     }
 
     #[test]
-    fn daemon_result_size_and_session_bounds_are_enforced() {
-        response_limit_round_trips_results_above_request_cap_and_near_canonical_cap();
-        result_over_canonical_cap_fails_closed_for_direct_and_task();
-        hostile_oversized_response_closes_owner_session_before_a_second_request();
-        malformed_and_truncated_responses_close_owner_sessions_before_reuse();
-        backpressured_response_uses_the_original_session_margin_without_reset();
-        server_captures_one_invocation_deadline_before_delayed_prepare_and_response_write();
-    }
-
-    #[test]
-    fn daemon_invocation_receipt_deadline_is_single_and_never_replenished() {
-        crate::application::invocation::tests::canonical_handoff_boundary_is_direct_before_7000_and_durable_at_or_before_deadline();
-        crate::application::invocation::tests::every_known_long_reason_materializes_before_execution_and_invalid_preparation_is_direct();
-        super::server::actor_capacity_tests::daemon_receipt_deadline_is_not_replenished_after_delayed_prepare();
-        server_captures_one_invocation_deadline_before_delayed_prepare_and_response_write();
-        backpressured_response_uses_the_original_session_margin_without_reset();
-    }
-
-    #[test]
     fn invocation_protocol_round_trips_all_four_strict_requests_and_closed_responses() {
         let submit = ClientRequest::submit_invocation(
             InvocationRequest::new(
@@ -1227,9 +1208,6 @@ mod tests {
         ] {
             assert!(super::protocol::parse_request(invalid).is_err());
         }
-        core_identity_is_closed_compile_time_abi_protocol_digest();
-        daemon_result_size_and_session_bounds_are_enforced();
-        daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it();
     }
 
     #[test]
@@ -2128,7 +2106,6 @@ mod tests {
         owner.cancel_task_before(task_id, &task_deadline).unwrap();
         drop(owner);
         server.join().unwrap().unwrap();
-        daemon_result_size_and_session_bounds_are_enforced();
     }
 
     #[test]
