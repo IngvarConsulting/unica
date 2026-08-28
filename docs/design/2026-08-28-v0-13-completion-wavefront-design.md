@@ -396,15 +396,19 @@ API не создаются. Invocation без доказанного resume own
 
 ## Обнаруженные противоречия
 
-### Daemon protocol v2 против v3
+### Текущий daemon protocol v3 и целевой v5
 
-`DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE` называет protocol v2, тогда как
+`DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE`,
 `DEC.2026-08-24.NATIVE-TASK-PROJECTION-SLICE` и active
-`CTR.WIRE.DAEMON-INVOCATION-PROTOCOL` требуют v3 и
-`unica-daemon-jsonl-3`.
+`CTR.WIRE.DAEMON-INVOCATION-PROTOCOL` согласованы на текущем protocol v3
+и identity `unica-daemon-jsonl-3`. Это действующее состояние hidden
+foundation, а не противоречие реестра.
 
-W0 обязан оставить в реестре одну текущую wire identity. План не разрешает
-сохранить обе формулировки под видом compatibility.
+Целевой ReceiptLedger меняет wire lifecycle и требует protocol v5.
+Поэтому W0c создаёт newly dated active successor/evidence, атомарно
+заменяет владельцев v3 и выведенные records, и оставляет в реестре
+ровно одну текущую wire identity. До этого v3 не выдаётся за
+ReceiptLedger и S1 не достигнут.
 
 ### 71 имя против опубликованных 74
 
@@ -497,7 +501,7 @@ private per-user, protocol/core-ABI daemon
 | Состояние | Наблюдаемая граница |
 | --- | --- |
 | S0 | Публичный V12, hidden неполный V13, PR #631 blocked |
-| S1 | Зелёный и слитый hidden foundation: durable ReceiptLedger резервирует exact IDs/request identity до предметной работы; Unbound cutoff создаёт `TaskPromisedUnbound`, pre-actor-bind terminal сохраняется как `TaskTerminalReceiptBacked`, а promised и actor-bound/begun paths используют разные durable intents, receipt-owned Capacity fallback и exact TaskStore reconciliation; inspect-only TaskStore startup выбирает terminal reason только по receipt evidence до listener; terminal Direct/Task восстанавливаются без replay, bare Reserved recovery не изобретает Task, а crash после `Reserved::Begun` до terminal commit даёт `outcome_uncertain`/`interrupted`; protocol-v5 recovery/ACK и 61-test cancel/restart/capacity RED matrix зелены, публичный V12 неизменён |
+| S1 | Зелёный и слитый hidden foundation: durable ReceiptLedger резервирует exact IDs/request identity до предметной работы; Unbound cutoff создаёт `TaskPromisedUnbound`, pre-actor-bind terminal сохраняется как `TaskTerminalReceiptBacked`, а promised и actor-bound/begun paths используют разные durable intents, receipt-owned Capacity fallback и exact TaskStore reconciliation; inspect-only TaskStore startup выбирает terminal reason только по receipt evidence до listener; terminal Direct/Task восстанавливаются без replay, bare Reserved recovery не изобретает Task, а crash после `Reserved::Begun` до terminal commit даёт `outcome_uncertain`/`interrupted`; все 61 named ReceiptLedger/protocol/identity/reserve/handoff/ACK/result-bounds/retention/cancel/restart/capacity cases зелены на macOS, Linux и Windows; newly dated active successor/evidence и derived active `INV.*`/`CTR.*` ссылаются на именованные проверки, а state machine, crash windows и capacity math прошли independent semantic review; публичный V12 неизменён |
 | S2 | Все 8 handlers и принятый registry `apply` работают через daemon, schema-derived semantic parity и content-addressed provenance scope lock закрыты; состояние отзывается при drift |
 | S3 | RC публикует ровно 8/11, legacy surface отсутствует |
 | S4 | Stable v0.13 прошёл fresh/upgrade/rollback/offline и host matrix |
