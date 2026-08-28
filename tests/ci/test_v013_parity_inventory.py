@@ -133,6 +133,7 @@ TOP_LEVEL_KEYS = {
     "complete",
     "baselineDispositions",
     "cases",
+    "newCapabilities",
 }
 NATIVE_ENTRIES = {"view", "apply", "find", "search", "check", "diff", "run", "docs"}
 OPERATION_ENTRIES = {"apply", "run"}
@@ -376,8 +377,10 @@ def validate_inventory(
 
     complete_values: list[bool] = []
     seen_legacy_tools: set[str] = set()
+    seen_new_capability_ids: set[str] = set()
     seen_case_ids: set[str] = set()
     case_entries: set[str] = set()
+    run_case_operations: set[str] = set()
     case_references: dict[str, tuple[tuple[str, str | None], str]] = {}
     case_identities: dict[str, tuple[str, str | None]] = {}
 
@@ -386,8 +389,8 @@ def validate_inventory(
         schema_version = document["schemaVersion"]
         if type(schema_version) is not int:
             raise InventoryError(f"{shard} schemaVersion must be an integer")
-        if schema_version != 1:
-            raise InventoryError(f"{shard} schemaVersion must be 1")
+        if schema_version != 2:
+            raise InventoryError(f"{shard} schemaVersion must be 2")
         complete = document["complete"]
         if type(complete) is not bool:
             raise InventoryError(f"{shard} complete must be a boolean")
@@ -409,51 +412,113 @@ def validate_inventory(
                 raise InventoryError(f"duplicate legacyTool across parity shards: {legacy_tool}")
             seen_legacy_tools.add(legacy_tool)
 
-            disposition = _require_nonempty_string(
-                raw_row.get("disposition"), f"{label} disposition"
-            )
-            if disposition not in DISPOSITIONS:
-                raise InventoryError(f"{label} has unsupported disposition")
-            if disposition in {"mapped", "absorbed"}:
-                _require_exact_keys(
-                    raw_row,
-                    {"legacyTool", "disposition", "successor", "caseIds"},
-                    label,
+            row = _require_exact_keys(raw_row, {"legacyTool", "variants"}, label)
+            variants = row["variants"]
+            if type(variants) is not list or not variants:
+                raise InventoryError(f"{label} variants must be a non-empty array")
+            seen_variants: set[str] = set()
+            for variant_index, raw_variant in enumerate(variants):
+                variant_label = f"{label} variants[{variant_index}]"
+                if type(raw_variant) is not dict:
+                    raise InventoryError(f"{variant_label} must be an object")
+                legacy_variant = _require_nonempty_string(
+                    raw_variant.get("legacyVariant"),
+                    f"{variant_label} legacyVariant",
                 )
-                successor_identity = _validate_successor(raw_row["successor"], label)
-                for case_id in _validate_case_ids(raw_row["caseIds"], label):
-                    previous = case_references.get(case_id)
-                    if previous is not None:
-                        raise InventoryError(
-                            f"caseId {case_id} is referenced by multiple dispositions"
-                        )
-                    case_references[case_id] = (successor_identity, label)
-            elif disposition == "transport-replaced":
-                _require_exact_keys(
-                    raw_row,
-                    {"legacyTool", "disposition", "projections"},
-                    label,
+                if legacy_variant in seen_variants:
+                    raise InventoryError(f"{label} has duplicate legacyVariant")
+                seen_variants.add(legacy_variant)
+                disposition = _require_nonempty_string(
+                    raw_variant.get("disposition"), f"{variant_label} disposition"
                 )
-                projections = raw_row["projections"]
-                if type(projections) is not list or not projections:
-                    raise InventoryError(f"{label} projections must be a non-empty array")
-                projection_ids: set[tuple[str, str]] = set()
-                for projection_index, projection in enumerate(projections):
-                    projection_id = _projection_identity(
-                        projection, f"{label} projections[{projection_index}]"
+                if disposition not in DISPOSITIONS:
+                    raise InventoryError(f"{variant_label} has unsupported disposition")
+                if disposition in {"mapped", "absorbed"}:
+                    variant = _require_exact_keys(
+                        raw_variant,
+                        {
+                            "legacyVariant",
+                            "disposition",
+                            "successor",
+                            "caseIds",
+                        },
+                        variant_label,
                     )
-                    if projection_id in projection_ids:
-                        raise InventoryError(f"{label} has duplicate projection")
-                    projection_ids.add(projection_id)
-            else:
-                _require_exact_keys(
-                    raw_row,
-                    {"legacyTool", "disposition", "rejectionEvidence"},
-                    label,
+                    successor_identity = _validate_successor(
+                        variant["successor"], variant_label
+                    )
+                    for case_id in _validate_case_ids(
+                        variant["caseIds"], variant_label
+                    ):
+                        previous = case_references.get(case_id)
+                        if previous is not None:
+                            raise InventoryError(
+                                f"caseId {case_id} is referenced by multiple capabilities"
+                            )
+                        case_references[case_id] = (
+                            successor_identity,
+                            variant_label,
+                        )
+                elif disposition == "transport-replaced":
+                    variant = _require_exact_keys(
+                        raw_variant,
+                        {"legacyVariant", "disposition", "projections"},
+                        variant_label,
+                    )
+                    projections = variant["projections"]
+                    if type(projections) is not list or not projections:
+                        raise InventoryError(
+                            f"{variant_label} projections must be a non-empty array"
+                        )
+                    projection_ids: set[tuple[str, str]] = set()
+                    for projection_index, projection in enumerate(projections):
+                        projection_id = _projection_identity(
+                            projection,
+                            f"{variant_label} projections[{projection_index}]",
+                        )
+                        if projection_id in projection_ids:
+                            raise InventoryError(
+                                f"{variant_label} has duplicate projection"
+                            )
+                        projection_ids.add(projection_id)
+                else:
+                    variant = _require_exact_keys(
+                        raw_variant,
+                        {"legacyVariant", "disposition", "rejectionEvidence"},
+                        variant_label,
+                    )
+                    _require_nonempty_string(
+                        variant["rejectionEvidence"],
+                        f"{variant_label} rejectionEvidence",
+                    )
+
+        new_capabilities = document["newCapabilities"]
+        if type(new_capabilities) is not list:
+            raise InventoryError(f"{shard} newCapabilities must be an array")
+        for index, raw_capability in enumerate(new_capabilities):
+            label = f"{shard} newCapabilities[{index}]"
+            capability = _require_exact_keys(
+                raw_capability,
+                {"capabilityId", "successor", "caseIds", "rationale"},
+                label,
+            )
+            capability_id = _require_nonempty_string(
+                capability["capabilityId"], f"{label} capabilityId"
+            )
+            if capability_id in seen_new_capability_ids:
+                raise InventoryError(
+                    f"duplicate capabilityId across parity shards: {capability_id}"
                 )
-                _require_nonempty_string(
-                    raw_row["rejectionEvidence"], f"{label} rejectionEvidence"
-                )
+            seen_new_capability_ids.add(capability_id)
+            successor_identity = _validate_successor(capability["successor"], label)
+            _require_nonempty_string(capability["rationale"], f"{label} rationale")
+            for case_id in _validate_case_ids(capability["caseIds"], label):
+                previous = case_references.get(case_id)
+                if previous is not None:
+                    raise InventoryError(
+                        f"caseId {case_id} is referenced by multiple capabilities"
+                    )
+                case_references[case_id] = (successor_identity, label)
 
         cases = document["cases"]
         if type(cases) is not list:
@@ -479,6 +544,8 @@ def validate_inventory(
             seen_case_ids.add(case_id)
             operation = _validate_operation(entry, case.get("operation"), label)
             case_entries.add(entry)
+            if entry == "run":
+                run_case_operations.add(operation)
             case_identities[case_id] = (entry, operation)
             _require_nonempty_string(case["mode"], f"{label} mode")
             fixture = _require_nonempty_string(case["fixture"], f"{label} fixture")
@@ -514,6 +581,10 @@ def validate_inventory(
             raise InventoryError("complete inventory must account for all 74 baseline names")
         if case_entries != NATIVE_ENTRIES:
             raise InventoryError("complete inventory must cover all eight native entries")
+        if run_case_operations != RUN_OPERATIONS:
+            raise InventoryError(
+                "complete inventory must cover all thirteen run operations"
+            )
         unowned_cases = set(case_identities) - set(case_references)
         if unowned_cases:
             raise InventoryError(
@@ -529,10 +600,11 @@ class V013ParityInventoryTest(unittest.TestCase):
         self.root = Path(self.temporary.name).resolve()
         self.documents = {
             shard: {
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "complete": False,
                 "baselineDispositions": [],
                 "cases": [],
+                "newCapabilities": [],
             }
             for shard in EXPECTED_SHARDS
         }
@@ -559,10 +631,19 @@ class V013ParityInventoryTest(unittest.TestCase):
     def _one_mapped_row(self) -> dict[str, object]:
         return {
             "legacyTool": "unica.meta.add",
-            "disposition": "mapped",
-            "successor": {"entry": "apply", "operation": "object.create"},
-            "caseIds": ["meta-object-create-basic"],
+            "variants": [
+                {
+                    "legacyVariant": "default",
+                    "disposition": "mapped",
+                    "successor": {"entry": "apply", "operation": "object.create"},
+                    "caseIds": ["meta-object-create-basic"],
+                }
+            ],
         }
+
+    @staticmethod
+    def _first_variant(row: dict[str, object]) -> dict[str, object]:
+        return row["variants"][0]
 
     def _one_case(self) -> dict[str, object]:
         return {
@@ -587,38 +668,78 @@ class V013ParityInventoryTest(unittest.TestCase):
 
         rows: list[dict[str, object]] = []
         cases: list[dict[str, object]] = []
-        entries = (
-            "view",
-            "apply",
-            "find",
-            "search",
-            "check",
-            "diff",
-            "run",
-            "docs",
+        mappable_index = 0
+        legacy_run_variants = (
+            ("operation=config-init", "source.create"),
+            ("operation=config-init;sourceSet=external", "source.attach"),
+            ("operation=init", "infobase.create"),
+            ("operation=build", "infobase.build"),
+            ("operation=dump", "source.dump"),
+            ("operation=convert", "source.convert"),
+            ("operation=make", "artifact.make"),
+            ("operation=load", "artifact.load"),
+            ("operation=syntax", "syntax.check"),
+            ("operation=test", "test.run"),
+            ("operation=launch", "client.run"),
+            ("operation=extensions", "extension.sync"),
         )
+        non_run_entries = ("view", "apply", "find", "search", "check", "diff", "docs")
         for index, legacy_tool in enumerate(IMMUTABLE_BASELINE_NAMES):
             if legacy_tool == "unica.runtime.job.status":
                 rows.append(
                     {
                         "legacyTool": legacy_tool,
-                        "disposition": "transport-replaced",
-                        "projections": [
-                            {"kind": "native-task", "method": "tasks/get"},
+                        "variants": [
                             {
-                                "kind": "compatibility-tool",
-                                "tool": "unica.task.get",
-                            },
+                                "legacyVariant": "default",
+                                "disposition": "transport-replaced",
+                                "projections": [
+                                    {"kind": "native-task", "method": "tasks/get"},
+                                    {
+                                        "kind": "compatibility-tool",
+                                        "tool": "unica.task.get",
+                                    },
+                                ],
+                            }
                         ],
                     }
                 )
+            elif legacy_tool == "unica.runtime.execute":
+                variants = []
+                for variant_index, (legacy_variant, operation) in enumerate(
+                    legacy_run_variants
+                ):
+                    case_id = f"runtime-variant-{variant_index:02d}"
+                    variants.append(
+                        {
+                            "legacyVariant": legacy_variant,
+                            "disposition": "mapped",
+                            "successor": {"entry": "run", "operation": operation},
+                            "caseIds": [case_id],
+                        }
+                    )
+                    cases.append(
+                        {
+                            "caseId": case_id,
+                            "entry": "run",
+                            "operation": operation,
+                            "mode": "direct",
+                            "fixture": self.fixture,
+                            "expected": {"outcome": "ok"},
+                        }
+                    )
+                variants.append(
+                    {
+                        "legacyVariant": "operation=tools-download",
+                        "disposition": "removed",
+                        "rejectionEvidence": "package rejects removed engine delivery operation",
+                    }
+                )
+                rows.append({"legacyTool": legacy_tool, "variants": variants})
             else:
-                entry = entries[index % len(entries)]
-                operation = None
-                if entry == "apply":
-                    operation = "object.create"
-                elif entry == "run":
-                    operation = "source.create"
+                entry = non_run_entries[mappable_index % len(non_run_entries)]
+                operation = "object.create" if entry == "apply" else None
+                mappable_index += 1
                 successor = {"entry": entry}
                 if operation is not None:
                     successor["operation"] = operation
@@ -626,11 +747,18 @@ class V013ParityInventoryTest(unittest.TestCase):
                 rows.append(
                     {
                         "legacyTool": legacy_tool,
-                        "disposition": (
-                            "mapped" if legacy_tool == "unica.meta.add" else "absorbed"
-                        ),
-                        "successor": successor,
-                        "caseIds": [case_id],
+                        "variants": [
+                            {
+                                "legacyVariant": "default",
+                                "disposition": (
+                                    "mapped"
+                                    if legacy_tool == "unica.meta.add"
+                                    else "absorbed"
+                                ),
+                                "successor": successor,
+                                "caseIds": [case_id],
+                            }
+                        ],
                     }
                 )
                 case = {
@@ -643,8 +771,27 @@ class V013ParityInventoryTest(unittest.TestCase):
                 if operation is not None:
                     case["operation"] = operation
                 cases.append(case)
+        query_case_id = "new-run-query-execute"
+        cases.append(
+            {
+                "caseId": query_case_id,
+                "entry": "run",
+                "operation": "query.execute",
+                "mode": "direct",
+                "fixture": self.fixture,
+                "expected": {"outcome": "ok"},
+            }
+        )
         documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = rows
         documents[EXPECTED_SHARDS[1]]["cases"] = cases
+        documents[EXPECTED_SHARDS[1]]["newCapabilities"] = [
+            {
+                "capabilityId": "run.query.execute",
+                "successor": {"entry": "run", "operation": "query.execute"},
+                "caseIds": [query_case_id],
+                "rationale": "No v0.12.3 public capability executes a typed query.",
+            }
+        ]
         return documents
 
     def test_repository_inventory_is_valid_and_uses_exact_seven_shards(self) -> None:
@@ -690,6 +837,113 @@ class V013ParityInventoryTest(unittest.TestCase):
         self._set_first_case(self._one_case())
         self._validate()
 
+    def test_one_legacy_tool_can_own_distinct_variants_and_new_capability_is_separate(
+        self,
+    ) -> None:
+        documents = copy.deepcopy(self.documents)
+        for document in documents.values():
+            document["schemaVersion"] = 2
+            document["newCapabilities"] = []
+        documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [
+            {
+                "legacyTool": "unica.runtime.execute",
+                "variants": [
+                    {
+                        "legacyVariant": "operation=config-init",
+                        "disposition": "mapped",
+                        "successor": {"entry": "run", "operation": "source.create"},
+                        "caseIds": ["runtime-config-init"],
+                    },
+                    {
+                        "legacyVariant": "operation=syntax",
+                        "disposition": "mapped",
+                        "successor": {"entry": "run", "operation": "syntax.check"},
+                        "caseIds": ["runtime-syntax"],
+                    },
+                ],
+            }
+        ]
+        documents[EXPECTED_SHARDS[0]]["cases"] = [
+            {
+                "caseId": "runtime-config-init",
+                "entry": "run",
+                "operation": "source.create",
+                "mode": "direct",
+                "fixture": self.fixture,
+                "expected": {"outcome": "ok"},
+            },
+            {
+                "caseId": "runtime-syntax",
+                "entry": "run",
+                "operation": "syntax.check",
+                "mode": "direct",
+                "fixture": self.fixture,
+                "expected": {"outcome": "ok"},
+            },
+            {
+                "caseId": "run-query-new",
+                "entry": "run",
+                "operation": "query.execute",
+                "mode": "direct",
+                "fixture": self.fixture,
+                "expected": {"outcome": "ok"},
+            },
+        ]
+        documents[EXPECTED_SHARDS[0]]["newCapabilities"] = [
+            {
+                "capabilityId": "run.query.execute",
+                "successor": {"entry": "run", "operation": "query.execute"},
+                "caseIds": ["run-query-new"],
+                "rationale": "No v0.12.3 public capability executes a typed query.",
+            }
+        ]
+
+        self._validate(documents)
+
+    def test_new_capabilities_have_exact_unique_identity_and_case_ownership(self) -> None:
+        capability = {
+            "capabilityId": "apply.object.create.new-variant",
+            "successor": {"entry": "apply", "operation": "object.create"},
+            "caseIds": ["meta-object-create-basic"],
+            "rationale": "This synthetic capability has no legacy predecessor.",
+        }
+        documents = copy.deepcopy(self.documents)
+        documents[EXPECTED_SHARDS[0]]["newCapabilities"] = [capability]
+        documents[EXPECTED_SHARDS[0]]["cases"] = [self._one_case()]
+        self._validate(documents)
+
+        invalid_capabilities: tuple[object, ...] = (
+            "apply.object.create.new-variant",
+            {key: value for key, value in capability.items() if key != "rationale"},
+            {**capability, "capabilityId": ""},
+            {**capability, "successor": {"entry": "unknown"}},
+            {**capability, "caseIds": []},
+            {**capability, "rationale": ""},
+            {**capability, "owner": "worker"},
+        )
+        for invalid in invalid_capabilities:
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]]["newCapabilities"] = [invalid]
+            documents[EXPECTED_SHARDS[0]]["cases"] = [self._one_case()]
+            with self.subTest(capability=invalid), self.assertRaises(InventoryError):
+                self._validate(documents)
+
+        documents = copy.deepcopy(self.documents)
+        documents[EXPECTED_SHARDS[0]]["newCapabilities"] = [capability]
+        documents[EXPECTED_SHARDS[1]]["newCapabilities"] = [copy.deepcopy(capability)]
+        documents[EXPECTED_SHARDS[0]]["cases"] = [self._one_case()]
+        with self.assertRaisesRegex(InventoryError, "duplicate capabilityId"):
+            self._validate(documents)
+
+        documents = copy.deepcopy(self.documents)
+        documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [
+            self._one_mapped_row()
+        ]
+        documents[EXPECTED_SHARDS[0]]["newCapabilities"] = [capability]
+        documents[EXPECTED_SHARDS[0]]["cases"] = [self._one_case()]
+        with self.assertRaisesRegex(InventoryError, "multiple capabilities"):
+            self._validate(documents)
+
     def test_loader_rejects_duplicate_json_keys_at_any_nesting_level(self) -> None:
         duplicate_json = self.root / "duplicate.json"
         duplicate_json.write_text(
@@ -707,10 +961,11 @@ class V013ParityInventoryTest(unittest.TestCase):
             (
                 "must have exact keys",
                 {
-                    "schemaVersion": 1,
+                    "schemaVersion": 2,
                     "complete": False,
                     "baselineDispositions": [],
                     "cases": [],
+                    "newCapabilities": [],
                     "owner": "worker",
                 },
             ),
@@ -721,42 +976,57 @@ class V013ParityInventoryTest(unittest.TestCase):
                     "complete": False,
                     "baselineDispositions": [],
                     "cases": [],
+                    "newCapabilities": [],
                 },
             ),
             (
-                "schemaVersion must be 1",
+                "schemaVersion must be 2",
                 {
-                    "schemaVersion": 2,
+                    "schemaVersion": 3,
                     "complete": False,
                     "baselineDispositions": [],
                     "cases": [],
+                    "newCapabilities": [],
                 },
             ),
             (
                 "complete must be a boolean",
                 {
-                    "schemaVersion": 1,
+                    "schemaVersion": 2,
                     "complete": 0,
                     "baselineDispositions": [],
                     "cases": [],
+                    "newCapabilities": [],
                 },
             ),
             (
                 "baselineDispositions must be an array",
                 {
-                    "schemaVersion": 1,
+                    "schemaVersion": 2,
                     "complete": False,
                     "baselineDispositions": {},
                     "cases": [],
+                    "newCapabilities": [],
                 },
             ),
             (
                 "cases must be an array",
                 {
-                    "schemaVersion": 1,
+                    "schemaVersion": 2,
                     "complete": False,
                     "baselineDispositions": [],
                     "cases": {},
+                    "newCapabilities": [],
+                },
+            ),
+            (
+                "newCapabilities must be an array",
+                {
+                    "schemaVersion": 2,
+                    "complete": False,
+                    "baselineDispositions": [],
+                    "cases": [],
+                    "newCapabilities": {},
                 },
             ),
         )
@@ -797,45 +1067,60 @@ class V013ParityInventoryTest(unittest.TestCase):
             self._validate()
 
     def test_disposition_variants_have_exact_key_sets(self) -> None:
-        invalid_rows = (
+        invalid_variants = (
+            {"legacyVariant": "default", "disposition": "unsupported"},
+            {"legacyVariant": "default", "disposition": "mapped"},
             {
-                "legacyTool": "unica.meta.add",
-                "disposition": "unsupported",
-            },
-            {
-                "legacyTool": "unica.meta.add",
-                "disposition": "mapped",
-            },
-            {
-                "legacyTool": "unica.meta.add",
+                "legacyVariant": "default",
                 "disposition": "absorbed",
                 "successor": {"entry": "view"},
                 "projections": [],
             },
             {
-                "legacyTool": "unica.meta.add",
+                "legacyVariant": "default",
                 "disposition": "transport-replaced",
                 "projections": [],
             },
             {
-                "legacyTool": "unica.meta.add",
+                "legacyVariant": "default",
                 "disposition": "transport-replaced",
-                "projections": [
-                    {"kind": "native-task", "method": "tasks/get"}
-                ],
+                "projections": [{"kind": "native-task", "method": "tasks/get"}],
                 "successor": {"entry": "view"},
             },
             {
-                "legacyTool": "unica.meta.add",
+                "legacyVariant": "default",
                 "disposition": "removed",
                 "rejectionEvidence": "",
             },
             {
-                "legacyTool": "unica.meta.add",
+                "legacyVariant": "default",
                 "disposition": "removed",
                 "rejectionEvidence": "tests/rejects_removed",
                 "successor": {"entry": "view"},
             },
+        )
+        invalid_rows: list[object] = [
+            {"legacyTool": "unica.meta.add"},
+            {"legacyTool": "unica.meta.add", "variants": []},
+            {
+                "legacyTool": "unica.meta.add",
+                "variants": [
+                    {
+                        "legacyVariant": "default",
+                        "disposition": "removed",
+                        "rejectionEvidence": "one",
+                    },
+                    {
+                        "legacyVariant": "default",
+                        "disposition": "removed",
+                        "rejectionEvidence": "two",
+                    },
+                ],
+            },
+        ]
+        invalid_rows.extend(
+            {"legacyTool": "unica.meta.add", "variants": [variant]}
+            for variant in invalid_variants
         )
         for row in invalid_rows:
             documents = copy.deepcopy(self.documents)
@@ -853,13 +1138,13 @@ class V013ParityInventoryTest(unittest.TestCase):
 
         documents = copy.deepcopy(self.documents)
         row = self._one_mapped_row()
-        row["disposition"] = []
+        self._first_variant(row)["disposition"] = []
         documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
         invalid_documents.append(documents)
 
         documents = copy.deepcopy(self.documents)
         row = self._one_mapped_row()
-        row["successor"] = {"entry": []}
+        self._first_variant(row)["successor"] = {"entry": []}
         documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
         invalid_documents.append(documents)
 
@@ -867,9 +1152,14 @@ class V013ParityInventoryTest(unittest.TestCase):
         documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [
             {
                 "legacyTool": "unica.runtime.job.status",
-                "disposition": "transport-replaced",
-                "projections": [
-                    {"kind": "native-task", "method": []},
+                "variants": [
+                    {
+                        "legacyVariant": "default",
+                        "disposition": "transport-replaced",
+                        "projections": [
+                            {"kind": "native-task", "method": []},
+                        ],
+                    }
                 ],
             }
         ]
@@ -899,7 +1189,7 @@ class V013ParityInventoryTest(unittest.TestCase):
         )
         for successor in invalid_successors:
             row = self._one_mapped_row()
-            row["successor"] = successor
+            self._first_variant(row)["successor"] = successor
             documents = copy.deepcopy(self.documents)
             documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
             with self.subTest(successor=successor), self.assertRaises(InventoryError):
@@ -907,7 +1197,10 @@ class V013ParityInventoryTest(unittest.TestCase):
 
     def test_run_successor_accepts_only_an_exact_typed_operation(self) -> None:
         row = self._one_mapped_row()
-        row["successor"] = {"entry": "run", "operation": "source.create"}
+        self._first_variant(row)["successor"] = {
+            "entry": "run",
+            "operation": "source.create",
+        }
         case = self._one_case()
         case["entry"] = "run"
         case["operation"] = "source.create"
@@ -934,7 +1227,10 @@ class V013ParityInventoryTest(unittest.TestCase):
         self.assertEqual(RUN_OPERATIONS, set(expected))
         for operation in expected:
             row = self._one_mapped_row()
-            row["successor"] = {"entry": "run", "operation": operation}
+            self._first_variant(row)["successor"] = {
+                "entry": "run",
+                "operation": operation,
+            }
             case = self._one_case()
             case["entry"] = "run"
             case["operation"] = operation
@@ -981,8 +1277,13 @@ class V013ParityInventoryTest(unittest.TestCase):
         for projections in invalid_projection_lists:
             row = {
                 "legacyTool": "unica.runtime.job.status",
-                "disposition": "transport-replaced",
-                "projections": projections,
+                "variants": [
+                    {
+                        "legacyVariant": "default",
+                        "disposition": "transport-replaced",
+                        "projections": projections,
+                    }
+                ],
             }
             documents = copy.deepcopy(self.documents)
             documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
@@ -1002,8 +1303,13 @@ class V013ParityInventoryTest(unittest.TestCase):
         for projection in valid_projections:
             row = {
                 "legacyTool": "unica.runtime.job.status",
-                "disposition": "transport-replaced",
-                "projections": [projection],
+                "variants": [
+                    {
+                        "legacyVariant": "default",
+                        "disposition": "transport-replaced",
+                        "projections": [projection],
+                    }
+                ],
             }
             documents = copy.deepcopy(self.documents)
             documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
@@ -1043,10 +1349,11 @@ class V013ParityInventoryTest(unittest.TestCase):
     def test_mapped_and_absorbed_rows_require_nonempty_unique_case_ids(self) -> None:
         for case_ids in (None, [], [""], ["meta-object-create-basic"] * 2):
             row = self._one_mapped_row()
+            variant = self._first_variant(row)
             if case_ids is None:
-                row.pop("caseIds")
+                variant.pop("caseIds")
             else:
-                row["caseIds"] = case_ids
+                variant["caseIds"] = case_ids
             documents = copy.deepcopy(self.documents)
             documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
             documents[EXPECTED_SHARDS[0]]["cases"] = [self._one_case()]
@@ -1208,19 +1515,43 @@ class V013ParityInventoryTest(unittest.TestCase):
             if case["caseId"] in docs_case_ids:
                 case["entry"] = "view"
         for row in documents[EXPECTED_SHARDS[0]]["baselineDispositions"]:
-            if row.get("caseIds", [None])[0] in docs_case_ids:
-                row["successor"] = {"entry": "view"}
+            for variant in row["variants"]:
+                if variant.get("caseIds", [None])[0] in docs_case_ids:
+                    variant["successor"] = {"entry": "view"}
         with self.assertRaisesRegex(InventoryError, "all eight native entries"):
+            self._validate(documents)
+
+    def test_all_true_requires_executable_coverage_of_all_thirteen_run_operations(
+        self,
+    ) -> None:
+        documents = self._complete_documents()
+        case = next(
+            case
+            for case in documents[EXPECTED_SHARDS[1]]["cases"]
+            if case.get("operation") == "query.execute"
+        )
+        case["operation"] = "source.create"
+        owning_capability = next(
+            capability
+            for capability in documents[EXPECTED_SHARDS[1]]["newCapabilities"]
+            if case["caseId"] in capability["caseIds"]
+        )
+        owning_capability["successor"] = {
+            "entry": "run",
+            "operation": "source.create",
+        }
+        with self.assertRaisesRegex(InventoryError, "all thirteen run operations"):
             self._validate(documents)
 
     def test_all_true_cross_links_exact_successor_operation_to_a_case(self) -> None:
         documents = self._complete_documents()
-        row = next(
-            row
+        variant = next(
+            variant
             for row in documents[EXPECTED_SHARDS[0]]["baselineDispositions"]
-            if row["disposition"] == "absorbed"
+            for variant in row["variants"]
+            if variant["disposition"] == "absorbed"
         )
-        row["successor"] = {"entry": "run", "operation": "query.execute"}
+        variant["successor"] = {"entry": "run", "operation": "query.execute"}
         with self.assertRaisesRegex(
             InventoryError, "successor identity"
         ):
@@ -1236,18 +1567,19 @@ class V013ParityInventoryTest(unittest.TestCase):
 
     def test_all_true_still_rejects_invalid_transport_projection(self) -> None:
         documents = self._complete_documents()
-        transport_row = next(
-            row
+        transport_variant = next(
+            variant
             for row in documents[EXPECTED_SHARDS[0]]["baselineDispositions"]
-            if row["disposition"] == "transport-replaced"
+            for variant in row["variants"]
+            if variant["disposition"] == "transport-replaced"
         )
-        transport_row["projections"] = [
+        transport_variant["projections"] = [
             {"kind": "native-task", "method": "tasks/result"}
         ]
         with self.assertRaisesRegex(InventoryError, "projection"):
             self._validate(documents)
 
-    def test_valid_synthetic_74_name_eight_entry_completion_passes(self) -> None:
+    def test_structurally_complete_synthetic_inventory_passes_shape_validation(self) -> None:
         self._validate(self._complete_documents())
 
     def test_immutable_release_baseline_has_74_unique_names_and_six_jobs(self) -> None:

@@ -11,11 +11,15 @@
 `docs/plans/2026-08-23-v0-12-3-to-v0-13-migration.md` на короткий критический
 путь, три непересекающихся исполнительских потока и отдельные release gates.
 
-Ревью выявило две ранее оставленные открытыми продуктовые границы. Модель
+Ревью выявило две ранее оставленные открытыми продуктовые границы и одну общую
+границу release evidence. Модель
 наблюдения durable Task принадлежит planned
 `DEC.2026-08-28.V0-13-TASK-OBSERVATION-SLICE`. Request-level reconciliation
 apply effects принадлежит отдельному planned
 `DEC.2026-08-28.REQUEST-LEVEL-APPLY-EFFECT-RECONCILIATION` и раскрыта в своей
+проектной записке. Schema-derived semantic oracle, content-addressed
+provenance scope lock и отзыв S2 при drift принадлежат planned
+`DEC.2026-08-28.V0-13-MIGRATION-EVIDENCE-GATE` и раскрыты в отдельной
 проектной записке. Каждая реализация получит действующее основание только через
 active successor/evidence `DEC.*` с именованной проверкой и производным
 правилом. Body принятого product decision после merge не меняется; successor
@@ -262,8 +266,8 @@ private per-user, protocol/core-ABI daemon
 | Состояние | Наблюдаемая граница |
 | --- | --- |
 | S0 | Публичный V12, hidden неполный V13, PR #631 blocked |
-| S1 | Зелёный и слитый hidden foundation, публичный V12 неизменён |
-| S2 | Все 8 handlers и принятый registry `apply` работают через daemon, parity закрыта |
+| S1 | Зелёный и слитый hidden foundation с полным receipt/wait/cancel/restart evidence, публичный V12 неизменён |
+| S2 | Все 8 handlers и принятый registry `apply` работают через daemon, schema-derived semantic parity и content-addressed provenance scope lock закрыты; состояние отзывается при drift |
 | S3 | RC публикует ровно 8/11, legacy surface отсутствует |
 | S4 | Stable v0.13 прошёл fresh/upgrade/rollback/offline и host matrix |
 
@@ -287,9 +291,44 @@ Request-level apply router не считается замороженным, п�
 глобальные индексы, порядок и effects от финального postimage. Публичный V12 не
 меняется.
 
+### W0.5: semantic baseline and provenance scope lock
+
+Сразу после S1 три workers параллельно характеризуют все 74 публичных имени и
+все capability variants внутри их argument schemas в immutable package/tag
+v0.12.3, а также 41 затронутый live-upstream skill entry, пока integrator
+выполняет W2a-core. Raw published `tools/list` сохраняется отдельно от sidecar с
+payload/package digest, а детерминированный extractor порождает catalog
+behavior discriminators. Он не строит слепой cross-product всех value enums:
+каждый selector и reachable combination связывается со schema pointer,
+immutable V12 handler branch и executable probe. Если schema не перечисляет
+behavior-bearing selector, W0.5 блокируется до такой reviewed rule. Единица
+legacy oracle — `(legacyTool, legacyVariant)`: один
+семейный V12 tool (`runtime.execute`, `meta.edit`, `dcs.edit` и другие) может
+иметь несколько разных successors или removal. Единственный integrator-owned
+capability oracle фиксирует для каждого variant допустимый typed
+successor/projection либо исполняемое rejection evidence, exact legacy request,
+immutable fixture, normalized legacy observation и reviewer. Действительно
+новая V13 capability записывается отдельно и не приписывается произвольному
+legacy имени ради coverage. Catalog и oracle обязаны иметь точно одинаковое
+множество legacy identities. V13 shard не может сам объявить свою семантику
+правильной: Python shape validation остаётся необходимой, но S2 получается
+только сравнением V13 execution с этим независимо снятым oracle. Каждая из 13
+`run` operations имеет хотя бы один executable case — legacy-derived или явно
+new.
+
+В той же волне immutable upstream review классифицирует каждый затронутый skill
+как routing/prose, bundled-tool или product behavior. Последние два класса
+сразу добавляются в toolchain либо W1/W3 scope и меняют оценку до fan-out;
+возврат W4 → W1/W3 запрещён. Integrator один владеет capability oracle,
+provenance review и expected index dispositions, workers передают ему disjoint
+evidence. W1 открывается только после join W0.5 и W2a-core. Task 11 превращает
+этот scope в tracked patch/index artifacts; до G6 они остаются staged, поэтому
+live `upstreamDrift=true` допустим; clean
+`affectedEntries: []` доказывается только после atomic application в G6.
+
 ### W2a-core и W2a-seams
 
-Сразу после S1 integrator закрывает W2a-core до первого W1 merge. Router
+Параллельно W0.5 integrator закрывает W2a-core до первого W1 merge. Router
 парсит request один раз, сохраняет исходный `ops[i]`, передаёт XDTO, Code и
 Event только через их admission-sealed authorities и выводит domain events из
 финального postimage всего request, а не суммирует промежуточные singleton
@@ -339,17 +378,31 @@ W2b. Integrator один регистрирует handlers в daemon и MCP shar
 
 Parity matrix создаётся в W0 и заполняется каждым vertical slice. В конце
 остаётся aggregate gate, а не поздняя отдельная wiring task. Каждый
-`mapped`/`absorbed` legacy row владеет непустым набором уникальных `caseId` с
-точной `(entry, operation)` identity; fixture-driven Rust runner исполняет
-каждый case через hidden canonical handler и сравнивает typed expected result.
-Одной Python-проверки JSON shape недостаточно. Параллельно три
-workers готовят migration mapping, fixtures и непубликуемые patch series для 73
-skills. Владелец каждого skill фиксируется в manifest; исходное распределение
+`mapped`/`absorbed` `(legacyTool, legacyVariant)` и каждая явно новая V13
+capability владеют непустым набором уникальных `caseId` с точной
+`(entry, operation)` identity; fixture-driven Rust runner связывает legacy cases
+с reviewed W0.5 request/observation, исполняет approved V13 successor через
+hidden canonical handler и сравнивает typed result или side effect.
+Transport/rejection evidence также исполняется, а new capability доказывается
+без вымышленного legacy predecessor. `complete: true` в Python доказывает только
+structural closure и не является S2 без semantic runner. Параллельно три workers
+готовят migration mapping, fixtures и
+четыре tracked patch artifacts для 73 skills и provenance index по уже
+замороженной W0.5
+классификации. Владелец каждого skill фиксируется в manifest; распределение
 строится детерминированным LPT по размеру отслеживаемого `SKILL.md`, а не по
 неравным буквенным диапазонам. Эти patches не сливаются в ветку с
-package-selected V12 и применяются только внутри atomic G6. До их authoring
-фиксируется live upstream review; zero exit code при `upstreamDrift=true` не
-считается зелёным provenance gate.
+package-selected V12 и вместе с единственным integrator-owned provenance index
+delta применяются только внутри atomic G6. Content-addressed manifest связывает
+review path/digest, upstream target/diff, множество per-entry решений, точно
+равное reviewed `affectedEntries` (41 — только исходный снимок), patch/index
+bytes, base blobs и expected result blobs. Validator применяет их в чистом
+временном дереве; applied-tree mode требует свежие `upstreamDrift=false` и
+`affectedEntries=[]`, поэтому local commit SHA, exit code текущего checker и
+`--validate-only` index не являются evidence. Изменение upstream target
+отзывает S2 и возвращает работу в
+новый immutable review; bundled-tool/product gap дополнительно возвращается в
+toolchain/W1/W3, после чего W4/W5 повторяются.
 
 ### W5: hidden V13 integration readiness
 
@@ -392,7 +445,8 @@ Integrator единолично владеет:
 - `crates/unica-coder/src/infrastructure/daemon/v13_service.rs`;
 - `crates/unica-coder/src/interfaces/mcp.rs`;
 - `crates/unica-coder/src/interfaces/task_projection.rs`;
-- surface/version manifests, architecture registry и aggregate tests.
+- surface/version manifests, architecture registry, capability oracle,
+  provenance review/index delta и aggregate tests.
 
 W0 ограничивает family-level часть crate-private SPI, уже начатую текущим
 кодом; W2a замораживает request-level wrapper и final-effect reconciliation:
@@ -443,7 +497,9 @@ fixtures/tests. Если нужен shared seam, worker отдаёт integrator 
 - возникает третий transaction participant помимо Source и WorkspaceCache;
 - после actor admission требуется ambient filesystem read;
 - operation не сопоставляется ровно одному имени принятого registry;
+- legacy disposition/expected result не подтверждается immutable reviewed v0.12.3 oracle;
 - parity требует сохранить старую публичную schema или alias;
+- upstream target меняется после W0.5 либо review открывает неоценённый tool/behavior gap; достигнутый S2 отзывается, owning slice и W4/W5 повторяются до G6;
 - recovery требует raw args, secrets, commands или blind replay mutation;
 - provider sharing смешивает actor, root или revision identity;
 - проверка 7000 мс требует real sleep вместо fake clock;
@@ -472,15 +528,21 @@ fixtures/tests. Если нужен shared seam, worker отдаёт integrator 
 
 ## Оценка
 
-После выявленного полного receipt/cancellation разрыва остаток оценивается в
-77–123 person-days. При одном
-integrator и трёх workers
-реалистичный срок до stable составляет 7–11 недель. Прежние 2–3 дня на W0 и
+После выявленного полного receipt/cancellation разрыва и исправления
+variant-level/provenance cardinality остаток оценивается в 94–148 person-days.
+При одном integrator и трёх workers реалистичный срок до stable составляет
+8–12 недель. Прежние 2–3 дня на W0 и
 шестинедельная оптимистичная граница больше не используются как обязательство.
 
-W2a-core освобождает W1, а W2a-seams выполняется параллельно и блокирует только
-первый W3 slice. Это сокращает ненужный общий барьер, но не отменяет
-последовательные gates W0, aggregate parity, provenance, G6/G7 и RC soak.
+Критический путь начинается как W0 → max(W0.5a worker evidence, W2a-core) →
+W0.5b integrator consolidation и два независимых review. Только после этого W1
+освобождает join; W2a-seams выполняется параллельно и
+блокирует только первый W3 slice. Это сокращает ненужный общий барьер, но не
+отменяет последовательные gates W0, aggregate parity, provenance, G6/G7 и RC
+soak. Точность оценки medium-low до классификации 41
+затронутого skill entry: если live review требует не prose routing, а
+behavior/tool port, он включается в scope и оценивается до fan-out, а не
+возвращается из W4 задним числом.
 
 ## Артефакты исполнения
 

@@ -1,6 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "complete": false,
   "baselineDispositions": [],
-  "cases": []
+  "cases": [],
+  "newCapabilities": []
 }
