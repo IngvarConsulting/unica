@@ -19,10 +19,10 @@ mod tests {
     };
     use super::server::{
         install_handshake_pause, install_startup_pause, run_daemon,
-        workspace_capacity_protocol_code_for_test, write_bytes_before, ActorBoundExecution,
-        ActorBoundInvocation, CanonicalInvocationService, DaemonServerConfig, MAX_HANDSHAKES,
-        MAX_OWNER_SESSIONS,
+        workspace_capacity_protocol_code_for_test, write_bytes_before, DaemonServerConfig,
+        MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
     };
+    use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService};
     use super::v13_service::CanonicalV13ReadService;
     use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN_MS;
     use crate::application::invocation_store::{
@@ -1984,13 +1984,212 @@ mod tests {
     }
 
     #[test]
+    fn canonical_invocation_orchestration_is_private_to_server_facade() {
+        use quote::ToTokens;
+        use syn::visit::Visit;
+
+        fn tokens(node: &impl ToTokens) -> String {
+            node.to_token_stream().to_string()
+        }
+
+        fn expected_use(source: &str) -> String {
+            tokens(&syn::parse_str::<syn::ItemUse>(source).expect("expected import parses"))
+        }
+
+        fn expected_visibility(source: &str) -> String {
+            tokens(&syn::parse_str::<syn::Visibility>(source).expect("expected visibility parses"))
+        }
+
+        #[derive(Default)]
+        struct Uses(Vec<String>);
+
+        impl<'ast> Visit<'ast> for Uses {
+            fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+                self.0.push(tokens(item));
+                syn::visit::visit_item_use(self, item);
+            }
+        }
+
+        let daemon = syn::parse_file(include_str!("mod.rs")).expect("daemon module parses");
+        assert!(
+            !daemon.items.iter().any(
+                |item| matches!(item, syn::Item::Mod(module) if module.ident == "invocation_service")
+            ),
+            "canonical invocation orchestration must not be a daemon sibling module"
+        );
+        let mut daemon_uses = Uses::default();
+        daemon_uses.visit_file(&daemon);
+        assert!(
+            !daemon_uses
+                .0
+                .iter()
+                .any(|item| item.contains("super :: invocation_service")),
+            "daemon tests must consume the canonical service seam through server"
+        );
+        let daemon_test_seam = expected_use(
+            "use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService};",
+        );
+        assert!(
+            daemon_uses.0.contains(&daemon_test_seam),
+            "daemon tests must use the exact server facade seam"
+        );
+
+        let server = syn::parse_file(include_str!("server.rs")).expect("server source parses");
+        let service_module = server
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Mod(module) if module.ident == "invocation_service" => Some(module),
+                _ => None,
+            })
+            .expect("server owns the canonical invocation implementation module");
+        assert!(
+            matches!(service_module.vis, syn::Visibility::Inherited),
+            "the invocation implementation module must remain private to server"
+        );
+        let module_path = service_module
+            .attrs
+            .iter()
+            .find_map(|attribute| match &attribute.meta {
+                syn::Meta::NameValue(name_value) if name_value.path.is_ident("path") => {
+                    match &name_value.value {
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(path),
+                            ..
+                        }) => Some(path.value()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            });
+        assert_eq!(
+            module_path.as_deref(),
+            Some("invocation_service.rs"),
+            "server must remain the stable producer/facade while locating the extracted owner"
+        );
+        let mut server_uses = Uses::default();
+        server_uses.visit_file(&server);
+        let public_seam = expected_use(
+            "pub(crate) use self::invocation_service::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService,};",
+        );
+        assert!(
+            server_uses.0.contains(&public_seam),
+            "server must expose only the exact canonical service seam"
+        );
+
+        let v13 = syn::parse_file(include_str!("v13_service.rs")).expect("v13 service parses");
+        let mut v13_uses = Uses::default();
+        v13_uses.visit_file(&v13);
+        let v13_seam = expected_use(
+            "use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService};",
+        );
+        assert_eq!(
+            v13_uses
+                .0
+                .iter()
+                .filter(|item| item.contains("CanonicalInvocationService"))
+                .collect::<Vec<_>>(),
+            vec![&v13_seam],
+            "the hidden v13 consumer must enter through the server facade"
+        );
+
+        let owner = syn::parse_file(include_str!("invocation_service.rs"))
+            .expect("invocation service owner parses");
+        let server_only = expected_visibility("pub(super)");
+        let bind_workspace_invocation = owner
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == "bind_workspace_invocation" => {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .expect("missing server-only function bind_workspace_invocation");
+        assert_eq!(
+            tokens(&bind_workspace_invocation.vis),
+            server_only,
+            "bind_workspace_invocation escaped server"
+        );
+        let admission_error = owner
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Enum(item) if item.ident == "WorkspaceAdmissionError" => Some(item),
+                _ => None,
+            })
+            .expect("workspace admission error exists");
+        assert_eq!(
+            tokens(&admission_error.vis),
+            server_only,
+            "workspace admission routing escaped server"
+        );
+        for name in ["response_deadline", "begin_execution", "publish"] {
+            let methods = owner
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    syn::Item::Impl(item) => Some(item),
+                    _ => None,
+                })
+                .flat_map(|item| item.items.iter())
+                .filter_map(|item| match item {
+                    syn::ImplItem::Fn(method) if method.sig.ident == name => Some(method),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(methods.len(), 1, "expected one orchestration method {name}");
+            assert_eq!(
+                tokens(&methods[0].vis),
+                server_only,
+                "{name} escaped server"
+            );
+        }
+
+        let daemon_visible = expected_visibility("pub(in crate::infrastructure::daemon)");
+        let capability = owner
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == "ActorReadSourceCapability" => Some(item),
+                _ => None,
+            })
+            .expect("actor read capability exists");
+        assert_eq!(
+            tokens(&capability.vis),
+            daemon_visible,
+            "the pre-existing daemon capability seam changed visibility"
+        );
+        for name in ["admitted_source_set_names", "admit_apply", "read_sources"] {
+            let method = owner
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    syn::Item::Impl(item) => Some(item),
+                    _ => None,
+                })
+                .flat_map(|item| item.items.iter())
+                .find_map(|item| match item {
+                    syn::ImplItem::Fn(method) if method.sig.ident == name => Some(method),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing daemon-visible method {name}"));
+            assert_eq!(
+                tokens(&method.vis),
+                daemon_visible,
+                "the pre-existing daemon method {name} changed visibility"
+            );
+        }
+    }
+
+    #[test]
     fn canonical_service_boundary_exposes_no_raw_request_or_workspace_hint() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let trait_start = source
             .find("pub(crate) trait CanonicalInvocationService")
             .expect("canonical service trait");
         let trait_end = source[trait_start..]
-            .find("\n}\n\nstruct DormantCanonicalV13Service")
+            .find("\n}\npub(super) fn bind_workspace_invocation")
             .expect("canonical service trait end")
             + trait_start;
         let boundary = &source[trait_start..trait_end];

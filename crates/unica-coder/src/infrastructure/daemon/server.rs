@@ -1,4 +1,16 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory};
+#[path = "invocation_service.rs"]
+mod invocation_service;
+#[cfg(test)]
+use self::invocation_service::{
+    actor_read_source_capability_for_test, actor_read_source_metadata_for_test,
+    bind_workspace_invocation_with_source_override_for_test, ActorInvocationResourcesForTest,
+    ActorReadSourceCapability,
+};
+use self::invocation_service::{bind_workspace_invocation, WorkspaceAdmissionError};
+pub(crate) use self::invocation_service::{
+    ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService,
+};
 use super::protocol::{
     parse_request, read_bounded_request_line, read_bounded_request_line_before, ClientRequest,
     DaemonErrorCode, DaemonTaskSnapshot, EndpointRecord, InvocationRequest, InvocationResponse,
@@ -12,28 +24,13 @@ use crate::application::invocation::{
 use crate::application::invocation_store::{InvocationStore, InvocationStoreError};
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::ports::{Clock, TokioClock};
-use crate::application::shared_work::{
-    LongWorkFailure, ProviderHostKey, ProviderHostOwner, SharedWorkLease, SharedWorkProducer,
-};
+use crate::application::shared_work::ProviderHostOwner;
 use crate::application::tool_contracts::SurfaceRelease;
-use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::composition::open_daemon_invocation_store_from_directory;
-use crate::domain::address::QualifiedAddress;
-use crate::domain::apply::ApplyRequest;
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::invocation::{
-    DomainResult, InvocationFailure, InvocationOutcome, SafeIdentityHash,
-};
-use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+use crate::domain::invocation::{DomainResult, InvocationFailure, InvocationOutcome};
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
-use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
-use crate::infrastructure::workspace::discover_workspace;
-use crate::infrastructure::workspace_actor::{
-    ApplyAdmission, IndexWorkIdentity, ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry,
-    WorkspaceActorRegistryError, WorkspaceLogicalReadFence, WorkspaceRevisionFence,
-    WorkspaceSourceSetInput,
-};
+use crate::infrastructure::workspace_actor::WorkspaceActorRegistry;
 use std::collections::HashSet;
 use std::io::{self, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -48,463 +45,6 @@ const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const MAX_HANDSHAKES: usize = 8;
 pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
-const ACTOR_OPERATION_BUDGET: Duration = Duration::from_secs(7);
-
-#[derive(Clone)]
-pub(crate) struct ActorBoundInvocation {
-    tool: crate::application::invocation_store::ToolIdentity,
-    arguments: serde_json::Map<String, serde_json::Value>,
-    response_deadline: InvocationResponseDeadline,
-    actor: Arc<WorkspaceActor>,
-    provider_root: ProviderRootBinding,
-    #[allow(dead_code)] // consumed only by the injected Task 14 service before Task 22
-    read_sources: Arc<[ActorReadSourceBinding]>,
-    workspace_identity_hash: SafeIdentityHash,
-    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
-    provider_hosts: Arc<ProviderHostOwner>,
-    runtime_resources: Arc<RuntimeResourceOwner>,
-    runtime_service: Option<Arc<RuntimeJobService>>,
-}
-
-#[allow(dead_code)]
-#[derive(Clone)]
-struct ActorReadSourceBinding {
-    binding: ProviderRootBinding,
-}
-
-#[allow(dead_code)]
-pub(super) struct ActorReadSourceCapability {
-    binding: ProviderRootBinding,
-    identity: String,
-    fence: WorkspaceLogicalReadFence,
-    deadline: ProviderDeadline,
-}
-
-#[allow(dead_code)]
-impl ActorReadSourceCapability {
-    pub(super) fn source_set_name(&self) -> &str {
-        self.binding.source_set_name()
-    }
-
-    const fn source_kind(&self) -> SourceSetKind {
-        self.binding.source_kind()
-    }
-
-    const fn source_format(&self) -> SourceFormat {
-        self.binding.source_format()
-    }
-
-    const fn source_profile(&self) -> SourceProfile {
-        self.binding.source_profile()
-    }
-
-    pub(super) const fn deadline(&self) -> ProviderDeadline {
-        self.deadline
-    }
-
-    pub(super) fn logical_view_read_authority<'a>(
-        &self,
-        cancellation: &'a CancellationToken,
-    ) -> Result<crate::infrastructure::v13_read::LogicalViewReadAuthority<'a>, String> {
-        let source_profile = self.binding.source_profile();
-        let platform_profile = source_profile.platform_profile().ok_or_else(|| {
-            "actor-bound logical source has no supported platform profile".to_string()
-        })?;
-        let read =
-            crate::infrastructure::v13_read_port::ProviderReadAuthority::new_with_revision_lease(
-                self.binding.source_set_name(),
-                self.identity.clone(),
-                self.binding.source_kind(),
-                self.binding.retained_root(),
-                self.fence.revision(),
-            );
-        Ok(
-            crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority(
-                cancellation,
-                read,
-                platform_profile,
-                self.deadline,
-            ),
-        )
-    }
-}
-
-struct ActorLogicalReadSourceLease {
-    binding: ProviderRootBinding,
-    fence: WorkspaceLogicalReadFence,
-}
-
-struct ActorLogicalReadLease {
-    deadline: ProviderDeadline,
-    sources: Vec<ActorLogicalReadSourceLease>,
-    route: ActorLogicalReadRoute,
-}
-
-enum ActorLogicalReadRoute {
-    Admitted,
-    Rejected(Box<DomainResult>),
-}
-
-impl ActorBoundInvocation {
-    pub(crate) fn tool(&self) -> crate::application::invocation_store::ToolIdentity {
-        self.tool
-    }
-
-    pub(crate) fn arguments(&self) -> &serde_json::Map<String, serde_json::Value> {
-        &self.arguments
-    }
-
-    pub(crate) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
-        &self.workspace_identity_hash
-    }
-
-    fn begin_execution(
-        self,
-        cancellation: &CancellationToken,
-    ) -> Result<ActorBoundExecution, String> {
-        self.begin_execution_with_logical_deadline(
-            cancellation,
-            ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),
-        )
-    }
-
-    fn begin_execution_with_logical_deadline(
-        self,
-        cancellation: &CancellationToken,
-        logical_deadline: ProviderDeadline,
-    ) -> Result<ActorBoundExecution, String> {
-        let revision = match self.tool {
-            crate::application::invocation_store::ToolIdentity::Apply => {
-                ActorExecutionRevision::UnpublishedApply
-            }
-            crate::application::invocation_store::ToolIdentity::View
-            | crate::application::invocation_store::ToolIdentity::Find => {
-                let (selected, route) = match self.tool {
-                    crate::application::invocation_store::ToolIdentity::View => {
-                        match self.arguments.get("at").and_then(serde_json::Value::as_str) {
-                            Some(at) => match QualifiedAddress::parse(at) {
-                                Ok(address) => match self
-                                .read_sources
-                                .iter()
-                                .find(|source| {
-                                    source.binding.source_set_name() == address.source_set()
-                                })
-                            {
-                                Some(source) => (vec![source], ActorLogicalReadRoute::Admitted),
-                                    None => (
-                                        Vec::new(),
-                                        ActorLogicalReadRoute::Rejected(Box::new(
-                                            DomainResult::canonical_rejection(
-                                                Some(at.to_string()),
-                                                "provider_unavailable",
-                                                "view source set was not admitted by the workspace actor",
-                                            ),
-                                        )),
-                                    ),
-                                },
-                                Err(error) => (
-                                    Vec::new(),
-                                    ActorLogicalReadRoute::Rejected(Box::new(
-                                        DomainResult::canonical_rejection(
-                                            Some(at.to_string()),
-                                            "bad_value",
-                                            error.to_string(),
-                                        ),
-                                    )),
-                                ),
-                            },
-                            None => (
-                                Vec::new(),
-                                ActorLogicalReadRoute::Rejected(Box::new(
-                                    DomainResult::canonical_rejection(
-                                        None,
-                                        "bad_value",
-                                        "view requires string argument `at`",
-                                    ),
-                                )),
-                            ),
-                        }
-                    }
-                    _ => (
-                        self.read_sources.iter().collect(),
-                        ActorLogicalReadRoute::Admitted,
-                    ),
-                };
-                if matches!(route, ActorLogicalReadRoute::Admitted) && selected.is_empty() {
-                    return Err(
-                        "logical read admission selected no actor-owned source sets".to_string()
-                    );
-                }
-                let mut sources = Vec::with_capacity(selected.len());
-                for source in selected {
-                    let fence = self.actor.capture_logical_read_revision(
-                        &source.binding,
-                        logical_deadline,
-                        cancellation,
-                    )?;
-                    sources.push(ActorLogicalReadSourceLease {
-                        binding: source.binding.clone(),
-                        fence,
-                    });
-                }
-                ActorExecutionRevision::LogicalRead(ActorLogicalReadLease {
-                    deadline: logical_deadline,
-                    sources,
-                    route,
-                })
-            }
-            _ => ActorExecutionRevision::Legacy(self.actor.capture_revision(
-                &self.provider_root,
-                ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
-                cancellation,
-            )?),
-        };
-        Ok(ActorBoundExecution {
-            invocation: self,
-            revision,
-        })
-    }
-}
-
-pub(crate) struct ActorBoundExecution {
-    invocation: ActorBoundInvocation,
-    revision: ActorExecutionRevision,
-}
-
-enum ActorExecutionRevision {
-    Legacy(WorkspaceRevisionFence),
-    LogicalRead(ActorLogicalReadLease),
-    UnpublishedApply,
-}
-
-impl ActorBoundExecution {
-    // The hidden V13 profile installs real consumers in Tasks 10-21. Until the
-    // Task 22 cutover, only injected canonical services exercise this narrow
-    // capability surface.
-    #[allow(dead_code)]
-    pub(crate) fn tool(&self) -> crate::application::invocation_store::ToolIdentity {
-        self.invocation.tool()
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn arguments(&self) -> &serde_json::Map<String, serde_json::Value> {
-        self.invocation.arguments()
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
-        self.invocation.workspace_identity_hash()
-    }
-
-    pub(super) fn admitted_source_set_names(&self) -> Vec<&str> {
-        self.invocation
-            .read_sources
-            .iter()
-            .map(|source| source.binding.source_set_name())
-            .collect()
-    }
-
-    pub(super) fn admit_apply(
-        &self,
-        request: &ApplyRequest,
-        cancellation: &CancellationToken,
-    ) -> Result<(ProviderRootBinding, ApplyAdmission), String> {
-        let binding = self
-            .invocation
-            .read_sources
-            .iter()
-            .find(|source| source.binding.source_set_name() == request.at().source_set())
-            .map(|source| source.binding.clone())
-            .ok_or_else(|| {
-                "apply source set was not admitted by the workspace actor".to_string()
-            })?;
-        self.invocation.actor.validate_binding(&binding)?;
-        let admission = self.invocation.actor.admit_apply(
-            &binding,
-            request.if_rev(),
-            request.dry_run(),
-            ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
-            cancellation,
-        )?;
-        Ok((binding, admission))
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn read_sources(&self) -> Result<Vec<ActorReadSourceCapability>, String> {
-        let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
-            return Err("logical read sources are unavailable to a legacy invocation".to_string());
-        };
-        lease
-            .sources
-            .iter()
-            .map(|source| {
-                self.invocation.actor.validate_binding(&source.binding)?;
-                Ok(ActorReadSourceCapability {
-                    binding: source.binding.clone(),
-                    identity: format!(
-                        "{}:{}",
-                        self.invocation.workspace_identity_hash.as_str(),
-                        source.binding.source_set_name()
-                    ),
-                    fence: source.fence.clone(),
-                    deadline: lease.deadline,
-                })
-            })
-            .collect()
-    }
-
-    pub(crate) fn rejected_logical_read_result(&self) -> Option<DomainResult> {
-        let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
-            return None;
-        };
-        match &lease.route {
-            ActorLogicalReadRoute::Admitted => None,
-            ActorLogicalReadRoute::Rejected(result) => Some(result.as_ref().clone()),
-        }
-    }
-
-    /// Daemon-owned exact delivery capability. Canonical work may wait here
-    /// only after request admission has become an Invocation or durable Task.
-    #[allow(dead_code)]
-    pub(crate) fn delivery_work(&self) -> &crate::infrastructure::engine_delivery::DeliveryDesk {
-        &self.invocation.deliveries
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn join_index_work<W>(
-        &self,
-        provider: &str,
-        profile: &str,
-        work: W,
-    ) -> Result<(IndexWorkIdentity, SharedWorkLease<(), LongWorkFailure>), String>
-    where
-        W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
-    {
-        let ActorExecutionRevision::Legacy(revision) = &self.revision else {
-            return Err("index work is unavailable to a logical read invocation".to_string());
-        };
-        self.invocation.actor.join_index_work(
-            &self.invocation.provider_root,
-            revision,
-            provider,
-            profile,
-            work,
-        )
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn join_provider_host<W>(
-        &self,
-        key: ProviderHostKey,
-        work: W,
-    ) -> SharedWorkLease<(), LongWorkFailure>
-    where
-        W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
-    {
-        self.invocation.provider_hosts.join_or_start(key, work)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn join_runtime_resource<W>(
-        &self,
-        lease_id: &str,
-        work: W,
-    ) -> Result<SharedWorkLease<(), LongWorkFailure>, String>
-    where
-        W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
-    {
-        let service = self.invocation.runtime_service.as_ref().ok_or_else(|| {
-            "runtime resource capability is not admitted for this daemon invocation".to_string()
-        })?;
-        service.join_shared_work(lease_id, &self.invocation.runtime_resources, work)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn read_relative_file(
-        &self,
-        relative: &std::path::Path,
-        max_bytes: usize,
-    ) -> Result<Vec<u8>, String> {
-        self.invocation.actor.read_relative_file(
-            &self.invocation.provider_root,
-            relative,
-            max_bytes,
-        )
-    }
-
-    #[cfg(test)]
-    fn mark_source_revision_dirty_for_test(&self) {
-        self.invocation.actor.mark_source_revisions_dirty();
-    }
-
-    fn publish(
-        self,
-        staged: Result<DomainResult, InvocationFailure>,
-        cancellation: &CancellationToken,
-    ) -> Result<Result<DomainResult, InvocationFailure>, String> {
-        match self.revision {
-            ActorExecutionRevision::Legacy(revision) => self
-                .invocation
-                .actor
-                .begin_publication(
-                    &revision,
-                    ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
-                    cancellation,
-                )?
-                .publish(
-                    staged,
-                    ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
-                    cancellation,
-                ),
-            ActorExecutionRevision::LogicalRead(lease) => {
-                if let ActorLogicalReadRoute::Rejected(expected) = lease.route {
-                    let is_closed_typed_rejection = staged.as_ref() == Ok(expected.as_ref());
-                    return is_closed_typed_rejection.then_some(staged).ok_or_else(|| {
-                        "logical view input rejection produced an unexpected terminal result"
-                            .to_string()
-                    });
-                }
-                let fences = lease
-                    .sources
-                    .into_iter()
-                    .map(|source| source.fence)
-                    .collect::<Vec<_>>();
-                self.invocation.actor.publish_logical_read(
-                    &fences,
-                    staged,
-                    lease.deadline,
-                    cancellation,
-                )
-            }
-            ActorExecutionRevision::UnpublishedApply => {
-                let requires_actor_publication = match &staged {
-                    Ok(result) => result.ok || !result.changed.is_empty() || result.rev.is_some(),
-                    Err(_) => false,
-                };
-                if requires_actor_publication {
-                    return Err(
-                        "unpublished Apply result requires real actor apply publication"
-                            .to_string(),
-                    );
-                }
-                Ok(staged)
-            }
-        }
-    }
-}
-
-pub(crate) trait CanonicalInvocationService: Send + Sync {
-    fn prepare(
-        &self,
-        invocation: &ActorBoundInvocation,
-    ) -> Result<ExecutionClass, Box<DomainResult>>;
-
-    fn execute(
-        &self,
-        invocation: &ActorBoundExecution,
-        cancellation: CancellationToken,
-    ) -> Result<DomainResult, InvocationFailure>;
-}
 
 struct DormantCanonicalV13Service;
 
@@ -525,171 +65,6 @@ impl CanonicalInvocationService for DormantCanonicalV13Service {
             "canonical v0.13 handler is not installed before the Task 22 cutover",
         ))
     }
-}
-
-fn bind_workspace_invocation(
-    request: &InvocationRequest,
-    actors: &WorkspaceActorRegistry,
-    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
-    provider_hosts: Arc<ProviderHostOwner>,
-    runtime_resources: Arc<RuntimeResourceOwner>,
-    runtime_service: Option<Arc<RuntimeJobService>>,
-    response_deadline: InvocationResponseDeadline,
-) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
-    bind_workspace_invocation_controlled(
-        request,
-        actors,
-        ActorInvocationResources {
-            deliveries,
-            provider_hosts,
-            runtime_resources,
-            runtime_service,
-        },
-        response_deadline,
-        |_| {},
-    )
-}
-
-struct ActorInvocationResources {
-    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
-    provider_hosts: Arc<ProviderHostOwner>,
-    runtime_resources: Arc<RuntimeResourceOwner>,
-    runtime_service: Option<Arc<RuntimeJobService>>,
-}
-
-#[derive(Clone)]
-struct DiscoveredActorSource {
-    name: String,
-    kind: SourceSetKind,
-    source_format: SourceFormat,
-    source_profile: SourceProfile,
-    root: std::path::PathBuf,
-    retained_identity: crate::infrastructure::platform::filesystem::FileIdentity,
-}
-
-fn bind_workspace_invocation_controlled(
-    request: &InvocationRequest,
-    actors: &WorkspaceActorRegistry,
-    resources: ActorInvocationResources,
-    response_deadline: InvocationResponseDeadline,
-    after_actor_admission: impl FnOnce(&mut [DiscoveredActorSource]),
-) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
-    let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
-        .map_err(|_| WorkspaceAdmissionError::Invalid)?;
-    let mut checkpoint = || {
-        response_deadline
-            .checkpoint_actor_admission()
-            .map_err(str::to_string)
-    };
-    let source_admission =
-        discover_project_source_admission(&context.workspace_root, &mut checkpoint)
-            .map_err(|_| WorkspaceAdmissionError::Invalid)?;
-    let mut admitted_sources = source_admission
-        .map()
-        .source_sets
-        .iter()
-        .filter(|source| source.source_format == SourceFormat::PlatformXml)
-        .map(|source| {
-            let relative = closed_daemon_source_relative_path(&source.path)
-                .map_err(|_| WorkspaceAdmissionError::Invalid)?;
-            let retained_identity = source_admission
-                .source_root_identity(&relative)
-                .ok_or(WorkspaceAdmissionError::Invalid)?;
-            let root = context.workspace_root.join(&relative);
-            Ok(DiscoveredActorSource {
-                name: source.name.clone(),
-                kind: source.kind,
-                source_format: source.source_format,
-                source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
-                root,
-                retained_identity,
-            })
-        })
-        .collect::<Result<Vec<_>, WorkspaceAdmissionError>>()?;
-    if admitted_sources.is_empty() {
-        return Err(WorkspaceAdmissionError::Invalid);
-    }
-    admitted_sources.sort_by(|left, right| left.name.cmp(&right.name));
-    let actor = actors
-        .get_or_create(
-            &context,
-            admitted_sources.iter().map(|source| {
-                WorkspaceSourceSetInput::new(
-                    source.name.clone(),
-                    source.root.clone(),
-                    source.kind,
-                    source.source_format,
-                    source.source_profile,
-                )
-            }),
-            "canonical-v0.13",
-        )
-        .map_err(|error| match error {
-            WorkspaceActorRegistryError::Capacity { .. } => WorkspaceAdmissionError::Capacity,
-            WorkspaceActorRegistryError::InvalidIdentity(_) => WorkspaceAdmissionError::Invalid,
-            WorkspaceActorRegistryError::Poisoned => WorkspaceAdmissionError::RegistryFailed,
-        })?;
-    after_actor_admission(&mut admitted_sources);
-    let read_sources = admitted_sources
-        .iter()
-        .map(|source| {
-            actor
-                .bind_provider_root(&source.name, &source.root)
-                .and_then(|binding| {
-                    if binding.retained_root().identity() != source.retained_identity {
-                        return Err("actor binding does not match retained source-map admission"
-                            .to_string());
-                    }
-                    Ok(ActorReadSourceBinding { binding })
-                })
-                .map_err(|_| WorkspaceAdmissionError::Invalid)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let provider_root = read_sources
-        .iter()
-        .find(|source| source.binding.source_set_name() == "main")
-        .or_else(|| read_sources.first())
-        .map(|source| source.binding.clone())
-        .ok_or(WorkspaceAdmissionError::Invalid)?;
-    let workspace_identity_hash = actor
-        .safe_identity_hash()
-        .map_err(|_| WorkspaceAdmissionError::Invalid)?;
-    Ok(ActorBoundInvocation {
-        tool: request.tool(),
-        arguments: request.arguments().clone(),
-        response_deadline,
-        actor,
-        provider_root,
-        read_sources: Arc::from(read_sources),
-        workspace_identity_hash,
-        deliveries: resources.deliveries,
-        provider_hosts: resources.provider_hosts,
-        runtime_resources: resources.runtime_resources,
-        runtime_service: resources.runtime_service,
-    })
-}
-
-fn closed_daemon_source_relative_path(path: &str) -> Result<std::path::PathBuf, String> {
-    let mut relative = std::path::PathBuf::new();
-    for component in std::path::Path::new(path).components() {
-        match component {
-            std::path::Component::Normal(name) => relative.push(name),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir
-            | std::path::Component::RootDir
-            | std::path::Component::Prefix(_) => {
-                return Err("source-map route is not workspace-relative".to_string());
-            }
-        }
-    }
-    Ok(relative)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkspaceAdmissionError {
-    Capacity,
-    RegistryFailed,
-    Invalid,
 }
 
 #[derive(Debug)]
@@ -988,7 +363,7 @@ impl DaemonInvocationRuntime {
                 normalized_arguments_hash(invocation.arguments()),
                 invocation.workspace_identity_hash().clone(),
                 class,
-                invocation.response_deadline.clone(),
+                invocation.response_deadline().clone(),
             )
             .with_resource_lease(Arc::new(invocation.clone()))
         });
@@ -1735,11 +1110,18 @@ pub(crate) mod actor_capacity_tests {
     use crate::application::shared_work::{
         ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey, ProviderHostKey,
     };
+    use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
+    use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::invocation::InvocationStatus;
+    use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
     use crate::infrastructure::runtime_jobs::{
         RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
     };
     use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
+    use crate::infrastructure::workspace::discover_workspace;
+    use crate::infrastructure::workspace_actor::{
+        IndexWorkIdentity, WorkspaceActor, WorkspaceSourceSetInput,
+    };
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Barrier, Condvar};
@@ -1766,12 +1148,21 @@ pub(crate) mod actor_capacity_tests {
             node.to_token_stream().to_string()
         }
 
-        fn is_pub_super(visibility: &syn::Visibility) -> bool {
-            matches!(
-                visibility,
-                syn::Visibility::Restricted(restricted)
-                    if restricted.in_token.is_none() && restricted.path.is_ident("super")
-            )
+        fn is_daemon_visible(visibility: &syn::Visibility) -> bool {
+            let syn::Visibility::Restricted(restricted) = visibility else {
+                return false;
+            };
+            restricted.in_token.is_some()
+                && restricted.path.leading_colon.is_none()
+                && restricted.path.segments.len() == 3
+                && restricted
+                    .path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .eq(["crate", "infrastructure", "daemon"]
+                        .into_iter()
+                        .map(str::to_string))
         }
 
         fn meta_list_is_exact_ident(list: &syn::MetaList, expected: &str) -> bool {
@@ -2476,7 +1867,7 @@ pub(crate) mod actor_capacity_tests {
         }
         let expected_read_sources_signature = tokens(
             &syn::parse_str::<syn::Signature>(
-                "fn read_sources(&self) -> Result<Vec<ActorReadSourceCapability>, String>",
+                "fn read_sources(&self,) -> Result<Vec<ActorReadSourceCapability>, String>",
             )
             .expect("the one actor capability return signature parses"),
         );
@@ -2561,12 +1952,12 @@ pub(crate) mod actor_capacity_tests {
                 found.declarations.len()
             ));
         };
-        if !is_pub_super(&declaration.vis)
+        if !is_daemon_visible(&declaration.vis)
             || !declaration.generics.params.is_empty()
             || declaration.generics.where_clause.is_some()
             || !is_exact_dead_code_allow(&declaration.attrs)
         {
-            return Err("actor read capability declaration must be exact `pub(super)` with no derives or generics".to_string());
+            return Err("actor read capability declaration must be exact daemon-visible with no derives or generics".to_string());
         }
         let syn::Fields::Named(named) = &declaration.fields else {
             return Err("actor read capability must have four named private fields".to_string());
@@ -2676,7 +2067,7 @@ pub(crate) mod actor_capacity_tests {
             };
             if !seen_methods.insert(name.clone())
                 || !method.attrs.is_empty()
-                || (*sibling_visible && !is_pub_super(&method.vis))
+                || (*sibling_visible && !is_daemon_visible(&method.vis))
                 || (!*sibling_visible && !matches!(method.vis, syn::Visibility::Inherited))
                 || !signature_is(&method.sig, expected_signature)
             {
@@ -2710,7 +2101,7 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     pub(crate) fn actor_read_source_capability_is_sealed_after_binding() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         audit_actor_read_source_capability_api(source).unwrap_or_else(|error| panic!("{error}"));
         actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc();
         actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator();
@@ -2748,7 +2139,7 @@ pub(crate) mod actor_capacity_tests {
     fn actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc() {
         use quote::ToTokens;
 
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         audit_actor_read_source_capability_api(source).unwrap_or_else(|error| panic!("{error}"));
         let file = syn::parse_file(source).expect("the audited production source parses");
         let declaration = file
@@ -2763,16 +2154,18 @@ pub(crate) mod actor_capacity_tests {
             .to_string();
         let fixture = format!(
             r#"
-mod daemon {{
-    mod owner {{
-        struct ProviderRootBinding;
-        struct WorkspaceLogicalReadFence;
-        struct ProviderDeadline;
-        {declaration}
-    }}
-    mod sibling {{
-        fn inspect(capability: &super::owner::ActorReadSourceCapability) {{
-            let _ = &capability.binding;
+mod infrastructure {{
+    pub mod daemon {{
+        mod owner {{
+            struct ProviderRootBinding;
+            struct WorkspaceLogicalReadFence;
+            struct ProviderDeadline;
+            {declaration}
+        }}
+        mod sibling {{
+            fn inspect(capability: &super::owner::ActorReadSourceCapability) {{
+                let _ = &capability.binding;
+            }}
         }}
     }}
 }}
@@ -2829,7 +2222,7 @@ fn main() {{}}
 
     #[test]
     fn actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let inject_method = |hostile_method: &str| {
             source.replacen(
                 "impl ActorReadSourceCapability {",
@@ -2867,13 +2260,13 @@ fn main() {{}}
 "#,
             ),
             source.replacen(
-                "#[allow(dead_code)]\npub(super) struct ActorReadSourceCapability {",
-                "#[allow(dead_code)]\n#[derive(Clone)]\npub(super) struct ActorReadSourceCapability {",
+                "#[allow(dead_code)]\npub(in crate::infrastructure::daemon) struct ActorReadSourceCapability {",
+                "#[allow(dead_code)]\n#[derive(Clone)]\npub(in crate::infrastructure::daemon) struct ActorReadSourceCapability {",
                 1,
             ),
             source.replacen(
-                "pub(super) const fn deadline(&self) -> ProviderDeadline {",
-                "pub(super) const fn deadline(&mut self) -> ProviderDeadline {",
+                "pub(in crate::infrastructure::daemon) const fn deadline(&self) -> ProviderDeadline {",
+                "pub(in crate::infrastructure::daemon) const fn deadline(&mut self) -> ProviderDeadline {",
                 1,
             ),
         ];
@@ -2887,7 +2280,7 @@ fn main() {{}}
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_split_sibling_visibility() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "impl ActorReadSourceCapability {",
             r#"impl ActorReadSourceCapability {
@@ -2910,10 +2303,10 @@ fn main() {{}}
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_multiline_derive_clone() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let multiline_derive = source.replacen(
-            "#[allow(dead_code)]\npub(super) struct ActorReadSourceCapability {",
-            "#[allow(dead_code)]\n#[derive(\n    Clone\n)]\npub(super) struct ActorReadSourceCapability {",
+            "#[allow(dead_code)]\npub(in crate::infrastructure::daemon) struct ActorReadSourceCapability {",
+            "#[allow(dead_code)]\n#[derive(\n    Clone\n)]\npub(in crate::infrastructure::daemon) struct ActorReadSourceCapability {",
             1,
         );
         assert!(
@@ -2924,7 +2317,7 @@ fn main() {{}}
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_multiline_manual_clone() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let manual_clone = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"impl
@@ -2946,7 +2339,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"impl
@@ -2972,7 +2365,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_macro_generated_api() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"macro_rules! add_actor_capability_api {
@@ -3002,7 +2395,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             "reopen_sealed_capability!();\n\nstruct ActorLogicalReadLease {",
@@ -3062,7 +2455,7 @@ fn main() {
 "#,
         );
 
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             "const _: () = external_reopen_capability!(ActorReadSourceCapability);\n\nstruct ActorLogicalReadLease {",
@@ -3122,7 +2515,7 @@ fn main() {
 "#,
         );
 
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             "const _: () = external_reopen_capability!();\n\nstruct ActorLogicalReadLease {",
@@ -3136,7 +2529,7 @@ fn main() {
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile_shapes = [
             "static OPAQUE: () = external_reopen_capability!();\n\n",
             "fn opaque_statement() { external_reopen_capability!(); }\n\n",
@@ -3160,7 +2553,7 @@ fn main() {
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"fn nested_opaque_macro() {
@@ -3178,7 +2571,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile_imports = [
             "use hostile_macros::reopen as format;\n",
             "use hostile_macros::matches;\n",
@@ -3187,8 +2580,8 @@ struct ActorLogicalReadLease {"#,
         let mut accepted = Vec::new();
         for import in hostile_imports {
             let hostile = source.replacen(
-                "use super::identity::{CoreIdentity, DaemonStateDirectory};",
-                &format!("{import}use super::identity::{{CoreIdentity, DaemonStateDirectory}};"),
+                "use super::super::protocol::InvocationRequest;",
+                &format!("{import}use super::super::protocol::InvocationRequest;"),
                 1,
             );
             if audit_actor_read_source_capability_api(&hostile).is_ok() {
@@ -3203,7 +2596,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn review_audit_rejects_opaque_attribute_macro_invocation() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             "#[external_reopen_capability]\nconst ATTRIBUTE_MACRO_TRIGGER: () = ();\n\nstruct ActorLogicalReadLease {",
@@ -3221,7 +2614,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_custom_derive_macro() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             "#[derive(ExternalReopenCapability)]\nstruct DERIVE_MACRO_TRIGGER;\n\nstruct ActorLogicalReadLease {",
@@ -3236,7 +2629,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile_items = [
             "#[hostile_attr::external_reopen_capability]\nconst ATTRIBUTE_MACRO_TRIGGER: () = ();\n\n",
             "#[cfg_attr(not(test), external_reopen_capability)]\nconst ATTRIBUTE_MACRO_TRIGGER: () = ();\n\n",
@@ -3259,8 +2652,8 @@ struct ActorLogicalReadLease {"#,
         }
         for import in hostile_imports {
             let hostile = source.replacen(
-                "use super::identity::{CoreIdentity, DaemonStateDirectory};",
-                &format!("{import}use super::identity::{{CoreIdentity, DaemonStateDirectory}};"),
+                "use super::super::protocol::InvocationRequest;",
+                &format!("{import}use super::super::protocol::InvocationRequest;"),
                 1,
             );
             if audit_actor_read_source_capability_api(&hostile).is_ok() {
@@ -3388,7 +2781,7 @@ fn main() {
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_type_alias_impl() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"type CapabilityAlias = ActorReadSourceCapability;
@@ -3455,7 +2848,7 @@ fn main() {
 "#,
         );
 
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"type CapabilityAlias<T = ActorReadSourceCapability> = T;
@@ -3524,7 +2917,7 @@ fn main() {
 "#,
         );
 
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"pub(super) fn forge_actor_read_source_capability(
@@ -3547,7 +2940,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_nested_production_factory() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"mod nested_factory {
@@ -3572,7 +2965,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"struct CapabilityExporter;
@@ -3596,7 +2989,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_associated_type_escape() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"trait CapabilityCarrier {
@@ -3618,7 +3011,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_item_field_escape() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"pub(super) struct CapabilityEscape {
@@ -3636,7 +3029,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile = source.replacen(
             r#"|| {
             "actor-bound logical source has no supported platform profile".to_string()
@@ -3655,7 +3048,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_substituted_construction_fields() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hostile_fields = [
             (
                 "Ok(ActorReadSourceCapability {\n                    binding: source.binding.clone(),",
@@ -3697,7 +3090,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let exact_test_only = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"#[cfg(test)]
@@ -3731,7 +3124,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hardcoded_profile = source.replacen(
             "source_profile.platform_profile()",
             "SourceProfile::platform_xml_8_3_27_format_2_20().platform_profile()",
@@ -3745,7 +3138,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let hardcoded_kind = source.replacen(
             "self.binding.source_kind(),\n                self.binding.retained_root(),",
             "SourceSetKind::Configuration,\n                self.binding.retained_root(),",
@@ -3759,7 +3152,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_replenished_deadline() {
-        let source = include_str!("server.rs");
+        let source = include_str!("invocation_service.rs");
         let replenished_deadline = source.replacen(
             "platform_profile,\n                self.deadline,",
             "platform_profile,\n                ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),",
@@ -3812,12 +3205,7 @@ struct ActorLogicalReadLease {"#,
             actor.safe_identity_hash().unwrap().as_str(),
             binding.source_set_name()
         );
-        let capability = ActorReadSourceCapability {
-            binding,
-            identity,
-            fence,
-            deadline,
-        };
+        let capability = actor_read_source_capability_for_test(binding, identity, fence, deadline);
         (workspace, actor, capability)
     }
 
@@ -3999,35 +3387,38 @@ struct ActorLogicalReadLease {"#,
             7_000,
         )
         .unwrap();
-        let invocation = bind_workspace_invocation_controlled(
+        let invocation = bind_workspace_invocation_with_source_override_for_test(
             &request,
             &runtime.workspace_actors,
-            ActorInvocationResources {
-                deliveries: Arc::clone(&runtime.deliveries),
-                provider_hosts: Arc::clone(&runtime.provider_hosts),
-                runtime_resources: Arc::clone(&runtime.runtime_resources),
-                runtime_service: None,
-            },
+            ActorInvocationResourcesForTest::new(
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+            ),
             runtime.capture_response_deadline(),
-            |sources| {
-                sources[0].kind = SourceSetKind::Extension;
-                sources[0].source_format = SourceFormat::Edt;
-                sources[0].source_profile = SourceProfile::TestPlatform8_3_28Format2_20;
-            },
+            SourceSetKind::Extension,
+            SourceFormat::Edt,
+            SourceProfile::TestPlatform8_3_28Format2_20,
         )
         .unwrap();
-        let binding = invocation.read_sources[0].binding.clone();
+        let binding = invocation
+            .read_source_binding_for_test("main")
+            .unwrap()
+            .clone();
         let execution = invocation
             .begin_execution(&CancellationToken::new())
             .unwrap();
         let capability = execution.read_sources().unwrap().remove(0);
+        let (source_kind, source_format, source_profile) =
+            actor_read_source_metadata_for_test(&capability);
 
         assert_eq!(capability.source_set_name(), binding.source_set_name());
-        assert_eq!(capability.source_kind(), binding.source_kind());
-        assert_eq!(capability.source_format(), binding.source_format());
-        assert_eq!(capability.source_profile(), binding.source_profile());
+        assert_eq!(source_kind, binding.source_kind());
+        assert_eq!(source_format, binding.source_format());
+        assert_eq!(source_profile, binding.source_profile());
         assert_eq!(
-            capability.source_profile().platform_profile(),
+            source_profile.platform_profile(),
             binding.source_profile().platform_profile(),
             "reader profile must be derived from the actor-issued source profile"
         );
@@ -4091,11 +3482,12 @@ struct ActorLogicalReadLease {"#,
         let extension = bind();
 
         assert!(
-            !Arc::ptr_eq(&configuration.actor, &extension.actor),
+            !Arc::ptr_eq(configuration.actor_for_test(), extension.actor_for_test()),
             "subsequent semantic kind change reused the live actor"
         );
         assert_ne!(
-            configuration.workspace_identity_hash, extension.workspace_identity_hash,
+            configuration.workspace_identity_hash(),
+            extension.workspace_identity_hash(),
             "durable daemon workspace identity ignored the changed source kind"
         );
     }
@@ -4165,8 +3557,8 @@ struct ActorLogicalReadLease {"#,
         let find_request = request(ToolIdentity::Find, serde_json::json!({"query": "Items"}));
         let view = bind(&view_request);
         let find = bind(&find_request);
-        assert!(Arc::ptr_eq(&view.actor, &find.actor));
-        let admitted_actor = Arc::clone(&view.actor);
+        assert!(Arc::ptr_eq(view.actor_for_test(), find.actor_for_test()));
+        let admitted_actor = Arc::clone(view.actor_for_test());
         std::fs::write(
             workspace.path().join("v8project.yaml"),
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: EXTENSION\n    path: src\n",
@@ -4190,11 +3582,11 @@ struct ActorLogicalReadLease {"#,
 
         let subsequent = bind(&view_request);
         assert!(
-            !Arc::ptr_eq(&admitted_actor, &subsequent.actor),
+            !Arc::ptr_eq(&admitted_actor, subsequent.actor_for_test()),
             "a subsequent invocation ignored the changed map"
         );
         assert_eq!(
-            subsequent.provider_root.source_kind(),
+            subsequent.provider_root_for_test().source_kind(),
             SourceSetKind::Extension
         );
         assert!(source.join("Catalogs/Items.xml").exists());
@@ -4266,9 +3658,10 @@ struct ActorLogicalReadLease {"#,
         .unwrap();
         let second = bind();
 
-        assert!(Arc::ptr_eq(&first.actor, &second.actor));
+        assert!(Arc::ptr_eq(first.actor_for_test(), second.actor_for_test()));
         assert_eq!(
-            first.workspace_identity_hash, second.workspace_identity_hash,
+            first.workspace_identity_hash(),
+            second.workspace_identity_hash(),
             "comments/order-only edit changed actor state scope"
         );
     }
@@ -4559,14 +3952,11 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
         let sibling_binding = invocation
-            .read_sources
-            .iter()
-            .find(|source| source.binding.source_set_name() == "dep")
+            .read_source_binding_for_test("dep")
             .unwrap()
-            .binding
             .clone();
         let sibling_revisions = invocation
-            .actor
+            .actor_for_test()
             .source_revision_service(&sibling_binding)
             .unwrap();
         let started = Instant::now();
@@ -4575,7 +3965,7 @@ struct ActorLogicalReadLease {"#,
             ProviderDeadline::with_clock(started + LOGICAL_READ_OPERATION_BUDGET, logical_read_now);
         let cancellation = CancellationToken::new();
         let execution = invocation
-            .begin_execution_with_logical_deadline(&cancellation, deadline)
+            .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
             .unwrap();
         assert_eq!(
             sibling_revisions.retained_scan_count(),
@@ -4602,9 +3992,9 @@ struct ActorLogicalReadLease {"#,
             .execute(&execution, cancellation.clone())
             .expect("hidden V13 execution");
         assert!(result.ok, "hidden V13 execution must succeed");
-        let actor = Arc::clone(&execution.invocation.actor);
+        let actor = Arc::clone(execution.actor_for_test());
         let legacy_fence = actor
-            .capture_revision(&execution.invocation.provider_root, deadline, &cancellation)
+            .capture_revision(execution.provider_root_for_test(), deadline, &cancellation)
             .expect("capture a fence for the actor mutation lane");
         let held_publication = actor
             .begin_publication(&legacy_fence, deadline, &cancellation)
@@ -4657,7 +4047,7 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
         let find_execution = find_invocation
-            .begin_execution_with_logical_deadline(&cancellation, deadline)
+            .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
             .unwrap();
         assert_eq!(
             find_execution.read_sources().unwrap().len(),
@@ -4668,10 +4058,10 @@ struct ActorLogicalReadLease {"#,
             .execute(&find_execution, cancellation.clone())
             .expect("hidden V13 find execution");
         assert!(find_result.ok, "hidden V13 find execution must succeed");
-        let find_actor = Arc::clone(&find_execution.invocation.actor);
+        let find_actor = Arc::clone(find_execution.actor_for_test());
         let legacy_fence = find_actor
             .capture_revision(
-                &find_execution.invocation.provider_root,
+                find_execution.provider_root_for_test(),
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &cancellation,
             )
@@ -4738,7 +4128,7 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
         let find_execution = find_invocation
-            .begin_execution_with_logical_deadline(&cancellation, deadline)
+            .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
             .unwrap();
         let find_result = service
             .execute(&find_execution, cancellation.clone())
@@ -4767,7 +4157,7 @@ struct ActorLogicalReadLease {"#,
         .unwrap();
         set_logical_read_now(started + Duration::from_secs(9));
         let execution = invocation
-            .begin_execution_with_logical_deadline(&cancellation, deadline)
+            .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
             .unwrap();
         let result = service
             .execute(&execution, cancellation.clone())
@@ -4834,8 +4224,8 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
         let revisions = invocation
-            .actor
-            .source_revision_service(&invocation.read_sources[0].binding)
+            .actor_for_test()
+            .source_revision_service(invocation.read_source_binding_for_test("main").unwrap())
             .unwrap();
         let scans_before = revisions.retained_scan_count();
         let cancellation = CancellationToken::new();
