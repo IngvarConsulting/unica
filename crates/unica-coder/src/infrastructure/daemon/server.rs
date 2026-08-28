@@ -475,10 +475,10 @@ impl ActorBoundExecution {
                 )
             }
             ActorExecutionRevision::UnpublishedApply => {
-                let requires_actor_publication = matches!(
-                    &staged,
-                    Ok(result) if result.ok || !result.changed.is_empty() || result.rev.is_some()
-                );
+                let requires_actor_publication = match &staged {
+                    Ok(result) => result.ok || !result.changed.is_empty() || result.rev.is_some(),
+                    Err(_) => false,
+                };
                 if requires_actor_publication {
                     return Err(
                         "unpublished Apply result requires real actor apply publication"
