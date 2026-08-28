@@ -83,8 +83,9 @@ production stdio создаёт V12 application, публичная миграц
 - retained actor root (`41593777`);
 - hidden apply-family seams, targeted actor-issued admission и no-publication
   proof (`21170c94`, `764dd1e8`, `3229485d`);
-- семь parity shards и strict validator (`d0893efe`, `686ea194`, `e870d810`),
-  для которого pinned check сейчас зелёный 39/39;
+- семь parity shards и strict structural inventory validator
+  (`d0893efe`, `686ea194`, `e870d810`), для которого pinned check сейчас
+  зелёный 39/39, но semantic oracle/execution остаются W0.5/W4;
 - Windows Job Object ownership/root-and-child cleanup (`f66d5948`) с зелёными
   local smoke/probe/actionlint/full-code gates.
 
@@ -329,11 +330,11 @@ remote MCP, MCP App или дополнительный MCPB-контур не �
 
 Целью остаётся `DEC.2026-08-23.V0-13-EXECUTION-SURFACE`:
 
-- native Tasks profile: ровно `view`, `apply`, `find`, `search`, `check`,
-  `diff`, `run`, `docs`;
-- compatibility profile: те же восемь плюс `task.get`, `task.result`,
-  `task.cancel`;
-- старые публичные имена и `runtime.job.*` не сохраняются как aliases;
+- native Tasks profile: ровно `unica.view`, `unica.apply`, `unica.find`,
+  `unica.search`, `unica.check`, `unica.diff`, `unica.run`, `unica.docs`;
+- compatibility profile: те же восемь плюс `unica.task.get`,
+  `unica.task.result`, `unica.task.cancel`;
+- старые публичные имена и `unica.runtime.job.*` не сохраняются как aliases;
 - `tests`, `features` и `log` остаются вне v0.13.
 
 Восемь entry points используют один canonical result и один daemon dispatcher.
@@ -356,8 +357,10 @@ Wavefront применяет:
 - `CTR.WIRE.COMPATIBILITY-TASK-TOOLS`;
 - `CTR.WIRE.DAEMON-INVOCATION-PROTOCOL`.
 
-Каждый valid submit имеет не более одного domain execution. Сервер сам выбирает direct
-result или Task: current post-prepare `KnownLong` сразу materializes exact
+В пределах bounded ReceiptLedger retention/deduplication horizon один
+exact `ReceiptKey` имеет не более одной попытки `prepare`/`execute`;
+после physical expiry вечная idempotency не обещается. Сервер сам
+выбирает direct result или Task: current post-prepare `KnownLong` сразу materializes exact
 actor-bound Task через `TaskHandoffActorBound`, остальные операции обязаны
 либо завершиться напрямую, либо иметь durable receipt к абсолютной границе
 7000 мс. Durable receipt начинается в `ReceiptLedger`, а не с первой
@@ -872,8 +875,10 @@ fixtures/tests. Если нужен shared seam, worker отдаёт integrator 
 ## Оценка
 
 После подтверждённого durable-receipt blocker и исправления
-variant-level/provenance cardinality остаток после delivered
-`e870d810`/`f66d5948` оценивается в 102–162 person-days. Завершённые
+variant-level/provenance cardinality current scoped base estimate остатка
+после delivered `e870d810`/`f66d5948` составляет 102–162 person-days.
+Это не upper cap: upstream move либо новый bundled-tool/product gap
+требуют explicit re-estimate до fan-out. Завершённые
 parity-inventory и Windows/process person-days повторно в эту сумму не входят.
 W0 увеличен с 6–10 до 14–24 person-days: добавлены separate durable store,
 receipt-backed unbound/terminal Task projection, actor-bound recoverable
