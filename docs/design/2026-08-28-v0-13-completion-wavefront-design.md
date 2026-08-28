@@ -41,6 +41,9 @@ issue #581. На исходном снимке:
 - hidden V13 catalog и два профиля `tools/list` существуют;
 - daemon, Invocation, durable Task, WorkspaceActor и SharedWork существенно
   реализованы, но production daemon по умолчанию устанавливает dormant service;
+- lifecycle до executor неполон: блокирующие workspace admission/prepare идут
+  до live Invocation/Task owner, а canonical MCP cancellation до получения
+  TaskId теряется; поэтому S1 ещё не достигнут даже при зелёных POSIX-тестах;
 - реальный canonical service обслуживает `view` и `find`, а остальные шесть
   входов ещё не образуют production vertical slices;
 - `apply` имеет общую модель, code/event planners и развиваемый XDTO slice, но
@@ -76,6 +79,15 @@ thin frontend. Скрытый versioned daemon владеет Invocation, TaskSt
 WorkspaceActor и долгой работой. V13 frontend не исполняет предметную операцию,
 не повторяет её после handoff и не делает fallback на V12. До G6 production
 V12 продолжает использовать действующий legacy handler.
+
+Один receipt-time Invocation owner должен существовать до потенциально
+блокирующих filesystem admission и service preparation. Он несёт заранее
+зарезервированные Invocation/Task identities, единую deadline/cancellation
+authority и безопасную request-scope identity; timer может материализовать
+durable preparing/working record, не ожидая возврата `prepare`. Private wire
+может получить pre-receipt cancel capability и новую CoreIdentity, если иначе
+невозможно связать MCP cancellation с этой Invocation. Это не публичный generic
+resume/idempotency API и не разрешение на replay.
 
 ### Запуск и поставка зависимостей
 
@@ -265,19 +277,28 @@ private per-user, protocol/core-ABI daemon
 PR #631 получает зелёные macOS, Linux и Windows gates. В этой волне закрываются
 текущие defect failures по TDD, устраняется v2/v3 contradiction, фиксируется
 internal SPI отдельных family planners, validation и canonical result.
+До S1 daemon создаёт live Invocation owner до admission/prepare, materializes
+Task к абсолютному cutoff даже при блокирующем prepare, не оставляет
+недоступный orphan после истечения response margin и доводит MCP cancellation
+до той же authority. Ownerless persisted `Queued` после restart становится
+terminal либо удаляется из поддерживаемой schema. Эти проверки используют
+barrier/event + fake clock, а не synchronous clock jump внутри `prepare`.
 Request-level apply router не считается замороженным, пока W2a не докажет
 глобальные индексы, порядок и effects от финального postimage. Публичный V12 не
 меняется.
 
-### W2a: request router и ранние seams
+### W2a-core и W2a-seams
 
-Сразу после S1 integrator закрывает shared seam до первого W1 merge. Router
+Сразу после S1 integrator закрывает W2a-core до первого W1 merge. Router
 парсит request один раз, сохраняет исходный `ops[i]`, передаёт XDTO, Code и
 Event только через их admission-sealed authorities и выводит domain events из
 финального postimage всего request, а не суммирует промежуточные singleton
-результаты. Здесь же компилируются стабильные W3 seams. Только после aggregate
-тестов на inverse operations, interleaved families, global error index и poison
-rollback family SPI считается frozen для fan-out.
+результаты. После aggregate тестов на inverse operations, interleaved families,
+global error index и poison rollback family SPI считается frozen и W1 fan-out
+начинается. Независимый integrator-owned W2a-seams стартует из обновлённого
+`main` параллельно W1, компилирует стабильные W3 adapters/validation view и
+обязан слиться до первого W3 slice. W1 не блокируется на не относящихся к нему
+W3 facade-файлах.
 
 Effect finalizer сначала отбрасывает path-bound candidates без изменения в
 финальном postimage и только затем выполняет stable first-surviving-occurrence
@@ -317,12 +338,18 @@ W2b. Integrator один регистрирует handlers в daemon и MCP shar
 ### W4: continuous parity and skills
 
 Parity matrix создаётся в W0 и заполняется каждым vertical slice. В конце
-остаётся aggregate gate, а не поздняя отдельная wiring task. Параллельно три
+остаётся aggregate gate, а не поздняя отдельная wiring task. Каждый
+`mapped`/`absorbed` legacy row владеет непустым набором уникальных `caseId` с
+точной `(entry, operation)` identity; fixture-driven Rust runner исполняет
+каждый case через hidden canonical handler и сравнивает typed expected result.
+Одной Python-проверки JSON shape недостаточно. Параллельно три
 workers готовят migration mapping, fixtures и непубликуемые patch series для 73
 skills. Владелец каждого skill фиксируется в manifest; исходное распределение
 строится детерминированным LPT по размеру отслеживаемого `SKILL.md`, а не по
 неравным буквенным диапазонам. Эти patches не сливаются в ветку с
-package-selected V12 и применяются только внутри atomic G6.
+package-selected V12 и применяются только внутри atomic G6. До их authoring
+фиксируется live upstream review; zero exit code при `upstreamDrift=true` не
+считается зелёным provenance gate.
 
 ### W5: hidden V13 integration readiness
 
@@ -437,24 +464,23 @@ fixtures/tests. Если нужен shared seam, worker отдаёт integrator 
 - raw CLI passthrough в `run`;
 - generic resumable mutation framework;
 - новый public progress API;
-- idempotency-token protocol;
+- публичный generic idempotency/resume protocol; private pre-receipt Invocation
+  capability для handoff/cancellation входит в W0;
 - `tests`, `features`, `log` как отдельные tools;
 - gRPC/platform 8.5 profile;
 - дополнительная оптимизация удаляемого V12 surface.
 
 ## Оценка
 
-Остаток на исходном снимке оценивается в 73–117 person-days. При одном
+После выявленного полного receipt/cancellation разрыва остаток оценивается в
+77–123 person-days. При одном
 integrator и трёх workers
-реалистичный срок до stable составляет 7–10 недель. Оптимистичная граница в
-6 недель достижима только без semantic rework, host delays и release failures.
+реалистичный срок до stable составляет 7–11 недель. Прежние 2–3 дня на W0 и
+шестинедельная оптимистичная граница больше не используются как обязательство.
 
-Ранний W2a и переход каждого worker к собственной W3-линии убирают общий
-барьер ожидания, но текущая ресурсная модель не доказывает отдельную
-календарную экономию: 1–2 дня W2a расходуют часть освобождённого overlap.
-Поэтому baseline остаётся 7–10 недель без вычитания неподтверждённой дельты.
-Параллелизм не отменяет последовательные gates W0/W2a, aggregate parity и
-G6/G7.
+W2a-core освобождает W1, а W2a-seams выполняется параллельно и блокирует только
+первый W3 slice. Это сокращает ненужный общий барьер, но не отменяет
+последовательные gates W0, aggregate parity, provenance, G6/G7 и RC soak.
 
 ## Артефакты исполнения
 
