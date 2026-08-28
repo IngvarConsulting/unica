@@ -280,8 +280,7 @@ mod tests {
                     .with_invocation_store_for_test(Arc::new(BlockingTerminalFileStore {
                         inner: store,
                     }))
-                    .with_invocation_service(Arc::new(ProcessCountingService { executions }))
-                    .with_reconciliation_budget_for_test(Duration::from_millis(100));
+                    .with_invocation_service(Arc::new(ProcessCountingService { executions }));
                 run_daemon(config).unwrap();
             }
             "successor" => {
@@ -370,6 +369,11 @@ mod tests {
         records: Mutex<HashMap<TaskId, StoredInvocationRecord>>,
         update_attempts: AtomicUsize,
         fail_updates: AtomicUsize,
+    }
+
+    struct DelayedTaskReadStore {
+        inner: DaemonMemoryStore,
+        read_delay: Duration,
     }
 
     impl InvocationStore for DaemonMemoryStore {
@@ -466,6 +470,43 @@ mod tests {
                 record.status_message = status_message;
             }
             Ok(record.clone())
+        }
+    }
+
+    impl InvocationStore for DelayedTaskReadStore {
+        fn create(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.create(record)
+        }
+
+        fn create_working(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.create_working(record)
+        }
+
+        fn get(&self, task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            thread::sleep(self.read_delay);
+            self.inner.get(task_id)
+        }
+
+        fn update(
+            &self,
+            task_id: TaskId,
+            transition: TaskTransition,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.update(task_id, transition)
+        }
+
+        fn cancel(
+            &self,
+            task_id: TaskId,
+            status_message: SafeStatusMessage,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.cancel(task_id, status_message)
         }
     }
 
@@ -1251,6 +1292,72 @@ mod tests {
     }
 
     #[test]
+    fn task_exchange_does_not_replace_the_frontend_cutoff_with_a_125ms_server_window() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let workspace_hint = physical.to_string_lossy().into_owned();
+        let identity = CoreIdentity::production();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (entered, entered_wait) = mpsc::channel();
+        let service = Arc::new(BlockingCanonicalService {
+            executions,
+            entered,
+        });
+        let store = Arc::new(DelayedTaskReadStore {
+            inner: DaemonMemoryStore::default(),
+            read_delay: Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS + 50),
+        });
+        let config = server_config(root.path().to_path_buf(), identity.clone())
+            .with_invocation_service(service)
+            .with_invocation_store_for_test(store);
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical.clone(),
+            identity,
+        ));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+        let task = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    workspace_hint,
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let task_id = match task {
+            InvocationResponse::Task(snapshot) => snapshot.task_id,
+            other => panic!("known-long invocation did not materialize: {other:?}"),
+        };
+        entered_wait
+            .recv_timeout(INTEGRATION_COORDINATION_TIMEOUT)
+            .expect("canonical invocation must enter the service");
+
+        let deadline = owner
+            .begin_task_deadline(Duration::from_millis(
+                INTEGRATION_TASK_WAIT_MS + RESPONSE_SERIALIZATION_MARGIN_MS,
+            ))
+            .unwrap();
+        assert_eq!(
+            owner.get_task_before(task_id, &deadline).unwrap().status,
+            InvocationStatus::Working
+        );
+        assert_eq!(
+            owner.cancel_task_before(task_id, &deadline).unwrap().status,
+            InvocationStatus::Cancelled
+        );
+
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn durability_uncertainty_stops_the_daemon_before_idle_grace() {
         let root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
@@ -1968,7 +2075,12 @@ mod tests {
         assert_eq!(record.tool, ToolIdentity::Run);
         assert_eq!(record.status, InvocationStatus::Working);
 
-        owner.cancel_task(task_id).unwrap();
+        let task_deadline = owner
+            .begin_task_deadline(Duration::from_millis(
+                INTEGRATION_TASK_WAIT_MS + RESPONSE_SERIALIZATION_MARGIN_MS,
+            ))
+            .unwrap();
+        owner.cancel_task_before(task_id, &task_deadline).unwrap();
         drop(owner);
         server.join().unwrap().unwrap();
         daemon_result_size_and_session_bounds_are_enforced();

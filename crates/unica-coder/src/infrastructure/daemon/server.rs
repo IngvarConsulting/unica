@@ -6,6 +6,7 @@ use super::protocol::{
 use crate::application::invocation::{
     normalized_arguments_hash, InvocationExecutor, InvocationExecutorError,
     InvocationResponseDeadline, PreparedDaemonInvocation, RESPONSE_SERIALIZATION_MARGIN_MS,
+    TASK_RECONCILIATION_BUDGET,
 };
 use crate::application::invocation_store::{InvocationStore, InvocationStoreError};
 use crate::application::operation_descriptors::ExecutionClass;
@@ -1465,11 +1466,11 @@ fn handle_connection(
                 }
             }
             ClientRequest::GetTask { task_id } => {
-                let deadline = session_response_deadline(Duration::ZERO);
+                let deadline = task_response_deadline(Duration::ZERO);
                 write_task_response_before(&mut stream, invocation_runtime.get(task_id), deadline)?
             }
             ClientRequest::WaitTask { task_id, wait_ms } => {
-                let deadline = session_response_deadline(Duration::from_millis(wait_ms));
+                let deadline = task_response_deadline(Duration::from_millis(wait_ms));
                 write_task_response_before(
                     &mut stream,
                     invocation_runtime.wait(task_id, wait_ms),
@@ -1477,7 +1478,7 @@ fn handle_connection(
                 )?
             }
             ClientRequest::CancelTask { task_id } => {
-                let deadline = session_response_deadline(Duration::ZERO);
+                let deadline = task_response_deadline(Duration::ZERO);
                 write_task_response_before(
                     &mut stream,
                     invocation_runtime.cancel(task_id),
@@ -1506,6 +1507,19 @@ fn write_task_response_before(
 
 fn session_response_deadline(operation_budget: Duration) -> Instant {
     Instant::now() + operation_budget + Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS)
+}
+
+fn task_response_deadline(wait_budget: Duration) -> Instant {
+    // The frontend owns the one absolute task-operation cutoff and closes a late session.
+    // Protocol v3 does not transmit that cutoff, so the daemon must not manufacture a fresh
+    // 125 ms operation window here. The daemon-side bound covers the executor's canonical store
+    // reconciliation allowance and response margin, capped by the independent session safety
+    // limit; it does not replenish the frontend cutoff.
+    let operation_budget = wait_budget
+        .saturating_add(TASK_RECONCILIATION_BUDGET)
+        .saturating_add(Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS))
+        .min(OWNER_RESPONSE_WRITE_TIMEOUT);
+    Instant::now() + operation_budget
 }
 
 fn write_response(stream: &mut TcpStream, response: &ServerResponse) -> Result<(), String> {

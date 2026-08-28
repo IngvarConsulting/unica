@@ -25,7 +25,7 @@ pub(crate) const RESPONSE_SERIALIZATION_MARGIN: Duration =
 const LARGE_DIRECT_RESULT_BYTES: usize = 16 * 1024;
 const INVOCATION_POLL_INTERVAL_MS: u64 = 250;
 const INVOCATION_TTL_MS: u64 = 60 * 60 * 1_000;
-const RECONCILIATION_BUDGET: Duration = Duration::from_secs(2);
+pub(crate) const TASK_RECONCILIATION_BUDGET: Duration = Duration::from_secs(2);
 const RECONCILIATION_INITIAL_BACKOFF: Duration = Duration::from_millis(10);
 const RECONCILIATION_MAX_BACKOFF: Duration = Duration::from_millis(250);
 
@@ -277,7 +277,7 @@ struct ReconciliationPolicy {
 impl ReconciliationPolicy {
     const fn production() -> Self {
         Self {
-            budget: RECONCILIATION_BUDGET,
+            budget: TASK_RECONCILIATION_BUDGET,
             initial_backoff: RECONCILIATION_INITIAL_BACKOFF,
             max_backoff: RECONCILIATION_MAX_BACKOFF,
         }
@@ -1053,7 +1053,7 @@ impl InvocationExecutor {
     ) -> Result<TaskSnapshot, InvocationExecutorError> {
         self.ensure_healthy()?;
         let cancellation = crate::domain::cancellation::CancellationToken::new();
-        let deadline = Instant::now() + RECONCILIATION_BUDGET;
+        let deadline = Instant::now() + TASK_RECONCILIATION_BUDGET;
         self.get_task_before(task_id, deadline, &cancellation)
     }
 
@@ -1074,7 +1074,7 @@ impl InvocationExecutor {
     ) -> Result<TaskSnapshot, InvocationExecutorError> {
         self.ensure_healthy()?;
         let cancellation = crate::domain::cancellation::CancellationToken::new();
-        let deadline = Instant::now() + wait + RECONCILIATION_BUDGET;
+        let deadline = Instant::now() + wait + TASK_RECONCILIATION_BUDGET;
         let current = self.get_task_before(task_id, deadline, &cancellation)?;
         if current.status != InvocationStatus::Working || wait.is_zero() {
             return Ok(current);
