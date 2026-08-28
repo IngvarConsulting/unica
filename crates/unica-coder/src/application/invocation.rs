@@ -3087,7 +3087,6 @@ pub(crate) mod tests {
         assert!(retained.result.is_none());
     }
 
-    #[test]
     fn canonical_result_limit_rejects_direct_and_task_bytes_without_persisting_them() {
         const OVER_LIMIT_SUMMARY_BYTES: usize = 8 * 1024 * 1024 + 1;
 
