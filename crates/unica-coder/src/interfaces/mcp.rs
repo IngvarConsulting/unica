@@ -3780,6 +3780,77 @@ mod tests {
         client.shutdown().await;
     }
 
+    async fn native_task_methods_preserve_one_frontend_transport_cutoff_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+
+        let task_id = TaskId::new();
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(InvocationResponse::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let (observed, observations) = mpsc::channel();
+        let get_observed = observed.clone();
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, deadline| {
+            get_observed
+                .send(deadline.remaining_transport_at(Instant::now()))
+                .unwrap();
+            Ok(canonical_snapshot(task_id, InvocationStatus::Working, None))
+        });
+        let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_, deadline| {
+            observed
+                .send(deadline.remaining_transport_at(Instant::now()))
+                .unwrap();
+            Ok(canonical_snapshot(
+                task_id,
+                InvocationStatus::Cancelled,
+                None,
+            ))
+        });
+        let server = UnicaServer::with_canonical_v13_tasks(call, get, cancel);
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params": {
+                    "protocolVersion":"2026-07-28",
+                    "capabilities":{"extensions":{"io.modelcontextprotocol/tasks":{}}},
+                    "clientInfo":{"name":"native-task-deadline-client","version":"1"}
+                }
+            }))
+            .await;
+        let initialized = client.receive().await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2026-07-28");
+
+        for (id, method) in [(1, "tasks/get"), (2, "tasks/update"), (3, "tasks/cancel")] {
+            let mut params = json!({
+                "taskId": task_id.to_string(),
+                "_meta": modern_tasks_meta()
+            });
+            if method == "tasks/update" {
+                params["inputResponses"] = json!({});
+            }
+            client
+                .send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+                .await;
+            let _response = client.receive().await;
+        }
+
+        let upper = INVOCATION_HANDOFF_WINDOW + RESPONSE_SERIALIZATION_MARGIN;
+        for method in ["tasks/get", "tasks/update", "tasks/cancel"] {
+            let remaining = observations
+                .recv_timeout(Duration::from_secs(1))
+                .expect("native task handler did not observe its frontend cutoff");
+            assert!(
+                remaining > Duration::from_millis(250) && remaining <= upper,
+                "{method} replaced the shared frontend cutoff with a phase-local window: {remaining:?}"
+            );
+        }
+        client.shutdown().await;
+    }
+
     async fn tasks_direct_and_completed_get_case() {
         use crate::domain::invocation::{InvocationStatus, TaskId};
 
@@ -4130,6 +4201,11 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_task_methods_preserve_one_frontend_transport_cutoff() {
+        native_task_methods_preserve_one_frontend_transport_cutoff_case().await;
+    }
+
+    #[tokio::test]
     async fn tasks_direct_and_completed_get_use_the_same_call_result_renderer() {
         tasks_direct_and_completed_get_case().await;
     }
@@ -4161,6 +4237,7 @@ mod tests {
         tasks_direct_first_capability_case().await;
         legacy_initialized_session_cannot_escalate_tasks_per_request_case().await;
         modern_initialized_session_retains_native_tasks_case().await;
+        native_task_methods_preserve_one_frontend_transport_cutoff_case().await;
         tasks_direct_and_completed_get_case().await;
         tasks_projection_rejects_reverse_timestamps_on_wire_case().await;
         tasks_projection_keeps_near_limit_wire_bounded_and_rejects_over_limit_case().await;

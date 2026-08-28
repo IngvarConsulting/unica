@@ -23,8 +23,11 @@ direct `CallToolResult` либо `CreateTaskResult`. `tasks/get` и idempotent
 `tasks/cancel` читают/меняют только daemon durable store; `tasks/update` сначала
 проверяет живую identity и затем возвращает закрытый
 `task_input_not_supported`. Unknown, expired и noncanonical TaskId сохраняют
-различимые закрытые ошибки. Polling и progress не запускают execution и после
-`CreateTaskResult` progress не продолжается.
+различимые закрытые ошибки. Каждый `tasks/get`, `tasks/update` и `tasks/cancel`
+один раз выводит absolute monotonic cutoff из времени приёма frontend и
+расходует его на connect, handshake, request, response read и parse; отдельная
+фаза не открывает новое окно 125 мс. Polling и progress не запускают execution
+и после `CreateTaskResult` progress не продолжается.
 
 Daemon protocol v3 переносит сохранённые epoch timestamps, TTL и poll interval;
 его строка ABI identity `unica-daemon-jsonl-3` входит в `CoreIdentity`, поэтому

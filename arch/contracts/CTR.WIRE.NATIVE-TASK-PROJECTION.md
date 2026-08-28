@@ -22,3 +22,8 @@ store; `updatedAt < createdAt` отклоняется. В `completed.result` л�
 находится в `structuredContent`, `content` пуст, а `isError`, `_meta` и
 `resultType` совпадают. Сериализованные `CallToolResult` и `DetailedTask` не
 превышают 8 MiB + 64 KiB; превышение возвращает закрытый `result_too_large`.
+
+`tasks/get`, `tasks/update` и `tasks/cancel` получают один absolute monotonic
+cutoff при входе во frontend, не позже 7000 мс + 125 мс от приёма запроса.
+Connect, handshake, request, response read и parse расходуют этот общий cutoff и
+не заменяют его отдельными окнами 125 мс.
