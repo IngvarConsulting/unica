@@ -5779,17 +5779,12 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn daemon_exact_long_work_ownership_contract() {
+        crate::infrastructure::runtime_jobs::reset_runtime_resource_contract_executions_for_test();
+
         daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership();
         daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication();
         daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication();
         crate::infrastructure::runtime_jobs::run_runtime_resource_tree_contract_for_test();
-    }
-
-    #[test]
-    fn daemon_named_contract_executes_runtime_resource_tree_evidence() {
-        crate::infrastructure::runtime_jobs::reset_runtime_resource_contract_executions_for_test();
-
-        daemon_exact_long_work_ownership_contract();
 
         assert_eq!(
             crate::infrastructure::runtime_jobs::runtime_resource_contract_executions_for_test(),
