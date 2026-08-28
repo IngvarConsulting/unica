@@ -887,7 +887,7 @@ impl RetainedDirectoryCapability {
                 ));
             }
         };
-        if let Err(error) = sync_renamed_regular_child(&published.file)
+        if let Err(error) = sync_renamed_regular_child(&staged.file)
             .and_then(|()| sync_directory(&self.retained.directory))
             .and_then(|()| published.validate_named_identity())
         {
@@ -954,7 +954,7 @@ impl RetainedDirectoryCapability {
                 return Err(RetainedPublicationError::before_rename(error));
             }
         };
-        if let Err(error) = sync_renamed_regular_child(&published.file)
+        if let Err(error) = sync_renamed_regular_child(&staged.file)
             .and_then(|()| sync_directory(&self.retained.directory))
             .and_then(|()| published.validate_named_identity_relative())
         {
@@ -3627,20 +3627,26 @@ fn rename_open_child(
     use std::ptr;
 
     #[repr(C)]
-    union RenameFlags {
-        replace_if_exists: u8,
-        flags: u32,
-    }
-
-    #[repr(C)]
     struct RenameInformation {
-        anonymous: RenameFlags,
+        flags: u32,
         root_directory: windows_sys::Win32::Foundation::HANDLE,
         file_name_length: u32,
         file_name: [u16; 1],
     }
 
     const FILE_RENAME_INFORMATION_CLASS: u32 = 10;
+    const FILE_RENAME_INFORMATION_EX_CLASS: u32 = 65;
+    const FILE_RENAME_REPLACE_IF_EXISTS: u32 = 0x0000_0001;
+    const FILE_RENAME_POSIX_SEMANTICS: u32 = 0x0000_0002;
+
+    let (information_class, rename_flags) = if replace_if_exists {
+        (
+            FILE_RENAME_INFORMATION_EX_CLASS,
+            FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS,
+        )
+    } else {
+        (FILE_RENAME_INFORMATION_CLASS, 0)
+    };
 
     let name = relative_child_name(destination_name)?;
     let name_bytes = name
@@ -3655,11 +3661,11 @@ fn rename_open_child(
     let mut storage = vec![0usize; word_count];
     let information = storage.as_mut_ptr().cast::<RenameInformation>();
     // SAFETY: storage is pointer-aligned and large enough for the fixed header plus the complete
-    // UTF-16 name. All fields are initialized before NtSetInformationFile reads the buffer.
+    // UTF-16 name. All fields are initialized before NtSetInformationFile reads the buffer. The
+    // legacy no-replace class interprets the zero low byte as ReplaceIfExists=false; the extended
+    // replacement class consumes the complete flags word.
     unsafe {
-        ptr::addr_of_mut!((*information).anonymous).write(RenameFlags {
-            replace_if_exists: u8::from(replace_if_exists),
-        });
+        ptr::addr_of_mut!((*information).flags).write(rename_flags);
         ptr::addr_of_mut!((*information).root_directory).write(destination_parent.as_raw_handle());
         ptr::addr_of_mut!((*information).file_name_length).write(name_bytes as u32);
         ptr::copy_nonoverlapping(
@@ -3680,7 +3686,7 @@ fn rename_open_child(
             &mut status,
             information.cast(),
             information_length,
-            FILE_RENAME_INFORMATION_CLASS,
+            information_class,
         )
     };
     if result < 0 {
@@ -6404,6 +6410,9 @@ mod tests {
             fs::create_dir_all(&root).unwrap();
             fs::write(root.join("record.json"), b"old").unwrap();
             let directory = RetainedDirectoryCapability::open(&root).unwrap();
+            let previous = directory
+                .retain_regular_child(std::ffi::OsStr::new("record.json"))
+                .unwrap();
 
             let published = directory
                 .replace_regular_child_atomically(
@@ -6415,6 +6424,12 @@ mod tests {
 
             published.validate_named_identity().unwrap();
             assert_eq!(published.read_bounded(16).unwrap(), b"new");
+            assert_eq!(
+                previous.read_bounded(16).unwrap(),
+                b"old",
+                "an already-retained preimage must remain readable after POSIX replacement"
+            );
+            drop(previous);
             drop(published);
             drop(directory);
             fs::remove_dir_all(root).unwrap();
@@ -6922,7 +6937,7 @@ mod tests {
 
     #[test]
     fn retained_atomic_replace_flushes_renamed_handle_before_directory_sync() {
-        let source = include_str!("filesystem.rs");
+        let source = include_str!("filesystem.rs").replace("\r\n", "\n");
         let start = source
             .find("pub(crate) fn replace_regular_child_atomically(")
             .expect("retained atomic publisher exists");
@@ -6945,6 +6960,10 @@ mod tests {
             rename < renamed_flush && renamed_flush < directory_sync,
             "rename must precede descriptor flush, which must precede directory sync"
         );
+        assert!(
+            publisher.contains("sync_renamed_regular_child(&staged.file)"),
+            "the still-writable staged handle must flush the physical object after rename"
+        );
 
         let windows_start = source
             .find("#[cfg(windows)]\npub(crate) fn replace_identity_bound_regular_child(")
@@ -6956,6 +6975,17 @@ mod tests {
         let windows_replace = &source[windows_start..windows_end];
         assert!(windows_replace.contains("rename_open_child("));
         assert!(!windows_replace.contains("MoveFileExW"));
+
+        let rename_start = source
+            .find("#[cfg(windows)]\nfn rename_open_child(")
+            .expect("Windows handle-bound rename exists");
+        let rename_end = source[rename_start..]
+            .find("#[cfg(unix)]\npub(crate) fn create_owner_only_directory_child(")
+            .map(|offset| rename_start + offset)
+            .expect("Windows handle-bound rename has a bounded source slice");
+        let windows_rename = &source[rename_start..rename_end];
+        assert!(windows_rename.contains("FILE_RENAME_INFORMATION_EX_CLASS"));
+        assert!(windows_rename.contains("FILE_RENAME_POSIX_SEMANTICS"));
     }
 
     #[cfg(windows)]

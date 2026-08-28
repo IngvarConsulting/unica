@@ -2513,7 +2513,9 @@ pub(crate) mod tests {
     use crate::domain::platform_profile::PlatformProfile;
     use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
     use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::native_operations::apply::ApplyStagingErrorKind;
+    use crate::infrastructure::native_operations::apply::{
+        ApplyStagedState, ApplyStagingErrorKind,
+    };
     use crate::infrastructure::native_operations::event::{
         plan_event_implement_batch, EventImplementArgs, EventPlanError, PlannedApplyEffects,
     };
@@ -2522,8 +2524,10 @@ pub(crate) mod tests {
         SourceRevisionFence,
     };
     use crate::infrastructure::platform::testing::{
+        attempt_retained_directory_replacement_for_test,
         can_swap_named_child_behind_retained_handle_for_test, create_file_link_fixture_for_test,
-        set_unix_mode_for_test, FileLinkFixtureOutcome,
+        path_identity_for_test, set_unix_mode_for_test, FileLinkFixtureOutcome,
+        RetainedDirectoryReplacementOutcome,
     };
     use crate::infrastructure::source_revision::SourceRevisionService;
     use crate::infrastructure::support_policy_evidence::SupportPolicyMode;
@@ -3785,10 +3789,19 @@ pub(crate) mod tests {
         assert_ne!(state_roots[0], state_roots[2]);
         assert_ne!(state_roots[1], state_roots[2]);
 
-        let legacy_direct =
-            crate::infrastructure::source_revision::SourceRevisionService::new(&context, &source)
-                .unwrap();
+        let legacy_direct = crate::infrastructure::source_revision::SourceRevisionService::new_reconciling_for_test(
+            &context,
+            &source,
+        )
+        .unwrap();
         legacy_direct.snapshot(deadline(), &cancellation).unwrap();
+        assert_eq!(
+            std::fs::read_dir(context.cache_root.join("source-revisions"))
+                .unwrap()
+                .count(),
+            records + 1,
+            "direct legacy revision did not publish exactly one physical-scope record"
+        );
         let legacy_identity = WorkspaceIdentity::new(
             &context,
             [WorkspaceSourceSetInput::new(
@@ -3812,7 +3825,7 @@ pub(crate) mod tests {
             std::fs::read_dir(context.cache_root.join("source-revisions"))
                 .unwrap()
                 .count(),
-            4,
+            records + 1,
             "legacy adapter moved the v0.12 revision namespace"
         );
         let direct_index = crate::infrastructure::workspace_index::WorkspaceIndexService::new()
@@ -7787,16 +7800,26 @@ pub(crate) mod tests {
                 &CancellationToken::new(),
             )
             .unwrap();
-        let mut state = admitted.staged_state().unwrap();
+        let other_fixture = actor_fixture("prepare-kind-containment-other", &["src"]);
+        std::fs::write(other_fixture.roots[0].join("Module.bsl"), b"original").unwrap();
+        let other_binding = other_fixture
+            .actor
+            .bind_provider_root("src", &other_fixture.roots[0])
+            .unwrap();
+        let mut state = ApplyStagedState::from_retained_root(
+            Arc::clone(&other_binding.source_root),
+            admitted.deadline,
+            admitted.cancellation.clone(),
+            admitted.writer_authority.clone(),
+        );
         state
             .replace("Module.bsl", b"original", b"replacement".to_vec())
             .unwrap();
-        std::fs::rename(&fixture.roots[0], fixture.root.join("src-displaced")).unwrap();
-        std::fs::create_dir(&fixture.roots[0]).unwrap();
         observed.push((
             ApplyStagingErrorKind::ContainmentIdentity,
             admitted.prepare(state).unwrap_err().kind(),
         ));
+        other_fixture.cleanup();
         fixture.cleanup();
 
         let fixture = actor_fixture("prepare-kind-occupied", &["src"]);
@@ -7875,6 +7898,11 @@ pub(crate) mod tests {
         ));
         fixture.cleanup();
 
+        assert_eq!(
+            observed.len(),
+            6,
+            "typed staging error matrix is incomplete"
+        );
         for (expected, actual) in observed {
             assert_eq!(actual, expected, "actor preparation erased {expected:?}");
         }
@@ -8124,22 +8152,38 @@ pub(crate) mod tests {
             .unwrap();
         let prepared = admitted.prepare(state).unwrap();
         let displaced = first.root.join("src-displaced");
-        std::fs::rename(&first.roots[0], &displaced).unwrap();
-        std::fs::create_dir_all(&first.roots[0]).unwrap();
-        std::fs::write(first.roots[0].join("Module.bsl"), b"replacement-tree").unwrap();
-        assert!(first
-            .actor
-            .publish_prepared_apply(prepared)
-            .unwrap_err()
-            .contains("physical identity"));
-        assert_eq!(
-            std::fs::read(displaced.join("Module.bsl")).unwrap(),
-            b"original"
-        );
-        assert_eq!(
-            std::fs::read(first.roots[0].join("Module.bsl")).unwrap(),
-            b"replacement-tree"
-        );
+        let retained_identity = path_identity_for_test(&first.roots[0])
+            .unwrap()
+            .expect("source root identity must be available on supported CI platforms");
+        match attempt_retained_directory_replacement_for_test(&first.roots[0], &displaced).unwrap()
+        {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                std::fs::create_dir_all(&first.roots[0]).unwrap();
+                std::fs::write(first.roots[0].join("Module.bsl"), b"replacement-tree").unwrap();
+                assert!(first
+                    .actor
+                    .publish_prepared_apply(prepared)
+                    .unwrap_err()
+                    .contains("physical identity"));
+                assert_eq!(
+                    std::fs::read(displaced.join("Module.bsl")).unwrap(),
+                    b"original"
+                );
+                assert_eq!(
+                    std::fs::read(first.roots[0].join("Module.bsl")).unwrap(),
+                    b"replacement-tree"
+                );
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&first.roots[0]).unwrap().as_deref(),
+                    Some(retained_identity.as_str())
+                );
+                assert!(!displaced.exists());
+                first.actor.publish_prepared_apply(prepared).unwrap();
+                assert_eq!(std::fs::read(&target).unwrap(), b"redirected");
+            }
+        }
         first.cleanup();
         second.cleanup();
     }
@@ -8514,22 +8558,50 @@ pub(crate) mod tests {
         let named_root = fixture.roots[0].clone();
         let displaced = fixture.root.join("src-dry-race-displaced");
         let hook_displaced = displaced.clone();
+        let retained_identity = path_identity_for_test(&named_root)
+            .unwrap()
+            .expect("source root identity must be available on supported CI platforms");
+        let (replacement_tx, replacement_rx) = mpsc::sync_channel(1);
         set_apply_dry_run_after_confirmation_hook(move || {
-            std::fs::rename(&named_root, &hook_displaced).unwrap();
-            std::fs::create_dir_all(&named_root).unwrap();
-            std::fs::write(named_root.join("Module.bsl"), b"replacement-tree").unwrap();
+            let replacement =
+                attempt_retained_directory_replacement_for_test(&named_root, &hook_displaced)
+                    .unwrap();
+            if replacement == RetainedDirectoryReplacementOutcome::Replaced {
+                std::fs::create_dir_all(&named_root).unwrap();
+                std::fs::write(named_root.join("Module.bsl"), b"replacement-tree").unwrap();
+            }
+            replacement_tx.send(replacement).unwrap();
         });
 
-        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-        assert!(error.contains("physical identity"), "{error}");
-        assert_eq!(
-            std::fs::read(displaced.join("Module.bsl")).unwrap(),
-            b"original"
-        );
-        assert_eq!(
-            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
-            b"replacement-tree"
-        );
+        let publication = fixture.actor.publish_prepared_apply(prepared);
+        let replacement = replacement_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("dry-run replacement hook did not report its platform outcome");
+        match replacement {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                let error = publication.unwrap_err();
+                assert!(error.contains("physical identity"), "{error}");
+                assert_eq!(
+                    std::fs::read(displaced.join("Module.bsl")).unwrap(),
+                    b"original"
+                );
+                assert_eq!(
+                    std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+                    b"replacement-tree"
+                );
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&fixture.roots[0])
+                        .unwrap()
+                        .as_deref(),
+                    Some(retained_identity.as_str())
+                );
+                assert!(!displaced.exists());
+                publication.unwrap();
+                assert_eq!(std::fs::read(&target).unwrap(), b"original");
+            }
+        }
         fixture.cleanup();
     }
 
@@ -9059,18 +9131,38 @@ pub(crate) mod tests {
             prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
         assert!(!prepared.effects.events.is_empty());
         let displaced = fixture.root.join("main-displaced");
-        std::fs::rename(&fixture.roots[0], &displaced).unwrap();
-        std::fs::create_dir_all(&fixture.roots[0]).unwrap();
-        std::fs::write(fixture.roots[0].join("foreign.txt"), b"foreign").unwrap();
-        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-        assert_eq!(
-            error.kind(),
-            super::ApplyPublicationErrorKind::ContainmentIdentity
-        );
-        assert_eq!(
-            std::fs::read(fixture.roots[0].join("foreign.txt")).unwrap(),
-            b"foreign"
-        );
+        let retained_identity = path_identity_for_test(&fixture.roots[0])
+            .unwrap()
+            .expect("source root identity must be available on supported CI platforms");
+        match attempt_retained_directory_replacement_for_test(&fixture.roots[0], &displaced)
+            .unwrap()
+        {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                std::fs::create_dir_all(&fixture.roots[0]).unwrap();
+                std::fs::write(fixture.roots[0].join("foreign.txt"), b"foreign").unwrap();
+                let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+                assert_eq!(
+                    error.kind(),
+                    super::ApplyPublicationErrorKind::ContainmentIdentity
+                );
+                assert_eq!(
+                    std::fs::read(fixture.roots[0].join("foreign.txt")).unwrap(),
+                    b"foreign"
+                );
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&fixture.roots[0])
+                        .unwrap()
+                        .as_deref(),
+                    Some(retained_identity.as_str())
+                );
+                assert!(!displaced.exists());
+                let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
+                assert!(!result.effects().events().is_empty());
+                assert!(!fixture.roots[0].join("foreign.txt").exists());
+            }
+        }
         fixture.cleanup();
 
         let fixture = actor_fixture("effect-race-cache-root", &["main"]);

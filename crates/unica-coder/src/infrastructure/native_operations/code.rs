@@ -1897,7 +1897,8 @@ pub(super) mod tests {
         resolve_line_ending, EolPolicy, LineEnding, SourceTextSnapshot,
     };
     use crate::infrastructure::platform::testing::{
-        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        attempt_retained_directory_replacement_for_test, create_file_link_fixture_for_test,
+        path_identity_for_test, FileLinkFixtureOutcome, RetainedDirectoryReplacementOutcome,
     };
     use crate::infrastructure::support_policy_evidence::SupportPolicyMode;
     use crate::infrastructure::workspace_actor::{
@@ -4437,20 +4438,54 @@ pub(super) mod tests {
             plan_admitted_code(&root_admission, &replaced_root.binding, &operation).unwrap();
         let prepared = root_admission.prepare_with_effects(state, effects).unwrap();
         let retained_source = replaced_root.root.join("retained-source");
-        fs::rename(&replaced_root.source, &retained_source).unwrap();
-        fs::create_dir(&replaced_root.source).unwrap();
-        assert!(replaced_root
-            .actor
-            .publish_prepared_apply(prepared)
-            .is_err());
-        assert_eq!(
-            fs::read(retained_source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
-            b"Procedure Base()\nEndProcedure\n"
-        );
-        assert!(fs::read_dir(&replaced_root.source)
+        let retained_identity = path_identity_for_test(&replaced_root.source)
             .unwrap()
-            .next()
-            .is_none());
+            .expect("source root identity must be available on supported CI platforms");
+        let replacement = attempt_retained_directory_replacement_for_test(
+            &replaced_root.source,
+            &retained_source,
+        )
+        .unwrap();
+        match replacement {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                fs::create_dir(&replaced_root.source).unwrap();
+                assert!(replaced_root
+                    .actor
+                    .publish_prepared_apply(prepared)
+                    .is_err());
+                assert_eq!(
+                    fs::read(retained_source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+                    b"Procedure Base()\nEndProcedure\n"
+                );
+                assert!(fs::read_dir(&replaced_root.source)
+                    .unwrap()
+                    .next()
+                    .is_none());
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&replaced_root.source)
+                        .unwrap()
+                        .as_deref(),
+                    Some(retained_identity.as_str())
+                );
+                assert!(!retained_source.exists());
+                let result = replaced_root
+                    .actor
+                    .publish_prepared_apply(prepared)
+                    .unwrap();
+                assert_eq!(result.effects().events().len(), 1);
+                let module = fs::read(
+                    replaced_root
+                        .source
+                        .join("CommonModules/Sample/Ext/Module.bsl"),
+                )
+                .unwrap();
+                assert!(module
+                    .windows(b"Procedure Added()".len())
+                    .any(|window| { window == b"Procedure Added()" }));
+            }
+        }
         replaced_root.cleanup();
 
         let linked = staged_code_fixture("guards-link", b"Procedure Base()\nEndProcedure\n");

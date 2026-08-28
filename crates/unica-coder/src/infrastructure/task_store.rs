@@ -2126,6 +2126,7 @@ pub(crate) mod tests {
             None,
         );
         store.create(record).unwrap();
+        drop(store);
 
         let mut all_bytes = Vec::new();
         collect_recursive_bytes(root.path(), &mut all_bytes);
@@ -2185,7 +2186,9 @@ pub(crate) mod tests {
     #[test]
     fn retained_root_handle_prevents_symlink_swap_from_redirecting_updates() {
         use crate::infrastructure::platform::testing::{
-            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+            attempt_retained_directory_replacement_for_test,
+            create_directory_link_fixture_for_test, path_identity_for_test, FileLinkFixtureOutcome,
+            RetainedDirectoryReplacementOutcome,
         };
 
         let parent = tempfile::tempdir().unwrap();
@@ -2197,11 +2200,26 @@ pub(crate) mod tests {
         let clock = Arc::new(ManualEpochClock::at(13_000));
         let (store, _) = open_store(&root_path, clock);
         let created = store.create(new_record(10_000, None)).unwrap();
-        fs::rename(&root_path, &displaced_path).unwrap();
-        let link_outcome =
-            create_directory_link_fixture_for_test(&attacker_path, &root_path).unwrap();
-        if link_outcome != FileLinkFixtureOutcome::Created {
-            return;
+        let retained_identity = path_identity_for_test(&root_path)
+            .unwrap()
+            .expect("store root identity must be available on supported CI platforms");
+        let replacement =
+            attempt_retained_directory_replacement_for_test(&root_path, &displaced_path).unwrap();
+        match replacement {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                let link_outcome =
+                    create_directory_link_fixture_for_test(&attacker_path, &root_path).unwrap();
+                if link_outcome != FileLinkFixtureOutcome::Created {
+                    return;
+                }
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&root_path).unwrap().as_deref(),
+                    Some(retained_identity.as_str())
+                );
+                assert!(!displaced_path.exists());
+            }
         }
 
         let updated = store
@@ -2214,9 +2232,13 @@ pub(crate) mod tests {
             .unwrap();
 
         assert_eq!(store.get(created.task_id).unwrap(), updated);
+        let authoritative_root = match replacement {
+            RetainedDirectoryReplacementOutcome::Replaced => &displaced_path,
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => &root_path,
+        };
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(
-                &fs::read(displaced_path.join(format!("{}.json", created.task_id))).unwrap()
+                &fs::read(authoritative_root.join(format!("{}.json", created.task_id))).unwrap()
             )
             .unwrap()["status"],
             "working"

@@ -96,6 +96,41 @@ pub(crate) fn can_swap_named_child_behind_retained_handle_for_test() -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetainedDirectoryReplacementOutcome {
+    Replaced,
+    PreventedByRetainedHandle,
+}
+
+pub(crate) fn attempt_retained_directory_replacement_for_test(
+    named: &Path,
+    displaced: &Path,
+) -> io::Result<RetainedDirectoryReplacementOutcome> {
+    match std::fs::rename(named, displaced) {
+        Ok(()) => Ok(RetainedDirectoryReplacementOutcome::Replaced),
+        Err(error) if windows_retained_directory_replacement_was_prevented(&error) => {
+            Ok(RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn windows_retained_directory_replacement_was_prevented(error: &io::Error) -> bool {
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+
+    matches!(
+        error.raw_os_error(),
+        Some(ERROR_ACCESS_DENIED) | Some(ERROR_SHARING_VIOLATION)
+    )
+}
+
+#[cfg(not(windows))]
+fn windows_retained_directory_replacement_was_prevented(_error: &io::Error) -> bool {
+    false
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileLinkFixtureOutcome {
     Created,
     Unsupported,

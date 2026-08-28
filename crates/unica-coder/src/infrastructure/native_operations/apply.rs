@@ -764,7 +764,8 @@ pub(crate) mod tests {
         RetainedDirectoryCapability,
     };
     use crate::infrastructure::platform::testing::{
-        create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        attempt_retained_directory_replacement_for_test, create_directory_link_fixture_for_test,
+        path_identity_for_test, FileLinkFixtureOutcome, RetainedDirectoryReplacementOutcome,
     };
     use std::cell::Cell;
     use std::path::{Path, PathBuf};
@@ -1053,23 +1054,51 @@ pub(crate) mod tests {
                 Some(b"original race bytes".to_vec())
             );
             let displaced = root.join("Race-displaced");
-            std::fs::rename(root.join("Race"), &displaced).unwrap();
-            assert_eq!(
-                create_directory_link_fixture_for_test(&external, root.join("Race")).unwrap(),
-                FileLinkFixtureOutcome::Created
-            );
-            raced
-                .replace(
-                    "Race/Module.bsl",
-                    b"original race bytes",
-                    b"must not redirect".to_vec(),
-                )
-                .unwrap();
-            assert!(raced.finalize().unwrap_err().contains("link/reparse"));
-            assert_eq!(
-                std::fs::read(displaced.join("Module.bsl")).unwrap(),
-                b"original race bytes"
-            );
+            let race_root = root.join("Race");
+            let retained_identity = path_identity_for_test(&race_root)
+                .unwrap()
+                .expect("race root identity must be available on supported CI platforms");
+            let replacement =
+                attempt_retained_directory_replacement_for_test(&race_root, &displaced).unwrap();
+            match replacement {
+                RetainedDirectoryReplacementOutcome::Replaced => {
+                    assert_eq!(
+                        create_directory_link_fixture_for_test(&external, &race_root).unwrap(),
+                        FileLinkFixtureOutcome::Created
+                    );
+                    raced
+                        .replace(
+                            "Race/Module.bsl",
+                            b"original race bytes",
+                            b"must not redirect".to_vec(),
+                        )
+                        .unwrap();
+                    assert!(raced.finalize().unwrap_err().contains("link/reparse"));
+                    assert_eq!(
+                        std::fs::read(displaced.join("Module.bsl")).unwrap(),
+                        b"original race bytes"
+                    );
+                }
+                RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                    assert_eq!(
+                        path_identity_for_test(&race_root).unwrap().as_deref(),
+                        Some(retained_identity.as_str())
+                    );
+                    assert!(!displaced.exists());
+                    raced
+                        .replace(
+                            "Race/Module.bsl",
+                            b"original race bytes",
+                            b"must not redirect".to_vec(),
+                        )
+                        .unwrap();
+                    assert_eq!(raced.finalize().unwrap().planned_changes().len(), 1);
+                    assert_eq!(
+                        std::fs::read(race_root.join("Module.bsl")).unwrap(),
+                        b"original race bytes"
+                    );
+                }
+            }
             assert_eq!(
                 std::fs::read(external.join("Module.bsl")).unwrap(),
                 b"external decoy"
