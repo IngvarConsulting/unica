@@ -13,6 +13,15 @@ path = "src/main.rs"
 name = "unica_coder"
 path = "src/lib.rs"
 
+[features]
+default = []
+receipt-ledger-test-support = []
+
+[[test]]
+name = "daemon_receipt_ledger"
+path = "tests/daemon_receipt_ledger.rs"
+required-features = ["receipt-ledger-test-support"]
+
 [dependencies]
 bsl-parser.workspace = true
 # Доставку движка по требованию ведёт тот же установщик, что ставит ядро:
