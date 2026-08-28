@@ -2316,7 +2316,7 @@ mod tests {
 
         assert!(
             matches!(connection, Ok(ExistingDaemon::Connected(_))),
-            "established handshake transport failure was not retried: {connection:?}"
+            "established handshake transport failure was not retried"
         );
         assert!(served_retry, "retry did not use a fresh connection");
     }
