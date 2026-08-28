@@ -1076,6 +1076,8 @@ pub(crate) struct DaemonServerConfig {
     #[cfg(test)]
     invocation_clock: Option<Arc<dyn Clock>>,
     #[cfg(test)]
+    startup_pause: Option<Arc<HandshakePause>>,
+    #[cfg(test)]
     handshake_pause: Option<Arc<HandshakePause>>,
 }
 
@@ -1096,6 +1098,8 @@ impl DaemonServerConfig {
             reconciliation_budget: None,
             #[cfg(test)]
             invocation_clock: None,
+            #[cfg(test)]
+            startup_pause: None,
             #[cfg(test)]
             handshake_pause: None,
         }
@@ -1128,6 +1132,12 @@ impl DaemonServerConfig {
     #[cfg(test)]
     pub(crate) fn with_invocation_clock_for_test(mut self, clock: Arc<dyn Clock>) -> Self {
         self.invocation_clock = Some(clock);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_startup_pause(mut self, pause: &HandshakePauseGuard) -> Self {
+        self.startup_pause = Some(Arc::clone(&pause.pause));
         self
     }
 
@@ -1205,6 +1215,8 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
 
     let record = EndpointRecord::new(config.core_identity.clone(), port);
     let published = state.publish_endpoint_record(&record)?;
+    #[cfg(test)]
+    pause_test_thread_if_configured(config.startup_pause.clone());
     let active_leases = Arc::new(LeaseRegistry::default());
     let admitted_connections = Arc::new(AtomicUsize::new(0));
     let shutting_down = Arc::new(AtomicBool::new(false));
@@ -1281,7 +1293,7 @@ fn spawn_connection_handler(
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         #[cfg(test)]
-        pause_before_handshake_if_configured(handshake_pause);
+        pause_test_thread_if_configured(handshake_pause);
         let _ = handle_connection(
             stream,
             &record,
@@ -4989,11 +5001,11 @@ struct ActorLogicalReadLease {"#,
         dirty_done: mpsc::Sender<()>,
     }
 
-    struct UncertainCancelStore {
+    struct UnavailableCancelStore {
         inner: FileInvocationStore,
     }
 
-    impl InvocationStore for UncertainCancelStore {
+    impl InvocationStore for UnavailableCancelStore {
         fn create(
             &self,
             record: NewInvocationRecord,
@@ -5025,13 +5037,10 @@ struct ActorLogicalReadLease {"#,
 
         fn cancel(
             &self,
-            task_id: crate::domain::invocation::TaskId,
+            _task_id: crate::domain::invocation::TaskId,
             _status_message: SafeStatusMessage,
         ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            Err(InvocationStoreError::CommitUncertain {
-                task_id,
-                operation: crate::application::invocation_store::CommitOperation::Cancel,
-            })
+            Err(InvocationStoreError::ActorUnavailable)
         }
     }
 
@@ -5957,14 +5966,16 @@ struct ActorLogicalReadLease {"#,
             FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
         let (entered, entered_wait) = mpsc::channel();
         let (release, release_wait) = mpsc::channel();
-        let runtime = DaemonInvocationRuntime::new_with_reconciliation_budget_for_test(
-            Arc::new(UncertainCancelStore { inner: store }),
+        // Trigger fail-stop at the cancel boundary itself. A shortened reconciliation budget
+        // also bounds the preceding create_working store call and makes this a scheduler-speed
+        // test instead of a process-owned resource-lifetime test.
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(UnavailableCancelStore { inner: store }),
             Arc::new(NonCooperativeActorService {
                 entered,
                 release: Mutex::new(release_wait),
             }),
             Arc::new(TokioClock),
-            Duration::from_millis(100),
         );
         let request = InvocationRequest::new(
             ToolIdentity::Run,
@@ -6236,7 +6247,12 @@ pub(crate) fn install_handshake_pause() -> HandshakePauseGuard {
 }
 
 #[cfg(test)]
-fn pause_before_handshake_if_configured(pause: Option<Arc<HandshakePause>>) {
+pub(crate) fn install_startup_pause() -> HandshakePauseGuard {
+    install_handshake_pause()
+}
+
+#[cfg(test)]
+fn pause_test_thread_if_configured(pause: Option<Arc<HandshakePause>>) {
     let Some(pause) = pause else {
         return;
     };

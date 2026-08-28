@@ -18,9 +18,10 @@ mod tests {
         MAX_DAEMON_REQUEST_LINE_BYTES, MAX_DAEMON_RESPONSE_LINE_BYTES,
     };
     use super::server::{
-        install_handshake_pause, run_daemon, workspace_capacity_protocol_code_for_test,
-        write_bytes_before, ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService,
-        DaemonServerConfig, MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
+        install_handshake_pause, install_startup_pause, run_daemon,
+        workspace_capacity_protocol_code_for_test, write_bytes_before, ActorBoundExecution,
+        ActorBoundInvocation, CanonicalInvocationService, DaemonServerConfig, MAX_HANDSHAKES,
+        MAX_OWNER_SESSIONS,
     };
     use super::v13_service::CanonicalV13ReadService;
     use crate::application::invocation_store::{
@@ -336,6 +337,7 @@ mod tests {
 
     struct SizedResultService {
         summary_bytes: usize,
+        class: ExecutionClass,
     }
 
     struct ManualInvocationClock(Mutex<Instant>);
@@ -542,7 +544,7 @@ mod tests {
             &self,
             _invocation: &ActorBoundInvocation,
         ) -> Result<ExecutionClass, Box<DomainResult>> {
-            Ok(ExecutionClass::InlineCandidate)
+            Ok(self.class)
         }
 
         fn execute(
@@ -683,7 +685,10 @@ mod tests {
         let physical = physical_root(root.path());
         let identity = CoreIdentity::production();
         let config = server_config(root.path().to_path_buf(), identity.clone())
-            .with_invocation_service(Arc::new(SizedResultService { summary_bytes }));
+            .with_invocation_service(Arc::new(SizedResultService {
+                summary_bytes,
+                class: ExecutionClass::InlineCandidate,
+            }));
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, _record) = wait_for_record(root.path(), &identity);
         let client = DaemonClient::new(DaemonClientConfig::existing_only(
@@ -714,27 +719,51 @@ mod tests {
             summary_bytes
         );
 
-        let task_id = match owner
+        drop(owner);
+        server.join().unwrap().unwrap();
+
+        let task_root = tempfile::tempdir().unwrap();
+        let task_physical = physical_root(task_root.path());
+        let task_identity = CoreIdentity::production();
+        let task_config = server_config(task_root.path().to_path_buf(), task_identity.clone())
+            .with_invocation_service(Arc::new(SizedResultService {
+                summary_bytes,
+                class: ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+            }));
+        let task_server = thread::spawn(move || run_daemon(task_config));
+        let (_directory, _record) = wait_for_record(task_root.path(), &task_identity);
+        let task_client = DaemonClient::new(DaemonClientConfig::existing_only(
+            task_physical.clone(),
+            task_identity,
+        ));
+        let mut task_owner = match task_client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+
+        let task_id = match task_owner
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
                     serde_json::json!({}),
-                    physical.to_string_lossy(),
-                    0,
+                    task_physical.to_string_lossy(),
+                    7_000,
                 )
                 .unwrap(),
             )
             .unwrap()
         {
             InvocationResponse::Task(snapshot) => snapshot.task_id,
-            other => panic!("zero-budget sized result was not a task: {other:?}"),
+            other => panic!("known-long sized result was not a task: {other:?}"),
         };
-        let terminal = owner.wait_task(task_id, INTEGRATION_TASK_WAIT_MS).unwrap();
+        let terminal = task_owner
+            .wait_task(task_id, INTEGRATION_TASK_WAIT_MS)
+            .unwrap();
         assert_eq!(terminal.status, InvocationStatus::Completed);
         assert_eq!(terminal.result.unwrap().summary.len(), summary_bytes);
 
-        drop(owner);
-        server.join().unwrap().unwrap();
+        drop(task_owner);
+        task_server.join().unwrap().unwrap();
     }
 
     #[test]
@@ -751,6 +780,7 @@ mod tests {
         let config = server_config(root.path().to_path_buf(), identity.clone())
             .with_invocation_service(Arc::new(SizedResultService {
                 summary_bytes: MAX_CANONICAL_RESULT_BYTES + 1,
+                class: ExecutionClass::InlineCandidate,
             }));
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, _record) = wait_for_record(root.path(), &identity);
@@ -779,28 +809,52 @@ mod tests {
             "daemon invocation submission rejected: result_too_large"
         );
 
-        let task_id = match owner
+        drop(owner);
+        server.join().unwrap().unwrap();
+
+        let task_root = tempfile::tempdir().unwrap();
+        let task_physical = physical_root(task_root.path());
+        let task_identity = CoreIdentity::production();
+        let task_config = server_config(task_root.path().to_path_buf(), task_identity.clone())
+            .with_invocation_service(Arc::new(SizedResultService {
+                summary_bytes: MAX_CANONICAL_RESULT_BYTES + 1,
+                class: ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+            }));
+        let task_server = thread::spawn(move || run_daemon(task_config));
+        let (_directory, _record) = wait_for_record(task_root.path(), &task_identity);
+        let task_client = DaemonClient::new(DaemonClientConfig::existing_only(
+            task_physical.clone(),
+            task_identity,
+        ));
+        let mut task_owner = match task_client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+
+        let task_id = match task_owner
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
                     serde_json::json!({}),
-                    physical.to_string_lossy(),
-                    0,
+                    task_physical.to_string_lossy(),
+                    7_000,
                 )
                 .unwrap(),
             )
             .unwrap()
         {
             InvocationResponse::Task(snapshot) => snapshot.task_id,
-            other => panic!("zero-budget oversized result was not a task: {other:?}"),
+            other => panic!("known-long oversized result was not a task: {other:?}"),
         };
-        let terminal = owner.wait_task(task_id, INTEGRATION_TASK_WAIT_MS).unwrap();
+        let terminal = task_owner
+            .wait_task(task_id, INTEGRATION_TASK_WAIT_MS)
+            .unwrap();
         assert_eq!(terminal.status, InvocationStatus::Failed);
         assert_eq!(terminal.failure.unwrap().code, "result_too_large");
         assert!(terminal.result.is_none());
 
-        drop(owner);
-        server.join().unwrap().unwrap();
+        drop(task_owner);
+        task_server.join().unwrap().unwrap();
     }
 
     fn assert_hostile_response_closes_owner_session(payload: Vec<u8>, expected_error: &str) {
@@ -2394,7 +2448,8 @@ mod tests {
 
     #[test]
     fn admitted_handshake_blocks_idle_exit_until_lease_is_registered() {
-        let pause = install_handshake_pause();
+        let startup_pause = install_startup_pause();
+        let handshake_pause = install_handshake_pause();
         let root = tempfile::tempdir().unwrap();
         let identity = CoreIdentity::production();
         let config = DaemonServerConfig::new(
@@ -2402,9 +2457,11 @@ mod tests {
             identity.clone(),
             Duration::from_millis(80),
         )
-        .with_handshake_pause(&pause);
+        .with_startup_pause(&startup_pause)
+        .with_handshake_pause(&handshake_pause);
         let server = thread::spawn(move || run_daemon(config));
         let (directory, record) = wait_for_record(root.path(), &identity);
+        startup_pause.wait_until_entered();
         let mut stream = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
         let request = ClientRequest::hello(
             DAEMON_PROTOCOL_VERSION,
@@ -2412,7 +2469,8 @@ mod tests {
             identity,
         );
         write_json_line(&mut stream, &request);
-        pause.wait_until_entered();
+        startup_pause.release();
+        handshake_pause.wait_until_entered();
 
         thread::sleep(Duration::from_millis(160));
         assert!(
@@ -2424,7 +2482,7 @@ mod tests {
             Some(record.clone())
         );
 
-        pause.release();
+        handshake_pause.release();
         let mut reader = BufReader::new(&stream);
         let ready: ServerResponse =
             serde_json::from_slice(&read_bounded_json_line(&mut reader).unwrap()).unwrap();

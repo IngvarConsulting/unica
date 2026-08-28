@@ -2658,22 +2658,91 @@ mod tests {
     fn wait_for_compatibility_daemon(
         state_root: &std::path::Path,
         identity: &crate::infrastructure::daemon::identity::CoreIdentity,
-    ) {
+        daemon_done: &std::sync::mpsc::Receiver<Result<(), String>>,
+        phase: &str,
+    ) -> crate::infrastructure::daemon::protocol::EndpointRecord {
         let deadline = Instant::now() + TEST_STEP;
         loop {
             let state = crate::infrastructure::daemon::identity::DaemonStateDirectory::open(
                 state_root, identity,
             )
             .unwrap();
-            if state.read_endpoint_record().unwrap().is_some() {
-                return;
+            if let Some(record) = state.read_endpoint_record().unwrap() {
+                return record;
+            }
+            match daemon_done.try_recv() {
+                Ok(Ok(())) => {
+                    panic!("{phase} compatibility daemon exited before its endpoint was observed")
+                }
+                Ok(Err(error)) => panic!(
+                    "{phase} compatibility daemon failed before publishing its endpoint: {error}"
+                ),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => panic!(
+                    "{phase} compatibility daemon outcome channel disconnected before publication"
+                ),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
             assert!(
                 Instant::now() < deadline,
-                "compatibility daemon endpoint was not published"
+                "{phase} compatibility daemon endpoint was not published"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn start_compatibility_daemon_with_anchor(
+        config: crate::infrastructure::daemon::server::DaemonServerConfig,
+        state_root: &std::path::Path,
+        identity: &crate::infrastructure::daemon::identity::CoreIdentity,
+        observation_delay: Duration,
+        phase: &str,
+    ) -> (
+        std::thread::JoinHandle<Result<(), String>>,
+        std::net::TcpStream,
+    ) {
+        use crate::infrastructure::daemon::protocol::{
+            read_bounded_json_line, ClientRequest, ServerResponse, DAEMON_PROTOCOL_VERSION,
+        };
+        use crate::infrastructure::daemon::server::{install_startup_pause, run_daemon};
+        use std::io::{BufReader as StdBufReader, Write};
+
+        let startup_pause = install_startup_pause();
+        let config = config.with_startup_pause(&startup_pause);
+        let (daemon_done, daemon_done_wait) = std::sync::mpsc::channel();
+        let daemon = std::thread::spawn(move || {
+            let outcome = run_daemon(config);
+            let _ = daemon_done.send(outcome.clone());
+            outcome
+        });
+
+        // Deliberately model a runner scheduling gap longer than the short test idle grace.
+        // The post-publication gate must retain the endpoint until an authenticated owner is
+        // already queued; merely polling the endpoint leaves a publication-to-connect race.
+        std::thread::sleep(observation_delay);
+        let record = wait_for_compatibility_daemon(state_root, identity, &daemon_done_wait, phase);
+
+        let mut anchor = std::net::TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
+        anchor.set_read_timeout(Some(TEST_STEP)).unwrap();
+        let mut hello = serde_json::to_vec(&ClientRequest::hello(
+            DAEMON_PROTOCOL_VERSION,
+            record.token().to_string(),
+            identity.clone(),
+        ))
+        .unwrap();
+        hello.push(b'\n');
+        anchor.write_all(&hello).unwrap();
+        anchor.flush().unwrap();
+        startup_pause.release();
+
+        let ready: ServerResponse = serde_json::from_slice(
+            &read_bounded_json_line(&mut StdBufReader::new(anchor.try_clone().unwrap())).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            ready.matches_record(&record),
+            "{phase} compatibility daemon rejected its queued startup anchor: {ready:?}"
+        );
+        (daemon, anchor)
     }
 
     fn connect_compatibility_daemon(
@@ -2696,7 +2765,7 @@ mod tests {
     async fn compatibility_daemon_restart_case() {
         use crate::domain::invocation::TaskId;
         use crate::infrastructure::daemon::identity::CoreIdentity;
-        use crate::infrastructure::daemon::server::{run_daemon, DaemonServerConfig};
+        use crate::infrastructure::daemon::server::DaemonServerConfig;
         use std::str::FromStr;
 
         let state = tempfile::tempdir().unwrap();
@@ -2716,16 +2785,20 @@ mod tests {
         let service = Arc::new(CompatibilityRestartService {
             executions: Arc::clone(&executions),
         });
-        let first_config = DaemonServerConfig::new(
-            state_root.clone(),
-            identity.clone(),
-            Duration::from_millis(350),
-        )
-        .with_invocation_service(service);
-        let first_daemon = std::thread::spawn(move || run_daemon(first_config));
-        wait_for_compatibility_daemon(&state_root, &identity);
+        let idle_grace = Duration::from_millis(350);
+        let first_config =
+            DaemonServerConfig::new(state_root.clone(), identity.clone(), idle_grace)
+                .with_invocation_service(service);
+        let (first_daemon, first_startup_anchor) = start_compatibility_daemon_with_anchor(
+            first_config,
+            &state_root,
+            &identity,
+            idle_grace * 2,
+            "first",
+        );
 
         let first_owner = connect_compatibility_daemon(state_root.clone(), identity.clone());
+        drop(first_startup_anchor);
         let (mut first, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
             first_owner,
             workspace_hint.clone(),
@@ -2777,14 +2850,17 @@ mod tests {
         first.shutdown().await;
         first_daemon.join().unwrap().unwrap();
 
-        let second_config = DaemonServerConfig::new(
-            state_root.clone(),
-            identity.clone(),
-            Duration::from_millis(350),
+        let second_config =
+            DaemonServerConfig::new(state_root.clone(), identity.clone(), idle_grace);
+        let (second_daemon, second_startup_anchor) = start_compatibility_daemon_with_anchor(
+            second_config,
+            &state_root,
+            &identity,
+            Duration::ZERO,
+            "second",
         );
-        let second_daemon = std::thread::spawn(move || run_daemon(second_config));
-        wait_for_compatibility_daemon(&state_root, &identity);
         let second_owner = connect_compatibility_daemon(state_root, identity);
+        drop(second_startup_anchor);
         let (mut second, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
             second_owner,
             workspace_hint,

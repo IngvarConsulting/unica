@@ -3973,8 +3973,9 @@ pub(crate) use tests::assert_system_cancellation_reaps_process_tree;
 pub(crate) mod tests {
     use super::*;
     use crate::infrastructure::platform::testing::{
-        create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
-        FileLinkFixtureOutcome,
+        attempt_retained_directory_replacement_for_test, create_directory_link_fixture_for_test,
+        create_file_link_fixture_for_test, path_identity_for_test, FileLinkFixtureOutcome,
+        RetainedDirectoryReplacementOutcome,
     };
     use serde_json::{json, Map};
     use std::{
@@ -5171,6 +5172,10 @@ pub(crate) mod tests {
         let jobs = service.store.jobs_root();
         let original = cache.path().join("jobs-original");
         let replacement_lease = started.id.clone();
+        let retained_identity = path_identity_for_test(&jobs)
+            .unwrap()
+            .expect("jobs root identity must be available on supported CI platforms");
+        let replacement = std::cell::Cell::new(None);
 
         let result = service.join_shared_work_after_capability(
             &started.id,
@@ -5180,21 +5185,42 @@ pub(crate) mod tests {
                 Ok(())
             },
             || {
-                fs::rename(&jobs, &original).expect("move physical jobs root A");
-                fs::create_dir(&jobs).expect("install physical jobs root B");
-                fs::write(jobs.join("active.lock"), replacement_lease)
-                    .expect("install matching-looking lease in B");
+                let outcome = attempt_retained_directory_replacement_for_test(&jobs, &original)
+                    .expect("attempt to move physical jobs root A");
+                if outcome == RetainedDirectoryReplacementOutcome::Replaced {
+                    fs::create_dir(&jobs).expect("install physical jobs root B");
+                    fs::write(jobs.join("active.lock"), replacement_lease)
+                        .expect("install matching-looking lease in B");
+                }
+                replacement.set(Some(outcome));
             },
         );
 
-        assert!(
-            result.is_err(),
-            "a lifecycle lock for A admitted physical B"
-        );
-        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        match replacement.get().expect("replacement hook must execute") {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                assert!(
+                    result.is_err(),
+                    "a lifecycle lock for A admitted physical B"
+                );
+                assert_eq!(executions.load(Ordering::SeqCst), 0);
 
-        fs::remove_dir_all(&jobs).expect("remove rejected physical jobs root B");
-        fs::rename(&original, &jobs).expect("restore exact jobs root A before teardown");
+                fs::remove_dir_all(&jobs).expect("remove rejected physical jobs root B");
+                fs::rename(&original, &jobs).expect("restore exact jobs root A before teardown");
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&jobs).unwrap().as_deref(),
+                    Some(retained_identity.as_str()),
+                    "a prevented replacement changed the retained jobs root identity"
+                );
+                assert!(!original.exists());
+                result
+                    .expect("the unchanged retained jobs root must remain admissible")
+                    .wait()
+                    .unwrap();
+                assert_eq!(executions.load(Ordering::SeqCst), 1);
+            }
+        }
     }
 
     #[test]
@@ -5271,39 +5297,54 @@ pub(crate) mod tests {
         let jobs = service.store.jobs_root();
         let original = cache.path().join("jobs-original");
         let replacement_id = started.id.clone();
+        let retained_identity = path_identity_for_test(&jobs)
+            .unwrap()
+            .expect("jobs root identity must be available on supported CI platforms");
+        let replacement = std::cell::Cell::new(None);
 
         let result = try_release_owned_quarantine_once_after_terminal(
             &service.store,
             &started.id,
             &mut active,
             || {
-                fs::rename(&jobs, &original).expect("move retained jobs root A");
-                fs::create_dir(&jobs).expect("install replacement jobs root B");
-                let replacement_job = jobs.join(&replacement_id);
-                fs::create_dir(&replacement_job).expect("install matching-looking job in B");
-                fs::copy(
-                    original.join(&replacement_id).join("record.json"),
-                    replacement_job.join("record.json"),
-                )
-                .expect("copy matching-looking quarantine record into B");
-                fs::write(jobs.join("active.lock"), &replacement_id)
-                    .expect("install matching-looking active lock in B");
+                replacement.set(Some(install_matching_replacement_jobs_root(
+                    &jobs,
+                    &original,
+                    &replacement_id,
+                )));
             },
         );
 
-        assert!(
-            result.is_err(),
-            "root replacement must keep the terminal process quarantined"
-        );
-        assert_eq!(
-            fs::read_to_string(jobs.join("active.lock")).expect("read B active lock"),
-            started.id,
-            "quarantine release followed the ambient path and removed B"
-        );
-        assert!(
-            original.join("active.lock").exists(),
-            "failed exact validation must retain A's durable quarantine"
-        );
+        match replacement.get().expect("replacement hook must execute") {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                assert!(
+                    result.is_err(),
+                    "root replacement must keep the terminal process quarantined"
+                );
+                assert_eq!(
+                    fs::read_to_string(jobs.join("active.lock")).expect("read B active lock"),
+                    started.id,
+                    "quarantine release followed the ambient path and removed B"
+                );
+                assert!(
+                    original.join("active.lock").exists(),
+                    "failed exact validation must retain A's durable quarantine"
+                );
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&jobs).unwrap().as_deref(),
+                    Some(retained_identity.as_str()),
+                    "a prevented replacement changed the retained jobs root identity"
+                );
+                assert!(!original.exists());
+                assert!(result.expect("exact retained quarantine release"));
+                assert!(
+                    !service.store.active_lock_path().exists(),
+                    "successful release left the exact original active lock behind"
+                );
+            }
+        }
     }
 
     fn lost_quarantine_fixture() -> (
@@ -5328,33 +5369,44 @@ pub(crate) mod tests {
         (cache, service, started.id, active)
     }
 
-    fn install_matching_replacement_jobs_root(jobs: &Path, original: &Path, job_id: &str) {
-        fs::rename(jobs, original).expect("move retained jobs root A");
-        fs::create_dir(jobs).expect("install replacement jobs root B");
-        let replacement_job = jobs.join(job_id);
-        fs::create_dir(&replacement_job).expect("install matching-looking job in B");
-        fs::copy(
-            original.join(job_id).join("record.json"),
-            replacement_job.join("record.json"),
-        )
-        .expect("copy byte-identical quarantine record into B");
-        fs::write(jobs.join("active.lock"), job_id)
-            .expect("install matching-looking active lock in B");
+    fn install_matching_replacement_jobs_root(
+        jobs: &Path,
+        original: &Path,
+        job_id: &str,
+    ) -> RetainedDirectoryReplacementOutcome {
+        let replacement = attempt_retained_directory_replacement_for_test(jobs, original)
+            .expect("attempt to move retained jobs root A");
+        if replacement == RetainedDirectoryReplacementOutcome::Replaced {
+            fs::create_dir(jobs).expect("install replacement jobs root B");
+            let replacement_job = jobs.join(job_id);
+            fs::create_dir(&replacement_job).expect("install matching-looking job in B");
+            fs::copy(
+                original.join(job_id).join("record.json"),
+                replacement_job.join("record.json"),
+            )
+            .expect("copy byte-identical quarantine record into B");
+            fs::write(jobs.join("active.lock"), job_id)
+                .expect("install matching-looking active lock in B");
+        }
+        replacement
     }
 
     fn install_matching_replacement_job_directory(
         jobs: &Path,
         job_id: &str,
         displaced_name: &str,
-    ) -> (PathBuf, Vec<u8>) {
+    ) -> (RetainedDirectoryReplacementOutcome, Vec<u8>) {
         let canonical = jobs.join(job_id);
         let displaced = jobs.join(displaced_name);
         let bytes = fs::read(canonical.join("record.json")).expect("save canonical record bytes");
-        fs::rename(&canonical, &displaced).expect("move retained job directory A");
-        fs::create_dir(&canonical).expect("install replacement job directory B");
-        fs::write(canonical.join("record.json"), &bytes)
-            .expect("install matching-looking record in B");
-        (displaced, bytes)
+        let replacement = attempt_retained_directory_replacement_for_test(&canonical, &displaced)
+            .expect("attempt to move retained job directory A");
+        if replacement == RetainedDirectoryReplacementOutcome::Replaced {
+            fs::create_dir(&canonical).expect("install replacement job directory B");
+            fs::write(canonical.join("record.json"), &bytes)
+                .expect("install matching-looking record in B");
+        }
+        (replacement, bytes)
     }
 
     #[test]
@@ -5363,6 +5415,10 @@ pub(crate) mod tests {
         let jobs = service.store.jobs_root();
         let original = service.store.cache_root.join("jobs-original-read");
         let saved_b = service.store.cache_root.join("jobs-saved-b-read");
+        let retained_identity = path_identity_for_test(&jobs)
+            .unwrap()
+            .expect("jobs root identity must be available on supported CI platforms");
+        let replacement = std::cell::Cell::new(None);
         let expected_b = Arc::new(Mutex::new(Vec::new()));
         let expected_b_for_hook = Arc::clone(&expected_b);
 
@@ -5372,16 +5428,21 @@ pub(crate) mod tests {
             &mut active,
             |point| match point {
                 QuarantineReleaseHookPoint::AfterFinalValidationBeforeRead => {
-                    install_matching_replacement_jobs_root(&jobs, &original, &job_id);
-                    let path = jobs.join(&job_id).join("record.json");
-                    let mut replacement: RuntimeJobRecord =
-                        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-                    replacement.warnings.push("record-from-root-b".to_string());
-                    let bytes = serde_json::to_vec_pretty(&replacement).unwrap();
-                    fs::write(&path, &bytes).unwrap();
-                    *expected_b_for_hook.lock().unwrap() = bytes;
+                    let outcome = install_matching_replacement_jobs_root(&jobs, &original, &job_id);
+                    replacement.set(Some(outcome));
+                    if outcome == RetainedDirectoryReplacementOutcome::Replaced {
+                        let path = jobs.join(&job_id).join("record.json");
+                        let mut replacement: RuntimeJobRecord =
+                            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                        replacement.warnings.push("record-from-root-b".to_string());
+                        let bytes = serde_json::to_vec_pretty(&replacement).unwrap();
+                        fs::write(&path, &bytes).unwrap();
+                        *expected_b_for_hook.lock().unwrap() = bytes;
+                    }
                 }
-                QuarantineReleaseHookPoint::AfterRecordRead => {
+                QuarantineReleaseHookPoint::AfterRecordRead
+                    if replacement.get() == Some(RetainedDirectoryReplacementOutcome::Replaced) =>
+                {
                     fs::rename(&jobs, &saved_b).expect("retain replacement B for inspection");
                     fs::rename(&original, &jobs).expect("restore original jobs root A");
                 }
@@ -5389,12 +5450,27 @@ pub(crate) mod tests {
             },
         );
 
-        assert!(result.expect("descriptor-relative A transition"));
-        assert_eq!(
-            fs::read(saved_b.join(&job_id).join("record.json")).unwrap(),
-            *expected_b.lock().unwrap(),
-            "reading A followed the replacement namespace into B"
-        );
+        match replacement.get().expect("replacement hook must execute") {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                assert!(result.expect("descriptor-relative A transition"));
+                assert_eq!(
+                    fs::read(saved_b.join(&job_id).join("record.json")).unwrap(),
+                    *expected_b.lock().unwrap(),
+                    "reading A followed the replacement namespace into B"
+                );
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert!(result.expect("exact retained A transition"));
+                assert_eq!(
+                    path_identity_for_test(&jobs).unwrap().as_deref(),
+                    Some(retained_identity.as_str()),
+                    "a prevented replacement changed the retained jobs root identity"
+                );
+                assert!(!original.exists());
+                assert!(!saved_b.exists());
+                assert!(!service.store.active_lock_path().exists());
+            }
+        }
         assert!(
             !service
                 .store
@@ -5413,6 +5489,10 @@ pub(crate) mod tests {
         let jobs = service.store.jobs_root();
         let original = service.store.cache_root.join("jobs-original-publish");
         let expected_b = fs::read(service.store.record_path(&job_id).unwrap()).unwrap();
+        let retained_identity = path_identity_for_test(&jobs)
+            .unwrap()
+            .expect("jobs root identity must be available on supported CI platforms");
+        let replacement = std::cell::Cell::new(None);
 
         let result = try_release_owned_quarantine_once_after_record_hooks(
             &service.store,
@@ -5420,31 +5500,62 @@ pub(crate) mod tests {
             &mut active,
             |point| {
                 if point == QuarantineReleaseHookPoint::ImmediatelyBeforeRecordPublish {
-                    install_matching_replacement_jobs_root(&jobs, &original, &job_id);
+                    replacement.set(Some(install_matching_replacement_jobs_root(
+                        &jobs, &original, &job_id,
+                    )));
                 }
             },
         );
 
-        assert!(
-            result.is_err(),
-            "replacement before publish must quarantine A"
-        );
-        assert_eq!(
-            fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
-            expected_b,
-            "A-derived terminal state was published into B"
-        );
-        assert!(
-            original.join("active.lock").exists(),
-            "A was falsely released"
-        );
+        match replacement.get().expect("replacement hook must execute") {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                assert!(
+                    result.is_err(),
+                    "replacement before publish must quarantine A"
+                );
+                assert_eq!(
+                    fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
+                    expected_b,
+                    "A-derived terminal state was published into B"
+                );
+                assert!(
+                    original.join("active.lock").exists(),
+                    "A was falsely released"
+                );
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert!(result.expect("exact retained A publication"));
+                assert_eq!(
+                    path_identity_for_test(&jobs).unwrap().as_deref(),
+                    Some(retained_identity.as_str()),
+                    "a prevented replacement changed the retained jobs root identity"
+                );
+                assert!(!original.exists());
+                assert!(!service.store.active_lock_path().exists());
+                assert!(
+                    service
+                        .store
+                        .read_record(&job_id)
+                        .unwrap()
+                        .finished_at_ms
+                        .is_some(),
+                    "the exact original record was not terminalized"
+                );
+            }
+        }
     }
 
     #[test]
     fn quarantine_publication_never_releases_after_same_root_job_directory_replacement() {
         let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
         let jobs = service.store.jobs_root();
+        let canonical = jobs.join(&job_id);
         let displaced_name = format!("{job_id}-retained");
+        let displaced = jobs.join(&displaced_name);
+        let retained_identity = path_identity_for_test(&canonical)
+            .unwrap()
+            .expect("job directory identity must be available on supported CI platforms");
+        let replacement = std::cell::Cell::new(None);
         let expected_b = Arc::new(Mutex::new(Vec::new()));
         let expected_b_for_hook = Arc::clone(&expected_b);
 
@@ -5454,50 +5565,76 @@ pub(crate) mod tests {
             &mut active,
             |point| {
                 if point == QuarantineReleaseHookPoint::ImmediatelyBeforeRecordPublish {
-                    let (_displaced, bytes) =
+                    let (outcome, bytes) =
                         install_matching_replacement_job_directory(&jobs, &job_id, &displaced_name);
-                    *expected_b_for_hook.lock().unwrap() = bytes;
+                    replacement.set(Some(outcome));
+                    if outcome == RetainedDirectoryReplacementOutcome::Replaced {
+                        *expected_b_for_hook.lock().unwrap() = bytes;
+                    }
                 }
             },
         );
 
-        assert!(
-            result.is_err(),
-            "same-root job-directory replacement falsely confirmed publication"
-        );
-        assert_eq!(
-            fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
-            *expected_b.lock().unwrap(),
-            "publication modified replacement job-directory B"
-        );
-        assert!(
-            service.store.active_lock_path().exists(),
-            "unconfirmed publication removed active.lock"
-        );
-        assert!(matches!(
-            active.process.try_wait(),
-            Ok(RuntimeJobProcessState::Exited { .. })
-        ));
+        match replacement.get().expect("replacement hook must execute") {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                assert!(
+                    result.is_err(),
+                    "same-root job-directory replacement falsely confirmed publication"
+                );
+                assert_eq!(
+                    fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
+                    *expected_b.lock().unwrap(),
+                    "publication modified replacement job-directory B"
+                );
+                assert!(
+                    service.store.active_lock_path().exists(),
+                    "unconfirmed publication removed active.lock"
+                );
+                assert!(matches!(
+                    active.process.try_wait(),
+                    Ok(RuntimeJobProcessState::Exited { .. })
+                ));
 
-        let retry = try_release_owned_quarantine_once_after_record_hooks(
-            &service.store,
-            &job_id,
-            &mut active,
-            |_| {},
-        );
-        assert!(
-            retry.is_err(),
-            "second quarantine probe accepted replacement job-directory B"
-        );
-        assert_eq!(
-            fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
-            *expected_b.lock().unwrap(),
-            "later quarantine probe modified replacement job-directory B"
-        );
-        assert!(
-            service.store.active_lock_path().exists(),
-            "later quarantine probe removed active.lock"
-        );
+                let retry = try_release_owned_quarantine_once_after_record_hooks(
+                    &service.store,
+                    &job_id,
+                    &mut active,
+                    |_| {},
+                );
+                assert!(
+                    retry.is_err(),
+                    "second quarantine probe accepted replacement job-directory B"
+                );
+                assert_eq!(
+                    fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
+                    *expected_b.lock().unwrap(),
+                    "later quarantine probe modified replacement job-directory B"
+                );
+                assert!(
+                    service.store.active_lock_path().exists(),
+                    "later quarantine probe removed active.lock"
+                );
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert!(result.expect("exact retained job publication"));
+                assert_eq!(
+                    path_identity_for_test(&canonical).unwrap().as_deref(),
+                    Some(retained_identity.as_str()),
+                    "a prevented replacement changed the retained job directory identity"
+                );
+                assert!(!displaced.exists());
+                assert!(!service.store.active_lock_path().exists());
+                assert!(
+                    service
+                        .store
+                        .read_record(&job_id)
+                        .unwrap()
+                        .finished_at_ms
+                        .is_some(),
+                    "the exact original record was not terminalized"
+                );
+            }
+        }
         assert!(matches!(
             active.process.try_wait(),
             Ok(RuntimeJobProcessState::Exited { .. })
@@ -5552,7 +5689,13 @@ pub(crate) mod tests {
     fn quarantine_post_publication_confirmation_rejects_same_root_job_directory_swap() {
         let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
         let jobs = service.store.jobs_root();
+        let canonical = jobs.join(&job_id);
         let displaced_name = format!("{job_id}-published");
+        let displaced = jobs.join(&displaced_name);
+        let retained_identity = path_identity_for_test(&canonical)
+            .unwrap()
+            .expect("job directory identity must be available on supported CI platforms");
+        let replacement = std::cell::Cell::new(None);
         let expected_b = Arc::new(Mutex::new(Vec::new()));
         let expected_b_for_hook = Arc::clone(&expected_b);
 
@@ -5562,44 +5705,66 @@ pub(crate) mod tests {
             &mut active,
             |point| {
                 if point == QuarantineReleaseHookPoint::AfterRecordPublishBeforeConfirmation {
-                    let (_displaced, bytes) =
+                    let (outcome, bytes) =
                         install_matching_replacement_job_directory(&jobs, &job_id, &displaced_name);
-                    *expected_b_for_hook.lock().unwrap() = bytes;
+                    replacement.set(Some(outcome));
+                    if outcome == RetainedDirectoryReplacementOutcome::Replaced {
+                        *expected_b_for_hook.lock().unwrap() = bytes;
+                    }
                 }
             },
         );
 
-        assert!(
-            result.is_err(),
-            "post-publication job-directory swap bypassed final confirmation"
-        );
-        assert_eq!(
-            fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
-            *expected_b.lock().unwrap(),
-            "final confirmation modified replacement job-directory B"
-        );
-        assert!(service.store.active_lock_path().exists());
-        assert!(matches!(
-            active.process.try_wait(),
-            Ok(RuntimeJobProcessState::Exited { .. })
-        ));
+        match replacement.get().expect("replacement hook must execute") {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                assert!(
+                    result.is_err(),
+                    "post-publication job-directory swap bypassed final confirmation"
+                );
+                assert_eq!(
+                    fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
+                    *expected_b.lock().unwrap(),
+                    "final confirmation modified replacement job-directory B"
+                );
+                assert!(service.store.active_lock_path().exists());
 
-        let retry = try_release_owned_quarantine_once_after_record_hooks(
-            &service.store,
-            &job_id,
-            &mut active,
-            |_| {},
-        );
-        assert!(
-            retry.is_err(),
-            "second post-publication probe accepted replacement job-directory B"
-        );
-        assert_eq!(
-            fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
-            *expected_b.lock().unwrap(),
-            "later post-publication probe modified replacement job-directory B"
-        );
-        assert!(service.store.active_lock_path().exists());
+                let retry = try_release_owned_quarantine_once_after_record_hooks(
+                    &service.store,
+                    &job_id,
+                    &mut active,
+                    |_| {},
+                );
+                assert!(
+                    retry.is_err(),
+                    "second post-publication probe accepted replacement job-directory B"
+                );
+                assert_eq!(
+                    fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
+                    *expected_b.lock().unwrap(),
+                    "later post-publication probe modified replacement job-directory B"
+                );
+                assert!(service.store.active_lock_path().exists());
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert!(result.expect("exact retained job confirmation"));
+                assert_eq!(
+                    path_identity_for_test(&canonical).unwrap().as_deref(),
+                    Some(retained_identity.as_str()),
+                    "a prevented replacement changed the retained job directory identity"
+                );
+                assert!(!displaced.exists());
+                assert!(!service.store.active_lock_path().exists());
+                assert!(
+                    service
+                        .store
+                        .read_record(&job_id)
+                        .unwrap()
+                        .finished_at_ms
+                        .is_some(),
+                    "the exact original record was not terminalized"
+                );
+            }
+        }
         assert!(matches!(
             active.process.try_wait(),
             Ok(RuntimeJobProcessState::Exited { .. })
@@ -6413,6 +6578,18 @@ pub(crate) mod tests {
         }
     }
 
+    struct ObservationFailureTerminalProof<'state> {
+        state: &'state ObservationFailureState,
+    }
+
+    impl Drop for ObservationFailureTerminalProof<'_> {
+        fn drop(&mut self) {
+            self.state.fail_poll.store(false, Ordering::Release);
+            self.state.fail_output.store(false, Ordering::Release);
+            self.state.terminal.store(true, Ordering::Release);
+        }
+    }
+
     fn assert_worker_supervises_observation_failure(fail_poll: bool, fail_output: bool) {
         let cache = TestCache::new();
         let request = fake_request(RuntimeJobOperation::Test);
@@ -6428,30 +6605,38 @@ pub(crate) mod tests {
             state: Arc::clone(&state),
         });
         let (finished_tx, finished_rx) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            finished_tx
-                .send(run_worker_request(handoff, runner))
-                .expect("send worker result");
-        });
-        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
-        wait_for_lost_record(&store, &queued.id);
-        assert!(
-            finished_rx.try_recv().is_err(),
-            "worker exited with retained ownership"
-        );
-        assert!(store.active_lock_path().exists());
-        assert_replacement_refused(&cache, &request);
+        thread::scope(|scope| {
+            // If a Windows timing failure trips an assertion before the explicit
+            // terminal proof below, release the controlled fake and join its
+            // worker before `TestCache::drop` audits the supervisor registry.
+            // This preserves the primary failure instead of aborting on a second
+            // teardown panic.
+            let _terminal_proof_on_unwind = ObservationFailureTerminalProof { state: &state };
+            let worker = scope.spawn(move || {
+                finished_tx
+                    .send(run_worker_request(handoff, runner))
+                    .expect("send worker result");
+            });
+            let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+            wait_for_lost_record(&store, &queued.id);
+            assert!(
+                finished_rx.try_recv().is_err(),
+                "worker exited with retained ownership"
+            );
+            assert!(store.active_lock_path().exists());
+            assert_replacement_refused(&cache, &request);
 
-        state.fail_poll.store(false, Ordering::Release);
-        state.fail_output.store(false, Ordering::Release);
-        state.terminal.store(true, Ordering::Release);
-        finished_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("worker did not finish retained supervision")
-            .expect("worker finishes after exact terminal proof");
-        worker.join().expect("join worker");
-        assert!(!store.active_lock_path().exists());
-        assert_replacement_available(&cache, &request);
+            state.fail_poll.store(false, Ordering::Release);
+            state.fail_output.store(false, Ordering::Release);
+            state.terminal.store(true, Ordering::Release);
+            finished_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("worker did not finish retained supervision")
+                .expect("worker finishes after exact terminal proof");
+            worker.join().expect("join worker");
+            assert!(!store.active_lock_path().exists());
+            assert_replacement_available(&cache, &request);
+        });
     }
 
     #[test]
