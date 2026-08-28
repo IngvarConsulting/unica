@@ -11,13 +11,16 @@
 `docs/plans/2026-08-23-v0-12-3-to-v0-13-migration.md` на короткий критический
 путь, три непересекающихся исполнительских потока и отдельные release gates.
 
-Ревью выявило одну ранее оставленную открытой продуктовую границу: обязательную
-модель наблюдения durable Task в v0.13. Её выбор принадлежит planned
-`DEC.2026-08-28.V0-13-TASK-OBSERVATION-SLICE`. Реализация получит действующее
-основание только через новый active successor/evidence `DEC.*`, который при G6
-сошлётся на именованную проверку, supersede эту planned-запись и изменит
-производный контракт. Принятое product decision после merge не переписывается;
-эта записка не выдаёт планируемое поведение за текущее.
+Ревью выявило две ранее оставленные открытыми продуктовые границы. Модель
+наблюдения durable Task принадлежит planned
+`DEC.2026-08-28.V0-13-TASK-OBSERVATION-SLICE`. Request-level reconciliation
+apply effects принадлежит отдельному planned
+`DEC.2026-08-28.REQUEST-LEVEL-APPLY-EFFECT-RECONCILIATION` и раскрыта в своей
+проектной записке. Каждая реализация получит действующее основание только через
+active successor/evidence `DEC.*` с именованной проверкой и производным
+правилом. Body принятого product decision после merge не меняется; successor
+обновляет только его lifecycle-поля `status` и `superseded-by`. Эта записка не
+выдаёт планируемое поведение за текущее.
 
 Остальные продуктовые правила остаются во владении существующих `DEC.*`,
 `INV.*` и `CTR.*`. Если в ходе W0 потребуется изменить другое правило, работа
@@ -150,6 +153,11 @@ API не создаются. Invocation без доказанного resume own
 - `INV.CACHE.RETAINED-APPLY-DETERMINISTIC-ORDER`;
 - `INV.SOURCE.RETAINED-APPLY-WRITE-FREE`.
 
+Эти записи регулируют публикацию уже готового `PlannedApplyEffects`, но не его
+вывод из cross-family batch. Этой новой границей владеет planned
+`DEC.2026-08-28.REQUEST-LEVEL-APPLY-EFFECT-RECONCILIATION`; до W2a она не
+является действующим инвариантом.
+
 ## Обнаруженные противоречия
 
 ### Daemon protocol v2 против v3
@@ -273,9 +281,11 @@ rollback family SPI считается frozen для fan-out.
 
 Effect finalizer сначала отбрасывает path-bound candidates без изменения в
 финальном postimage и только затем выполняет stable first-surviving-occurrence
-dedup по `DEC.2026-08-26.RETAINED-APPLY-EFFECT-PUBLICATION-SLICE`. Обратный
-порядок ошибочен: transient первый duplicate не должен поглотить surviving
-второй.
+dedup по planned
+`DEC.2026-08-28.REQUEST-LEVEL-APPLY-EFFECT-RECONCILIATION`. Обратный порядок
+ошибочен: transient первый duplicate не должен поглотить surviving второй.
+Active retained-publication decision применяется уже к полученному
+`PlannedApplyEffects` и не подменяет эту будущую норму.
 
 ### W1: закрыть измеренный registry apply
 
@@ -440,7 +450,9 @@ integrator и трёх workers
 6 недель достижима только без semantic rework, host delays и release failures.
 
 Ранний W2a и переход каждого worker к собственной W3-линии убирают общий
-барьер примерно на 2–4 календарных дня, но не уменьшают person-days.
+барьер ожидания, но текущая ресурсная модель не доказывает отдельную
+календарную экономию: 1–2 дня W2a расходуют часть освобождённого overlap.
+Поэтому baseline остаётся 7–10 недель без вычитания неподтверждённой дельты.
 Параллелизм не отменяет последовательные gates W0/W2a, aggregate parity и
 G6/G7.
 
