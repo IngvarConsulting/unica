@@ -37,6 +37,7 @@ mod tests {
         FileLinkFixtureOutcome,
     };
     use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
+    use crate::test_support::tree_snapshot;
     use std::collections::HashMap;
     use std::io::{BufReader, Cursor, Write};
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -1438,93 +1439,116 @@ mod tests {
     #[test]
     fn hidden_v13_apply_dispatch_uses_targeted_secondary_admission_and_reaches_all_three_compiled_family_stubs(
     ) {
-        let daemon_root = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let main = workspace.path().join("main");
-        let secondary = workspace.path().join("secondary");
-        std::fs::create_dir_all(&main).unwrap();
-        std::fs::write(
-            main.join("ConfigDumpInfo.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor><Properties><Name>MainProcessor</Name></Properties><ChildObjects/></ExternalDataProcessor></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::create_dir_all(&secondary).unwrap();
-        std::fs::write(
-            secondary.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Secondary</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            workspace.path().join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: main\n    type: EXTERNAL_DATA_PROCESSORS\n    path: main\n",
-                "  - name: secondary\n    type: CONFIGURATION\n    path: secondary\n",
-            ),
-        )
-        .unwrap();
+        let mut mode_write_free = [false; 2];
+        for (mode_index, dry_run) in [false, true].into_iter().enumerate() {
+            let daemon_root = tempfile::tempdir().unwrap();
+            let workspace = tempfile::tempdir().unwrap();
+            let main = workspace.path().join("main");
+            let secondary = workspace.path().join("secondary");
+            let cache_root = workspace.path().join(".build/unica");
+            std::fs::create_dir_all(&main).unwrap();
+            std::fs::write(
+                main.join("ConfigDumpInfo.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor><Properties><Name>MainProcessor</Name></Properties><ChildObjects/></ExternalDataProcessor></MetaDataObject>"#,
+            )
+            .unwrap();
+            std::fs::create_dir_all(&secondary).unwrap();
+            std::fs::write(
+                secondary.join("Configuration.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Secondary</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                workspace.path().join("v8project.yaml"),
+                concat!(
+                    "format: DESIGNER\n",
+                    "source-set:\n",
+                    "  - name: main\n    type: EXTERNAL_DATA_PROCESSORS\n    path: main\n",
+                    "  - name: secondary\n    type: CONFIGURATION\n    path: secondary\n",
+                ),
+            )
+            .unwrap();
+            assert!(
+                !cache_root.exists(),
+                "fresh dryRun={dry_run} fixture unexpectedly has a cache root"
+            );
+            let workspace_before = tree_snapshot(workspace.path());
+            let main_before = tree_snapshot(&main);
+            let secondary_before = tree_snapshot(&secondary);
+            let cache_before = cache_root.exists().then(|| tree_snapshot(&cache_root));
 
-        let identity = CoreIdentity::production();
-        let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
-            .with_invocation_service(Arc::new(CanonicalV13ReadService::default()));
-        let server = thread::spawn(move || run_daemon(config));
-        let (_directory, _record) = wait_for_record(daemon_root.path(), &identity);
-        let client = DaemonClient::new(DaemonClientConfig::existing_only(
-            physical_root(daemon_root.path()),
-            identity,
-        ));
-        let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
-            ExistingDaemon::Absent => panic!("published daemon must connect"),
-        };
-        let secondary_before = std::fs::read(secondary.join("Configuration.xml")).unwrap();
-
-        // Regression oracle: replacing the targeted read_sources lookup in
-        // ActorBoundExecution::admit_apply with provider_root must fail with the
-        // external processor's exact-profile diagnostic before a lane stub runs.
-        for operation in ["object.create", "form.create", "dcs.set", "code.insert"] {
-            let response = owner
-                .submit_invocation(
-                    InvocationRequest::new(
-                        ToolIdentity::Apply,
-                        serde_json::json!({
-                            "at": "secondary:Configuration",
-                            "ops": [{"op": operation, "args": {}}],
-                            "dryRun": false,
-                        }),
-                        physical_root(workspace.path()).to_string_lossy(),
-                        7_000,
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-            let InvocationResponse::Direct(result) = response else {
-                panic!("hidden W0 apply stub must complete inline")
+            let identity = CoreIdentity::production();
+            let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
+                .with_invocation_service(Arc::new(CanonicalV13ReadService::default()));
+            let server = thread::spawn(move || run_daemon(config));
+            let (_directory, _record) = wait_for_record(daemon_root.path(), &identity);
+            let client = DaemonClient::new(DaemonClientConfig::existing_only(
+                physical_root(daemon_root.path()),
+                identity,
+            ));
+            let mut owner = match client.connect_existing().unwrap() {
+                ExistingDaemon::Connected(owner) => owner,
+                ExistingDaemon::Absent => panic!("published daemon must connect"),
             };
-            assert!(!result.ok, "{operation} unexpectedly succeeded");
-            assert_eq!(result.at.as_deref(), Some("ops[0].op"), "{operation}");
-            assert_eq!(
-                result.diagnostics[0]["code"], "provider_unavailable",
-                "{operation}"
-            );
-            assert_eq!(
-                result.summary, "hidden v0.13 apply family is not implemented",
-                "{operation}"
-            );
-        }
 
+            // Regression oracle: replacing the targeted read_sources lookup in
+            // ActorBoundExecution::admit_apply with provider_root must fail with the
+            // external processor's exact-profile diagnostic before a lane stub runs.
+            for operation in ["object.create", "form.create", "dcs.set", "code.insert"] {
+                let response = owner
+                    .submit_invocation(
+                        InvocationRequest::new(
+                            ToolIdentity::Apply,
+                            serde_json::json!({
+                                "at": "secondary:Configuration",
+                                "ops": [{"op": operation, "args": {}}],
+                                "dryRun": dry_run,
+                            }),
+                            physical_root(workspace.path()).to_string_lossy(),
+                            7_000,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                let InvocationResponse::Direct(result) = response else {
+                    panic!("hidden W0 apply stub must complete inline")
+                };
+                assert!(
+                    !result.ok,
+                    "dryRun={dry_run} {operation} unexpectedly succeeded"
+                );
+                assert_eq!(
+                    result.at.as_deref(),
+                    Some("ops[0].op"),
+                    "dryRun={dry_run} {operation}"
+                );
+                assert_eq!(
+                    result.diagnostics[0]["code"], "provider_unavailable",
+                    "dryRun={dry_run} {operation}"
+                );
+                assert_eq!(
+                    result.summary, "hidden v0.13 apply family is not implemented",
+                    "dryRun={dry_run} {operation}"
+                );
+            }
+
+            drop(owner);
+            server.join().unwrap().unwrap();
+            let workspace_after = tree_snapshot(workspace.path());
+            let main_after = tree_snapshot(&main);
+            let secondary_after = tree_snapshot(&secondary);
+            let cache_after = cache_root.exists().then(|| tree_snapshot(&cache_root));
+            mode_write_free[mode_index] = workspace_after == workspace_before
+                && main_after == main_before
+                && secondary_after == secondary_before
+                && cache_after == cache_before
+                && !cache_root.exists();
+        }
         assert_eq!(
-            std::fs::read(secondary.join("Configuration.xml")).unwrap(),
-            secondary_before,
-            "W0 hidden apply dispatch mutated the admitted source before W2 publication"
+            mode_write_free,
+            [true, true],
+            "hidden W0 Apply mutated source/cache topology or bytes for [dryRun=false, dryRun=true], including a prohibited .build/unica/source-revisions/*.json publication"
         );
-        assert!(
-            !workspace.path().join(".build/unica/state.json").exists(),
-            "W0 hidden apply dispatch published workspace cache state"
-        );
-        drop(owner);
-        server.join().unwrap().unwrap();
     }
 
     #[test]

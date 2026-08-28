@@ -172,6 +172,9 @@ impl ActorBoundInvocation {
         logical_deadline: ProviderDeadline,
     ) -> Result<ActorBoundExecution, String> {
         let revision = match self.tool {
+            crate::application::invocation_store::ToolIdentity::Apply => {
+                ActorExecutionRevision::UnpublishedApply
+            }
             crate::application::invocation_store::ToolIdentity::View
             | crate::application::invocation_store::ToolIdentity::Find => {
                 let (selected, route) = match self.tool {
@@ -269,6 +272,7 @@ pub(crate) struct ActorBoundExecution {
 enum ActorExecutionRevision {
     Legacy(WorkspaceRevisionFence),
     LogicalRead(ActorLogicalReadLease),
+    UnpublishedApply,
 }
 
 impl ActorBoundExecution {
@@ -469,6 +473,19 @@ impl ActorBoundExecution {
                     lease.deadline,
                     cancellation,
                 )
+            }
+            ActorExecutionRevision::UnpublishedApply => {
+                let requires_actor_publication = matches!(
+                    &staged,
+                    Ok(result) if result.ok || !result.changed.is_empty() || result.rev.is_some()
+                );
+                if requires_actor_publication {
+                    return Err(
+                        "unpublished Apply result requires real actor apply publication"
+                            .to_string(),
+                    );
+                }
+                Ok(staged)
             }
         }
     }
@@ -4179,6 +4196,81 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(
             first.workspace_identity_hash, second.workspace_identity_hash,
             "comments/order-only edit changed actor state scope"
+        );
+    }
+
+    #[test]
+    fn unpublished_apply_execution_rejects_success_changed_and_revision_without_actor_publication()
+    {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Configuration",
+                "ops": [{"op": "object.create", "args": {}}],
+                "dryRun": false,
+            }),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let bind = || {
+            bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline(),
+            )
+            .unwrap()
+        };
+        let mut changed = failed_domain_result("unpublished changed Apply");
+        changed.changed.push(serde_json::json!({"path": "src"}));
+        let mut revision = failed_domain_result("unpublished revision-bearing Apply");
+        revision.rev = Some("unpublished-revision".to_string());
+        let cases = [
+            ("success", DomainResult::success("unpublished Apply")),
+            ("changed", changed),
+            ("revision", revision),
+        ];
+        let mut accepted = Vec::new();
+        for (label, result) in cases {
+            let cancellation = CancellationToken::new();
+            let execution = bind().begin_execution(&cancellation).unwrap();
+            if execution.publish(Ok(result), &cancellation).is_ok() {
+                accepted.push(label);
+            }
+        }
+
+        assert!(
+            accepted.is_empty(),
+            "unpublished Apply accepted result classes requiring actor publication: {accepted:?}"
         );
     }
 
