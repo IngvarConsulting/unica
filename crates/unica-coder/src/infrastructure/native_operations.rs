@@ -30,6 +30,8 @@ pub(crate) mod support;
 pub(crate) mod template;
 pub(crate) mod text_snapshot;
 pub(crate) mod typed_result;
+// The staged B4 XDTO planner/writer remains dormant until its W1B actor route.
+#[allow(dead_code)]
 pub(crate) mod xdto;
 
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
