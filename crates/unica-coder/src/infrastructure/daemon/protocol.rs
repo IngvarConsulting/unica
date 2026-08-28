@@ -454,7 +454,11 @@ fn read_bounded_json_line_with_limit<R: BufRead>(
 ) -> io::Result<Vec<u8>> {
     let mut line = Vec::new();
     loop {
-        let buffer = reader.fill_buf()?;
+        let buffer = match reader.fill_buf() {
+            Ok(buffer) => buffer,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if buffer.is_empty() {
             return if line.is_empty() {
                 Err(io::Error::new(

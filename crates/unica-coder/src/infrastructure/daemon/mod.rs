@@ -41,7 +41,7 @@ mod tests {
     use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
     use crate::test_support::tree_snapshot;
     use std::collections::HashMap;
-    use std::io::{BufReader, Cursor, Write};
+    use std::io::{self, BufRead, BufReader, Cursor, Read, Write};
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
     use std::path::PathBuf;
     use std::process::{Child, Command, Stdio};
@@ -725,6 +725,44 @@ mod tests {
         );
         let error = serde_json::from_slice::<ClientRequest>(unknown.as_bytes()).unwrap_err();
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn protocol_reader_retries_an_interrupted_fill_without_losing_the_line() {
+        struct InterruptedOnce<R> {
+            inner: R,
+            interrupted: bool,
+        }
+
+        impl<R: Read> Read for InterruptedOnce<R> {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                self.inner.read(buffer)
+            }
+        }
+
+        impl<R: BufRead> BufRead for InterruptedOnce<R> {
+            fn fill_buf(&mut self) -> io::Result<&[u8]> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                self.inner.fill_buf()
+            }
+
+            fn consume(&mut self, amount: usize) {
+                self.inner.consume(amount);
+            }
+        }
+
+        let mut reader = InterruptedOnce {
+            inner: Cursor::new(b"{\"kind\":\"ping\"}\n"),
+            interrupted: false,
+        };
+
+        assert_eq!(
+            read_bounded_json_line(&mut reader).unwrap(),
+            b"{\"kind\":\"ping\"}"
+        );
     }
 
     fn round_trip_sized_result(summary_bytes: usize) {
