@@ -3601,6 +3601,26 @@ fn run_worker_request(
     handoff: WorkerStartRequest,
     runner: Arc<dyn RuntimeJobRunner>,
 ) -> Result<(), String> {
+    run_worker_request_with_quarantine_hook(handoff, runner, None::<fn()>)
+}
+
+/// The hook runs after the worker has durably published `Lost` and immediately
+/// before it starts supervising the retained process. Tests use the event
+/// instead of racing the worker through the ambient filesystem.
+#[cfg(test)]
+fn run_worker_request_after_quarantine_persisted(
+    handoff: WorkerStartRequest,
+    runner: Arc<dyn RuntimeJobRunner>,
+    after_quarantine_persisted: impl FnMut(),
+) -> Result<(), String> {
+    run_worker_request_with_quarantine_hook(handoff, runner, Some(after_quarantine_persisted))
+}
+
+fn run_worker_request_with_quarantine_hook(
+    handoff: WorkerStartRequest,
+    runner: Arc<dyn RuntimeJobRunner>,
+    mut after_quarantine_persisted: Option<impl FnMut()>,
+) -> Result<(), String> {
     let job_id = canonical_job_id(&handoff.job_id)?;
     let request = match handoff.runtime_request() {
         Ok(request) => request,
@@ -3614,6 +3634,7 @@ fn run_worker_request(
     let service = RuntimeJobService::new(handoff.cache_root, runner);
     if let Err(error) = service.activate_enqueued(&job_id, &request) {
         if service.has_retained_process(&job_id) {
+            notify_after_durable_quarantine(&service, &job_id, &mut after_quarantine_persisted)?;
             return service.supervise_quarantine(&job_id);
         }
         return Err(error);
@@ -3623,11 +3644,17 @@ fn run_worker_request(
         let snapshot = match service.poll(&job_id) {
             Ok(snapshot) => snapshot,
             Err(_error) if service.has_retained_process(&job_id) => {
-                return service.supervise_quarantine(&job_id)
+                notify_after_durable_quarantine(
+                    &service,
+                    &job_id,
+                    &mut after_quarantine_persisted,
+                )?;
+                return service.supervise_quarantine(&job_id);
             }
             Err(error) => return Err(error),
         };
         if snapshot.phase.is_terminal() && service.has_retained_process(&job_id) {
+            notify_after_durable_quarantine(&service, &job_id, &mut after_quarantine_persisted)?;
             return service.supervise_quarantine(&job_id);
         }
         if snapshot.phase.is_terminal() {
@@ -3640,6 +3667,24 @@ fn run_worker_request(
         }
         thread::sleep(Duration::from_millis(25));
     }
+}
+
+fn notify_after_durable_quarantine(
+    service: &RuntimeJobService,
+    job_id: &str,
+    hook: &mut Option<impl FnMut()>,
+) -> JobResult<()> {
+    let Some(hook) = hook.as_mut() else {
+        return Ok(());
+    };
+    let record = service.store.read_record(job_id)?;
+    if record.phase != RuntimeJobPhase::Lost {
+        return Err(redacted_error(
+            "runtime worker entered retained supervision before durable quarantine publication",
+        ));
+    }
+    hook();
+    Ok(())
 }
 
 fn apply_runtime_success_effects(cwd: &Path, operation: &str, job_id: &str) -> JobResult<()> {
@@ -6605,6 +6650,8 @@ pub(crate) mod tests {
             state: Arc::clone(&state),
         });
         let (finished_tx, finished_rx) = mpsc::channel();
+        let (worker_started_tx, worker_started_rx) = mpsc::sync_channel(1);
+        let (quarantine_tx, quarantine_rx) = mpsc::sync_channel(1);
         thread::scope(|scope| {
             // If a Windows timing failure trips an assertion before the explicit
             // terminal proof below, release the controlled fake and join its
@@ -6613,12 +6660,30 @@ pub(crate) mod tests {
             // teardown panic.
             let _terminal_proof_on_unwind = ObservationFailureTerminalProof { state: &state };
             let worker = scope.spawn(move || {
+                worker_started_tx.send(()).expect("announce worker start");
                 finished_tx
-                    .send(run_worker_request(handoff, runner))
+                    .send(run_worker_request_after_quarantine_persisted(
+                        handoff,
+                        runner,
+                        || quarantine_tx.send(()).expect("announce durable quarantine"),
+                    ))
                     .expect("send worker result");
             });
+            worker_started_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("worker did not start");
+            quarantine_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("worker did not publish durable quarantine");
             let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
-            wait_for_lost_record(&store, &queued.id);
+            assert_eq!(
+                store
+                    .read_record(&queued.id)
+                    .expect("read durable quarantine")
+                    .phase,
+                RuntimeJobPhase::Lost,
+                "quarantine event preceded the durable Lost publication"
+            );
             assert!(
                 finished_rx.try_recv().is_err(),
                 "worker exited with retained ownership"
