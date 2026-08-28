@@ -537,6 +537,14 @@ impl RetainedDirectoryCapability {
         self.retained.identity
     }
 
+    /// Clones the already-retained physical directory handle without
+    /// rediscovering it through an ambient path. Store owners use the clone for
+    /// descriptor-relative platform operations while this capability remains
+    /// the authority that validates the directory's current namespace name.
+    pub(crate) fn try_clone_directory(&self) -> io::Result<fs::File> {
+        self.retained.directory.try_clone()
+    }
+
     /// Compares two absent immediate-child names using the lookup semantics of
     /// this exact retained directory. The directory descriptor, not its
     /// ambient path, supplies the filesystem case policy.
