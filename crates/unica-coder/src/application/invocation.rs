@@ -1125,16 +1125,18 @@ impl InvocationExecutor {
                 .state
                 .lock()
                 .map_err(|_| InvocationExecutorError::StatePoisoned)?;
-            #[cfg(test)]
-            live.wait_at_task_waiter_gate_for_test();
             let _ = live
                 .changed
                 .wait_timeout_while(state, wait, |state| {
-                    matches!(
+                    let is_live = matches!(
                         state,
                         LiveInvocationState::Running { .. }
                             | LiveInvocationState::Materializing { .. }
-                    ) && !live.cancellation.is_cancelled()
+                    );
+                    let is_cancelled = live.cancellation.is_cancelled();
+                    #[cfg(test)]
+                    live.wait_at_task_waiter_gate_for_test();
+                    is_live && !is_cancelled
                 })
                 .map_err(|_| InvocationExecutorError::StatePoisoned)?;
         }
@@ -1182,14 +1184,19 @@ impl InvocationExecutor {
             Err(error) => return Err(error.into()),
         };
         if record.status == InvocationStatus::Cancelled {
-            if let Some(live) = self
-                .live_tasks
-                .lock()
-                .map_err(|_| InvocationExecutorError::StatePoisoned)?
-                .get(&task_id)
-                .cloned()
-            {
+            let live = {
+                let live_tasks = self
+                    .live_tasks
+                    .lock()
+                    .map_err(|_| InvocationExecutorError::StatePoisoned)?;
+                live_tasks.get(&task_id).cloned()
+            };
+            if let Some(live) = live {
                 live.cancellation.cancel();
+                let _state = live
+                    .state
+                    .lock()
+                    .map_err(|_| InvocationExecutorError::StatePoisoned)?;
                 live.changed.notify_all();
             }
         }
@@ -3961,8 +3968,9 @@ pub(crate) mod tests {
 
     #[test]
     fn task_wait_observes_cancellation_when_notification_precedes_condvar_wait() {
+        let store = Arc::new(MemoryStore::default());
         let executor = Arc::new(InvocationExecutor::new(
-            Arc::new(MemoryStore::default()),
+            store.clone(),
             Arc::new(ManualClock::new(Instant::now())),
         ));
         let (task_id, execution_release) = submit_blocked_wait_test_task(
@@ -3972,11 +3980,43 @@ pub(crate) mod tests {
         let (_, wait_release, wait_done_wait, waiting) =
             start_gated_task_wait(&executor, task_id, Duration::from_secs(30));
 
-        assert_eq!(
-            executor.cancel_task(task_id).unwrap().status,
-            InvocationStatus::Cancelled
-        );
+        let (cancel_done, cancel_done_wait) = mpsc::channel();
+        let cancelling = {
+            let executor = Arc::clone(&executor);
+            std::thread::spawn(move || {
+                cancel_done.send(executor.cancel_task(task_id)).unwrap();
+            })
+        };
+        let cancellation_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if store
+                .records
+                .lock()
+                .unwrap()
+                .get(&task_id)
+                .is_some_and(|record| record.status == InvocationStatus::Cancelled)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < cancellation_deadline,
+                "cancel did not publish its durable winner"
+            );
+            std::thread::yield_now();
+        }
+        let cancel_completed_while_waiter_held_state =
+            cancel_done_wait.recv_timeout(Duration::from_millis(250));
+        let notification_was_not_synchronized = cancel_completed_while_waiter_held_state.is_ok();
         wait_release.send(()).unwrap();
+        let cancelled = match cancel_completed_while_waiter_held_state {
+            Ok(cancelled) => cancelled,
+            Err(mpsc::RecvTimeoutError::Timeout) => cancel_done_wait
+                .recv_timeout(Duration::from_secs(2))
+                .expect("cancellation must finish after the waiter releases live state"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("cancellation disconnected before returning its durable winner")
+            }
+        };
         let observed = wait_done_wait.recv_timeout(Duration::from_secs(2));
         execution_release.send(()).unwrap();
         if observed.is_err() {
@@ -3985,8 +4025,14 @@ pub(crate) mod tests {
                 .expect("cleanup terminal notification must release the old waiter")
                 .unwrap();
         }
+        cancelling.join().unwrap();
         waiting.join().unwrap();
 
+        assert!(
+            !notification_was_not_synchronized,
+            "cancellation notification must synchronize with the waiter state mutex"
+        );
+        assert_eq!(cancelled.unwrap().status, InvocationStatus::Cancelled);
         assert_eq!(
             observed
                 .expect("committed cancellation must release the waiter without a lost wake")
