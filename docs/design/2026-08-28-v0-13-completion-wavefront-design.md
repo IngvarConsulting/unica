@@ -11,8 +11,17 @@
 `docs/plans/2026-08-23-v0-12-3-to-v0-13-migration.md` на короткий критический
 путь, три непересекающихся исполнительских потока и отдельные release gates.
 
-Ревью выявило две ранее оставленные открытыми продуктовые границы и одну общую
-границу release evidence. Модель
+Ревью выявило три ранее оставленные открытыми продуктовые границы и одну общую
+границу release evidence. Новый semantic blocker — это не только
+live receipt-time owner, а отдельный private durable `ReceiptLedger`,
+который доказывает at-most-once domain execution при потере direct
+response, restart и duplicate submit. Направлением владеет planned
+`DEC.2026-08-28.DAEMON-RECEIPT-LEDGER`, но его пустой `establishes`
+не может быть дописан после merge. Поэтому W0 implementation commit
+создаёт newly dated active successor `DEC.*` с realized evidence и
+полным `establishes`, создаёт выведенные active `INV.*`/`CTR.*` и
+меняет у planned predecessor только lifecycle-поля `status`/`superseded-by`.
+Модель
 наблюдения durable Task принадлежит planned
 `DEC.2026-08-28.V0-13-TASK-OBSERVATION-SLICE`. Request-level reconciliation
 apply effects принадлежит отдельному planned
@@ -48,6 +57,10 @@ issue #581. На исходном снимке:
 - lifecycle до executor неполон: блокирующие workspace admission/prepare идут
   до live Invocation/Task owner, а canonical MCP cancellation до получения
   TaskId теряется; поэтому S1 ещё не достигнут даже при зелёных POSIX-тестах;
+- in-memory receipt map и предварительно зарезервированный TaskId не закрывают
+  durable receipt: restart забывает pre-Task owner, а потерянный Direct
+  response не имеет долговечного dedupe/recovery witness; поэтому такая
+  реализация не проходит S1;
 - реальный canonical service обслуживает `view` и `find`, а остальные шесть
   входов ещё не образуют production vertical slices;
 - `apply` имеет общую модель, code/event planners и развиваемый XDTO slice, но
@@ -61,6 +74,23 @@ issue #581. На исходном снимке:
 
 Количество изменённых строк PR не является мерой готовности. До тех пор пока
 production stdio создаёт V12 application, публичная миграция не состоялась.
+
+После исходного design snapshot текущий committed baseline дошёл до
+`f66d5948`. Уже доставлены и не входят повторно в remaining estimate:
+
+- formatting/guardrails, compaction unmerged retained-evidence decision и
+  ранний Windows cleanup (`22a3a9cf`, `9156efe7`);
+- retained actor root (`41593777`);
+- hidden apply-family seams, targeted actor-issued admission и no-publication
+  proof (`21170c94`, `764dd1e8`, `3229485d`);
+- семь parity shards и strict validator (`d0893efe`, `686ea194`, `e870d810`),
+  для которого pinned check сейчас зелёный 39/39;
+- Windows Job Object ownership/root-and-child cleanup (`f66d5948`) с зелёными
+  local smoke/probe/actionlint/full-code gates.
+
+Последний пункт implementation-complete, но не заменяет fresh remote `win-x64`
+evidence для S1. Structural parity skeleton также не заменяет W0.5 oracle и W4
+semantic execution.
 
 ## Применяемые архитектурные решения
 
@@ -85,13 +115,195 @@ WorkspaceActor и долгой работой. V13 frontend не исполня�
 V12 продолжает использовать действующий legacy handler.
 
 Один receipt-time Invocation owner должен существовать до потенциально
-блокирующих filesystem admission и service preparation. Он несёт заранее
-зарезервированные Invocation/Task identities, единую deadline/cancellation
-authority и безопасную request-scope identity; timer может материализовать
-durable preparing/working record, не ожидая возврата `prepare`. Private wire
-может получить pre-receipt cancel capability и новую CoreIdentity, если иначе
-невозможно связать MCP cancellation с этой Invocation. Это не публичный generic
-resume/idempotency API и не разрешение на replay.
+блокирующих filesystem admission и service preparation, но live owner не
+является durability boundary. Private daemon владеет отдельным
+`ReceiptLedger`, а TaskStore остаётся хранилищем только materialized Tasks.
+Допустимый submit атомарно резервирует exact
+`InvocationId` + `reservedTaskId` + daemon-derived secret-free request identity до
+предметной validation, workspace admission, `prepare` и `execute`. Wire-строка,
+которую strict outer-envelope parser не может безошибочно превратить в
+`SubmitInvocation` с каноническими обоими IDs, tool, bounded arguments и
+workspaceHint, не
+является valid submit: она отклоняется без ledger row и без любой
+предметной работы. Эта strict envelope boundary не включает
+валидацию tool arguments, workspace или execution class.
+
+Request identity содержит exact 64-hex `CoreIdentity`, `ToolIdentity`,
+`NormalizedArgumentsHash` канонических arguments и request-scope `SafeIdentityHash`
+от `workspaceHint`; transient response budget, deadline и retry timing в него
+не входят. Frontend и daemon используют одну canonical derivation, чтобы
+pre-submit cancel мог назвать полный `ReceiptKey`, но daemon всегда
+пересчитывает digest из strict parsed submit и отклоняет mismatch до reserve и
+любой предметной работы. Exact duplicate после restart или потери transport читает тот же
+receipt/terminal result и не вызывает `prepare`/`execute` повторно.
+Потеря submit session сама по себе не меняет state и не ускоряет Task handoff:
+daemon продолжает исходный lifecycle под original cutoff и ещё может durable
+опубликовать Direct. Только original cutoff внутри Unbound либо текущий
+post-prepare `KnownLong`/actor-bound cutoff выбирают соответствующий Task path.
+Protocol/CoreIdentity одновременно ограждает private session и форкает state
+directory: v3/v4/v5 process, key и state не смешиваются.
+Этот request digest никогда не подменяет actor-derived workspace identity,
+которая появляется только после успешного admission.
+Повторное использование одного ID с другим парным ID или другим
+request identity даёт closed mismatch rejection и не меняет исходную
+Invocation.
+
+`ReceiptLedger` хранит закрытые состояния `CancelReserved`, `Reserved` с фазами
+`Unbound`/`ActorBound`/`Begun`, `DirectTerminalUnacked`,
+`AcknowledgedTombstone`, `TaskPromisedUnbound`, `TaskPromisedActorBound`,
+`TaskHandoffActorBound`, `TaskReceiptOwnedActorBound`,
+`TaskTerminalReceiptBacked`, `TaskBound` и
+`TaskTerminalBound`;
+`outcome_uncertain` является closed terminal outcome,
+а не replayable фазой. Перед первым `service.prepare` daemon сначала
+durable-фиксирует `Reserved::Begun` с actor-derived identity. Если процесс
+падает после этого marker, но до terminal
+commit, recovery не может обещать известный business outcome: она фиксирует
+`outcome_uncertain`, проецируемый как закрытый `interrupted`, и никогда не
+повторяет callback. Исключение допустимо только для конкретной операции,
+если её writer в том же slice доказывает atomic coupling или idempotent
+recovery. Bare `Reserved::Unbound/ActorBound` без committed promise/handoff при
+restart становится `DirectTerminalUnacked(cancelled |
+interrupted_before_execution)` по durable flag; bare `Reserved::Begun` без
+handoff становится `DirectTerminalUnacked(outcome_uncertain)`. Task не
+создаётся задним числом: её разрешает только committed
+`TaskPromised*`/`TaskHandoffActorBound`. Direct result или
+закрытый отказ сначала фиксируется как `DirectTerminalUnacked`, и только
+после durability proof пишется в submit session. Private explicit ACK той же
+exact identity разрешает удалить terminal payload/nonessential metadata и оставить компактный
+dedupe tombstone на ограниченный horizon. До ACK потеря response
+восстанавливает тот же terminal Direct result; после ACK duplicate в
+пределах horizon закрыто отклоняется, а не исполняется снова.
+Канонический private wire — `unica-daemon-jsonl-5`: recovery идёт через
+`RecoverInvocationReceipt { receiptKey }`, ACK — через
+`AcknowledgeInvocationReceipt { receiptKey, terminalDigest }`, а cancellation несёт
+полный `ReceiptKey`. Client получает `PendingDirectReceipt` и ACK-ит его
+только после успешного построения окончательного `CallToolResult`.
+Это подтверждает daemon→frontend handoff, но не обещает exactly-once
+доставку frontend→MCP host.
+
+К cutoff 7000 мс внутри ещё `Reserved::Unbound` validation/admission ledger
+атомарно переходит в `TaskPromisedUnbound` и сразу проецирует exact reserved TaskId
+как durable queued Task. Если validation или actor admission ещё блокируются,
+TaskStore record не создаётся: без actor-derived workspace identity он был бы
+ложным. Cancel или restart до actor bind terminalizes эту receipt-backed Task
+под тем же TaskId без callback и без TaskStore placeholder. Текущий
+`KnownLong`, возвращаемый `service.prepare` уже после `ActorBound` и
+`Reserved::Begun`, не возвращается в unbound-состояние: он проходит через
+actor-bound handoff intent и пытается exact TaskStore create/readback;
+proven Capacity после `Begun` оставляет его receipt-owned без TaskStore record.
+
+Validation/admission rejection после promise durable-публикует
+`TaskTerminalReceiptBacked` с exact canonical result или closed failure,
+поскольку TaskStore до actor bind не существует. Эта projection повторно читается
+до полного Task TTL; Direct ACK к ней неприменим. Promised pipeline получает
+fixed two-second cleanup grace: зависший validator/admission вызывает
+process-owned fail-stop без join, а terminal-winner check перед каждым
+следующим callback/bind запрещает позднему worker продолжить после
+cancel/restart/terminal.
+
+После ActorBound оба Task path используют один recoverable write-ahead
+protocol. Ранее созданный unbound promise переходит в
+`TaskPromisedActorBound`, а cutoff или
+current `KnownLong` из `Reserved::ActorBound`/`Reserved::Begun` — в
+`TaskHandoffActorBound`; оба состояния несут exact Task record с actor-derived
+identity. TaskStore делает idempotent create/readback, ledger фиксирует
+`TaskBound` под live per-invocation `BoundStartCancelGate`, который охватывает
+exact identity/cancel-flag readback и transfer sole cancel authority; только
+затем resolver атомарно переключает источник projection.
+Если TaskStore create возвращает typed proven `Capacity`, тот же
+continuously-held gate охватывает `latch_task_store_capacity` до receipt
+commit. Atomic reread сохраняет staged terminal/cancel winner; иначе
+pre-Begun handoff закрывается receipt-backed `task_capacity`, а begun
+handoff переходит в `TaskReceiptOwnedActorBound`. Он сохраняет
+single live attempt, actor identity, cancel flag и reserved result quota, не
+повторяет TaskStore create и публикует actual или crash-derived
+`outcome_uncertain` как `TaskTerminalReceiptBacked`. `CommitUncertain` не
+маскируется как Capacity.
+
+Для `TaskBound { begun:false }` coordinator удерживает тот же gate до receipt
+begun: reauthorize-ит live actor/resource proof, затем TaskStore sole-writer
+одной atomic `start_working_if_not_cancel_requested` без separate false-read
+либо возвращает cancel/terminal winner, либо commits exact versioned
+Queued→Working/readback. `mark_bound_task_begun` под тем же guard повторно
+проверяет authorization/proof, фиксирует `begun:true`; затем gate освобождается
+и вызывается `service.prepare`. Missing/foreign/stale proof до authorization
+ничего не меняет; stale после Working запрещает begun/prepare, требует
+fail-stop, а recovery terminalizes interrupted-before-execution. Executor
+удерживает proof/actor/resource lease до terminal cleanup или смерти PID. До
+receipt commit resolver маскирует underlying Working как queued. Crash в этом
+окне terminalizes cancelled только при durable TaskStore flag, иначе
+interrupted-before-execution без callback; crash после receipt begun —
+`outcome_uncertain` без replay, а begun+Queued mismatch ведёт к fail-stop. Уже
+begun handoff продолжает тот же единственный attempt.
+
+Direct path не обязан создавать TaskStore record: под тем же gate
+`mark_reserved_begun` атомарно проверяет live proof и `cancelRequested=false` и
+возвращает один begun/cancel winner, затем terminal outcome хранится в
+ReceiptLedger.
+Cancel до submit создаёт durable pre-submit reservation; последующий exact
+submit завершается без предметной работы.
+
+До commit `TaskBound` после exact TaskStore create/readback `ReceiptLedger`
+остаётся единственным durable cancel authority:
+`TaskPromisedActorBound` и `TaskHandoffActorBound` сохраняют monotonic
+`cancelRequested` до TaskStore create и до live-token signal. Bind под
+`BoundStartCancelGate` переносит тот же flag в TaskStore, подтверждает
+identity/flag exact readback и только затем публикует `TaskBound`, передавая
+authority. Cancel берёт тот же gate, re-resolves current authority, durable
+фиксирует flag/terminal и только затем сигналит token. Поэтому cancel после
+false observation, но до atomic Working, выигрывает без callback; cancel после
+Working ждёт receipt begun и становится post-Begun. Begun handoff не может
+объявить `cancelled`: crash между receipt flag, Task create и token создаёт
+exact Working Task и terminalizes `outcome_uncertain` без replay.
+`TaskReceiptOwnedActorBound` также сохраняет cancel flag в ReceiptLedger,
+но не может stage-ить `cancelled` после `Begun`.
+
+Protocol-v5 startup не вызывает legacy eager `TaskStore::open`, который
+terminalize-ит `Queued`/`Working` до чтения receipt. Сначала
+`FileInvocationStore::open_inspect_only` возвращает immutable
+`TaskStoreRecoveryCatalog` без mutations; затем single-threaded
+`ReceiptRecoveryCoordinator::reconcile` выбирает exact
+`RecoveryTerminalReason` и вызывает только
+`terminalize_recovered_exact`. Listener публикуется лишь после
+`RecoveryComplete`; active v5 Task без exact receipt link fail-stop-ится.
+
+Емкость и retention ledger не заимствуют лимит TaskStore. W0 фиксирует
+отдельные production bounds из наблюдаемой нагрузки. Общий live count cap 64
+охватывает `CancelReserved`, `Reserved`, promised/handoff/receipt-owned,
+`DirectTerminalUnacked` и `TaskTerminalReceiptBacked`; его
+actual-plus-reserved byte cap равен
+`64 × 8 454 144 = 541 065 216` bytes. `CancelReserved` занимает один slot и
+не более 1 024 metadata bytes без result reservation, живёт исходные 7 125 мс
+без продления от duplicate, а exact submit атомарно получает полный result
+reserve в том же pool. Этот reserve остаётся сквозь promise/handoff до одного из
+четырёх durable events: exact TaskStore bind/readback, Direct ACK, physical
+expiry/delete `DirectTerminalUnacked` или expiry receipt-backed terminal Task.
+Поэтому canonical terminal projection до exact TaskStore bind/readback всегда
+имеет место.
+`DirectTerminalUnacked` хранится один час либо до ACK; по истечении часа record
+физически удаляется без tombstone и освобождает exact live count/result quota;
+`TaskTerminalReceiptBacked` — один час от terminal epoch без Direct ACK.
+
+Отдельный bound Task-link pool допускает 4 096 records, максимум 1 024 bytes
+каждый и 4 194 304 bytes суммарно; его retention не короче retention
+соответствующей Task. Proven Capacity на 4 097-й Task не вытесняет
+существующие records и не занимает link: pre-Begun handoff публикует
+receipt-backed `task_capacity`, а begun handoff остаётся
+`TaskReceiptOwnedActorBound` до actual/uncertain terminal. Post-ACK Direct horizon равен 15 минут и
+`32 calls/s × 900 s + 64 = 28 864` compact tombstones. Tombstone ограничен
+512 bytes, поэтому его independent byte cap равен
+`28 864 × 512 = 14 778 368` bytes. Цель 32 acknowledged Direct calls/s выведена
+из текущего admission limit 32: каждый admitted worker завершает и ACK-ит
+один fast Direct в секунду. Deterministic test проводит 28 800 ACKed lifecycle
+за fake-clock 900 секунд одновременно с 64 live count/payload slots и 4 096
+Task links. Отдельно каждая OS за 60 секунд проводит ≥1 920 полных
+reserve→small terminal→ACK lifecycle, с p99 ≤250 мс, нулём capacity/store
+errors и drain writer queue ≤2 с.
+Истекшие records удаляются
+до отказа по capacity; live payload/link не вытесняется. Переполнение
+отклоняет valid submit до validation/prepare/execute и не занимает TaskStore slot.
+Это private daemon protocol, а не публичный generic idempotency/resume API.
 
 ### Запуск и поставка зависимостей
 
@@ -144,10 +356,15 @@ Wavefront применяет:
 - `CTR.WIRE.COMPATIBILITY-TASK-TOOLS`;
 - `CTR.WIRE.DAEMON-INVOCATION-PROTOCOL`.
 
-Каждый предметный вызов имеет ровно одно исполнение. Сервер сам выбирает direct
-result или Task: known-long materializes Task сразу, остальные операции обязаны
+Каждый valid submit имеет не более одного domain execution. Сервер сам выбирает direct
+result или Task: current post-prepare `KnownLong` сразу materializes exact
+actor-bound Task через `TaskHandoffActorBound`, остальные операции обязаны
 либо завершиться напрямую, либо иметь durable receipt к абсолютной границе
-7000 мс. Native и compatibility projections читают одну Invocation.
+7000 мс. Durable receipt начинается в `ReceiptLedger`, а не с первой
+TaskStore-записи. Direct outcome до private ACK остаётся recovery result,
+а Task projection к cutoff читает receipt-backed `TaskPromisedUnbound` с тем же
+TaskId; TaskStore получает его только после ActorBound. Native и compatibility
+projections читают одну Invocation.
 
 Planned `DEC.2026-08-28.V0-13-TASK-OBSERVATION-SLICE` ограничивает целевое
 наблюдение прогресса после receipt изменением status и `updatedAt`, доступным
@@ -198,6 +415,16 @@ Hidden V13 tests доказывают отдельные slices, но production
 а default daemon остаётся dormant. Поэтому Tasks 1–14 старого плана после W0
 становятся frozen foundation baseline, но не доказательством публичного
 cutover.
+
+### Live receipt owner против durable receipt
+
+Заранее выданные IDs, in-memory map и cancellation token закрывают
+гонку внутри одного процесса, но не доказывают at-most-once после
+restart или потери Direct response. TaskStore также не может заменить
+receipt ledger: до cutoff Task ещё может не существовать, а успешный
+Direct вообще не обязан становиться публичной Task. S1 поэтому
+блокируется до отдельной durable state machine, её crash reconciliation и
+bounded compaction.
 
 ### Release-переключение внутри mega-PR
 
@@ -252,7 +479,8 @@ thin stdio frontend
         |
         v
 private per-user, protocol/core-ABI daemon
-  |-- durable Invocation / Task store
+  |-- private durable ReceiptLedger / dedupe horizon
+  |-- durable TaskStore for materialized Tasks
   |-- WorkspaceActor per authenticated source profile
   |-- exact SharedWork for delivery/index/provider/runtime
   `-- one canonical dispatcher with 8 domain handlers
@@ -266,7 +494,7 @@ private per-user, protocol/core-ABI daemon
 | Состояние | Наблюдаемая граница |
 | --- | --- |
 | S0 | Публичный V12, hidden неполный V13, PR #631 blocked |
-| S1 | Зелёный и слитый hidden foundation с полным receipt/wait/cancel/restart evidence, публичный V12 неизменён |
+| S1 | Зелёный и слитый hidden foundation: durable ReceiptLedger резервирует exact IDs/request identity до предметной работы; Unbound cutoff создаёт `TaskPromisedUnbound`, pre-actor-bind terminal сохраняется как `TaskTerminalReceiptBacked`, а promised и actor-bound/begun paths используют разные durable intents, receipt-owned Capacity fallback и exact TaskStore reconciliation; inspect-only TaskStore startup выбирает terminal reason только по receipt evidence до listener; terminal Direct/Task восстанавливаются без replay, bare Reserved recovery не изобретает Task, а crash после `Reserved::Begun` до terminal commit даёт `outcome_uncertain`/`interrupted`; protocol-v5 recovery/ACK и 61-test cancel/restart/capacity RED matrix зелены, публичный V12 неизменён |
 | S2 | Все 8 handlers и принятый registry `apply` работают через daemon, schema-derived semantic parity и content-addressed provenance scope lock закрыты; состояние отзывается при drift |
 | S3 | RC публикует ровно 8/11, legacy surface отсутствует |
 | S4 | Stable v0.13 прошёл fresh/upgrade/rollback/offline и host matrix |
@@ -278,15 +506,58 @@ private per-user, protocol/core-ABI daemon
 
 ### W0: stabilize and bound
 
-PR #631 получает зелёные macOS, Linux и Windows gates. В этой волне закрываются
-текущие defect failures по TDD, устраняется v2/v3 contradiction, фиксируется
-internal SPI отдельных family planners, validation и canonical result.
-До S1 daemon создаёт live Invocation owner до admission/prepare, materializes
-Task к абсолютному cutoff даже при блокирующем prepare, не оставляет
-недоступный orphan после истечения response margin и доводит MCP cancellation
-до той же authority. Ownerless persisted `Queued` после restart становится
-terminal либо удаляется из поддерживаемой schema. Эти проверки используют
-barrier/event + fake clock, а не synchronous clock jump внутри `prepare`.
+PR #631 получает зелёные macOS, Linux и Windows gates. Integrator единолично
+меняет receipt/protocol/store hotspots, один worker пишет только black-box RED
+matrix, а два оставшихся слота независимо проверяют capacity/recovery/crash и
+полную семантику. Windows/process implementation уже доставлен; adversarial
+reviewer возвращается к его коду только если fresh `win-x64` CI воспроизведёт
+дефект. Эти линии не конкурируют за production receipt files.
+
+До S1 private durable `ReceiptLedger` атомарно резервирует exact
+InvocationId/TaskId/request identity на valid-submit boundary и затем один
+live owner владеет admission/prepare/execute. Direct result durable до response
+и private ACK; потеря transport при живом daemon или restart после durable
+terminal commit возвращают тот же result без replay. Crash после
+`Reserved::Begun`, но до terminal commit возвращает `outcome_uncertain`/`interrupted`,
+а не вымышленный result и не replay. Без committed promise/handoff bare
+`Reserved::Unbound/ActorBound` recovery остаётся Direct
+cancelled/interrupted-before-execution, а bare `Reserved::Begun` — Direct
+`outcome_uncertain`; только committed Task intent разрешает Task projection.
+Cutoff внутри pre-actor-bind
+validation/admission материализует exact receipt-backed
+`TaskPromisedUnbound`; зависший pre-Begun pipeline после fixed grace ведёт к
+process fail-stop и не может поздно победить terminal. Current
+`ExecutionClass::KnownLong` и cutoff во время `prepare`/`execute` уже имеют
+actor-derived identity и `Reserved::Begun`, поэтому используют
+`TaskHandoffActorBound` и пытаются exact TaskStore create/readback;
+proven Capacity переводит begun handoff в receipt-owned branch без TaskStore
+record. TaskStore никогда не получает
+workspace-hint substitute. В `TaskPromisedUnbound` cancel/restart до actor bind
+terminalizes receipt-backed Task без callback и TaskStore. После ActorBound,
+но до `TaskBound`, durable cancel flag остаётся в ReceiptLedger intent;
+только `BoundStartCancelGate` + exact TaskStore create/identity/flag readback +
+`TaskBound` переносят authority в TaskStore.
+Proven TaskStore Capacity под тем же continuously-held gate не затирает
+staged/cancel winner: pre-Begun он даёт receipt-backed `task_capacity`,
+а post-Begun — `TaskReceiptOwnedActorBound`, который не повторяет create и
+хранит actual/uncertain terminal в ledger. При restart protocol-v5 сначала
+открывает TaskStore inspect-only; ReceiptLedger-led coordinator различает
+Queued/Working по `begun` evidence и завершает reconciliation до listener.
+Cancel-before-submit, 32 simultaneous submit/cancel pairs, restart каждой
+durable фазы, uncertain promised-to-TaskStore promotion, exact duplicate, each
+of six identity-component mismatches, ACK
+compaction, independent ledger/TaskStore capacity и retention доказываются
+barrier/crash-injection + fake-clock тестами. Active protocol-v5 `Queued`/`Working`
+после restart не terminalize-ится и не удаляется наугад: Task
+без exact receipt/link evidence является corruption, поэтому startup fail-stop-ится
+до mutation и listener publication.
+
+В той же волне закрываются остальные defect failures по TDD, устраняется
+daemon protocol contradiction, фиксируется internal SPI family planners,
+validation и canonical result. W0 implementation commit создаёт newly dated
+active successor к `DEC.2026-08-28.DAEMON-RECEIPT-LEDGER` с realized evidence,
+`establishes` и derived active `INV.*`/`CTR.*`; planned predecessor получает
+только lifecycle stamp.
 Request-level apply router не считается замороженным, пока W2a не докажет
 глобальные индексы, порядок и effects от финального postimage. Публичный V12 не
 меняется.
@@ -339,6 +610,15 @@ global error index и poison rollback family SPI считается frozen и W1
 обязан слиться до первого W3 slice. W1 не блокируется на не относящихся к нему
 W3 facade-файлах.
 
+Validation seam заранее делится по файлам, иначе W2b и W3B имеют один
+непараллелимый hotspot. W2a-seams создаёт
+`infrastructure/v13_validation/mod.rs`, `apply.rs` и `check.rs`. После merge
+`mod.rs` остаётся frozen integrator-owned registry/facade, `apply.rs` остаётся
+integrator-only staged adapter для W2b, а exclusive write ownership `check.rs`
+переходит Worker B для persisted adapter. Любая поздняя смена общего интерфейса
+останавливает обе линии и проходит отдельным integrator seam PR из свежего
+`main`, а не параллельными правками.
+
 Effect finalizer сначала отбрасывает path-bound candidates без изменения в
 финальном postimage и только затем выполняет stable first-surviving-occurrence
 dedup по planned
@@ -365,14 +645,19 @@ implementation source для `view.can[]`, parse и dispatch, подключае
 planners к WorkspaceActor и устанавливает real `apply` handler в canonical
 daemon service. W2b выполняется по мере поступления W1 slices и не добавляется к
 календарю отдельной последовательной фазой. Он расширяет уже доказанный W2a
-router, а не возвращает singleton dispatch.
+router, а не возвращает singleton dispatch. Для validation W2b меняет только
+`v13_validation/apply.rs`; frozen `mod.rs` и Worker-B-owned `check.rs` остаются
+read-only.
 
 ### W3: remaining entry points
 
 После завершения собственной apply-линии каждый worker сразу переходит к
 `search` + `docs`, `check` + `diff` или `run`, не ожидая две другие линии.
 Исключение — B8 (`apply(dryRun)` parity): он ждёт финальную интеграцию apply в
-W2b. Integrator один регистрирует handlers в daemon и MCP shared files.
+W2b, читает финальный `v13_validation/apply.rs` и владеет только отдельным
+equality test/fixture. B7 пишет persisted adapter только в `check.rs`, B9/B10 —
+diff files; ни один из них не со-редактирует integrator validation files.
+Integrator один регистрирует handlers в daemon и MCP shared files.
 
 ### W4: continuous parity and skills
 
@@ -439,6 +724,8 @@ Integrator единолично владеет:
 - `crates/unica-coder/src/domain/apply.rs` и common validation/result interfaces;
 - `crates/unica-coder/src/infrastructure/native_operations/apply.rs` и
   корневым dispatcher registry;
+- `crates/unica-coder/src/infrastructure/v13_validation/mod.rs` и
+  `crates/unica-coder/src/infrastructure/v13_validation/apply.rs`;
 - `crates/unica-coder/src/infrastructure/workspace_actor.rs`;
 - `crates/unica-coder/src/infrastructure/daemon/mod.rs`;
 - `crates/unica-coder/src/infrastructure/daemon/server.rs`;
@@ -447,6 +734,12 @@ Integrator единолично владеет:
 - `crates/unica-coder/src/interfaces/task_projection.rs`;
 - surface/version manifests, architecture registry, capability oracle,
   provenance review/index delta и aggregate tests.
+
+W2a-seams единолично создаёт весь `v13_validation/` directory и компилирует
+его facade. После merge ownership становится file-disjoint: Worker B получает
+только `check.rs` и dedicated check/diff/equality tests; `mod.rs` и `apply.rs`
+навсегда остаются integrator-owned. Это time-phased handoff, а не разрешение
+двум веткам одновременно менять directory registry.
 
 W0 ограничивает family-level часть crate-private SPI, уже начатую текущим
 кодом; W2a замораживает request-level wrapper и final-effect reconciliation:
@@ -469,10 +762,12 @@ finalize_request_effects(&ApplyStagedState, ProvisionalApplyEffects)
 `crates/unica-coder/src/domain/validation.rs` хранит только типы target,
 finding и failure. Общая read seam создаётся в
 `crates/unica-coder/src/application/validation.rs` как порт `ValidationView`,
-читающий типизированные логические узлы. Infrastructure реализует два adapter:
-persisted actor snapshot и staged `ApplyStagedState`. Поэтому domain не зависит
-от infrastructure, а конкретный validator получает view и не открывает
-filesystem самостоятельно.
+читающий типизированные логические узлы. Infrastructure реализует два adapter в
+разных owned files: integrator — staged `ApplyStagedState` в
+`v13_validation/apply.rs`, Worker B после W2a handoff — persisted actor snapshot
+в `v13_validation/check.rs`. B8 сравнивает их отдельным equality test, читая
+apply adapter без правки. Поэтому domain не зависит от infrastructure, а
+конкретный validator получает view и не открывает filesystem самостоятельно.
 
 Worker меняет только своё семейство, новый isolated handler и собственные
 fixtures/tests. Если нужен shared seam, worker отдаёт integrator падающий тест,
@@ -501,6 +796,53 @@ fixtures/tests. Если нужен shared seam, worker отдаёт integrator 
 - parity требует сохранить старую публичную schema или alias;
 - upstream target меняется после W0.5 либо review открывает неоценённый tool/behavior gap; достигнутый S2 отзывается, owning slice и W4/W5 повторяются до G6;
 - recovery требует raw args, secrets, commands или blind replay mutation;
+- valid submit достигает validation, admission, `prepare` или `execute` до
+  durable reservation exact InvocationId/TaskId/request identity;
+- direct outcome пишется в transport до durable terminal commit или ledger
+  теряет его до private ACK;
+- cutoff внутри Unbound validation/admission не проецирует receipt-backed
+  `TaskPromisedUnbound`, current post-prepare `KnownLong` ошибочно возвращается
+  в unbound state либо TaskStore получает request-scope identity до ActorBound;
+- rejection/cancel/restart обещанной unbound Task не сохраняет exact canonical
+  `TaskTerminalReceiptBacked` на один час, Direct ACK удаляет этот payload,
+  либо зависший validation/admission переживает общий two-second fail-stop
+  grace и поздно достигает bind/callback;
+- promised promotion или actor-bound/begun `TaskHandoffActorBound` оставляет
+  split-brain между ReceiptLedger и TaskStore, теряет staged terminal либо
+  разрешает новый domain callback при reconciliation;
+- protocol-v5 TaskStore open eager-terminalize-ит `Queued`/`Working` до
+  receipt-led reconciliation, legacy orphan pass касается v5-linked Task либо
+  listener публикуется до `RecoveryComplete`;
+- proven TaskStore Capacity затирает staged/cancel winner, повторяет
+  create после `Begun`, вытесняет чужой Task/останавливает listener либо не
+  terminalize-ит `TaskReceiptOwnedActorBound` как receipt-backed actual/
+  `outcome_uncertain`;
+- Direct start/cancel, cancel-authority transfer при `bind_task` и bound Task
+  start/cancel не линеаризуются одним live per-invocation
+  `BoundStartCancelGate`, либо cancel может durable выиграть в окне между
+  Working readback и receipt `begun`;
+- `TaskBound { begun:false }` использует separate cancel false-read/write-
+  Working вместо sole-writer atomic
+  `start_working_if_not_cancel_requested`, вызывает prepare до exact
+  versioned Working readback + receipt begun, resolver показывает Working до
+  receipt begun commit или recovery не различает Working+begun=false,
+  Working+begun=true и invalid Queued+begun=true;
+- `mark_reserved_begun`/`authorize_bound_task_start`/`mark_bound_task_begun`
+  не требуют held guard и тот же live actor proof, не recheck-ят proof до
+  и после Working readback либо executor освобождает actor/resource lease
+  до terminal cleanup или process fail-stop;
+- cancel flag в promised/handoff intent не durable до TaskStore/token,
+  `bind_task` не удерживает тот же gate до exact identity/flag readback либо begun
+  handoff после crash объявляется `cancelled` вместо `outcome_uncertain`;
+- crash после `Reserved::Begun` приводит к replay или выдуманному known outcome
+  вместо closed `outcome_uncertain`;
+- recovery из bare `Reserved::Unbound/ActorBound/Begun` без committed
+  promise/handoff задним числом создаёт Task вместо exact Direct terminal;
+- capacity/retention ReceiptLedger зависит от TaskStore, вытесняет
+  live payload/link, считает `CancelReserved` отдельным скрытым +64 pool,
+  освобождает promised/handoff result reserve до одного из четырёх
+  durable release events, не делает physical delete unacked Direct ровно
+  через час либо не восстанавливает лимиты после restart;
 - provider sharing смешивает actor, root или revision identity;
 - проверка 7000 мс требует real sleep вместо fake clock;
 - worker вынужден править shared integration file;
@@ -520,21 +862,37 @@ fixtures/tests. Если нужен shared seam, worker отдаёт integrator 
 - raw CLI passthrough в `run`;
 - generic resumable mutation framework;
 - новый public progress API;
-- публичный generic idempotency/resume protocol; private pre-receipt Invocation
-  capability для handoff/cancellation входит в W0;
+- публичный generic idempotency/resume protocol; private ReceiptLedger,
+  exact duplicate reconciliation, ACK/tombstone и pre-submit cancellation входят в W0,
+  но не расширяют `tools/list` или public Tasks API;
 - `tests`, `features`, `log` как отдельные tools;
 - gRPC/platform 8.5 profile;
 - дополнительная оптимизация удаляемого V12 surface.
 
 ## Оценка
 
-После выявленного полного receipt/cancellation разрыва и исправления
-variant-level/provenance cardinality остаток оценивается в 94–148 person-days.
-При одном integrator и трёх workers реалистичный срок до stable составляет
-8–12 недель. Прежние 2–3 дня на W0 и
+После подтверждённого durable-receipt blocker и исправления
+variant-level/provenance cardinality остаток после delivered
+`e870d810`/`f66d5948` оценивается в 102–162 person-days. Завершённые
+parity-inventory и Windows/process person-days повторно в эту сумму не входят.
+W0 увеличен с 6–10 до 14–24 person-days: добавлены separate durable store,
+receipt-backed unbound/terminal Task projection, actor-bound recoverable
+handoff reconciliation, inspect-only receipt-led startup, receipt-owned
+TaskStore-Capacity fallback, private ACK/compaction и crash/capacity matrix. Эти
+две seam заменяют unsafe recovery/backpressure внутри того же W0, а не
+добавляют новую public slice. Сумма
+task-level packages равна ровно 102–162 person-days; скрытого contingency сверх
+таблицы нет. При
+одном integrator и трёх workers реалистичный срок до stable составляет
+9–13 недель, из них W0 занимает 8–12 рабочих дней на critical path.
+Прежние 2–3 дня на W0 и
 шестинедельная оптимистичная граница больше не используются как обязательство.
 
-Критический путь начинается как W0 → max(W0.5a worker evidence, W2a-core) →
+Критический путь начинается как W0a planned ReceiptLedger contract/RED/store →
+W0b unbound Task projection + promised/actor-bound recoverable handoff + Direct ACK/recovery +
+cancel/restart/capacity integration →
+W0c active successor/evidence + aggregate и independent semantic review →
+max(W0.5a worker evidence, W2a-core) →
 W0.5b integrator consolidation и два независимых review. Только после этого W1
 освобождает join; W2a-seams выполняется параллельно и
 блокирует только первый W3 slice. Это сокращает ненужный общий барьер, но не
