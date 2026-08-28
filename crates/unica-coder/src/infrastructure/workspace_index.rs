@@ -4619,7 +4619,7 @@ source-set:
         let context = test_context("actor-bound-sync-root-replacement");
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
-        let source_root = fs::canonicalize(source_root).unwrap();
+        let source_root = normalize_path_identity(&source_root).unwrap();
         let capability = Arc::new(RetainedDirectoryCapability::open(&source_root).unwrap());
         let runner = ReplacingRunner {
             source_root: source_root.clone(),
@@ -4695,7 +4695,7 @@ source-set:
         let context = test_context("actor-bound-background-start-root-replacement");
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
-        let source_root = fs::canonicalize(source_root).unwrap();
+        let source_root = normalize_path_identity(&source_root).unwrap();
         let capability = Arc::new(RetainedDirectoryCapability::open(&source_root).unwrap());
         let runner = ReplacingStartRunner {
             source_root: source_root.clone(),

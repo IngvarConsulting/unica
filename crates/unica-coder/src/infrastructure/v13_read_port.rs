@@ -857,12 +857,44 @@ fn identity_metadata_payload_from_evidence(
 }
 
 fn path_text(path: PathBuf) -> Result<String, ViewError> {
-    path.to_str().map(str::to_string).ok_or_else(|| {
-        ViewError::new(
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(value) => components.push(value),
+            _ => {
+                return Err(ViewError::new(
+                    "provider_unavailable",
+                    "Platform XML export path is not a relative component path",
+                ));
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(ViewError::new(
             "provider_unavailable",
-            "Platform XML export path is not valid UTF-8",
-        )
-    })
+            "Platform XML export path is empty",
+        ));
+    }
+    encode_export_path_components(components)
+}
+
+fn encode_export_path_components<'a>(
+    components: impl IntoIterator<Item = &'a std::ffi::OsStr>,
+) -> Result<String, ViewError> {
+    let mut encoded = String::new();
+    for component in components {
+        let component = component.to_str().ok_or_else(|| {
+            ViewError::new(
+                "provider_unavailable",
+                "Platform XML export path is not valid UTF-8",
+            )
+        })?;
+        if !encoded.is_empty() {
+            encoded.push('/');
+        }
+        encoded.push_str(component);
+    }
+    Ok(encoded)
 }
 
 fn unsupported_object() -> ObjectSupportData {
@@ -881,5 +913,25 @@ fn metadata_support_status(support: ObjectSupportData) -> MetaSupportStatus {
         ObjectSupportState::EditableWithSupport | ObjectSupportState::NotSupported => {
             MetaSupportStatus::Supported
         }
+    }
+}
+
+#[cfg(test)]
+mod export_path_tests {
+    use std::ffi::OsStr;
+
+    #[test]
+    fn export_path_components_use_wire_slashes_independently_of_host() {
+        let components = [
+            OsStr::new("Reports"),
+            OsStr::new("ParityReport"),
+            OsStr::new("Forms"),
+            OsStr::new("MainForm.xml"),
+        ];
+
+        assert_eq!(
+            super::encode_export_path_components(components),
+            Ok("Reports/ParityReport/Forms/MainForm.xml".to_string())
+        );
     }
 }

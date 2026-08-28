@@ -35,7 +35,7 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -1114,8 +1114,8 @@ impl SourceRevisionService {
         // replace a file and free bytes elsewhere regardless of lexical order.
         for change in changes {
             retained_revision_checkpoint(deadline, cancellation)?;
-            if self.artifact_policy.classify(&change.relative_path)
-                != RevisionArtifactDisposition::Content
+            let relative_path = native_projection_relative_path(&change.relative_path)?;
+            if self.artifact_policy.classify(&relative_path) != RevisionArtifactDisposition::Content
             {
                 return Err(RetainedRevisionError::new(
                     RetainedRevisionErrorKind::Invariant,
@@ -1125,7 +1125,7 @@ impl SourceRevisionService {
                     ),
                 ));
             }
-            let removed = projected_manifest.remove(&change.relative_path);
+            let removed = projected_manifest.remove(&relative_path);
             let removed_bytes = removed.as_ref().map_or(0, |entry| entry.content_bytes);
             total_bytes = total_bytes.checked_sub(removed_bytes).ok_or_else(|| {
                 RetainedRevisionError::new(
@@ -1145,11 +1145,11 @@ impl SourceRevisionService {
 
         for change in changes {
             retained_revision_checkpoint(deadline, cancellation)?;
+            let relative_path = native_projection_relative_path(&change.relative_path)?;
             match &change.current {
                 StagedFileState::Absent => {}
                 StagedFileState::Bytes(bytes) => {
-                    let parent_depth = change
-                        .relative_path
+                    let parent_depth = relative_path
                         .parent()
                         .into_iter()
                         .flat_map(Path::components)
@@ -1164,14 +1164,14 @@ impl SourceRevisionService {
                     let mut reader = Cursor::new(bytes.as_slice());
                     let (digest, content_bytes) = hash_bounded_source_reader(
                         &mut reader,
-                        &change.relative_path,
+                        &relative_path,
                         limits,
                         &mut total_bytes,
                         &mut || retained_revision_checkpoint(deadline, cancellation),
                     )?;
                     if projected_manifest
                         .insert(
-                            change.relative_path.clone(),
+                            relative_path.clone(),
                             SourceEntryDigest {
                                 kind: ManifestEntryKind::Content,
                                 digest,
@@ -1187,7 +1187,7 @@ impl SourceRevisionService {
                             )
                         })?;
                     }
-                    let mut parent = change.relative_path.parent();
+                    let mut parent = relative_path.parent();
                     while let Some(relative) = parent {
                         if relative.as_os_str().is_empty() {
                             break;
@@ -1757,6 +1757,29 @@ fn remove_manifest_entry(
         .checked_sub(removed_bytes)
         .ok_or_else(|| "source revision aggregate byte accounting underflowed".to_string())?;
     Ok(())
+}
+
+fn native_projection_relative_path(path: &Path) -> Result<PathBuf, RetainedRevisionError> {
+    let mut native = PathBuf::new();
+    for component in path.components() {
+        let Component::Normal(name) = component else {
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::Invariant,
+                format!(
+                    "staged source path contains a non-normal relative component: {}",
+                    path.display()
+                ),
+            ));
+        };
+        native.push(name);
+    }
+    if native.as_os_str().is_empty() {
+        return Err(RetainedRevisionError::new(
+            RetainedRevisionErrorKind::Invariant,
+            "staged source path must not be empty",
+        ));
+    }
+    Ok(native)
 }
 
 fn load_revision_record(
@@ -3332,6 +3355,41 @@ pub(crate) mod tests {
             ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
             &CancellationToken::new(),
         )
+    }
+
+    #[test]
+    fn actor_revision_projection_rebuilds_wire_slash_paths_in_native_manifest_encoding() {
+        let (_workspace, service, root) =
+            topology_projection_fixture("projection-native-path-encoding", &[], &[]);
+        let wire_path = PathBuf::from("XDTOPackages/A/Ext/Package.bin");
+        let prepared = prepare_topology_projection(
+            &service,
+            &root,
+            &[topology_projection_change(
+                wire_path,
+                StagedFileState::Absent,
+                StagedFileState::Bytes(b"native".to_vec()),
+            )],
+        )
+        .unwrap();
+        let native_path = ["XDTOPackages", "A", "Ext", "Package.bin"]
+            .iter()
+            .collect::<PathBuf>();
+        let target = root.path().join(native_path);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, b"native").unwrap();
+
+        prepared
+            .activate(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .validate_published_source_without_transients_for_test(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .expect("projected wire path must hash exactly like the live native capture");
     }
 
     #[test]

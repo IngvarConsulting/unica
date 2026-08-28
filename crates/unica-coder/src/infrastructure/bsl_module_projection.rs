@@ -383,7 +383,7 @@ fn project_module_with_specs(
         request.platform_event_write,
     );
     let body = source
-        .split_terminator('\n')
+        .lines()
         .enumerate()
         .map(|(index, text)| BodyLine {
             line: index + 1,
@@ -2021,6 +2021,31 @@ mod tests {
                 (17, 17, "Client And WebClient"),
                 (19, 19, "Client And Not (WebClient)"),
             ]
+        );
+    }
+
+    #[test]
+    fn crlf_projection_preserves_source_signature_but_body_lines_drop_record_terminators() {
+        let source = SYNTAX_BOUNDARIES.replace('\n', "\r\n");
+        let projection = project("main:CommonModule.ЗаказыСервер", Some(&source));
+        let multiline = projection
+            .methods()
+            .iter()
+            .find(|method| method.name == "Многострочная")
+            .unwrap();
+        assert!(
+            multiline.signature.contains("\r\n"),
+            "source-proven signatures retain the source EOL profile"
+        );
+        let body = projection
+            .method_body(&multiline.at, None, 100, None)
+            .unwrap();
+        assert!(
+            body.lines
+                .iter()
+                .all(|line| !line.text.contains(['\r', '\n'])),
+            "BodyLine.text must not expose record terminators: {:?}",
+            body.lines
         );
     }
 
