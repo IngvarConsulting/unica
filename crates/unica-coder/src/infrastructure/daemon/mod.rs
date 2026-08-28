@@ -74,6 +74,7 @@ mod tests {
 
     struct BlockingTerminalFileStore {
         inner: FileInvocationStore,
+        create_delay: Duration,
     }
 
     impl InvocationStore for BlockingTerminalFileStore {
@@ -88,6 +89,7 @@ mod tests {
             &self,
             record: NewInvocationRecord,
         ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            thread::sleep(self.create_delay);
             self.inner.create_working(record)
         }
 
@@ -279,6 +281,9 @@ mod tests {
                 let config = DaemonServerConfig::new(state_root, identity, Duration::from_secs(30))
                     .with_invocation_store_for_test(Arc::new(BlockingTerminalFileStore {
                         inner: store,
+                        // Keep this lifecycle fixture independent from filesystem speed by
+                        // proving that task creation may exceed the zero-budget response window.
+                        create_delay: Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS + 50),
                     }))
                     .with_invocation_service(Arc::new(ProcessCountingService { executions }));
                 run_daemon(config).unwrap();
@@ -1442,7 +1447,9 @@ mod tests {
                     ToolIdentity::Run,
                     serde_json::json!({}),
                     workspace.to_string_lossy(),
-                    0,
+                    // This fixture exercises process-owned fail-stop and durable recovery. The
+                    // zero-budget response cutoff is covered independently at the wire boundary.
+                    INTEGRATION_TASK_WAIT_MS,
                 )
                 .unwrap(),
             )
