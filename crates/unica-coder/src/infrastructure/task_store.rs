@@ -328,7 +328,10 @@ impl FileInvocationStore {
                     max_records: self.limits.max_records,
                 });
             }
-            if record.status == InvocationStatus::Working {
+            if matches!(
+                record.status,
+                InvocationStatus::Queued | InvocationStatus::Working
+            ) {
                 let (reason, status_message, classification) = if record.resume.is_some() {
                     (
                         SafeFailureReason::ResumeUnsupported,
@@ -1305,7 +1308,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn failed_rename_preserves_the_previous_committed_record_after_reopen() {
+    fn failed_rename_preserves_previous_commit_until_recovery_terminalizes_it() {
         let root = tempfile::tempdir().unwrap();
         let clock = Arc::new(ManualEpochClock::at(1_500));
         let (store, _) = open_store(root.path(), clock.clone());
@@ -1321,10 +1324,20 @@ pub(crate) mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, InvocationStoreError::Storage(_)));
+        assert_eq!(
+            FileInvocationStore::read_committed(root.path(), created.task_id).unwrap(),
+            created
+        );
         drop(store);
 
         let (reopened, _) = open_store(root.path(), clock);
-        assert_eq!(reopened.get(created.task_id).unwrap(), created);
+        let recovered = reopened.get(created.task_id).unwrap();
+        assert_eq!(recovered.task_id, created.task_id);
+        assert_eq!(recovered.status, InvocationStatus::Failed);
+        assert_eq!(
+            recovered.failure_reason,
+            Some(SafeFailureReason::Interrupted)
+        );
     }
 
     #[test]
@@ -1347,7 +1360,8 @@ pub(crate) mod tests {
         let (reopened, _) = open_store(root.path(), clock);
         let visible = reopened.get(task_id).unwrap();
         assert_eq!(visible.task_id, task_id);
-        assert_eq!(visible.status, InvocationStatus::Queued);
+        assert_eq!(visible.status, InvocationStatus::Failed);
+        assert_eq!(visible.failure_reason, Some(SafeFailureReason::Interrupted));
     }
 
     #[test]
@@ -1840,17 +1854,29 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn committed_record_survives_reopening() {
+    fn queued_record_without_a_live_owner_recovers_as_interrupted() {
         let root = tempfile::tempdir().unwrap();
         let clock = Arc::new(ManualEpochClock::at(8_000));
         let (store, _) = open_store(root.path(), clock.clone());
-        let created = store.create(new_record(10_000, None)).unwrap();
+        let queued = store.create(new_record(10_000, None)).unwrap();
         drop(store);
 
         let (reopened, report) = open_store(root.path(), clock);
+        let recovered = reopened.get(queued.task_id).unwrap();
 
-        assert!(report.classifications.is_empty());
-        assert_eq!(reopened.get(created.task_id).unwrap(), created);
+        assert_eq!(recovered.status, InvocationStatus::Failed);
+        assert_eq!(recovered.status_message, SafeStatusMessage::Interrupted);
+        assert_eq!(
+            recovered.failure_reason,
+            Some(SafeFailureReason::Interrupted)
+        );
+        assert!(recovered.result.is_none());
+        assert!(recovered.resume.is_none());
+        assert!(report.classifications.contains(
+            &RecoveryClassification::InterruptedNonResumable {
+                task_id: queued.task_id,
+            }
+        ));
     }
 
     #[test]
@@ -2319,6 +2345,41 @@ pub(crate) mod tests {
             Err(InvocationStoreError::NotFound)
         ));
         assert_eq!(store.get(third.task_id).unwrap(), third);
+    }
+
+    #[test]
+    fn recovered_queued_record_releases_capacity_after_its_terminal_ttl() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(14_225));
+        let (store, _) = FileInvocationStore::open_with_limits_for_test(
+            root.path(),
+            clock.clone(),
+            1,
+            1_048_576,
+        )
+        .unwrap();
+        let queued = store.create(new_record(1, None)).unwrap();
+        drop(store);
+
+        let (reopened, _) = FileInvocationStore::open_with_limits_for_test(
+            root.path(),
+            clock.clone(),
+            1,
+            1_048_576,
+        )
+        .unwrap();
+        assert_eq!(
+            reopened.get(queued.task_id).unwrap().status,
+            InvocationStatus::Failed
+        );
+        clock.set(14_227);
+
+        let replacement = reopened.create_working(new_record(10_000, None)).unwrap();
+        assert_eq!(replacement.status, InvocationStatus::Working);
+        assert_eq!(
+            reopened.get(queued.task_id).unwrap_err(),
+            InvocationStoreError::NotFound
+        );
     }
 
     #[test]
