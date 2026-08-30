@@ -551,8 +551,20 @@ mod tests {
             assert_record_rejected(record_with_task(task));
         }
 
-        for invalid_status in ["", "Working", "canceled", "unknown"] {
-            assert_record_rejected(record_with_task(json!({"status": invalid_status})));
+        for (task, wrong_case_status) in
+            valid_tasks
+                .iter()
+                .zip(["Queued", "Working", "Completed", "Failed", "Cancelled"])
+        {
+            let mut wrong_case = task.clone();
+            wrong_case["status"] = json!(wrong_case_status);
+            assert_record_rejected(record_with_task(wrong_case));
+        }
+
+        for invalid_status in ["", "canceled", "unknown"] {
+            let mut invalid = valid_tasks[4].clone();
+            invalid["status"] = json!(invalid_status);
+            assert_record_rejected(record_with_task(invalid));
         }
     }
 }
