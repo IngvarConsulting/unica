@@ -1,4 +1,6 @@
-use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+use crate::application::invocation_store::{
+    MAX_CANONICAL_RESULT_BYTES, MAX_TASK_RECORD_ENVELOPE_BYTES,
+};
 use crate::application::invocation_store_v5::V5SafeFailureReason;
 use crate::domain::invocation::{
     DomainResult, InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId,
@@ -243,6 +245,166 @@ impl ReceiptKey {
             self.normalized_arguments_hash.clone(),
             self.request_scope_hash.clone(),
         )
+    }
+}
+
+pub(crate) const MAX_ORIGINAL_RESPONSE_BUDGET_MS: u64 = 7_000;
+pub(crate) const MAX_LIVE_RECEIPTS: usize = 64;
+pub(crate) const MAX_RECEIPT_ENTITLEMENT_BYTES: u64 =
+    (MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES) as u64;
+pub(crate) const MAX_LIVE_RECEIPT_BYTES: u64 =
+    MAX_RECEIPT_ENTITLEMENT_BYTES * MAX_LIVE_RECEIPTS as u64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OriginalCutoffDescriptor {
+    accepted_epoch_ms: u64,
+    response_budget_ms: u64,
+}
+
+impl OriginalCutoffDescriptor {
+    pub(crate) fn new(
+        accepted_epoch_ms: u64,
+        response_budget_ms: u64,
+    ) -> Result<Self, OriginalCutoffDescriptorError> {
+        if response_budget_ms > MAX_ORIGINAL_RESPONSE_BUDGET_MS {
+            return Err(OriginalCutoffDescriptorError::ResponseBudgetTooLarge);
+        }
+        if accepted_epoch_ms.checked_add(response_budget_ms).is_none() {
+            return Err(OriginalCutoffDescriptorError::EpochBudgetOverflow);
+        }
+        Ok(Self {
+            accepted_epoch_ms,
+            response_budget_ms,
+        })
+    }
+
+    pub(crate) const fn accepted_epoch_ms(self) -> u64 {
+        self.accepted_epoch_ms
+    }
+
+    pub(crate) const fn response_budget_ms(self) -> u64 {
+        self.response_budget_ms
+    }
+}
+
+impl<'de> Deserialize<'de> for OriginalCutoffDescriptor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct StrictOriginalCutoffDescriptor {
+            accepted_epoch_ms: u64,
+            response_budget_ms: u64,
+        }
+
+        let decoded = StrictOriginalCutoffDescriptor::deserialize(deserializer)?;
+        Self::new(decoded.accepted_epoch_ms, decoded.response_budget_ms)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OriginalCutoffDescriptorError {
+    ResponseBudgetTooLarge,
+    EpochBudgetOverflow,
+}
+
+impl fmt::Display for OriginalCutoffDescriptorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ResponseBudgetTooLarge => "original response budget exceeds 7000 ms",
+            Self::EpochBudgetOverflow => "original response cutoff epoch exceeds u64",
+        })
+    }
+}
+
+impl std::error::Error for OriginalCutoffDescriptorError {}
+
+/// Exact readback of the first durable `Reserved::Unbound` transition.
+///
+/// A duplicate may observe this value but cannot replace its original cutoff,
+/// mutation sequence, or fixed result-space entitlement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReservedReceipt {
+    key: ReceiptKey,
+    key_digest: ReceiptKeyDigest,
+    original_cutoff: OriginalCutoffDescriptor,
+    cancel_requested: bool,
+    mutation_sequence: u64,
+    encoded_bytes: u64,
+    reserved_result_bytes: u64,
+}
+
+impl ReservedReceipt {
+    pub(crate) fn new(
+        key: ReceiptKey,
+        key_digest: ReceiptKeyDigest,
+        original_cutoff: OriginalCutoffDescriptor,
+        cancel_requested: bool,
+        mutation_sequence: u64,
+        encoded_bytes: u64,
+        reserved_result_bytes: u64,
+    ) -> Self {
+        Self {
+            key,
+            key_digest,
+            original_cutoff,
+            cancel_requested,
+            mutation_sequence,
+            encoded_bytes,
+            reserved_result_bytes,
+        }
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        &self.key
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        &self.key_digest
+    }
+
+    pub(crate) const fn original_cutoff(&self) -> &OriginalCutoffDescriptor {
+        &self.original_cutoff
+    }
+
+    pub(crate) const fn cancel_requested(&self) -> bool {
+        self.cancel_requested
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        self.mutation_sequence
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.encoded_bytes
+    }
+
+    pub(crate) const fn reserved_result_bytes(&self) -> u64 {
+        self.reserved_result_bytes
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReserveOutcome {
+    Created(ReservedReceipt),
+    ExistingExact(ReservedReceipt),
+}
+
+impl ReserveOutcome {
+    pub(crate) fn reservation(&self) -> &ReservedReceipt {
+        match self {
+            Self::Created(reservation) | Self::ExistingExact(reservation) => reservation,
+        }
+    }
+
+    pub(crate) fn into_reservation(self) -> ReservedReceipt {
+        match self {
+            Self::Created(reservation) | Self::ExistingExact(reservation) => reservation,
+        }
     }
 }
 
@@ -686,6 +848,44 @@ mod tests {
         for alternative in alternatives {
             assert_ne!(receipt_key_digest(&alternative), baseline_digest);
         }
+    }
+
+    #[test]
+    fn original_cutoff_descriptor_is_strict_bounded_and_restart_stable() {
+        let cutoff =
+            OriginalCutoffDescriptor::new(1_234, 7_000).expect("maximum bounded response cutoff");
+        assert_eq!(cutoff.accepted_epoch_ms(), 1_234);
+        assert_eq!(cutoff.response_budget_ms(), 7_000);
+        assert_eq!(
+            serde_json::to_value(cutoff).expect("serialize cutoff descriptor"),
+            json!({"acceptedEpochMs": 1_234, "responseBudgetMs": 7_000})
+        );
+        assert_eq!(
+            serde_json::from_value::<OriginalCutoffDescriptor>(json!({
+                "acceptedEpochMs": 1_234,
+                "responseBudgetMs": 7_000
+            }))
+            .expect("strict cutoff descriptor"),
+            cutoff
+        );
+        assert!(OriginalCutoffDescriptor::new(1_234, 7_001).is_err());
+        assert!(OriginalCutoffDescriptor::new(u64::MAX, 1).is_err());
+        assert!(serde_json::from_value::<OriginalCutoffDescriptor>(json!({
+            "acceptedEpochMs": 1_234,
+            "responseBudgetMs": 7_001
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<OriginalCutoffDescriptor>(json!({
+            "acceptedEpochMs": u64::MAX,
+            "responseBudgetMs": 1
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<OriginalCutoffDescriptor>(json!({
+            "acceptedEpochMs": 1_234,
+            "responseBudgetMs": 7_000,
+            "deadlineMs": 8_000
+        }))
+        .is_err());
     }
 
     #[test]

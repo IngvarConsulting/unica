@@ -101,21 +101,40 @@ pub(crate) enum RetainedDirectoryReplacementOutcome {
     PreventedByRetainedHandle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetainedRegularFileRelocationOutcome {
+    Relocated,
+    PreventedByRetainedHandle,
+}
+
 pub(crate) fn attempt_retained_directory_replacement_for_test(
     named: &Path,
     displaced: &Path,
 ) -> io::Result<RetainedDirectoryReplacementOutcome> {
     match std::fs::rename(named, displaced) {
         Ok(()) => Ok(RetainedDirectoryReplacementOutcome::Replaced),
-        Err(error) if windows_retained_directory_replacement_was_prevented(&error) => {
+        Err(error) if windows_retained_name_relocation_was_prevented(&error) => {
             Ok(RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle)
         }
         Err(error) => Err(error),
     }
 }
 
+pub(crate) fn attempt_retained_regular_file_relocation_for_test(
+    named: &Path,
+    relocated: &Path,
+) -> io::Result<RetainedRegularFileRelocationOutcome> {
+    match std::fs::rename(named, relocated) {
+        Ok(()) => Ok(RetainedRegularFileRelocationOutcome::Relocated),
+        Err(error) if windows_retained_name_relocation_was_prevented(&error) => {
+            Ok(RetainedRegularFileRelocationOutcome::PreventedByRetainedHandle)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(windows)]
-fn windows_retained_directory_replacement_was_prevented(error: &io::Error) -> bool {
+fn windows_retained_name_relocation_was_prevented(error: &io::Error) -> bool {
     const ERROR_ACCESS_DENIED: i32 = 5;
     const ERROR_SHARING_VIOLATION: i32 = 32;
 
@@ -126,7 +145,7 @@ fn windows_retained_directory_replacement_was_prevented(error: &io::Error) -> bo
 }
 
 #[cfg(not(windows))]
-fn windows_retained_directory_replacement_was_prevented(_error: &io::Error) -> bool {
+fn windows_retained_name_relocation_was_prevented(_error: &io::Error) -> bool {
     false
 }
 
