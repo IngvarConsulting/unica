@@ -1,4 +1,7 @@
 use serde_json::Value;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -174,6 +177,78 @@ fn v5_frontend_process_spawns_the_same_binary_and_pings_the_v5_runtime() {
         Duration::from_secs(5),
         || !endpoint_path(&state_root, PRODUCTION_V5_IDENTITY).exists(),
         "v5 owned endpoint removal",
+    );
+}
+
+#[test]
+fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_unica"));
+
+    let owner = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
+        &state_root,
+        PRODUCTION_V5_IDENTITY,
+        &executable,
+        20,
+    )
+    .expect("spawn the initial exact protocol-v5 daemon");
+    let initial_pid = owner.daemon_pid();
+    let blackhole = TcpListener::bind(("127.0.0.1", 0)).expect("bind stale endpoint blackhole");
+    let mut stale_endpoint = read_endpoint(&state_root, PRODUCTION_V5_IDENTITY);
+    let stale_instance = stale_endpoint["instanceId"].clone();
+    stale_endpoint["port"] = Value::from(blackhole.local_addr().expect("blackhole address").port());
+    let endpoint_record_path = endpoint_path(&state_root, PRODUCTION_V5_IDENTITY);
+    let mut stale_bytes = serde_json::to_vec(&stale_endpoint).expect("serialize stale endpoint");
+    stale_bytes.push(b'\n');
+    let mut endpoint_file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&endpoint_record_path)
+        .expect("open the production-created owner-only endpoint");
+    endpoint_file
+        .write_all(&stale_bytes)
+        .and_then(|()| endpoint_file.sync_all())
+        .expect("persist stale endpoint on the same owner-only file identity");
+    drop(endpoint_file);
+    drop(owner);
+    thread::sleep(Duration::from_millis(250));
+    assert_eq!(
+        read_endpoint(&state_root, PRODUCTION_V5_IDENTITY),
+        stale_endpoint,
+        "the original daemon removed a stale endpoint record it no longer owned"
+    );
+
+    let started = Instant::now();
+    let replacement = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
+        &state_root,
+        PRODUCTION_V5_IDENTITY,
+        &executable,
+        100,
+    );
+    let elapsed = started.elapsed();
+    drop(blackhole);
+    let mut replacement = replacement.expect(
+        "a stale endpoint handshake must leave enough of the single startup deadline to spawn",
+    );
+
+    replacement
+        .ping()
+        .expect("ping the replacement exact protocol-v5 daemon");
+    assert_ne!(replacement.daemon_pid(), initial_pid);
+    let replacement_endpoint = read_endpoint(&state_root, PRODUCTION_V5_IDENTITY);
+    assert_ne!(replacement_endpoint["instanceId"], stale_instance);
+    assert_ne!(replacement_endpoint["port"], stale_endpoint["port"]);
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "stale endpoint probes consumed the spawn budget for {elapsed:?}"
+    );
+    drop(replacement);
+
+    wait_until(
+        Duration::from_secs(5),
+        || !endpoint_path(&state_root, PRODUCTION_V5_IDENTITY).exists(),
+        "replacement v5 endpoint removal",
     );
 }
 

@@ -252,18 +252,28 @@ impl ReceiptLedgerStore {
         &self,
         receipt_key_digest: &ReceiptKeyDigest,
     ) -> Result<MissingReceiptObservation, ReceiptLedgerError> {
+        self.inspect_exact_after_row_lookup(receipt_key_digest, || {})
+    }
+
+    fn inspect_exact_after_row_lookup(
+        &self,
+        receipt_key_digest: &ReceiptKeyDigest,
+        after_row_lookup: impl FnOnce(),
+    ) -> Result<MissingReceiptObservation, ReceiptLedgerError> {
         self.verify_named_authority()?;
         let generation_before = self.generation()?;
         let record_name = format!("{}.json", receipt_key_digest.as_str());
-        match open_regular_child_nofollow(&self.active_file, OsStr::new(&record_name)) {
-            Ok(record) => {
-                verify_owner_only_acl(&record)
-                    .map_err(|error| storage_error("verify receipt row ownership", error))?;
-                return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(storage_error("inspect exact receipt row", error)),
-        }
+        let row_present =
+            match open_regular_child_nofollow(&self.active_file, OsStr::new(&record_name)) {
+                Ok(record) => {
+                    verify_owner_only_acl(&record)
+                        .map_err(|error| storage_error("verify receipt row ownership", error))?;
+                    true
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => return Err(storage_error("inspect exact receipt row", error)),
+            };
+        after_row_lookup();
         let generation_after = self.generation()?;
         if generation_after != generation_before {
             return Err(ReceiptLedgerError::ConcurrentGenerationChange {
@@ -272,6 +282,9 @@ impl ReceiptLedgerStore {
             });
         }
         self.verify_named_authority()?;
+        if row_present {
+            return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
+        }
         Ok(MissingReceiptObservation {
             receipt_key_digest: receipt_key_digest.clone(),
             generation_before,
@@ -455,9 +468,10 @@ mod tests {
         attempt_retained_directory_replacement_for_test, create_directory_link_fixture_for_test,
         FileLinkFixtureOutcome, RetainedDirectoryReplacementOutcome,
     };
+    use std::cell::Cell;
     use std::ffi::OsStr;
     use std::fs;
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::str::FromStr;
 
     fn digest(byte: char) -> ReceiptKeyDigest {
@@ -588,6 +602,61 @@ mod tests {
             fs::read(receipts.join("generation")).expect("reread generation bytes"),
             generation_before
         );
+    }
+
+    #[test]
+    fn present_receipt_revalidates_named_active_authority_after_lookup() {
+        let root = tempfile::tempdir().expect("active temporary root");
+        let root = fs::canonicalize(root.path()).expect("physical active temporary root");
+        let receipts = root.join("receipts");
+        let active = receipts.join(ACTIVE_DIRECTORY_NAME);
+        let displaced_active = receipts.join("active-displaced");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let expected_digest = digest('e');
+        let record_name = format!("{}.json", expected_digest.as_str());
+        let mut record = create_owner_only_file_child(&store.active_file, OsStr::new(&record_name))
+            .expect("create owner-only receipt row");
+        record
+            .write_all(b"{}\n")
+            .and_then(|()| record.sync_all())
+            .expect("persist receipt row fixture");
+        sync_directory(&store.active_file).expect("sync receipt row fixture");
+        drop(record);
+        let replacement = Cell::new(None);
+
+        let error = store
+            .inspect_exact_after_row_lookup(&expected_digest, || {
+                let outcome =
+                    attempt_retained_directory_replacement_for_test(&active, &displaced_active)
+                        .expect("attempt named active replacement after row lookup");
+                if outcome == RetainedDirectoryReplacementOutcome::Replaced {
+                    drop(
+                        create_owner_only_directory_child(
+                            &store.receipts_file,
+                            OsStr::new(ACTIVE_DIRECTORY_NAME),
+                        )
+                        .expect("create replacement owner-only active directory"),
+                    );
+                }
+                replacement.set(Some(outcome));
+            })
+            .expect_err("a present receipt is not decodable in the W0a shell");
+        let outcome = replacement
+            .get()
+            .expect("present-row lookup returned before the post-lookup authority checkpoint");
+
+        match outcome {
+            RetainedDirectoryReplacementOutcome::Replaced => assert!(matches!(
+                error,
+                ReceiptLedgerError::Storage {
+                    operation: "validate named receipt active directory",
+                    ..
+                }
+            )),
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(error, ReceiptLedgerError::ReceiptRowPresentUnsupported)
+            }
+        }
     }
 
     #[test]

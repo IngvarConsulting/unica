@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const EXISTING_ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const RETRY_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -117,7 +118,8 @@ impl V5DaemonProcessOwner {
             .ok_or_else(|| "protocol-v5 startup deadline overflow".to_string())?;
         let state = DaemonStateDirectory::open(state_root, &core_identity)?;
         if let Some(record) = state.read_v5_endpoint_record()? {
-            if let Ok(owner) = Self::connect_before(record, deadline) {
+            let probe_deadline = existing_endpoint_probe_deadline(deadline)?;
+            if let Ok(owner) = Self::connect_before(record, probe_deadline) {
                 return Ok(owner);
             }
         }
@@ -125,7 +127,8 @@ impl V5DaemonProcessOwner {
         let lock_budget = remaining(deadline, "spawn lock")?.min(SPAWN_LOCK_TIMEOUT);
         let _spawn_lock = state.acquire_spawn_lock(lock_budget)?;
         if let Some(record) = state.read_v5_endpoint_record()? {
-            if let Ok(owner) = Self::connect_before(record, deadline) {
+            let probe_deadline = existing_endpoint_probe_deadline(deadline)?;
+            if let Ok(owner) = Self::connect_before(record, probe_deadline) {
                 return Ok(owner);
             }
         }
@@ -319,6 +322,16 @@ fn remaining(deadline: Instant, stage: &'static str) -> Result<Duration, String>
         .checked_duration_since(Instant::now())
         .filter(|remaining| !remaining.is_zero())
         .ok_or_else(|| format!("protocol-v5 deadline expired during {stage}"))
+}
+
+fn existing_endpoint_probe_deadline(outer_deadline: Instant) -> Result<Instant, String> {
+    let now = Instant::now();
+    let outer_budget = outer_deadline
+        .checked_duration_since(now)
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| "protocol-v5 deadline expired during existing endpoint probe".to_string())?;
+    now.checked_add(outer_budget.min(EXISTING_ENDPOINT_PROBE_TIMEOUT))
+        .ok_or_else(|| "protocol-v5 existing endpoint probe deadline overflow".to_string())
 }
 
 #[cfg(test)]
