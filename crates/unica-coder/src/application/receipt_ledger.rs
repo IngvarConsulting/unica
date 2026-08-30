@@ -8,7 +8,9 @@ use crate::domain::invocation::{
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
+use std::num::NonZeroU64;
 use std::str::FromStr;
+use std::time::Instant;
 
 const REQUEST_SCOPE_DOMAIN: &[u8] = b"unica.request-scope.v1\0";
 const RECEIPT_KEY_DOMAIN: &[u8] = b"unica.receipt-key.v1\0";
@@ -98,6 +100,109 @@ checked_digest!(RequestScopeHash);
 checked_digest!(ReceiptKeyDigest);
 checked_digest!(TaskLinkDigest);
 checked_digest!(TerminalDigest);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReceiptLedgerError {
+    AlreadyOwned,
+    DeadlineExceeded,
+    InvocationIdentityMismatch,
+    ReservedTaskIdentityMismatch,
+    ReceiptDigestCollision,
+    ReceiptNotFound,
+    CapacityExceeded,
+    RecordTooLarge,
+    StoreUnavailable,
+    CommitUncertain {
+        receipt_key_digest: ReceiptKeyDigest,
+    },
+    ConcurrentGenerationChange {
+        generation_before: u64,
+        generation_after: u64,
+    },
+    Corrupt(&'static str),
+    ReceiptRowPresentUnsupported,
+    Storage {
+        operation: &'static str,
+        message: String,
+    },
+}
+
+impl ReceiptLedgerError {
+    pub(crate) const fn requires_reopen(&self) -> bool {
+        matches!(
+            self,
+            Self::StoreUnavailable
+                | Self::CommitUncertain { .. }
+                | Self::ConcurrentGenerationChange { .. }
+                | Self::ReceiptDigestCollision
+                | Self::Corrupt(_)
+                | Self::Storage { .. }
+        )
+    }
+}
+
+impl fmt::Display for ReceiptLedgerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyOwned => formatter.write_str("receipt ledger is already owned"),
+            Self::DeadlineExceeded => formatter.write_str("receipt ledger deadline expired"),
+            Self::InvocationIdentityMismatch => {
+                formatter.write_str("invocation id belongs to a different receipt key")
+            }
+            Self::ReservedTaskIdentityMismatch => {
+                formatter.write_str("reserved task id belongs to a different receipt key")
+            }
+            Self::ReceiptDigestCollision => {
+                formatter.write_str("receipt key digest belongs to a different exact key")
+            }
+            Self::ReceiptNotFound => formatter.write_str("receipt was not found"),
+            Self::CapacityExceeded => formatter.write_str("receipt ledger capacity is exhausted"),
+            Self::RecordTooLarge => formatter.write_str("receipt record exceeds its byte limit"),
+            Self::StoreUnavailable => {
+                formatter.write_str("receipt ledger requires process-owned recovery")
+            }
+            Self::CommitUncertain {
+                receipt_key_digest,
+            } => write!(
+                formatter,
+                "receipt commit is uncertain for {receipt_key_digest}"
+            ),
+            Self::ConcurrentGenerationChange {
+                generation_before,
+                generation_after,
+            } => write!(
+                formatter,
+                "receipt ledger generation changed during exact inspection: {generation_before} -> {generation_after}"
+            ),
+            Self::Corrupt(message) => write!(formatter, "corrupt receipt ledger: {message}"),
+            Self::ReceiptRowPresentUnsupported => {
+                formatter.write_str("receipt row exists but record decoding is not implemented")
+            }
+            Self::Storage { operation, message } => write!(formatter, "{operation}: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for ReceiptLedgerError {}
+
+/// Sole-writer boundary owned by the application actor.
+///
+/// The port deliberately requires only `Send`: the actor moves one concrete
+/// writer to its worker thread and never shares it behind a mutex.
+pub(crate) trait ReceiptLedgerPort: Send + 'static {
+    fn reserve(
+        &mut self,
+        key: ReceiptKey,
+        original_cutoff: OriginalCutoffDescriptor,
+        deadline: Instant,
+    ) -> Result<ReserveOutcome, ReceiptLedgerError>;
+
+    fn recover(
+        &mut self,
+        key: &ReceiptKey,
+        deadline: Instant,
+    ) -> Result<ReceiptState, ReceiptLedgerError>;
+}
 
 impl CoreIdentityDigest {
     pub(crate) fn from_sha256(bytes: [u8; 32]) -> Self {
@@ -323,68 +428,591 @@ impl fmt::Display for OriginalCutoffDescriptorError {
 
 impl std::error::Error for OriginalCutoffDescriptorError {}
 
+/// Per-record CAS version, distinct from the ledger-wide mutation sequence.
+///
+/// Every newly reserved record starts at one even when another record already
+/// advanced the global ledger generation. Future transitions advance only the
+/// exact record version they replace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct ReceiptVersion(NonZeroU64);
+
+impl ReceiptVersion {
+    pub(crate) const fn initial() -> Self {
+        Self(NonZeroU64::MIN)
+    }
+
+    pub(crate) const fn new(value: u64) -> Option<Self> {
+        match NonZeroU64::new(value) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    pub(crate) const fn get(self) -> u64 {
+        self.0.get()
+    }
+
+    pub(crate) fn checked_next(self) -> Option<Self> {
+        self.get().checked_add(1).and_then(Self::new)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReservedPhase {
+    Unbound,
+    ActorBound {
+        bound_workspace_identity: SafeIdentityHash,
+    },
+    Begun {
+        bound_workspace_identity: SafeIdentityHash,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttemptPhase {
+    NotBegun,
+    Begun,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReceiptStateKind {
+    CancelReserved,
+    ReservedUnbound,
+    ReservedActorBound,
+    ReservedBegun,
+    DirectTerminalUnacked,
+    AcknowledgedTombstone,
+    TaskPromisedUnbound,
+    TaskPromisedActorBound,
+    TaskHandoffActorBoundNotBegun,
+    TaskHandoffActorBoundBegun,
+    TaskReceiptOwnedActorBound,
+    TaskTerminalReceiptBacked,
+    TaskBoundNotBegun,
+    TaskBoundBegun,
+    TaskTerminalBound,
+    TaskRetirementPending,
+}
+
+impl ReceiptStateKind {
+    pub(crate) const ALL: [Self; 16] = [
+        Self::CancelReserved,
+        Self::ReservedUnbound,
+        Self::ReservedActorBound,
+        Self::ReservedBegun,
+        Self::DirectTerminalUnacked,
+        Self::AcknowledgedTombstone,
+        Self::TaskPromisedUnbound,
+        Self::TaskPromisedActorBound,
+        Self::TaskHandoffActorBoundNotBegun,
+        Self::TaskHandoffActorBoundBegun,
+        Self::TaskReceiptOwnedActorBound,
+        Self::TaskTerminalReceiptBacked,
+        Self::TaskBoundNotBegun,
+        Self::TaskBoundBegun,
+        Self::TaskTerminalBound,
+        Self::TaskRetirementPending,
+    ];
+
+    pub(crate) const fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::CancelReserved => "cancel_reserved",
+            Self::ReservedUnbound => "reserved_unbound",
+            Self::ReservedActorBound => "reserved_actor_bound",
+            Self::ReservedBegun => "reserved_begun",
+            Self::DirectTerminalUnacked => "direct_terminal_unacked",
+            Self::AcknowledgedTombstone => "acknowledged_tombstone",
+            Self::TaskPromisedUnbound => "task_promised_unbound",
+            Self::TaskPromisedActorBound => "task_promised_actor_bound",
+            Self::TaskHandoffActorBoundNotBegun => "task_handoff_actor_bound_not_begun",
+            Self::TaskHandoffActorBoundBegun => "task_handoff_actor_bound_begun",
+            Self::TaskReceiptOwnedActorBound => "task_receipt_owned_actor_bound",
+            Self::TaskTerminalReceiptBacked => "task_terminal_receipt_backed",
+            Self::TaskBoundNotBegun => "task_bound_not_begun",
+            Self::TaskBoundBegun => "task_bound_begun",
+            Self::TaskTerminalBound => "task_terminal_bound",
+            Self::TaskRetirementPending => "task_retirement_pending",
+        }
+    }
+}
+
+/// Fields required to recover and CAS-replace every durable receipt body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReceiptRecordHeader {
+    key: ReceiptKey,
+    key_digest: ReceiptKeyDigest,
+    record_version: ReceiptVersion,
+    mutation_sequence: u64,
+    encoded_bytes: u64,
+}
+
+impl ReceiptRecordHeader {
+    pub(crate) fn new(
+        key: ReceiptKey,
+        key_digest: ReceiptKeyDigest,
+        record_version: ReceiptVersion,
+        mutation_sequence: u64,
+        encoded_bytes: u64,
+    ) -> Self {
+        Self {
+            key,
+            key_digest,
+            record_version,
+            mutation_sequence,
+            encoded_bytes,
+        }
+    }
+}
+
+/// Stable Task projection retained before TaskStore becomes sole owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReceiptTaskProjection {
+    task_id: TaskId,
+    invocation_id: InvocationId,
+    created_at_epoch_ms: u64,
+    updated_at_epoch_ms: u64,
+    ttl_ms: u64,
+    poll_interval_ms: u64,
+    version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskLinkReference {
+    identity: TaskLinkIdentity,
+    digest: TaskLinkDigest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V5CertificateProtocolIdentity {
+    V5,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProvisionalTaskStatus {
+    Queued,
+    Working,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StagedTaskPublicationCase {
+    Absent {
+        final_task_record_max_bytes: u64,
+        task_response_frame_max_bytes: u64,
+    },
+    ExactProvisional {
+        status: ProvisionalTaskStatus,
+        version: u64,
+        cancel_requested: bool,
+        final_task_record_max_bytes: u64,
+        task_response_frame_max_bytes: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StagedTaskPublicationCases([StagedTaskPublicationCase; 5]);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StagedTerminalTransferCertificateError {
+    InvalidTaskPublicationCases,
+    TaskTerminalBoundLinkRecordTooLarge,
+}
+
+impl StagedTaskPublicationCases {
+    pub(crate) fn new(
+        cases: [StagedTaskPublicationCase; 5],
+    ) -> Result<Self, StagedTerminalTransferCertificateError> {
+        match &cases {
+            [StagedTaskPublicationCase::Absent { .. }, StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Queued,
+                version: queued_version,
+                cancel_requested: false,
+                ..
+            }, StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Queued,
+                version: queued_cancel_version,
+                cancel_requested: true,
+                ..
+            }, StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Working,
+                version: working_version,
+                cancel_requested: false,
+                ..
+            }, StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Working,
+                version: working_cancel_version,
+                cancel_requested: true,
+                ..
+            }] if [
+                *queued_version,
+                *queued_cancel_version,
+                *working_version,
+                *working_cancel_version,
+            ] == [u64::MAX; 4] =>
+            {
+                Ok(Self(cases))
+            }
+            _ => Err(StagedTerminalTransferCertificateError::InvalidTaskPublicationCases),
+        }
+    }
+
+    pub(crate) fn as_slice(&self) -> &[StagedTaskPublicationCase] {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StagedCapacityFallbackCase {
+    LinkCapacity {
+        receipt_backed_record_max_bytes: u64,
+        task_response_frame_max_bytes: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StagedTerminalTransferCertificate {
+    certificate_version: u32,
+    protocol_identity: V5CertificateProtocolIdentity,
+    core_identity_digest: CoreIdentityDigest,
+    receipt_key_digest: ReceiptKeyDigest,
+    task_id: TaskId,
+    invocation_id: InvocationId,
+    task_link_digest: TaskLinkDigest,
+    terminal_digest: TerminalDigest,
+    terminal_epoch_ms: u64,
+    receipt_record_schema_version: u32,
+    task_record_schema_version: u32,
+    lifecycle_link_record_schema_version: u32,
+    terminal_codec_version: u32,
+    max_daemon_response_line_bytes: u64,
+    max_task_lifecycle_link_record_bytes: u64,
+    staged_receipt_record_max_bytes: u64,
+    task_terminal_bound_link_record_max_bytes: u64,
+    task_publication_cases: StagedTaskPublicationCases,
+    capacity_fallback_cases: [StagedCapacityFallbackCase; 1],
+}
+
+impl StagedTerminalTransferCertificate {
+    const CERTIFICATE_VERSION: u32 = 1;
+    const RECEIPT_RECORD_SCHEMA_VERSION: u32 = 1;
+    const TASK_RECORD_SCHEMA_VERSION: u32 = 1;
+    const LIFECYCLE_LINK_RECORD_SCHEMA_VERSION: u32 = 1;
+    const TERMINAL_CODEC_VERSION: u32 = 1;
+    const MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES: u64 = 1_024;
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        core_identity_digest: CoreIdentityDigest,
+        receipt_key_digest: ReceiptKeyDigest,
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        task_link_digest: TaskLinkDigest,
+        terminal_digest: TerminalDigest,
+        terminal_epoch_ms: u64,
+        staged_receipt_record_max_bytes: u64,
+        task_terminal_bound_link_record_max_bytes: u64,
+        task_publication_cases: [StagedTaskPublicationCase; 5],
+        capacity_fallback_cases: [StagedCapacityFallbackCase; 1],
+    ) -> Result<Self, StagedTerminalTransferCertificateError> {
+        let task_publication_cases = StagedTaskPublicationCases::new(task_publication_cases)?;
+        if task_terminal_bound_link_record_max_bytes > Self::MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES {
+            return Err(
+                StagedTerminalTransferCertificateError::TaskTerminalBoundLinkRecordTooLarge,
+            );
+        }
+
+        Ok(Self {
+            certificate_version: Self::CERTIFICATE_VERSION,
+            protocol_identity: V5CertificateProtocolIdentity::V5,
+            core_identity_digest,
+            receipt_key_digest,
+            task_id,
+            invocation_id,
+            task_link_digest,
+            terminal_digest,
+            terminal_epoch_ms,
+            receipt_record_schema_version: Self::RECEIPT_RECORD_SCHEMA_VERSION,
+            task_record_schema_version: Self::TASK_RECORD_SCHEMA_VERSION,
+            lifecycle_link_record_schema_version: Self::LIFECYCLE_LINK_RECORD_SCHEMA_VERSION,
+            terminal_codec_version: Self::TERMINAL_CODEC_VERSION,
+            max_daemon_response_line_bytes: (MAX_CANONICAL_RESULT_BYTES
+                + MAX_TASK_RECORD_ENVELOPE_BYTES)
+                as u64,
+            max_task_lifecycle_link_record_bytes: Self::MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
+            staged_receipt_record_max_bytes,
+            task_terminal_bound_link_record_max_bytes,
+            task_publication_cases,
+            capacity_fallback_cases,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum HandoffTerminalStage {
+    NoTerminal,
+    Staged {
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        certificate: Box<StagedTerminalTransferCertificate>,
+    },
+}
+
+/// Closed evidence for either dimension of the Task/link capacity limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProvenTaskLinkCapacity {
+    Count {
+        observed_live_links: u64,
+        maximum_live_links: u64,
+    },
+    Bytes {
+        required_link_bytes: u64,
+        available_link_bytes: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClosedTerminalStatus {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Bound-family records are lifecycle-link records, not active receipt rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LifecycleLinkRecordHeader {
+    key: ReceiptKey,
+    key_digest: ReceiptKeyDigest,
+    link: TaskLinkReference,
+    lifecycle_link_version: u64,
+    mutation_sequence: u64,
+    encoded_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedDualIdAccounting {
+    invocation_index_bytes: u64,
+    reserved_task_index_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CancelReservedReceipt {
+    record: ReceiptRecordHeader,
+    cancel_reserved_at_epoch_ms: u64,
+    expires_at_epoch_ms: u64,
+}
+
 /// Exact readback of the first durable `Reserved::Unbound` transition.
 ///
 /// A duplicate may observe this value but cannot replace its original cutoff,
 /// mutation sequence, or fixed result-space entitlement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReservedReceipt {
-    key: ReceiptKey,
-    key_digest: ReceiptKeyDigest,
+    record: ReceiptRecordHeader,
+    reserved_at_epoch_ms: u64,
     original_cutoff: OriginalCutoffDescriptor,
+    phase: ReservedPhase,
     cancel_requested: bool,
-    mutation_sequence: u64,
-    encoded_bytes: u64,
     reserved_result_bytes: u64,
 }
 
 impl ReservedReceipt {
     pub(crate) fn new(
-        key: ReceiptKey,
-        key_digest: ReceiptKeyDigest,
+        record: ReceiptRecordHeader,
+        reserved_at_epoch_ms: u64,
         original_cutoff: OriginalCutoffDescriptor,
+        phase: ReservedPhase,
         cancel_requested: bool,
-        mutation_sequence: u64,
-        encoded_bytes: u64,
         reserved_result_bytes: u64,
     ) -> Self {
         Self {
-            key,
-            key_digest,
+            record,
+            reserved_at_epoch_ms,
             original_cutoff,
+            phase,
             cancel_requested,
-            mutation_sequence,
-            encoded_bytes,
             reserved_result_bytes,
         }
     }
 
     pub(crate) fn key(&self) -> &ReceiptKey {
-        &self.key
+        &self.record.key
     }
 
     pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
-        &self.key_digest
+        &self.record.key_digest
+    }
+
+    pub(crate) const fn reserved_at_epoch_ms(&self) -> u64 {
+        self.reserved_at_epoch_ms
     }
 
     pub(crate) const fn original_cutoff(&self) -> &OriginalCutoffDescriptor {
         &self.original_cutoff
     }
 
+    pub(crate) const fn phase(&self) -> &ReservedPhase {
+        &self.phase
+    }
+
     pub(crate) const fn cancel_requested(&self) -> bool {
         self.cancel_requested
     }
 
+    pub(crate) const fn record_version(&self) -> ReceiptVersion {
+        self.record.record_version
+    }
+
     pub(crate) const fn mutation_sequence(&self) -> u64 {
-        self.mutation_sequence
+        self.record.mutation_sequence
     }
 
     pub(crate) const fn encoded_bytes(&self) -> u64 {
-        self.encoded_bytes
+        self.record.encoded_bytes
     }
 
     pub(crate) const fn reserved_result_bytes(&self) -> u64 {
         self.reserved_result_bytes
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DirectTerminalUnackedReceipt {
+    record: ReceiptRecordHeader,
+    terminal_epoch_ms: u64,
+    terminal: V5CanonicalTerminal,
+    reserved_result_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AcknowledgedTombstoneReceipt {
+    record: ReceiptRecordHeader,
+    terminal_digest: TerminalDigest,
+    acknowledged_at_epoch_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskPromisedUnboundReceipt {
+    record: ReceiptRecordHeader,
+    task: ReceiptTaskProjection,
+    cancel_requested: bool,
+    reserved_result_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskPromisedActorBoundReceipt {
+    record: ReceiptRecordHeader,
+    task: ReceiptTaskProjection,
+    link: TaskLinkReference,
+    cancel_requested: bool,
+    reserved_result_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TaskHandoffActorBoundReceipt {
+    record: ReceiptRecordHeader,
+    task: ReceiptTaskProjection,
+    link: TaskLinkReference,
+    phase: AttemptPhase,
+    cancel_requested: bool,
+    reserved_result_bytes: u64,
+    terminal_stage: HandoffTerminalStage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskReceiptOwnedActorBoundReceipt {
+    record: ReceiptRecordHeader,
+    task: ReceiptTaskProjection,
+    link: TaskLinkReference,
+    cancel_requested: bool,
+    reserved_result_bytes: u64,
+    proven_link_capacity: ProvenTaskLinkCapacity,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TaskTerminalReceiptBackedReceipt {
+    record: ReceiptRecordHeader,
+    task: ReceiptTaskProjection,
+    terminal_epoch_ms: u64,
+    terminal: V5CanonicalTerminal,
+    cancel_requested: bool,
+    reserved_result_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskBoundReceipt {
+    record: LifecycleLinkRecordHeader,
+    task: ReceiptTaskProjection,
+    task_record_version: u64,
+    bind_epoch_ms: u64,
+    phase: AttemptPhase,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskTerminalBoundReceipt {
+    record: LifecycleLinkRecordHeader,
+    task: ReceiptTaskProjection,
+    task_record_version: u64,
+    terminal_status: ClosedTerminalStatus,
+    terminal_digest: TerminalDigest,
+    terminal_epoch_ms: u64,
+    expires_at_epoch_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskRetirementPendingReceipt {
+    record: LifecycleLinkRecordHeader,
+    task: ReceiptTaskProjection,
+    expected_terminal_task_version: u64,
+    terminal_status: ClosedTerminalStatus,
+    terminal_digest: TerminalDigest,
+    terminal_epoch_ms: u64,
+    expires_at_epoch_ms: u64,
+    retained_link_bytes: u64,
+    retained_dual_id_accounting: RetainedDualIdAccounting,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ReceiptState {
+    CancelReserved(CancelReservedReceipt),
+    Reserved(ReservedReceipt),
+    DirectTerminalUnacked(DirectTerminalUnackedReceipt),
+    AcknowledgedTombstone(AcknowledgedTombstoneReceipt),
+    TaskPromisedUnbound(TaskPromisedUnboundReceipt),
+    TaskPromisedActorBound(TaskPromisedActorBoundReceipt),
+    TaskHandoffActorBound(TaskHandoffActorBoundReceipt),
+    TaskReceiptOwnedActorBound(TaskReceiptOwnedActorBoundReceipt),
+    TaskTerminalReceiptBacked(TaskTerminalReceiptBackedReceipt),
+    TaskBound(TaskBoundReceipt),
+    TaskTerminalBound(TaskTerminalBoundReceipt),
+    TaskRetirementPending(TaskRetirementPendingReceipt),
+}
+
+impl ReceiptState {
+    pub(crate) const fn kind(&self) -> ReceiptStateKind {
+        match self {
+            Self::CancelReserved(_) => ReceiptStateKind::CancelReserved,
+            Self::Reserved(receipt) => match receipt.phase() {
+                ReservedPhase::Unbound => ReceiptStateKind::ReservedUnbound,
+                ReservedPhase::ActorBound { .. } => ReceiptStateKind::ReservedActorBound,
+                ReservedPhase::Begun { .. } => ReceiptStateKind::ReservedBegun,
+            },
+            Self::DirectTerminalUnacked(_) => ReceiptStateKind::DirectTerminalUnacked,
+            Self::AcknowledgedTombstone(_) => ReceiptStateKind::AcknowledgedTombstone,
+            Self::TaskPromisedUnbound(_) => ReceiptStateKind::TaskPromisedUnbound,
+            Self::TaskPromisedActorBound(_) => ReceiptStateKind::TaskPromisedActorBound,
+            Self::TaskHandoffActorBound(receipt) => match receipt.phase {
+                AttemptPhase::NotBegun => ReceiptStateKind::TaskHandoffActorBoundNotBegun,
+                AttemptPhase::Begun => ReceiptStateKind::TaskHandoffActorBoundBegun,
+            },
+            Self::TaskReceiptOwnedActorBound(_) => ReceiptStateKind::TaskReceiptOwnedActorBound,
+            Self::TaskTerminalReceiptBacked(_) => ReceiptStateKind::TaskTerminalReceiptBacked,
+            Self::TaskBound(receipt) => match receipt.phase {
+                AttemptPhase::NotBegun => ReceiptStateKind::TaskBoundNotBegun,
+                AttemptPhase::Begun => ReceiptStateKind::TaskBoundBegun,
+            },
+            Self::TaskTerminalBound(_) => ReceiptStateKind::TaskTerminalBound,
+            Self::TaskRetirementPending(_) => ReceiptStateKind::TaskRetirementPending,
+        }
     }
 }
 
@@ -848,6 +1476,449 @@ mod tests {
         for alternative in alternatives {
             assert_ne!(receipt_key_digest(&alternative), baseline_digest);
         }
+    }
+
+    #[test]
+    fn receipt_version_is_nonzero_and_advances_independently() {
+        let initial = ReceiptVersion::initial();
+
+        assert_eq!(initial.get(), 1);
+        assert_eq!(
+            initial.checked_next().expect("second record version").get(),
+            2
+        );
+        assert_eq!(
+            serde_json::to_value(initial).expect("serialize record version"),
+            json!(1)
+        );
+        assert_eq!(
+            serde_json::from_value::<ReceiptVersion>(json!(1))
+                .expect("deserialize nonzero record version"),
+            initial
+        );
+        assert!(serde_json::from_value::<ReceiptVersion>(json!(0)).is_err());
+        assert!(ReceiptVersion::new(u64::MAX)
+            .expect("maximum nonzero record version")
+            .checked_next()
+            .is_none());
+    }
+
+    #[test]
+    fn receipt_state_outer_algebra_is_closed_over_sixteen_observable_kinds() {
+        assert_eq!(
+            ReceiptStateKind::ALL.map(ReceiptStateKind::diagnostic_name),
+            [
+                "cancel_reserved",
+                "reserved_unbound",
+                "reserved_actor_bound",
+                "reserved_begun",
+                "direct_terminal_unacked",
+                "acknowledged_tombstone",
+                "task_promised_unbound",
+                "task_promised_actor_bound",
+                "task_handoff_actor_bound_not_begun",
+                "task_handoff_actor_bound_begun",
+                "task_receipt_owned_actor_bound",
+                "task_terminal_receipt_backed",
+                "task_bound_not_begun",
+                "task_bound_begun",
+                "task_terminal_bound",
+                "task_retirement_pending",
+            ]
+        );
+
+        let key = frozen_receipt_key();
+        let state = ReceiptState::Reserved(ReservedReceipt::new(
+            ReceiptRecordHeader::new(
+                key.clone(),
+                receipt_key_digest(&key),
+                ReceiptVersion::initial(),
+                1,
+                512,
+            ),
+            1_000,
+            OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+            ReservedPhase::Unbound,
+            false,
+            1_024,
+        ));
+        assert_eq!(state.kind(), ReceiptStateKind::ReservedUnbound);
+
+        fn exhaust_outer_bodies(state: &ReceiptState) -> ReceiptStateKind {
+            match state {
+                ReceiptState::CancelReserved(_)
+                | ReceiptState::Reserved(_)
+                | ReceiptState::DirectTerminalUnacked(_)
+                | ReceiptState::AcknowledgedTombstone(_)
+                | ReceiptState::TaskPromisedUnbound(_)
+                | ReceiptState::TaskPromisedActorBound(_)
+                | ReceiptState::TaskHandoffActorBound(_)
+                | ReceiptState::TaskReceiptOwnedActorBound(_)
+                | ReceiptState::TaskTerminalReceiptBacked(_)
+                | ReceiptState::TaskBound(_)
+                | ReceiptState::TaskTerminalBound(_)
+                | ReceiptState::TaskRetirementPending(_) => state.kind(),
+            }
+        }
+
+        assert_eq!(
+            exhaust_outer_bodies(&state),
+            ReceiptStateKind::ReservedUnbound
+        );
+    }
+
+    #[test]
+    fn every_observable_kind_is_derived_from_a_real_durable_state_body() {
+        let key = frozen_receipt_key();
+        let key_digest = receipt_key_digest(&key);
+        let workspace_identity = SafeIdentityHash::from_sha256([0x77; 32]);
+        let link_identity = TaskLinkIdentity::new(
+            key_digest.clone(),
+            key.reserved_task_id(),
+            key.invocation_id(),
+            workspace_identity.clone(),
+        );
+        let link = TaskLinkReference {
+            digest: task_link_digest(&link_identity),
+            identity: link_identity,
+        };
+        let task = ReceiptTaskProjection {
+            task_id: key.reserved_task_id(),
+            invocation_id: key.invocation_id(),
+            created_at_epoch_ms: 1_000,
+            updated_at_epoch_ms: 1_000,
+            ttl_ms: 3_600_000,
+            poll_interval_ms: 100,
+            version: 1,
+        };
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+            .expect("canonical cancelled terminal");
+        let terminal_digest = terminal.digest().clone();
+        let record = || ReceiptRecordHeader {
+            key: key.clone(),
+            key_digest: key_digest.clone(),
+            record_version: ReceiptVersion::initial(),
+            mutation_sequence: 1,
+            encoded_bytes: 512,
+        };
+        let link_record = || LifecycleLinkRecordHeader {
+            key: key.clone(),
+            key_digest: key_digest.clone(),
+            link: link.clone(),
+            lifecycle_link_version: 1,
+            mutation_sequence: 1,
+            encoded_bytes: 512,
+        };
+        let reserved = |phase| {
+            ReceiptState::Reserved(ReservedReceipt::new(
+                record(),
+                1_000,
+                OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                phase,
+                false,
+                1_024,
+            ))
+        };
+        let handoff = |phase| {
+            ReceiptState::TaskHandoffActorBound(TaskHandoffActorBoundReceipt {
+                record: record(),
+                task: task.clone(),
+                link: link.clone(),
+                phase,
+                cancel_requested: false,
+                reserved_result_bytes: 1_024,
+                terminal_stage: HandoffTerminalStage::NoTerminal,
+            })
+        };
+        let bound = |phase| {
+            ReceiptState::TaskBound(TaskBoundReceipt {
+                record: link_record(),
+                task: task.clone(),
+                task_record_version: 1,
+                bind_epoch_ms: 1_000,
+                phase,
+            })
+        };
+
+        let states = [
+            ReceiptState::CancelReserved(CancelReservedReceipt {
+                record: record(),
+                cancel_reserved_at_epoch_ms: 1_000,
+                expires_at_epoch_ms: 8_125,
+            }),
+            reserved(ReservedPhase::Unbound),
+            reserved(ReservedPhase::ActorBound {
+                bound_workspace_identity: workspace_identity.clone(),
+            }),
+            reserved(ReservedPhase::Begun {
+                bound_workspace_identity: workspace_identity,
+            }),
+            ReceiptState::DirectTerminalUnacked(DirectTerminalUnackedReceipt {
+                record: record(),
+                terminal_epoch_ms: 2_000,
+                terminal: terminal.clone(),
+                reserved_result_bytes: 1_024,
+            }),
+            ReceiptState::AcknowledgedTombstone(AcknowledgedTombstoneReceipt {
+                record: record(),
+                terminal_digest: terminal_digest.clone(),
+                acknowledged_at_epoch_ms: 2_100,
+            }),
+            ReceiptState::TaskPromisedUnbound(TaskPromisedUnboundReceipt {
+                record: record(),
+                task: task.clone(),
+                cancel_requested: false,
+                reserved_result_bytes: 1_024,
+            }),
+            ReceiptState::TaskPromisedActorBound(TaskPromisedActorBoundReceipt {
+                record: record(),
+                task: task.clone(),
+                link: link.clone(),
+                cancel_requested: false,
+                reserved_result_bytes: 1_024,
+            }),
+            handoff(AttemptPhase::NotBegun),
+            handoff(AttemptPhase::Begun),
+            ReceiptState::TaskReceiptOwnedActorBound(TaskReceiptOwnedActorBoundReceipt {
+                record: record(),
+                task: task.clone(),
+                link: link.clone(),
+                cancel_requested: false,
+                reserved_result_bytes: 1_024,
+                proven_link_capacity: ProvenTaskLinkCapacity::Count {
+                    observed_live_links: 4_096,
+                    maximum_live_links: 4_096,
+                },
+            }),
+            ReceiptState::TaskTerminalReceiptBacked(TaskTerminalReceiptBackedReceipt {
+                record: record(),
+                task: task.clone(),
+                terminal_epoch_ms: 2_000,
+                terminal,
+                cancel_requested: true,
+                reserved_result_bytes: 1_024,
+            }),
+            bound(AttemptPhase::NotBegun),
+            bound(AttemptPhase::Begun),
+            ReceiptState::TaskTerminalBound(TaskTerminalBoundReceipt {
+                record: link_record(),
+                task: task.clone(),
+                task_record_version: 2,
+                terminal_status: ClosedTerminalStatus::Cancelled,
+                terminal_digest: terminal_digest.clone(),
+                terminal_epoch_ms: 2_000,
+                expires_at_epoch_ms: 3_602_000,
+            }),
+            ReceiptState::TaskRetirementPending(TaskRetirementPendingReceipt {
+                record: link_record(),
+                task,
+                expected_terminal_task_version: 2,
+                terminal_status: ClosedTerminalStatus::Cancelled,
+                terminal_digest,
+                terminal_epoch_ms: 2_000,
+                expires_at_epoch_ms: 3_602_000,
+                retained_link_bytes: 512,
+                retained_dual_id_accounting: RetainedDualIdAccounting {
+                    invocation_index_bytes: 64,
+                    reserved_task_index_bytes: 64,
+                },
+            }),
+        ];
+
+        assert_eq!(states.map(|state| state.kind()), ReceiptStateKind::ALL);
+    }
+
+    #[test]
+    fn staged_terminal_certificate_carries_the_complete_closed_transfer_bound() {
+        let key = frozen_receipt_key();
+        let key_digest = receipt_key_digest(&key);
+        let workspace_identity = SafeIdentityHash::from_sha256([0x77; 32]);
+        let link_identity = TaskLinkIdentity::new(
+            key_digest.clone(),
+            key.reserved_task_id(),
+            key.invocation_id(),
+            workspace_identity,
+        );
+        let link_digest = task_link_digest(&link_identity);
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+            .expect("canonical cancelled terminal");
+        let terminal_digest = terminal.digest().clone();
+        let task_publication_cases = [
+            StagedTaskPublicationCase::Absent {
+                final_task_record_max_bytes: 1_000,
+                task_response_frame_max_bytes: 2_000,
+            },
+            StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Queued,
+                version: u64::MAX,
+                cancel_requested: false,
+                final_task_record_max_bytes: 1_001,
+                task_response_frame_max_bytes: 2_001,
+            },
+            StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Queued,
+                version: u64::MAX,
+                cancel_requested: true,
+                final_task_record_max_bytes: 1_002,
+                task_response_frame_max_bytes: 2_002,
+            },
+            StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Working,
+                version: u64::MAX,
+                cancel_requested: false,
+                final_task_record_max_bytes: 1_003,
+                task_response_frame_max_bytes: 2_003,
+            },
+            StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Working,
+                version: u64::MAX,
+                cancel_requested: true,
+                final_task_record_max_bytes: 1_004,
+                task_response_frame_max_bytes: 2_004,
+            },
+        ];
+        let capacity_fallback_cases = [StagedCapacityFallbackCase::LinkCapacity {
+            receipt_backed_record_max_bytes: 8_400_000,
+            task_response_frame_max_bytes: 8_454_144,
+        }];
+        let certificate = StagedTerminalTransferCertificate::new(
+            key.core_identity_digest().clone(),
+            key_digest,
+            key.reserved_task_id(),
+            key.invocation_id(),
+            link_digest,
+            terminal_digest,
+            2_000,
+            8_400_000,
+            1_024,
+            task_publication_cases.clone(),
+            capacity_fallback_cases.clone(),
+        )
+        .expect("exact closed transfer certificate");
+
+        assert_eq!(certificate.task_publication_cases.as_slice().len(), 5);
+        assert!(matches!(
+            certificate.task_publication_cases.as_slice()[0],
+            StagedTaskPublicationCase::Absent { .. }
+        ));
+        assert!(matches!(
+            certificate.capacity_fallback_cases,
+            [StagedCapacityFallbackCase::LinkCapacity { .. }]
+        ));
+        let mut wrong_order = task_publication_cases.clone();
+        wrong_order.swap(1, 2);
+        assert_eq!(
+            StagedTaskPublicationCases::new(wrong_order),
+            Err(StagedTerminalTransferCertificateError::InvalidTaskPublicationCases)
+        );
+        let mut wrong_version = task_publication_cases;
+        wrong_version[1] = StagedTaskPublicationCase::ExactProvisional {
+            status: ProvisionalTaskStatus::Queued,
+            version: 1,
+            cancel_requested: false,
+            final_task_record_max_bytes: 1_001,
+            task_response_frame_max_bytes: 2_001,
+        };
+        assert_eq!(
+            StagedTaskPublicationCases::new(wrong_version),
+            Err(StagedTerminalTransferCertificateError::InvalidTaskPublicationCases)
+        );
+        assert_eq!(
+            StagedTerminalTransferCertificate::new(
+                key.core_identity_digest().clone(),
+                receipt_key_digest(&key),
+                key.reserved_task_id(),
+                key.invocation_id(),
+                task_link_digest(&link_identity),
+                terminal.digest().clone(),
+                2_000,
+                8_400_000,
+                1_025,
+                [
+                    StagedTaskPublicationCase::Absent {
+                        final_task_record_max_bytes: 1_000,
+                        task_response_frame_max_bytes: 2_000,
+                    },
+                    StagedTaskPublicationCase::ExactProvisional {
+                        status: ProvisionalTaskStatus::Queued,
+                        version: u64::MAX,
+                        cancel_requested: false,
+                        final_task_record_max_bytes: 1_001,
+                        task_response_frame_max_bytes: 2_001,
+                    },
+                    StagedTaskPublicationCase::ExactProvisional {
+                        status: ProvisionalTaskStatus::Queued,
+                        version: u64::MAX,
+                        cancel_requested: true,
+                        final_task_record_max_bytes: 1_002,
+                        task_response_frame_max_bytes: 2_002,
+                    },
+                    StagedTaskPublicationCase::ExactProvisional {
+                        status: ProvisionalTaskStatus::Working,
+                        version: u64::MAX,
+                        cancel_requested: false,
+                        final_task_record_max_bytes: 1_003,
+                        task_response_frame_max_bytes: 2_003,
+                    },
+                    StagedTaskPublicationCase::ExactProvisional {
+                        status: ProvisionalTaskStatus::Working,
+                        version: u64::MAX,
+                        cancel_requested: true,
+                        final_task_record_max_bytes: 1_004,
+                        task_response_frame_max_bytes: 2_004,
+                    },
+                ],
+                [StagedCapacityFallbackCase::LinkCapacity {
+                    receipt_backed_record_max_bytes: 8_400_000,
+                    task_response_frame_max_bytes: 8_454_144,
+                }],
+            ),
+            Err(StagedTerminalTransferCertificateError::TaskTerminalBoundLinkRecordTooLarge)
+        );
+    }
+
+    #[test]
+    fn receipt_backed_completed_terminal_preserves_independent_cancel_request() {
+        let key = frozen_receipt_key();
+        let receipt = TaskTerminalReceiptBackedReceipt {
+            record: ReceiptRecordHeader::new(
+                key.clone(),
+                receipt_key_digest(&key),
+                ReceiptVersion::initial(),
+                1,
+                512,
+            ),
+            task: ReceiptTaskProjection {
+                task_id: key.reserved_task_id(),
+                invocation_id: key.invocation_id(),
+                created_at_epoch_ms: 1_000,
+                updated_at_epoch_ms: 2_000,
+                ttl_ms: 3_600_000,
+                poll_interval_ms: 100,
+                version: 2,
+            },
+            terminal_epoch_ms: 2_000,
+            terminal: canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+                result: Box::new(DomainResult::success(
+                    "completed despite cancellation request",
+                )),
+            })
+            .expect("canonical completed terminal"),
+            cancel_requested: true,
+            reserved_result_bytes: 1_024,
+        };
+
+        assert!(matches!(
+            receipt.terminal.outcome(),
+            ReceiptTerminalOutcome::Completed { .. }
+        ));
+        assert!(receipt.cancel_requested);
+    }
+
+    #[test]
+    fn receipt_digest_collision_requires_process_owned_reopen() {
+        assert!(ReceiptLedgerError::ReceiptDigestCollision.requires_reopen());
+        assert!(!ReceiptLedgerError::ReceiptNotFound.requires_reopen());
     }
 
     #[test]
