@@ -269,8 +269,35 @@ pub(crate) struct V5StoredInvocationRecord {
 mod tests {
     use super::{V5SafeFailureReason, V5StoredInvocationRecord};
     use crate::application::invocation_store::SafeFailureReason;
+    use serde_json::{json, Value};
 
     const QUEUED: &str = r#"{"schemaVersion":1,"taskId":"11111111-1111-4111-8111-111111111111","invocationId":"22222222-2222-4222-8222-222222222222","receiptKeyDigest":"0000000000000000000000000000000000000000000000000000000000000000","tool":"unica.view","normalizedArgumentsHash":"1111111111111111111111111111111111111111111111111111111111111111","workspaceIdentityHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","createdAtEpochMs":1,"updatedAtEpochMs":2,"ttlMs":3600000,"pollIntervalMs":100,"version":3,"cancelRequested":false,"task":{"status":"queued"}}"#;
+    const TERMINAL_DIGEST: &str =
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn queued_record_value() -> Value {
+        serde_json::from_str(QUEUED).unwrap()
+    }
+
+    fn record_with_task(task: Value) -> Value {
+        let mut record = queued_record_value();
+        record["task"] = task;
+        record
+    }
+
+    fn assert_record_rejected(record: Value) {
+        let encoded = serde_json::to_string(&record).unwrap();
+        assert!(
+            serde_json::from_str::<V5StoredInvocationRecord>(&encoded).is_err(),
+            "strict v5 record decoder accepted {encoded}"
+        );
+    }
+
+    fn assert_task_round_trip(task: Value) {
+        let expected = record_with_task(task);
+        let record = serde_json::from_value::<V5StoredInvocationRecord>(expected.clone()).unwrap();
+        assert_eq!(serde_json::to_value(record).unwrap(), expected);
+    }
 
     #[test]
     fn v5_safe_failure_reason_is_closed_and_converts_every_legacy_reason() {
@@ -295,6 +322,28 @@ mod tests {
                 serde_json::to_string(&reason).unwrap(),
                 format!("\"{wire_name}\"")
             );
+            assert_eq!(
+                serde_json::from_str::<V5SafeFailureReason>(&format!("\"{wire_name}\"")).unwrap(),
+                reason
+            );
+            assert_task_round_trip(json!({
+                "status": "failed",
+                "terminalEpochMs": 2,
+                "terminalDigest": TERMINAL_DIGEST,
+                "reason": wire_name,
+            }));
+        }
+
+        for unknown in ["", "Interrupted", "taskCapacity", "unknown"] {
+            assert!(
+                serde_json::from_str::<V5SafeFailureReason>(&format!("\"{unknown}\"")).is_err()
+            );
+            assert_record_rejected(record_with_task(json!({
+                "status": "failed",
+                "terminalEpochMs": 2,
+                "terminalDigest": TERMINAL_DIGEST,
+                "reason": unknown,
+            })));
         }
 
         for (legacy, expected) in [
@@ -324,28 +373,186 @@ mod tests {
     }
 
     #[test]
-    fn schema_v1_record_is_closed_and_rejects_wrong_or_cross_variant_fields() {
+    fn all_five_task_statuses_round_trip_with_the_exact_selected_fields() {
         let record = serde_json::from_str::<V5StoredInvocationRecord>(QUEUED).unwrap();
         assert_eq!(serde_json::to_string(&record).unwrap(), QUEUED);
 
-        for invalid in [
-            QUEUED.replace("\"schemaVersion\":1", "\"schemaVersion\":2"),
-            QUEUED.replace("\"cancelRequested\":false,", ""),
-            QUEUED.replace("\"status\":\"queued\"", "\"status\":\"queued\",\"reason\":\"interrupted\""),
-            QUEUED.replace("\"status\":\"queued\"", "\"status\":\"completed\",\"terminalEpochMs\":2,\"terminalDigest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"")
+        for task in [
+            json!({"status": "queued"}),
+            json!({"status": "working"}),
+            json!({
+                "status": "completed",
+                "terminalEpochMs": 2,
+                "terminalDigest": TERMINAL_DIGEST,
+                "result": {"ok": true, "summary": "done"},
+            }),
+            json!({
+                "status": "failed",
+                "terminalEpochMs": 2,
+                "terminalDigest": TERMINAL_DIGEST,
+                "reason": "outcome_uncertain",
+            }),
+            json!({
+                "status": "cancelled",
+                "terminalEpochMs": 2,
+                "terminalDigest": TERMINAL_DIGEST,
+            }),
         ] {
-            assert!(serde_json::from_str::<V5StoredInvocationRecord>(&invalid).is_err());
+            assert_task_round_trip(task);
         }
     }
 
     #[test]
-    fn terminal_task_fields_use_the_frozen_camel_case_field_algebra() {
-        let completed = QUEUED.replace(
-            r#""task":{"status":"queued"}"#,
-            r#""task":{"status":"completed","terminalEpochMs":2,"terminalDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","result":{"ok":true,"summary":"done"}}"#,
-        );
+    fn record_rejects_wrong_schema_unknown_duplicate_and_every_missing_root_field() {
+        let mut wrong_schema = queued_record_value();
+        wrong_schema["schemaVersion"] = json!(2);
+        assert_record_rejected(wrong_schema);
 
-        let record = serde_json::from_str::<V5StoredInvocationRecord>(&completed).unwrap();
-        assert_eq!(serde_json::to_string(&record).unwrap(), completed);
+        let mut unknown = queued_record_value();
+        unknown["unexpected"] = json!(true);
+        assert_record_rejected(unknown);
+
+        for required in [
+            "schemaVersion",
+            "taskId",
+            "invocationId",
+            "receiptKeyDigest",
+            "tool",
+            "normalizedArgumentsHash",
+            "workspaceIdentityHash",
+            "createdAtEpochMs",
+            "updatedAtEpochMs",
+            "ttlMs",
+            "pollIntervalMs",
+            "version",
+            "cancelRequested",
+            "task",
+        ] {
+            let mut missing = queued_record_value();
+            missing.as_object_mut().unwrap().remove(required);
+            assert_record_rejected(missing);
+        }
+
+        let mut wrong_case = queued_record_value();
+        let poll_interval = wrong_case
+            .as_object_mut()
+            .unwrap()
+            .remove("pollIntervalMs")
+            .unwrap();
+        wrong_case["poll_interval_ms"] = poll_interval;
+        assert_record_rejected(wrong_case);
+
+        for duplicate in [
+            QUEUED.replace(
+                "\"schemaVersion\":1",
+                "\"schemaVersion\":1,\"schemaVersion\":1",
+            ),
+            QUEUED.replace(
+                "\"status\":\"queued\"",
+                "\"status\":\"queued\",\"status\":\"queued\"",
+            ),
+        ] {
+            assert!(serde_json::from_str::<V5StoredInvocationRecord>(&duplicate).is_err());
+        }
+    }
+
+    #[test]
+    fn every_task_status_rejects_unknown_missing_wrong_case_and_cross_variant_fields() {
+        let valid_tasks = [
+            json!({"status": "queued"}),
+            json!({"status": "working"}),
+            json!({
+                "status": "completed",
+                "terminalEpochMs": 2,
+                "terminalDigest": TERMINAL_DIGEST,
+                "result": {"ok": true, "summary": "done"},
+            }),
+            json!({
+                "status": "failed",
+                "terminalEpochMs": 2,
+                "terminalDigest": TERMINAL_DIGEST,
+                "reason": "interrupted",
+            }),
+            json!({
+                "status": "cancelled",
+                "terminalEpochMs": 2,
+                "terminalDigest": TERMINAL_DIGEST,
+            }),
+        ];
+
+        for task in &valid_tasks {
+            let mut unknown = task.clone();
+            unknown["unexpected"] = json!(true);
+            assert_record_rejected(record_with_task(unknown));
+
+            let mut missing_status = task.clone();
+            missing_status.as_object_mut().unwrap().remove("status");
+            assert_record_rejected(record_with_task(missing_status));
+        }
+
+        for (task, required_fields) in [
+            (
+                valid_tasks[2].clone(),
+                &["terminalEpochMs", "terminalDigest", "result"][..],
+            ),
+            (
+                valid_tasks[3].clone(),
+                &["terminalEpochMs", "terminalDigest", "reason"][..],
+            ),
+            (
+                valid_tasks[4].clone(),
+                &["terminalEpochMs", "terminalDigest"][..],
+            ),
+        ] {
+            for required in required_fields {
+                let mut missing = task.clone();
+                missing.as_object_mut().unwrap().remove(*required);
+                assert_record_rejected(record_with_task(missing));
+            }
+        }
+
+        for task in &valid_tasks[2..] {
+            for (camel_case, snake_case) in [
+                ("terminalEpochMs", "terminal_epoch_ms"),
+                ("terminalDigest", "terminal_digest"),
+            ] {
+                let mut wrong_case = task.clone();
+                let value = wrong_case
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(camel_case)
+                    .unwrap();
+                wrong_case[snake_case] = value;
+                assert_record_rejected(record_with_task(wrong_case));
+            }
+        }
+
+        for status in ["queued", "working"] {
+            for (field, value) in [
+                ("terminalEpochMs", json!(2)),
+                ("terminalDigest", json!(TERMINAL_DIGEST)),
+                ("result", json!({"ok": true, "summary": "done"})),
+                ("reason", json!("interrupted")),
+            ] {
+                let mut task = json!({"status": status});
+                task[field] = value;
+                assert_record_rejected(record_with_task(task));
+            }
+        }
+
+        for (status_index, field, value) in [
+            (2, "reason", json!("interrupted")),
+            (3, "result", json!({"ok": true, "summary": "done"})),
+            (4, "reason", json!("interrupted")),
+            (4, "result", json!({"ok": true, "summary": "done"})),
+        ] {
+            let mut task = valid_tasks[status_index].clone();
+            task[field] = value;
+            assert_record_rejected(record_with_task(task));
+        }
+
+        for invalid_status in ["", "Working", "canceled", "unknown"] {
+            assert_record_rejected(record_with_task(json!({"status": invalid_status})));
+        }
     }
 }
