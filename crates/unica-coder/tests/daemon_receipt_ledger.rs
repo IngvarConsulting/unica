@@ -341,6 +341,8 @@ enum ProductionBoundary {
 #[serde(rename_all = "snake_case")]
 enum EvidenceCode {
     ProtocolVersionUnsupported,
+    ProtocolBehaviorUnavailable,
+    StrictEnvelopeObservationUnavailable,
     ReceiptRowAbsent,
     ReceiptTransitionUnavailable,
     ReceiptIdentityUnavailable,
@@ -430,7 +432,7 @@ impl Action {
         match self {
             Self::SendOuterEnvelope { .. } => Some((
                 B::StrictEnvelopeValidation,
-                E::ProtocolVersionUnsupported,
+                E::StrictEnvelopeObservationUnavailable,
                 None,
             )),
             Self::Submit { .. } | Self::SpawnSubmit { .. } => Some((
@@ -443,7 +445,6 @@ impl Action {
             | Self::Cancel { .. }
             | Self::SpawnCancel { .. }
             | Self::SeedReceipt { .. }
-            | Self::Crash { .. }
             | Self::InjectStoreFault { .. } => {
                 Some((B::ReceiptTransition, E::ReceiptTransitionUnavailable, None))
             }
@@ -452,7 +453,7 @@ impl Action {
             }
             Self::ProbeProtocol { .. } => Some((
                 B::ProtocolNegotiation,
-                E::ProtocolVersionUnsupported,
+                E::ProtocolBehaviorUnavailable,
                 Some(EventKind::ProtocolFrameRead),
             )),
             Self::ReadTask { .. }
@@ -505,6 +506,7 @@ impl Action {
             | Self::JoinOperation { .. }
             | Self::AdvanceMonotonic { .. }
             | Self::AdvanceEpoch { .. }
+            | Self::Crash { .. }
             | Self::Restart
             | Self::Checkpoint { .. }
             | Self::Reset

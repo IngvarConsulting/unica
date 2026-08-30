@@ -1363,8 +1363,6 @@ impl RetainedRegularFileCapability {
     ) -> io::Result<()> {
         #[cfg(unix)]
         {
-            #[cfg(test)]
-            run_before_identity_bound_cleanup_mutation_hook();
             rename_identity_bound_regular_child_no_replace_after_cleanup_hook(
                 &self.parent.retained.directory,
                 &self.name,
@@ -5301,6 +5299,8 @@ fn rename_identity_bound_regular_child_no_replace_after_cleanup_hook(
             "regular child identity changed; replacement left untouched",
         ));
     }
+    #[cfg(test)]
+    run_before_identity_bound_cleanup_mutation_hook();
     rename_regular_child_at_no_replace(
         source_parent,
         source_name,
@@ -5523,10 +5523,11 @@ pub(crate) fn discard_created_regular_child(
 /// identity still name the object captured by the caller.
 ///
 /// The parent handle is the mutation anchor, so replacing the lexical parent
-/// route cannot redirect cleanup into another directory. The child name is
-/// rechecked immediately before the descriptor-relative unlink used under the
-/// publication lock; Windows additionally deletes through the verified child
-/// handle.
+/// route cannot redirect cleanup into another directory. Unix first moves the
+/// public name without replacement to a fresh private quarantine and observes
+/// the identity that was actually moved. A raced successor is restored and is
+/// never passed to unlink; only an observed expected quarantine is unlinked.
+/// Windows deletes through the verified child handle.
 #[cfg(unix)]
 pub(crate) fn remove_identity_bound_regular_child(
     parent: &fs::File,
@@ -5534,18 +5535,78 @@ pub(crate) fn remove_identity_bound_regular_child(
     expected_identity: FileIdentity,
     retained: &fs::File,
 ) -> io::Result<()> {
-    if file_identity(retained)? != expected_identity {
+    let quarantine_name =
+        std::ffi::OsString::from(format!(".unica-cleanup-{}", uuid::Uuid::new_v4()));
+    rename_identity_bound_regular_child_no_replace_after_cleanup_hook(
+        parent,
+        name,
+        expected_identity,
+        retained,
+        parent,
+        &quarantine_name,
+    )?;
+
+    let quarantined = open_regular_child_nofollow(parent, &quarantine_name).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cleanup quarantine could not be observed and was preserved: {error}"),
+        )
+    })?;
+    let quarantined_identity = file_identity(&quarantined).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cleanup quarantine identity could not be read and was preserved: {error}"),
+        )
+    })?;
+    if quarantined_identity != expected_identity {
+        let restoration = restore_regular_child_from_cleanup_quarantine(
+            parent,
+            &quarantine_name,
+            quarantined_identity,
+            &quarantined,
+            name,
+        );
+        return Err(match restoration {
+            Ok(()) => io::Error::other(
+                "regular child identity changed at cleanup quarantine boundary; replacement restored and retained child left untouched",
+            ),
+            Err(restoration) => io::Error::other(format!(
+                "regular child identity changed at cleanup quarantine boundary; replacement preserved in quarantine because restoration failed: {restoration}"
+            )),
+        });
+    }
+
+    unlink_child_at(parent, &quarantine_name, 0).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("verified cleanup quarantine could not be deleted and was preserved: {error}"),
+        )
+    })
+}
+
+#[cfg(unix)]
+fn restore_regular_child_from_cleanup_quarantine(
+    parent: &fs::File,
+    quarantine_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    public_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    rename_identity_bound_regular_child_no_replace(
+        parent,
+        quarantine_name,
+        expected_identity,
+        retained,
+        parent,
+        public_name,
+    )?;
+    let restored = open_regular_child_nofollow(parent, public_name)?;
+    if file_identity(&restored)? != expected_identity {
         return Err(io::Error::other(
-            "retained regular child identity changed; replacement left untouched",
+            "regular child identity changed again while restoring cleanup quarantine; observed child left untouched",
         ));
     }
-    let child = open_regular_child_nofollow(parent, name)?;
-    if file_identity(&child)? != expected_identity {
-        return Err(io::Error::other(
-            "regular child identity changed; replacement left untouched",
-        ));
-    }
-    unlink_child_at(parent, name, 0)
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -6889,6 +6950,45 @@ mod tests {
         .unwrap();
         drop(removable_retained);
         assert!(!removable.exists());
+
+        drop(retained);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn old_owner_cleanup_never_unlinks_successor_published_after_identity_check() {
+        use crate::infrastructure::platform::filesystem::{
+            create_new_regular_child, file_identity, open_directory_nofollow,
+            remove_identity_bound_regular_child, set_before_identity_bound_cleanup_mutation_hook,
+        };
+        use std::ffi::OsStr;
+        use std::io::Write;
+
+        let root = unique_temp_root("identity-bound-file-cleanup-successor-race");
+        fs::create_dir_all(&root).unwrap();
+        let parent = open_directory_nofollow(&root).unwrap();
+        let name = OsStr::new("record.json");
+        let route = root.join(name);
+        let displaced = root.join("old-owner.json");
+        let mut retained = create_new_regular_child(&parent, name).unwrap();
+        retained.write_all(b"old owner").unwrap();
+        let expected = file_identity(&retained).unwrap();
+
+        let route_for_hook = route.clone();
+        let displaced_for_hook = displaced.clone();
+        set_before_identity_bound_cleanup_mutation_hook(move || {
+            fs::rename(&route_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&route_for_hook, b"successor").unwrap();
+        });
+
+        let error =
+            remove_identity_bound_regular_child(&parent, name, expected, &retained).unwrap_err();
+
+        assert!(error.to_string().contains("identity changed"), "{error}");
+        assert_eq!(fs::read(&route).unwrap(), b"successor");
+        assert_eq!(fs::read(&displaced).unwrap(), b"old owner");
 
         drop(retained);
         drop(parent);

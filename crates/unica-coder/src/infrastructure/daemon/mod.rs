@@ -1,8 +1,10 @@
 pub(crate) mod client;
+pub(crate) mod client_v5;
 pub(crate) mod identity;
 pub(crate) mod protocol;
 #[allow(dead_code)]
 pub(crate) mod protocol_v5;
+pub(crate) mod runtime_v5;
 pub(crate) mod server;
 #[allow(dead_code)]
 mod v13_service;

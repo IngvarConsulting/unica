@@ -482,6 +482,10 @@ impl DaemonServerConfig {
         }
     }
 
+    pub(super) fn invocation_service_for_v5(&self) -> Arc<dyn CanonicalInvocationService> {
+        Arc::clone(&self.invocation_service)
+    }
+
     #[cfg(test)]
     pub(crate) fn with_invocation_service(
         mut self,

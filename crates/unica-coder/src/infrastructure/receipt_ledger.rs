@@ -18,12 +18,47 @@ const GENERATION_FILE_NAME: &str = "generation";
 const LEDGER_LOCK_FILE_NAME: &str = ".receipt-ledger.lock";
 const MAX_GENERATION_FILE_BYTES: usize = 32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReceiptInspectObservation {
-    Missing {
-        generation_before: u64,
-        generation_after: u64,
-    },
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MissingReceiptObservation {
+    receipt_key_digest: ReceiptKeyDigest,
+    generation_before: u64,
+    generation_after: u64,
+}
+
+impl MissingReceiptObservation {
+    pub(crate) fn receipt_key_digest(&self) -> &ReceiptKeyDigest {
+        &self.receipt_key_digest
+    }
+
+    pub(crate) const fn generation_before(&self) -> u64 {
+        self.generation_before
+    }
+
+    pub(crate) const fn generation_after(&self) -> u64 {
+        self.generation_after
+    }
+}
+
+/// Opaque proof that the retained ledger authority and its generation stayed
+/// stable across a complete read observation.
+///
+/// Only `ReceiptLedgerStore` can construct this value. Feature-only production
+/// reachability owners may consume its read-only generation evidence, but they
+/// cannot forge a successful validation step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StableReceiptLedgerObservation {
+    generation_before: u64,
+    generation_after: u64,
+}
+
+impl StableReceiptLedgerObservation {
+    pub(crate) const fn generation_before(&self) -> u64 {
+        self.generation_before
+    }
+
+    pub(crate) const fn generation_after(&self) -> u64 {
+        self.generation_after
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,10 +229,29 @@ impl ReceiptLedgerStore {
         Ok(generation)
     }
 
+    pub(crate) fn observe_stable_generation(
+        &self,
+    ) -> Result<StableReceiptLedgerObservation, ReceiptLedgerError> {
+        self.verify_named_authority()?;
+        let generation_before = self.generation()?;
+        let generation_after = self.generation()?;
+        if generation_after != generation_before {
+            return Err(ReceiptLedgerError::ConcurrentGenerationChange {
+                generation_before,
+                generation_after,
+            });
+        }
+        self.verify_named_authority()?;
+        Ok(StableReceiptLedgerObservation {
+            generation_before,
+            generation_after,
+        })
+    }
+
     pub(crate) fn inspect_exact(
         &self,
         receipt_key_digest: &ReceiptKeyDigest,
-    ) -> Result<ReceiptInspectObservation, ReceiptLedgerError> {
+    ) -> Result<MissingReceiptObservation, ReceiptLedgerError> {
         self.verify_named_authority()?;
         let generation_before = self.generation()?;
         let record_name = format!("{}.json", receipt_key_digest.as_str());
@@ -218,7 +272,8 @@ impl ReceiptLedgerStore {
             });
         }
         self.verify_named_authority()?;
-        Ok(ReceiptInspectObservation::Missing {
+        Ok(MissingReceiptObservation {
+            receipt_key_digest: receipt_key_digest.clone(),
             generation_before,
             generation_after,
         })
@@ -453,6 +508,40 @@ mod tests {
     }
 
     #[test]
+    fn exact_missing_observation_is_key_bound_and_store_minted() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let expected = digest('c');
+
+        let observation = store
+            .inspect_exact(&expected)
+            .expect("inspect exact missing receipt");
+
+        assert_eq!(observation.receipt_key_digest(), &expected);
+        assert_eq!(observation.generation_before(), 0);
+        assert_eq!(observation.generation_after(), 0);
+    }
+
+    #[test]
+    fn stable_generation_observation_is_store_minted_after_two_sided_validation() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+
+        let observation = store
+            .observe_stable_generation()
+            .expect("observe a stable validated generation");
+
+        assert_eq!(observation.generation_before(), 0);
+        assert_eq!(observation.generation_after(), 0);
+    }
+
+    #[test]
     fn retained_named_capability_opens_without_reconstructing_the_receipts_path() {
         let root = tempfile::tempdir().expect("temporary root");
         let root = fs::canonicalize(root.path()).expect("physical temporary root");
@@ -486,15 +575,13 @@ mod tests {
             .read_to_end(&mut generation_before)
             .expect("read generation bytes");
 
-        assert_eq!(
-            store
-                .inspect_exact(&digest('a'))
-                .expect("inspect exact missing receipt"),
-            ReceiptInspectObservation::Missing {
-                generation_before: 0,
-                generation_after: 0,
-            }
-        );
+        let expected_digest = digest('a');
+        let observation = store
+            .inspect_exact(&expected_digest)
+            .expect("inspect exact missing receipt");
+        assert_eq!(observation.receipt_key_digest(), &expected_digest);
+        assert_eq!(observation.generation_before(), 0);
+        assert_eq!(observation.generation_after(), 0);
 
         assert_eq!(directory_names(&receipts), names_before);
         assert_eq!(
@@ -575,15 +662,13 @@ mod tests {
                 );
             }
             RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
-                assert_eq!(
-                    active_store
-                        .inspect_exact(&digest('d'))
-                        .expect("retained active inspection"),
-                    ReceiptInspectObservation::Missing {
-                        generation_before: 0,
-                        generation_after: 0,
-                    }
-                );
+                let expected_digest = digest('d');
+                let observation = active_store
+                    .inspect_exact(&expected_digest)
+                    .expect("retained active inspection");
+                assert_eq!(observation.receipt_key_digest(), &expected_digest);
+                assert_eq!(observation.generation_before(), 0);
+                assert_eq!(observation.generation_after(), 0);
             }
         }
     }

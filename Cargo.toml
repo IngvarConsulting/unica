@@ -29,6 +29,7 @@ serde_yaml = "0.9"
 unsafe-libyaml = "0.2.11"
 syn = { version = "2", features = ["full", "visit"] }
 quote = "1"
+proc-macro2 = "1"
 sha2 = "0.10"
 objc2-core-services = { version = "0.3.2", default-features = false, features = ["std", "FSEvents", "dispatch2"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFString"] }

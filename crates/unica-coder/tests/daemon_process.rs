@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 const PROCESS_FIXTURE_ENV: &str = "UNICA_DAEMON_PROCESS_FIXTURE";
 const IDENTITY_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const IDENTITY_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const PRODUCTION_V5_IDENTITY: &str =
+    "884b76181583ce34907a2a9758e2b493e5b40883e7cbb0d7f88dcec0e468cfa0";
 
 #[test]
 fn daemon_frontend_process_fixture() {
@@ -145,6 +147,33 @@ fn incompatible_core_identities_spawn_separate_process_endpoints() {
                 && !endpoint_path(&state_root, IDENTITY_B).exists()
         },
         "incompatible endpoint removal",
+    );
+}
+
+#[test]
+fn v5_frontend_process_spawns_the_same_binary_and_pings_the_v5_runtime() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_unica"));
+
+    let mut owner = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
+        &state_root,
+        PRODUCTION_V5_IDENTITY,
+        &executable,
+        150,
+    )
+    .expect("spawn and connect exact protocol-v5 daemon");
+    owner.ping().expect("ping exact protocol-v5 daemon");
+    let endpoint = read_endpoint(&state_root, PRODUCTION_V5_IDENTITY);
+    assert_eq!(endpoint["protocolVersion"], 5);
+    assert_eq!(endpoint["coreIdentity"], PRODUCTION_V5_IDENTITY);
+    assert_eq!(endpoint["pid"], owner.daemon_pid());
+    drop(owner);
+
+    wait_until(
+        Duration::from_secs(5),
+        || !endpoint_path(&state_root, PRODUCTION_V5_IDENTITY).exists(),
+        "v5 owned endpoint removal",
     );
 }
 

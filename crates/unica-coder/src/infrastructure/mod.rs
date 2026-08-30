@@ -47,6 +47,9 @@ pub(crate) mod redaction;
 pub(crate) mod receipt_ledger;
 #[cfg(feature = "receipt-ledger-test-support")]
 #[allow(dead_code)]
+pub(crate) mod receipt_ledger_reachability;
+#[cfg(feature = "receipt-ledger-test-support")]
+#[allow(dead_code)]
 pub(crate) mod receipt_ledger_test_evidence;
 mod revision_artifact_policy;
 pub(crate) mod rlm_navigation;
