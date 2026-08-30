@@ -29,6 +29,8 @@ pub(crate) mod invocation;
 #[allow(dead_code)]
 pub(crate) mod invocation_store;
 pub(crate) mod invocation_store_actor;
+#[allow(dead_code)]
+pub(crate) mod invocation_store_v5;
 pub(crate) mod metadata;
 pub(crate) mod operation_descriptors;
 pub(crate) mod operational_config;

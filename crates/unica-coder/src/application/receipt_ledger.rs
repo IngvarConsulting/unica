@@ -1,4 +1,5 @@
-use crate::application::invocation_store::{SafeFailureReason, MAX_CANONICAL_RESULT_BYTES};
+use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+use crate::application::invocation_store_v5::V5SafeFailureReason;
 use crate::domain::invocation::{
     DomainResult, InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId,
 };
@@ -265,48 +266,6 @@ impl TaskLinkIdentity {
             task_id,
             invocation_id,
             workspace_identity_hash,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum V5SafeFailureReason {
-    InvocationFailed,
-    ResultTooLarge,
-    Interrupted,
-    ResumeUnsupported,
-    PersistenceFailed,
-    OutcomeUncertain,
-    TaskCapacity,
-    WorkspaceCapacity,
-    WorkspaceRegistryFailed,
-}
-
-impl V5SafeFailureReason {
-    pub(crate) const fn wire_name(self) -> &'static str {
-        match self {
-            Self::InvocationFailed => "invocation_failed",
-            Self::ResultTooLarge => "result_too_large",
-            Self::Interrupted => "interrupted",
-            Self::ResumeUnsupported => "resume_unsupported",
-            Self::PersistenceFailed => "persistence_failed",
-            Self::OutcomeUncertain => "outcome_uncertain",
-            Self::TaskCapacity => "task_capacity",
-            Self::WorkspaceCapacity => "workspace_capacity",
-            Self::WorkspaceRegistryFailed => "workspace_registry_failed",
-        }
-    }
-}
-
-impl From<SafeFailureReason> for V5SafeFailureReason {
-    fn from(reason: SafeFailureReason) -> Self {
-        match reason {
-            SafeFailureReason::InvocationFailed => Self::InvocationFailed,
-            SafeFailureReason::ResultTooLarge => Self::ResultTooLarge,
-            SafeFailureReason::Interrupted => Self::Interrupted,
-            SafeFailureReason::ResumeUnsupported => Self::ResumeUnsupported,
-            SafeFailureReason::PersistenceFailed => Self::PersistenceFailed,
         }
     }
 }
