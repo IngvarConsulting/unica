@@ -1068,6 +1068,477 @@ enum EventKindInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proc_macro2::{TokenStream, TokenTree};
+    use std::collections::BTreeSet;
+    use syn::parse::Parser;
+    use syn::visit::Visit;
+
+    fn facade_forbidden_authority_references(
+        source: &str,
+        forbidden: &[&str],
+    ) -> Result<BTreeSet<String>, String> {
+        let syntax = syn::parse_file(source).map_err(|error| error.to_string())?;
+        let mut finder = FacadeAuthorityReferenceFinder {
+            forbidden,
+            references: BTreeSet::new(),
+            unsupported_syntax: BTreeSet::new(),
+        };
+        finder.visit_file(&syntax);
+        if finder.unsupported_syntax.is_empty() {
+            Ok(finder.references)
+        } else {
+            Err(finder
+                .unsupported_syntax
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join("; "))
+        }
+    }
+
+    struct FacadeAuthorityReferenceFinder<'a> {
+        forbidden: &'a [&'a str],
+        references: BTreeSet<String>,
+        unsupported_syntax: BTreeSet<String>,
+    }
+
+    impl FacadeAuthorityReferenceFinder<'_> {
+        fn scan_text(&mut self, text: &str) {
+            for authority in self.forbidden {
+                if text.contains(authority) {
+                    self.references.insert((*authority).to_string());
+                }
+            }
+        }
+
+        fn scan_literal(&mut self, literal: &syn::Lit) -> String {
+            let decoded = match literal {
+                syn::Lit::Str(value) => value.value(),
+                syn::Lit::ByteStr(value) => {
+                    String::from_utf8_lossy(value.value().as_slice()).into_owned()
+                }
+                syn::Lit::CStr(value) => {
+                    String::from_utf8_lossy(value.value().to_bytes()).into_owned()
+                }
+                syn::Lit::Byte(value) => char::from(value.value()).to_string(),
+                syn::Lit::Char(value) => value.value().to_string(),
+                syn::Lit::Int(value) => value.base10_digits().to_string(),
+                syn::Lit::Float(value) => value.base10_digits().to_string(),
+                syn::Lit::Bool(value) => value.value.to_string(),
+                syn::Lit::Verbatim(value) => {
+                    self.unsupported_syntax.insert(format!(
+                        "unsupported literal in facade authority guard: `{value}`"
+                    ));
+                    value.to_string()
+                }
+                _ => {
+                    self.unsupported_syntax
+                        .insert("unsupported future literal in facade authority guard".to_string());
+                    String::new()
+                }
+            };
+            self.scan_text(&decoded);
+            decoded
+        }
+
+        fn scan_concat_tokens(&mut self, tokens: TokenStream) -> String {
+            let expressions =
+                match syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated
+                    .parse2(tokens)
+                {
+                    Ok(expressions) => expressions,
+                    Err(error) => {
+                        self.unsupported_syntax.insert(format!(
+                            "unsupported concat! syntax in facade authority guard: {error}"
+                        ));
+                        return String::new();
+                    }
+                };
+            let mut concatenated = String::new();
+            for expression in expressions {
+                let fragment = match expression {
+                    syn::Expr::Lit(expression) => self.scan_literal(&expression.lit),
+                    syn::Expr::Group(expression) => {
+                        self.scan_static_string_expression(&expression.expr)
+                    }
+                    syn::Expr::Paren(expression) => {
+                        self.scan_static_string_expression(&expression.expr)
+                    }
+                    syn::Expr::Macro(expression)
+                        if expression
+                            .mac
+                            .path
+                            .segments
+                            .last()
+                            .is_some_and(|segment| segment.ident == "concat") =>
+                    {
+                        self.scan_concat_tokens(expression.mac.tokens)
+                    }
+                    _ => {
+                        self.unsupported_syntax.insert(
+                            "dynamic concat! expression in facade authority guard".to_string(),
+                        );
+                        String::new()
+                    }
+                };
+                concatenated.push_str(&fragment);
+            }
+            self.scan_text(&concatenated);
+            concatenated
+        }
+
+        fn scan_static_string_expression(&mut self, expression: &syn::Expr) -> String {
+            match expression {
+                syn::Expr::Lit(expression) => self.scan_literal(&expression.lit),
+                syn::Expr::Group(expression) => {
+                    self.scan_static_string_expression(&expression.expr)
+                }
+                syn::Expr::Paren(expression) => {
+                    self.scan_static_string_expression(&expression.expr)
+                }
+                syn::Expr::Macro(expression)
+                    if expression
+                        .mac
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "concat") =>
+                {
+                    self.scan_concat_tokens(expression.mac.tokens.clone())
+                }
+                _ => {
+                    self.unsupported_syntax
+                        .insert("dynamic string expression in facade authority guard".to_string());
+                    String::new()
+                }
+            }
+        }
+
+        fn format_static_segments(format: &str) -> Vec<String> {
+            let mut segments = vec![String::new()];
+            let mut characters = format.chars().peekable();
+            while let Some(character) = characters.next() {
+                match character {
+                    '{' if characters.peek() == Some(&'{') => {
+                        characters.next();
+                        segments.last_mut().expect("initial segment").push('{');
+                    }
+                    '}' if characters.peek() == Some(&'}') => {
+                        characters.next();
+                        segments.last_mut().expect("initial segment").push('}');
+                    }
+                    '{' => {
+                        let mut closed = false;
+                        for nested in characters.by_ref() {
+                            if nested == '}' {
+                                closed = true;
+                                break;
+                            }
+                        }
+                        if closed {
+                            segments.push(String::new());
+                        } else {
+                            segments.last_mut().expect("initial segment").push('{');
+                        }
+                    }
+                    character => segments
+                        .last_mut()
+                        .expect("initial segment")
+                        .push(character),
+                }
+            }
+            segments
+        }
+
+        fn format_has_explicit_placeholder_selector(format: &str) -> bool {
+            let mut characters = format.chars().peekable();
+            while let Some(character) = characters.next() {
+                if character != '{' {
+                    continue;
+                }
+                if characters.peek() == Some(&'{') {
+                    characters.next();
+                    continue;
+                }
+                let selector = characters
+                    .by_ref()
+                    .take_while(|character| *character != '}')
+                    .take_while(|character| *character != ':')
+                    .collect::<String>();
+                if !selector.is_empty() {
+                    return true;
+                }
+            }
+            false
+        }
+
+        fn formatting_argument_literal(&mut self, expression: &syn::Expr) -> Option<String> {
+            match expression {
+                syn::Expr::Lit(expression) => Some(self.scan_literal(&expression.lit)),
+                syn::Expr::Assign(expression) => {
+                    self.formatting_argument_literal(&expression.right)
+                }
+                syn::Expr::Group(expression) => self.formatting_argument_literal(&expression.expr),
+                syn::Expr::Paren(expression) => self.formatting_argument_literal(&expression.expr),
+                _ => None,
+            }
+        }
+
+        fn scan_formatting_macro(&mut self, tokens: TokenStream, has_destination: bool) {
+            let expressions =
+                match syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated
+                    .parse2(tokens)
+                {
+                    Ok(expressions) => expressions.into_iter().collect::<Vec<_>>(),
+                    Err(error) => {
+                        self.unsupported_syntax.insert(format!(
+                            "unsupported formatting macro in facade authority guard: {error}"
+                        ));
+                        return;
+                    }
+                };
+            let format_index = usize::from(has_destination);
+            let Some(syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(format),
+                ..
+            })) = expressions.get(format_index)
+            else {
+                self.unsupported_syntax
+                    .insert("dynamic formatting template in facade authority guard".to_string());
+                return;
+            };
+            if expressions.len() > format_index + 1
+                && Self::format_has_explicit_placeholder_selector(&format.value())
+            {
+                self.unsupported_syntax.insert(
+                    "indexed or named formatting arguments in facade authority guard".to_string(),
+                );
+                return;
+            }
+            let segments = Self::format_static_segments(&format.value());
+            let arguments = expressions
+                .iter()
+                .skip(format_index + 1)
+                .map(|expression| self.formatting_argument_literal(expression))
+                .collect::<Vec<_>>();
+            let mut rendered = segments.first().cloned().unwrap_or_default();
+            for (index, segment) in segments.iter().skip(1).enumerate() {
+                if let Some(Some(argument)) = arguments.get(index) {
+                    rendered.push_str(argument);
+                }
+                rendered.push_str(segment);
+            }
+            for argument in arguments
+                .iter()
+                .skip(segments.len().saturating_sub(1))
+                .flatten()
+            {
+                rendered.push_str(argument);
+            }
+            self.scan_text(&rendered);
+        }
+
+        fn scan_macro_tokens(&mut self, tokens: TokenStream) {
+            let tokens = tokens.into_iter().collect::<Vec<_>>();
+            let mut index = 0;
+            while index < tokens.len() {
+                match &tokens[index] {
+                    TokenTree::Group(group) => {
+                        self.scan_macro_tokens(group.stream());
+                    }
+                    TokenTree::Ident(identifier) => {
+                        let identifier = identifier.to_string();
+                        if matches!(
+                            identifier.as_str(),
+                            "concat"
+                                | "format"
+                                | "format_args"
+                                | "write"
+                                | "writeln"
+                                | "include"
+                                | "include_str"
+                                | "include_bytes"
+                        )
+                            && tokens.get(index + 1).is_some_and(
+                                |token| matches!(token, TokenTree::Punct(punct) if punct.as_char() == '!'),
+                            )
+                        {
+                            self.unsupported_syntax.insert(format!(
+                                "nested or dynamic `{identifier}!` in facade authority guard"
+                            ));
+                        }
+                        self.scan_text(&identifier);
+                    }
+                    TokenTree::Literal(literal) => {
+                        match syn::parse_str::<syn::Lit>(&literal.to_string()) {
+                            Ok(literal) => {
+                                self.scan_literal(&literal);
+                            }
+                            Err(error) => {
+                                self.unsupported_syntax.insert(format!(
+                                    "unsupported macro literal `{literal}`: {error}"
+                                ));
+                            }
+                        }
+                    }
+                    TokenTree::Punct(_) => {}
+                }
+                index += 1;
+            }
+        }
+
+        fn attributes_have_exact_cfg_test(attributes: &[syn::Attribute]) -> bool {
+            attributes.iter().any(|attribute| {
+                attribute.path().is_ident("cfg")
+                    && attribute
+                        .parse_args::<syn::Path>()
+                        .is_ok_and(|path| path.is_ident("test"))
+            })
+        }
+
+        fn item_has_exact_cfg_test(item: &syn::Item) -> bool {
+            let attributes: &[syn::Attribute] = match item {
+                syn::Item::Const(item) => &item.attrs,
+                syn::Item::Enum(item) => &item.attrs,
+                syn::Item::ExternCrate(item) => &item.attrs,
+                syn::Item::Fn(item) => &item.attrs,
+                syn::Item::ForeignMod(item) => &item.attrs,
+                syn::Item::Impl(item) => &item.attrs,
+                syn::Item::Macro(item) => &item.attrs,
+                syn::Item::Mod(item) => &item.attrs,
+                syn::Item::Static(item) => &item.attrs,
+                syn::Item::Struct(item) => &item.attrs,
+                syn::Item::Trait(item) => &item.attrs,
+                syn::Item::TraitAlias(item) => &item.attrs,
+                syn::Item::Type(item) => &item.attrs,
+                syn::Item::Union(item) => &item.attrs,
+                syn::Item::Use(item) => &item.attrs,
+                syn::Item::Verbatim(_) => &[],
+                _ => &[],
+            };
+            Self::attributes_have_exact_cfg_test(attributes)
+        }
+
+        fn impl_item_has_exact_cfg_test(item: &syn::ImplItem) -> bool {
+            let attributes: &[syn::Attribute] = match item {
+                syn::ImplItem::Const(item) => &item.attrs,
+                syn::ImplItem::Fn(item) => &item.attrs,
+                syn::ImplItem::Type(item) => &item.attrs,
+                syn::ImplItem::Macro(item) => &item.attrs,
+                syn::ImplItem::Verbatim(_) => &[],
+                _ => &[],
+            };
+            Self::attributes_have_exact_cfg_test(attributes)
+        }
+
+        fn trait_item_has_exact_cfg_test(item: &syn::TraitItem) -> bool {
+            let attributes: &[syn::Attribute] = match item {
+                syn::TraitItem::Const(item) => &item.attrs,
+                syn::TraitItem::Fn(item) => &item.attrs,
+                syn::TraitItem::Type(item) => &item.attrs,
+                syn::TraitItem::Macro(item) => &item.attrs,
+                syn::TraitItem::Verbatim(_) => &[],
+                _ => &[],
+            };
+            Self::attributes_have_exact_cfg_test(attributes)
+        }
+
+        fn foreign_item_has_exact_cfg_test(item: &syn::ForeignItem) -> bool {
+            let attributes: &[syn::Attribute] = match item {
+                syn::ForeignItem::Fn(item) => &item.attrs,
+                syn::ForeignItem::Static(item) => &item.attrs,
+                syn::ForeignItem::Type(item) => &item.attrs,
+                syn::ForeignItem::Macro(item) => &item.attrs,
+                syn::ForeignItem::Verbatim(_) => &[],
+                _ => &[],
+            };
+            Self::attributes_have_exact_cfg_test(attributes)
+        }
+    }
+
+    impl<'ast> Visit<'ast> for FacadeAuthorityReferenceFinder<'_> {
+        fn visit_item(&mut self, item: &'ast syn::Item) {
+            if Self::item_has_exact_cfg_test(item) {
+                return;
+            }
+            if let syn::Item::Verbatim(tokens) = item {
+                self.unsupported_syntax.insert(format!(
+                    "unsupported verbatim item in facade authority guard: `{tokens}`"
+                ));
+                return;
+            }
+            syn::visit::visit_item(self, item);
+        }
+
+        fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {
+            if Self::impl_item_has_exact_cfg_test(item) {
+                return;
+            }
+            syn::visit::visit_impl_item(self, item);
+        }
+
+        fn visit_trait_item(&mut self, item: &'ast syn::TraitItem) {
+            if Self::trait_item_has_exact_cfg_test(item) {
+                return;
+            }
+            syn::visit::visit_trait_item(self, item);
+        }
+
+        fn visit_foreign_item(&mut self, item: &'ast syn::ForeignItem) {
+            if Self::foreign_item_has_exact_cfg_test(item) {
+                return;
+            }
+            syn::visit::visit_foreign_item(self, item);
+        }
+
+        fn visit_ident(&mut self, identifier: &'ast proc_macro2::Ident) {
+            self.scan_text(&identifier.to_string());
+        }
+
+        fn visit_lit(&mut self, literal: &'ast syn::Lit) {
+            self.scan_literal(literal);
+        }
+
+        fn visit_macro(&mut self, macro_: &'ast syn::Macro) {
+            syn::visit::visit_path(self, &macro_.path);
+            match macro_.path.segments.last().map(|segment| &segment.ident) {
+                Some(identifier) if identifier == "concat" => {
+                    self.scan_concat_tokens(macro_.tokens.clone());
+                }
+                Some(identifier)
+                    if matches!(
+                        identifier.to_string().as_str(),
+                        "format" | "format_args" | "write" | "writeln"
+                    ) =>
+                {
+                    self.scan_formatting_macro(
+                        macro_.tokens.clone(),
+                        matches!(identifier.to_string().as_str(), "write" | "writeln"),
+                    );
+                }
+                Some(identifier)
+                    if matches!(
+                        identifier.to_string().as_str(),
+                        "include" | "include_str" | "include_bytes"
+                    ) =>
+                {
+                    self.unsupported_syntax.insert(format!(
+                        "external `{identifier}!` content in facade authority guard"
+                    ));
+                }
+                _ => {
+                    self.scan_macro_tokens(macro_.tokens.clone());
+                }
+            }
+        }
+
+        fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
+            if expression.method == "concat" {
+                self.unsupported_syntax
+                    .insert("dynamic `.concat()` in facade authority guard".to_string());
+            }
+            syn::visit::visit_expr_method_call(self, expression);
+        }
+    }
 
     #[test]
     fn authority_wrappers_match_the_frozen_application_vectors() {
@@ -1188,6 +1659,134 @@ mod tests {
     }
 
     #[test]
+    fn facade_authority_guard_ignores_only_exact_cfg_test_subtrees() {
+        let source = r#"
+            fn production_entry() {}
+
+            #[cfg(test)]
+            mod tests {
+                const EXPECTED_CODE: &str = "writer_path_unavailable";
+                fn assertion_mentions_type() {
+                    let _ = "ProductionBoundary";
+                }
+            }
+        "#;
+
+        assert!(facade_forbidden_authority_references(
+            source,
+            &["writer_path_unavailable", "ProductionBoundary"],
+        )
+        .expect("synthetic facade source parses")
+        .is_empty());
+    }
+
+    #[test]
+    fn facade_authority_guard_rejects_production_string_literals() {
+        let source = r#"
+            const FORGED_CODE: &str = "writer_path_unavailable";
+        "#;
+
+        assert_eq!(
+            facade_forbidden_authority_references(source, &["writer_path_unavailable"])
+                .expect("synthetic facade source parses"),
+            BTreeSet::from(["writer_path_unavailable".to_string()])
+        );
+    }
+
+    #[test]
+    fn facade_authority_guard_audits_mixed_cfg_subtrees() {
+        let source = r#"
+            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+            const FORGED_CODE: &str = "writer_path_unavailable";
+        "#;
+
+        assert_eq!(
+            facade_forbidden_authority_references(source, &["writer_path_unavailable"])
+                .expect("synthetic facade source parses"),
+            BTreeSet::from(["writer_path_unavailable".to_string()])
+        );
+    }
+
+    #[test]
+    fn facade_authority_guard_reconstructs_split_concat_literals() {
+        let source = r#"
+            const FORGED_CODE: &str = concat!("writer_path", "_unavailable");
+        "#;
+
+        assert_eq!(
+            facade_forbidden_authority_references(source, &["writer_path_unavailable"])
+                .expect("synthetic facade source parses"),
+            BTreeSet::from(["writer_path_unavailable".to_string()])
+        );
+    }
+
+    #[test]
+    fn facade_authority_guard_reconstructs_nested_concat_literals() {
+        let source = r#"
+            const FORGED_CODE: &str =
+                concat!("writer_", concat!("path", "_unavailable"));
+        "#;
+
+        assert_eq!(
+            facade_forbidden_authority_references(source, &["writer_path_unavailable"])
+                .expect("synthetic facade source parses"),
+            BTreeSet::from(["writer_path_unavailable".to_string()])
+        );
+    }
+
+    #[test]
+    fn facade_authority_guard_fails_closed_on_dynamic_string_construction() {
+        for source in [
+            r#"fn forged() { let _ = format!("writer_path{}", "_unavailable"); }"#,
+            r#"fn forged() { let _ = format!("{1}{0}", "_unavailable", "writer_path"); }"#,
+            r#"fn forged() { let _ = ["writer_path", "_unavailable"].concat(); }"#,
+            r#"fn forged(out: &mut String) { let _ = write!(out, "writer_path{}", "_unavailable"); }"#,
+            r#"include!("forged-evidence.rs");"#,
+            r#"fn forged() { let _ = include_str!("forged-evidence.txt"); }"#,
+        ] {
+            match facade_forbidden_authority_references(source, &["writer_path_unavailable"]) {
+                Err(_) => {}
+                Ok(references) => assert!(
+                    !references.is_empty(),
+                    "dynamic production string construction must fail closed: {source}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn facade_authority_guard_does_not_concatenate_unrelated_macro_literals() {
+        let source = r#"
+            fn classify(value: &str) -> bool {
+                matches!(value, "writer_path" | "_unavailable")
+            }
+        "#;
+
+        assert!(
+            facade_forbidden_authority_references(source, &["writer_path_unavailable"])
+                .expect("ordinary macro literals are audited independently")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn facade_authority_guard_ignores_exact_cfg_test_associated_items() {
+        let source = r#"
+            struct ProductionOwner;
+            impl ProductionOwner {
+                #[cfg(test)]
+                const EXPECTED_CODE: &str = "writer_path_unavailable";
+            }
+        "#;
+
+        assert!(
+            facade_forbidden_authority_references(source, &["writer_path_unavailable"])
+                .expect("synthetic facade source parses")
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn facade_source_keeps_the_exact_abi_and_has_no_production_authority() {
         let source = include_str!("receipt_ledger_test_support.rs");
         let syntax = syn::parse_file(source).expect("facade source parses");
@@ -1212,7 +1811,7 @@ mod tests {
             ]
         );
 
-        for forbidden in [
+        let forbidden = [
             concat!("sha", "2"),
             concat!("ReceiptLedger", "Store"),
             concat!("Production", "Boundary"),
@@ -1230,11 +1829,12 @@ mod tests {
             concat!("ReachedProduction", "Boundary"),
             concat!("Facade", "Envelope"),
             concat!("production_missing", "_transition"),
-        ] {
-            assert!(
-                !source.contains(forbidden),
-                "facade source contains forbidden production authority {forbidden}"
-            );
-        }
+        ];
+        let references = facade_forbidden_authority_references(source, &forbidden)
+            .unwrap_or_else(|error| panic!("facade authority guard failed closed: {error}"));
+        assert!(
+            references.is_empty(),
+            "facade source contains forbidden production authorities: {references:?}"
+        );
     }
 }

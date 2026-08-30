@@ -417,6 +417,8 @@ mod tests {
     fn constructor_reference_finder_detects_direct_and_aliased_calls() {
         let constructors = ["receipt_row_absent"];
         let direct = r#"
+            use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
+
             fn mint(observation: MissingReceiptObservation) {
                 ProductionMissingTransitionEvidence::receipt_row_absent(observation);
             }
@@ -477,6 +479,8 @@ mod tests {
     #[test]
     fn constructor_reference_finder_detects_self_receiver() {
         let source = r#"
+            use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
+
             impl ProductionMissingTransitionEvidence {
                 fn mint(observation: MissingReceiptObservation) {
                     Self::receipt_row_absent(observation);
@@ -494,6 +498,8 @@ mod tests {
     #[test]
     fn constructor_reference_finder_detects_local_type_alias_receiver() {
         let source = r#"
+            use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
+
             type Evidence = ProductionMissingTransitionEvidence;
             type ChainedEvidence = Evidence;
 
@@ -507,6 +513,49 @@ mod tests {
                 .expect("parse local type alias"),
             BTreeSet::from(["receipt_row_absent".to_string()])
         );
+    }
+
+    #[test]
+    fn constructor_reference_finder_fails_closed_on_local_canonical_name_shadow() {
+        let source = r#"
+            fn mint(observation: MissingReceiptObservation) {
+                struct ProductionMissingTransitionEvidence;
+                impl ProductionMissingTransitionEvidence {
+                    fn receipt_row_absent(_: MissingReceiptObservation) {}
+                }
+
+                ProductionMissingTransitionEvidence::receipt_row_absent(observation);
+            }
+        "#;
+
+        let error = evidence_constructor_references(source, &["receipt_row_absent"])
+            .expect_err("an unrelated local type cannot inherit sealed evidence authority");
+        assert!(error.contains("unsupported sealed evidence constructor receiver"));
+        assert!(error.contains("ProductionMissingTransitionEvidence::receipt_row_absent"));
+    }
+
+    #[test]
+    fn constructor_reference_finder_does_not_inherit_self_authority_into_nested_impl() {
+        let source = r#"
+            use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
+
+            impl ProductionMissingTransitionEvidence {
+                fn outer(observation: MissingReceiptObservation) {
+                    struct Unrelated;
+                    impl Unrelated {
+                        fn mint(observation: MissingReceiptObservation) {
+                            Self::receipt_row_absent(observation);
+                        }
+                    }
+                    let _ = observation;
+                }
+            }
+        "#;
+
+        let error = evidence_constructor_references(source, &["receipt_row_absent"])
+            .expect_err("Self authority belongs only to the current evidence impl receiver");
+        assert!(error.contains("unsupported sealed evidence constructor receiver"));
+        assert!(error.contains("Self::receipt_row_absent"));
     }
 
     #[test]
@@ -526,6 +575,8 @@ mod tests {
     #[test]
     fn constructor_reference_finder_detects_macro_rules_body() {
         let source = r#"
+            use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
+
             macro_rules! mint {
                 ($observation:expr) => {
                     ProductionMissingTransitionEvidence::receipt_row_absent($observation)
@@ -543,6 +594,8 @@ mod tests {
     #[test]
     fn constructor_reference_finder_detects_associated_path_in_macro_invocation() {
         let source = r#"
+            use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
+
             fn mint(observation: MissingReceiptObservation) {
                 helper!(ProductionMissingTransitionEvidence::receipt_row_absent(observation));
             }
@@ -582,6 +635,125 @@ mod tests {
             .expect_err("unknown macro receiver must fail closed");
         assert!(error.contains("unsupported sealed evidence constructor receiver"));
         assert!(error.contains("HiddenReexport::receipt_row_absent"));
+    }
+
+    #[test]
+    fn constructor_reference_finder_fails_closed_on_macro_constructor_metavariable() {
+        let source = r#"
+            use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
+
+            macro_rules! mint {
+                ($constructor:ident, $observation:expr) => {
+                    ProductionMissingTransitionEvidence::$constructor($observation)
+                };
+            }
+
+            fn call(observation: MissingReceiptObservation) {
+                mint!(receipt_row_absent, observation);
+            }
+        "#;
+
+        let error = evidence_constructor_references(source, &["receipt_row_absent"])
+            .expect_err("a dynamic sealed constructor must fail closed");
+        assert!(error.contains("unsupported macro metavariable constructor"));
+    }
+
+    #[test]
+    fn constructor_reference_finder_fails_closed_on_top_level_self_macro_constructor() {
+        let source = r#"
+            use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
+
+            macro_rules! mint {
+                ($constructor:ident, $observation:expr) => {
+                    Self::$constructor($observation)
+                };
+            }
+
+            impl ProductionMissingTransitionEvidence {
+                fn call(observation: MissingReceiptObservation) {
+                    mint!(receipt_row_absent, observation);
+                }
+            }
+        "#;
+
+        let error = evidence_constructor_references(source, &["receipt_row_absent"])
+            .expect_err("top-level Self macro can expand inside the evidence impl");
+        assert!(error.contains("unsupported macro metavariable constructor"));
+    }
+
+    #[test]
+    fn constructor_reference_finder_fails_closed_on_top_level_self_with_evidence_alias() {
+        let source = r#"
+            use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence as Evidence;
+
+            macro_rules! mint {
+                ($constructor:ident, $observation:expr) => {
+                    Self::$constructor($observation)
+                };
+            }
+
+            impl Evidence {
+                fn call(observation: MissingReceiptObservation) {
+                    mint!(receipt_row_absent, observation);
+                }
+            }
+        "#;
+
+        let error = evidence_constructor_references(source, &["receipt_row_absent"])
+            .expect_err("top-level Self macro sees every canonical evidence alias");
+        assert!(error.contains("unsupported macro metavariable constructor"));
+    }
+
+    #[test]
+    fn constructor_reference_finder_rejects_outer_trait_generic_shadow() {
+        let source = r#"
+            use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
+
+            trait Shadow<ProductionMissingTransitionEvidence> {
+                fn mint(observation: MissingReceiptObservation) {
+                    ProductionMissingTransitionEvidence::receipt_row_absent(observation);
+                }
+            }
+        "#;
+
+        let error = evidence_constructor_references(source, &["receipt_row_absent"])
+            .expect_err("outer trait generics shadow imported evidence bindings");
+        assert!(error.contains("unsupported sealed evidence constructor receiver"));
+    }
+
+    #[test]
+    fn constructor_reference_finder_rejects_fake_canonical_module_suffix() {
+        for source in [
+            r#"
+                mod receipt_ledger_test_evidence {
+                    pub struct ProductionMissingTransitionEvidence;
+                    impl ProductionMissingTransitionEvidence {
+                        pub fn receipt_row_absent(_: MissingReceiptObservation) {}
+                    }
+                }
+
+                fn mint(observation: MissingReceiptObservation) {
+                    receipt_ledger_test_evidence::ProductionMissingTransitionEvidence::receipt_row_absent(observation);
+                }
+            "#,
+            r#"
+                mod receipt_ledger_test_evidence {
+                    pub struct ProductionMissingTransitionEvidence;
+                    impl ProductionMissingTransitionEvidence {
+                        pub fn receipt_row_absent(_: MissingReceiptObservation) {}
+                    }
+                }
+                use receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
+
+                fn mint(observation: MissingReceiptObservation) {
+                    ProductionMissingTransitionEvidence::receipt_row_absent(observation);
+                }
+            "#,
+        ] {
+            let error = evidence_constructor_references(source, &["receipt_row_absent"])
+                .expect_err("a local suffix cannot impersonate the canonical evidence module");
+            assert!(error.contains("unsupported sealed evidence constructor receiver"));
+        }
     }
 
     #[test]
@@ -696,13 +868,12 @@ mod tests {
         constructors: &[&str],
     ) -> Result<BTreeSet<String>, String> {
         let syntax = syn::parse_file(source).map_err(|error| error.to_string())?;
-        let aliases = EvidenceTypeAliasCollector::collect(&syntax);
         let mut finder = EvidenceConstructorReferenceFinder {
-            evidence_type_aliases: &aliases,
             constructors: constructors.iter().copied().collect(),
             references: BTreeSet::new(),
             unsupported_references: BTreeSet::new(),
-            evidence_impl_depth: 0,
+            type_scopes: Vec::new(),
+            impl_receivers: Vec::new(),
         };
         finder.visit_file(&syntax);
         if finder.unsupported_references.is_empty() {
@@ -732,90 +903,19 @@ mod tests {
         Ok((owner, references))
     }
 
-    struct EvidenceTypeAliasCollector {
-        aliases: BTreeSet<String>,
-        local_type_aliases: Vec<(String, String)>,
-    }
-
-    impl EvidenceTypeAliasCollector {
-        fn new() -> Self {
-            Self {
-                aliases: BTreeSet::from(["ProductionMissingTransitionEvidence".to_string()]),
-                local_type_aliases: Vec::new(),
-            }
-        }
-
-        fn collect(syntax: &syn::File) -> BTreeSet<String> {
-            let mut collector = Self::new();
-            collector.visit_file(syntax);
-            loop {
-                let mut changed = false;
-                for (alias, target) in &collector.local_type_aliases {
-                    if collector.aliases.contains(target) {
-                        changed |= collector.aliases.insert(alias.clone());
-                    }
-                }
-                if !changed {
-                    return collector.aliases;
-                }
-            }
-        }
-
-        fn type_path_last_identifier(ty: &syn::Type) -> Option<String> {
-            match ty {
-                syn::Type::Path(path) if path.qself.is_none() => path
-                    .path
-                    .segments
-                    .last()
-                    .map(|segment| segment.ident.to_string()),
-                syn::Type::Group(group) => Self::type_path_last_identifier(&group.elem),
-                syn::Type::Paren(paren) => Self::type_path_last_identifier(&paren.elem),
-                _ => None,
-            }
-        }
-
-        fn collect_use_tree(&mut self, tree: &syn::UseTree) {
-            match tree {
-                syn::UseTree::Path(path) => self.collect_use_tree(&path.tree),
-                syn::UseTree::Name(name) if name.ident == "ProductionMissingTransitionEvidence" => {
-                    self.aliases.insert(name.ident.to_string());
-                }
-                syn::UseTree::Rename(rename)
-                    if rename.ident == "ProductionMissingTransitionEvidence" =>
-                {
-                    self.aliases.insert(rename.rename.to_string());
-                }
-                syn::UseTree::Group(group) => {
-                    for item in &group.items {
-                        self.collect_use_tree(item);
-                    }
-                }
-                syn::UseTree::Name(_) | syn::UseTree::Rename(_) | syn::UseTree::Glob(_) => {}
-            }
-        }
-    }
-
-    impl<'ast> Visit<'ast> for EvidenceTypeAliasCollector {
-        fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
-            self.collect_use_tree(&item.tree);
-            syn::visit::visit_item_use(self, item);
-        }
-
-        fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
-            if let Some(target) = Self::type_path_last_identifier(&item.ty) {
-                self.local_type_aliases
-                    .push((item.ident.to_string(), target));
-            }
-            syn::visit::visit_item_type(self, item);
-        }
-    }
-
     struct EvidenceConstructorReferenceFinder<'a> {
-        evidence_type_aliases: &'a BTreeSet<String>,
         constructors: BTreeSet<&'a str>,
         references: BTreeSet<String>,
         unsupported_references: BTreeSet<String>,
-        evidence_impl_depth: usize,
+        type_scopes: Vec<BTreeMap<String, EvidenceTypeBinding>>,
+        impl_receivers: Vec<Option<EvidenceTypeBinding>>,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum EvidenceTypeBinding {
+        Evidence,
+        NonEvidence,
+        Ambiguous,
     }
 
     enum MacroLexeme {
@@ -825,6 +925,213 @@ mod tests {
     }
 
     impl EvidenceConstructorReferenceFinder<'_> {
+        const EVIDENCE_TYPE: &'static str = "ProductionMissingTransitionEvidence";
+        const EVIDENCE_MODULE: &'static str = "receipt_ledger_test_evidence";
+
+        fn segments_are_canonical_evidence(segments: &[String]) -> bool {
+            segments
+                == [
+                    "crate",
+                    "infrastructure",
+                    Self::EVIDENCE_MODULE,
+                    Self::EVIDENCE_TYPE,
+                ]
+        }
+
+        fn merge_binding(
+            bindings: &mut BTreeMap<String, EvidenceTypeBinding>,
+            name: String,
+            binding: EvidenceTypeBinding,
+        ) {
+            bindings
+                .entry(name)
+                .and_modify(|existing| {
+                    if *existing != binding {
+                        *existing = EvidenceTypeBinding::Ambiguous;
+                    }
+                })
+                .or_insert(binding);
+        }
+
+        fn path_is_canonical_evidence(path: &syn::Path) -> bool {
+            let segments = path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>();
+            Self::segments_are_canonical_evidence(&segments)
+        }
+
+        fn resolve_name(&self, name: &str) -> Option<EvidenceTypeBinding> {
+            self.type_scopes
+                .iter()
+                .rev()
+                .find_map(|scope| scope.get(name).copied())
+        }
+
+        fn has_visible_evidence_binding(&self) -> bool {
+            self.type_scopes.iter().rev().any(|scope| {
+                scope
+                    .values()
+                    .any(|binding| *binding == EvidenceTypeBinding::Evidence)
+            })
+        }
+
+        fn resolve_name_with_local(
+            &self,
+            name: &str,
+            local: &BTreeMap<String, EvidenceTypeBinding>,
+        ) -> Option<EvidenceTypeBinding> {
+            local.get(name).copied().or_else(|| self.resolve_name(name))
+        }
+
+        fn binding_for_path_with_local(
+            &self,
+            path: &syn::Path,
+            local: &BTreeMap<String, EvidenceTypeBinding>,
+        ) -> Option<EvidenceTypeBinding> {
+            if Self::path_is_canonical_evidence(path) {
+                return Some(EvidenceTypeBinding::Evidence);
+            }
+            if path.segments.len() == 1 {
+                return path.segments.first().and_then(|segment| {
+                    self.resolve_name_with_local(segment.ident.to_string().as_str(), local)
+                });
+            }
+            None
+        }
+
+        fn binding_for_type_with_local(
+            &self,
+            ty: &syn::Type,
+            local: &BTreeMap<String, EvidenceTypeBinding>,
+        ) -> Option<EvidenceTypeBinding> {
+            match ty {
+                syn::Type::Path(path) if path.qself.is_none() => {
+                    self.binding_for_path_with_local(&path.path, local)
+                }
+                syn::Type::Group(group) => self.binding_for_type_with_local(&group.elem, local),
+                syn::Type::Paren(paren) => self.binding_for_type_with_local(&paren.elem, local),
+                _ => Some(EvidenceTypeBinding::NonEvidence),
+            }
+        }
+
+        fn binding_for_type(&self, ty: &syn::Type) -> Option<EvidenceTypeBinding> {
+            self.binding_for_type_with_local(ty, &BTreeMap::new())
+        }
+
+        fn collect_use_bindings(
+            tree: &syn::UseTree,
+            prefix: &mut Vec<String>,
+            bindings: &mut BTreeMap<String, EvidenceTypeBinding>,
+        ) {
+            match tree {
+                syn::UseTree::Path(path) => {
+                    prefix.push(path.ident.to_string());
+                    Self::collect_use_bindings(&path.tree, prefix, bindings);
+                    prefix.pop();
+                }
+                syn::UseTree::Name(name) => {
+                    let mut imported = prefix.clone();
+                    imported.push(name.ident.to_string());
+                    let binding = if Self::segments_are_canonical_evidence(&imported) {
+                        EvidenceTypeBinding::Evidence
+                    } else {
+                        EvidenceTypeBinding::NonEvidence
+                    };
+                    Self::merge_binding(bindings, name.ident.to_string(), binding);
+                }
+                syn::UseTree::Rename(rename) => {
+                    let mut imported = prefix.clone();
+                    imported.push(rename.ident.to_string());
+                    let binding = if Self::segments_are_canonical_evidence(&imported) {
+                        EvidenceTypeBinding::Evidence
+                    } else {
+                        EvidenceTypeBinding::NonEvidence
+                    };
+                    Self::merge_binding(bindings, rename.rename.to_string(), binding);
+                }
+                syn::UseTree::Group(group) => {
+                    for tree in &group.items {
+                        Self::collect_use_bindings(tree, prefix, bindings);
+                    }
+                }
+                syn::UseTree::Glob(_) => {}
+            }
+        }
+
+        fn bindings_for_items<'ast>(
+            &self,
+            items: impl IntoIterator<Item = &'ast syn::Item>,
+        ) -> BTreeMap<String, EvidenceTypeBinding> {
+            let items = items.into_iter().collect::<Vec<_>>();
+            let mut bindings = BTreeMap::new();
+            let mut aliases = Vec::new();
+
+            for item in &items {
+                let non_evidence_name = match item {
+                    syn::Item::Enum(item) => Some(item.ident.to_string()),
+                    syn::Item::ExternCrate(item) => Some(
+                        item.rename
+                            .as_ref()
+                            .map_or_else(|| item.ident.to_string(), |(_, name)| name.to_string()),
+                    ),
+                    syn::Item::Mod(item) => Some(item.ident.to_string()),
+                    syn::Item::Struct(item) => Some(item.ident.to_string()),
+                    syn::Item::Trait(item) => Some(item.ident.to_string()),
+                    syn::Item::TraitAlias(item) => Some(item.ident.to_string()),
+                    syn::Item::Union(item) => Some(item.ident.to_string()),
+                    _ => None,
+                };
+                if let Some(name) = non_evidence_name {
+                    Self::merge_binding(&mut bindings, name, EvidenceTypeBinding::NonEvidence);
+                }
+                match item {
+                    syn::Item::Use(item) => {
+                        Self::collect_use_bindings(&item.tree, &mut Vec::new(), &mut bindings);
+                    }
+                    syn::Item::Type(item) => {
+                        aliases.push((item.ident.to_string(), item.ty.as_ref()));
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut unresolved = aliases;
+            loop {
+                let mut progress = false;
+                unresolved.retain(|(alias, target)| {
+                    let Some(binding) = self.binding_for_type_with_local(target, &bindings) else {
+                        return true;
+                    };
+                    Self::merge_binding(&mut bindings, alias.clone(), binding);
+                    progress = true;
+                    false
+                });
+                if !progress {
+                    break;
+                }
+            }
+            for (alias, _) in unresolved {
+                Self::merge_binding(&mut bindings, alias, EvidenceTypeBinding::NonEvidence);
+            }
+            bindings
+        }
+
+        fn bindings_for_generics(
+            generics: &syn::Generics,
+        ) -> BTreeMap<String, EvidenceTypeBinding> {
+            generics
+                .type_params()
+                .map(|parameter| {
+                    (
+                        parameter.ident.to_string(),
+                        EvidenceTypeBinding::NonEvidence,
+                    )
+                })
+                .collect()
+        }
+
         fn record_path(&mut self, path: &syn::Path) {
             let Some(constructor) = path.segments.last() else {
                 return;
@@ -834,33 +1141,46 @@ mod tests {
                 return;
             }
 
-            let receiver = path
+            let receiver_segments = path
                 .segments
                 .iter()
-                .rev()
-                .nth(1)
-                .map(|segment| segment.ident.to_string());
+                .take(path.segments.len().saturating_sub(1))
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>();
+            let receiver = receiver_segments.last().map(String::as_str);
+            let binding = if Self::segments_are_canonical_evidence(&receiver_segments) {
+                Some(EvidenceTypeBinding::Evidence)
+            } else if receiver_segments.len() == 1 {
+                self.binding_for_receiver(receiver)
+            } else {
+                None
+            };
             let rendered = path
                 .segments
                 .iter()
                 .map(|segment| segment.ident.to_string())
                 .collect::<Vec<_>>()
                 .join("::");
-            self.record_receiver(receiver.as_deref(), false, constructor.as_str(), &rendered);
+            self.record_binding(binding, false, constructor.as_str(), &rendered);
         }
 
-        fn record_receiver(
+        fn binding_for_receiver(&self, receiver: Option<&str>) -> Option<EvidenceTypeBinding> {
+            match receiver {
+                Some("Self") => self.impl_receivers.last().copied().flatten(),
+                Some(receiver) => self.resolve_name(receiver),
+                None => None,
+            }
+        }
+
+        fn record_binding(
             &mut self,
-            receiver: Option<&str>,
+            binding: Option<EvidenceTypeBinding>,
             receiver_is_metavariable: bool,
             constructor: &str,
             rendered: &str,
         ) {
-            let supported = !receiver_is_metavariable
-                && receiver.is_some_and(|receiver| {
-                    self.evidence_type_aliases.contains(receiver)
-                        || (receiver == "Self" && self.evidence_impl_depth > 0)
-                });
+            let supported =
+                !receiver_is_metavariable && binding == Some(EvidenceTypeBinding::Evidence);
             if supported {
                 self.references.insert(constructor.to_string());
             } else {
@@ -903,6 +1223,37 @@ mod tests {
                         index += 2;
                     }
                     TokenTree::Punct(punctuation) if punctuation.as_char() == '$' => {
+                        if let (
+                            Some(MacroLexeme::Identifier {
+                                name: receiver,
+                                metavariable: receiver_is_metavariable,
+                            }),
+                            Some(MacroLexeme::PathSeparator),
+                            Some(TokenTree::Ident(constructor)),
+                        ) = (
+                            lexemes.iter().rev().nth(1),
+                            lexemes.last(),
+                            tokens.get(index + 1),
+                        ) {
+                            let receiver_binding = self.binding_for_receiver(Some(receiver));
+                            let top_level_self = receiver == "Self"
+                                && self.impl_receivers.last().copied().flatten().is_none()
+                                && !self.has_visible_evidence_binding();
+                            if !top_level_self
+                                && (*receiver_is_metavariable
+                                    || receiver_binding
+                                        != Some(EvidenceTypeBinding::NonEvidence))
+                            {
+                                let rendered_receiver = if *receiver_is_metavariable {
+                                    format!("${receiver}")
+                                } else {
+                                    receiver.clone()
+                                };
+                                self.unsupported_references.insert(format!(
+                                    "unsupported macro metavariable constructor in `{rendered_receiver}::${constructor}`"
+                                ));
+                            }
+                        }
                         lexemes.push(MacroLexeme::Barrier);
                         next_identifier_is_metavariable = true;
                         index += 1;
@@ -947,36 +1298,93 @@ mod tests {
                     receiver.clone()
                 };
                 let rendered = format!("{rendered_receiver}::{constructor}");
-                self.record_receiver(
-                    Some(receiver),
-                    *receiver_is_metavariable,
-                    constructor,
-                    &rendered,
-                );
+                let binding = self.binding_for_receiver(Some(receiver));
+                self.record_binding(binding, *receiver_is_metavariable, constructor, &rendered);
             }
-        }
-
-        fn type_is_evidence(&self, ty: &syn::Type) -> bool {
-            EvidenceTypeAliasCollector::type_path_last_identifier(ty)
-                .is_some_and(|identifier| self.evidence_type_aliases.contains(&identifier))
         }
     }
 
     impl<'ast> Visit<'ast> for EvidenceConstructorReferenceFinder<'_> {
+        fn visit_file(&mut self, file: &'ast syn::File) {
+            let bindings = self.bindings_for_items(&file.items);
+            self.type_scopes.push(bindings);
+            for item in &file.items {
+                self.visit_item(item);
+            }
+            self.type_scopes.pop();
+        }
+
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            let Some((_, items)) = &item.content else {
+                syn::visit::visit_item_mod(self, item);
+                return;
+            };
+            let bindings = self.bindings_for_items(items);
+            self.type_scopes.push(bindings);
+            for item in items {
+                self.visit_item(item);
+            }
+            self.type_scopes.pop();
+        }
+
+        fn visit_block(&mut self, block: &'ast syn::Block) {
+            let bindings = self.bindings_for_items(block.stmts.iter().filter_map(|statement| {
+                if let syn::Stmt::Item(item) = statement {
+                    Some(item)
+                } else {
+                    None
+                }
+            }));
+            self.type_scopes.push(bindings);
+            syn::visit::visit_block(self, block);
+            self.type_scopes.pop();
+        }
+
         fn visit_expr_path(&mut self, expression: &'ast syn::ExprPath) {
             self.record_path(&expression.path);
             syn::visit::visit_expr_path(self, expression);
         }
 
         fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
-            let evidence_impl = self.type_is_evidence(&item.self_ty);
-            if evidence_impl {
-                self.evidence_impl_depth += 1;
-            }
+            self.type_scopes
+                .push(Self::bindings_for_generics(&item.generics));
+            let receiver = self.binding_for_type(&item.self_ty);
+            self.impl_receivers.push(receiver);
             syn::visit::visit_item_impl(self, item);
-            if evidence_impl {
-                self.evidence_impl_depth -= 1;
-            }
+            self.impl_receivers.pop();
+            self.type_scopes.pop();
+        }
+
+        fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+            self.type_scopes
+                .push(Self::bindings_for_generics(&item.generics));
+            syn::visit::visit_item_trait(self, item);
+            self.type_scopes.pop();
+        }
+
+        fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+            self.type_scopes
+                .push(Self::bindings_for_generics(&item.sig.generics));
+            self.impl_receivers.push(None);
+            syn::visit::visit_item_fn(self, item);
+            self.impl_receivers.pop();
+            self.type_scopes.pop();
+        }
+
+        fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+            self.type_scopes
+                .push(Self::bindings_for_generics(&item.sig.generics));
+            syn::visit::visit_impl_item_fn(self, item);
+            self.type_scopes.pop();
+        }
+
+        fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+            self.type_scopes
+                .push(Self::bindings_for_generics(&item.sig.generics));
+            self.impl_receivers.push(None);
+            syn::visit::visit_trait_item_fn(self, item);
+            self.impl_receivers.pop();
+            self.type_scopes.pop();
         }
 
         fn visit_macro(&mut self, macro_: &'ast syn::Macro) {
