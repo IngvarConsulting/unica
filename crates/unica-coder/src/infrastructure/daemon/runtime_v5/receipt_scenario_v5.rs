@@ -19,7 +19,7 @@ use crate::infrastructure::daemon::protocol_v5::{
     V5InvocationResponse, V5ServerResponse,
 };
 use crate::infrastructure::daemon::server::DaemonServerConfig;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -846,23 +846,23 @@ fn snapshot_with_actor(
 }
 
 fn receipt_observation(state: ReceiptState) -> Result<Value, String> {
-    match state {
-        ReceiptState::CancelReserved(receipt) => Ok(json!({
-            "key": receipt_key_observation(receipt.key()),
-            "state": "cancel_reserved",
-            "cancelRequested": true,
-            "acceptedEpochMs": receipt.cancel_reserved_at_epoch_ms(),
-            "originalBudgetMs": 0,
-            "expiresEpochMs": receipt.expires_at_epoch_ms(),
-            "boundWorkspaceIdentity": null,
-            "stagedTerminal": null,
-            "terminal": null,
-            "encodedBytes": receipt.encoded_bytes(),
-            "reservedResultBytes": 0,
-            "version": receipt.record_version().get(),
-            "mutationSequence": receipt.mutation_sequence(),
-            "begun": false
-        })),
+    let observation = match state {
+        ReceiptState::CancelReserved(receipt) => ScenarioReceiptObservation {
+            key: receipt_key_observation(receipt.key()),
+            state: "cancel_reserved",
+            cancel_requested: true,
+            accepted_epoch_ms: receipt.cancel_reserved_at_epoch_ms(),
+            original_budget_ms: 0,
+            expires_epoch_ms: Some(receipt.expires_at_epoch_ms()),
+            bound_workspace_identity: None,
+            staged_terminal: None,
+            terminal: None,
+            encoded_bytes: receipt.encoded_bytes(),
+            reserved_result_bytes: 0,
+            version: receipt.record_version().get(),
+            mutation_sequence: receipt.mutation_sequence(),
+            begun: false,
+        },
         ReceiptState::Reserved(receipt) => {
             let (state, bound_workspace_identity, begun) = match receipt.phase() {
                 ReservedPhase::Unbound => ("reserved_unbound", None, false),
@@ -885,50 +885,78 @@ fn receipt_observation(state: ReceiptState) -> Result<Value, String> {
                     true,
                 ),
             };
-            Ok(json!({
-                "key": receipt_key_observation(receipt.key()),
-                "state": state,
-                "cancelRequested": receipt.cancel_requested(),
-                "acceptedEpochMs": receipt.original_cutoff().accepted_epoch_ms(),
-                "originalBudgetMs": receipt.original_cutoff().response_budget_ms(),
-                "expiresEpochMs": null,
-                "boundWorkspaceIdentity": bound_workspace_identity,
-                "stagedTerminal": null,
-                "terminal": null,
-                "encodedBytes": receipt.encoded_bytes(),
-                "reservedResultBytes": receipt.reserved_result_bytes(),
-                "version": receipt.record_version().get(),
-                "mutationSequence": receipt.mutation_sequence(),
-                "begun": begun
-            }))
+            ScenarioReceiptObservation {
+                key: receipt_key_observation(receipt.key()),
+                state,
+                cancel_requested: receipt.cancel_requested(),
+                accepted_epoch_ms: receipt.original_cutoff().accepted_epoch_ms(),
+                original_budget_ms: receipt.original_cutoff().response_budget_ms(),
+                expires_epoch_ms: None,
+                bound_workspace_identity,
+                staged_terminal: None,
+                terminal: None,
+                encoded_bytes: receipt.encoded_bytes(),
+                reserved_result_bytes: receipt.reserved_result_bytes(),
+                version: receipt.record_version().get(),
+                mutation_sequence: receipt.mutation_sequence(),
+                begun,
+            }
         }
-        ReceiptState::DirectTerminalUnacked(receipt) => Ok(json!({
-            "key": receipt_key_observation(receipt.key()),
-            "state": "direct_terminal_unacked",
-            "cancelRequested": matches!(
+        ReceiptState::DirectTerminalUnacked(receipt) => ScenarioReceiptObservation {
+            key: receipt_key_observation(receipt.key()),
+            state: "direct_terminal_unacked",
+            cancel_requested: matches!(
                 receipt.terminal().outcome(),
                 ReceiptTerminalOutcome::Cancelled
             ),
-            "acceptedEpochMs": receipt.original_cutoff().accepted_epoch_ms(),
-            "originalBudgetMs": receipt.original_cutoff().response_budget_ms(),
-            "expiresEpochMs": receipt.terminal_epoch_ms() + DIRECT_TERMINAL_RETENTION_MS,
-            "boundWorkspaceIdentity": null,
-            "stagedTerminal": null,
-            "terminal": terminal_observation(
+            accepted_epoch_ms: receipt.original_cutoff().accepted_epoch_ms(),
+            original_budget_ms: receipt.original_cutoff().response_budget_ms(),
+            expires_epoch_ms: Some(
+                receipt
+                    .terminal_epoch_ms()
+                    .checked_add(DIRECT_TERMINAL_RETENTION_MS)
+                    .ok_or_else(|| "direct terminal observation expiry overflow".to_owned())?,
+            ),
+            bound_workspace_identity: None,
+            staged_terminal: None,
+            terminal: Some(terminal_observation(
                 receipt.terminal().outcome(),
                 receipt.terminal_epoch_ms(),
-            )?,
-            "encodedBytes": receipt.encoded_bytes(),
-            "reservedResultBytes": receipt.reserved_result_bytes(),
-            "version": receipt.record_version().get(),
-            "mutationSequence": receipt.mutation_sequence(),
-            "begun": false
-        })),
-        other => Err(format!(
-            "receipt scenario cannot project unsupported state {}",
-            other.kind().diagnostic_name()
-        )),
-    }
+            )?),
+            encoded_bytes: receipt.encoded_bytes(),
+            reserved_result_bytes: receipt.reserved_result_bytes(),
+            version: receipt.record_version().get(),
+            mutation_sequence: receipt.mutation_sequence(),
+            begun: false,
+        },
+        other => {
+            return Err(format!(
+                "receipt scenario cannot project unsupported state {}",
+                other.kind().diagnostic_name()
+            ))
+        }
+    };
+    serde_json::to_value(observation)
+        .map_err(|error| format!("encode receipt scenario observation: {error}"))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScenarioReceiptObservation {
+    key: Value,
+    state: &'static str,
+    cancel_requested: bool,
+    accepted_epoch_ms: u64,
+    original_budget_ms: u64,
+    expires_epoch_ms: Option<u64>,
+    bound_workspace_identity: Option<String>,
+    staged_terminal: Option<Value>,
+    terminal: Option<Value>,
+    encoded_bytes: u64,
+    reserved_result_bytes: u64,
+    version: u64,
+    mutation_sequence: u64,
+    begun: bool,
 }
 
 fn response_observation(
