@@ -518,6 +518,15 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         key: &ReceiptKey,
         deadline: Instant,
     ) -> Result<ReceiptState, ReceiptLedgerError>;
+
+    fn recover_at(
+        &mut self,
+        key: &ReceiptKey,
+        _observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        self.recover(key, deadline)
+    }
 }
 
 impl CoreIdentityDigest {

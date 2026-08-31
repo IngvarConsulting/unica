@@ -539,7 +539,7 @@ impl V5ReceiptRuntime {
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
         self.validate_receipt_key(&key)?;
-        let state = self.receipt_ledger.recover(key, deadline)?;
+        let state = self.receipt_ledger.recover_at(key, epoch_ms, deadline)?;
         match classify_recovered_receipt(state, epoch_ms) {
             CancelReservedRecoveryDecision::Current(state) => {
                 let decision = decide_cancel_reserved_submit(ReserveOutcome::ExistingExact(*state))
@@ -1055,6 +1055,14 @@ fn handle_probe_connection(
                 deadlines.operation,
             ) {
                 Ok(reply) => {
+                    #[cfg(feature = "receipt-ledger-test-support")]
+                    if runtime
+                        .scenario_control
+                        .as_ref()
+                        .is_some_and(|control| control.take_ack_response_disconnect())
+                    {
+                        return Ok(());
+                    }
                     write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
                 }
                 Err(

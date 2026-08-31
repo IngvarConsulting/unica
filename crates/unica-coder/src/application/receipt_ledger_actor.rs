@@ -252,6 +252,7 @@ enum Command {
     },
     Recover {
         key: ReceiptKey,
+        observed_at_epoch_ms: Option<u64>,
         deadline: Instant,
         ticket: Arc<Ticket<ReceiptState>>,
     },
@@ -615,6 +616,24 @@ impl ReceiptLedgerActor {
         key: ReceiptKey,
         deadline: Instant,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
+        self.recover_inner(key, None, deadline)
+    }
+
+    pub(crate) fn recover_at(
+        &self,
+        key: ReceiptKey,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        self.recover_inner(key, Some(observed_at_epoch_ms), deadline)
+    }
+
+    fn recover_inner(
+        &self,
+        key: ReceiptKey,
+        observed_at_epoch_ms: Option<u64>,
+        deadline: Instant,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
         if Instant::now() >= deadline {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
@@ -631,6 +650,7 @@ impl ReceiptLedgerActor {
         self.enqueue(
             Command::Recover {
                 key,
+                observed_at_epoch_ms,
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -917,14 +937,20 @@ fn run_worker(
             }
             Command::Recover {
                 key,
+                observed_at_epoch_ms,
                 deadline,
                 ticket,
             } => {
                 if !ticket.try_begin(&health) {
                     continue;
                 }
-                let result = catch_unwind(AssertUnwindSafe(|| port.recover(&key, deadline)))
-                    .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                let result = catch_unwind(AssertUnwindSafe(|| match observed_at_epoch_ms {
+                    Some(observed_at_epoch_ms) => {
+                        port.recover_at(&key, observed_at_epoch_ms, deadline)
+                    }
+                    None => port.recover(&key, deadline),
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
                 ticket.finish(result, &health);
             }
         }

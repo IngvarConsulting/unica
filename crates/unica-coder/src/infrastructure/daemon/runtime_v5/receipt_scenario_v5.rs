@@ -37,6 +37,7 @@ const SCENARIO_OPERATION_TIMEOUT: Duration = Duration::from_secs(2);
 pub(super) struct ReceiptScenarioControl {
     barrier: Mutex<CancelConversionBarrier>,
     changed: Condvar,
+    drop_ack_response_after_commit: AtomicBool,
 }
 
 #[derive(Default)]
@@ -51,7 +52,18 @@ impl ReceiptScenarioControl {
         Self {
             barrier: Mutex::new(CancelConversionBarrier::default()),
             changed: Condvar::new(),
+            drop_ack_response_after_commit: AtomicBool::new(false),
         }
+    }
+
+    fn arm_ack_response_disconnect(&self) {
+        self.drop_ack_response_after_commit
+            .store(true, Ordering::Release);
+    }
+
+    pub(super) fn take_ack_response_disconnect(&self) -> bool {
+        self.drop_ack_response_after_commit
+            .swap(false, Ordering::AcqRel)
     }
 
     fn install(&self) {
@@ -311,19 +323,36 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     }
                     ScenarioDigest::TaskTerminal => return Ok(None),
                 };
-                let response = exchange_once(
-                    state.path(),
-                    &identity,
-                    Arc::clone(&clock),
-                    Arc::clone(&telemetry),
-                    |owner| {
-                        owner.acknowledge_invocation_receipt(exact_key.clone(), terminal_digest)
-                    },
-                )?;
-                if matches!(disconnect, ScenarioAckDisconnect::Never) {
-                    report
-                        .responses
-                        .insert(label, response_observation(&response, None)?);
+                match disconnect {
+                    ScenarioAckDisconnect::Never => {
+                        let response = exchange_once(
+                            state.path(),
+                            &identity,
+                            Arc::clone(&clock),
+                            Arc::clone(&telemetry),
+                            |owner| {
+                                owner.acknowledge_invocation_receipt(
+                                    exact_key.clone(),
+                                    terminal_digest,
+                                )
+                            },
+                        )?;
+                        report
+                            .responses
+                            .insert(label, response_observation(&response, None)?);
+                    }
+                    ScenarioAckDisconnect::AfterTombstoneCommit => {
+                        control.arm_ack_response_disconnect();
+                        exchange_ack_and_expect_disconnect(
+                            state.path(),
+                            &identity,
+                            Arc::clone(&clock),
+                            Arc::clone(&control),
+                            Arc::clone(&telemetry),
+                            exact_key.clone(),
+                            terminal_digest,
+                        )?;
+                    }
                 }
             }
             ReceiptScenarioAction::AdvanceEpoch { millis } => {
@@ -584,6 +613,47 @@ fn exchange_once(
     })();
     let cleanup = daemon.stop_and_join("protocol-v5 receipt scenario daemon panicked");
     finish_with_daemon_cleanup(response, cleanup)
+}
+
+fn exchange_ack_and_expect_disconnect(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: Arc<ScenarioEpochClock>,
+    control: Arc<ReceiptScenarioControl>,
+    telemetry: Arc<V5ReceiptRuntimeTelemetry>,
+    key: ReceiptKey,
+    terminal_digest: TerminalDigest,
+) -> Result<(), String> {
+    let config = DaemonServerConfig::new(
+        state_root.to_path_buf(),
+        identity.clone(),
+        SCENARIO_IDLE_GRACE,
+    );
+    let daemon = ScenarioDaemon::spawn(config, move |runtime| {
+        let mut runtime = runtime.with_shared_telemetry(telemetry);
+        runtime.epoch_clock = clock;
+        runtime.scenario_control = Some(control);
+        runtime
+    });
+    let result = (|| {
+        wait_for_endpoint(state_root, identity)?;
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+            state_root,
+            identity.clone(),
+            std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
+            SCENARIO_IDLE_GRACE,
+        )?;
+        let result = owner.acknowledge_invocation_receipt(key, terminal_digest);
+        drop(owner);
+        match result {
+            Ok(_) => {
+                Err("ACK response was delivered instead of disconnecting after commit".to_owned())
+            }
+            Err(_) => Ok(()),
+        }
+    })();
+    let cleanup = daemon.stop_and_join("protocol-v5 receipt scenario ACK daemon panicked");
+    finish_with_daemon_cleanup(result, cleanup)
 }
 
 enum ScenarioWireRequest {
