@@ -15,19 +15,19 @@
 Typical empty workspace order:
 
 1. Create `src/` if there are no source files.
-2. Preview `operation=config-init` with `dryRun=true`; applied config writes are fail-closed, so stop and ask for a project config instead of bypassing MCP.
-3. Preview `operation=init` with `dryRun=true` when runtime state must be materialized; applied init is fail-closed before spawn.
-4. If the database is the source of truth, preview synchronous `operation=dump` with `mode=full`; applied dump remains fail-closed because its post-run validation/publication has no proved receipt bound.
+2. Preview `operation=config-init` with `dryRun=true`; the applied write runs and carries `runtime_risk_publication_without_bounded_recovery`, so agree with the user before applying it and never bypass MCP with a direct runner call.
+3. Preview `operation=init` with `dryRun=true` when runtime state must be materialized; the applied run carries `runtime_risk_critical_non_abortable`, so cancellation is deferred until that phase ends.
+4. If the database is the source of truth, preview synchronous `operation=dump` with `mode=full`; the applied run carries `runtime_risk_publication_without_bounded_recovery` because its post-run validation/publication has no proved receipt bound.
 5. If Git sources are the source of truth, ask before previewing `operation=build` with `dryRun=true`; applied build is not currently admitted.
 
 All dump modes and applied `convert` write persistent state without a bounded recovery contract, and the result names that risk. Designer `rawKeys` containing `DumpConfigToFiles` or
 `LoadConfigFromFiles` are fail-closed until they share the verified publication
 boundary.
 
-For a future admitted applied operation, `build` also prepares configured client
+For an applied operation, `build` also prepares configured client
 MCP tool extensions when the project has `tools.client_mcp.extension`.
-Currently only preview `fullRebuild=true` when that generated state may be
-stale; the preview does not prepare the extension.
+Preview `fullRebuild=true` when that generated state may be stale; note that
+the preview does not prepare the extension.
 
 Only a durable build carries the one full retry. The synchronous entry point is
 refused before it ever starts a process, so it has no first attempt to repeat,
@@ -53,14 +53,15 @@ failure without that deadline and can still start the retry. A failed full retry
 does not start a third attempt. This temporary Unica fallback does not replace
 the separate runtime/runner redesign planned for v14.
 
-Preview `extensions` with `dryRun=true` when only extension properties need synchronization; applied synchronization is not currently admitted.
+Preview `extensions` with `dryRun=true` when only extension properties need synchronization; the applied run carries `runtime_risk_critical_non_abortable`.
 
 Preview `tools-download` with `dryRun=true` when the project needs
-v8-runner-managed YaXUnit, Vanessa, or client MCP payloads. Applied download is
-fail-closed until the runner exposes bounded atomic publication; require an
-already prepared managed artifact before continuing.
+v8-runner-managed YaXUnit, Vanessa, or client MCP payloads. Applied download runs and carries
+`runtime_risk_publication_without_bounded_recovery`: until the runner exposes
+bounded atomic publication, an interrupted download may leave a partial
+artifact.
 
-Preview `launch` with `clientMode=mcp` or `clientMode=mcp-va` for client-side MCP workflows; detached applied launch is not admitted, and platform launch strings must not be hand-assembled.
+Preview `launch` with `clientMode=mcp` or `clientMode=mcp-va` for client-side MCP workflows; a detached applied launch runs and carries `runtime_risk_detached_child`, so this call cannot observe the child exit, and platform launch strings must not be hand-assembled.
 
 For a local external `.epf`, preview direct `clientMode=thin` with
 `waitForExit=true`, bounded `waitTimeoutMs`, `dryRun=true`, and distinct paths:

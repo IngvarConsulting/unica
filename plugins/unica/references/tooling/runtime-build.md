@@ -332,8 +332,9 @@ EPF/ERF runtime-аргументы в packaged Unica plugin предпросма
 ```
 
 Для preview внешних отчетов используй `sourceSet: "external-reports"`.
-`output` задаёт предполагаемый каталог будущей публикации; текущий вызов не
-создаёт `.epf` или `.erf`.
+`output` задаёт каталог публикации; preview с `dryRun: true` его не создаёт, а
+применённый вызов публикует туда `.epf` или `.erf`, неся
+`runtime_risk_publication_without_bounded_recovery`.
 
 ### Выгрузка внешних исходников
 

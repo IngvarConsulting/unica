@@ -27,7 +27,7 @@ description: "Реализация интеграций 1С. Используй 
 3. Create or edit metadata through `unica.meta.add` / `unica.meta.edit`; keep source-set and format selected by `unica.project.map`.
 4. Put reusable logic in common modules; keep HTTP service handlers thin and explicit about request parsing, validation, and response codes.
 5. Handle secrets outside versioned modules and configs. Do not log tokens, passwords, full request bodies with personal data, or raw auth headers.
-6. Use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them and report runtime verification as unavailable; for live HTTP behavior require a user-provided debug URL and external evidence, because `autonomous-server` cannot currently launch through this contract.
+6. Use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, treating the result as evidence only for what the check covers; for live HTTP behaviour require a user-provided debug URL and external evidence.
 
 ## Contract detail
 

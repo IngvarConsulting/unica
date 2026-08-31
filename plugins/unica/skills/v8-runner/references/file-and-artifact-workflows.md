@@ -58,13 +58,15 @@ ACLs. Secret-bearing effective configuration stays outside retained recovery.
 User-owned or otherwise mutable installs are rejected before `ibcmd` or
 `v8-runner` starts; other Unix hosts fail closed.
 
-`convert` is repository-aware and does not require an infobase, but applied
-conversion remains fail-closed because it can publish Designer XML outside the
-verified dump boundary. Use `dryRun=true`.
+`convert` is repository-aware and does not require an infobase; applied
+conversion runs and carries `runtime_risk_publication_without_bounded_recovery`
+because it can publish Designer XML outside the verified dump boundary. Inspect
+it with `dryRun=true` first.
 
 Preview `make` with `dryRun=true` for `.cf`, `.cfe`, `.epf`, or `.erf`
-artifacts. Applied publication is fail-closed until the runner exposes a
-bounded rollback contract. Provide `output`; add `sourceSet` or `extension`
+artifacts. Applied publication runs and carries
+`runtime_risk_publication_without_bounded_recovery`: until the runner exposes a
+bounded rollback contract, an interrupted run may leave partial output. Provide `output`; add `sourceSet` or `extension`
 when the target is not the default source. For external processors/reports,
 `output` is a publish directory, not a single `.epf`/`.erf` filename.
 

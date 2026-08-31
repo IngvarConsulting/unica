@@ -18,7 +18,7 @@ description: Создать пустой make-ready scaffold внешнего о
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Для будущей сборки результата предпросмотреть `operation=make` через `v8-runner`; текущий вызов не создаёт артефакт.
+- Для сборки результата использовать `operation=make` через `v8-runner`: preview с `dryRun: true` артефакт не создаёт, применённый вызов публикует его, неся `runtime_risk_publication_without_bounded_recovery`.
 
 ## Порядок работы
 
@@ -28,7 +28,7 @@ description: Создать пустой make-ready scaffold внешнего о
 4. Если source-set ещё не объявлен, создать scaffold в выбранном новом каталоге, затем явно добавить этот каталог как корень Designer source-set. Проверить регистрацию через `unica.project.map`: `kind=external_report`, `sourceFormat=platform_xml`.
 5. Передать `FormName`, только если нужна пустая управляемая форма. Без него создаются descriptor и `ObjectModule.bsl`; пустая СКД автоматически не добавляется.
 6. Сначала проверить точный список файлов через `dryRun: true`; при явном запросе пользователя повторить с `dryRun: false`.
-7. Добавлять СКД позже через `dcs-*`/`template-*`, затем предпросмотреть `unica.runtime.execute operation=make`. Для будущей applied-сборки в `v8project.yaml` потребуется доступная `infobase.connection`; текущий preview не собирает `.erf`.
+7. Добавлять СКД позже через `dcs-*`/`template-*`, затем предпросмотреть `unica.runtime.execute operation=make`. Для applied-сборки в `v8project.yaml` потребуется доступная `infobase.connection`; сам preview `.erf` не собирает.
 
 `Name` и `FormName` должны быть идентификаторами 1С. Существующие descriptor или одноимённый каталог не перезаписываются. При `format: EDT` остановиться и объяснить несовместимость, не создавать Designer XML внутри EDT source-set.
 
@@ -113,7 +113,7 @@ Preview отчёта с пустой управляемой формой:
 
 `unica.erf.init` разбирает весь сгенерированный XML до публикации. Проверить, что созданы `<Name>.xml`, `<Name>/Ext/ObjectModule.bsl` и, если запрошена форма, три файла под `<Name>/Forms/`. Форму дополнительно проверить через `unica.form.validate` с путём к её `Ext/Form.xml`. Отдельный generic Meta validator не использовать: он не принимает root `ExternalReport`. Не создавать `Configuration.xml`, platform-generated CDFI sidecar или СКД без запроса; legitimate external descriptor может называться `ConfigDumpInfo.xml`, если пользователь выбрал такое имя объекта.
 
-Предпросмотреть будущую команду сборки только с `dryRun: true`:
+Предпросмотреть команду сборки с `dryRun: true`:
 
 ```json
 {

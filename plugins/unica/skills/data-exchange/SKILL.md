@@ -32,7 +32,7 @@ description: "Обмен данными 1С. Используй когда ну�
 2. Inspect metadata and modules with `unica.meta.info` and `unica.code.search`: plans, nodes, registration rules, message numbers, loading handlers, and conflict resolution.
 3. Define the exchange contract: node identity, external ids, schema version, ordering, idempotency, retry behavior, duplicate detection, and compatibility rules.
 4. Check change registration deliberately: keep регистрация изменений explicit, state which objects are registered, when registration is suppressed, how deletes are represented, and how retries avoid double writes.
-5. Use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them and report runtime verification as unavailable; for live failures, rely on supplied ЖР/ТЖ and correlate message id, node, user/session, and object ids.
+5. Use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, treating the result as evidence only for what the check covers; for live failures, rely on supplied ЖР/ТЖ and correlate message id, node, user/session, and object ids.
 
 ## Review checklist
 

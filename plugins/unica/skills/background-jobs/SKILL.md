@@ -32,7 +32,7 @@ description: "Фоновые и регламентные задания 1С. И�
 2. Find entry points with `unica.code.search`; inspect related metadata with `unica.meta.info` and project layout with `unica.project.map`.
 3. Define execution contract: parameters, user context, transaction scope, idempotency key, lock strategy, timeout, retry count, and logging fields.
 4. Check failure behavior before implementation: duplicate launch, partial write, stale lock, external service failure, session termination, and restart after crash.
-5. Run `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test/launch arguments and, with `dryRun: false`, to run it, and record runtime verification as unavailable unless separate evidence is supplied.
+5. Run `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test/launch arguments and, with `dryRun: false`, to run it, and treat that run as evidence only for what the check covers; live job behaviour still needs separate evidence.
 6. For diagnosis, build a timeline from ЖР/ТЖ and map the first failure back to module code.
 
 ## Review checklist

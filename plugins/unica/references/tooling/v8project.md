@@ -64,9 +64,9 @@ directory containing the primary config.
 
 `execution_timeout` is the v8-runner operation budget in milliseconds. The
 default is `300000`; v8-runner validates the value in the `1..=86400000` range.
-For a future admitted long operation, this project config value is the runner
-budget; it is not a reason to attempt an unclassified applied call or add
-a Unica wrapper timeout argument.
+For a long operation this project config value is the runner budget; it is not
+a reason to attempt an unclassified applied call or add a Unica wrapper timeout
+argument.
 
 Server infobase connections use the normal 1C connection string form in
 `infobase.connection`, for example `Srvr="srv01";Ref="dev";`. IBCMD server
@@ -200,9 +200,9 @@ or `v8-runner` would execute; other Unix hosts fail closed as well.
   then ask the user to provide the config; preview cannot create it.
 - Prefer `source-set` names over ad hoc source directories.
 - Treat a platform-generated CDFI sidecar `ConfigDumpInfo.xml` whose root is `ConfigDumpInfo` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence. A legitimate metadata descriptor (including an external EPF/ERF descriptor) for an object actually named `ConfigDumpInfo` remains source and belongs in Git.
-- `execution_timeout` in `v8project.yaml` describes a future runner-operation
-  budget; Unica does not expose `timeoutMs` for `unica.runtime.execute`, and
-  changing this value does not admit a current applied operation.
+- `execution_timeout` in `v8project.yaml` describes the runner-operation budget;
+  Unica does not expose `timeoutMs` for `unica.runtime.execute`, and changing
+  this value does not move an unclassified operation into the admitted set.
 - Do not use `mode=update` for `operation=load`; v8-runner rejects it. Use `mode=load` or `mode=merge` with `settings`.
 - Every applied operation carries a named risk; `convert` additionally lacks a
   verified private-stage publication boundary.

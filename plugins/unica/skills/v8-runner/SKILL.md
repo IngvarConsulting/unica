@@ -104,16 +104,17 @@ then call `unica.project.status` again after the approved fix.
 ## Workspace init
 
 Для пустого репозитория сначала создай `src/`, предпросмотри команду создания
-`v8project.yaml`, затем остановись: применённый `config-init` пока fail-closed,
-потому что закреплённый runner пишет конфиг вне прерываемой транзакции. Не
-обходи это прямым запуском runner-а; сообщи пользователю, что конфиг нужно
-предоставить до продолжения runtime workflow.
+`v8project.yaml`, затем реши с пользователем, применять ли её: применённый
+`config-init` исполняется и несёт `runtime_risk_publication_without_bounded_recovery`,
+потому что закреплённый runner пишет конфиг вне прерываемой транзакции —
+прерванный запуск может оставить частичный результат. Не обходи вызов прямым
+запуском runner-а.
 
 Если исходники отсутствуют или `src/` пустой, считай существующую базу
 источником правды и предпросмотри синхронный полный `dump`. Применённый dump
-пока fail-closed: его проверенная private-stage публикация защищает формат и
-rollback, но постпроцессинг не имеет доказанного верхнего срока для terminal
-receipt. Если исходники уже есть, не выполняй `build` автоматически: спроси,
+исполняется и несёт `runtime_risk_publication_without_bounded_recovery`: его
+проверенная private-stage публикация защищает формат и rollback, но
+постпроцессинг не имеет доказанного верхнего срока для terminal receipt. Если исходники уже есть, не выполняй `build` автоматически: спроси,
 база или Git является источником правды.
 
 ### Предпросмотр нового `v8project.yaml`
@@ -137,7 +138,9 @@ receipt. Если исходники уже есть, не выполняй `bui
 
 ### Предпросмотр первичной инициализации runtime state
 
-`init` содержит непрерываемую фазу и пока не допускается к применённому запуску.
+`init` содержит непрерываемую фазу: применённый запуск исполняется и несёт
+`runtime_risk_critical_non_abortable`, поэтому отмена откладывается до конца
+этой фазы.
 
 ```json
 {
@@ -217,13 +220,15 @@ receipt. Если исходники уже есть, не выполняй `bui
 
 Используй `v8project.local.yaml` для локальных `workPath`, `infobase.connection`, credentials, `tools`, `tests` и `mcp`. Не передавай local overlay как `config`. Не добавляй туда `source-set`, `format`, `builder` или `execution_timeout`: эти поля должны жить в основном проектном конфиге.
 
-Для будущей допущенной операции бюджет runner-а задаётся через `execution_timeout` в `v8project.yaml` (миллисекунды, default `300000`, диапазон `1..=86400000`); это поле не допускает текущий applied-вызов само по себе. Не прокидывай отдельный `timeoutMs` в `unica.runtime.execute`: Unica не владеет таймаутом runner-а.
+Бюджет runner-а задаётся через `execution_timeout` в `v8project.yaml` (миллисекунды, default `300000`, диапазон `1..=86400000`); одно это поле не переводит неклассифицированную операцию в допущенные. Не прокидывай отдельный `timeoutMs` в `unica.runtime.execute`: Unica не владеет таймаутом runner-а.
 
 Если ignored EPF workspace уже содержит основной `v8project.yaml` только с
 `EXTERNAL_DATA_PROCESSORS`, можно предпросмотреть привязку к личной локальной ИБ
 через `config-init` с явными `config`, `sourceSet` и `connection`. Применённая
-запись local overlay пока также fail-closed. Не обходи её прямым запуском
-runner-а; в preview не передавай `format`, `builder` или `force`.
+запись local overlay исполняется и несёт тот же
+`runtime_risk_publication_without_bounded_recovery`, что и обычный `config-init`.
+Не обходи её прямым запуском runner-а; в preview не передавай `format`,
+`builder` или `force`.
 
 ## Build/load/artifacts
 
@@ -249,10 +254,10 @@ runner-а; в preview не передавай `format`, `builder` или `force`
 }
 ```
 
-Политика повтора живёт только в долговременном задании. `unica.runtime.execute`
-по INV-MCP-RUNTIME-RECEIPT применённым не бывает, поэтому и первой команды у него
-нет; предпросмотр показывает нормализованную команду, но никакой попытки не
-делает. Для `unica.runtime.job.start` с операцией `build` без `fullRebuild: true`
+Политика повтора живёт только в долговременном задании. Применённый
+`unica.runtime.execute` по INV-MCP-RUNTIME-RECEIPT отвечает терминальным
+результатом одной попытки и сам её не повторяет; предпросмотр показывает
+нормализованную команду, но никакой попытки не делает. Для `unica.runtime.job.start` с операцией `build` без `fullRebuild: true`
 Unica сначала запускает обычную сборку и не читает состояние поддержки
 Platform XML.
 Ровно одну полную повторную попытку вызывает только корректный структурированный
@@ -402,8 +407,12 @@ rollback публикует целое дерево. Контракт публи
 `INV-SOURCE-BOUND-PREIMAGES` и `INV-SOURCE-ROLLBACK-VISIBLE`, а OS-зависимая
 реализация остаётся за `INV-PLATFORM-OS-BEHIND-FACADE`.
 
-Любой applied dump пока отказывает до spawn. Асинхронный full dump и dump для
-external source-set также доступны только как preview. `incremental` и
+Применённый синхронный full dump для CONFIGURATION и EXTENSION исполняется и
+несёт `runtime_risk_publication_without_bounded_recovery`. Асинхронный full dump
+и dump для external source-set остаются недоступны отдельными гарантиями —
+не классификацией ADR-0074, а отсутствием проверки private staged tree на
+границе фонового задания и ограничением full dump на CONFIGURATION/EXTENSION;
+для них доступен только preview. `incremental` и
 `partial` исполняются, но до private
 CDFI, точного receipt и divergence-safe merge (alkoleft/v8-runner-rust#30) их
 результату в Git-visible root доверять нельзя без сверки исходников.
@@ -762,8 +771,10 @@ EDT-сессия и build/extension-фазы также не имеют огра
 ### Download Vanessa Automation
 
 Если Vanessa Automation ещё не подготовлена в workspace, можно предпросмотреть
-загрузку управляемого v8-runner артефакта. Применённый `tools-download` пока
-fail-closed до появления прерываемой атомарной публикации:
+загрузку управляемого v8-runner артефакта. Применённый `tools-download`
+исполняется и несёт `runtime_risk_publication_without_bounded_recovery`: до
+появления прерываемой атомарной публикации оборванный запуск может оставить
+частичный артефакт.
 
 ```json
 {
@@ -784,10 +795,10 @@ fail-closed до появления прерываемой атомарной п
 Для любого preview запуска Vanessa EPF по effective `tools.va.epf_path` должна
 уже существовать. Предпросмотр `tools-download` с `dryRun: true` только
 проверяет типизированные аргументы и не создаёт и не сохраняет артефакт.
-Будущая применённая загрузка со стандартной конфигурацией должна была бы
-сохранить EPF как `build/tools/vanessa-automation-single.epf`; если project
-config переопределяет путь, в `execute` можно использовать только уже
-существующий файл по этому пути.
+Применённая загрузка со стандартной конфигурацией сохраняет EPF как
+`build/tools/vanessa-automation-single.epf`; если project config переопределяет
+путь, в `execute` для запуска можно использовать только уже существующий файл по
+этому пути.
 
 ### Download client MCP extension
 
@@ -840,7 +851,9 @@ config переопределяет путь, в `execute` можно испол
 
 ## Launch
 
-Все режимы launch доступны только как preview. Даже `waitForExit=true` не
+Все режимы launch исполняются применённо и несут названный риск:
+`runtime_risk_unproven_process_ownership` с `waitForExit=true` и
+`runtime_risk_detached_child` без него. Даже `waitForExit=true` не
 доказывает владение отдельно сгруппированным процессом 1С на каждом аварийном
 пути закреплённого runner-а.
 
@@ -915,10 +928,12 @@ config переопределяет путь, в `execute` можно испол
 }
 ```
 
-Любой применённый launch отказывает до запуска. Поля `waitForExit`,
+Любой применённый launch исполняется и несёт названный риск. Поля `waitForExit`,
 `waitTimeoutMs`, `output` и `stderrOutput` можно проверить в preview, но
 terminal receipt реального EPF не обещается до появления доказанного
-ownership-контракта runner-а. Не обходи отказ через `unica.runtime.job.start`.
+ownership-контракта runner-а.
+Не обходи названный риск через `unica.runtime.job.start`: долговременное
+задание — отдельная поверхность для работы, которую вызов ждать не должен.
 Поле `c` runner преобразует в единственный ключ `/C`.
 Дополнительные нерезервированные ключи, например `/TESTMANAGER`, можно передать
 через `rawKeys`; не дублируй там `/C`, `/Execute` или `/Out`.

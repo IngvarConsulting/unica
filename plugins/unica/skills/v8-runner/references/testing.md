@@ -14,7 +14,7 @@ Use `operation=test`, `testRunner=yaxunit`, `testScope=module`, and `module=<nam
 
 Use `operation=test`, `testRunner=va` for the configured Vanessa Automation profile. Optional VA narrowing arguments are `features`, `filterTags`, `ignoreTags`, and `scenarioFilters`. Do not invent feature paths without inspecting project test configuration.
 
-Preview `operation=launch`, `clientMode=mcp-va`, `dryRun=true` for interactive Vanessa Automation scenario authoring and debugging through client MCP; this detached launch is not currently admitted.
+Preview `operation=launch`, `clientMode=mcp-va`, `dryRun=true` for interactive Vanessa Automation scenario authoring and debugging through client MCP; the applied detached launch runs and carries `runtime_risk_detached_child`, so the call cannot observe the client exit.
 
 Preview syntax validation with `operation=syntax`, `dryRun=true`, and
 `mode=designer-modules`, `mode=designer-config`, or `mode=edt`. Designer modes

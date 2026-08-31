@@ -32,7 +32,7 @@ description: "Разделение данных 1С. Используй когд
 2. Inspect metadata and roles with `unica.meta.info` and `unica.role.info`; find risky code with `unica.code.search`.
 3. Trace tenant value through reads, writes, reports, background jobs, exchange messages, file batches, temp storage, and integration calls.
 4. Review queries for missing tenant filters, unsafe privileged mode, broad virtual tables, and joins that cross boundaries.
-5. Use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them; record runtime verification as unavailable and require separate evidence covering at least two tenant contexts.
+5. Use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, treating the result as evidence only for what the check covers; tenant isolation still requires separate evidence covering at least two tenant contexts.
 
 ## Red flags
 

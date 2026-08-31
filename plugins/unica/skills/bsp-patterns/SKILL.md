@@ -26,7 +26,7 @@ description: "Поиск и применение паттернов БСП. Ис
 2. Search existing project usage with `unica.code.search` before writing new code. Prefer local project conventions over generic snippets.
 3. Inspect affected metadata, forms, roles, and external processing registration with `unica.*.info` skills.
 4. Use `unica.standards.search` only for a `development-standard` that constrains the pattern. Do not treat it as platform or BSP documentation. Exact platform mechanics require a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap. Treat local BSP code as corroborating implementation evidence, not as the platform contract.
-5. Implement the smallest integration point; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, and do not claim runtime verification from that preview.
+5. Implement the smallest integration point; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, and do not claim runtime verification from a preview: only the applied run is evidence.
 
 ## References
 

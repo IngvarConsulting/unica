@@ -2658,10 +2658,14 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             skill_text,
             r'(?s)"waitForExit": true.{0,400}"dryRun": true',
         )
-        self.assertIn("Любой применённый launch отказывает", skill_text)
+        self.assertIn("Любой применённый launch исполняется", skill_text)
+        self.assertIn("runtime_risk_unproven_process_ownership", skill_text)
+        self.assertIn("runtime_risk_detached_child", skill_text)
         self.assertIn("платформенный `/Out`", all_text)
         self.assertIn("stderr клиентского процесса 1\u0421", all_text)
-        self.assertIn("Не обходи отказ через `unica.runtime.job.start`", skill_text)
+        self.assertIn(
+            "Не обходи названный риск через `unica.runtime.job.start`", skill_text
+        )
         self.assertNotIn("`data.external_epf_wait`", skill_text)
         self.assertNotIn("`diagnostics.external_epf_wait`", skill_text)
 
