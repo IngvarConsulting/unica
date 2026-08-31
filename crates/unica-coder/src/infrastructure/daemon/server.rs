@@ -5959,7 +5959,11 @@ struct ActorLogicalReadLease {"#,
     fn daemon_exact_long_work_ownership_contract() {
         std::thread::Builder::new()
             .name("daemon-exact-long-work-contract".to_owned())
-            .stack_size(8 * 1024 * 1024)
+            // The aggregate exercises several deeply nested debug-only
+            // ownership oracles. Windows' test harness stack is too small,
+            // and 8 MiB remained close enough to the limit to be flaky under
+            // the full workspace run.
+            .stack_size(32 * 1024 * 1024)
             .spawn(|| {
                 crate::infrastructure::runtime_jobs::reset_runtime_resource_contract_executions_for_test();
 
