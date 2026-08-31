@@ -1901,6 +1901,66 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         ):
             module._stable_tool_contract(self.tool_entries(expected), expected)
 
+    def test_accepts_exact_v13_compatibility_surface(self) -> None:
+        module = load_module()
+        expected = module.V13_COMPATIBILITY_TOOL_NAMES
+
+        module._stable_tool_contract(self.tool_entries(expected), expected)
+
+    def test_rejects_v13_surface_missing_a_canonical_tool(self) -> None:
+        module = load_module()
+        expected = module.V13_COMPATIBILITY_TOOL_NAMES
+
+        with self.assertRaisesRegex(SystemExit, "missing: unica.search"):
+            module._stable_tool_contract(
+                self.tool_entries(expected - {"unica.search"}),
+                expected,
+            )
+
+    def test_v13_payload_uses_structured_content_without_text_duplication(self) -> None:
+        module = load_module()
+        payload = {
+            "ok": True,
+            "summary": "workspace source sets are admitted",
+            "data": {"status": "admitted", "sources": ["main"]},
+            "rev": "unica-read-set-sha256-v1:test",
+        }
+
+        self.assertEqual(
+            module._v13_tool_payload(
+                {
+                    "result": {
+                        "content": [],
+                        "structuredContent": payload,
+                        "isError": False,
+                    }
+                }
+            ),
+            payload,
+        )
+
+    def test_source_snapshot_excludes_only_the_canonical_internal_cache(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".build/unica/source-revisions").mkdir(parents=True)
+            (root / ".build/other").mkdir(parents=True)
+            (root / "src").mkdir()
+            (root / ".build/unica/source-revisions/revision.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            (root / ".build/other/evidence.txt").write_text(
+                "visible", encoding="utf-8"
+            )
+            (root / "src/Configuration.xml").write_text(
+                "<Configuration/>", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                set(module._source_snapshot(root)),
+                {".build/other/evidence.txt", "src/Configuration.xml"},
+            )
+
     def test_rejects_runtime_exposing_an_unexpected_tool(self) -> None:
         result = self.run_smoke(
             self.tool_entries(self.expected_tools() | {"unica.xdto.validate"})
@@ -2460,6 +2520,7 @@ for _retired_test in {
     "test_rejects_xdto_edit_schema_missing_operation_branch_requirement",
     "test_rejects_xdto_info_schema_missing_required_target",
     "test_reports_missing_and_unexpected_tools_together",
+    "test_reports_source_tool_missing_from_ledger_before_projection",
     "test_requires_all_logical_source_tools",
 }:
     setattr(

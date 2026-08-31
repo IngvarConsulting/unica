@@ -45,6 +45,19 @@ SOURCE_TOOL_NAMES = {
     "unica.source.resources",
     "unica.source.read",
 }
+V13_COMPATIBILITY_TOOL_NAMES = {
+    "unica.view",
+    "unica.apply",
+    "unica.find",
+    "unica.search",
+    "unica.check",
+    "unica.diff",
+    "unica.run",
+    "unica.docs",
+    "unica.task.get",
+    "unica.task.result",
+    "unica.task.cancel",
+}
 META_TOOL_NAMES = {
     "unica.meta.info",
     "unica.meta.add",
@@ -1178,7 +1191,12 @@ def _source_workspace(root: Path) -> None:
         )
         (root / source_set / "CommonModules/Shared.xml").write_text(
             "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
-            "<CommonModule><Properties><Name>Shared</Name></Properties></CommonModule>"
+            "<CommonModule><Properties><Name>Shared</Name><Global>false</Global>"
+            "<ClientManagedApplication>true</ClientManagedApplication><Server>true</Server>"
+            "<ExternalConnection>false</ExternalConnection>"
+            "<ClientOrdinaryApplication>false</ClientOrdinaryApplication>"
+            "<ServerCall>false</ServerCall><Privileged>false</Privileged>"
+            "<ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule>"
             "</MetaDataObject>",
             encoding="utf-8",
         )
@@ -1268,6 +1286,14 @@ def _workspace_snapshot(root: Path) -> dict[str, bytes]:
         path.relative_to(root).as_posix(): path.read_bytes()
         for path in root.rglob("*")
         if path.is_file()
+    }
+
+
+def _source_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        relative: content
+        for relative, content in _workspace_snapshot(root).items()
+        if not relative.startswith(".build/unica/")
     }
 
 
@@ -1379,6 +1405,26 @@ def _tool_payload(response: dict) -> dict:
     if not payload.get("ok"):
         raise SystemExit(f"Unica MCP tools/call rejected source flow: {payload}")
     _assert_path_free(payload)
+    return payload
+
+
+def _v13_tool_payload(response: dict) -> dict:
+    if "error" in response:
+        raise SystemExit(f"Unica MCP tools/call failed: {response['error']}")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise SystemExit(f"Unica MCP tools/call has no result: {response}")
+    payload = result.get("structuredContent")
+    if not isinstance(payload, dict):
+        raise SystemExit(
+            f"canonical v0.13 call has no structuredContent: {response}"
+        )
+    if result.get("content") != []:
+        raise SystemExit(
+            f"canonical v0.13 call unexpectedly duplicates its wire payload: {response}"
+        )
+    if result.get("isError") is not False or payload.get("ok") is not True:
+        raise SystemExit(f"canonical v0.13 call was rejected: {payload}")
     return payload
 
 
@@ -1791,6 +1837,7 @@ def _call(
     arguments: dict,
     *,
     expect_ok: bool = True,
+    structured_content: bool = False,
 ) -> dict:
     response = session.request(
         {
@@ -1801,7 +1848,11 @@ def _call(
         }
     )
     if expect_ok:
-        return _tool_payload(response)
+        return (
+            _v13_tool_payload(response)
+            if structured_content
+            else _tool_payload(response)
+        )
     # A refusal is the thing under test, so its payload is returned as-is; the
     # caller asserts the stable code rather than the shape of a success.
     if "error" in response:
@@ -1819,6 +1870,9 @@ def _call(
 
 
 def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None:
+    if expected_names == V13_COMPATIBILITY_TOOL_NAMES:
+        _stable_v13_tool_contract(tools, expected_names)
+        return
     unledgered_source_tools = sorted(SOURCE_TOOL_NAMES - expected_names)
     if unledgered_source_tools:
         raise SystemExit(
@@ -1909,6 +1963,123 @@ def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None
                     raise SystemExit(f"Unica MCP code.search output schema {error}")
         elif "outputSchema" in tool:
             raise SystemExit(f"non-Meta tool unexpectedly publishes outputSchema: {name}")
+
+
+def _stable_v13_tool_contract(
+    tools: list[object], expected_names: set[str]
+) -> None:
+    by_name: dict[str, dict] = {}
+    duplicates: set[str] = set()
+    malformed = 0
+    for tool in tools:
+        if not isinstance(tool, dict) or not _valid_unica_tool_name(tool.get("name")):
+            malformed += 1
+            continue
+        name = tool["name"]
+        if name in by_name:
+            duplicates.add(name)
+        schema_error = _input_schema_shape_error(tool.get("inputSchema"))
+        if schema_error is not None:
+            raise SystemExit(
+                f"Unica MCP tools/list has malformed input schema for {name}: "
+                f"{schema_error}"
+            )
+        _assert_path_free(tool["inputSchema"])
+        by_name[name] = tool
+
+    actual_names = set(by_name)
+    missing = sorted(expected_names - actual_names)
+    unexpected = sorted(actual_names - expected_names)
+    if missing or unexpected or duplicates or malformed:
+        diagnostics = []
+        if missing:
+            diagnostics.append("missing: " + ", ".join(missing))
+        if unexpected:
+            diagnostics.append("unexpected: " + ", ".join(unexpected))
+        if duplicates:
+            diagnostics.append("duplicate: " + ", ".join(sorted(duplicates)))
+        if malformed:
+            diagnostics.append(f"malformed entries: {malformed}")
+        raise SystemExit(
+            "Unica MCP tools/list differs from the canonical v0.13 compatibility "
+            "surface (" + "; ".join(diagnostics) + ")"
+        )
+
+
+def _exercise_v13_packaged_surface(
+    session: McpSession, request_id: int
+) -> int:
+    checked = _call(
+        session,
+        request_id,
+        "unica.check",
+        {},
+        structured_content=True,
+    )
+    request_id += 1
+    if (
+        checked.get("ok") is not True
+        or checked.get("data", {}).get("status") != "admitted"
+        or set(checked["data"].get("sources", [])) != {"main", "extension"}
+    ):
+        raise SystemExit(f"canonical check did not admit both source sets: {checked}")
+
+    viewed = _call(
+        session,
+        request_id,
+        "unica.view",
+        {"at": "main:Configuration"},
+        structured_content=True,
+    )
+    request_id += 1
+    if viewed.get("ok") is not True or not isinstance(viewed.get("data"), dict):
+        raise SystemExit(f"canonical view did not return typed data: {viewed}")
+
+    compared = _call(
+        session,
+        request_id,
+        "unica.diff",
+        {"left": "main:Configuration", "right": "main:Configuration"},
+        structured_content=True,
+    )
+    request_id += 1
+    if (
+        compared.get("ok") is not True
+        or compared.get("data", {}).get("equal") is not True
+        or compared["data"].get("changes") != []
+    ):
+        raise SystemExit(f"canonical diff did not prove equal projections: {compared}")
+
+    searched = _call(
+        session,
+        request_id,
+        "unica.search",
+        {"query": "RunExtension", "scope": "extension:Configuration"},
+        structured_content=True,
+    )
+    request_id += 1
+    matches = searched.get("data", {}).get("matches")
+    if searched.get("ok") is not True or not isinstance(matches, list) or len(matches) != 1:
+        raise SystemExit(f"canonical search did not return the extension hit: {searched}")
+    if matches[0].get("scope") != "extension:Configuration":
+        raise SystemExit(f"canonical search escaped its logical scope: {searched}")
+    _assert_path_free(searched)
+
+    operations = _call(
+        session,
+        request_id,
+        "unica.run",
+        {},
+        structured_content=True,
+    )
+    request_id += 1
+    if (
+        operations.get("ok") is not True
+        or not isinstance(operations.get("data", {}).get("operations"), list)
+        or not operations["data"]["operations"]
+    ):
+        raise SystemExit(f"canonical run dictionary is unavailable: {operations}")
+    return request_id
 
 
 def _exercise_source_set(
@@ -2023,7 +2194,7 @@ def smoke(
         cache_root = root / "cache"
         environment["UNICA_CACHE_DIR"] = str(cache_root)
         _source_workspace(workspace)
-        before = _workspace_snapshot(workspace)
+        before = _source_snapshot(workspace)
         executable = Path(command[0])
         if executable.exists():
             command = [str(executable.resolve()), *command[1:]]
@@ -2061,52 +2232,59 @@ def smoke(
             if not isinstance(tools, list):
                 raise SystemExit("Unica MCP tools/list response is missing")
             _stable_tool_contract(tools, expected_names)
-            next_id, _ = _exercise_source_set(
-                session, 3, workspace, cache_root, "main"
-            )
-            next_id, _ = _exercise_source_set(
-                session, next_id, workspace, cache_root, "extension"
-            )
-            next_id = _exercise_bsl_search(
-                session,
-                next_id,
-                timeout_seconds,
-                deadline,
-            )
-            next_id = _exercise_reader_bridge(session, next_id, workspace)
-            success = _meta_payload(
-                session.request(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": next_id,
-                        "method": "tools/call",
-                        "params": {
-                            "name": "unica.meta.info",
-                            "arguments": {
-                                "sourceSet": "main",
-                                "metadataPath": "Enum.LanguageAware",
+            if expected_names == V13_COMPATIBILITY_TOOL_NAMES:
+                _exercise_v13_packaged_surface(session, 3)
+            else:
+                next_id, _ = _exercise_source_set(
+                    session, 3, workspace, cache_root, "main"
+                )
+                next_id, _ = _exercise_source_set(
+                    session, next_id, workspace, cache_root, "extension"
+                )
+                next_id = _exercise_bsl_search(
+                    session,
+                    next_id,
+                    timeout_seconds,
+                    deadline,
+                )
+                next_id = _exercise_reader_bridge(session, next_id, workspace)
+                success = _meta_payload(
+                    session.request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": next_id,
+                            "method": "tools/call",
+                            "params": {
+                                "name": "unica.meta.info",
+                                "arguments": {
+                                    "sourceSet": "main",
+                                    "metadataPath": "Enum.LanguageAware",
+                                },
                             },
-                        },
-                    }
-                ),
-                expected_ok=True,
-            )
-            invalid = _meta_payload(
-                session.request(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": next_id + 1,
-                        "method": "tools/call",
-                        "params": {"name": "unica.meta.info", "arguments": {}},
-                    }
-                ),
-                expected_ok=False,
-            )
-            diagnostics = invalid.get("diagnostics")
-            if not isinstance(diagnostics, list) or not diagnostics:
-                raise SystemExit(f"invalid Meta smoke returned no diagnostics: {invalid}")
-            if diagnostics[0].get("code") != "invalid_arguments":
-                raise SystemExit(f"invalid Meta smoke returned unstable diagnostics: {invalid}")
+                        }
+                    ),
+                    expected_ok=True,
+                )
+                invalid = _meta_payload(
+                    session.request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": next_id + 1,
+                            "method": "tools/call",
+                            "params": {"name": "unica.meta.info", "arguments": {}},
+                        }
+                    ),
+                    expected_ok=False,
+                )
+                diagnostics = invalid.get("diagnostics")
+                if not isinstance(diagnostics, list) or not diagnostics:
+                    raise SystemExit(
+                        f"invalid Meta smoke returned no diagnostics: {invalid}"
+                    )
+                if diagnostics[0].get("code") != "invalid_arguments":
+                    raise SystemExit(
+                        f"invalid Meta smoke returned unstable diagnostics: {invalid}"
+                    )
         finally:
             _close_session_and_workspace_services(
                 session,
@@ -2114,7 +2292,7 @@ def smoke(
                 max(5.0, timeout_seconds),
                 deadline,
             )
-        after = _workspace_snapshot(workspace)
+        after = _source_snapshot(workspace)
         # The whole public source surface is read-only, so the packaged smoke
         # must end with the byte map it started from.
         expected = dict(before)
@@ -2226,7 +2404,7 @@ def main() -> None:
             raise
     finally:
         watchdog.cancel()
-    print("verified packaged Unica MCP source-resource flow and bsl-analyzer search")
+    print("verified packaged Unica MCP canonical surface and useful read modes")
 
 
 if __name__ == "__main__":
