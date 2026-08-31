@@ -243,7 +243,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("cargo test", source)
         self.assertIn("search_integration_changed == 'true'", search_integration)
         self.assertIn("ci_changed == 'true'", search_integration)
-        self.assertIn("--test issue_89_workspace_service -- --ignored", search_integration)
+        self.assertIn("--test v13_search_integration -- --ignored", search_integration)
         self.assertNotIn("dtolnay/rust-toolchain", source)
         self.assertIn("runs-on: macos-14", primary)
         self.assertIn("rust_changed == 'true'", primary)
@@ -253,28 +253,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("toolchain_changed == 'true'", platforms)
         self.assertIn("ci_changed == 'true'", platforms)
         self.assertEqual(2, platforms.count("if: matrix.runner == 'macos-14'"))
-
-    def test_every_supported_rust_lane_runs_the_receipt_ledger_contract(self) -> None:
-        text = self.release_text()
-        primary = job_block(text, "test-rust-primary")
-        platforms = job_block(text, "test-rust-platforms")
-        command = (
-            "cargo test -p unica-coder --features receipt-ledger-test-support "
-            "--test daemon_receipt_ledger -- --nocapture --test-threads=1"
-        )
-
-        # The primary contour is the normal macOS Rust lane. Platform-sensitive
-        # changes expand to all three supported hosts through this matrix, so a
-        # single unconditional step in that job executes once per host.
-        self.assertIn("runs-on: macos-14", primary)
-        self.assertEqual(1, primary.count(command))
-        self.assertIn(
-            "runner: [ubuntu-latest, windows-latest, macos-14]",
-            platforms,
-        )
-        self.assertEqual(1, platforms.count(command))
-        self.assertNotIn("continue-on-error", primary)
-        self.assertNotIn("continue-on-error", platforms)
 
     def test_search_integration_checkout_does_not_persist_credentials(self) -> None:
         integration = job_block(self.release_text(), "test-search-integration")

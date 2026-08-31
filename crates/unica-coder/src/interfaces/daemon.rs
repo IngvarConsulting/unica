@@ -285,26 +285,30 @@ mod tests {
 
     #[test]
     fn default_user_daemon_state_root_is_pure_and_requires_an_absolute_root() {
+        let absolute_root = std::env::temp_dir().join("unica-provider-state");
+        let alice_home = std::env::temp_dir().join("unica-home-alice");
+        let bob_home = std::env::temp_dir().join("unica-home-bob");
         let environment = |name: &str| match name {
-            "UNICA_PROVIDER_STATE_DIR" => Some("/provider-state".into()),
-            "HOME" => Some("/Users/alice".into()),
+            "UNICA_PROVIDER_STATE_DIR" => Some(absolute_root.clone().into_os_string()),
+            "HOME" => Some(alice_home.clone().into_os_string()),
             _ => None,
         };
         assert_eq!(
             resolve_default_user_daemon_state_root(&environment).unwrap(),
-            std::path::PathBuf::from("/provider-state")
+            absolute_root
         );
 
-        let home_only = |name: &str| (name == "HOME").then(|| "/Users/alice".into());
+        let home_only = |name: &str| (name == "HOME").then(|| alice_home.clone().into_os_string());
         assert_eq!(
             resolve_default_user_daemon_state_root(&home_only).unwrap(),
-            std::path::PathBuf::from("/Users/alice/.unica/provider-state")
+            alice_home.join(".unica/provider-state")
         );
 
-        let user_profile_only = |name: &str| (name == "USERPROFILE").then(|| "/Users/bob".into());
+        let user_profile_only =
+            |name: &str| (name == "USERPROFILE").then(|| bob_home.clone().into_os_string());
         assert_eq!(
             resolve_default_user_daemon_state_root(&user_profile_only).unwrap(),
-            std::path::PathBuf::from("/Users/bob/.unica/provider-state")
+            bob_home.join(".unica/provider-state")
         );
 
         let relative = |name: &str| (name == "UNICA_PROVIDER_STATE_DIR").then(|| "state".into());

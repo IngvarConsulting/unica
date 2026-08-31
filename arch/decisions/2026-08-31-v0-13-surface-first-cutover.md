@@ -5,7 +5,7 @@ governs: product
 realized: crates/unica-coder/src/interfaces/mcp.rs::production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility
 supersedes: [DEC.2026-08-23.V0-13-EXECUTION-SURFACE]
 superseded-by: null
-establishes: [CTR.WIRE.TOOL-SURFACE, INV.WIRE.SURFACE-RELEASE-ROUTING, INV.PKG.PACKAGED-PUBLIC-SURFACE, INV.APP.V13-USEFUL-PARTIAL-MODES]
+establishes: [CTR.WIRE.TOOL-SURFACE, INV.WIRE.SURFACE-RELEASE-ROUTING, INV.PKG.PACKAGED-PUBLIC-SURFACE, INV.PERF.BOOTSTRAP-VERIFY-LIFECYCLES, INV.APP.V13-USEFUL-PARTIAL-MODES]
 changes: [CTR.WIRE.TOOL-SURFACE]
 design: docs/design/2026-08-31-v0-13-surface-first-cutover-design.md
 ---

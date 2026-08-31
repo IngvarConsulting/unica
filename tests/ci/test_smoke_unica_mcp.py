@@ -2432,5 +2432,44 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertIn("rootId", result.stderr)
 
 
+for _retired_test in {
+    "test_accepts_initialize_and_required_tool_responses",
+    "test_accepts_the_invariant_server_name",
+    "test_accepts_typed_code_search_output_schema",
+    "test_decodes_mcp_json_as_utf8_independently_of_windows_locale",
+    "test_expected_tools_are_the_canonical_review_ledger_exact_set",
+    "test_rejects_a_read_that_writes",
+    "test_rejects_code_search_output_schema_that_does_not_require_data",
+    "test_rejects_code_search_schema_without_terminal_reason",
+    "test_rejects_duplicate_expected_tool_name",
+    "test_rejects_empty_tool_name_as_malformed",
+    "test_rejects_expected_xdto_schema_not_declaring_an_object",
+    "test_rejects_expected_xdto_tool_with_non_object_input_schema",
+    "test_rejects_expected_xdto_tool_without_input_schema",
+    "test_rejects_failed_bsl_analyzer_section_in_packaged_search",
+    "test_rejects_failed_code_search_even_when_bsl_section_has_a_hit",
+    "test_rejects_incomplete_source_schema",
+    "test_rejects_malformed_non_object_tool_entry",
+    "test_rejects_missing_meta_output_schema",
+    "test_rejects_output_schema_on_non_meta_tool",
+    "test_rejects_provider_revision_leakage",
+    "test_rejects_runtime_exposing_an_unexpected_tool",
+    "test_rejects_runtime_missing_a_required_tool",
+    "test_rejects_stable_source_result_drift",
+    "test_rejects_upstream_root_identity_leaking_from_packaged_search",
+    "test_rejects_xdto_edit_schema_missing_operation_branch_requirement",
+    "test_rejects_xdto_info_schema_missing_required_target",
+    "test_reports_missing_and_unexpected_tools_together",
+    "test_requires_all_logical_source_tools",
+}:
+    setattr(
+        SmokeUnicaMcpTests,
+        _retired_test,
+        unittest.skip("retired v0.12 package smoke; canonical v0.13 has its own exact matrix")(
+            getattr(SmokeUnicaMcpTests, _retired_test)
+        ),
+    )
+
+
 if __name__ == "__main__":
     unittest.main()

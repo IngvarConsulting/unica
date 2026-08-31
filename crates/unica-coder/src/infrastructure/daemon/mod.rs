@@ -1873,7 +1873,6 @@ mod tests {
         assert!(!unsupported.ok);
         assert_eq!(unsupported.diagnostics[0]["code"], "unsupported_operation");
 
-        drop(call);
         drop(owner);
         server.join().unwrap().unwrap();
     }

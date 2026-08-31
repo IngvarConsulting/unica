@@ -5258,6 +5258,12 @@ pub(crate) fn rename_identity_bound_directory_child_no_replace(
     }
     #[cfg(test)]
     run_before_identity_bound_no_replace_rename_hook();
+    let named = open_directory_child_for_rename(source_parent, source_name)?;
+    if file_identity(&named)? != expected_identity {
+        return Err(io::Error::other(
+            "directory child identity changed at publication boundary; destination left untouched",
+        ));
+    }
     rename_directory_handle_child_no_replace(&named, destination_parent, destination_name)
 }
 
@@ -5421,6 +5427,14 @@ pub(crate) fn rename_identity_bound_regular_child_no_replace(
     }
     #[cfg(test)]
     run_before_identity_bound_no_replace_rename_hook();
+    let named = open_any_child_for_delete(source_parent, source_name)?;
+    if opened_child_kind(&named)? != OpenedChildKind::RegularFile
+        || file_identity(&named)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "regular child identity changed at publication boundary; replacement left untouched",
+        ));
+    }
     rename_open_child_no_replace(&named, destination_parent, destination_name)
 }
 
@@ -5639,6 +5653,8 @@ pub(crate) fn remove_identity_bound_regular_child(
             "regular child identity changed; replacement left untouched",
         ));
     }
+    #[cfg(test)]
+    run_before_identity_bound_cleanup_mutation_hook();
     let mut permissions = named.metadata()?.permissions();
     if permissions.readonly() {
         permissions.set_readonly(false);

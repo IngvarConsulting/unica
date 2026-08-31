@@ -1094,6 +1094,7 @@ struct DomainResultObservation {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 enum TerminalObservation {
     Completed {
@@ -1318,6 +1319,7 @@ enum TerminalPublicationOwner {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "owner", rename_all = "snake_case", deny_unknown_fields)]
 enum TerminalCommitPreflightObservation {
     DirectReceiptLedger {
@@ -1566,6 +1568,7 @@ struct TaskLinkObservation {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum TaskLinkLifecycleObservation {
     TaskBoundNotBegun {
@@ -1647,6 +1650,7 @@ struct V5StoredInvocationRecordObservation {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 enum V5StoredTaskObservation {
     Queued,
@@ -2107,6 +2111,7 @@ struct CrashCaseObservation {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "owner", rename_all = "snake_case", deny_unknown_fields)]
 enum CrashLedgerObservation {
     ActiveReceipt { receipt: ReceiptObservation },
@@ -2332,6 +2337,7 @@ struct ConcurrencySample {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 #[serde(
     tag = "kind",
     content = "payload",
@@ -2709,6 +2715,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     encoded
 }
 
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn decode_hex(value: &str, maximum_bytes: usize) -> Vec<u8> {
     assert!(
         !value.is_empty(),
@@ -5249,10 +5256,10 @@ enum ExpectedInvocationResultType {
     Acknowledged,
 }
 
-fn assert_invocation_response_frame<'a>(
-    frame: &'a serde_json::Value,
+fn assert_invocation_response_frame(
+    frame: &serde_json::Value,
     expected: ExpectedInvocationResultType,
-) -> &'a serde_json::Value {
+) -> &serde_json::Value {
     assert_exact_json_keys(frame, &["kind", "outcome"]);
     assert_eq!(json_string(frame, "kind"), "invocation");
     let outcome = &frame["outcome"];
