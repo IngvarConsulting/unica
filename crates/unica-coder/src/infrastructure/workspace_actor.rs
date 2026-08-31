@@ -10653,26 +10653,26 @@ pub(crate) mod tests {
             let binding = actor.bind_provider_root("src", &source).unwrap();
             let before = snapshot_tree(&root);
             let cancellation = CancellationToken::new();
+            let started = Instant::now();
+            set_support_policy_actor_test_now(started);
+            let deadline = if gate == "deadline" {
+                ProviderDeadline::with_clock(
+                    started + Duration::from_secs(1),
+                    support_policy_actor_test_now,
+                )
+            } else {
+                ProviderDeadline::from_budget(Duration::from_secs(5))
+            };
             if gate == "cancelled" {
                 let cancel = cancellation.clone();
                 set_support_policy_capture_hook(move || cancel.cancel());
             } else {
-                set_support_policy_capture_hook(|| {
-                    std::thread::sleep(Duration::from_millis(80));
+                set_support_policy_capture_hook(move || {
+                    set_support_policy_actor_test_now(started + Duration::from_secs(2));
                 });
             }
 
-            let result = actor.admit_apply(
-                &binding,
-                None,
-                false,
-                ProviderDeadline::from_budget(if gate == "deadline" {
-                    Duration::from_millis(50)
-                } else {
-                    Duration::from_secs(5)
-                }),
-                &cancellation,
-            );
+            let result = actor.admit_apply(&binding, None, false, deadline, &cancellation);
 
             observed.push(result.err());
             assert_eq!(snapshot_tree(&root), before, "{gate}");
