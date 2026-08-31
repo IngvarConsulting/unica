@@ -3196,7 +3196,14 @@ mod tests {
         let error = client.connect_existing().unwrap_err();
         assert_eq!(error, "daemon owner capacity reached; retry later");
 
-        drop(owners.pop());
+        let mut released_owner = owners.pop().expect("capacity fixture owner");
+        write_json_line(&mut released_owner, &ClientRequest::Release {});
+        let released: ServerResponse = serde_json::from_slice(
+            &read_bounded_json_line(&mut BufReader::new(&released_owner)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(released, ServerResponse::Released);
+        drop(released_owner);
         let retry_deadline = Instant::now() + Duration::from_secs(2);
         let mut recovered = loop {
             match client.connect_existing() {
