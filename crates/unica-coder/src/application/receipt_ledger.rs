@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 use std::num::NonZeroU64;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Instant;
 
 const REQUEST_SCOPE_DOMAIN: &[u8] = b"unica.request-scope.v1\0";
@@ -100,6 +101,13 @@ checked_digest!(RequestScopeHash);
 checked_digest!(ReceiptKeyDigest);
 checked_digest!(TaskLinkDigest);
 checked_digest!(TerminalDigest);
+checked_digest!(ArtifactSha256);
+
+impl ArtifactSha256 {
+    pub(crate) fn from_sha256(bytes: [u8; 32]) -> Self {
+        Self::from_digest_bytes(bytes)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReceiptLedgerError {
@@ -107,10 +115,16 @@ pub(crate) enum ReceiptLedgerError {
     DeadlineExceeded,
     InvocationIdentityMismatch,
     ReservedTaskIdentityMismatch,
+    ReceiptVersionMismatch {
+        expected: ReceiptVersion,
+        actual: ReceiptVersion,
+    },
+    TerminalMismatch,
     ReceiptDigestCollision,
     ReceiptNotFound,
     CapacityExceeded,
     RecordTooLarge,
+    TimestampOverflow,
     StoreUnavailable,
     CommitUncertain {
         receipt_key_digest: ReceiptKeyDigest,
@@ -152,12 +166,24 @@ impl fmt::Display for ReceiptLedgerError {
             Self::ReservedTaskIdentityMismatch => {
                 formatter.write_str("reserved task id belongs to a different receipt key")
             }
+            Self::ReceiptVersionMismatch { expected, actual } => write!(
+                formatter,
+                "receipt record version mismatch: expected {}, actual {}",
+                expected.get(),
+                actual.get()
+            ),
+            Self::TerminalMismatch => {
+                formatter.write_str("receipt already owns a different terminal outcome")
+            }
             Self::ReceiptDigestCollision => {
                 formatter.write_str("receipt key digest belongs to a different exact key")
             }
             Self::ReceiptNotFound => formatter.write_str("receipt was not found"),
             Self::CapacityExceeded => formatter.write_str("receipt ledger capacity is exhausted"),
             Self::RecordTooLarge => formatter.write_str("receipt record exceeds its byte limit"),
+            Self::TimestampOverflow => {
+                formatter.write_str("receipt retention timestamp exceeds u64")
+            }
             Self::StoreUnavailable => {
                 formatter.write_str("receipt ledger requires process-owned recovery")
             }
@@ -196,6 +222,15 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         original_cutoff: OriginalCutoffDescriptor,
         deadline: Instant,
     ) -> Result<ReserveOutcome, ReceiptLedgerError>;
+
+    fn publish_direct_terminal(
+        &mut self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: Instant,
+    ) -> Result<CommittedDirectPublication, ReceiptLedgerError>;
 
     fn recover(
         &mut self,
@@ -359,6 +394,7 @@ pub(crate) const MAX_RECEIPT_ENTITLEMENT_BYTES: u64 =
     (MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES) as u64;
 pub(crate) const MAX_LIVE_RECEIPT_BYTES: u64 =
     MAX_RECEIPT_ENTITLEMENT_BYTES * MAX_LIVE_RECEIPTS as u64;
+pub(crate) const DIRECT_TERMINAL_RETENTION_MS: u64 = 3_600_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -455,6 +491,10 @@ impl ReceiptVersion {
 
     pub(crate) fn checked_next(self) -> Option<Self> {
         self.get().checked_add(1).and_then(Self::new)
+    }
+
+    pub(crate) fn checked_previous(self) -> Option<Self> {
+        self.get().checked_sub(1).and_then(Self::new)
     }
 }
 
@@ -878,9 +918,64 @@ impl ReservedReceipt {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DirectTerminalUnackedReceipt {
     record: ReceiptRecordHeader,
+    original_cutoff: OriginalCutoffDescriptor,
     terminal_epoch_ms: u64,
     terminal: V5CanonicalTerminal,
     reserved_result_bytes: u64,
+}
+
+impl DirectTerminalUnackedReceipt {
+    pub(crate) fn new(
+        record: ReceiptRecordHeader,
+        original_cutoff: OriginalCutoffDescriptor,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        reserved_result_bytes: u64,
+    ) -> Self {
+        Self {
+            record,
+            original_cutoff,
+            terminal_epoch_ms,
+            terminal,
+            reserved_result_bytes,
+        }
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        &self.record.key
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        &self.record.key_digest
+    }
+
+    pub(crate) const fn record_version(&self) -> ReceiptVersion {
+        self.record.record_version
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        self.record.mutation_sequence
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.record.encoded_bytes
+    }
+
+    pub(crate) const fn original_cutoff(&self) -> &OriginalCutoffDescriptor {
+        &self.original_cutoff
+    }
+
+    pub(crate) const fn terminal_epoch_ms(&self) -> u64 {
+        self.terminal_epoch_ms
+    }
+
+    pub(crate) fn terminal(&self) -> &V5CanonicalTerminal {
+        &self.terminal
+    }
+
+    pub(crate) const fn reserved_result_bytes(&self) -> u64 {
+        self.reserved_result_bytes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1016,22 +1111,33 @@ impl ReceiptState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ReserveOutcome {
     Created(ReservedReceipt),
-    ExistingExact(ReservedReceipt),
+    ExistingExact(ReceiptState),
 }
 
 impl ReserveOutcome {
-    pub(crate) fn reservation(&self) -> &ReservedReceipt {
+    pub(crate) fn reservation(&self) -> Option<&ReservedReceipt> {
         match self {
-            Self::Created(reservation) | Self::ExistingExact(reservation) => reservation,
+            Self::Created(reservation) => Some(reservation),
+            Self::ExistingExact(ReceiptState::Reserved(reservation)) => Some(reservation),
+            Self::ExistingExact(_) => None,
         }
     }
 
-    pub(crate) fn into_reservation(self) -> ReservedReceipt {
+    pub(crate) fn into_reservation(self) -> Result<ReservedReceipt, Box<ReceiptState>> {
         match self {
-            Self::Created(reservation) | Self::ExistingExact(reservation) => reservation,
+            Self::Created(reservation) => Ok(reservation),
+            Self::ExistingExact(ReceiptState::Reserved(reservation)) => Ok(reservation),
+            Self::ExistingExact(state) => Err(Box::new(state)),
+        }
+    }
+
+    pub(crate) fn into_state(self) -> ReceiptState {
+        match self {
+            Self::Created(reservation) => ReceiptState::Reserved(reservation),
+            Self::ExistingExact(state) => state,
         }
     }
 }
@@ -1136,11 +1242,27 @@ impl<'de> Deserialize<'de> for ReceiptTerminalOutcome {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct V5CanonicalTerminal {
-    outcome: ReceiptTerminalOutcome,
-    payload: Vec<u8>,
+    outcome: Arc<ReceiptTerminalOutcome>,
+    payload: Arc<[u8]>,
     digest: TerminalDigest,
+}
+
+impl fmt::Debug for V5CanonicalTerminal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let outcome = match self.outcome.as_ref() {
+            ReceiptTerminalOutcome::Completed { .. } => "completed",
+            ReceiptTerminalOutcome::Failed { .. } => "failed",
+            ReceiptTerminalOutcome::Cancelled => "cancelled",
+        };
+        formatter
+            .debug_struct("V5CanonicalTerminal")
+            .field("outcome", &outcome)
+            .field("payload_bytes", &self.payload.len())
+            .field("digest", &self.digest)
+            .finish()
+    }
 }
 
 impl V5CanonicalTerminal {
@@ -1154,6 +1276,286 @@ impl V5CanonicalTerminal {
 
     pub(crate) fn digest(&self) -> &TerminalDigest {
         &self.digest
+    }
+
+    pub(crate) fn outcome_shared(&self) -> Arc<ReceiptTerminalOutcome> {
+        Arc::clone(&self.outcome)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReceiptTerminalBinding {
+    key: ReceiptKey,
+    key_digest: ReceiptKeyDigest,
+    expected_version: ReceiptVersion,
+    committed_version: ReceiptVersion,
+    mutation_sequence: u64,
+    original_cutoff: OriginalCutoffDescriptor,
+    terminal_epoch_ms: u64,
+    terminal_digest: TerminalDigest,
+}
+
+impl ReceiptTerminalBinding {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        key: ReceiptKey,
+        key_digest: ReceiptKeyDigest,
+        expected_version: ReceiptVersion,
+        committed_version: ReceiptVersion,
+        mutation_sequence: u64,
+        original_cutoff: OriginalCutoffDescriptor,
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+    ) -> Self {
+        Self {
+            key,
+            key_digest,
+            expected_version,
+            committed_version,
+            mutation_sequence,
+            original_cutoff,
+            terminal_epoch_ms,
+            terminal_digest,
+        }
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        &self.key
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        &self.key_digest
+    }
+
+    pub(crate) const fn expected_version(&self) -> ReceiptVersion {
+        self.expected_version
+    }
+
+    pub(crate) const fn committed_version(&self) -> ReceiptVersion {
+        self.committed_version
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        self.mutation_sequence
+    }
+
+    pub(crate) const fn original_cutoff(&self) -> OriginalCutoffDescriptor {
+        self.original_cutoff
+    }
+
+    pub(crate) const fn terminal_epoch_ms(&self) -> u64 {
+        self.terminal_epoch_ms
+    }
+
+    pub(crate) fn terminal_digest(&self) -> &TerminalDigest {
+        &self.terminal_digest
+    }
+}
+
+pub(crate) struct PreparedReceiptRecord {
+    binding: ReceiptTerminalBinding,
+    bytes: Box<[u8]>,
+    encoded_bytes: u64,
+    reserved_result_bytes: u64,
+    sha256: ArtifactSha256,
+    terminal: V5CanonicalTerminal,
+}
+
+impl fmt::Debug for PreparedReceiptRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedReceiptRecord")
+            .field("binding", &self.binding)
+            .field("encoded_bytes", &self.encoded_bytes)
+            .field("reserved_result_bytes", &self.reserved_result_bytes)
+            .field("sha256", &self.sha256)
+            .field("terminal", &self.terminal)
+            .finish()
+    }
+}
+
+impl PreparedReceiptRecord {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        binding: ReceiptTerminalBinding,
+        bytes: Box<[u8]>,
+        encoded_bytes: u64,
+        reserved_result_bytes: u64,
+        sha256: ArtifactSha256,
+        terminal: V5CanonicalTerminal,
+    ) -> Self {
+        Self {
+            binding,
+            bytes,
+            encoded_bytes,
+            reserved_result_bytes,
+            sha256,
+            terminal,
+        }
+    }
+
+    pub(crate) fn binding(&self) -> &ReceiptTerminalBinding {
+        &self.binding
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.encoded_bytes
+    }
+
+    pub(crate) const fn reserved_result_bytes(&self) -> u64 {
+        self.reserved_result_bytes
+    }
+
+    pub(crate) fn sha256(&self) -> &ArtifactSha256 {
+        &self.sha256
+    }
+
+    pub(crate) fn terminal(&self) -> &V5CanonicalTerminal {
+        &self.terminal
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        ReceiptTerminalBinding,
+        Box<[u8]>,
+        u64,
+        u64,
+        ArtifactSha256,
+        V5CanonicalTerminal,
+    ) {
+        (
+            self.binding,
+            self.bytes,
+            self.encoded_bytes,
+            self.reserved_result_bytes,
+            self.sha256,
+            self.terminal,
+        )
+    }
+}
+
+pub(crate) struct PreparedWireFrame {
+    binding: ReceiptTerminalBinding,
+    jsonl: Box<[u8]>,
+    encoded_bytes: u64,
+    sha256: ArtifactSha256,
+}
+
+impl fmt::Debug for PreparedWireFrame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedWireFrame")
+            .field("binding", &self.binding)
+            .field("encoded_bytes", &self.encoded_bytes)
+            .field("sha256", &self.sha256)
+            .finish()
+    }
+}
+
+impl PreparedWireFrame {
+    pub(crate) fn new(
+        binding: ReceiptTerminalBinding,
+        jsonl: Box<[u8]>,
+        encoded_bytes: u64,
+        sha256: ArtifactSha256,
+    ) -> Self {
+        Self {
+            binding,
+            jsonl,
+            encoded_bytes,
+            sha256,
+        }
+    }
+
+    pub(crate) fn binding(&self) -> &ReceiptTerminalBinding {
+        &self.binding
+    }
+
+    pub(crate) fn jsonl(&self) -> &[u8] {
+        &self.jsonl
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.encoded_bytes
+    }
+
+    pub(crate) fn sha256(&self) -> &ArtifactSha256 {
+        &self.sha256
+    }
+
+    pub(crate) fn into_jsonl(self) -> Box<[u8]> {
+        self.jsonl
+    }
+}
+
+pub(crate) struct PreparedReceiptTerminalPublication {
+    record: PreparedReceiptRecord,
+    wire_frame: PreparedWireFrame,
+}
+
+impl fmt::Debug for PreparedReceiptTerminalPublication {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedReceiptTerminalPublication")
+            .field("binding", self.record.binding())
+            .field("record_encoded_bytes", &self.record.encoded_bytes())
+            .field("record_sha256", self.record.sha256())
+            .field("wire_encoded_bytes", &self.wire_frame.encoded_bytes())
+            .field("wire_sha256", self.wire_frame.sha256())
+            .finish()
+    }
+}
+
+impl PreparedReceiptTerminalPublication {
+    pub(crate) fn new(record: PreparedReceiptRecord, wire_frame: PreparedWireFrame) -> Self {
+        Self { record, wire_frame }
+    }
+
+    pub(crate) fn record(&self) -> &PreparedReceiptRecord {
+        &self.record
+    }
+
+    pub(crate) fn wire_frame(&self) -> &PreparedWireFrame {
+        &self.wire_frame
+    }
+
+    pub(crate) fn into_parts(self) -> (PreparedReceiptRecord, PreparedWireFrame) {
+        (self.record, self.wire_frame)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CommittedDirectPublication {
+    receipt: DirectTerminalUnackedReceipt,
+    wire_frame: PreparedWireFrame,
+}
+
+impl CommittedDirectPublication {
+    pub(crate) fn new(
+        receipt: DirectTerminalUnackedReceipt,
+        wire_frame: PreparedWireFrame,
+    ) -> Self {
+        Self {
+            receipt,
+            wire_frame,
+        }
+    }
+
+    pub(crate) fn receipt(&self) -> &DirectTerminalUnackedReceipt {
+        &self.receipt
+    }
+
+    pub(crate) fn wire_frame(&self) -> &PreparedWireFrame {
+        &self.wire_frame
+    }
+
+    pub(crate) fn into_parts(self) -> (DirectTerminalUnackedReceipt, PreparedWireFrame) {
+        (self.receipt, self.wire_frame)
     }
 }
 
@@ -1265,7 +1667,13 @@ pub(crate) fn task_link_digest(identity: &TaskLinkIdentity) -> TaskLinkDigest {
 pub(crate) fn canonical_v5_terminal(
     outcome: &ReceiptTerminalOutcome,
 ) -> Result<V5CanonicalTerminal, CanonicalTerminalError> {
-    let payload = match outcome {
+    canonical_v5_terminal_from_shared(Arc::new(outcome.clone()))
+}
+
+pub(crate) fn canonical_v5_terminal_from_shared(
+    outcome: Arc<ReceiptTerminalOutcome>,
+) -> Result<V5CanonicalTerminal, CanonicalTerminalError> {
+    let payload = match outcome.as_ref() {
         ReceiptTerminalOutcome::Completed { result } => {
             let result =
                 serde_json::to_vec(result).map_err(|_| CanonicalTerminalError::Serialization)?;
@@ -1288,8 +1696,8 @@ pub(crate) fn canonical_v5_terminal(
     digest.update(TERMINAL_OUTCOME_DOMAIN);
     update_framed(&mut digest, &payload);
     Ok(V5CanonicalTerminal {
-        outcome: outcome.clone(),
-        payload,
+        outcome,
+        payload: payload.into(),
         digest: TerminalDigest::from_digest_bytes(digest.finalize().into()),
     })
 }
@@ -1370,6 +1778,7 @@ mod tests {
         assert_checked_digest!(ReceiptKeyDigest);
         assert_checked_digest!(TaskLinkDigest);
         assert_checked_digest!(TerminalDigest);
+        assert_checked_digest!(ArtifactSha256);
     }
 
     #[test]
@@ -1655,6 +2064,7 @@ mod tests {
             }),
             ReceiptState::DirectTerminalUnacked(DirectTerminalUnackedReceipt {
                 record: record(),
+                original_cutoff: OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
                 terminal_epoch_ms: 2_000,
                 terminal: terminal.clone(),
                 reserved_result_bytes: 1_024,

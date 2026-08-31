@@ -6,6 +6,7 @@ pub(crate) mod protocol;
 pub(crate) mod protocol_v5;
 pub(crate) mod runtime_v5;
 pub(crate) mod server;
+pub(crate) mod terminal_codec_v5;
 #[allow(dead_code)]
 mod v13_service;
 
