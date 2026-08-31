@@ -1,8 +1,11 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory};
 use super::protocol_v5::{
-    read_bounded_v5_probe_response_frame_before, V5ClientRequest, V5EndpointRecord,
-    V5HandshakeServerResponse, V5ProbeResponseKind, V5ProbeServerResponse,
+    decode_v5_server_response, read_bounded_v5_probe_response_frame_before, V5ClientRequest,
+    V5EndpointRecord, V5HandshakeServerResponse, V5InvocationRequest, V5ProbeResponseKind,
+    V5ProbeServerResponse, V5ServerResponse,
 };
+use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
+use crate::application::receipt_ledger::ReceiptKey;
 use crate::infrastructure::platform::ManagedStartupChild;
 use std::io::{self, BufReader, Write};
 use std::net::TcpStream;
@@ -12,6 +15,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const OWNER_RESPONSE_SAFETY_TIMEOUT: Duration = Duration::from_secs(10);
 const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const EXISTING_ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -280,6 +284,79 @@ impl V5DaemonProcessOwner {
             return Err("protocol-v5 ping returned an unexpected response".to_string());
         }
         Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn submit_invocation(
+        &mut self,
+        invocation: V5InvocationRequest,
+    ) -> Result<V5ServerResponse, String> {
+        self.exchange(
+            V5ClientRequest::SubmitInvocation { invocation },
+            "submit invocation",
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn cancel_invocation(
+        &mut self,
+        receipt_key: ReceiptKey,
+    ) -> Result<V5ServerResponse, String> {
+        self.exchange(
+            V5ClientRequest::CancelInvocation { receipt_key },
+            "cancel invocation",
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn recover_invocation_receipt(
+        &mut self,
+        receipt_key: ReceiptKey,
+    ) -> Result<V5ServerResponse, String> {
+        self.exchange(
+            V5ClientRequest::RecoverInvocationReceipt { receipt_key },
+            "recover invocation receipt",
+        )
+    }
+
+    #[allow(dead_code)]
+    fn exchange(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+    ) -> Result<V5ServerResponse, String> {
+        if self.poisoned {
+            return Err("protocol-v5 owner session is poisoned".to_string());
+        }
+        let response_timeout = match &request {
+            V5ClientRequest::SubmitInvocation { invocation } => {
+                Duration::from_millis(invocation.response_budget_ms())
+                    .saturating_add(RESPONSE_SERIALIZATION_MARGIN)
+            }
+            _ => CONNECT_TIMEOUT,
+        }
+        .min(OWNER_RESPONSE_SAFETY_TIMEOUT);
+        let deadline = Instant::now()
+            .checked_add(response_timeout)
+            .ok_or_else(|| format!("protocol-v5 {stage} deadline overflow"))?;
+        if let Err(error) = self.write_before(&request, deadline, stage) {
+            self.poison();
+            return Err(error);
+        }
+        let frame = match self.read_before(deadline, stage) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.poison();
+                return Err(error);
+            }
+        };
+        match decode_v5_server_response(&frame) {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
+        }
     }
 
     fn write_before<T: serde::Serialize>(

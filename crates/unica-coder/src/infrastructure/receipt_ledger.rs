@@ -7,6 +7,11 @@ use crate::application::receipt_ledger::{
     V5CanonicalTerminal, CANCEL_RESERVATION_TTL_MS, DIRECT_TERMINAL_RETENTION_MS,
     MAX_LIVE_RECEIPTS, MAX_LIVE_RECEIPT_BYTES, MAX_RECEIPT_ENTITLEMENT_BYTES,
 };
+#[cfg(feature = "receipt-ledger-test-support")]
+use crate::application::receipt_ledger::{
+    ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
+    ReceiptLedgerCatalogSnapshotParts,
+};
 use crate::domain::invocation::{InvocationId, TaskId};
 use crate::infrastructure::daemon::terminal_codec_v5::{
     prepare_committed_direct_wire, prepare_direct_terminal, restore_canonical_terminal,
@@ -317,6 +322,15 @@ struct ReceiptCatalog {
     actual_bytes: u64,
     reserved_result_bytes: u64,
     unavailable: bool,
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+fn sort_receipt_keys_by_digest(keys: &mut [ReceiptKey]) {
+    keys.sort_unstable_by(|left, right| {
+        receipt_key_digest(left)
+            .as_str()
+            .cmp(receipt_key_digest(right).as_str())
+    });
 }
 
 struct GenerationState {
@@ -683,6 +697,101 @@ impl ReceiptLedgerStore {
             generation_before,
             generation_after,
         })
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn snapshot_catalog(
+        &self,
+        authority: ReceiptLedgerCatalogSnapshotAuthority,
+        deadline: Instant,
+    ) -> Result<ReceiptLedgerCatalogSnapshot, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        let observed = self.inspect_catalog_with_generation_under_stable_fence(
+            &mut catalog,
+            Some(deadline),
+            |catalog, generation| {
+                let mut records = catalog.records.iter().collect::<Vec<_>>();
+                records.sort_unstable_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
+                let keys = records
+                    .iter()
+                    .map(|(_, entry)| entry.record.key.clone())
+                    .collect::<Vec<_>>();
+
+                let mut invocation_index = Vec::with_capacity(catalog.invocation_index.len());
+                for (invocation_id, key_digest) in &catalog.invocation_index {
+                    let entry =
+                        catalog
+                            .records
+                            .get(key_digest)
+                            .ok_or(ReceiptLedgerError::Corrupt(
+                                "receipt invocation index points outside the catalog",
+                            ))?;
+                    if entry.record.key.invocation_id() != *invocation_id {
+                        return Err(ReceiptLedgerError::Corrupt(
+                            "receipt invocation index contradicts its catalog key",
+                        ));
+                    }
+                    invocation_index.push(entry.record.key.clone());
+                }
+                sort_receipt_keys_by_digest(&mut invocation_index);
+
+                let mut reserved_task_index = Vec::with_capacity(catalog.reserved_task_index.len());
+                for (reserved_task_id, key_digest) in &catalog.reserved_task_index {
+                    let entry =
+                        catalog
+                            .records
+                            .get(key_digest)
+                            .ok_or(ReceiptLedgerError::Corrupt(
+                                "receipt reserved-task index points outside the catalog",
+                            ))?;
+                    if entry.record.key.reserved_task_id() != *reserved_task_id {
+                        return Err(ReceiptLedgerError::Corrupt(
+                            "receipt reserved-task index contradicts its catalog key",
+                        ));
+                    }
+                    reserved_task_index.push(entry.record.key.clone());
+                }
+                sort_receipt_keys_by_digest(&mut reserved_task_index);
+
+                Ok((
+                    generation,
+                    keys,
+                    invocation_index,
+                    reserved_task_index,
+                    u64::try_from(catalog.records.len()).map_err(|_| {
+                        ReceiptLedgerError::Corrupt("receipt catalog count does not fit telemetry")
+                    })?,
+                    catalog.actual_bytes,
+                    catalog.reserved_result_bytes,
+                ))
+            },
+        )?;
+        let (
+            generation,
+            keys,
+            invocation_index,
+            reserved_task_index,
+            live_count,
+            actual_bytes,
+            reserved_result_bytes,
+        ) = match observed {
+            Ok(observed) => observed,
+            Err(error) => return latch_catalog_error(&mut catalog, error),
+        };
+        let snapshot = authority.seal(ReceiptLedgerCatalogSnapshotParts::new(
+            generation,
+            keys,
+            invocation_index,
+            reserved_task_index,
+            live_count,
+            actual_bytes,
+            reserved_result_bytes,
+        ));
+        latch_catalog_result(&mut catalog, snapshot)
     }
 
     pub(crate) fn request_cancel_or_reserve(
@@ -1664,6 +1773,19 @@ impl ReceiptLedgerStore {
         deadline: Option<Instant>,
         inspect: impl FnOnce(&ReceiptCatalog) -> T,
     ) -> Result<T, ReceiptLedgerError> {
+        self.inspect_catalog_with_generation_under_stable_fence(
+            catalog,
+            deadline,
+            |catalog, _generation| inspect(catalog),
+        )
+    }
+
+    fn inspect_catalog_with_generation_under_stable_fence<T>(
+        &self,
+        catalog: &mut ReceiptCatalog,
+        deadline: Option<Instant>,
+        inspect: impl FnOnce(&ReceiptCatalog, u64) -> T,
+    ) -> Result<T, ReceiptLedgerError> {
         if catalog.unavailable {
             return Err(ReceiptLedgerError::StoreUnavailable);
         }
@@ -1672,7 +1794,7 @@ impl ReceiptLedgerStore {
         check_optional_deadline(deadline)?;
         let generation_before = latch_catalog_result(catalog, self.generation_under_writer_lock())?;
         check_optional_deadline(deadline)?;
-        let inspected = inspect(catalog);
+        let inspected = inspect(catalog, generation_before);
         check_optional_deadline(deadline)?;
         let generation_after = latch_catalog_result(catalog, self.generation_under_writer_lock())?;
         if generation_after != generation_before {
@@ -2414,6 +2536,22 @@ impl ReceiptLedgerStore {
 }
 
 impl ReceiptLedgerPort for ReceiptLedgerStore {
+    #[cfg(feature = "receipt-ledger-test-support")]
+    fn snapshot_catalog(
+        &mut self,
+        authority: ReceiptLedgerCatalogSnapshotAuthority,
+        deadline: Instant,
+    ) -> Result<ReceiptLedgerCatalogSnapshot, ReceiptLedgerError> {
+        ReceiptLedgerStore::snapshot_catalog(self, authority, deadline)
+    }
+
+    fn generation(&mut self, deadline: Instant) -> Result<u64, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let generation = ReceiptLedgerStore::generation(self)?;
+        check_deadline(deadline)?;
+        Ok(generation)
+    }
+
     fn reserve(
         &mut self,
         key: ReceiptKey,

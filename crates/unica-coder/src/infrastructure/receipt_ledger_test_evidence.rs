@@ -120,7 +120,12 @@ impl ProductionMissingTransitionEvidence {
                 generation_after,
             },
             code: ProductionMissingTransitionCode::WriterPathUnavailable,
-            correlation: ActionCorrelation::Exact(action_kind),
+            correlation: match token.action() {
+                crate::infrastructure::daemon::runtime_v5::V5ExecutorReachabilityAction::SubmitInvocation => {
+                    ActionCorrelation::Submit
+                }
+                _ => ActionCorrelation::Exact(action_kind),
+            },
             fingerprint: executor_fingerprint(&token),
         }
     }
@@ -801,10 +806,7 @@ mod tests {
                 "strict_envelope_observation_unavailable",
                 Some("src/infrastructure/daemon/protocol_v5.rs"),
             ),
-            (
-                "receipt_row_absent",
-                Some("src/infrastructure/daemon/runtime_v5.rs"),
-            ),
+            ("receipt_row_absent", None),
             (
                 "protocol_behavior_unavailable",
                 Some("src/infrastructure/daemon/runtime_v5.rs"),

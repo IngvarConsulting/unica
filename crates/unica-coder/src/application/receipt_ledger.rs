@@ -219,11 +219,201 @@ impl fmt::Display for ReceiptLedgerError {
 
 impl std::error::Error for ReceiptLedgerError {}
 
+#[cfg(feature = "receipt-ledger-test-support")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReceiptLedgerCatalogSnapshot {
+    generation: u64,
+    keys: Vec<ReceiptKey>,
+    invocation_index: Vec<ReceiptKey>,
+    reserved_task_index: Vec<ReceiptKey>,
+    live_count: u64,
+    actual_bytes: u64,
+    reserved_result_bytes: u64,
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+impl ReceiptLedgerCatalogSnapshot {
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn keys(&self) -> &[ReceiptKey] {
+        &self.keys
+    }
+
+    pub(crate) fn invocation_index(&self) -> &[ReceiptKey] {
+        &self.invocation_index
+    }
+
+    pub(crate) fn reserved_task_index(&self) -> &[ReceiptKey] {
+        &self.reserved_task_index
+    }
+
+    pub(crate) const fn live_count(&self) -> u64 {
+        self.live_count
+    }
+
+    pub(crate) const fn actual_bytes(&self) -> u64 {
+        self.actual_bytes
+    }
+
+    pub(crate) const fn reserved_result_bytes(&self) -> u64 {
+        self.reserved_result_bytes
+    }
+}
+
+/// One-shot construction authority for feature-only catalog telemetry.
+///
+/// Only the application actor can mint the authority. The concrete store may
+/// consume it after observing its complete catalog under the retained writer
+/// fence, while callers receive only the validated, read-only snapshot.
+#[cfg(feature = "receipt-ledger-test-support")]
+pub(crate) struct ReceiptLedgerCatalogSnapshotAuthority {
+    _private: (),
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+pub(crate) struct ReceiptLedgerCatalogSnapshotParts {
+    generation: u64,
+    keys: Vec<ReceiptKey>,
+    invocation_index: Vec<ReceiptKey>,
+    reserved_task_index: Vec<ReceiptKey>,
+    live_count: u64,
+    actual_bytes: u64,
+    reserved_result_bytes: u64,
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+impl ReceiptLedgerCatalogSnapshotParts {
+    pub(crate) fn new(
+        generation: u64,
+        keys: Vec<ReceiptKey>,
+        invocation_index: Vec<ReceiptKey>,
+        reserved_task_index: Vec<ReceiptKey>,
+        live_count: u64,
+        actual_bytes: u64,
+        reserved_result_bytes: u64,
+    ) -> Self {
+        Self {
+            generation,
+            keys,
+            invocation_index,
+            reserved_task_index,
+            live_count,
+            actual_bytes,
+            reserved_result_bytes,
+        }
+    }
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+impl ReceiptLedgerCatalogSnapshotAuthority {
+    pub(super) const fn new() -> Self {
+        Self { _private: () }
+    }
+
+    pub(crate) fn seal(
+        self,
+        parts: ReceiptLedgerCatalogSnapshotParts,
+    ) -> Result<ReceiptLedgerCatalogSnapshot, ReceiptLedgerError> {
+        let ReceiptLedgerCatalogSnapshotParts {
+            generation,
+            keys,
+            invocation_index,
+            reserved_task_index,
+            live_count,
+            actual_bytes,
+            reserved_result_bytes,
+        } = parts;
+        let observed_count = u64::try_from(keys.len()).map_err(|_| {
+            ReceiptLedgerError::Corrupt("receipt catalog count does not fit telemetry")
+        })?;
+        if live_count != observed_count || keys.len() > MAX_LIVE_RECEIPTS {
+            return Err(ReceiptLedgerError::Corrupt(
+                "receipt catalog telemetry count contradicts its keys",
+            ));
+        }
+        if invocation_index.len() != keys.len()
+            || reserved_task_index.len() != keys.len()
+            || !same_exact_receipt_key_set(&keys, &invocation_index)
+            || !same_exact_receipt_key_set(&keys, &reserved_task_index)
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "receipt catalog telemetry indexes contradict its keys",
+            ));
+        }
+        for (offset, key) in keys.iter().enumerate() {
+            let prior = &keys[..offset];
+            if prior
+                .iter()
+                .any(|candidate| receipt_key_digest(candidate) == receipt_key_digest(key))
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "receipt catalog telemetry contains a duplicate key digest",
+                ));
+            }
+            if prior
+                .iter()
+                .any(|candidate| candidate.invocation_id() == key.invocation_id())
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "receipt catalog telemetry contains a duplicate invocation id",
+                ));
+            }
+            if prior
+                .iter()
+                .any(|candidate| candidate.reserved_task_id() == key.reserved_task_id())
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "receipt catalog telemetry contains a duplicate reserved task id",
+                ));
+            }
+        }
+        if actual_bytes
+            .checked_add(reserved_result_bytes)
+            .is_none_or(|bytes| bytes > MAX_LIVE_RECEIPT_BYTES)
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "receipt catalog telemetry exceeds its byte entitlement",
+            ));
+        }
+        Ok(ReceiptLedgerCatalogSnapshot {
+            generation,
+            keys,
+            invocation_index,
+            reserved_task_index,
+            live_count,
+            actual_bytes,
+            reserved_result_bytes,
+        })
+    }
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+fn same_exact_receipt_key_set(expected: &[ReceiptKey], observed: &[ReceiptKey]) -> bool {
+    expected
+        .iter()
+        .all(|key| observed.iter().any(|candidate| candidate == key))
+}
+
 /// Sole-writer boundary owned by the application actor.
 ///
 /// The port deliberately requires only `Send`: the actor moves one concrete
 /// writer to its worker thread and never shares it behind a mutex.
 pub(crate) trait ReceiptLedgerPort: Send + 'static {
+    #[cfg(feature = "receipt-ledger-test-support")]
+    fn snapshot_catalog(
+        &mut self,
+        _authority: ReceiptLedgerCatalogSnapshotAuthority,
+        _deadline: Instant,
+    ) -> Result<ReceiptLedgerCatalogSnapshot, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    fn generation(&mut self, _deadline: Instant) -> Result<u64, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
     fn reserve(
         &mut self,
         key: ReceiptKey,

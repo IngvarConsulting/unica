@@ -3,6 +3,10 @@ use crate::application::receipt_ledger::{
     OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort,
     ReceiptState, ReceiptVersion, ReserveOutcome, V5CanonicalTerminal,
 };
+#[cfg(feature = "receipt-ledger-test-support")]
+use crate::application::receipt_ledger::{
+    ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
+};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
@@ -92,8 +96,42 @@ impl Drop for HeavyResultPermit {
 
 #[derive(Clone)]
 pub(crate) struct ReceiptLedgerActor {
-    sender: SyncSender<Command>,
+    worker: Arc<ReceiptLedgerWorkerOwner>,
     health: Arc<ActorHealth>,
+}
+
+struct ReceiptLedgerWorkerOwner {
+    sender: Option<SyncSender<Command>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    health: Arc<ActorHealth>,
+}
+
+impl ReceiptLedgerWorkerOwner {
+    fn sender(&self) -> &SyncSender<Command> {
+        self.sender
+            .as_ref()
+            .expect("receipt ledger sender exists while an actor handle is alive")
+    }
+}
+
+impl Drop for ReceiptLedgerWorkerOwner {
+    fn drop(&mut self) {
+        drop(self.sender.take());
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        if !self.health.is_ready() {
+            // A timed-out running port call is process-owned fail-stop work.
+            // Joining it here would keep the process alive indefinitely and
+            // violate the bounded caller contract.
+            drop(worker);
+            return;
+        }
+        if worker.thread().id() == std::thread::current().id() {
+            return;
+        }
+        let _ = worker.join();
+    }
 }
 
 struct ActorHealth {
@@ -162,6 +200,15 @@ impl ActorHealth {
 }
 
 enum Command {
+    #[cfg(feature = "receipt-ledger-test-support")]
+    SnapshotCatalog {
+        deadline: Instant,
+        ticket: Arc<Ticket<ReceiptLedgerCatalogSnapshot>>,
+    },
+    Generation {
+        deadline: Instant,
+        ticket: Arc<Ticket<u64>>,
+    },
     Reserve {
         key: ReceiptKey,
         original_cutoff: OriginalCutoffDescriptor,
@@ -349,6 +396,9 @@ impl<R> Ticket<R> {
 }
 
 enum TimeoutClass {
+    #[cfg(feature = "receipt-ledger-test-support")]
+    SnapshotCatalog,
+    Generation,
     Reserve(ReceiptKeyDigest),
     RequestCancelOrReserve(ReceiptKeyDigest),
     ExpireCancelReserved(ReceiptKeyDigest),
@@ -359,6 +409,9 @@ enum TimeoutClass {
 impl TimeoutClass {
     fn running_error(self) -> ReceiptLedgerError {
         match self {
+            #[cfg(feature = "receipt-ledger-test-support")]
+            Self::SnapshotCatalog => ReceiptLedgerError::StoreUnavailable,
+            Self::Generation => ReceiptLedgerError::StoreUnavailable,
             Self::Reserve(receipt_key_digest)
             | Self::RequestCancelOrReserve(receipt_key_digest)
             | Self::ExpireCancelReserved(receipt_key_digest)
@@ -375,11 +428,69 @@ impl ReceiptLedgerActor {
         let (sender, receiver) = mpsc::sync_channel(RECEIPT_LEDGER_CHANNEL_CAPACITY);
         let health = Arc::new(ActorHealth::ready());
         let worker_health = Arc::clone(&health);
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("unica-receipt-ledger".to_owned())
             .spawn(move || run_worker(port, receiver, worker_health))
             .expect("spawn receipt ledger actor");
-        Self { sender, health }
+        Self {
+            worker: Arc::new(ReceiptLedgerWorkerOwner {
+                sender: Some(sender),
+                worker: Some(worker),
+                health: Arc::clone(&health),
+            }),
+            health,
+        }
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn snapshot_catalog(
+        &self,
+        deadline: Instant,
+    ) -> Result<ReceiptLedgerCatalogSnapshot, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::SnapshotCatalog,
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::SnapshotCatalog {
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn generation(&self, deadline: Instant) -> Result<u64, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let ticket = Arc::new(Ticket::queued(deadline, TimeoutClass::Generation));
+        self.enqueue(
+            Command::Generation {
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn restart_required(&self) -> bool {
+        !self.health.is_ready()
     }
 
     pub(crate) fn reserve(
@@ -557,7 +668,7 @@ impl ReceiptLedgerActor {
                 return Err(ReceiptLedgerError::DeadlineExceeded);
             }
 
-            match self.sender.try_send(command) {
+            match self.worker.sender().try_send(command) {
                 Ok(()) => return Ok(()),
                 Err(TrySendError::Full(returned)) => {
                     command = returned;
@@ -581,6 +692,25 @@ fn run_worker(
 ) {
     while let Ok(command) = receiver.recv() {
         match command {
+            #[cfg(feature = "receipt-ledger-test-support")]
+            Command::SnapshotCatalog { deadline, ticket } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.snapshot_catalog(ReceiptLedgerCatalogSnapshotAuthority::new(), deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::Generation { deadline, ticket } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let result = catch_unwind(AssertUnwindSafe(|| port.generation(deadline)))
+                    .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
             Command::Reserve {
                 key,
                 original_cutoff,
@@ -687,7 +817,9 @@ fn run_worker(
 
 #[cfg(test)]
 mod tests {
-    use super::{ActorHealth, ReceiptLedgerActor, ReceiptLedgerPort, Ticket, TimeoutClass};
+    use super::{
+        ActorHealth, Command, ReceiptLedgerActor, ReceiptLedgerPort, Ticket, TimeoutClass,
+    };
     use crate::application::invocation::normalized_arguments_hash;
     use crate::application::receipt_ledger::{
         canonical_v5_terminal, receipt_key_digest, request_scope_hash, CancelExpiryOutcome,
@@ -700,7 +832,7 @@ mod tests {
     use std::cell::Cell;
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{mpsc, Arc};
+    use std::sync::{mpsc, Arc, Mutex};
     use std::time::{Duration, Instant};
 
     struct BlockingPort {
@@ -1015,6 +1147,85 @@ mod tests {
         }
     }
 
+    struct WorkerGenerationGate {
+        actor_to_drop: Option<Arc<Mutex<Option<ReceiptLedgerActor>>>>,
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    struct DropNotifyingPort {
+        generation: u64,
+        dropped: mpsc::Sender<()>,
+        worker_generation: Option<WorkerGenerationGate>,
+    }
+
+    impl Drop for DropNotifyingPort {
+        fn drop(&mut self) {
+            let _ = self.dropped.send(());
+        }
+    }
+
+    impl ReceiptLedgerPort for DropNotifyingPort {
+        fn generation(&mut self, _deadline: Instant) -> Result<u64, ReceiptLedgerError> {
+            if let Some(gate) = self.worker_generation.take() {
+                gate.entered.send(()).expect("report generation entry");
+                gate.release.recv().expect("release worker generation");
+                if let Some(actor) = gate.actor_to_drop {
+                    drop(actor.lock().expect("self-drop actor mutex poisoned").take());
+                }
+            }
+            Ok(self.generation)
+        }
+
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: Instant,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: Instant,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: Instant,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn expire_cancel_reserved(
+            &mut self,
+            _key: ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _expected_mutation_sequence: u64,
+            _observed_at_epoch_ms: u64,
+            _deadline: Instant,
+        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: Instant,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+    }
+
     fn receipt_key() -> ReceiptKey {
         ReceiptKey::new(
             InvocationId::new(),
@@ -1040,6 +1251,186 @@ mod tests {
     fn cancelled_terminal() -> V5CanonicalTerminal {
         canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
             .expect("cancelled terminal is canonical")
+    }
+
+    #[test]
+    fn dropping_last_actor_waits_until_the_port_is_released() {
+        let (entered, observed_entry) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (dropped, observed_drop) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn(DropNotifyingPort {
+            generation: 41,
+            dropped,
+            worker_generation: Some(WorkerGenerationGate {
+                actor_to_drop: None,
+                entered,
+                release: released,
+            }),
+        });
+        let health = Arc::clone(&actor.health);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let ticket = Arc::new(Ticket::queued(deadline, TimeoutClass::Generation));
+        actor
+            .enqueue(
+                Command::Generation {
+                    deadline,
+                    ticket: Arc::clone(&ticket),
+                },
+                deadline,
+            )
+            .expect("enqueue blocked generation probe");
+        observed_entry.recv().expect("worker enters generation");
+        let (drop_returned, observed_drop_return) = mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            drop(actor);
+            drop_returned.send(()).expect("report actor drop return");
+        });
+
+        let returned_before_release =
+            match observed_drop_return.recv_timeout(Duration::from_millis(100)) {
+                Ok(()) => true,
+                Err(mpsc::RecvTimeoutError::Timeout) => false,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("actor dropper disconnected before reporting return")
+                }
+            };
+        release.send(()).expect("release blocked generation");
+
+        assert_eq!(ticket.wait(&health), Ok(41));
+        observed_drop
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker releases its port after generation returns");
+        if !returned_before_release {
+            observed_drop_return
+                .recv_timeout(Duration::from_secs(1))
+                .expect("actor drop returns after port release");
+        }
+        dropper.join().expect("actor dropper does not panic");
+        assert!(
+            !returned_before_release,
+            "last actor drop returned while its worker still owned the port"
+        );
+    }
+
+    #[test]
+    fn fail_stopped_actor_drop_does_not_wait_for_a_stuck_port() {
+        let (entered, observed_entry) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn(BlockingPort {
+            entered: Some(entered),
+            release: released,
+            calls: Arc::new(AtomicUsize::new(0)),
+            direct_calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let caller = actor.clone();
+        let key = receipt_key();
+        let call = std::thread::spawn(move || {
+            caller.reserve(key, cutoff(), Instant::now() + Duration::from_millis(30))
+        });
+        observed_entry
+            .recv_timeout(Duration::from_secs(1))
+            .expect("stuck port enters the mutation");
+        assert!(matches!(
+            call.join().expect("join timed-out actor caller"),
+            Err(ReceiptLedgerError::CommitUncertain { .. })
+        ));
+        assert!(actor.restart_required());
+
+        let (drop_returned, observed_drop_return) = mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            drop(actor);
+            drop_returned
+                .send(())
+                .expect("report fail-stopped actor drop return");
+        });
+        let returned_without_port = observed_drop_return
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+        release
+            .send(())
+            .expect("release stuck port after observation");
+        if !returned_without_port {
+            observed_drop_return
+                .recv_timeout(Duration::from_secs(1))
+                .expect("actor drop returns after cleanup release");
+        }
+        dropper.join().expect("join actor dropper");
+
+        assert!(
+            returned_without_port,
+            "fail-stop waited for a worker that process death must own"
+        );
+    }
+
+    #[test]
+    fn dropping_a_non_last_clone_keeps_the_worker_available() {
+        let (dropped, observed_drop) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn(DropNotifyingPort {
+            generation: 41,
+            dropped,
+            worker_generation: None,
+        });
+        let survivor = actor.clone();
+
+        drop(actor);
+
+        assert_eq!(
+            observed_drop.try_recv(),
+            Err(mpsc::TryRecvError::Empty),
+            "a non-last clone cannot release the shared port"
+        );
+        assert_eq!(
+            survivor.generation(Instant::now() + Duration::from_secs(1)),
+            Ok(41)
+        );
+        drop(survivor);
+        observed_drop
+            .try_recv()
+            .expect("last surviving clone releases the port synchronously");
+    }
+
+    #[test]
+    fn dropping_last_actor_on_its_worker_never_self_joins() {
+        let actor_slot = Arc::new(Mutex::new(None));
+        let (entered, observed_entry) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (dropped, observed_drop) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn(DropNotifyingPort {
+            generation: 43,
+            dropped,
+            worker_generation: Some(WorkerGenerationGate {
+                actor_to_drop: Some(Arc::clone(&actor_slot)),
+                entered,
+                release: released,
+            }),
+        });
+        actor_slot
+            .lock()
+            .expect("self-drop actor mutex poisoned")
+            .replace(actor.clone());
+        let health = Arc::clone(&actor.health);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let ticket = Arc::new(Ticket::queued(deadline, TimeoutClass::Generation));
+        actor
+            .enqueue(
+                Command::Generation {
+                    deadline,
+                    ticket: Arc::clone(&ticket),
+                },
+                deadline,
+            )
+            .expect("enqueue self-drop probe");
+        observed_entry
+            .recv()
+            .expect("worker enters self-drop probe");
+
+        drop(actor);
+        release.send(()).expect("release worker self-drop");
+
+        assert_eq!(ticket.wait(&health), Ok(43));
+        observed_drop
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker exits and releases the port without self-join");
     }
 
     #[test]
