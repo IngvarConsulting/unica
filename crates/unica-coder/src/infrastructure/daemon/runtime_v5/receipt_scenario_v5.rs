@@ -7,8 +7,8 @@ use crate::application::invocation_store::EpochMillisClock;
 use crate::application::receipt_ledger::{
     canonical_v5_terminal, receipt_key_digest, request_scope_hash, task_link_digest,
     CoreIdentityDigest, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptState,
-    ReceiptTerminalOutcome, RequestIdentity, ReservedPhase, TaskLinkIdentity, V5ToolIdentity,
-    DIRECT_TERMINAL_RETENTION_MS,
+    ReceiptTerminalOutcome, RequestIdentity, ReservedPhase, TaskLinkIdentity, TerminalDigest,
+    V5ToolIdentity, DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::invocation::{InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId};
@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
@@ -285,6 +286,46 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     .responses
                     .insert(label, response_observation(&response, None)?);
             }
+            ReceiptScenarioAction::Acknowledge {
+                key,
+                digest,
+                disconnect,
+                label,
+            } => {
+                let ScenarioKey::Exact = key else {
+                    return Ok(None);
+                };
+                let terminal_digest = match digest {
+                    ScenarioDigest::ExactTerminal => exact_terminal_digest(
+                        state.path(),
+                        &identity,
+                        Arc::clone(&clock),
+                        Arc::clone(&telemetry),
+                        &exact_key,
+                    )?,
+                    ScenarioDigest::Mismatched => TerminalDigest::from_str(&"a5".repeat(32))
+                        .expect("fixed mismatch digest is normalized"),
+                    ScenarioDigest::WellFormedCandidate => {
+                        TerminalDigest::from_str(&"00".repeat(32))
+                            .expect("fixed candidate digest is normalized")
+                    }
+                    ScenarioDigest::TaskTerminal => return Ok(None),
+                };
+                let response = exchange_once(
+                    state.path(),
+                    &identity,
+                    Arc::clone(&clock),
+                    Arc::clone(&telemetry),
+                    |owner| {
+                        owner.acknowledge_invocation_receipt(exact_key.clone(), terminal_digest)
+                    },
+                )?;
+                if matches!(disconnect, ScenarioAckDisconnect::Never) {
+                    report
+                        .responses
+                        .insert(label, response_observation(&response, None)?);
+                }
+            }
             ReceiptScenarioAction::AdvanceEpoch { millis } => {
                 clock.advance(millis)?;
             }
@@ -497,6 +538,7 @@ fn has_supported_shape(request: &str) -> Result<bool, String> {
                     "cancel"
                         | "submit"
                         | "recover"
+                        | "acknowledge"
                         | "advance_epoch"
                         | "restart"
                         | "checkpoint"
@@ -781,9 +823,16 @@ fn snapshot_with_actor(
     telemetry: &V5ReceiptRuntimeTelemetry,
     keys: &[ReceiptKey],
 ) -> Result<Value, String> {
+    actor
+        .reclaim_expired_tombstones(
+            clock.now_epoch_millis(),
+            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+        )
+        .map_err(|error| format!("reclaim protocol-v5 receipt tombstones: {error}"))?;
     let mut receipts = Vec::with_capacity(keys.len());
     for key in keys {
         match actor.recover(key.clone(), Instant::now() + SCENARIO_OPERATION_TIMEOUT) {
+            Ok(ReceiptState::AcknowledgedTombstone(_)) => {}
             Ok(receipt) => receipts.push(receipt_observation(receipt)?),
             Err(ReceiptLedgerError::ReceiptNotFound) => {}
             Err(error) => {
@@ -797,6 +846,11 @@ fn snapshot_with_actor(
     if u64::try_from(catalog.keys().len()).ok() != Some(catalog.live_count()) {
         return Err("sealed protocol-v5 receipt catalog count is inconsistent".to_owned());
     }
+    let tombstones = catalog
+        .tombstones()
+        .iter()
+        .map(tombstone_observation)
+        .collect::<Vec<_>>();
     let invocation_index = catalog
         .invocation_index()
         .iter()
@@ -812,7 +866,7 @@ fn snapshot_with_actor(
 
     Ok(json!({
         "receipts": receipts,
-        "tombstones": [],
+        "tombstones": tombstones,
         "tasks": [],
         "taskLinks": [],
         "invocationIndex": invocation_index,
@@ -824,8 +878,8 @@ fn snapshot_with_actor(
         "taskLinkBytes": 0,
         "taskLinkReservedCount": 0,
         "taskLinkReservedBytes": 0,
-        "tombstoneCount": 0,
-        "tombstoneBytes": 0,
+        "tombstoneCount": catalog.tombstones().len(),
+        "tombstoneBytes": catalog.tombstone_bytes(),
         "callbacks": runtime.callbacks,
         "listener": runtime.listener,
         "restartRequested": false,
@@ -843,6 +897,18 @@ fn snapshot_with_actor(
         "fallbackExecutions": 0,
         "stagedResponsesExposed": 0
     }))
+}
+
+fn tombstone_observation(
+    receipt: &crate::application::receipt_ledger::AcknowledgedTombstoneReceipt,
+) -> Value {
+    json!({
+        "key": receipt_key_observation(receipt.key()),
+        "terminalDigest": receipt.terminal_digest(),
+        "ackEpochMs": receipt.acknowledged_at_epoch_ms(),
+        "expiresEpochMs": receipt.expires_at_epoch_ms(),
+        "encodedBytes": receipt.encoded_bytes()
+    })
 }
 
 fn receipt_observation(state: ReceiptState) -> Result<Value, String> {
@@ -1007,6 +1073,30 @@ fn response_observation(
                 "latencyMs": 0
             }))
         }
+        V5ServerResponse::InvocationAcknowledged { acknowledgement } => Ok(json!({
+            "kind": "acknowledged",
+            "error": null,
+            "terminal": null,
+            "key": receipt_key_observation(acknowledgement.receipt_key()),
+            "task": null,
+            "acknowledgement": acknowledgement_observation(acknowledgement),
+            "cutoffEpochMs": null,
+            "originalBudgetMs": null,
+            "latencyMs": 0
+        })),
+        V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Acknowledged { acknowledgement },
+        } => Ok(json!({
+            "kind": "tombstone",
+            "error": null,
+            "terminal": null,
+            "key": receipt_key_observation(acknowledgement.receipt_key()),
+            "task": null,
+            "acknowledgement": acknowledgement_observation(acknowledgement),
+            "cutoffEpochMs": null,
+            "originalBudgetMs": null,
+            "latencyMs": 0
+        })),
         V5ServerResponse::Error { code } => Ok(json!({
             "kind": if matches!(code, V5DaemonErrorCode::ReceiptNotFound) {
                 "not_found"
@@ -1025,6 +1115,42 @@ fn response_observation(
         })),
         other => Err(format!(
             "receipt scenario received unsupported protocol-v5 response: {other:?}"
+        )),
+    }
+}
+
+fn acknowledgement_observation(
+    acknowledgement: &crate::infrastructure::daemon::protocol_v5::V5AcknowledgedReceipt,
+) -> Value {
+    json!({
+        "ackEpochMs": acknowledgement.ack_epoch_ms(),
+        "expiresEpochMs": acknowledgement.expires_epoch_ms(),
+        "terminalDigest": acknowledgement.terminal_digest()
+    })
+}
+
+fn exact_terminal_digest(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: Arc<ScenarioEpochClock>,
+    telemetry: Arc<V5ReceiptRuntimeTelemetry>,
+    key: &ReceiptKey,
+) -> Result<TerminalDigest, String> {
+    let response = exchange_once(state_root, identity, clock, telemetry, |owner| {
+        owner.recover_invocation_receipt(key.clone())
+    })?;
+    match response {
+        V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Direct { receipt },
+        } => Ok(receipt.terminal_digest().clone()),
+        V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Acknowledged { acknowledgement },
+        }
+        | V5ServerResponse::InvocationAcknowledged { acknowledgement } => {
+            Ok(acknowledgement.terminal_digest().clone())
+        }
+        other => Err(format!(
+            "protocol-v5 scenario has no exact terminal digest: {other:?}"
         )),
     }
 }
@@ -1256,6 +1382,12 @@ enum ReceiptScenarioAction {
         key: ScenarioKey,
         label: String,
     },
+    Acknowledge {
+        key: ScenarioKey,
+        digest: ScenarioDigest,
+        disconnect: ScenarioAckDisconnect,
+        label: String,
+    },
     AdvanceEpoch {
         millis: u64,
     },
@@ -1303,6 +1435,15 @@ impl ReceiptScenarioAction {
                     && matches!(disconnect, ScenarioDisconnect::Never)
             }
             Self::Recover { key, .. } => matches!(key, ScenarioKey::Exact),
+            Self::Acknowledge {
+                key, disconnect, ..
+            } => {
+                matches!(key, ScenarioKey::Exact)
+                    && matches!(
+                        disconnect,
+                        ScenarioAckDisconnect::Never | ScenarioAckDisconnect::AfterTombstoneCommit
+                    )
+            }
             Self::AdvanceEpoch { .. }
             | Self::Restart
             | Self::Checkpoint { .. }
@@ -1326,6 +1467,22 @@ enum ScenarioRequest {
 #[serde(rename_all = "snake_case")]
 enum ScenarioDisconnect {
     Never,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioAckDisconnect {
+    Never,
+    AfterTombstoneCommit,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioDigest {
+    ExactTerminal,
+    Mismatched,
+    TaskTerminal,
+    WellFormedCandidate,
 }
 
 #[derive(Deserialize)]
@@ -1371,9 +1528,137 @@ enum ScenarioIdentityField {
 mod tests {
     use super::*;
     use crate::application::receipt_ledger::{
-        OriginalCutoffDescriptor, MAX_RECEIPT_ENTITLEMENT_BYTES,
+        OriginalCutoffDescriptor, ACKNOWLEDGED_TOMBSTONE_TTL_MS, MAX_RECEIPT_ENTITLEMENT_BYTES,
     };
     use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
+
+    #[test]
+    fn protocol_ack_loss_retry_and_duplicate_read_the_same_compact_tombstone() {
+        let request = json!({
+            "clock": "fake",
+            "actions": [
+                {
+                    "action": "cancel",
+                    "key": "exact",
+                    "lazy_session": true,
+                    "label": "cancel"
+                },
+                { "action": "checkpoint", "label": "premature-before" },
+                {
+                    "action": "acknowledge",
+                    "key": "exact",
+                    "digest": "well_formed_candidate",
+                    "disconnect": "never",
+                    "label": "premature"
+                },
+                { "action": "checkpoint", "label": "premature-after" },
+                {
+                    "action": "submit",
+                    "request": "canonical",
+                    "response_budget_ms": 6_000,
+                    "disconnect": "never",
+                    "label": "direct"
+                },
+                { "action": "checkpoint", "label": "mismatch-before" },
+                {
+                    "action": "acknowledge",
+                    "key": "exact",
+                    "digest": "mismatched",
+                    "disconnect": "never",
+                    "label": "mismatched"
+                },
+                { "action": "checkpoint", "label": "mismatch-after" },
+                {
+                    "action": "acknowledge",
+                    "key": "exact",
+                    "digest": "exact_terminal",
+                    "disconnect": "after_tombstone_commit",
+                    "label": "lost"
+                },
+                { "action": "checkpoint", "label": "after-lost" },
+                {
+                    "action": "acknowledge",
+                    "key": "exact",
+                    "digest": "exact_terminal",
+                    "disconnect": "never",
+                    "label": "retry"
+                },
+                {
+                    "action": "submit",
+                    "request": "canonical",
+                    "response_budget_ms": 6_000,
+                    "disconnect": "never",
+                    "label": "duplicate"
+                },
+                { "action": "advance_epoch", "millis": 899_999 },
+                { "action": "checkpoint", "label": "before-expiry" },
+                { "action": "advance_epoch", "millis": 1 },
+                { "action": "checkpoint", "label": "at-expiry" }
+            ]
+        });
+
+        let encoded = run_supported_receipt_scenario_for_test(&request.to_string())
+            .expect("run protocol-v5 acknowledgement scenario")
+            .expect("acknowledgement scenario is supported");
+        let report: Value = serde_json::from_str(&encoded).expect("decode scenario report");
+        let payload = &report["payload"];
+        let tombstones = payload["checkpoints"]["after-lost"]["tombstones"]
+            .as_array()
+            .expect("tombstone inventory");
+
+        assert_eq!(tombstones.len(), 1);
+        assert_eq!(
+            payload["responses"]["premature"]["error"].as_str(),
+            Some("invalid_request")
+        );
+        assert_eq!(
+            payload["checkpoints"]["premature-before"]["receipts"],
+            payload["checkpoints"]["premature-after"]["receipts"]
+        );
+        assert_eq!(
+            payload["responses"]["mismatched"]["error"].as_str(),
+            Some("invalid_request")
+        );
+        assert_eq!(
+            payload["checkpoints"]["mismatch-before"]["receipts"],
+            payload["checkpoints"]["mismatch-after"]["receipts"]
+        );
+        assert_eq!(
+            payload["checkpoints"]["after-lost"]["receiptLiveCount"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            payload["responses"]["retry"]["kind"].as_str(),
+            Some("acknowledged")
+        );
+        assert_eq!(
+            payload["responses"]["duplicate"]["kind"].as_str(),
+            Some("tombstone")
+        );
+        let first_ack_epoch = tombstones[0]["ackEpochMs"]
+            .as_u64()
+            .expect("first acknowledgement epoch");
+        assert_eq!(
+            tombstones[0]["expiresEpochMs"].as_u64(),
+            first_ack_epoch.checked_add(ACKNOWLEDGED_TOMBSTONE_TTL_MS)
+        );
+        assert_eq!(
+            payload["responses"]["retry"]["acknowledgement"]["ackEpochMs"].as_u64(),
+            Some(first_ack_epoch)
+        );
+        assert_eq!(
+            payload["responses"]["duplicate"]["acknowledgement"]["ackEpochMs"].as_u64(),
+            Some(first_ack_epoch)
+        );
+        assert_eq!(
+            payload["checkpoints"]["before-expiry"]["tombstoneCount"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            payload["checkpoints"]["at-expiry"]["tombstoneCount"].as_u64(),
+            Some(0)
+        );
+    }
 
     #[test]
     fn batch_client_failure_stops_and_joins_the_daemon_before_returning() {

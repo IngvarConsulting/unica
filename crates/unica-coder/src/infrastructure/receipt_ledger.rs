@@ -1,11 +1,14 @@
 use crate::application::invocation_store::MAX_TASK_RECORD_ENVELOPE_BYTES;
 use crate::application::receipt_ledger::{
-    receipt_key_digest, CancelExpiryOutcome, CancelReservedReceipt, CancelResolution,
-    CommittedDirectPublication, DirectTerminalUnackedReceipt, OriginalCutoffDescriptor, ReceiptKey,
-    ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort, ReceiptRecordHeader, ReceiptState,
-    ReceiptTerminalOutcome, ReceiptVersion, ReserveOutcome, ReservedPhase, ReservedReceipt,
-    V5CanonicalTerminal, CANCEL_RESERVATION_TTL_MS, DIRECT_TERMINAL_RETENTION_MS,
-    MAX_LIVE_RECEIPTS, MAX_LIVE_RECEIPT_BYTES, MAX_RECEIPT_ENTITLEMENT_BYTES,
+    receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelReservedReceipt,
+    CancelResolution, CommittedDirectPublication, DirectTerminalUnackedReceipt,
+    OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort,
+    ReceiptRecordHeader, ReceiptState, ReceiptTerminalOutcome, ReceiptVersion, ReserveOutcome,
+    ReservedPhase, ReservedReceipt, TerminalDigest, V5CanonicalTerminal,
+    ACKNOWLEDGED_TOMBSTONE_TTL_MS, CANCEL_RESERVATION_TTL_MS, DIRECT_TERMINAL_RETENTION_MS,
+    MAX_ACKNOWLEDGED_TOMBSTONES, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
+    MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES, MAX_LIVE_RECEIPTS, MAX_LIVE_RECEIPT_BYTES,
+    MAX_RECEIPT_ENTITLEMENT_BYTES,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -41,8 +44,9 @@ const LEDGER_LOCK_FILE_NAME: &str = ".receipt-ledger.lock";
 const MAX_GENERATION_FILE_BYTES: usize = 32;
 const RECEIPT_RECORD_SCHEMA_VERSION: u32 = 1;
 const MAX_CANCEL_RESERVED_RECORD_BYTES: u64 = 1_024;
-const MAX_ACTIVE_DIRECTORY_ENTRIES: usize = MAX_LIVE_RECEIPTS * 2;
-const MAX_GENERATION_STAGING_ENTRIES: usize = MAX_LIVE_RECEIPTS;
+const MAX_RETAINED_RECEIPT_ROWS: usize = MAX_LIVE_RECEIPTS + MAX_ACKNOWLEDGED_TOMBSTONES;
+const MAX_ACTIVE_DIRECTORY_ENTRIES: usize = MAX_RETAINED_RECEIPT_ROWS * 2;
+const MAX_GENERATION_STAGING_ENTRIES: usize = MAX_RETAINED_RECEIPT_ROWS;
 const MAX_RECEIPT_ROOT_DIRECTORY_ENTRIES: usize = MAX_GENERATION_STAGING_ENTRIES + 3;
 const DEFAULT_RECEIPT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -165,6 +169,14 @@ struct StoredActiveReceiptV1 {
     lifecycle: StoredActiveLifecycleV1,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredAcknowledgedTombstoneV1 {
+    key: ReceiptKey,
+    terminal_digest: TerminalDigest,
+    ack_epoch_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(
     tag = "state",
@@ -185,6 +197,11 @@ enum StoredActiveLifecycleV1 {
         prior_cancel_reserved_at_epoch_ms: u64,
         prior_expires_at_epoch_ms: u64,
     },
+    ExpiredTombstoneDeletion {
+        observed_at_epoch_ms: u64,
+        prior_acknowledged_at_epoch_ms: u64,
+        prior_terminal_digest: TerminalDigest,
+    },
     ReservedUnbound {
         reserved_at_epoch_ms: u64,
         original_cutoff: OriginalCutoffDescriptor,
@@ -195,6 +212,10 @@ enum StoredActiveLifecycleV1 {
         terminal_epoch_ms: u64,
         terminal_digest: crate::application::receipt_ledger::TerminalDigest,
         terminal: Arc<ReceiptTerminalOutcome>,
+    },
+    AcknowledgedTombstone {
+        terminal_digest: TerminalDigest,
+        acknowledged_at_epoch_ms: u64,
     },
 }
 
@@ -218,13 +239,38 @@ impl CatalogEntry {
     fn reserved_result_bytes(&self) -> u64 {
         match &self.record.lifecycle {
             StoredActiveLifecycleV1::CancelReserved { .. }
-            | StoredActiveLifecycleV1::ExpiredDeletion { .. } => 0,
+            | StoredActiveLifecycleV1::ExpiredDeletion { .. }
+            | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
+            | StoredActiveLifecycleV1::AcknowledgedTombstone { .. } => 0,
             StoredActiveLifecycleV1::ReservedUnbound { .. }
             | StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
                 MAX_RECEIPT_ENTITLEMENT_BYTES
                     .checked_sub(self.encoded_bytes)
                     .expect("validated receipt record fits its exact byte entitlement")
             }
+        }
+    }
+
+    fn is_tombstone(&self) -> bool {
+        matches!(
+            &self.record.lifecycle,
+            StoredActiveLifecycleV1::AcknowledgedTombstone { .. }
+        )
+    }
+
+    fn live_actual_bytes(&self) -> u64 {
+        if self.is_tombstone() {
+            0
+        } else {
+            self.encoded_bytes
+        }
+    }
+
+    fn tombstone_bytes(&self) -> u64 {
+        if self.is_tombstone() {
+            self.encoded_bytes
+        } else {
+            0
         }
     }
 
@@ -250,9 +296,10 @@ impl CatalogEntry {
                 }
                 Ok(ReceiptState::CancelReserved(receipt))
             }
-            StoredActiveLifecycleV1::ExpiredDeletion { .. } => Err(ReceiptLedgerError::Corrupt(
-                "expired deletion witness is not a live receipt state",
-            )),
+            StoredActiveLifecycleV1::ExpiredDeletion { .. }
+            | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. } => Err(
+                ReceiptLedgerError::Corrupt("expired deletion witness is not a live receipt state"),
+            ),
             StoredActiveLifecycleV1::ReservedUnbound {
                 reserved_at_epoch_ms,
                 original_cutoff,
@@ -283,13 +330,30 @@ impl CatalogEntry {
                     ),
                 ))
             }
+            StoredActiveLifecycleV1::AcknowledgedTombstone {
+                terminal_digest,
+                acknowledged_at_epoch_ms,
+            } => Ok(ReceiptState::AcknowledgedTombstone(
+                AcknowledgedTombstoneReceipt::new(
+                    self.record.key.clone(),
+                    self.record.key_digest.clone(),
+                    terminal_digest.clone(),
+                    *acknowledged_at_epoch_ms,
+                    self.encoded_bytes,
+                )
+                .map_err(|_| {
+                    ReceiptLedgerError::Corrupt("acknowledged tombstone expiry exceeds u64")
+                })?,
+            )),
         }
     }
 
     fn reservation(&self) -> Result<ReservedReceipt, ReceiptLedgerError> {
         match self.state()? {
             ReceiptState::Reserved(reservation) => Ok(reservation),
-            ReceiptState::CancelReserved(_) | ReceiptState::DirectTerminalUnacked(_) => {
+            ReceiptState::CancelReserved(_)
+            | ReceiptState::DirectTerminalUnacked(_)
+            | ReceiptState::AcknowledgedTombstone(_) => {
                 Err(ReceiptLedgerError::ReceiptRowPresentUnsupported)
             }
             _ => unreachable!("active receipt codec currently has three variants"),
@@ -300,6 +364,7 @@ impl CatalogEntry {
         matches!(
             &self.record.lifecycle,
             StoredActiveLifecycleV1::ExpiredDeletion { .. }
+                | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
         )
     }
 }
@@ -321,7 +386,24 @@ struct ReceiptCatalog {
     reserved_task_index: HashMap<TaskId, ReceiptKeyDigest>,
     actual_bytes: u64,
     reserved_result_bytes: u64,
+    tombstone_bytes: u64,
     unavailable: bool,
+}
+
+impl ReceiptCatalog {
+    fn live_count(&self) -> usize {
+        self.records
+            .values()
+            .filter(|entry| !entry.is_tombstone())
+            .count()
+    }
+
+    fn tombstone_count(&self) -> usize {
+        self.records
+            .values()
+            .filter(|entry| entry.is_tombstone())
+            .count()
+    }
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -718,8 +800,19 @@ impl ReceiptLedgerStore {
                 records.sort_unstable_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
                 let keys = records
                     .iter()
+                    .filter(|(_, entry)| !entry.is_tombstone())
                     .map(|(_, entry)| entry.record.key.clone())
                     .collect::<Vec<_>>();
+                let tombstones = records
+                    .iter()
+                    .filter(|(_, entry)| entry.is_tombstone())
+                    .map(|(_, entry)| match entry.state()? {
+                        ReceiptState::AcknowledgedTombstone(receipt) => Ok(receipt),
+                        _ => Err(ReceiptLedgerError::Corrupt(
+                            "tombstone catalog entry decoded as a live receipt",
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 let mut invocation_index = Vec::with_capacity(catalog.invocation_index.len());
                 for (invocation_id, key_digest) in &catalog.invocation_index {
@@ -760,24 +853,28 @@ impl ReceiptLedgerStore {
                 Ok((
                     generation,
                     keys,
+                    tombstones,
                     invocation_index,
                     reserved_task_index,
-                    u64::try_from(catalog.records.len()).map_err(|_| {
+                    u64::try_from(catalog.live_count()).map_err(|_| {
                         ReceiptLedgerError::Corrupt("receipt catalog count does not fit telemetry")
                     })?,
                     catalog.actual_bytes,
                     catalog.reserved_result_bytes,
+                    catalog.tombstone_bytes,
                 ))
             },
         )?;
         let (
             generation,
             keys,
+            tombstones,
             invocation_index,
             reserved_task_index,
             live_count,
             actual_bytes,
             reserved_result_bytes,
+            tombstone_bytes,
         ) = match observed {
             Ok(observed) => observed,
             Err(error) => return latch_catalog_error(&mut catalog, error),
@@ -785,11 +882,13 @@ impl ReceiptLedgerStore {
         let snapshot = authority.seal(ReceiptLedgerCatalogSnapshotParts::new(
             generation,
             keys,
+            tombstones,
             invocation_index,
             reserved_task_index,
             live_count,
             actual_bytes,
             reserved_result_bytes,
+            tombstone_bytes,
         ));
         latch_catalog_result(&mut catalog, snapshot)
     }
@@ -1064,7 +1163,7 @@ impl ReceiptLedgerStore {
     ) -> Result<(), ReceiptLedgerError> {
         let mut reclaim = Vec::with_capacity(2);
         if let Some(digest) = catalog.invocation_index.get(&key.invocation_id()).cloned() {
-            let expired = match catalog_entry_is_expired_cancel_reserved(
+            let expired = match catalog_entry_is_expired_identity_reclaimable(
                 catalog,
                 &digest,
                 observed_at_epoch_ms,
@@ -1086,7 +1185,7 @@ impl ReceiptLedgerStore {
             .get(&key.reserved_task_id())
             .cloned()
         {
-            let expired = match catalog_entry_is_expired_cancel_reserved(
+            let expired = match catalog_entry_is_expired_identity_reclaimable(
                 catalog,
                 &digest,
                 observed_at_epoch_ms,
@@ -1106,11 +1205,19 @@ impl ReceiptLedgerStore {
         reclaim.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
         reclaim.dedup();
 
+        let reclaimed_live = reclaim
+            .iter()
+            .filter(|digest| {
+                catalog
+                    .records
+                    .get(*digest)
+                    .is_some_and(|entry| !entry.is_tombstone())
+            })
+            .count();
         let projected_count =
             catalog
-                .records
-                .len()
-                .checked_sub(reclaim.len())
+                .live_count()
+                .checked_sub(reclaimed_live)
                 .ok_or(ReceiptLedgerError::Corrupt(
                     "receipt reclamation exceeds the live catalog",
                 ))?;
@@ -1134,12 +1241,42 @@ impl ReceiptLedgerStore {
         }
 
         for digest in reclaim {
-            self.reclaim_expired_cancel_reservation_under_writer_lock(
-                catalog,
-                &digest,
-                observed_at_epoch_ms,
-                deadline,
-            )?;
+            match catalog
+                .records
+                .get(&digest)
+                .map(|entry| &entry.record.lifecycle)
+            {
+                Some(StoredActiveLifecycleV1::CancelReserved { .. }) => {
+                    self.reclaim_expired_cancel_reservation_under_writer_lock(
+                        catalog,
+                        &digest,
+                        observed_at_epoch_ms,
+                        deadline,
+                    )?;
+                }
+                Some(StoredActiveLifecycleV1::AcknowledgedTombstone { .. }) => {
+                    self.reclaim_expired_tombstone_under_writer_lock(
+                        catalog,
+                        &digest,
+                        observed_at_epoch_ms,
+                        deadline,
+                    )?;
+                }
+                Some(_) => {
+                    return latch_catalog_error(
+                        catalog,
+                        ReceiptLedgerError::Corrupt(
+                            "identity reclamation candidate changed lifecycle",
+                        ),
+                    )
+                }
+                None => {
+                    return latch_catalog_error(
+                        catalog,
+                        ReceiptLedgerError::Corrupt("identity reclamation candidate disappeared"),
+                    )
+                }
+            }
         }
         Ok(())
     }
@@ -1308,16 +1445,28 @@ impl ReceiptLedgerStore {
                 Ok(state) => state,
                 Err(error) => return latch_catalog_error(&mut catalog, error),
             };
-            return match state {
-                ReceiptState::CancelReserved(_) => self.convert_cancel_reserved_to_submit(
-                    &mut catalog,
-                    persisted,
-                    key,
-                    original_cutoff,
-                    deadline,
-                ),
-                state => Ok(ReserveOutcome::ExistingExact(state)),
-            };
+            match state {
+                ReceiptState::CancelReserved(_) => {
+                    return self.convert_cancel_reserved_to_submit(
+                        &mut catalog,
+                        persisted,
+                        key,
+                        original_cutoff,
+                        deadline,
+                    )
+                }
+                ReceiptState::AcknowledgedTombstone(receipt)
+                    if original_cutoff.accepted_epoch_ms() >= receipt.expires_at_epoch_ms() =>
+                {
+                    self.reclaim_expired_tombstone_under_writer_lock(
+                        &mut catalog,
+                        &key_digest,
+                        original_cutoff.accepted_epoch_ms(),
+                        deadline,
+                    )?;
+                }
+                state => return Ok(ReserveOutcome::ExistingExact(state)),
+            }
         }
 
         self.prepare_new_admission_under_writer_lock(
@@ -1836,6 +1985,316 @@ impl ReceiptLedgerStore {
         .map(|publication| publication.into_parts().0)
     }
 
+    pub(crate) fn acknowledge_direct(
+        &self,
+        key: &ReceiptKey,
+        terminal_digest: &TerminalDigest,
+        acknowledged_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        acknowledged_at_epoch_ms
+            .checked_add(ACKNOWLEDGED_TOMBSTONE_TTL_MS)
+            .ok_or(ReceiptLedgerError::TimestampOverflow)?;
+        let key_digest = receipt_key_digest(key);
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        let classified =
+            self.inspect_catalog_under_stable_fence(&mut catalog, Some(deadline), |catalog| {
+                if let Some(existing) = catalog.records.get(&key_digest) {
+                    if &existing.record.key != key {
+                        return Err(ReceiptLedgerError::ReceiptDigestCollision);
+                    }
+                    return Ok(existing.clone());
+                }
+                if catalog.invocation_index.contains_key(&key.invocation_id()) {
+                    return Err(ReceiptLedgerError::InvocationIdentityMismatch);
+                }
+                if catalog
+                    .reserved_task_index
+                    .contains_key(&key.reserved_task_id())
+                {
+                    return Err(ReceiptLedgerError::ReservedTaskIdentityMismatch);
+                }
+                Err(ReceiptLedgerError::ReceiptNotFound)
+            })?;
+        let expected = match classified {
+            Ok(existing) => existing,
+            Err(error) if error.requires_reopen() => {
+                return latch_catalog_error(&mut catalog, error)
+            }
+            Err(error) => return Err(error),
+        };
+        let persisted =
+            match self.read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))? {
+                Some(persisted) if persisted == expected => persisted,
+                Some(_) => {
+                    return latch_catalog_error(
+                        &mut catalog,
+                        ReceiptLedgerError::Corrupt("catalogued receipt row changed on disk"),
+                    )
+                }
+                None => {
+                    return latch_catalog_error(
+                        &mut catalog,
+                        ReceiptLedgerError::Corrupt("catalogued receipt row is missing"),
+                    )
+                }
+            };
+        match persisted.state() {
+            Ok(ReceiptState::AcknowledgedTombstone(tombstone)) => {
+                if tombstone.terminal_digest() == terminal_digest {
+                    return Ok(tombstone);
+                }
+                return self.reject_before_mutation(
+                    &mut catalog,
+                    deadline,
+                    ReceiptLedgerError::TerminalMismatch,
+                );
+            }
+            Ok(ReceiptState::DirectTerminalUnacked(receipt)) => {
+                if receipt.terminal().digest() != terminal_digest {
+                    return self.reject_before_mutation(
+                        &mut catalog,
+                        deadline,
+                        ReceiptLedgerError::TerminalMismatch,
+                    );
+                }
+            }
+            Ok(_) => {
+                return self.reject_before_mutation(
+                    &mut catalog,
+                    deadline,
+                    ReceiptLedgerError::ReceiptRowPresentUnsupported,
+                )
+            }
+            Err(error) => return latch_catalog_error(&mut catalog, error),
+        }
+
+        // Reclamation is part of successful ACK-capacity preflight only.
+        // Premature or digest-mismatched ACK must remain reject-before-mutation,
+        // including with unrelated expired tombstones in the pool.
+        self.reclaim_expired_tombstones_under_writer_lock(
+            &mut catalog,
+            acknowledged_at_epoch_ms,
+            deadline,
+        )?;
+
+        let generation = latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = generation
+            .checked_add(1)
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt generation exhausted u64",
+            ))?;
+        let record = StoredActiveReceiptV1 {
+            schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+            // Compact tombstones persist only exact key, terminal digest and
+            // first-ACK epoch. The generation file remains the mutation fence.
+            mutation_sequence: 0,
+            record_version: ReceiptVersion::new(3)
+                .expect("compact tombstone marker version is nonzero"),
+            key: key.clone(),
+            key_digest: key_digest.clone(),
+            lifecycle: StoredActiveLifecycleV1::AcknowledgedTombstone {
+                terminal_digest: terminal_digest.clone(),
+                acknowledged_at_epoch_ms,
+            },
+        };
+        let (record, encoded) =
+            serialize_reserved_record(record, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES)?;
+        let encoded_bytes =
+            u64::try_from(encoded.len()).map_err(|_| ReceiptLedgerError::RecordTooLarge)?;
+        let replacement = CatalogEntry {
+            record: record.clone(),
+            encoded_bytes,
+        };
+        if let Err(error) = validate_catalog_replace(&catalog, &persisted, &replacement) {
+            return self.reject_before_mutation(&mut catalog, deadline, error);
+        }
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_replace(&mut catalog, replacement);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        match self.read_active_record_bytes(&key_digest) {
+            Ok(Some(committed)) if committed == encoded => {}
+            Ok(Some(_)) | Ok(None) | Err(_) => {
+                catalog.unavailable = true;
+                return Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                });
+            }
+        }
+        if check_deadline(deadline).is_err() || self.verify_named_authority().is_err() {
+            catalog.unavailable = true;
+            return Err(ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: key_digest,
+            });
+        }
+        AcknowledgedTombstoneReceipt::new(
+            key.clone(),
+            receipt_key_digest(key),
+            terminal_digest.clone(),
+            acknowledged_at_epoch_ms,
+            encoded_bytes,
+        )
+    }
+
+    pub(crate) fn reclaim_expired_tombstones(
+        &self,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<usize, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+        self.reclaim_expired_tombstones_under_writer_lock(
+            &mut catalog,
+            observed_at_epoch_ms,
+            deadline,
+        )
+    }
+
+    fn reclaim_expired_tombstones_under_writer_lock(
+        &self,
+        catalog: &mut ReceiptCatalog,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<usize, ReceiptLedgerError> {
+        let mut expired = catalog
+            .records
+            .iter()
+            .filter_map(|(digest, entry)| match &entry.record.lifecycle {
+                StoredActiveLifecycleV1::AcknowledgedTombstone {
+                    acknowledged_at_epoch_ms,
+                    ..
+                } if acknowledged_at_epoch_ms
+                    .checked_add(ACKNOWLEDGED_TOMBSTONE_TTL_MS)
+                    .is_some_and(|expires| observed_at_epoch_ms >= expires) =>
+                {
+                    Some(digest.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        expired.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
+        for digest in &expired {
+            self.reclaim_expired_tombstone_under_writer_lock(
+                catalog,
+                digest,
+                observed_at_epoch_ms,
+                deadline,
+            )?;
+        }
+        Ok(expired.len())
+    }
+
+    fn reclaim_expired_tombstone_under_writer_lock(
+        &self,
+        catalog: &mut ReceiptCatalog,
+        key_digest: &ReceiptKeyDigest,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<(), ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let expected =
+            catalog
+                .records
+                .get(key_digest)
+                .cloned()
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "expired tombstone disappeared while the writer lock was held",
+                ))?;
+        let persisted = self
+            .read_entry_under_writer_lock(catalog, key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "catalogued expired tombstone row is missing",
+            ))?;
+        if persisted != expected {
+            return latch_catalog_error(
+                catalog,
+                ReceiptLedgerError::Corrupt("catalogued expired tombstone changed on disk"),
+            );
+        }
+        let expires_at_epoch_ms = match persisted.state() {
+            Ok(ReceiptState::AcknowledgedTombstone(receipt)) => receipt.expires_at_epoch_ms(),
+            Ok(_) => {
+                return latch_catalog_error(
+                    catalog,
+                    ReceiptLedgerError::Corrupt(
+                        "expired tombstone candidate changed lifecycle under writer lock",
+                    ),
+                )
+            }
+            Err(error) => return latch_catalog_error(catalog, error),
+        };
+        if observed_at_epoch_ms < expires_at_epoch_ms {
+            return latch_catalog_error(
+                catalog,
+                ReceiptLedgerError::Corrupt("selected acknowledged tombstone is not expired"),
+            );
+        }
+
+        let generation = latch_catalog_result(catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = generation
+            .checked_add(1)
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt generation exhausted u64",
+            ))?;
+        let record = build_expired_tombstone_deletion_record(
+            &persisted,
+            observed_at_epoch_ms,
+            mutation_sequence,
+        )?;
+        let (record, encoded) =
+            serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES)?;
+        if let Err(error) = validate_catalog_remove(catalog, &persisted) {
+            return latch_catalog_error(catalog, error);
+        }
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_remove(catalog, &persisted);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        if let Err(error) = self.remove_expired_deletion_witness(key_digest, &encoded, deadline) {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        if check_deadline(deadline).is_err() || self.verify_named_authority().is_err() {
+            catalog.unavailable = true;
+            return Err(ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: key_digest.clone(),
+            });
+        }
+        Ok(())
+    }
+
     fn reject_before_mutation<T>(
         &self,
         catalog: &mut ReceiptCatalog,
@@ -2081,13 +2540,15 @@ impl ReceiptLedgerStore {
                     "receipt catalog contains a duplicate reserved task id",
                 ));
             }
-            if !mutation_sequences.insert(entry.record.mutation_sequence) {
-                return Err(ReceiptLedgerError::Corrupt(
-                    "receipt recovery contains a duplicate mutation sequence",
-                ));
+            if !entry.is_tombstone() {
+                if !mutation_sequences.insert(entry.record.mutation_sequence) {
+                    return Err(ReceiptLedgerError::Corrupt(
+                        "receipt recovery contains a duplicate mutation sequence",
+                    ));
+                }
+                maximum_mutation_sequence =
+                    maximum_mutation_sequence.max(entry.record.mutation_sequence);
             }
-            maximum_mutation_sequence =
-                maximum_mutation_sequence.max(entry.record.mutation_sequence);
             if entry.is_expired_deletion() {
                 if expired_deletion_mutation_sequence
                     .replace(entry.record.mutation_sequence)
@@ -2755,6 +3216,30 @@ impl ReceiptLedgerPort for ReceiptLedgerStore {
         )
     }
 
+    fn acknowledge_direct(
+        &mut self,
+        key: &ReceiptKey,
+        terminal_digest: &TerminalDigest,
+        acknowledged_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
+        ReceiptLedgerStore::acknowledge_direct(
+            self,
+            key,
+            terminal_digest,
+            acknowledged_at_epoch_ms,
+            deadline,
+        )
+    }
+
+    fn reclaim_expired_tombstones(
+        &mut self,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<usize, ReceiptLedgerError> {
+        ReceiptLedgerStore::reclaim_expired_tombstones(self, observed_at_epoch_ms, deadline)
+    }
+
     fn recover(
         &mut self,
         key: &ReceiptKey,
@@ -2809,14 +3294,35 @@ fn read_active_record_from_retained(
     receipt_key_digest: &ReceiptKeyDigest,
 ) -> Result<CatalogEntry, ReceiptLedgerError> {
     let bytes = read_active_record_bytes_from_retained(file)?;
-    let record: StoredActiveReceiptV1 = serde_json::from_slice(&bytes)
-        .map_err(|_| ReceiptLedgerError::Corrupt("receipt row is not strict schema-v1 JSON"))?;
+    let record: StoredActiveReceiptV1 = match serde_json::from_slice(&bytes) {
+        Ok(record) => record,
+        Err(_) => {
+            let tombstone: StoredAcknowledgedTombstoneV1 =
+                serde_json::from_slice(&bytes).map_err(|_| {
+                    ReceiptLedgerError::Corrupt("receipt row is not a strict supported JSON record")
+                })?;
+            StoredActiveReceiptV1 {
+                schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+                mutation_sequence: 0,
+                record_version: ReceiptVersion::new(3)
+                    .expect("tombstone marker version is nonzero"),
+                key_digest: crate::application::receipt_ledger::receipt_key_digest(&tombstone.key),
+                key: tombstone.key,
+                lifecycle: StoredActiveLifecycleV1::AcknowledgedTombstone {
+                    terminal_digest: tombstone.terminal_digest,
+                    acknowledged_at_epoch_ms: tombstone.ack_epoch_ms,
+                },
+            }
+        }
+    };
     validate_active_record(&record, &bytes, receipt_key_digest)?;
     if matches!(
         &record.lifecycle,
         StoredActiveLifecycleV1::CancelReserved { .. }
             | StoredActiveLifecycleV1::ExpiredDeletion { .. }
+            | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
             | StoredActiveLifecycleV1::ReservedUnbound { .. }
+            | StoredActiveLifecycleV1::AcknowledgedTombstone { .. }
     ) {
         validate_persisted_reserved_record_bytes(&record, &bytes)?;
     }
@@ -3144,6 +3650,37 @@ fn build_expired_deletion_record(
     })
 }
 
+fn build_expired_tombstone_deletion_record(
+    expected: &CatalogEntry,
+    observed_at_epoch_ms: u64,
+    mutation_sequence: u64,
+) -> Result<StoredActiveReceiptV1, ReceiptLedgerError> {
+    let (prior_acknowledged_at_epoch_ms, prior_terminal_digest) = match &expected.record.lifecycle {
+        StoredActiveLifecycleV1::AcknowledgedTombstone {
+            terminal_digest,
+            acknowledged_at_epoch_ms,
+        } => (*acknowledged_at_epoch_ms, terminal_digest.clone()),
+        _ => {
+            return Err(ReceiptLedgerError::Corrupt(
+                "expired tombstone deletion witness requires an acknowledged predecessor",
+            ))
+        }
+    };
+    Ok(StoredActiveReceiptV1 {
+        schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+        mutation_sequence,
+        record_version: ReceiptVersion::new(4)
+            .expect("expired tombstone witness version is nonzero"),
+        key: expected.record.key.clone(),
+        key_digest: expected.record.key_digest.clone(),
+        lifecycle: StoredActiveLifecycleV1::ExpiredTombstoneDeletion {
+            observed_at_epoch_ms,
+            prior_acknowledged_at_epoch_ms,
+            prior_terminal_digest,
+        },
+    })
+}
+
 /// Sole serializer for active non-terminal receipt records.
 ///
 /// Direct terminal bytes are owned by `terminal_codec_v5`; accepting one here
@@ -3160,8 +3697,18 @@ fn serialize_reserved_record(
             "Direct terminal rows must use the sole v5 terminal codec",
         ));
     }
-    let encoded = serde_json::to_vec(&record)
-        .map_err(|_| ReceiptLedgerError::Corrupt("receipt row serialization failed"))?;
+    let encoded = match &record.lifecycle {
+        StoredActiveLifecycleV1::AcknowledgedTombstone {
+            terminal_digest,
+            acknowledged_at_epoch_ms,
+        } => serde_json::to_vec(&StoredAcknowledgedTombstoneV1 {
+            key: record.key.clone(),
+            terminal_digest: terminal_digest.clone(),
+            ack_epoch_ms: *acknowledged_at_epoch_ms,
+        }),
+        _ => serde_json::to_vec(&record),
+    }
+    .map_err(|_| ReceiptLedgerError::Corrupt("receipt row serialization failed"))?;
     let encoded_bytes =
         u64::try_from(encoded.len()).map_err(|_| ReceiptLedgerError::RecordTooLarge)?;
     if encoded_bytes > maximum_encoded_bytes || encoded_bytes > MAX_RECEIPT_ENTITLEMENT_BYTES {
@@ -3176,8 +3723,12 @@ fn validate_persisted_reserved_record_bytes(
 ) -> Result<(), ReceiptLedgerError> {
     let maximum_encoded_bytes = match &record.lifecycle {
         StoredActiveLifecycleV1::CancelReserved { .. }
-        | StoredActiveLifecycleV1::ExpiredDeletion { .. } => MAX_CANCEL_RESERVED_RECORD_BYTES,
+        | StoredActiveLifecycleV1::ExpiredDeletion { .. }
+        | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. } => {
+            MAX_CANCEL_RESERVED_RECORD_BYTES
+        }
         StoredActiveLifecycleV1::ReservedUnbound { .. } => MAX_TASK_RECORD_ENVELOPE_BYTES as u64,
+        StoredActiveLifecycleV1::AcknowledgedTombstone { .. } => MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
         StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
             return Err(ReceiptLedgerError::Corrupt(
                 "non-terminal receipt validator received a Direct terminal lifecycle",
@@ -3275,7 +3826,12 @@ fn validate_active_record(
             "receipt row schema version is unsupported",
         ));
     }
-    if record.mutation_sequence == 0 {
+    if record.mutation_sequence == 0
+        && !matches!(
+            &record.lifecycle,
+            StoredActiveLifecycleV1::AcknowledgedTombstone { .. }
+        )
+    {
         return Err(ReceiptLedgerError::Corrupt(
             "receipt mutation sequence must be positive",
         ));
@@ -3351,6 +3907,28 @@ fn validate_active_record(
             }
             MAX_CANCEL_RESERVED_RECORD_BYTES
         }
+        StoredActiveLifecycleV1::ExpiredTombstoneDeletion {
+            observed_at_epoch_ms,
+            prior_acknowledged_at_epoch_ms,
+            ..
+        } => {
+            if record.record_version.get() != 4 {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired tombstone deletion witness has an invalid record version",
+                ));
+            }
+            let expires_at_epoch_ms = prior_acknowledged_at_epoch_ms
+                .checked_add(ACKNOWLEDGED_TOMBSTONE_TTL_MS)
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "expired tombstone deletion witness expiry exceeds u64",
+                ))?;
+            if *observed_at_epoch_ms < expires_at_epoch_ms {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired tombstone deletion witness predates the absolute expiry boundary",
+                ));
+            }
+            MAX_CANCEL_RESERVED_RECORD_BYTES
+        }
         StoredActiveLifecycleV1::ReservedUnbound {
             reserved_at_epoch_ms,
             original_cutoff,
@@ -3393,6 +3971,22 @@ fn validate_active_record(
             )?;
             MAX_RECEIPT_ENTITLEMENT_BYTES
         }
+        StoredActiveLifecycleV1::AcknowledgedTombstone {
+            acknowledged_at_epoch_ms,
+            ..
+        } => {
+            if record.record_version.get() < 3 {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "acknowledged tombstone must follow a direct terminal record",
+                ));
+            }
+            acknowledged_at_epoch_ms
+                .checked_add(ACKNOWLEDGED_TOMBSTONE_TTL_MS)
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "acknowledged tombstone expiry exceeds u64",
+                ))?;
+            MAX_ACKNOWLEDGED_TOMBSTONE_BYTES
+        }
     };
     if u64::try_from(encoded.len()).map_or(true, |length| length > per_record_limit) {
         return Err(ReceiptLedgerError::Corrupt(
@@ -3407,11 +4001,18 @@ fn validate_catalog_insert(
     entry: &CatalogEntry,
     recovering: bool,
 ) -> Result<(), ReceiptLedgerError> {
-    if catalog.records.len() >= MAX_LIVE_RECEIPTS {
+    if !entry.is_tombstone() && catalog.live_count() >= MAX_LIVE_RECEIPTS {
         return Err(if recovering {
             ReceiptLedgerError::Corrupt("receipt catalog exceeds the live-record limit")
         } else {
             ReceiptLedgerError::CapacityExceeded
+        });
+    }
+    if entry.is_tombstone() && catalog.tombstone_count() >= MAX_ACKNOWLEDGED_TOMBSTONES {
+        return Err(if recovering {
+            ReceiptLedgerError::Corrupt("receipt catalog exceeds the tombstone-record limit")
+        } else {
+            ReceiptLedgerError::TombstoneCapacityExceeded
         });
     }
     if catalog.records.contains_key(&entry.record.key_digest) {
@@ -3441,10 +4042,12 @@ fn validate_catalog_insert(
             ReceiptLedgerError::ReservedTaskIdentityMismatch
         });
     }
-    if catalog
-        .records
-        .values()
-        .any(|stored| stored.record.mutation_sequence == entry.record.mutation_sequence)
+    if !entry.is_tombstone()
+        && catalog
+            .records
+            .values()
+            .filter(|stored| !stored.is_tombstone())
+            .any(|stored| stored.record.mutation_sequence == entry.record.mutation_sequence)
     {
         return Err(ReceiptLedgerError::Corrupt(
             "receipt catalog contains a duplicate mutation sequence",
@@ -3452,7 +4055,7 @@ fn validate_catalog_insert(
     }
     let next_actual_bytes = catalog
         .actual_bytes
-        .checked_add(entry.encoded_bytes)
+        .checked_add(entry.live_actual_bytes())
         .ok_or(ReceiptLedgerError::CapacityExceeded)?;
     let next_reserved_bytes = catalog
         .reserved_result_bytes
@@ -3469,12 +4072,24 @@ fn validate_catalog_insert(
             ReceiptLedgerError::CapacityExceeded
         });
     }
+    let next_tombstone_bytes = catalog
+        .tombstone_bytes
+        .checked_add(entry.tombstone_bytes())
+        .ok_or(ReceiptLedgerError::TombstoneCapacityExceeded)?;
+    if next_tombstone_bytes > MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES {
+        return Err(if recovering {
+            ReceiptLedgerError::Corrupt("receipt catalog exceeds the tombstone byte limit")
+        } else {
+            ReceiptLedgerError::TombstoneCapacityExceeded
+        });
+    }
     Ok(())
 }
 
 fn commit_catalog_insert(catalog: &mut ReceiptCatalog, entry: CatalogEntry) {
-    catalog.actual_bytes += entry.encoded_bytes;
+    catalog.actual_bytes += entry.live_actual_bytes();
     catalog.reserved_result_bytes += entry.reserved_result_bytes();
+    catalog.tombstone_bytes += entry.tombstone_bytes();
     catalog.invocation_index.insert(
         entry.record.key.invocation_id(),
         entry.record.key_digest.clone(),
@@ -3498,7 +4113,7 @@ fn insert_catalog_entry(
     Ok(())
 }
 
-fn catalog_entry_is_expired_cancel_reserved(
+fn catalog_entry_is_expired_identity_reclaimable(
     catalog: &ReceiptCatalog,
     digest: &ReceiptKeyDigest,
     observed_at_epoch_ms: u64,
@@ -3509,10 +4124,10 @@ fn catalog_entry_is_expired_cancel_reserved(
         .ok_or(ReceiptLedgerError::Corrupt(
             "receipt identity index points outside the catalog",
         ))?;
-    Ok(entry_is_expired_cancel_reserved(
-        entry,
-        observed_at_epoch_ms,
-    ))
+    Ok(
+        entry_is_expired_cancel_reserved(entry, observed_at_epoch_ms)
+            || entry_is_expired_tombstone(entry, observed_at_epoch_ms),
+    )
 }
 
 fn entry_is_expired_cancel_reserved(entry: &CatalogEntry, observed_at_epoch_ms: u64) -> bool {
@@ -3522,6 +4137,18 @@ fn entry_is_expired_cancel_reserved(entry: &CatalogEntry, observed_at_epoch_ms: 
             expires_at_epoch_ms,
             ..
         } if observed_at_epoch_ms >= *expires_at_epoch_ms
+    )
+}
+
+fn entry_is_expired_tombstone(entry: &CatalogEntry, observed_at_epoch_ms: u64) -> bool {
+    matches!(
+        &entry.record.lifecycle,
+        StoredActiveLifecycleV1::AcknowledgedTombstone {
+            acknowledged_at_epoch_ms,
+            ..
+        } if acknowledged_at_epoch_ms
+            .checked_add(ACKNOWLEDGED_TOMBSTONE_TTL_MS)
+            .is_some_and(|expires_at_epoch_ms| observed_at_epoch_ms >= expires_at_epoch_ms)
     )
 }
 
@@ -3555,7 +4182,7 @@ fn validate_catalog_remove(
     }
     catalog
         .actual_bytes
-        .checked_sub(expected.encoded_bytes)
+        .checked_sub(expected.live_actual_bytes())
         .ok_or(ReceiptLedgerError::Corrupt(
             "receipt catalog actual-byte accounting underflowed",
         ))?;
@@ -3565,13 +4192,20 @@ fn validate_catalog_remove(
         .ok_or(ReceiptLedgerError::Corrupt(
             "receipt catalog reserved-byte accounting underflowed",
         ))?;
+    catalog
+        .tombstone_bytes
+        .checked_sub(expected.tombstone_bytes())
+        .ok_or(ReceiptLedgerError::Corrupt(
+            "receipt catalog tombstone-byte accounting underflowed",
+        ))?;
     Ok(())
 }
 
 fn commit_catalog_remove(catalog: &mut ReceiptCatalog, expected: &CatalogEntry) {
     let digest = &expected.record.key_digest;
-    catalog.actual_bytes -= expected.encoded_bytes;
+    catalog.actual_bytes -= expected.live_actual_bytes();
     catalog.reserved_result_bytes -= expected.reserved_result_bytes();
+    catalog.tombstone_bytes -= expected.tombstone_bytes();
     catalog
         .invocation_index
         .remove(&expected.record.key.invocation_id());
@@ -3598,18 +4232,21 @@ fn validate_catalog_replace(
             "receipt replacement changed its exact identity",
         ));
     }
-    if catalog.records.iter().any(|(digest, stored)| {
-        digest != &expected.record.key_digest
-            && stored.record.mutation_sequence == replacement.record.mutation_sequence
-    }) {
+    if !replacement.is_tombstone()
+        && catalog.records.iter().any(|(digest, stored)| {
+            digest != &expected.record.key_digest
+                && !stored.is_tombstone()
+                && stored.record.mutation_sequence == replacement.record.mutation_sequence
+        })
+    {
         return Err(ReceiptLedgerError::Corrupt(
             "receipt replacement reuses a mutation sequence",
         ));
     }
     let next_actual_bytes = catalog
         .actual_bytes
-        .checked_sub(expected.encoded_bytes)
-        .and_then(|bytes| bytes.checked_add(replacement.encoded_bytes))
+        .checked_sub(expected.live_actual_bytes())
+        .and_then(|bytes| bytes.checked_add(replacement.live_actual_bytes()))
         .ok_or(ReceiptLedgerError::Corrupt(
             "receipt catalog actual-byte accounting underflowed",
         ))?;
@@ -3627,22 +4264,45 @@ fn validate_catalog_replace(
     {
         return Err(ReceiptLedgerError::CapacityExceeded);
     }
+    let next_tombstone_count = catalog
+        .tombstone_count()
+        .checked_sub(usize::from(expected.is_tombstone()))
+        .and_then(|count| count.checked_add(usize::from(replacement.is_tombstone())))
+        .ok_or(ReceiptLedgerError::Corrupt(
+            "receipt catalog tombstone count underflowed",
+        ))?;
+    if next_tombstone_count > MAX_ACKNOWLEDGED_TOMBSTONES {
+        return Err(ReceiptLedgerError::TombstoneCapacityExceeded);
+    }
+    let next_tombstone_bytes = catalog
+        .tombstone_bytes
+        .checked_sub(expected.tombstone_bytes())
+        .and_then(|bytes| bytes.checked_add(replacement.tombstone_bytes()))
+        .ok_or(ReceiptLedgerError::Corrupt(
+            "receipt catalog tombstone-byte accounting underflowed",
+        ))?;
+    if next_tombstone_bytes > MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES {
+        return Err(ReceiptLedgerError::TombstoneCapacityExceeded);
+    }
     Ok(())
 }
 
 fn commit_catalog_replace(catalog: &mut ReceiptCatalog, replacement: CatalogEntry) {
     let digest = replacement.record.key_digest.clone();
-    let replacement_encoded_bytes = replacement.encoded_bytes;
+    let replacement_live_actual_bytes = replacement.live_actual_bytes();
     let replacement_reserved_result_bytes = replacement.reserved_result_bytes();
+    let replacement_tombstone_bytes = replacement.tombstone_bytes();
     let previous = catalog
         .records
         .insert(digest, replacement)
         .expect("validated receipt replacement has an existing catalog entry");
     catalog.actual_bytes =
-        catalog.actual_bytes - previous.encoded_bytes + replacement_encoded_bytes;
+        catalog.actual_bytes - previous.live_actual_bytes() + replacement_live_actual_bytes;
     catalog.reserved_result_bytes = catalog.reserved_result_bytes
         - previous.reserved_result_bytes()
         + replacement_reserved_result_bytes;
+    catalog.tombstone_bytes =
+        catalog.tombstone_bytes - previous.tombstone_bytes() + replacement_tombstone_bytes;
 }
 
 fn latch_catalog_error<T>(
@@ -5278,6 +5938,315 @@ mod tests {
     }
 
     #[test]
+    fn direct_ack_compacts_payload_to_restart_stable_idempotent_tombstone() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let cutoff =
+            OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid original response cutoff");
+        let reserved = store
+            .reserve(key.clone(), cutoff, reserve_deadline())
+            .expect("reserve exact receipt")
+            .into_reservation()
+            .expect("receipt remains reserved");
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("direct result to compact")),
+        })
+        .expect("canonical direct terminal");
+        let terminal_digest = terminal.digest().clone();
+        let committed = store
+            .publish_direct_terminal(
+                &key,
+                reserved.record_version(),
+                2_000,
+                terminal,
+                reserve_deadline(),
+            )
+            .expect("publish exact direct terminal");
+
+        let acknowledged = store
+            .acknowledge_direct(&key, &terminal_digest, 2_100, reserve_deadline())
+            .expect("acknowledge committed direct terminal");
+        assert_eq!(acknowledged.key(), &key);
+        assert_eq!(acknowledged.terminal_digest(), &terminal_digest);
+        assert_eq!(acknowledged.acknowledged_at_epoch_ms(), 2_100);
+        assert_eq!(acknowledged.expires_at_epoch_ms(), 902_100);
+        assert!(acknowledged.encoded_bytes() <= MAX_ACKNOWLEDGED_TOMBSTONE_BYTES);
+        assert_eq!(store.generation().expect("generation after ack"), 3);
+        {
+            let catalog = store.writer.lock().expect("inspect acknowledged catalog");
+            assert_eq!(catalog.live_count(), 0);
+            assert_eq!(catalog.actual_bytes, 0);
+            assert_eq!(catalog.reserved_result_bytes, 0);
+            assert_eq!(catalog.tombstone_count(), 1);
+            assert_eq!(catalog.tombstone_bytes, acknowledged.encoded_bytes());
+        }
+        drop(store);
+
+        let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen receipt ledger");
+        let recovered = reopened
+            .recover_exact(&key, reserve_deadline())
+            .expect("recover exact acknowledged tombstone");
+        assert_eq!(
+            recovered,
+            ReceiptState::AcknowledgedTombstone(acknowledged.clone())
+        );
+        let duplicate = reopened
+            .acknowledge_direct(&key, &terminal_digest, 9_999, reserve_deadline())
+            .expect("repeat exact acknowledgement");
+        assert_eq!(duplicate, acknowledged);
+        assert_eq!(
+            reopened
+                .generation()
+                .expect("generation after duplicate ack"),
+            3,
+            "duplicate ACK must not rewrite first-ACK epoch or generation"
+        );
+        assert!(committed.encoded_bytes() > acknowledged.encoded_bytes());
+    }
+
+    #[test]
+    fn acknowledged_tombstone_is_physically_reclaimed_at_its_absolute_expiry() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let reserved = store
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                reserve_deadline(),
+            )
+            .expect("reserve exact receipt")
+            .into_reservation()
+            .expect("receipt remains reserved");
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+            .expect("canonical direct terminal");
+        let terminal_digest = terminal.digest().clone();
+        store
+            .publish_direct_terminal(
+                &key,
+                reserved.record_version(),
+                2_000,
+                terminal,
+                reserve_deadline(),
+            )
+            .expect("publish direct terminal");
+        store
+            .acknowledge_direct(&key, &terminal_digest, 2_100, reserve_deadline())
+            .expect("acknowledge direct terminal");
+
+        assert_eq!(
+            store
+                .reclaim_expired_tombstones(902_099, reserve_deadline())
+                .expect("inspect one millisecond before expiry"),
+            0
+        );
+        assert!(matches!(
+            store.recover_exact(&key, reserve_deadline()),
+            Ok(ReceiptState::AcknowledgedTombstone(_))
+        ));
+        assert_eq!(
+            store
+                .reclaim_expired_tombstones(902_100, reserve_deadline())
+                .expect("reclaim at absolute expiry"),
+            1
+        );
+        assert_eq!(
+            store.recover_exact(&key, reserve_deadline()),
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        );
+        assert_eq!(store.generation().expect("generation after expiry"), 4);
+        drop(store);
+
+        let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen after expiry");
+        assert_eq!(
+            reopened.recover_exact(&key, reserve_deadline()),
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        );
+    }
+
+    #[test]
+    fn expired_tombstone_releases_partial_identity_for_new_admission_only_at_expiry() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let original = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let reserved = store
+            .reserve(
+                original.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                reserve_deadline(),
+            )
+            .expect("reserve original receipt")
+            .into_reservation()
+            .expect("original remains reserved");
+        let terminal =
+            canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled).expect("canonical terminal");
+        let terminal_digest = terminal.digest().clone();
+        store
+            .publish_direct_terminal(
+                &original,
+                reserved.record_version(),
+                2_000,
+                terminal,
+                reserve_deadline(),
+            )
+            .expect("publish original direct terminal");
+        store
+            .acknowledge_direct(&original, &terminal_digest, 2_100, reserve_deadline())
+            .expect("acknowledge original direct terminal");
+        let replacement = receipt_key(INVOCATION_A, TASK_B, "workspace-b");
+
+        assert_eq!(
+            store.reserve(
+                replacement.clone(),
+                OriginalCutoffDescriptor::new(902_099, 7_000).expect("pre-expiry cutoff"),
+                reserve_deadline(),
+            ),
+            Err(ReceiptLedgerError::InvocationIdentityMismatch)
+        );
+        assert_eq!(store.generation().expect("pre-expiry generation"), 3);
+
+        let admitted = store
+            .reserve(
+                replacement.clone(),
+                OriginalCutoffDescriptor::new(902_100, 7_000).expect("expiry cutoff"),
+                reserve_deadline(),
+            )
+            .expect("expired identity is reusable")
+            .into_reservation()
+            .expect("replacement is newly reserved");
+        assert_eq!(admitted.key(), &replacement);
+        assert_eq!(store.generation().expect("replacement generation"), 5);
+        assert_eq!(
+            store.recover_exact(&original, reserve_deadline()),
+            Err(ReceiptLedgerError::InvocationIdentityMismatch)
+        );
+        assert!(!receipts
+            .join(ACTIVE_DIRECTORY_NAME)
+            .join(format!("{}.json", receipt_key_digest(&original).as_str()))
+            .exists());
+    }
+
+    #[test]
+    fn tombstone_pool_does_not_consume_the_sixty_four_live_receipt_slots() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let terminal_digest = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+            .expect("canonical terminal")
+            .digest()
+            .clone();
+        let mut catalog = store.writer.lock().expect("inspect receipt catalog");
+        for _ in 0..65 {
+            let key = receipt_key_with_ids(InvocationId::new(), TaskId::new(), "workspace-a");
+            let key_digest = receipt_key_digest(&key);
+            insert_catalog_entry(
+                &mut catalog,
+                CatalogEntry {
+                    record: StoredActiveReceiptV1 {
+                        schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+                        mutation_sequence: 0,
+                        record_version: ReceiptVersion::new(3).expect("tombstone marker version"),
+                        key,
+                        key_digest,
+                        lifecycle: StoredActiveLifecycleV1::AcknowledgedTombstone {
+                            terminal_digest: terminal_digest.clone(),
+                            acknowledged_at_epoch_ms: 1_000,
+                        },
+                    },
+                    encoded_bytes: 256,
+                },
+                false,
+            )
+            .expect("insert synthetic tombstone telemetry fixture");
+        }
+        assert_eq!(catalog.live_count(), 0);
+        assert_eq!(catalog.tombstone_count(), 65);
+        let fresh = receipt_key_with_ids(InvocationId::new(), TaskId::new(), "workspace-fresh");
+
+        store
+            .prepare_new_admission_under_writer_lock(
+                &mut catalog,
+                &fresh,
+                1_001,
+                reserve_deadline(),
+            )
+            .expect("separate tombstone pool cannot block live admission");
+    }
+
+    #[test]
+    fn rejected_ack_does_not_reclaim_an_unrelated_expired_tombstone() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let tombstone_key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let reserved = store
+            .reserve(
+                tombstone_key.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                reserve_deadline(),
+            )
+            .expect("reserve original receipt")
+            .into_reservation()
+            .expect("original remains reserved");
+        let terminal =
+            canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled).expect("canonical terminal");
+        let terminal_digest = terminal.digest().clone();
+        store
+            .publish_direct_terminal(
+                &tombstone_key,
+                reserved.record_version(),
+                2_000,
+                terminal,
+                reserve_deadline(),
+            )
+            .expect("publish original terminal");
+        let tombstone = store
+            .acknowledge_direct(&tombstone_key, &terminal_digest, 2_100, reserve_deadline())
+            .expect("acknowledge original terminal");
+        let premature_key = receipt_key(INVOCATION_B, TASK_B, "workspace-b");
+        store
+            .reserve(
+                premature_key.clone(),
+                OriginalCutoffDescriptor::new(3_000, 7_000).expect("valid second cutoff"),
+                reserve_deadline(),
+            )
+            .expect("reserve unrelated receipt");
+        let generation_before = store.generation().expect("generation before rejected ACK");
+
+        assert_eq!(
+            store.acknowledge_direct(
+                &premature_key,
+                &terminal_digest,
+                tombstone.expires_at_epoch_ms(),
+                reserve_deadline(),
+            ),
+            Err(ReceiptLedgerError::ReceiptRowPresentUnsupported)
+        );
+        assert_eq!(
+            store.generation().expect("generation after rejected ACK"),
+            generation_before
+        );
+        assert_eq!(
+            store.recover_exact(&tombstone_key, reserve_deadline()),
+            Ok(ReceiptState::AcknowledgedTombstone(tombstone))
+        );
+    }
+
+    #[test]
     fn direct_terminal_reopens_byte_equivalent_with_exact_state() {
         let root = tempfile::tempdir().expect("temporary root");
         let receipts = fs::canonicalize(root.path())
@@ -6896,12 +7865,18 @@ mod tests {
             StoredActiveLifecycleV1::ExpiredDeletion { .. } => {
                 panic!("reserved fixture decoded as an expiry deletion witness")
             }
+            StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. } => {
+                panic!("reserved fixture decoded as a tombstone deletion witness")
+            }
             StoredActiveLifecycleV1::ReservedUnbound {
                 reserved_at_epoch_ms,
                 ..
             } => *reserved_at_epoch_ms = 1_001,
             StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
                 panic!("reserved fixture decoded as a direct terminal")
+            }
+            StoredActiveLifecycleV1::AcknowledgedTombstone { .. } => {
+                panic!("reserved fixture decoded as an acknowledged tombstone")
             }
         }
         let contradictory = serde_json::to_vec(&record).expect("encode contradictory row");

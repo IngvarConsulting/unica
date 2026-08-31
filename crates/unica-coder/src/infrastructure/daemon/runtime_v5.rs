@@ -1,9 +1,10 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory, ReceiptAuthorityLock};
 use super::protocol_v5::{
     decode_v5_request_frame, read_bounded_v5_request_frame_before, DecodedV5Request,
-    V5ClientRequest, V5ClientRequestKind, V5DaemonErrorCode, V5EndpointRecord,
-    V5HandshakeServerResponse, V5InvocationPhase, V5InvocationResponse, V5ProbeServerResponse,
-    V5RequestFrameError, V5ServerResponse, DAEMON_PROTOCOL_VERSION, MAX_V5_RESPONSE_LINE_BYTES,
+    V5AcknowledgedReceipt, V5ClientRequest, V5ClientRequestKind, V5DaemonErrorCode,
+    V5EndpointRecord, V5HandshakeServerResponse, V5InvocationPhase, V5InvocationResponse,
+    V5ProbeServerResponse, V5RequestFrameError, V5ServerResponse, DAEMON_PROTOCOL_VERSION,
+    MAX_V5_RESPONSE_LINE_BYTES,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use super::protocol_v5::{
@@ -19,7 +20,7 @@ use crate::application::invocation_v5::{
 };
 use crate::application::receipt_ledger::{
     OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey, ReceiptLedgerError, ReceiptState,
-    ReserveOutcome, ReservedPhase,
+    ReserveOutcome, ReservedPhase, TerminalDigest,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
@@ -58,6 +59,7 @@ enum V5ReceiptRuntimeEventKind {
     V5ReceiptRuntimeEntered,
     CancelReservationConverted,
     ReceiptTerminalCommitted,
+    AcknowledgementCommitted,
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -575,6 +577,29 @@ impl V5ReceiptRuntime {
         }
     }
 
+    fn acknowledge_invocation(
+        &self,
+        key: ReceiptKey,
+        terminal_digest: TerminalDigest,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        self.validate_receipt_key(&key)?;
+        let acknowledged =
+            self.receipt_ledger
+                .acknowledge_direct(key, terminal_digest, epoch_ms, deadline)?;
+        #[cfg(feature = "receipt-ledger-test-support")]
+        self.telemetry.record_event(
+            V5ReceiptRuntimeEventKind::AcknowledgementCommitted,
+            epoch_ms,
+        );
+        Ok(V5RuntimeReply::Json(
+            V5ServerResponse::InvocationAcknowledged {
+                acknowledgement: V5AcknowledgedReceipt::from_receipt(&acknowledged),
+            },
+        ))
+    }
+
     fn reply_for_existing_state(
         &self,
         state: ReceiptState,
@@ -601,6 +626,13 @@ impl V5ReceiptRuntime {
                     deadline,
                 )?;
                 Ok(V5RuntimeReply::Prepared(publication.into_parts().1))
+            }
+            ReceiptState::AcknowledgedTombstone(receipt) => {
+                Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Acknowledged {
+                        acknowledgement: V5AcknowledgedReceipt::from_receipt(&receipt),
+                    },
+                }))
             }
             _ => Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
         }
@@ -1007,6 +1039,41 @@ fn handle_probe_connection(
                 ),
             }
         }
+        V5ClientRequestKind::AcknowledgeInvocationReceipt => {
+            let V5ClientRequest::AcknowledgeInvocationReceipt {
+                receipt_key,
+                terminal_digest,
+            } = decoded.into_request()
+            else {
+                unreachable!("request kind and decoded acknowledgement variant diverged");
+            };
+            let epoch_ms = runtime.epoch_ms();
+            match runtime.acknowledge_invocation(
+                receipt_key,
+                terminal_digest,
+                epoch_ms,
+                deadlines.operation,
+            ) {
+                Ok(reply) => {
+                    write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
+                }
+                Err(
+                    ReceiptLedgerError::TerminalMismatch
+                    | ReceiptLedgerError::ReceiptRowPresentUnsupported,
+                ) => write_runtime_probe_error_before(
+                    &mut stream,
+                    runtime,
+                    V5DaemonErrorCode::InvalidRequest,
+                    deadlines.response,
+                ),
+                Err(error) => write_runtime_ledger_error_before(
+                    &mut stream,
+                    runtime,
+                    &error,
+                    deadlines.response,
+                ),
+            }
+        }
         V5ClientRequestKind::Release => write_runtime_json_line_before(
             &mut stream,
             runtime,
@@ -1148,6 +1215,7 @@ fn daemon_error_code(error: &ReceiptLedgerError) -> V5DaemonErrorCode {
         }
         ReceiptLedgerError::ReceiptNotFound => V5DaemonErrorCode::ReceiptNotFound,
         ReceiptLedgerError::CapacityExceeded => V5DaemonErrorCode::ReceiptCapacity,
+        ReceiptLedgerError::TombstoneCapacityExceeded => V5DaemonErrorCode::TombstoneCapacity,
         ReceiptLedgerError::CommitUncertain { .. } => V5DaemonErrorCode::DurabilityUncertain,
         ReceiptLedgerError::DeadlineExceeded => V5DaemonErrorCode::Overloaded,
         ReceiptLedgerError::AlreadyOwned => V5DaemonErrorCode::DuplicateLease,

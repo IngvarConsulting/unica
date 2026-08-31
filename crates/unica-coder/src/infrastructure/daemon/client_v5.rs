@@ -5,7 +5,7 @@ use super::protocol_v5::{
     V5ProbeServerResponse, V5ServerResponse,
 };
 use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
-use crate::application::receipt_ledger::ReceiptKey;
+use crate::application::receipt_ledger::{ReceiptKey, TerminalDigest};
 use crate::infrastructure::platform::ManagedStartupChild;
 use std::io::{self, BufReader, Write};
 use std::net::TcpStream;
@@ -316,6 +316,21 @@ impl V5DaemonProcessOwner {
         self.exchange(
             V5ClientRequest::RecoverInvocationReceipt { receipt_key },
             "recover invocation receipt",
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn acknowledge_invocation_receipt(
+        &mut self,
+        receipt_key: ReceiptKey,
+        terminal_digest: TerminalDigest,
+    ) -> Result<V5ServerResponse, String> {
+        self.exchange(
+            V5ClientRequest::AcknowledgeInvocationReceipt {
+                receipt_key,
+                terminal_digest,
+            },
+            "acknowledge invocation receipt",
         )
     }
 

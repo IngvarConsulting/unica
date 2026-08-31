@@ -1,7 +1,8 @@
 use crate::application::receipt_ledger::{
-    receipt_key_digest, CancelExpiryOutcome, CancelResolution, CommittedDirectPublication,
-    OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort,
-    ReceiptState, ReceiptVersion, ReserveOutcome, V5CanonicalTerminal,
+    receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelResolution,
+    CommittedDirectPublication, OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest,
+    ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion, ReserveOutcome,
+    TerminalDigest, V5CanonicalTerminal,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -237,6 +238,18 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<CommittedDirectPublication>>,
     },
+    AcknowledgeDirect {
+        key: ReceiptKey,
+        terminal_digest: TerminalDigest,
+        acknowledged_at_epoch_ms: u64,
+        deadline: Instant,
+        ticket: Arc<Ticket<AcknowledgedTombstoneReceipt>>,
+    },
+    ReclaimExpiredTombstones {
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+        ticket: Arc<Ticket<usize>>,
+    },
     Recover {
         key: ReceiptKey,
         deadline: Instant,
@@ -403,6 +416,8 @@ enum TimeoutClass {
     RequestCancelOrReserve(ReceiptKeyDigest),
     ExpireCancelReserved(ReceiptKeyDigest),
     PublishDirectTerminal(ReceiptKeyDigest),
+    AcknowledgeDirect(ReceiptKeyDigest),
+    ReclaimExpiredTombstones,
     Recover,
 }
 
@@ -415,9 +430,11 @@ impl TimeoutClass {
             Self::Reserve(receipt_key_digest)
             | Self::RequestCancelOrReserve(receipt_key_digest)
             | Self::ExpireCancelReserved(receipt_key_digest)
-            | Self::PublishDirectTerminal(receipt_key_digest) => {
+            | Self::PublishDirectTerminal(receipt_key_digest)
+            | Self::AcknowledgeDirect(receipt_key_digest) => {
                 ReceiptLedgerError::CommitUncertain { receipt_key_digest }
             }
+            Self::ReclaimExpiredTombstones => ReceiptLedgerError::StoreUnavailable,
             Self::Recover => ReceiptLedgerError::StoreUnavailable,
         }
     }
@@ -658,6 +675,67 @@ impl ReceiptLedgerActor {
         ticket.wait(&self.health)
     }
 
+    pub(crate) fn acknowledge_direct(
+        &self,
+        key: ReceiptKey,
+        terminal_digest: TerminalDigest,
+        acknowledged_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::AcknowledgeDirect(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::AcknowledgeDirect {
+                key,
+                terminal_digest,
+                acknowledged_at_epoch_ms,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn reclaim_expired_tombstones(
+        &self,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<usize, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::ReclaimExpiredTombstones,
+        ));
+        self.enqueue(
+            Command::ReclaimExpiredTombstones {
+                observed_at_epoch_ms,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
     fn enqueue(&self, mut command: Command, deadline: Instant) -> Result<(), ReceiptLedgerError> {
         loop {
             if !self.health.is_ready() {
@@ -799,6 +877,44 @@ fn run_worker(
                 }));
                 ticket.finish(result, &health);
             }
+            Command::AcknowledgeDirect {
+                key,
+                terminal_digest,
+                acknowledged_at_epoch_ms,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.acknowledge_direct(
+                        &key,
+                        &terminal_digest,
+                        acknowledged_at_epoch_ms,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::ReclaimExpiredTombstones {
+                observed_at_epoch_ms,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.reclaim_expired_tombstones(observed_at_epoch_ms, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
             Command::Recover {
                 key,
                 deadline,
@@ -822,11 +938,11 @@ mod tests {
     };
     use crate::application::invocation::normalized_arguments_hash;
     use crate::application::receipt_ledger::{
-        canonical_v5_terminal, receipt_key_digest, request_scope_hash, CancelExpiryOutcome,
-        CancelReservedReceipt, CancelResolution, CommittedDirectPublication, CoreIdentityDigest,
-        OriginalCutoffDescriptor, ReceiptKey, ReceiptLedgerError, ReceiptState,
-        ReceiptTerminalOutcome, ReceiptVersion, RequestIdentity, ReserveOutcome,
-        V5CanonicalTerminal, V5ToolIdentity,
+        canonical_v5_terminal, receipt_key_digest, request_scope_hash,
+        AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelReservedReceipt, CancelResolution,
+        CommittedDirectPublication, CoreIdentityDigest, OriginalCutoffDescriptor, ReceiptKey,
+        ReceiptLedgerError, ReceiptState, ReceiptTerminalOutcome, ReceiptVersion, RequestIdentity,
+        ReserveOutcome, TerminalDigest, V5CanonicalTerminal, V5ToolIdentity,
     };
     use crate::domain::invocation::{InvocationId, TaskId};
     use std::cell::Cell;
@@ -1251,6 +1367,101 @@ mod tests {
     fn cancelled_terminal() -> V5CanonicalTerminal {
         canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
             .expect("cancelled terminal is canonical")
+    }
+
+    struct AcknowledgePort {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ReceiptLedgerPort for AcknowledgePort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: Instant,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: Instant,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn expire_cancel_reserved(
+            &mut self,
+            _key: ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _expected_mutation_sequence: u64,
+            _observed_at_epoch_ms: u64,
+            _deadline: Instant,
+        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: Instant,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn acknowledge_direct(
+            &mut self,
+            key: &ReceiptKey,
+            terminal_digest: &TerminalDigest,
+            acknowledged_at_epoch_ms: u64,
+            _deadline: Instant,
+        ) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            AcknowledgedTombstoneReceipt::new(
+                key.clone(),
+                receipt_key_digest(key),
+                terminal_digest.clone(),
+                acknowledged_at_epoch_ms,
+                256,
+            )
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: Instant,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+    }
+
+    #[test]
+    fn acknowledge_direct_round_trips_through_the_serial_actor() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(AcknowledgePort {
+            calls: Arc::clone(&calls),
+        });
+        let key = receipt_key();
+        let digest = cancelled_terminal().digest().clone();
+
+        let acknowledged = actor
+            .acknowledge_direct(
+                key.clone(),
+                digest.clone(),
+                1_234,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .expect("acknowledgement reaches the ledger port");
+
+        assert_eq!(acknowledged.key(), &key);
+        assert_eq!(acknowledged.terminal_digest(), &digest);
+        assert_eq!(acknowledged.acknowledged_at_epoch_ms(), 1_234);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

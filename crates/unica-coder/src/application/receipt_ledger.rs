@@ -127,6 +127,7 @@ pub(crate) enum ReceiptLedgerError {
     ReceiptDigestCollision,
     ReceiptNotFound,
     CapacityExceeded,
+    TombstoneCapacityExceeded,
     RecordTooLarge,
     TimestampOverflow,
     StoreUnavailable,
@@ -188,6 +189,9 @@ impl fmt::Display for ReceiptLedgerError {
             }
             Self::ReceiptNotFound => formatter.write_str("receipt was not found"),
             Self::CapacityExceeded => formatter.write_str("receipt ledger capacity is exhausted"),
+            Self::TombstoneCapacityExceeded => {
+                formatter.write_str("receipt tombstone capacity is exhausted")
+            }
             Self::RecordTooLarge => formatter.write_str("receipt record exceeds its byte limit"),
             Self::TimestampOverflow => {
                 formatter.write_str("receipt retention timestamp exceeds u64")
@@ -224,11 +228,13 @@ impl std::error::Error for ReceiptLedgerError {}
 pub(crate) struct ReceiptLedgerCatalogSnapshot {
     generation: u64,
     keys: Vec<ReceiptKey>,
+    tombstones: Vec<AcknowledgedTombstoneReceipt>,
     invocation_index: Vec<ReceiptKey>,
     reserved_task_index: Vec<ReceiptKey>,
     live_count: u64,
     actual_bytes: u64,
     reserved_result_bytes: u64,
+    tombstone_bytes: u64,
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -239,6 +245,10 @@ impl ReceiptLedgerCatalogSnapshot {
 
     pub(crate) fn keys(&self) -> &[ReceiptKey] {
         &self.keys
+    }
+
+    pub(crate) fn tombstones(&self) -> &[AcknowledgedTombstoneReceipt] {
+        &self.tombstones
     }
 
     pub(crate) fn invocation_index(&self) -> &[ReceiptKey] {
@@ -260,6 +270,10 @@ impl ReceiptLedgerCatalogSnapshot {
     pub(crate) const fn reserved_result_bytes(&self) -> u64 {
         self.reserved_result_bytes
     }
+
+    pub(crate) const fn tombstone_bytes(&self) -> u64 {
+        self.tombstone_bytes
+    }
 }
 
 /// One-shot construction authority for feature-only catalog telemetry.
@@ -276,32 +290,39 @@ pub(crate) struct ReceiptLedgerCatalogSnapshotAuthority {
 pub(crate) struct ReceiptLedgerCatalogSnapshotParts {
     generation: u64,
     keys: Vec<ReceiptKey>,
+    tombstones: Vec<AcknowledgedTombstoneReceipt>,
     invocation_index: Vec<ReceiptKey>,
     reserved_task_index: Vec<ReceiptKey>,
     live_count: u64,
     actual_bytes: u64,
     reserved_result_bytes: u64,
+    tombstone_bytes: u64,
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
 impl ReceiptLedgerCatalogSnapshotParts {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         generation: u64,
         keys: Vec<ReceiptKey>,
+        tombstones: Vec<AcknowledgedTombstoneReceipt>,
         invocation_index: Vec<ReceiptKey>,
         reserved_task_index: Vec<ReceiptKey>,
         live_count: u64,
         actual_bytes: u64,
         reserved_result_bytes: u64,
+        tombstone_bytes: u64,
     ) -> Self {
         Self {
             generation,
             keys,
+            tombstones,
             invocation_index,
             reserved_task_index,
             live_count,
             actual_bytes,
             reserved_result_bytes,
+            tombstone_bytes,
         }
     }
 }
@@ -319,11 +340,13 @@ impl ReceiptLedgerCatalogSnapshotAuthority {
         let ReceiptLedgerCatalogSnapshotParts {
             generation,
             keys,
+            tombstones,
             invocation_index,
             reserved_task_index,
             live_count,
             actual_bytes,
             reserved_result_bytes,
+            tombstone_bytes,
         } = parts;
         let observed_count = u64::try_from(keys.len()).map_err(|_| {
             ReceiptLedgerError::Corrupt("receipt catalog count does not fit telemetry")
@@ -333,17 +356,41 @@ impl ReceiptLedgerCatalogSnapshotAuthority {
                 "receipt catalog telemetry count contradicts its keys",
             ));
         }
-        if invocation_index.len() != keys.len()
-            || reserved_task_index.len() != keys.len()
-            || !same_exact_receipt_key_set(&keys, &invocation_index)
-            || !same_exact_receipt_key_set(&keys, &reserved_task_index)
+        let tombstone_count = u64::try_from(tombstones.len()).map_err(|_| {
+            ReceiptLedgerError::Corrupt("receipt tombstone count does not fit telemetry")
+        })?;
+        if tombstones.len() > MAX_ACKNOWLEDGED_TOMBSTONES
+            || tombstones
+                .iter()
+                .any(|receipt| receipt.encoded_bytes() > MAX_ACKNOWLEDGED_TOMBSTONE_BYTES)
+            || tombstones.iter().try_fold(0_u64, |bytes, receipt| {
+                bytes.checked_add(receipt.encoded_bytes())
+            }) != Some(tombstone_bytes)
+            || tombstone_bytes > MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "receipt catalog telemetry contradicts its tombstone pool",
+            ));
+        }
+        let mut indexed_keys = keys.clone();
+        indexed_keys.extend(tombstones.iter().map(|receipt| receipt.key().clone()));
+        let indexed_count =
+            live_count
+                .checked_add(tombstone_count)
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "receipt catalog telemetry count overflow",
+                ))?;
+        if u64::try_from(invocation_index.len()).ok() != Some(indexed_count)
+            || u64::try_from(reserved_task_index.len()).ok() != Some(indexed_count)
+            || !same_exact_receipt_key_set(&indexed_keys, &invocation_index)
+            || !same_exact_receipt_key_set(&indexed_keys, &reserved_task_index)
         {
             return Err(ReceiptLedgerError::Corrupt(
                 "receipt catalog telemetry indexes contradict its keys",
             ));
         }
-        for (offset, key) in keys.iter().enumerate() {
-            let prior = &keys[..offset];
+        for (offset, key) in indexed_keys.iter().enumerate() {
+            let prior = &indexed_keys[..offset];
             if prior
                 .iter()
                 .any(|candidate| receipt_key_digest(candidate) == receipt_key_digest(key))
@@ -380,11 +427,13 @@ impl ReceiptLedgerCatalogSnapshotAuthority {
         Ok(ReceiptLedgerCatalogSnapshot {
             generation,
             keys,
+            tombstones,
             invocation_index,
             reserved_task_index,
             live_count,
             actual_bytes,
             reserved_result_bytes,
+            tombstone_bytes,
         })
     }
 }
@@ -445,6 +494,24 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         terminal: V5CanonicalTerminal,
         deadline: Instant,
     ) -> Result<CommittedDirectPublication, ReceiptLedgerError>;
+
+    fn acknowledge_direct(
+        &mut self,
+        _key: &ReceiptKey,
+        _terminal_digest: &TerminalDigest,
+        _acknowledged_at_epoch_ms: u64,
+        _deadline: Instant,
+    ) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    fn reclaim_expired_tombstones(
+        &mut self,
+        _observed_at_epoch_ms: u64,
+        _deadline: Instant,
+    ) -> Result<usize, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
 
     fn recover(
         &mut self,
@@ -610,6 +677,11 @@ pub(crate) const MAX_LIVE_RECEIPT_BYTES: u64 =
     MAX_RECEIPT_ENTITLEMENT_BYTES * MAX_LIVE_RECEIPTS as u64;
 pub(crate) const DIRECT_TERMINAL_RETENTION_MS: u64 = 3_600_000;
 pub(crate) const CANCEL_RESERVATION_TTL_MS: u64 = 7_125;
+pub(crate) const ACKNOWLEDGED_TOMBSTONE_TTL_MS: u64 = 900_000;
+pub(crate) const MAX_ACKNOWLEDGED_TOMBSTONES: usize = 28_864;
+pub(crate) const MAX_ACKNOWLEDGED_TOMBSTONE_BYTES: u64 = 512;
+pub(crate) const MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES: u64 =
+    MAX_ACKNOWLEDGED_TOMBSTONE_BYTES * MAX_ACKNOWLEDGED_TOMBSTONES as u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1254,9 +1326,56 @@ impl DirectTerminalUnackedReceipt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AcknowledgedTombstoneReceipt {
-    record: ReceiptRecordHeader,
+    key: ReceiptKey,
+    key_digest: ReceiptKeyDigest,
     terminal_digest: TerminalDigest,
     acknowledged_at_epoch_ms: u64,
+    encoded_bytes: u64,
+}
+
+impl AcknowledgedTombstoneReceipt {
+    pub(crate) fn new(
+        key: ReceiptKey,
+        key_digest: ReceiptKeyDigest,
+        terminal_digest: TerminalDigest,
+        acknowledged_at_epoch_ms: u64,
+        encoded_bytes: u64,
+    ) -> Result<Self, ReceiptLedgerError> {
+        acknowledged_at_epoch_ms
+            .checked_add(ACKNOWLEDGED_TOMBSTONE_TTL_MS)
+            .ok_or(ReceiptLedgerError::TimestampOverflow)?;
+        Ok(Self {
+            key,
+            key_digest,
+            terminal_digest,
+            acknowledged_at_epoch_ms,
+            encoded_bytes,
+        })
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        &self.key
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        &self.key_digest
+    }
+
+    pub(crate) const fn terminal_digest(&self) -> &TerminalDigest {
+        &self.terminal_digest
+    }
+
+    pub(crate) const fn acknowledged_at_epoch_ms(&self) -> u64 {
+        self.acknowledged_at_epoch_ms
+    }
+
+    pub(crate) fn expires_at_epoch_ms(&self) -> u64 {
+        self.acknowledged_at_epoch_ms + ACKNOWLEDGED_TOMBSTONE_TTL_MS
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.encoded_bytes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2434,9 +2553,11 @@ mod tests {
                 reserved_result_bytes: 1_024,
             }),
             ReceiptState::AcknowledgedTombstone(AcknowledgedTombstoneReceipt {
-                record: record(),
+                key: key.clone(),
+                key_digest: key_digest.clone(),
                 terminal_digest: terminal_digest.clone(),
                 acknowledged_at_epoch_ms: 2_100,
+                encoded_bytes: 512,
             }),
             ReceiptState::TaskPromisedUnbound(TaskPromisedUnboundReceipt {
                 record: record(),

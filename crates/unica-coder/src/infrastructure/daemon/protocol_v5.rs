@@ -5,8 +5,9 @@ use crate::application::invocation_store::{
 };
 use crate::application::invocation_store_v5::V5SafeFailureReason;
 use crate::application::receipt_ledger::{
-    canonical_v5_terminal, receipt_key_digest, request_scope_hash, ReceiptKey, ReceiptKeyDigest,
-    ReceiptTerminalOutcome, RequestIdentity, TerminalDigest, V5ToolIdentity,
+    canonical_v5_terminal, receipt_key_digest, request_scope_hash, AcknowledgedTombstoneReceipt,
+    ReceiptKey, ReceiptKeyDigest, ReceiptTerminalOutcome, RequestIdentity, TerminalDigest,
+    V5ToolIdentity,
 };
 use crate::domain::invocation::{DomainResult, InvocationId, TaskId};
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -587,6 +588,33 @@ pub(crate) struct V5AcknowledgedReceipt {
     terminal_digest: TerminalDigest,
     ack_epoch_ms: u64,
     expires_epoch_ms: u64,
+}
+
+impl V5AcknowledgedReceipt {
+    pub(crate) fn from_receipt(receipt: &AcknowledgedTombstoneReceipt) -> Self {
+        Self {
+            receipt_key: receipt.key().clone(),
+            terminal_digest: receipt.terminal_digest().clone(),
+            ack_epoch_ms: receipt.acknowledged_at_epoch_ms(),
+            expires_epoch_ms: receipt.expires_at_epoch_ms(),
+        }
+    }
+
+    pub(crate) fn receipt_key(&self) -> &ReceiptKey {
+        &self.receipt_key
+    }
+
+    pub(crate) fn terminal_digest(&self) -> &TerminalDigest {
+        &self.terminal_digest
+    }
+
+    pub(crate) const fn ack_epoch_ms(&self) -> u64 {
+        self.ack_epoch_ms
+    }
+
+    pub(crate) const fn expires_epoch_ms(&self) -> u64 {
+        self.expires_epoch_ms
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
