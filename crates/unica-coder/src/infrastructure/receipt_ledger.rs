@@ -1,9 +1,10 @@
 use crate::application::invocation_store::MAX_TASK_RECORD_ENVELOPE_BYTES;
 use crate::application::receipt_ledger::{
-    receipt_key_digest, CommittedDirectPublication, DirectTerminalUnackedReceipt,
-    OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort,
-    ReceiptRecordHeader, ReceiptState, ReceiptTerminalOutcome, ReceiptVersion, ReserveOutcome,
-    ReservedPhase, ReservedReceipt, V5CanonicalTerminal, DIRECT_TERMINAL_RETENTION_MS,
+    receipt_key_digest, CancelExpiryOutcome, CancelReservedReceipt, CancelResolution,
+    CommittedDirectPublication, DirectTerminalUnackedReceipt, OriginalCutoffDescriptor, ReceiptKey,
+    ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort, ReceiptRecordHeader, ReceiptState,
+    ReceiptTerminalOutcome, ReceiptVersion, ReserveOutcome, ReservedPhase, ReservedReceipt,
+    V5CanonicalTerminal, CANCEL_RESERVATION_TTL_MS, DIRECT_TERMINAL_RETENTION_MS,
     MAX_LIVE_RECEIPTS, MAX_LIVE_RECEIPT_BYTES, MAX_RECEIPT_ENTITLEMENT_BYTES,
 };
 use crate::domain::invocation::{InvocationId, TaskId};
@@ -20,7 +21,7 @@ use crate::infrastructure::platform::filesystem::{
     RetainedDirectoryCapability, RetainedRegularFileCapability,
 };
 use fs2::FileExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -34,6 +35,7 @@ const GENERATION_FILE_NAME: &str = "generation";
 const LEDGER_LOCK_FILE_NAME: &str = ".receipt-ledger.lock";
 const MAX_GENERATION_FILE_BYTES: usize = 32;
 const RECEIPT_RECORD_SCHEMA_VERSION: u32 = 1;
+const MAX_CANCEL_RESERVED_RECORD_BYTES: u64 = 1_024;
 const MAX_ACTIVE_DIRECTORY_ENTRIES: usize = MAX_LIVE_RECEIPTS * 2;
 const MAX_GENERATION_STAGING_ENTRIES: usize = MAX_LIVE_RECEIPTS;
 const MAX_RECEIPT_ROOT_DIRECTORY_ENTRIES: usize = MAX_GENERATION_STAGING_ENTRIES + 3;
@@ -57,6 +59,9 @@ thread_local! {
         std::cell::Cell::new(0)
     };
     static TEST_AFTER_RESERVE_CATALOG_LOCK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
+        std::cell::RefCell::new(None)
+    };
+    static TEST_AFTER_EXPIRED_DELETION_WITNESS_REMOVE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
         std::cell::RefCell::new(None)
     };
 }
@@ -130,6 +135,20 @@ fn run_after_reserve_catalog_lock_hook_for_test() {
     }
 }
 
+#[cfg(test)]
+fn set_after_expired_deletion_witness_remove_hook_for_test(hook: impl FnOnce() + 'static) {
+    TEST_AFTER_EXPIRED_DELETION_WITNESS_REMOVE.with(|slot| slot.replace(Some(Box::new(hook))));
+}
+
+#[cfg(test)]
+fn run_after_expired_deletion_witness_remove_hook_for_test() {
+    if let Some(hook) =
+        TEST_AFTER_EXPIRED_DELETION_WITNESS_REMOVE.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredActiveReceiptV1 {
@@ -149,6 +168,18 @@ struct StoredActiveReceiptV1 {
     deny_unknown_fields
 )]
 enum StoredActiveLifecycleV1 {
+    CancelReserved {
+        cancel_reserved_at_epoch_ms: u64,
+        expires_at_epoch_ms: u64,
+        cancel_requested: bool,
+    },
+    ExpiredDeletion {
+        observed_at_epoch_ms: u64,
+        prior_record_version: ReceiptVersion,
+        prior_mutation_sequence: u64,
+        prior_cancel_reserved_at_epoch_ms: u64,
+        prior_expires_at_epoch_ms: u64,
+    },
     ReservedUnbound {
         reserved_at_epoch_ms: u64,
         original_cutoff: OriginalCutoffDescriptor,
@@ -180,13 +211,43 @@ impl CatalogEntry {
     }
 
     fn reserved_result_bytes(&self) -> u64 {
-        MAX_RECEIPT_ENTITLEMENT_BYTES
-            .checked_sub(self.encoded_bytes)
-            .expect("validated receipt record fits its exact byte entitlement")
+        match &self.record.lifecycle {
+            StoredActiveLifecycleV1::CancelReserved { .. }
+            | StoredActiveLifecycleV1::ExpiredDeletion { .. } => 0,
+            StoredActiveLifecycleV1::ReservedUnbound { .. }
+            | StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
+                MAX_RECEIPT_ENTITLEMENT_BYTES
+                    .checked_sub(self.encoded_bytes)
+                    .expect("validated receipt record fits its exact byte entitlement")
+            }
+        }
     }
 
     fn state(&self) -> Result<ReceiptState, ReceiptLedgerError> {
         match &self.record.lifecycle {
+            StoredActiveLifecycleV1::CancelReserved {
+                cancel_reserved_at_epoch_ms,
+                expires_at_epoch_ms,
+                cancel_requested,
+            } => {
+                let receipt = CancelReservedReceipt::new(
+                    self.record.key.clone(),
+                    self.record.record_version,
+                    self.record.mutation_sequence,
+                    self.encoded_bytes,
+                    *cancel_reserved_at_epoch_ms,
+                )
+                .map_err(|_| ReceiptLedgerError::Corrupt("CancelReserved expiry exceeds u64"))?;
+                if !cancel_requested || receipt.expires_at_epoch_ms() != *expires_at_epoch_ms {
+                    return Err(ReceiptLedgerError::Corrupt(
+                        "CancelReserved row contradicts its fixed cancellation reservation",
+                    ));
+                }
+                Ok(ReceiptState::CancelReserved(receipt))
+            }
+            StoredActiveLifecycleV1::ExpiredDeletion { .. } => Err(ReceiptLedgerError::Corrupt(
+                "expired deletion witness is not a live receipt state",
+            )),
             StoredActiveLifecycleV1::ReservedUnbound {
                 reserved_at_epoch_ms,
                 original_cutoff,
@@ -223,11 +284,18 @@ impl CatalogEntry {
     fn reservation(&self) -> Result<ReservedReceipt, ReceiptLedgerError> {
         match self.state()? {
             ReceiptState::Reserved(reservation) => Ok(reservation),
-            ReceiptState::DirectTerminalUnacked(_) => {
+            ReceiptState::CancelReserved(_) | ReceiptState::DirectTerminalUnacked(_) => {
                 Err(ReceiptLedgerError::ReceiptRowPresentUnsupported)
             }
-            _ => unreachable!("active receipt codec currently has two variants"),
+            _ => unreachable!("active receipt codec currently has three variants"),
         }
+    }
+
+    fn is_expired_deletion(&self) -> bool {
+        matches!(
+            &self.record.lifecycle,
+            StoredActiveLifecycleV1::ExpiredDeletion { .. }
+        )
     }
 }
 
@@ -262,6 +330,8 @@ struct RecoveredCatalog {
     catalog: ReceiptCatalog,
     maximum_mutation_sequence: u64,
     staging: Vec<RecoveryStagingEntry>,
+    expired_deletions: Vec<RecoveryStagingEntry>,
+    expired_deletion_mutation_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,6 +522,8 @@ impl ReceiptLedgerStore {
                 catalog: ReceiptCatalog::default(),
                 maximum_mutation_sequence: 0,
                 staging: Vec::new(),
+                expired_deletions: Vec::new(),
+                expired_deletion_mutation_sequence: None,
             }
         };
         check_deadline(deadline)?;
@@ -475,6 +547,15 @@ impl ReceiptLedgerStore {
             return Err(ReceiptLedgerError::Corrupt(
                 "nonzero receipt generation is missing its active directory",
             ));
+        }
+        if let Some(witness_sequence) = recovered.expired_deletion_mutation_sequence {
+            let is_current_or_next = witness_sequence == persisted_generation
+                || persisted_generation.checked_add(1) == Some(witness_sequence);
+            if !is_current_or_next || witness_sequence != recovered.maximum_mutation_sequence {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired deletion witness is not the next persisted mutation",
+                ));
+            }
         }
         let (active, active_file) = match existing_active {
             Some(existing) => existing,
@@ -524,6 +605,11 @@ impl ReceiptLedgerStore {
             check_deadline(deadline)?;
             store.publish_generation(recovered.maximum_mutation_sequence, None, Some(deadline))?;
         }
+        // An ExpiredDeletion row is the durable commit witness for logical
+        // removal.  Its mutation sequence must become authoritative before the
+        // witness is unlinked, otherwise a crash could resurrect the previous
+        // generation without any evidence that the receipt was deleted.
+        store.remove_active_staging(recovered.expired_deletions, deadline)?;
         check_deadline(deadline)?;
         *store
             .writer
@@ -599,6 +685,322 @@ impl ReceiptLedgerStore {
         })
     }
 
+    pub(crate) fn request_cancel_or_reserve(
+        &self,
+        key: ReceiptKey,
+        cancel_reserved_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<CancelResolution, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let key_digest = receipt_key_digest(&key);
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        check_deadline(deadline)?;
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+
+        if let Some(existing) = catalog.records.get(&key_digest) {
+            if existing.record.key != key {
+                return self.reject_before_mutation(
+                    &mut catalog,
+                    deadline,
+                    ReceiptLedgerError::ReceiptDigestCollision,
+                );
+            }
+            let persisted = self
+                .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "catalogued receipt row is missing",
+                ))?;
+            let state = match persisted.state() {
+                Ok(state) => state,
+                Err(error) => return latch_catalog_error(&mut catalog, error),
+            };
+            return Ok(match state {
+                ReceiptState::CancelReserved(receipt) => CancelResolution::ExistingExact(receipt),
+                winner => CancelResolution::ExistingWinner(Box::new(winner)),
+            });
+        }
+        if catalog.invocation_index.contains_key(&key.invocation_id()) {
+            return self.reject_before_mutation(
+                &mut catalog,
+                deadline,
+                ReceiptLedgerError::InvocationIdentityMismatch,
+            );
+        }
+        if catalog
+            .reserved_task_index
+            .contains_key(&key.reserved_task_id())
+        {
+            return self.reject_before_mutation(
+                &mut catalog,
+                deadline,
+                ReceiptLedgerError::ReservedTaskIdentityMismatch,
+            );
+        }
+        if catalog.records.len() >= MAX_LIVE_RECEIPTS {
+            return self.reject_before_mutation(
+                &mut catalog,
+                deadline,
+                ReceiptLedgerError::CapacityExceeded,
+            );
+        }
+        let expires_at_epoch_ms = cancel_reserved_at_epoch_ms
+            .checked_add(CANCEL_RESERVATION_TTL_MS)
+            .ok_or(ReceiptLedgerError::TimestampOverflow)?;
+
+        let generation = latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = match generation.checked_add(1) {
+            Some(sequence) => sequence,
+            None => {
+                return self.reject_before_mutation(
+                    &mut catalog,
+                    deadline,
+                    ReceiptLedgerError::Corrupt("receipt generation exhausted u64"),
+                )
+            }
+        };
+        let record = build_cancel_reserved_record(
+            key,
+            key_digest.clone(),
+            cancel_reserved_at_epoch_ms,
+            expires_at_epoch_ms,
+            mutation_sequence,
+        );
+        let (record, encoded) =
+            match serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES) {
+                Ok(serialized) => serialized,
+                Err(error) => return self.reject_before_mutation(&mut catalog, deadline, error),
+            };
+        let encoded_bytes = match u64::try_from(encoded.len()) {
+            Ok(encoded_bytes) => encoded_bytes,
+            Err(_) => {
+                return self.reject_before_mutation(
+                    &mut catalog,
+                    deadline,
+                    ReceiptLedgerError::RecordTooLarge,
+                )
+            }
+        };
+        let entry = CatalogEntry {
+            record: record.clone(),
+            encoded_bytes,
+        };
+        if let Err(error) = validate_catalog_insert(&catalog, &entry, false) {
+            return self.reject_before_mutation(&mut catalog, deadline, error);
+        }
+        if let Err(error) = self.publish_new_record(&record, &encoded, deadline, || {
+            commit_catalog_insert(&mut catalog, entry);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        match self.read_active_record_bytes(&key_digest) {
+            Ok(Some(committed)) if committed.as_slice() == encoded.as_slice() => {}
+            Ok(Some(_)) | Ok(None) | Err(_) => {
+                catalog.unavailable = true;
+                return Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                });
+            }
+        }
+        if check_deadline(deadline).is_err() || self.verify_named_authority().is_err() {
+            catalog.unavailable = true;
+            return Err(ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: key_digest.clone(),
+            });
+        }
+        let committed = match catalog.records.get(&key_digest).cloned() {
+            Some(committed) if committed.record == record => committed,
+            Some(_) | None => {
+                catalog.unavailable = true;
+                return Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                });
+            }
+        };
+        match committed.state() {
+            Ok(ReceiptState::CancelReserved(receipt)) => {
+                Ok(CancelResolution::NewlyReserved(receipt))
+            }
+            Ok(_) | Err(_) => {
+                catalog.unavailable = true;
+                Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                })
+            }
+        }
+    }
+
+    pub(crate) fn expire_cancel_reserved(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        expected_mutation_sequence: u64,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let key_digest = receipt_key_digest(&key);
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        check_deadline(deadline)?;
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+
+        let Some(expected) = catalog.records.get(&key_digest).cloned() else {
+            if catalog.invocation_index.contains_key(&key.invocation_id()) {
+                return self.reject_before_mutation(
+                    &mut catalog,
+                    deadline,
+                    ReceiptLedgerError::InvocationIdentityMismatch,
+                );
+            }
+            if catalog
+                .reserved_task_index
+                .contains_key(&key.reserved_task_id())
+            {
+                return self.reject_before_mutation(
+                    &mut catalog,
+                    deadline,
+                    ReceiptLedgerError::ReservedTaskIdentityMismatch,
+                );
+            }
+            return match self.read_entry_under_writer_lock(
+                &mut catalog,
+                &key_digest,
+                Some(deadline),
+            )? {
+                None => Ok(CancelExpiryOutcome::Missing),
+                Some(_) => latch_catalog_error(
+                    &mut catalog,
+                    ReceiptLedgerError::Corrupt(
+                        "receipt row is present outside the recovered catalog",
+                    ),
+                ),
+            };
+        };
+        if expected.record.key != key {
+            return self.reject_before_mutation(
+                &mut catalog,
+                deadline,
+                ReceiptLedgerError::ReceiptDigestCollision,
+            );
+        }
+        let persisted = self
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "catalogued receipt row is missing",
+            ))?;
+        if persisted != expected {
+            return latch_catalog_error(
+                &mut catalog,
+                ReceiptLedgerError::Corrupt("catalogued receipt row changed on disk"),
+            );
+        }
+        let state = match persisted.state() {
+            Ok(state) => state,
+            Err(error) => return latch_catalog_error(&mut catalog, error),
+        };
+        let cancel_reserved = match state {
+            ReceiptState::CancelReserved(receipt) => receipt,
+            winner => return Ok(CancelExpiryOutcome::ExistingWinner(Box::new(winner))),
+        };
+        if cancel_reserved.record_version() != expected_version {
+            return Err(ReceiptLedgerError::ReceiptVersionMismatch {
+                expected: expected_version,
+                actual: cancel_reserved.record_version(),
+            });
+        }
+        if cancel_reserved.mutation_sequence() != expected_mutation_sequence {
+            return Err(ReceiptLedgerError::ReceiptMutationSequenceMismatch {
+                expected: expected_mutation_sequence,
+                actual: cancel_reserved.mutation_sequence(),
+            });
+        }
+        if observed_at_epoch_ms < cancel_reserved.expires_at_epoch_ms() {
+            return Ok(CancelExpiryOutcome::NotDue(cancel_reserved));
+        }
+
+        let next_record_version = match expected_version.checked_next() {
+            Some(version) => version,
+            None => {
+                return latch_catalog_error(
+                    &mut catalog,
+                    ReceiptLedgerError::Corrupt("receipt record version exhausted u64"),
+                )
+            }
+        };
+        let generation = latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = match generation.checked_add(1) {
+            Some(sequence) => sequence,
+            None => {
+                return latch_catalog_error(
+                    &mut catalog,
+                    ReceiptLedgerError::Corrupt("receipt generation exhausted u64"),
+                )
+            }
+        };
+        let record = match build_expired_deletion_record(
+            &persisted,
+            observed_at_epoch_ms,
+            mutation_sequence,
+            next_record_version,
+        ) {
+            Ok(record) => record,
+            Err(error) => return latch_catalog_error(&mut catalog, error),
+        };
+        let (record, encoded) =
+            match serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES) {
+                Ok(serialized) => serialized,
+                Err(error) => return self.reject_before_mutation(&mut catalog, deadline, error),
+            };
+        if let Err(error) = validate_catalog_remove(&catalog, &persisted) {
+            return latch_catalog_error(&mut catalog, error);
+        }
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_remove(&mut catalog, &persisted);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        if let Err(error) = self.remove_expired_deletion_witness(&key_digest, &encoded, deadline) {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        if check_deadline(deadline).is_err() || self.verify_named_authority().is_err() {
+            catalog.unavailable = true;
+            return Err(ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: key_digest,
+            });
+        }
+        Ok(CancelExpiryOutcome::Expired)
+    }
+
     pub(crate) fn reserve(
         &self,
         key: ReceiptKey,
@@ -636,7 +1038,16 @@ impl ReceiptLedgerStore {
                 Ok(state) => state,
                 Err(error) => return latch_catalog_error(&mut catalog, error),
             };
-            return Ok(ReserveOutcome::ExistingExact(state));
+            return match state {
+                ReceiptState::CancelReserved(_) => self.convert_cancel_reserved_to_submit(
+                    &mut catalog,
+                    persisted,
+                    key,
+                    original_cutoff,
+                    deadline,
+                ),
+                state => Ok(ReserveOutcome::ExistingExact(state)),
+            };
         }
         if catalog.invocation_index.contains_key(&key.invocation_id()) {
             return self.reject_before_mutation(
@@ -674,16 +1085,19 @@ impl ReceiptLedgerStore {
                 )
             }
         };
-        let (record, encoded) = match serialize_reserved_record(
+        let record = build_reserved_record(
             key,
             key_digest.clone(),
             original_cutoff,
             mutation_sequence,
+            ReceiptVersion::initial(),
             false,
-        ) {
-            Ok(serialized) => serialized,
-            Err(error) => return self.reject_before_mutation(&mut catalog, deadline, error),
-        };
+        );
+        let (record, encoded) =
+            match serialize_reserved_record(record, MAX_TASK_RECORD_ENVELOPE_BYTES as u64) {
+                Ok(serialized) => serialized,
+                Err(error) => return self.reject_before_mutation(&mut catalog, deadline, error),
+            };
         let encoded_bytes = match u64::try_from(encoded.len()) {
             Ok(encoded_bytes) => encoded_bytes,
             Err(_) => {
@@ -788,6 +1202,130 @@ impl ReceiptLedgerStore {
         Ok(ReserveOutcome::Created(committed.reservation()?))
     }
 
+    fn convert_cancel_reserved_to_submit(
+        &self,
+        catalog: &mut ReceiptCatalog,
+        expected: CatalogEntry,
+        key: ReceiptKey,
+        original_cutoff: OriginalCutoffDescriptor,
+        deadline: Instant,
+    ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+        let key_digest = expected.record.key_digest.clone();
+        let cancel_requested = match &expected.record.lifecycle {
+            StoredActiveLifecycleV1::CancelReserved {
+                expires_at_epoch_ms,
+                ..
+            } => original_cutoff.accepted_epoch_ms() < *expires_at_epoch_ms,
+            _ => {
+                return latch_catalog_error(
+                    catalog,
+                    ReceiptLedgerError::Corrupt(
+                        "cancel conversion requires a CancelReserved predecessor",
+                    ),
+                )
+            }
+        };
+        let next_record_version = match expected.record.record_version.checked_next() {
+            Some(version) => version,
+            None => {
+                return latch_catalog_error(
+                    catalog,
+                    ReceiptLedgerError::Corrupt("receipt record version exhausted u64"),
+                )
+            }
+        };
+        let generation = latch_catalog_result(catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = match generation.checked_add(1) {
+            Some(sequence) => sequence,
+            None => {
+                return latch_catalog_error(
+                    catalog,
+                    ReceiptLedgerError::Corrupt("receipt generation exhausted u64"),
+                )
+            }
+        };
+        let record = build_reserved_record(
+            key,
+            key_digest.clone(),
+            original_cutoff,
+            mutation_sequence,
+            next_record_version,
+            cancel_requested,
+        );
+        let (record, encoded) =
+            match serialize_reserved_record(record, MAX_TASK_RECORD_ENVELOPE_BYTES as u64) {
+                Ok(serialized) => serialized,
+                Err(error) => return self.reject_before_mutation(catalog, deadline, error),
+            };
+        let encoded_bytes = match u64::try_from(encoded.len()) {
+            Ok(encoded_bytes) => encoded_bytes,
+            Err(_) => {
+                return self.reject_before_mutation(
+                    catalog,
+                    deadline,
+                    ReceiptLedgerError::RecordTooLarge,
+                )
+            }
+        };
+        let replacement = CatalogEntry {
+            record: record.clone(),
+            encoded_bytes,
+        };
+        if let Err(error) = validate_catalog_replace(catalog, &expected, &replacement) {
+            if error.requires_reopen() {
+                return latch_catalog_error(catalog, error);
+            }
+            return self.reject_before_mutation(catalog, deadline, error);
+        }
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_replace(catalog, replacement);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        match self.read_active_record_bytes(&key_digest) {
+            Ok(Some(committed)) if committed.as_slice() == encoded.as_slice() => {}
+            Ok(Some(_)) | Ok(None) | Err(_) => {
+                catalog.unavailable = true;
+                return Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                });
+            }
+        }
+        if check_deadline(deadline).is_err() || self.verify_named_authority().is_err() {
+            catalog.unavailable = true;
+            return Err(ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: key_digest.clone(),
+            });
+        }
+        let committed = match catalog.records.get(&key_digest).cloned() {
+            Some(committed) if committed.record == record => committed,
+            Some(_) | None => {
+                catalog.unavailable = true;
+                return Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                });
+            }
+        };
+        match committed.reservation() {
+            Ok(reservation) => Ok(ReserveOutcome::Created(reservation)),
+            Err(_) => {
+                catalog.unavailable = true;
+                Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                })
+            }
+        }
+    }
+
     pub(crate) fn publish_direct_terminal_publication(
         &self,
         key: &ReceiptKey,
@@ -866,8 +1404,11 @@ impl ReceiptLedgerStore {
             ReceiptState::DirectTerminalUnacked(_) => {
                 return Err(ReceiptLedgerError::TerminalMismatch)
             }
+            ReceiptState::CancelReserved(_) => {
+                return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported)
+            }
             ReceiptState::Reserved(reserved) => *reserved.original_cutoff(),
-            _ => unreachable!("active receipt codec currently has two variants"),
+            _ => unreachable!("active receipt codec currently has three variants"),
         };
         if persisted.record.record_version != expected_version {
             return Err(ReceiptLedgerError::ReceiptVersionMismatch {
@@ -1217,7 +1758,12 @@ impl ReceiptLedgerStore {
         names.sort();
         let mut catalog = ReceiptCatalog::default();
         let mut maximum_mutation_sequence = 0;
+        let mut mutation_sequences = HashSet::new();
+        let mut recovered_invocations = HashMap::new();
+        let mut recovered_tasks = HashMap::new();
         let mut temporary_entries = Vec::new();
+        let mut expired_deletions = Vec::new();
+        let mut expired_deletion_mutation_sequence = None;
         for name in names {
             check_deadline(deadline)?;
             let Some(name_text) = name.to_str() else {
@@ -1239,12 +1785,55 @@ impl ReceiptLedgerStore {
                 continue;
             }
             let digest = parse_receipt_record_name(name_text)?;
-            let entry = read_active_record_from(active_file, &digest)?.ok_or(
-                ReceiptLedgerError::Corrupt("receipt row disappeared during bounded recovery"),
-            )?;
+            let mut retained = open_regular_child_nofollow(active_file, &name)
+                .map_err(|error| storage_error("open receipt row during recovery", error))?;
+            verify_owner_only_acl(&retained)
+                .map_err(|error| storage_error("verify recovered receipt row ownership", error))?;
+            let identity = file_identity(&retained)
+                .map_err(|error| storage_error("identify recovered receipt row", error))?;
+            let entry = read_active_record_from_retained(&mut retained, &digest)?;
             check_deadline(deadline)?;
+            if recovered_invocations
+                .insert(
+                    entry.record.key.invocation_id(),
+                    entry.record.key_digest.clone(),
+                )
+                .is_some()
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "receipt catalog contains a duplicate invocation id",
+                ));
+            }
+            if recovered_tasks
+                .insert(
+                    entry.record.key.reserved_task_id(),
+                    entry.record.key_digest.clone(),
+                )
+                .is_some()
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "receipt catalog contains a duplicate reserved task id",
+                ));
+            }
+            if !mutation_sequences.insert(entry.record.mutation_sequence) {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "receipt recovery contains a duplicate mutation sequence",
+                ));
+            }
             maximum_mutation_sequence =
                 maximum_mutation_sequence.max(entry.record.mutation_sequence);
+            if entry.is_expired_deletion() {
+                if expired_deletion_mutation_sequence
+                    .replace(entry.record.mutation_sequence)
+                    .is_some()
+                {
+                    return Err(ReceiptLedgerError::Corrupt(
+                        "receipt recovery contains more than one expiry deletion witness",
+                    ));
+                }
+                expired_deletions.push((name, identity, retained));
+                continue;
+            }
             insert_catalog_entry(&mut catalog, entry, true)?;
         }
         check_deadline(deadline)?;
@@ -1254,6 +1843,8 @@ impl ReceiptLedgerStore {
             catalog,
             maximum_mutation_sequence,
             staging: temporary_entries,
+            expired_deletions,
+            expired_deletion_mutation_sequence,
         })
     }
 
@@ -1409,6 +2000,46 @@ impl ReceiptLedgerStore {
         receipt_key_digest: &ReceiptKeyDigest,
     ) -> Result<Option<Vec<u8>>, ReceiptLedgerError> {
         read_active_record_bytes_from(&self.active_file, receipt_key_digest)
+    }
+
+    fn remove_expired_deletion_witness(
+        &self,
+        receipt_key_digest: &ReceiptKeyDigest,
+        expected_bytes: &[u8],
+        deadline: Instant,
+    ) -> Result<(), ReceiptLedgerError> {
+        let uncertain = || ReceiptLedgerError::CommitUncertain {
+            receipt_key_digest: receipt_key_digest.clone(),
+        };
+        if check_deadline(deadline).is_err() || self.verify_named_authority().is_err() {
+            return Err(uncertain());
+        }
+        let name = format!("{}.json", receipt_key_digest.as_str());
+        let name = OsStr::new(&name);
+        let mut witness =
+            open_regular_child_nofollow(&self.active_file, name).map_err(|_| uncertain())?;
+        verify_owner_only_acl(&witness).map_err(|_| uncertain())?;
+        let identity = file_identity(&witness).map_err(|_| uncertain())?;
+        let actual_bytes =
+            read_active_record_bytes_from_retained(&mut witness).map_err(|_| uncertain())?;
+        if actual_bytes != expected_bytes {
+            return Err(uncertain());
+        }
+        if check_deadline(deadline).is_err() || self.verify_named_authority().is_err() {
+            return Err(uncertain());
+        }
+        remove_identity_bound_regular_child(&self.active_file, name, identity, &witness)
+            .map_err(|_| uncertain())?;
+        drop(witness);
+        #[cfg(test)]
+        run_after_expired_deletion_witness_remove_hook_for_test();
+        if sync_receipt_row_directory(&self.active_file).is_err()
+            || check_deadline(deadline).is_err()
+            || self.verify_named_authority().is_err()
+        {
+            return Err(uncertain());
+        }
+        Ok(())
     }
 
     fn publish_new_record(
@@ -1792,6 +2423,38 @@ impl ReceiptLedgerPort for ReceiptLedgerStore {
         ReceiptLedgerStore::reserve(self, key, original_cutoff, deadline)
     }
 
+    fn request_cancel_or_reserve(
+        &mut self,
+        key: ReceiptKey,
+        cancel_reserved_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<CancelResolution, ReceiptLedgerError> {
+        ReceiptLedgerStore::request_cancel_or_reserve(
+            self,
+            key,
+            cancel_reserved_at_epoch_ms,
+            deadline,
+        )
+    }
+
+    fn expire_cancel_reserved(
+        &mut self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        expected_mutation_sequence: u64,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
+        ReceiptLedgerStore::expire_cancel_reserved(
+            self,
+            key,
+            expected_version,
+            expected_mutation_sequence,
+            observed_at_epoch_ms,
+            deadline,
+        )
+    }
+
     fn publish_direct_terminal(
         &mut self,
         key: &ReceiptKey,
@@ -1848,24 +2511,39 @@ fn read_active_record_from(
     active_file: &File,
     receipt_key_digest: &ReceiptKeyDigest,
 ) -> Result<Option<CatalogEntry>, ReceiptLedgerError> {
-    let Some(bytes) = read_active_record_bytes_from(active_file, receipt_key_digest)? else {
-        return Ok(None);
+    let record_name = format!("{}.json", receipt_key_digest.as_str());
+    let mut file = match open_regular_child_nofollow(active_file, OsStr::new(&record_name)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(storage_error("open active receipt row", error)),
     };
+    verify_owner_only_acl(&file)
+        .map_err(|error| storage_error("verify active receipt row ownership", error))?;
+    read_active_record_from_retained(&mut file, receipt_key_digest).map(Some)
+}
+
+fn read_active_record_from_retained(
+    file: &mut File,
+    receipt_key_digest: &ReceiptKeyDigest,
+) -> Result<CatalogEntry, ReceiptLedgerError> {
+    let bytes = read_active_record_bytes_from_retained(file)?;
     let record: StoredActiveReceiptV1 = serde_json::from_slice(&bytes)
         .map_err(|_| ReceiptLedgerError::Corrupt("receipt row is not strict schema-v1 JSON"))?;
     validate_active_record(&record, &bytes, receipt_key_digest)?;
     if matches!(
         &record.lifecycle,
-        StoredActiveLifecycleV1::ReservedUnbound { .. }
+        StoredActiveLifecycleV1::CancelReserved { .. }
+            | StoredActiveLifecycleV1::ExpiredDeletion { .. }
+            | StoredActiveLifecycleV1::ReservedUnbound { .. }
     ) {
         validate_persisted_reserved_record_bytes(&record, &bytes)?;
     }
-    Ok(Some(CatalogEntry {
+    Ok(CatalogEntry {
         record,
         encoded_bytes: u64::try_from(bytes.len()).map_err(|_| {
             ReceiptLedgerError::Corrupt("persisted receipt row byte count exceeds u64")
         })?,
-    }))
+    })
 }
 
 fn read_active_record_bytes_from(
@@ -1880,8 +2558,14 @@ fn read_active_record_bytes_from(
     };
     verify_owner_only_acl(&file)
         .map_err(|error| storage_error("verify active receipt row ownership", error))?;
+    read_active_record_bytes_from_retained(&mut file).map(Some)
+}
+
+fn read_active_record_bytes_from_retained(file: &mut File) -> Result<Vec<u8>, ReceiptLedgerError> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| storage_error("rewind active receipt row", error))?;
     let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
+    Read::by_ref(file)
         .take(MAX_RECEIPT_ENTITLEMENT_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| storage_error("read active receipt row", error))?;
@@ -1890,7 +2574,7 @@ fn read_active_record_bytes_from(
             "persisted receipt row exceeds its byte limit",
         ));
     }
-    Ok(Some(bytes))
+    Ok(bytes)
 }
 
 fn open_or_create_owner_only_directory(path: &Path) -> Result<File, ReceiptLedgerError> {
@@ -2100,17 +2784,18 @@ fn recovery_error(operation: &'static str, error: io::Error) -> ReceiptLedgerErr
     }
 }
 
-fn serialize_reserved_record(
+fn build_reserved_record(
     key: ReceiptKey,
     key_digest: ReceiptKeyDigest,
     original_cutoff: OriginalCutoffDescriptor,
     mutation_sequence: u64,
+    record_version: ReceiptVersion,
     cancel_requested: bool,
-) -> Result<(StoredActiveReceiptV1, Vec<u8>), ReceiptLedgerError> {
-    let record = StoredActiveReceiptV1 {
+) -> StoredActiveReceiptV1 {
+    StoredActiveReceiptV1 {
         schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
         mutation_sequence,
-        record_version: ReceiptVersion::initial(),
+        record_version,
         key,
         key_digest,
         lifecycle: StoredActiveLifecycleV1::ReservedUnbound {
@@ -2118,14 +2803,86 @@ fn serialize_reserved_record(
             original_cutoff,
             cancel_requested,
         },
-    };
+    }
+}
+
+fn build_cancel_reserved_record(
+    key: ReceiptKey,
+    key_digest: ReceiptKeyDigest,
+    cancel_reserved_at_epoch_ms: u64,
+    expires_at_epoch_ms: u64,
+    mutation_sequence: u64,
+) -> StoredActiveReceiptV1 {
+    StoredActiveReceiptV1 {
+        schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+        mutation_sequence,
+        record_version: ReceiptVersion::initial(),
+        key,
+        key_digest,
+        lifecycle: StoredActiveLifecycleV1::CancelReserved {
+            cancel_reserved_at_epoch_ms,
+            expires_at_epoch_ms,
+            cancel_requested: true,
+        },
+    }
+}
+
+fn build_expired_deletion_record(
+    expected: &CatalogEntry,
+    observed_at_epoch_ms: u64,
+    mutation_sequence: u64,
+    record_version: ReceiptVersion,
+) -> Result<StoredActiveReceiptV1, ReceiptLedgerError> {
+    let (prior_cancel_reserved_at_epoch_ms, prior_expires_at_epoch_ms) =
+        match &expected.record.lifecycle {
+            StoredActiveLifecycleV1::CancelReserved {
+                cancel_reserved_at_epoch_ms,
+                expires_at_epoch_ms,
+                ..
+            } => (*cancel_reserved_at_epoch_ms, *expires_at_epoch_ms),
+            _ => {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired deletion witness requires a CancelReserved predecessor",
+                ))
+            }
+        };
+    Ok(StoredActiveReceiptV1 {
+        schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+        mutation_sequence,
+        record_version,
+        key: expected.record.key.clone(),
+        key_digest: expected.record.key_digest.clone(),
+        lifecycle: StoredActiveLifecycleV1::ExpiredDeletion {
+            observed_at_epoch_ms,
+            prior_record_version: expected.record.record_version,
+            prior_mutation_sequence: expected.record.mutation_sequence,
+            prior_cancel_reserved_at_epoch_ms,
+            prior_expires_at_epoch_ms,
+        },
+    })
+}
+
+/// Sole serializer for active non-terminal receipt records.
+///
+/// Direct terminal bytes are owned by `terminal_codec_v5`; accepting one here
+/// would create a second, potentially divergent codec for the same lifecycle.
+fn serialize_reserved_record(
+    record: StoredActiveReceiptV1,
+    maximum_encoded_bytes: u64,
+) -> Result<(StoredActiveReceiptV1, Vec<u8>), ReceiptLedgerError> {
+    if matches!(
+        &record.lifecycle,
+        StoredActiveLifecycleV1::DirectTerminalUnacked { .. }
+    ) {
+        return Err(ReceiptLedgerError::Corrupt(
+            "Direct terminal rows must use the sole v5 terminal codec",
+        ));
+    }
     let encoded = serde_json::to_vec(&record)
         .map_err(|_| ReceiptLedgerError::Corrupt("receipt row serialization failed"))?;
     let encoded_bytes =
         u64::try_from(encoded.len()).map_err(|_| ReceiptLedgerError::RecordTooLarge)?;
-    if encoded.len() > MAX_TASK_RECORD_ENVELOPE_BYTES
-        || encoded_bytes > MAX_RECEIPT_ENTITLEMENT_BYTES
-    {
+    if encoded_bytes > maximum_encoded_bytes || encoded_bytes > MAX_RECEIPT_ENTITLEMENT_BYTES {
         return Err(ReceiptLedgerError::RecordTooLarge);
     }
     Ok((record, encoded))
@@ -2135,23 +2892,18 @@ fn validate_persisted_reserved_record_bytes(
     record: &StoredActiveReceiptV1,
     persisted_bytes: &[u8],
 ) -> Result<(), ReceiptLedgerError> {
-    let StoredActiveLifecycleV1::ReservedUnbound {
-        original_cutoff,
-        cancel_requested,
-        ..
-    } = &record.lifecycle
-    else {
-        return Err(ReceiptLedgerError::Corrupt(
-            "reserved receipt validator received another lifecycle",
-        ));
+    let maximum_encoded_bytes = match &record.lifecycle {
+        StoredActiveLifecycleV1::CancelReserved { .. }
+        | StoredActiveLifecycleV1::ExpiredDeletion { .. } => MAX_CANCEL_RESERVED_RECORD_BYTES,
+        StoredActiveLifecycleV1::ReservedUnbound { .. } => MAX_TASK_RECORD_ENVELOPE_BYTES as u64,
+        StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
+            return Err(ReceiptLedgerError::Corrupt(
+                "non-terminal receipt validator received a Direct terminal lifecycle",
+            ))
+        }
     };
-    let (canonical_record, canonical_bytes) = serialize_reserved_record(
-        record.key.clone(),
-        record.key_digest.clone(),
-        *original_cutoff,
-        record.mutation_sequence,
-        *cancel_requested,
-    )?;
+    let (canonical_record, canonical_bytes) =
+        serialize_reserved_record(record.clone(), maximum_encoded_bytes)?;
     if &canonical_record != record || canonical_bytes != persisted_bytes {
         return Err(ReceiptLedgerError::Corrupt(
             "receipt row is not canonical schema-v1 JSON",
@@ -2253,6 +3005,70 @@ fn validate_active_record(
         ));
     }
     let per_record_limit = match &record.lifecycle {
+        StoredActiveLifecycleV1::CancelReserved {
+            cancel_reserved_at_epoch_ms,
+            expires_at_epoch_ms,
+            cancel_requested,
+        } => {
+            if record.record_version != ReceiptVersion::initial() {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "CancelReserved receipt must retain its initial record version",
+                ));
+            }
+            if !cancel_requested {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "CancelReserved receipt must persist cancelRequested=true",
+                ));
+            }
+            let expected_expiry = cancel_reserved_at_epoch_ms
+                .checked_add(CANCEL_RESERVATION_TTL_MS)
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "CancelReserved expiry exceeds u64",
+                ))?;
+            if *expires_at_epoch_ms != expected_expiry {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "CancelReserved expiry is not the fixed absolute TTL",
+                ));
+            }
+            MAX_CANCEL_RESERVED_RECORD_BYTES
+        }
+        StoredActiveLifecycleV1::ExpiredDeletion {
+            observed_at_epoch_ms,
+            prior_record_version,
+            prior_mutation_sequence,
+            prior_cancel_reserved_at_epoch_ms,
+            prior_expires_at_epoch_ms,
+        } => {
+            if *prior_record_version != ReceiptVersion::initial() {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired deletion witness predecessor is not an initial CancelReserved",
+                ));
+            }
+            if prior_record_version.checked_next() != Some(record.record_version) {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired deletion witness does not advance its predecessor version",
+                ));
+            }
+            if *prior_mutation_sequence == 0 || *prior_mutation_sequence >= record.mutation_sequence
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired deletion witness does not follow its predecessor mutation",
+                ));
+            }
+            if prior_cancel_reserved_at_epoch_ms.checked_add(CANCEL_RESERVATION_TTL_MS)
+                != Some(*prior_expires_at_epoch_ms)
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired deletion witness predecessor expiry is not its fixed absolute TTL",
+                ));
+            }
+            if observed_at_epoch_ms < prior_expires_at_epoch_ms {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired deletion witness predates the absolute expiry boundary",
+                ));
+            }
+            MAX_CANCEL_RESERVED_RECORD_BYTES
+        }
         StoredActiveLifecycleV1::ReservedUnbound {
             reserved_at_epoch_ms,
             original_cutoff,
@@ -2398,6 +3214,62 @@ fn insert_catalog_entry(
     validate_catalog_insert(catalog, &entry, recovering)?;
     commit_catalog_insert(catalog, entry);
     Ok(())
+}
+
+fn validate_catalog_remove(
+    catalog: &ReceiptCatalog,
+    expected: &CatalogEntry,
+) -> Result<(), ReceiptLedgerError> {
+    let digest = &expected.record.key_digest;
+    if catalog.records.get(digest) != Some(expected) {
+        return Err(ReceiptLedgerError::Corrupt(
+            "receipt catalog changed before exact removal",
+        ));
+    }
+    if catalog
+        .invocation_index
+        .get(&expected.record.key.invocation_id())
+        != Some(digest)
+    {
+        return Err(ReceiptLedgerError::Corrupt(
+            "receipt invocation index changed before exact removal",
+        ));
+    }
+    if catalog
+        .reserved_task_index
+        .get(&expected.record.key.reserved_task_id())
+        != Some(digest)
+    {
+        return Err(ReceiptLedgerError::Corrupt(
+            "receipt task index changed before exact removal",
+        ));
+    }
+    catalog
+        .actual_bytes
+        .checked_sub(expected.encoded_bytes)
+        .ok_or(ReceiptLedgerError::Corrupt(
+            "receipt catalog actual-byte accounting underflowed",
+        ))?;
+    catalog
+        .reserved_result_bytes
+        .checked_sub(expected.reserved_result_bytes())
+        .ok_or(ReceiptLedgerError::Corrupt(
+            "receipt catalog reserved-byte accounting underflowed",
+        ))?;
+    Ok(())
+}
+
+fn commit_catalog_remove(catalog: &mut ReceiptCatalog, expected: &CatalogEntry) {
+    let digest = &expected.record.key_digest;
+    catalog.actual_bytes -= expected.encoded_bytes;
+    catalog.reserved_result_bytes -= expected.reserved_result_bytes();
+    catalog
+        .invocation_index
+        .remove(&expected.record.key.invocation_id());
+    catalog
+        .reserved_task_index
+        .remove(&expected.record.key.reserved_task_id());
+    catalog.records.remove(digest);
 }
 
 fn validate_catalog_replace(
@@ -2643,9 +3515,16 @@ mod tests {
         mutation_sequence: u64,
     ) -> ReceiptKeyDigest {
         let key_digest = crate::application::receipt_ledger::receipt_key_digest(&key);
-        let (_, encoded) =
-            serialize_reserved_record(key, key_digest.clone(), cutoff, mutation_sequence, false)
-                .expect("serialize valid reserved-row fixture");
+        let record = build_reserved_record(
+            key,
+            key_digest.clone(),
+            cutoff,
+            mutation_sequence,
+            ReceiptVersion::initial(),
+            false,
+        );
+        let (_, encoded) = serialize_reserved_record(record, MAX_TASK_RECORD_ENVELOPE_BYTES as u64)
+            .expect("serialize valid reserved-row fixture");
         let receipts = open_directory_nofollow(receipts).expect("open receipts fixture");
         let active = crate::infrastructure::platform::filesystem::open_directory_child_nofollow(
             &receipts,
@@ -2659,6 +3538,48 @@ mod tests {
             .and_then(|()| row.sync_all())
             .expect("persist reserved-row fixture");
         sync_directory(&active).expect("sync reserved-row fixture");
+        key_digest
+    }
+
+    fn write_expiry_witness_fixture(
+        receipts: &Path,
+        key: ReceiptKey,
+        prior_mutation_sequence: u64,
+        mutation_sequence: u64,
+    ) -> ReceiptKeyDigest {
+        let key_digest = receipt_key_digest(&key);
+        let predecessor = CatalogEntry {
+            record: build_cancel_reserved_record(
+                key,
+                key_digest.clone(),
+                1_000,
+                8_125,
+                prior_mutation_sequence,
+            ),
+            encoded_bytes: 512,
+        };
+        let record = build_expired_deletion_record(
+            &predecessor,
+            8_125,
+            mutation_sequence,
+            ReceiptVersion::new(2).expect("next expiry witness version"),
+        )
+        .expect("build valid expiry witness fixture");
+        let (_, encoded) = serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES)
+            .expect("serialize expiry witness fixture");
+        let receipts = open_directory_nofollow(receipts).expect("open receipts fixture");
+        let active = crate::infrastructure::platform::filesystem::open_directory_child_nofollow(
+            &receipts,
+            OsStr::new(ACTIVE_DIRECTORY_NAME),
+        )
+        .expect("open active fixture");
+        let name = format!("{}.json", key_digest.as_str());
+        let mut row = create_owner_only_file_child(&active, OsStr::new(&name))
+            .expect("create owner-only expiry witness fixture");
+        row.write_all(&encoded)
+            .and_then(|()| row.sync_all())
+            .expect("persist expiry witness fixture");
+        sync_directory(&active).expect("sync expiry witness fixture");
         key_digest
     }
 
@@ -2749,6 +3670,934 @@ mod tests {
         assert!(
             names.iter().all(|name| !name.starts_with(".generation.")),
             "reopen removes the abandoned generation staging file"
+        );
+    }
+
+    #[test]
+    fn cancel_reserved_persists_exact_absolute_expiry_without_result_entitlement() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+
+        let initial = store
+            .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
+            .expect("reserve cancellation before submit");
+        let initial = match initial {
+            crate::application::receipt_ledger::CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("first cancel must create CancelReserved, got {other:?}"),
+        };
+        assert_eq!(initial.key(), &key);
+        assert_eq!(initial.record_version(), ReceiptVersion::initial());
+        assert_eq!(initial.mutation_sequence(), 1);
+        assert_eq!(initial.cancel_reserved_at_epoch_ms(), 1_000);
+        assert_eq!(initial.expires_at_epoch_ms(), 8_125);
+        assert!(initial.cancel_requested());
+        assert!(initial.encoded_bytes() <= 1_024);
+        {
+            let catalog = store.writer.lock().expect("inspect receipt catalog");
+            assert_eq!(catalog.records.len(), 1);
+            assert_eq!(catalog.actual_bytes, initial.encoded_bytes());
+            assert_eq!(catalog.reserved_result_bytes, 0);
+        }
+        let row = receipts
+            .join(ACTIVE_DIRECTORY_NAME)
+            .join(format!("{}.json", initial.key_digest().as_str()));
+        let bytes_before_duplicate = fs::read(&row).expect("read CancelReserved row");
+
+        let duplicate = store
+            .request_cancel_or_reserve(key.clone(), 4_000, reserve_deadline())
+            .expect("repeat the exact cancellation reservation");
+        let duplicate = match duplicate {
+            crate::application::receipt_ledger::CancelResolution::ExistingExact(receipt) => receipt,
+            other => panic!("duplicate cancel must reuse CancelReserved, got {other:?}"),
+        };
+        assert_eq!(duplicate, initial);
+        assert_eq!(store.generation().expect("stable generation"), 1);
+        let duplicate_with_irrelevant_overflow = store
+            .request_cancel_or_reserve(
+                key.clone(),
+                u64::MAX - CANCEL_RESERVATION_TTL_MS + 1,
+                reserve_deadline(),
+            )
+            .expect("an exact duplicate reuses the original timestamp before parsing a new one");
+        assert_eq!(
+            duplicate_with_irrelevant_overflow,
+            crate::application::receipt_ledger::CancelResolution::ExistingExact(initial.clone())
+        );
+        assert_eq!(store.generation().expect("duplicate generation"), 1);
+        assert_eq!(
+            fs::read(&row).expect("reread exact CancelReserved row"),
+            bytes_before_duplicate,
+            "exact duplicate cannot extend TTL or rewrite durable bytes"
+        );
+        drop(store);
+
+        let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen receipt ledger");
+        let state = reopened
+            .recover_exact(&key, reserve_deadline())
+            .expect("recover exact CancelReserved state");
+        assert_eq!(
+            state,
+            ReceiptState::CancelReserved(initial),
+            "reopen preserves the original absolute expiry and record identity"
+        );
+        let catalog = reopened.writer.lock().expect("inspect reopened catalog");
+        assert_eq!(catalog.reserved_result_bytes, 0);
+    }
+
+    #[test]
+    fn cancel_reserved_expires_at_the_absolute_boundary_and_releases_its_slot() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let reserved = match store
+            .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
+            .expect("reserve cancellation before submit")
+        {
+            crate::application::receipt_ledger::CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("first cancel must create CancelReserved, got {other:?}"),
+        };
+
+        assert_eq!(
+            store
+                .expire_cancel_reserved(
+                    key.clone(),
+                    reserved.record_version(),
+                    reserved.mutation_sequence(),
+                    8_124,
+                    reserve_deadline(),
+                )
+                .expect("the half-open retention interval includes one millisecond before expiry"),
+            crate::application::receipt_ledger::CancelExpiryOutcome::NotDue(reserved.clone())
+        );
+        assert_eq!(store.generation().expect("read pre-expiry generation"), 1);
+        assert_eq!(
+            store
+                .expire_cancel_reserved(
+                    key.clone(),
+                    reserved.record_version(),
+                    reserved.mutation_sequence(),
+                    8_125,
+                    reserve_deadline(),
+                )
+                .expect("the exact absolute boundary expires CancelReserved"),
+            crate::application::receipt_ledger::CancelExpiryOutcome::Expired
+        );
+        assert_eq!(
+            store
+                .recover_exact(&key, reserve_deadline())
+                .expect_err("expired receipt is no longer live"),
+            ReceiptLedgerError::ReceiptNotFound
+        );
+        assert_eq!(store.generation().expect("expiry advances generation"), 2);
+        {
+            let catalog = store.writer.lock().expect("inspect expired catalog");
+            assert!(catalog.records.is_empty());
+            assert!(catalog.invocation_index.is_empty());
+            assert!(catalog.reserved_task_index.is_empty());
+            assert_eq!(catalog.actual_bytes, 0);
+            assert_eq!(catalog.reserved_result_bytes, 0);
+        }
+        let row = receipts
+            .join(ACTIVE_DIRECTORY_NAME)
+            .join(format!("{}.json", reserved.key_digest().as_str()));
+        assert!(!row.exists(), "expiry removes the durable payload row");
+        drop(store);
+
+        let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen expired ledger");
+        assert_eq!(reopened.generation().expect("reopened generation"), 2);
+        assert_eq!(
+            reopened
+                .recover_exact(&key, reserve_deadline())
+                .expect_err("expired exact key stays absent after reopen"),
+            ReceiptLedgerError::ReceiptNotFound
+        );
+    }
+
+    #[test]
+    fn stale_expiry_cas_cannot_delete_a_recreated_cancel_reservation_with_version_one() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let old = match store
+            .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
+            .expect("create old cancellation reservation")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("old cancellation must be newly reserved, got {other:?}"),
+        };
+        assert_eq!(
+            store
+                .expire_cancel_reserved(
+                    key.clone(),
+                    old.record_version(),
+                    old.mutation_sequence(),
+                    old.expires_at_epoch_ms(),
+                    reserve_deadline(),
+                )
+                .expect("expire old cancellation reservation"),
+            CancelExpiryOutcome::Expired
+        );
+        let current = match store
+            .request_cancel_or_reserve(key.clone(), 9_000, reserve_deadline())
+            .expect("recreate the exact cancellation reservation")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("recreated cancellation must be newly reserved, got {other:?}"),
+        };
+        assert_eq!(current.record_version(), ReceiptVersion::initial());
+        assert_eq!(current.mutation_sequence(), 3);
+
+        assert_eq!(
+            store
+                .expire_cancel_reserved(
+                    key.clone(),
+                    old.record_version(),
+                    old.mutation_sequence(),
+                    current.expires_at_epoch_ms(),
+                    reserve_deadline(),
+                )
+                .expect_err("stale incarnation cannot delete the current version-one row"),
+            ReceiptLedgerError::ReceiptMutationSequenceMismatch {
+                expected: old.mutation_sequence(),
+                actual: current.mutation_sequence(),
+            }
+        );
+        assert_eq!(store.generation().expect("unchanged current generation"), 3);
+        assert_eq!(
+            store
+                .recover_exact(&key, reserve_deadline())
+                .expect("current cancellation survives stale expiry"),
+            ReceiptState::CancelReserved(current)
+        );
+    }
+
+    #[test]
+    fn expired_deletion_witness_rejects_an_impossible_cancel_predecessor_version() {
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let key_digest = receipt_key_digest(&key);
+        let predecessor = CatalogEntry {
+            record: build_cancel_reserved_record(key, key_digest.clone(), 1_000, 8_125, 1),
+            encoded_bytes: 512,
+        };
+        let mut witness = build_expired_deletion_record(
+            &predecessor,
+            8_125,
+            2,
+            ReceiptVersion::new(2).expect("next version"),
+        )
+        .expect("build valid expiry witness");
+        witness.record_version = ReceiptVersion::new(3).expect("impossible next version");
+        match &mut witness.lifecycle {
+            StoredActiveLifecycleV1::ExpiredDeletion {
+                prior_record_version,
+                ..
+            } => *prior_record_version = ReceiptVersion::new(2).expect("impossible predecessor"),
+            other => panic!("fixture must be an expiry witness, got {other:?}"),
+        }
+        let encoded = serde_json::to_vec(&witness).expect("encode canonical impossible witness");
+
+        assert_eq!(
+            validate_active_record(&witness, &encoded, &key_digest)
+                .expect_err("CancelReserved can only expire from its initial version"),
+            ReceiptLedgerError::Corrupt(
+                "expired deletion witness predecessor is not an initial CancelReserved"
+            )
+        );
+    }
+
+    #[test]
+    fn expired_deletion_witness_must_follow_its_predecessor_mutation() {
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let key_digest = receipt_key_digest(&key);
+        let predecessor = CatalogEntry {
+            record: build_cancel_reserved_record(key, key_digest.clone(), 1_000, 8_125, 1),
+            encoded_bytes: 512,
+        };
+        let witness = build_expired_deletion_record(
+            &predecessor,
+            8_125,
+            1,
+            ReceiptVersion::new(2).expect("next version"),
+        )
+        .expect("build sequence-one expiry witness fixture");
+        let encoded = serde_json::to_vec(&witness).expect("encode canonical impossible witness");
+
+        assert_eq!(
+            validate_active_record(&witness, &encoded, &key_digest)
+                .expect_err("deletion cannot share its predecessor mutation sequence"),
+            ReceiptLedgerError::Corrupt(
+                "expired deletion witness does not follow its predecessor mutation"
+            )
+        );
+    }
+
+    #[test]
+    fn expired_deletion_witness_preserves_the_predecessor_fixed_absolute_ttl() {
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let key_digest = receipt_key_digest(&key);
+        let predecessor = CatalogEntry {
+            record: build_cancel_reserved_record(key, key_digest.clone(), 1_000, 8_125, 1),
+            encoded_bytes: 512,
+        };
+        let mut witness = build_expired_deletion_record(
+            &predecessor,
+            9_000,
+            2,
+            ReceiptVersion::new(2).expect("next version"),
+        )
+        .expect("build valid expiry witness");
+        match &mut witness.lifecycle {
+            StoredActiveLifecycleV1::ExpiredDeletion {
+                prior_expires_at_epoch_ms,
+                ..
+            } => *prior_expires_at_epoch_ms = 9_000,
+            other => panic!("fixture must be an expiry witness, got {other:?}"),
+        }
+        let encoded = serde_json::to_vec(&witness).expect("encode canonical impossible witness");
+
+        assert_eq!(
+            validate_active_record(&witness, &encoded, &key_digest)
+                .expect_err("witness cannot rewrite the predecessor absolute TTL"),
+            ReceiptLedgerError::Corrupt(
+                "expired deletion witness predecessor expiry is not its fixed absolute TTL"
+            )
+        );
+    }
+
+    #[test]
+    fn reopen_rejects_expiry_witness_invocation_collision_with_a_live_row() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let live_key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        {
+            let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+            store
+                .request_cancel_or_reserve(live_key, 1_000, reserve_deadline())
+                .expect("create live cancellation row");
+        }
+        write_expiry_witness_fixture(
+            &receipts,
+            receipt_key(INVOCATION_A, TASK_B, "workspace-b"),
+            1,
+            2,
+        );
+
+        assert_eq!(
+            ReceiptLedgerStore::open(&receipts)
+                .err()
+                .expect("witness identity must participate in invocation collision checks"),
+            ReceiptLedgerError::Corrupt("receipt catalog contains a duplicate invocation id")
+        );
+    }
+
+    #[test]
+    fn reopen_rejects_expiry_witness_task_collision_with_a_live_row() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let live_key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        {
+            let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+            store
+                .request_cancel_or_reserve(live_key, 1_000, reserve_deadline())
+                .expect("create live cancellation row");
+        }
+        write_expiry_witness_fixture(
+            &receipts,
+            receipt_key(INVOCATION_B, TASK_A, "workspace-b"),
+            1,
+            2,
+        );
+
+        assert_eq!(
+            ReceiptLedgerStore::open(&receipts)
+                .err()
+                .expect("witness identity must participate in task collision checks"),
+            ReceiptLedgerError::Corrupt("receipt catalog contains a duplicate reserved task id")
+        );
+    }
+
+    #[test]
+    fn reopen_rejects_a_mutation_sequence_shared_by_live_row_and_expiry_witness() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let live_key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let expiring_key = receipt_key(INVOCATION_B, TASK_B, "workspace-b");
+        store
+            .request_cancel_or_reserve(live_key.clone(), 1_000, reserve_deadline())
+            .expect("create first cancellation reservation");
+        let expiring = match store
+            .request_cancel_or_reserve(expiring_key.clone(), 1_000, reserve_deadline())
+            .expect("create second cancellation reservation")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("second cancellation must be newly reserved, got {other:?}"),
+        };
+        set_after_receipt_row_rename_hook_for_test(|| {
+            panic!("simulate process loss after the expiry witness rename")
+        });
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = store.expire_cancel_reserved(
+                    expiring_key,
+                    expiring.record_version(),
+                    expiring.mutation_sequence(),
+                    expiring.expires_at_epoch_ms(),
+                    reserve_deadline(),
+                );
+            }))
+            .is_err(),
+            "expiry failpoint must leave its witness visible"
+        );
+        drop(store);
+
+        let live_digest = receipt_key_digest(&live_key);
+        let live_row = receipts
+            .join(ACTIVE_DIRECTORY_NAME)
+            .join(format!("{}.json", live_digest.as_str()));
+        let mut record: StoredActiveReceiptV1 =
+            serde_json::from_slice(&fs::read(&live_row).expect("read live cancellation row"))
+                .expect("decode live cancellation row");
+        record.mutation_sequence = 3;
+        let (_, encoded) = serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES)
+            .expect("encode canonical duplicate-sequence row");
+        fs::write(&live_row, encoded).expect("persist duplicate-sequence fixture");
+
+        assert_eq!(
+            ReceiptLedgerStore::open(&receipts)
+                .err()
+                .expect("duplicate recovery sequence must be rejected"),
+            ReceiptLedgerError::Corrupt("receipt recovery contains a duplicate mutation sequence")
+        );
+    }
+
+    #[test]
+    fn reopen_rejects_an_expiry_witness_that_skips_the_persisted_generation() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let reserved = match store
+            .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
+            .expect("create cancellation reservation")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("cancellation must be newly reserved, got {other:?}"),
+        };
+        set_after_receipt_row_rename_hook_for_test(|| {
+            panic!("simulate process loss before expiry generation publication")
+        });
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = store.expire_cancel_reserved(
+                    key.clone(),
+                    reserved.record_version(),
+                    reserved.mutation_sequence(),
+                    reserved.expires_at_epoch_ms(),
+                    reserve_deadline(),
+                );
+            }))
+            .is_err(),
+            "expiry failpoint must leave its witness visible"
+        );
+        drop(store);
+
+        let row = receipts
+            .join(ACTIVE_DIRECTORY_NAME)
+            .join(format!("{}.json", reserved.key_digest().as_str()));
+        let mut witness: StoredActiveReceiptV1 =
+            serde_json::from_slice(&fs::read(&row).expect("read expiry witness"))
+                .expect("decode expiry witness");
+        assert!(matches!(
+            &witness.lifecycle,
+            StoredActiveLifecycleV1::ExpiredDeletion { .. }
+        ));
+        witness.mutation_sequence = 3;
+        match &mut witness.lifecycle {
+            StoredActiveLifecycleV1::ExpiredDeletion {
+                prior_mutation_sequence,
+                ..
+            } => *prior_mutation_sequence = 2,
+            other => panic!("fixture must remain an expiry witness, got {other:?}"),
+        }
+        let (_, encoded) = serialize_reserved_record(witness, MAX_CANCEL_RESERVED_RECORD_BYTES)
+            .expect("encode canonical skipped-generation witness");
+        fs::write(&row, encoded).expect("persist skipped-generation fixture");
+
+        assert_eq!(
+            ReceiptLedgerStore::open(&receipts)
+                .err()
+                .expect("witness cannot skip the next persisted generation"),
+            ReceiptLedgerError::Corrupt(
+                "expired deletion witness is not the next persisted mutation"
+            )
+        );
+    }
+
+    #[test]
+    fn expiry_reopens_logically_absent_after_crash_between_witness_unlink_and_directory_sync() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let reserved = match store
+            .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
+            .expect("create cancellation reservation")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("cancellation must be newly reserved, got {other:?}"),
+        };
+        set_after_expired_deletion_witness_remove_hook_for_test(|| {
+            panic!("simulate process loss before syncing the witness unlink")
+        });
+
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = store.expire_cancel_reserved(
+                    key.clone(),
+                    reserved.record_version(),
+                    reserved.mutation_sequence(),
+                    reserved.expires_at_epoch_ms(),
+                    reserve_deadline(),
+                );
+            }))
+            .is_err(),
+            "post-unlink failpoint must interrupt expiry"
+        );
+        drop(store);
+
+        let reopened = ReceiptLedgerStore::open(&receipts)
+            .expect("generation makes the receipt absent with or without durable unlink");
+        assert_eq!(reopened.generation().expect("recovered generation"), 2);
+        assert_eq!(
+            reopened
+                .recover_exact(&key, reserve_deadline())
+                .expect_err("expired receipt cannot resurrect after the crash"),
+            ReceiptLedgerError::ReceiptNotFound
+        );
+        assert!(
+            !receipts
+                .join(ACTIVE_DIRECTORY_NAME)
+                .join(format!("{}.json", reserved.key_digest().as_str()))
+                .exists(),
+            "reopen finishes any witness cleanup"
+        );
+    }
+
+    #[test]
+    fn expiry_reopen_heals_generation_after_crash_at_visible_witness_rename() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let reserved = match store
+            .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
+            .expect("create cancellation reservation")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("cancellation must be newly reserved, got {other:?}"),
+        };
+        set_after_receipt_row_rename_hook_for_test(|| {
+            panic!("simulate process loss at visible witness rename")
+        });
+
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = store.expire_cancel_reserved(
+                    key.clone(),
+                    reserved.record_version(),
+                    reserved.mutation_sequence(),
+                    reserved.expires_at_epoch_ms(),
+                    reserve_deadline(),
+                );
+            }))
+            .is_err(),
+            "witness rename failpoint must interrupt expiry"
+        );
+        drop(store);
+
+        let reopened = ReceiptLedgerStore::open(&receipts)
+            .expect("reopen must heal generation from the durable witness");
+        assert_eq!(reopened.generation().expect("healed generation"), 2);
+        assert_eq!(
+            reopened
+                .recover_exact(&key, reserve_deadline())
+                .expect_err("witness is logically absent"),
+            ReceiptLedgerError::ReceiptNotFound
+        );
+        let catalog = reopened.writer.lock().expect("inspect healed catalog");
+        assert!(catalog.records.is_empty());
+        assert!(catalog.invocation_index.is_empty());
+        assert!(catalog.reserved_task_index.is_empty());
+        assert_eq!(catalog.actual_bytes, 0);
+        assert_eq!(catalog.reserved_result_bytes, 0);
+        assert!(
+            !receipts
+                .join(ACTIVE_DIRECTORY_NAME)
+                .join(format!("{}.json", reserved.key_digest().as_str()))
+                .exists(),
+            "reopen removes the healed witness"
+        );
+    }
+
+    #[test]
+    fn expiry_reopen_accepts_other_receipt_mutations_between_predecessor_and_witness() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let expiring_key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let surviving_key = receipt_key(INVOCATION_B, TASK_B, "workspace-b");
+        let expiring = match store
+            .request_cancel_or_reserve(expiring_key.clone(), 1_000, reserve_deadline())
+            .expect("create first cancellation reservation")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("first cancellation must be newly reserved, got {other:?}"),
+        };
+        let surviving = match store
+            .request_cancel_or_reserve(surviving_key.clone(), 2_000, reserve_deadline())
+            .expect("interleave a second receipt mutation")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("second cancellation must be newly reserved, got {other:?}"),
+        };
+        assert_eq!(expiring.mutation_sequence(), 1);
+        assert_eq!(surviving.mutation_sequence(), 2);
+        set_after_receipt_row_rename_hook_for_test(|| {
+            panic!("simulate process loss after interleaved expiry witness rename")
+        });
+
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = store.expire_cancel_reserved(
+                    expiring_key.clone(),
+                    expiring.record_version(),
+                    expiring.mutation_sequence(),
+                    expiring.expires_at_epoch_ms(),
+                    reserve_deadline(),
+                );
+            }))
+            .is_err(),
+            "witness rename failpoint must interrupt interleaved expiry"
+        );
+        drop(store);
+
+        let reopened = ReceiptLedgerStore::open(&receipts)
+            .expect("global sequence gaps are valid predecessor history");
+        assert_eq!(reopened.generation().expect("healed generation"), 3);
+        assert_eq!(
+            reopened
+                .recover_exact(&expiring_key, reserve_deadline())
+                .expect_err("expired receipt remains absent"),
+            ReceiptLedgerError::ReceiptNotFound
+        );
+        assert_eq!(
+            reopened
+                .recover_exact(&surviving_key, reserve_deadline())
+                .expect("interleaved receipt survives recovery"),
+            ReceiptState::CancelReserved(surviving)
+        );
+    }
+
+    #[test]
+    fn expiry_reopen_cleans_witness_after_crash_at_visible_generation_replace() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let reserved = match store
+            .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
+            .expect("create cancellation reservation")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("cancellation must be newly reserved, got {other:?}"),
+        };
+        set_after_generation_replace_hook_for_test(|| {
+            panic!("simulate process loss before witness unlink")
+        });
+
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = store.expire_cancel_reserved(
+                    key.clone(),
+                    reserved.record_version(),
+                    reserved.mutation_sequence(),
+                    reserved.expires_at_epoch_ms(),
+                    reserve_deadline(),
+                );
+            }))
+            .is_err(),
+            "generation replace failpoint must interrupt expiry"
+        );
+        drop(store);
+
+        let reopened = ReceiptLedgerStore::open(&receipts)
+            .expect("reopen must accept either durable side of generation replacement");
+        assert_eq!(reopened.generation().expect("recovered generation"), 2);
+        assert_eq!(
+            reopened
+                .recover_exact(&key, reserve_deadline())
+                .expect_err("published deletion cannot resurrect"),
+            ReceiptLedgerError::ReceiptNotFound
+        );
+        assert!(
+            !receipts
+                .join(ACTIVE_DIRECTORY_NAME)
+                .join(format!("{}.json", reserved.key_digest().as_str()))
+                .exists(),
+            "reopen removes the committed witness"
+        );
+    }
+
+    #[test]
+    fn cancel_reserved_shares_the_live_count_without_reserving_result_bytes() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+
+        for index in 0..MAX_LIVE_RECEIPTS {
+            let key = receipt_key_with_ids(
+                InvocationId::new(),
+                TaskId::new(),
+                &format!("cancel-workspace-{index}"),
+            );
+            assert!(matches!(
+                store.request_cancel_or_reserve(key, 1_000, reserve_deadline()),
+                Ok(crate::application::receipt_ledger::CancelResolution::NewlyReserved(_))
+            ));
+        }
+        let overflow = store
+            .request_cancel_or_reserve(
+                receipt_key_with_ids(
+                    InvocationId::new(),
+                    TaskId::new(),
+                    "cancel-workspace-overflow",
+                ),
+                1_000,
+                reserve_deadline(),
+            )
+            .expect_err("the sixty-fifth live receipt must be rejected");
+        assert_eq!(overflow, ReceiptLedgerError::CapacityExceeded);
+        let catalog = store.writer.lock().expect("inspect full cancel catalog");
+        assert_eq!(catalog.records.len(), MAX_LIVE_RECEIPTS);
+        assert_eq!(catalog.reserved_result_bytes, 0);
+        assert!(catalog.actual_bytes <= (MAX_LIVE_RECEIPTS * 1_024) as u64);
+        assert!(catalog
+            .records
+            .values()
+            .all(|entry| entry.encoded_bytes <= 1_024 && entry.reserved_result_bytes() == 0));
+    }
+
+    #[test]
+    fn exact_submit_atomically_converts_cancel_reserved_to_full_cancelled_reservation() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let cancel = store
+            .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
+            .expect("reserve cancellation before submit");
+        assert!(matches!(
+            cancel,
+            crate::application::receipt_ledger::CancelResolution::NewlyReserved(_)
+        ));
+        let cutoff = OriginalCutoffDescriptor::new(2_000, 7_000).expect("valid submit cutoff");
+
+        let converted = store
+            .reserve(key.clone(), cutoff, reserve_deadline())
+            .expect("convert the exact cancellation into a submit reservation");
+        let converted = match converted {
+            ReserveOutcome::Created(receipt) => receipt,
+            other => panic!("cancel conversion is a durable mutation, got {other:?}"),
+        };
+        assert_eq!(converted.key(), &key);
+        assert_eq!(converted.record_version().get(), 2);
+        assert_eq!(converted.mutation_sequence(), 2);
+        assert_eq!(converted.original_cutoff(), &cutoff);
+        assert!(converted.cancel_requested());
+        assert_eq!(
+            converted.encoded_bytes() + converted.reserved_result_bytes(),
+            MAX_RECEIPT_ENTITLEMENT_BYTES
+        );
+        assert_eq!(store.generation().expect("converted generation"), 2);
+        {
+            let catalog = store.writer.lock().expect("inspect converted catalog");
+            assert_eq!(catalog.records.len(), 1);
+            assert_eq!(
+                catalog.actual_bytes + catalog.reserved_result_bytes,
+                MAX_RECEIPT_ENTITLEMENT_BYTES
+            );
+        }
+        drop(store);
+
+        let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen converted ledger");
+        assert_eq!(
+            reopened
+                .recover_exact(&key, reserve_deadline())
+                .expect("recover converted reservation"),
+            ReceiptState::Reserved(converted)
+        );
+    }
+
+    #[test]
+    fn exact_submit_at_cancel_expiry_atomically_creates_a_fresh_uncancelled_reservation() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let cancel = match store
+            .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
+            .expect("reserve cancellation before submit")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("first cancellation must reserve, got {other:?}"),
+        };
+        let cutoff = OriginalCutoffDescriptor::new(cancel.expires_at_epoch_ms(), 7_000)
+            .expect("valid submit cutoff at the half-open expiry boundary");
+
+        let converted = match store
+            .reserve(key.clone(), cutoff, reserve_deadline())
+            .expect("replace expired cancellation with exact submit")
+        {
+            ReserveOutcome::Created(receipt) => receipt,
+            other => panic!("expired exact conversion is a mutation, got {other:?}"),
+        };
+
+        assert!(!converted.cancel_requested());
+        assert_eq!(converted.original_cutoff(), &cutoff);
+        assert_eq!(converted.record_version().get(), 2);
+        assert_eq!(converted.mutation_sequence(), 2);
+        assert_eq!(store.generation().expect("converted generation"), 2);
+        drop(store);
+
+        assert_eq!(
+            ReceiptLedgerStore::open(&receipts)
+                .expect("reopen exact conversion")
+                .recover_exact(&key, reserve_deadline())
+                .expect("recover exact conversion"),
+            ReceiptState::Reserved(converted)
+        );
+    }
+
+    #[test]
+    fn cancel_reserved_timestamp_overflow_and_partial_identity_collisions_do_not_mutate() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        assert_eq!(
+            store
+                .request_cancel_or_reserve(key.clone(), u64::MAX - 7_124, reserve_deadline(),)
+                .expect_err("cancel expiry must not wrap"),
+            ReceiptLedgerError::TimestampOverflow
+        );
+        assert_eq!(store.generation().expect("unchanged generation"), 0);
+
+        store
+            .request_cancel_or_reserve(key, 1_000, reserve_deadline())
+            .expect("create the anchor CancelReserved");
+        let invocation_collision = receipt_key(INVOCATION_A, TASK_B, "workspace-b");
+        assert_eq!(
+            store
+                .request_cancel_or_reserve(invocation_collision, 1_000, reserve_deadline())
+                .expect_err("partial invocation identity cannot cancel the anchor"),
+            ReceiptLedgerError::InvocationIdentityMismatch
+        );
+        let task_collision = receipt_key(INVOCATION_B, TASK_A, "workspace-b");
+        assert_eq!(
+            store
+                .request_cancel_or_reserve(task_collision, 1_000, reserve_deadline())
+                .expect_err("partial task identity cannot cancel the anchor"),
+            ReceiptLedgerError::ReservedTaskIdentityMismatch
+        );
+        assert_eq!(store.generation().expect("only anchor mutated"), 1);
+        assert_eq!(
+            store
+                .writer
+                .lock()
+                .expect("inspect anchor catalog")
+                .records
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn cancel_timestamp_overflow_cannot_bypass_an_already_fail_stopped_store() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let generation_path = receipts.join(GENERATION_FILE_NAME);
+        if !set_unix_mode_for_test(&generation_path, 0o644).expect("weaken generation mode fixture")
+        {
+            return;
+        }
+        assert!(matches!(
+            store
+                .generation()
+                .expect_err("authority drift fail-stops the store"),
+            ReceiptLedgerError::Storage {
+                operation: "verify generation record ownership",
+                ..
+            }
+        ));
+        set_unix_mode_for_test(&generation_path, 0o600).expect("restore generation mode fixture");
+        let generation_before = fs::read(&generation_path).expect("read stable generation");
+        let names_before = directory_names(&receipts.join(ACTIVE_DIRECTORY_NAME));
+
+        assert_eq!(
+            store
+                .request_cancel_or_reserve(
+                    receipt_key(INVOCATION_A, TASK_A, "workspace-a"),
+                    u64::MAX - CANCEL_RESERVATION_TTL_MS + 1,
+                    reserve_deadline(),
+                )
+                .expect_err("invalid input cannot bypass the latched store state"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+        assert_eq!(
+            fs::read(&generation_path).expect("fail-stop leaves generation untouched"),
+            generation_before
+        );
+        assert_eq!(
+            directory_names(&receipts.join(ACTIVE_DIRECTORY_NAME)),
+            names_before
         );
     }
 
@@ -4514,6 +6363,12 @@ mod tests {
             serde_json::from_slice(&fs::read(&row_path).expect("read canonical receipt row"))
                 .expect("decode strict receipt fixture");
         match &mut record.lifecycle {
+            StoredActiveLifecycleV1::CancelReserved { .. } => {
+                panic!("reserved fixture decoded as a cancellation reservation")
+            }
+            StoredActiveLifecycleV1::ExpiredDeletion { .. } => {
+                panic!("reserved fixture decoded as an expiry deletion witness")
+            }
             StoredActiveLifecycleV1::ReservedUnbound {
                 reserved_at_epoch_ms,
                 ..
@@ -4935,7 +6790,15 @@ mod tests {
         let key_digest = crate::application::receipt_ledger::receipt_key_digest(&key);
         let cutoff =
             OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid original response cutoff");
-        let (_, encoded) = serialize_reserved_record(key, key_digest.clone(), cutoff, 1, false)
+        let record = build_reserved_record(
+            key,
+            key_digest.clone(),
+            cutoff,
+            1,
+            ReceiptVersion::initial(),
+            false,
+        );
+        let (_, encoded) = serialize_reserved_record(record, MAX_TASK_RECORD_ENVELOPE_BYTES as u64)
             .expect("serialize foreign live row fixture");
         let name = format!("{}.json", key_digest.as_str());
         let mut row = create_owner_only_file_child(&store.active_file, OsStr::new(&name))
@@ -4986,7 +6849,15 @@ mod tests {
         let key_digest = crate::application::receipt_ledger::receipt_key_digest(&key);
         let cutoff =
             OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid original response cutoff");
-        let (_, encoded) = serialize_reserved_record(key.clone(), key_digest, cutoff, 1, false)
+        let record = build_reserved_record(
+            key.clone(),
+            key_digest,
+            cutoff,
+            1,
+            ReceiptVersion::initial(),
+            false,
+        );
+        let (_, encoded) = serialize_reserved_record(record, MAX_TASK_RECORD_ENVELOPE_BYTES as u64)
             .expect("serialize foreign live row fixture");
         let name = format!("{}.json", receipt_key_digest(&key).as_str());
         let mut row = create_owner_only_file_child(&store.active_file, OsStr::new(&name))
