@@ -820,8 +820,9 @@ fn run_daemon_configured_until(
                     return Err(error);
                 }
                 idle_since = Instant::now();
-                // This W0a shell deliberately handles one bounded probe synchronously. Full
-                // owner/session concurrency and invocation traffic remain separate W0b work.
+                // This CR0 slice handles one bounded authenticated session synchronously,
+                // including the partial submit/cancel/recover ReceiptLedger path. Full
+                // owner/session concurrency and execution traffic remain later work.
                 let _ = handle_probe_connection(stream, &record, &runtime);
                 if runtime.restart_required() {
                     restart_requested = true;
