@@ -855,37 +855,12 @@ impl ReceiptLedgerStore {
                 .ok_or(ReceiptLedgerError::TimestampOverflow)?
         };
 
-        self.reclaim_expired_cancel_reservations_under_writer_lock(
+        self.prepare_new_admission_under_writer_lock(
             &mut catalog,
+            &key,
             cancel_reserved_at_epoch_ms,
-            None,
             deadline,
         )?;
-
-        if catalog.invocation_index.contains_key(&key.invocation_id()) {
-            return self.reject_before_mutation(
-                &mut catalog,
-                deadline,
-                ReceiptLedgerError::InvocationIdentityMismatch,
-            );
-        }
-        if catalog
-            .reserved_task_index
-            .contains_key(&key.reserved_task_id())
-        {
-            return self.reject_before_mutation(
-                &mut catalog,
-                deadline,
-                ReceiptLedgerError::ReservedTaskIdentityMismatch,
-            );
-        }
-        if catalog.records.len() >= MAX_LIVE_RECEIPTS {
-            return self.reject_before_mutation(
-                &mut catalog,
-                deadline,
-                ReceiptLedgerError::CapacityExceeded,
-            );
-        }
         let generation = latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
         let mutation_sequence = match generation.checked_add(1) {
             Some(sequence) => sequence,
@@ -1080,71 +1055,147 @@ impl ReceiptLedgerStore {
         Ok(CancelExpiryOutcome::Expired)
     }
 
-    fn reclaim_expired_cancel_reservations_under_writer_lock(
+    fn prepare_new_admission_under_writer_lock(
         &self,
         catalog: &mut ReceiptCatalog,
+        key: &ReceiptKey,
         observed_at_epoch_ms: u64,
-        except: Option<&ReceiptKeyDigest>,
         deadline: Instant,
     ) -> Result<(), ReceiptLedgerError> {
-        let mut expired = catalog
-            .records
-            .iter()
-            .filter_map(|(digest, entry)| match &entry.record.lifecycle {
-                StoredActiveLifecycleV1::CancelReserved {
-                    expires_at_epoch_ms,
-                    ..
-                } if observed_at_epoch_ms >= *expires_at_epoch_ms && except != Some(digest) => {
-                    Some(digest.clone())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        expired.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
-
-        for key_digest in expired {
-            check_deadline(deadline)?;
-            let expected =
-                catalog
-                    .records
-                    .get(&key_digest)
-                    .cloned()
-                    .ok_or(ReceiptLedgerError::Corrupt(
-                        "expired receipt disappeared while the writer lock was held",
-                    ))?;
-            let persisted = self
-                .read_entry_under_writer_lock(catalog, &key_digest, Some(deadline))?
-                .ok_or(ReceiptLedgerError::Corrupt(
-                    "catalogued expired receipt row is missing",
-                ))?;
-            if persisted != expected {
-                return latch_catalog_error(
+        let mut reclaim = Vec::with_capacity(2);
+        if let Some(digest) = catalog.invocation_index.get(&key.invocation_id()).cloned() {
+            let expired = match catalog_entry_is_expired_cancel_reserved(
+                catalog,
+                &digest,
+                observed_at_epoch_ms,
+            ) {
+                Ok(expired) => expired,
+                Err(error) => return latch_catalog_error(catalog, error),
+            };
+            if !expired {
+                return self.reject_before_mutation(
                     catalog,
-                    ReceiptLedgerError::Corrupt("catalogued expired receipt row changed on disk"),
+                    deadline,
+                    ReceiptLedgerError::InvocationIdentityMismatch,
                 );
             }
-            match persisted.state() {
-                Ok(ReceiptState::CancelReserved(receipt))
-                    if observed_at_epoch_ms >= receipt.expires_at_epoch_ms() => {}
-                Ok(ReceiptState::CancelReserved(_)) => continue,
-                Ok(_) => {
-                    return latch_catalog_error(
-                        catalog,
-                        ReceiptLedgerError::Corrupt(
-                            "expired cancellation candidate changed lifecycle under writer lock",
-                        ),
-                    )
-                }
-                Err(error) => return latch_catalog_error(catalog, error),
-            }
-            self.expire_cancel_reserved_entry_under_writer_lock(
+            reclaim.push(digest);
+        }
+        if let Some(digest) = catalog
+            .reserved_task_index
+            .get(&key.reserved_task_id())
+            .cloned()
+        {
+            let expired = match catalog_entry_is_expired_cancel_reserved(
                 catalog,
-                persisted,
+                &digest,
+                observed_at_epoch_ms,
+            ) {
+                Ok(expired) => expired,
+                Err(error) => return latch_catalog_error(catalog, error),
+            };
+            if !expired {
+                return self.reject_before_mutation(
+                    catalog,
+                    deadline,
+                    ReceiptLedgerError::ReservedTaskIdentityMismatch,
+                );
+            }
+            reclaim.push(digest);
+        }
+        reclaim.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
+        reclaim.dedup();
+
+        let projected_count =
+            catalog
+                .records
+                .len()
+                .checked_sub(reclaim.len())
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "receipt reclamation exceeds the live catalog",
+                ))?;
+        if projected_count >= MAX_LIVE_RECEIPTS {
+            let capacity_candidate = catalog
+                .records
+                .iter()
+                .filter(|(digest, _)| !reclaim.contains(digest))
+                .filter(|(_, entry)| entry_is_expired_cancel_reserved(entry, observed_at_epoch_ms))
+                .map(|(digest, _)| digest.clone())
+                .min_by(|left, right| left.as_str().cmp(right.as_str()));
+            let Some(capacity_candidate) = capacity_candidate else {
+                return self.reject_before_mutation(
+                    catalog,
+                    deadline,
+                    ReceiptLedgerError::CapacityExceeded,
+                );
+            };
+            reclaim.push(capacity_candidate);
+            reclaim.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
+        }
+
+        for digest in reclaim {
+            self.reclaim_expired_cancel_reservation_under_writer_lock(
+                catalog,
+                &digest,
                 observed_at_epoch_ms,
                 deadline,
             )?;
         }
         Ok(())
+    }
+
+    fn reclaim_expired_cancel_reservation_under_writer_lock(
+        &self,
+        catalog: &mut ReceiptCatalog,
+        key_digest: &ReceiptKeyDigest,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<(), ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let expected =
+            catalog
+                .records
+                .get(key_digest)
+                .cloned()
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "expired receipt disappeared while the writer lock was held",
+                ))?;
+        let persisted = self
+            .read_entry_under_writer_lock(catalog, key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "catalogued expired receipt row is missing",
+            ))?;
+        if persisted != expected {
+            return latch_catalog_error(
+                catalog,
+                ReceiptLedgerError::Corrupt("catalogued expired receipt row changed on disk"),
+            );
+        }
+        match persisted.state() {
+            Ok(ReceiptState::CancelReserved(receipt))
+                if observed_at_epoch_ms >= receipt.expires_at_epoch_ms() => {}
+            Ok(ReceiptState::CancelReserved(_)) => {
+                return latch_catalog_error(
+                    catalog,
+                    ReceiptLedgerError::Corrupt("selected cancellation reservation is not expired"),
+                )
+            }
+            Ok(_) => {
+                return latch_catalog_error(
+                    catalog,
+                    ReceiptLedgerError::Corrupt(
+                        "expired cancellation candidate changed lifecycle under writer lock",
+                    ),
+                )
+            }
+            Err(error) => return latch_catalog_error(catalog, error),
+        }
+        self.expire_cancel_reserved_entry_under_writer_lock(
+            catalog,
+            persisted,
+            observed_at_epoch_ms,
+            deadline,
+        )
     }
 
     fn expire_cancel_reserved_entry_under_writer_lock(
@@ -1240,13 +1291,6 @@ impl ReceiptLedgerStore {
         check_deadline(deadline)?;
         latch_catalog_result(&mut catalog, self.verify_named_authority())?;
 
-        self.reclaim_expired_cancel_reservations_under_writer_lock(
-            &mut catalog,
-            original_cutoff.accepted_epoch_ms(),
-            Some(&key_digest),
-            deadline,
-        )?;
-
         if let Some(existing) = catalog.records.get(&key_digest) {
             if existing.record.key != key {
                 return self.reject_before_mutation(
@@ -1275,30 +1319,13 @@ impl ReceiptLedgerStore {
                 state => Ok(ReserveOutcome::ExistingExact(state)),
             };
         }
-        if catalog.invocation_index.contains_key(&key.invocation_id()) {
-            return self.reject_before_mutation(
-                &mut catalog,
-                deadline,
-                ReceiptLedgerError::InvocationIdentityMismatch,
-            );
-        }
-        if catalog
-            .reserved_task_index
-            .contains_key(&key.reserved_task_id())
-        {
-            return self.reject_before_mutation(
-                &mut catalog,
-                deadline,
-                ReceiptLedgerError::ReservedTaskIdentityMismatch,
-            );
-        }
-        if catalog.records.len() >= MAX_LIVE_RECEIPTS {
-            return self.reject_before_mutation(
-                &mut catalog,
-                deadline,
-                ReceiptLedgerError::CapacityExceeded,
-            );
-        }
+
+        self.prepare_new_admission_under_writer_lock(
+            &mut catalog,
+            &key,
+            original_cutoff.accepted_epoch_ms(),
+            deadline,
+        )?;
 
         let generation = latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
         let mutation_sequence = match generation.checked_add(1) {
@@ -3471,6 +3498,33 @@ fn insert_catalog_entry(
     Ok(())
 }
 
+fn catalog_entry_is_expired_cancel_reserved(
+    catalog: &ReceiptCatalog,
+    digest: &ReceiptKeyDigest,
+    observed_at_epoch_ms: u64,
+) -> Result<bool, ReceiptLedgerError> {
+    let entry = catalog
+        .records
+        .get(digest)
+        .ok_or(ReceiptLedgerError::Corrupt(
+            "receipt identity index points outside the catalog",
+        ))?;
+    Ok(entry_is_expired_cancel_reserved(
+        entry,
+        observed_at_epoch_ms,
+    ))
+}
+
+fn entry_is_expired_cancel_reserved(entry: &CatalogEntry, observed_at_epoch_ms: u64) -> bool {
+    matches!(
+        &entry.record.lifecycle,
+        StoredActiveLifecycleV1::CancelReserved {
+            expires_at_epoch_ms,
+            ..
+        } if observed_at_epoch_ms >= *expires_at_epoch_ms
+    )
+}
+
 fn validate_catalog_remove(
     catalog: &ReceiptCatalog,
     expected: &CatalogEntry,
@@ -4718,7 +4772,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_admission_reclaims_a_full_pool_of_expired_cancel_reservations() {
+    fn submit_admission_reclaims_one_slot_from_a_full_expired_cancel_pool() {
         let root = tempfile::tempdir().expect("temporary root");
         let receipts = fs::canonicalize(root.path())
             .expect("physical temporary root")
@@ -4735,7 +4789,7 @@ mod tests {
                 store.request_cancel_or_reserve(
                     key,
                     1_000,
-                    Instant::now() + Duration::from_secs(10),
+                    Instant::now() + Duration::from_secs(7),
                 ),
                 Ok(CancelResolution::NewlyReserved(_))
             ));
@@ -4752,23 +4806,141 @@ mod tests {
             .reserve(
                 admitted_key.clone(),
                 cutoff,
-                Instant::now() + Duration::from_secs(10),
+                Instant::now() + Duration::from_secs(7),
             )
             .expect("expired cancel reservations cannot deny later admission")
             .into_reservation()
             .expect("new submit remains reserved");
 
         assert_eq!(admitted.key(), &admitted_key);
-        assert_eq!(admitted.mutation_sequence(), 129);
+        assert_eq!(admitted.mutation_sequence(), 66);
+        assert_eq!(store.generation().expect("reclaim plus admission"), 66);
         let catalog = store.writer.lock().expect("inspect reclaimed catalog");
-        assert_eq!(catalog.records.len(), 1);
-        assert_eq!(catalog.invocation_index.len(), 1);
-        assert_eq!(catalog.reserved_task_index.len(), 1);
-        assert_eq!(catalog.actual_bytes, admitted.encoded_bytes());
+        assert_eq!(catalog.records.len(), MAX_LIVE_RECEIPTS);
+        assert_eq!(catalog.invocation_index.len(), MAX_LIVE_RECEIPTS);
+        assert_eq!(catalog.reserved_task_index.len(), MAX_LIVE_RECEIPTS);
+        assert_eq!(
+            catalog
+                .records
+                .values()
+                .filter(|entry| matches!(
+                    entry.record.lifecycle,
+                    StoredActiveLifecycleV1::CancelReserved { .. }
+                ))
+                .count(),
+            MAX_LIVE_RECEIPTS - 1
+        );
         assert_eq!(
             catalog.reserved_result_bytes,
             admitted.reserved_result_bytes()
         );
+    }
+
+    #[test]
+    fn partial_identity_rejection_does_not_reclaim_an_unrelated_expired_cancel() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let expired_key = receipt_key(INVOCATION_A, TASK_A, "expired-workspace");
+        store
+            .request_cancel_or_reserve(expired_key.clone(), 1_000, reserve_deadline())
+            .expect("seed expired cancellation reservation");
+        let live_key = receipt_key_with_ids(InvocationId::new(), TaskId::new(), "live-workspace");
+        let live_cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid live cutoff");
+        store
+            .reserve(live_key.clone(), live_cutoff, reserve_deadline())
+            .expect("seed live exact identity");
+        let mismatch = receipt_key_with_ids(
+            live_key.invocation_id(),
+            TaskId::new(),
+            "mismatching-workspace",
+        );
+
+        assert_eq!(
+            store
+                .request_cancel_or_reserve(mismatch, 8_125, reserve_deadline())
+                .expect_err("live partial identity must reject"),
+            ReceiptLedgerError::InvocationIdentityMismatch
+        );
+        assert_eq!(store.generation().expect("rejection generation"), 2);
+        assert!(matches!(
+            store
+                .recover_exact(&expired_key, reserve_deadline())
+                .expect("rejection cannot run unrelated housekeeping"),
+            ReceiptState::CancelReserved(_)
+        ));
+    }
+
+    #[test]
+    fn expired_partial_identity_is_reclaimed_before_new_admission() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let expired_key = receipt_key(INVOCATION_A, TASK_A, "expired-workspace");
+        store
+            .request_cancel_or_reserve(expired_key, 1_000, reserve_deadline())
+            .expect("seed expired cancellation reservation");
+        let admitted_key = receipt_key_with_ids(
+            InvocationId::from_str(INVOCATION_A).expect("canonical reused invocation"),
+            TaskId::new(),
+            "new-workspace",
+        );
+
+        let admitted = match store
+            .request_cancel_or_reserve(admitted_key.clone(), 8_125, reserve_deadline())
+            .expect("expired identity owner is reclaimable")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            other => panic!("reclaimed identity must admit a new receipt, got {other:?}"),
+        };
+
+        assert_eq!(admitted.key(), &admitted_key);
+        assert_eq!(admitted.mutation_sequence(), 3);
+        assert_eq!(store.generation().expect("reclaim plus admission"), 3);
+        let catalog = store
+            .writer
+            .lock()
+            .expect("inspect reused identity catalog");
+        assert_eq!(catalog.records.len(), 1);
+        assert_eq!(catalog.invocation_index.len(), 1);
+        assert_eq!(catalog.reserved_task_index.len(), 1);
+    }
+
+    #[test]
+    fn exact_reserve_winner_does_not_reclaim_an_unrelated_expired_cancel() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let expired_key = receipt_key(INVOCATION_A, TASK_A, "expired-workspace");
+        store
+            .request_cancel_or_reserve(expired_key.clone(), 1_000, reserve_deadline())
+            .expect("seed expired cancellation reservation");
+        let live_key = receipt_key_with_ids(InvocationId::new(), TaskId::new(), "live-workspace");
+        let initial_cutoff =
+            OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid initial cutoff");
+        let initial = store
+            .reserve(live_key.clone(), initial_cutoff, reserve_deadline())
+            .expect("seed live exact identity");
+        let duplicate_cutoff =
+            OriginalCutoffDescriptor::new(8_125, 1).expect("irrelevant duplicate cutoff");
+
+        let duplicate = store
+            .reserve(live_key, duplicate_cutoff, reserve_deadline())
+            .expect("exact duplicate returns its original winner");
+        assert_eq!(duplicate.into_state(), initial.into_state());
+        assert_eq!(store.generation().expect("duplicate generation"), 2);
+        assert!(matches!(
+            store
+                .recover_exact(&expired_key, reserve_deadline())
+                .expect("duplicate cannot run unrelated housekeeping"),
+            ReceiptState::CancelReserved(_)
+        ));
     }
 
     #[test]
