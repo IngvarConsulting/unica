@@ -9272,19 +9272,35 @@ pub(crate) mod tests {
         let review = review
             .as_object()
             .expect("tool-surface review is a tool-name object");
-        let registered = tools();
+        let catalog = crate::application::v13::tool_catalog::catalog_for(
+            crate::application::tool_contracts::SurfaceRelease::V13,
+        )
+        .expect("canonical v0.13 catalog exists");
+        let registered = catalog
+            .tools
+            .iter()
+            .map(|tool| format!("unica.{}", tool.name))
+            .chain(
+                crate::application::v13::task_tools::compatibility_tool_contracts()
+                    .into_iter()
+                    .map(|tool| format!("unica.{}", tool.name)),
+            )
+            .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(review.len(), registered.len());
+        assert_eq!(
+            review
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            registered
+        );
 
-        for tool in registered {
+        for name in registered {
             let entry = review
-                .get(tool.name)
-                .unwrap_or_else(|| panic!("{} has no tool-surface review", tool.name));
-            let expected = if entry["scope"] == "in" && entry["result"]["contract"] == "typed" {
-                ResultContract::Typed
-            } else {
-                ResultContract::ExternalStream
-            };
-            assert_eq!(tool.result_contract, expected, "{}", tool.name);
+                .get(&name)
+                .unwrap_or_else(|| panic!("{name} has no tool-surface review"));
+            assert_eq!(entry["scope"], "in", "{name}");
+            assert_eq!(entry["result"]["contract"], "typed", "{name}");
         }
     }
 

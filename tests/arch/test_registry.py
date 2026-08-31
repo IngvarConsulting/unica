@@ -309,7 +309,7 @@ class RecordShapeTests(unittest.TestCase):
 
         self.assertTrue(any("active rule cites a non-active decision" in error for error in errors), errors)
 
-    def test_rule_ownership_is_reciprocal(self) -> None:
+    def test_current_rule_owner_establishes_the_rule(self) -> None:
         rule = contract_record(self.contract_props())
 
         missing_from_decision = REGISTRY.validation_errors([self.active_decision(), rule])
@@ -328,7 +328,7 @@ class RecordShapeTests(unittest.TestCase):
                 "scope": ["wire"],
             }
         )
-        stale_establishes = REGISTRY.validation_errors(
+        historical_establishes = REGISTRY.validation_errors(
             [
                 self.active_decision(establishes=["INV.WIRE.EXAMPLE"]),
                 decision_record(
@@ -343,10 +343,7 @@ class RecordShapeTests(unittest.TestCase):
                 unrelated,
             ]
         )
-        self.assertTrue(
-            any("establishes a rule owned by" in error for error in stale_establishes),
-            stale_establishes,
-        )
+        self.assertEqual(historical_establishes, [])
 
     def test_scope_and_consumers_are_non_empty_lists(self) -> None:
         errors = REGISTRY.validation_errors(
@@ -399,8 +396,18 @@ class RecordShapeTests(unittest.TestCase):
                 "realized": "",
             }
         )
+        superseded_unbuilt = decision_record(
+            {
+                "id": "DEC.2026-08-21.EXAMPLE",
+                "status": "superseded",
+                "governs": "product",
+                "realized": None,
+                "superseded-by": "DEC.2026-08-22.SUCCESSOR",
+            }
+        )
 
         self.assertEqual(REGISTRY.validation_errors([planned]), [])
+        self.assertEqual(REGISTRY.validation_errors([superseded_unbuilt]), [])
         self.assertTrue(
             any("missing prop `realized`" in error for error in REGISTRY.validation_errors([active]))
         )
@@ -533,7 +540,7 @@ class ReferenceTests(unittest.TestCase):
                             offenders.append(f"{record.relative}: {key} cites {item}")
         self.assertEqual(offenders, [])
 
-    def test_rule_decision_and_establishes_are_reciprocal(self) -> None:
+    def test_current_rule_owner_establishes_the_rule(self) -> None:
         by_id = {record.id: record for record in REGISTRY.records()}
         offenders = []
         for record in REGISTRY.records():
@@ -544,14 +551,6 @@ class ReferenceTests(unittest.TestCase):
                 offenders.append(
                     f"{record.relative}: {record.props.get('decision')} does not establish {record.id}"
                 )
-        for decision in (record for record in REGISTRY.records() if record.kind == "decision"):
-            for rule_id in decision.props.get("establishes") or []:
-                rule = by_id.get(rule_id)
-                if rule is not None and rule.props.get("decision") != decision.id:
-                    offenders.append(
-                        f"{decision.relative}: establishes {rule_id}, owned by "
-                        f"{rule.props.get('decision')}"
-                    )
         self.assertEqual(offenders, [])
 
     def test_record_ids_are_globally_unique_and_not_reused(self) -> None:

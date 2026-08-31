@@ -1316,8 +1316,9 @@ fn validate_view_filter(
     route: &LogicalTreeRoute,
     filter: &ViewFilter,
 ) -> Result<ModuleViewFilter, ViewError> {
+    let has_reader_filter = filter.iter().any(|(key, _)| key != "sections");
     if route.reader() != LogicalReader::Module {
-        return if filter.is_empty() {
+        return if !has_reader_filter {
             Ok(ModuleViewFilter::default())
         } else {
             Err(ViewError::new(
@@ -1327,7 +1328,7 @@ fn validate_view_filter(
         };
     }
     if route.module().is_none() {
-        return if filter.is_empty() {
+        return if !has_reader_filter {
             Ok(ModuleViewFilter::default())
         } else {
             Err(ViewError::new(
@@ -1339,6 +1340,7 @@ fn validate_view_filter(
     let mut result = ModuleViewFilter::default();
     for (key, value) in filter.iter() {
         match key.as_str() {
+            "sections" => {}
             "context" => {
                 let context = value.as_str().ok_or_else(|| {
                     ViewError::new("bad_value", "module filter.context must be a string")

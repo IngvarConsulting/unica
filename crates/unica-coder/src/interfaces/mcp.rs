@@ -90,6 +90,7 @@ struct CanonicalV13Router {
 
 #[derive(Clone)]
 enum SurfaceToolRouter {
+    #[allow(dead_code)] // constructed only by the explicit legacy test seam
     LegacyV12(Arc<ToolCallHandler>),
     CanonicalV13(CanonicalV13Router),
 }
@@ -141,11 +142,33 @@ impl FrontendInvocationDeadline {
 }
 
 pub fn run_stdio() {
-    let app = Arc::new(UnicaApplication::new());
-    let handler: Arc<ToolCallHandler> = Arc::new(move |name, arguments, cancellation, progress| {
-        call_tool_result_observed(&app, name, arguments, cancellation, progress)
-    });
-    let server = UnicaServer::new(handler);
+    if SurfaceRelease::from_package_version() != SurfaceRelease::V13 {
+        eprintln!("this package does not select the canonical v0.13 MCP surface");
+        return;
+    }
+    let state_root = match crate::interfaces::daemon::default_user_daemon_state_root() {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("failed to resolve unica user daemon state: {error}");
+            return;
+        }
+    };
+    let owner = match crate::interfaces::daemon::connect_default_user_daemon(&state_root) {
+        Ok(owner) => owner,
+        Err(error) => {
+            eprintln!("failed to connect to unica user daemon: {error}");
+            return;
+        }
+    };
+    let workspace_hint = match std::env::current_dir() {
+        Ok(path) => path.to_string_lossy().into_owned(),
+        Err(error) => {
+            eprintln!("failed to determine unica MCP workspace: {error}");
+            return;
+        }
+    };
+    let notice = startup_notice_from(std::env::var(STARTUP_NOTICE_ENV).ok());
+    let server = UnicaServer::canonical_v13_daemon(owner, workspace_hint, notice);
     let in_flight = server.in_flight();
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -233,13 +256,17 @@ fn startup_notice_from(value: Option<String>) -> Option<String> {
 }
 
 impl UnicaServer {
-    fn new(handler: Arc<ToolCallHandler>) -> Self {
-        debug_assert_eq!(SurfaceRelease::from_package_version(), SurfaceRelease::V12);
+    #[cfg(test)]
+    fn legacy_for_test(handler: Arc<ToolCallHandler>) -> Self {
         let notice = startup_notice_from(std::env::var(STARTUP_NOTICE_ENV).ok());
-        Self::with_startup_notice(handler, notice)
+        Self::legacy_with_startup_notice_for_test(handler, notice)
     }
 
-    fn with_startup_notice(handler: Arc<ToolCallHandler>, startup_notice: Option<String>) -> Self {
+    #[cfg(test)]
+    fn legacy_with_startup_notice_for_test(
+        handler: Arc<ToolCallHandler>,
+        startup_notice: Option<String>,
+    ) -> Self {
         Self {
             router: SurfaceToolRouter::LegacyV12(handler),
             in_flight: Arc::new(InFlightRegistry::default()),
@@ -291,18 +318,26 @@ impl UnicaServer {
         }
     }
 
-    #[allow(dead_code)]
-    fn with_canonical_daemon(
+    fn canonical_v13_daemon(
         owner: crate::infrastructure::daemon::client::DaemonOwner,
         workspace_hint: String,
+        startup_notice: Option<String>,
     ) -> Self {
         let router = canonical_daemon_router(owner, workspace_hint);
         Self {
             router: SurfaceToolRouter::CanonicalV13(router),
             in_flight: Arc::new(InFlightRegistry::default()),
             structured_tools: HashSet::new(),
-            startup_notice: None,
+            startup_notice,
         }
+    }
+
+    #[cfg(test)]
+    fn with_canonical_daemon(
+        owner: crate::infrastructure::daemon::client::DaemonOwner,
+        workspace_hint: String,
+    ) -> Self {
+        Self::canonical_v13_daemon(owner, workspace_hint, None)
     }
 
     fn in_flight(&self) -> Arc<InFlightRegistry> {
@@ -478,10 +513,9 @@ fn project_compatibility_snapshot(
     )
 }
 
-/// Hidden bridge used only by explicitly selected canonical-v0.13 frontends.
-/// The released stdio constructor remains on `SurfaceRelease::V12` until the
-/// atomic Task 22 cutover.
-#[allow(dead_code)]
+/// Build the canonical router backed by a persistent v3 user daemon. The
+/// production stdio entrypoint owns one daemon lease for its session and uses
+/// this router for every canonical tool and compatibility Task operation.
 fn canonical_daemon_router(
     owner: crate::infrastructure::daemon::client::DaemonOwner,
     workspace_hint: String,
@@ -552,6 +586,7 @@ fn structured_output_schema(spec: &ToolSpec) -> Option<Value> {
     }
 }
 
+#[allow(dead_code)] // legacy surface test support; production selects canonical V13
 fn has_structured_output(spec: &ToolSpec) -> bool {
     structured_output_schema(spec).is_some()
 }
@@ -585,7 +620,7 @@ fn v13_tool_definitions(profile: V13TaskProfile) -> &'static [Tool] {
     static COMPATIBILITY: std::sync::OnceLock<Vec<Tool>> = std::sync::OnceLock::new();
     let build = || {
         let catalog = crate::application::v13::tool_catalog::catalog_for(SurfaceRelease::V13)
-            .expect("hidden V13 profile has a catalog");
+            .expect("canonical v0.13 profile has a catalog");
         let mut tools = catalog
             .tools
             .into_iter()
@@ -1167,6 +1202,7 @@ fn call_tool_result(
     call_tool_result_observed(app, name, args, cancellation, Arc::new(NoopProgressSink))
 }
 
+#[allow(dead_code)] // legacy surface test support; production dispatches through daemon
 fn call_tool_result_observed(
     app: &UnicaApplication,
     name: &str,
@@ -1312,6 +1348,62 @@ mod tests {
     }
 
     #[test]
+    fn production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility() {
+        let canonical: Arc<CanonicalToolCallHandler> = Arc::new(|_, _, _, _| {
+            Ok(InvocationResponse::Direct(
+                crate::domain::invocation::DomainResult::success("canonical"),
+            ))
+        });
+        let server = UnicaServer::with_canonical_v13(canonical);
+
+        assert!(
+            matches!(server.router, SurfaceToolRouter::CanonicalV13(_)),
+            "the production MCP constructor must select the canonical v0.13 router"
+        );
+
+        let native = v13_tool_definitions(V13TaskProfile::Native)
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            native,
+            [
+                "unica.view",
+                "unica.apply",
+                "unica.find",
+                "unica.search",
+                "unica.check",
+                "unica.diff",
+                "unica.run",
+                "unica.docs",
+            ],
+            "the native Tasks-capable profile must expose exactly the eight canonical tools"
+        );
+
+        let compatibility = v13_tool_definitions(V13TaskProfile::Compatibility)
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            compatibility,
+            [
+                "unica.view",
+                "unica.apply",
+                "unica.find",
+                "unica.search",
+                "unica.check",
+                "unica.diff",
+                "unica.run",
+                "unica.docs",
+                "unica.task.get",
+                "unica.task.result",
+                "unica.task.cancel",
+            ],
+            "the compatibility profile must add only the three task projection tools"
+        );
+    }
+
+    #[test]
     fn surface_release_structurally_gates_v12_legacy_dispatch_from_v13_daemon_dispatch() {
         use std::sync::atomic::AtomicUsize;
 
@@ -1321,7 +1413,7 @@ mod tests {
             legacy_observed.fetch_add(1, Ordering::SeqCst);
             Ok(successful_test_result("legacy"))
         });
-        let v12 = UnicaServer::new(legacy);
+        let v12 = UnicaServer::legacy_for_test(legacy);
         let received = Instant::now();
         let deadline = FrontendInvocationDeadline::new(received, None);
         let result = execute_surface_tool(
@@ -1593,7 +1685,7 @@ mod tests {
     }
 
     fn spawn_server(handler: Arc<ToolCallHandler>) -> (McpClient, Arc<InFlightRegistry>) {
-        spawn_unica_server(UnicaServer::new(handler))
+        spawn_unica_server(UnicaServer::legacy_for_test(handler))
     }
 
     fn spawn_unica_server(server: UnicaServer) -> (McpClient, Arc<InFlightRegistry>) {
@@ -1632,8 +1724,10 @@ mod tests {
         // Убитая установка своего провода не имела: её рассказ приходит сюда
         // от загрузчика и уходит вызывающему обычным ответом на `initialize`.
         let notice = "a Unica startup was killed while downloading unica 0.13.0";
-        let server =
-            UnicaServer::with_startup_notice(application_handler(), Some(notice.to_owned()));
+        let server = UnicaServer::legacy_with_startup_notice_for_test(
+            application_handler(),
+            Some(notice.to_owned()),
+        );
 
         assert_eq!(server.get_info().instructions.as_deref(), Some(notice));
     }
@@ -1641,7 +1735,7 @@ mod tests {
     #[test]
     fn a_session_with_nothing_to_report_carries_no_instructions() {
         // Обычная сессия платит за это ноль байтов поверхности.
-        let server = UnicaServer::with_startup_notice(application_handler(), None);
+        let server = UnicaServer::legacy_with_startup_notice_for_test(application_handler(), None);
 
         assert_eq!(server.get_info().instructions, None);
     }
@@ -2155,7 +2249,7 @@ mod tests {
         if !native_tasks {
             expected.extend(["unica.task.get", "unica.task.result", "unica.task.cancel"]);
         }
-        assert_eq!(names, expected, "wrong hidden V13 tools/list profile");
+        assert_eq!(names, expected, "wrong canonical v0.13 tools/list profile");
         for forbidden in [
             "unica.task.list",
             "unica.task.logs",
@@ -4304,11 +4398,11 @@ mod tests {
     #[tokio::test]
     async fn native_task_projection_contract_is_capability_gated_durable_and_replay_free() {
         assert!(
-            !UnicaServer::new(application_handler())
+            !UnicaServer::legacy_for_test(application_handler())
                 .get_info()
                 .capabilities
                 .supports_tasks(),
-            "the package-selected v0.12 profile must not advertise Tasks"
+            "the explicit v0.12 test profile must not advertise Tasks"
         );
         tasks_direct_first_capability_case().await;
         legacy_initialized_session_cannot_escalate_tasks_per_request_case().await;
@@ -4562,7 +4656,7 @@ mod tests {
         // A direct-first request with an incomplete reserved set is not a
         // silent legacy downgrade: admission refuses the connection.
         let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
-        let server = UnicaServer::new(application_handler());
+        let server = UnicaServer::legacy_for_test(application_handler());
         let handle = tokio::spawn(async move {
             server
                 .serve(server_io)

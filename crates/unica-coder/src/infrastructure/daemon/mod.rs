@@ -7,8 +7,10 @@ pub(crate) mod protocol_v5;
 pub(crate) mod runtime_v5;
 pub(crate) mod server;
 pub(crate) mod terminal_codec_v5;
+mod v13_read_modes;
 #[allow(dead_code)]
 mod v13_service;
+mod v13_syntax_run;
 
 #[cfg(test)]
 mod tests {
@@ -1695,8 +1697,189 @@ mod tests {
     }
 
     #[test]
-    fn hidden_v13_apply_dispatch_uses_targeted_secondary_admission_and_reaches_all_three_compiled_family_stubs(
-    ) {
+    fn canonical_v13_service_gives_each_of_the_eight_surface_tools_a_useful_closed_mode() {
+        struct PlatformDocsStandIn;
+
+        impl crate::domain::documentation::DocumentationProvider for PlatformDocsStandIn {
+            fn id(&self) -> crate::domain::documentation::DocumentationProviderId {
+                crate::domain::documentation::DocumentationProviderId::new("platform-test")
+            }
+
+            fn corpora(&self) -> Vec<crate::domain::documentation::DocumentationCorpus> {
+                vec![crate::domain::documentation::DocumentationCorpus {
+                    id: "platform-test".to_string(),
+                    source_kind: crate::domain::documentation::SourceKind::PlatformHelp,
+                    authority: crate::domain::documentation::Authority::Vendor,
+                }]
+            }
+
+            fn needs_network(&self) -> bool {
+                false
+            }
+
+            fn search(
+                &self,
+                request: &crate::domain::documentation::DocumentationSearchRequest,
+                _: &crate::domain::documentation::DocumentationContext,
+            ) -> Vec<crate::domain::documentation::DocumentationSection> {
+                vec![crate::domain::documentation::DocumentationSection::empty(
+                    self.id(),
+                    "platform-test",
+                    crate::domain::documentation::SourceKind::PlatformHelp,
+                    crate::domain::documentation::Authority::Vendor,
+                    &request.language,
+                )]
+            }
+        }
+
+        let _docs =
+            crate::infrastructure::application_ports::install_documentation_registry_stand_in(
+                Arc::new(PlatformDocsStandIn),
+            );
+        let daemon_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Catalogs/Items/Ext")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items/Ext/ObjectModule.bsl"),
+            "Процедура Проверка()\n    UniqueSearchNeedle = Истина;\nКонецПроцедуры\n",
+        )
+        .unwrap();
+
+        let identity = CoreIdentity::production();
+        let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
+            .with_invocation_service(Arc::new(CanonicalV13ReadService::default()));
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(daemon_root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical_root(daemon_root.path()),
+            identity,
+        ));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+        let workspace_hint = physical_root(workspace.path())
+            .to_string_lossy()
+            .into_owned();
+        let mut call = |tool, arguments| {
+            let response = owner
+                .submit_invocation(
+                    InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000)
+                        .unwrap(),
+                )
+                .unwrap();
+            match response {
+                InvocationResponse::Direct(result) => result,
+                InvocationResponse::Task(snapshot) => {
+                    let terminal = owner
+                        .wait_task(snapshot.task_id, INTEGRATION_TASK_WAIT_MS)
+                        .unwrap();
+                    assert_eq!(terminal.status, InvocationStatus::Completed);
+                    terminal
+                        .result
+                        .expect("canonical tool must publish a result")
+                }
+            }
+        };
+
+        let cases = [
+            (
+                ToolIdentity::View,
+                serde_json::json!({"at": "main:Catalog.Items"}),
+                "kind",
+            ),
+            (
+                ToolIdentity::Find,
+                serde_json::json!({"query": "Items"}),
+                "candidates",
+            ),
+            (
+                ToolIdentity::Search,
+                serde_json::json!({
+                    "query": "UniqueSearchNeedle",
+                    "scope": "main:Configuration"
+                }),
+                "matches",
+            ),
+            (ToolIdentity::Check, serde_json::json!({}), "sources"),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({
+                    "left": "main:Catalog.Items",
+                    "right": "main:Catalog.Items"
+                }),
+                "equal",
+            ),
+            (ToolIdentity::Run, serde_json::json!({}), "operations"),
+            (
+                ToolIdentity::Docs,
+                serde_json::json!({
+                    "query": "Items",
+                    "source": "platform-help"
+                }),
+                "sections",
+            ),
+            (
+                ToolIdentity::Apply,
+                serde_json::json!({
+                    "at": "main:Catalog.Items",
+                    "ops": [{"op": "props.set", "args": {"values": {"Comment": "Preview"}}}],
+                    "dryRun": true
+                }),
+                "validated",
+            ),
+        ];
+        for (tool, arguments, expected_data_key) in cases {
+            let result = call(tool, arguments);
+            assert!(
+                result.ok,
+                "{} useful mode failed: {} {:?}",
+                tool.catalog_name(),
+                result.summary,
+                result.diagnostics
+            );
+            assert!(
+                result
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get(expected_data_key))
+                    .is_some(),
+                "{} omitted data.{expected_data_key}: {:?}",
+                tool.catalog_name(),
+                result.data
+            );
+        }
+
+        let unsupported = call(
+            ToolIdentity::Run,
+            serde_json::json!({"op": "client.run", "args": {}}),
+        );
+        assert!(!unsupported.ok);
+        assert_eq!(unsupported.diagnostics[0]["code"], "unsupported_operation");
+
+        drop(call);
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn canonical_v13_apply_dry_run_and_real_noop_use_the_exact_target_without_writes() {
         let mut mode_write_free = [false; 2];
         for (mode_index, dry_run) in [false, true].into_iter().enumerate() {
             let daemon_root = tempfile::tempdir().unwrap();
@@ -1710,10 +1893,15 @@ mod tests {
                 r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor><Properties><Name>MainProcessor</Name></Properties><ChildObjects/></ExternalDataProcessor></MetaDataObject>"#,
             )
             .unwrap();
-            std::fs::create_dir_all(&secondary).unwrap();
+            std::fs::create_dir_all(secondary.join("Catalogs")).unwrap();
             std::fs::write(
                 secondary.join("Configuration.xml"),
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Secondary</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Secondary</Name></Properties><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                secondary.join("Catalogs/Items.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
             )
             .unwrap();
             std::fs::write(
@@ -1749,46 +1937,35 @@ mod tests {
                 ExistingDaemon::Absent => panic!("published daemon must connect"),
             };
 
-            // Regression oracle: replacing the targeted read_sources lookup in
-            // ActorBoundExecution::admit_apply with provider_root must fail with the
-            // external processor's exact-profile diagnostic before a lane stub runs.
-            for operation in ["object.create", "form.create", "dcs.set", "code.insert"] {
-                let response = owner
-                    .submit_invocation(
-                        InvocationRequest::new(
-                            ToolIdentity::Apply,
-                            serde_json::json!({
-                                "at": "secondary:Configuration",
-                                "ops": [{"op": operation, "args": {}}],
-                                "dryRun": dry_run,
-                            }),
-                            physical_root(workspace.path()).to_string_lossy(),
-                            7_000,
-                        )
-                        .unwrap(),
+            // Regression oracle: both modes use the exact targeted source set and
+            // the real typed planner, while a net-zero plan remains write-free.
+            let response = owner
+                .submit_invocation(
+                    InvocationRequest::new(
+                        ToolIdentity::Apply,
+                        serde_json::json!({
+                            "at": "secondary:Catalog.Items",
+                            "ops": [{"op": "props.set", "args": {"values": {"Comment": ""}}}],
+                            "dryRun": dry_run,
+                        }),
+                        physical_root(workspace.path()).to_string_lossy(),
+                        7_000,
                     )
-                    .unwrap();
-                let InvocationResponse::Direct(result) = response else {
-                    panic!("hidden W0 apply stub must complete inline")
-                };
-                assert!(
-                    !result.ok,
-                    "dryRun={dry_run} {operation} unexpectedly succeeded"
-                );
-                assert_eq!(
-                    result.at.as_deref(),
-                    Some("ops[0].op"),
-                    "dryRun={dry_run} {operation}"
-                );
-                assert_eq!(
-                    result.diagnostics[0]["code"], "provider_unavailable",
-                    "dryRun={dry_run} {operation}"
-                );
-                assert_eq!(
-                    result.summary, "hidden v0.13 apply family is not implemented",
-                    "dryRun={dry_run} {operation}"
-                );
-            }
+                    .unwrap(),
+                )
+                .unwrap();
+            let InvocationResponse::Direct(result) = response else {
+                panic!("canonical apply mode must complete inline")
+            };
+            assert!(result.ok, "dryRun={dry_run} no-op failed: {result:?}");
+            assert_eq!(result.at.as_deref(), Some("secondary:Catalog.Items"));
+            assert_eq!(result.data.as_ref().unwrap()["validated"], true);
+            assert_eq!(result.data.as_ref().unwrap()["executable"], true);
+            assert_eq!(
+                result.data.as_ref().unwrap()["mode"],
+                if dry_run { "preview" } else { "published" }
+            );
+            assert!(result.changed.is_empty());
 
             drop(owner);
             server.join().unwrap().unwrap();
@@ -1805,15 +1982,20 @@ mod tests {
         assert_eq!(
             mode_write_free,
             [true, true],
-            "hidden W0 Apply mutated source/cache topology or bytes for [dryRun=false, dryRun=true], including a prohibited .build/unica/source-revisions/*.json publication"
+            "canonical Apply mutated source/cache topology or bytes for [dryRun=false, dryRun=true], including a prohibited .build/unica/source-revisions/*.json publication"
         );
     }
 
     #[test]
-    fn daemon_default_keeps_the_hidden_v13_service_dormant_before_task22() {
+    fn production_v3_daemon_default_executes_the_canonical_v13_service() {
         let daemon_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         ensure_platform_xml_workspace(workspace.path());
+        std::fs::write(
+            workspace.path().join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
         let identity = CoreIdentity::production();
         let config = server_config(daemon_root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
@@ -1839,12 +2021,12 @@ mod tests {
             )
             .unwrap();
         let InvocationResponse::Direct(result) = response else {
-            panic!("dormant service should reject inline")
+            panic!("canonical v0.13 view should complete inline")
         };
-        assert!(!result.ok);
-        assert!(result
-            .summary
-            .contains("not installed before the Task 22 cutover"));
+        assert!(
+            result.ok,
+            "production v3 default must not use an unavailable service: {result:?}"
+        );
 
         drop(owner);
         server.join().unwrap().unwrap();
@@ -2095,7 +2277,7 @@ mod tests {
                 .filter(|item| item.contains("CanonicalInvocationService"))
                 .collect::<Vec<_>>(),
             vec![&v13_seam],
-            "the hidden v13 consumer must enter through the server facade"
+            "the canonical v0.13 consumer must enter through the server facade"
         );
 
         let owner = syn::parse_file(include_str!("invocation_service.rs"))

@@ -23,6 +23,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const ACTOR_OPERATION_BUDGET: Duration = Duration::from_secs(7);
+const CANONICAL_SEARCH_MAX_ENTRIES: usize = 16_384;
+const CANONICAL_SEARCH_MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
+const CANONICAL_SEARCH_MAX_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+const CANONICAL_SEARCH_MAX_DEPTH: usize = 32;
 
 #[derive(Clone)]
 pub(crate) struct ActorBoundInvocation {
@@ -100,6 +104,157 @@ impl ActorReadSourceCapability {
                 self.deadline,
             ),
         )
+    }
+
+    pub(in crate::infrastructure::daemon) fn revision_identity(&self) -> String {
+        self.fence.revision().revision_identity()
+    }
+
+    pub(in crate::infrastructure::daemon) fn search_bsl_literal(
+        &self,
+        query: &str,
+        limit: usize,
+        scope_prefix: Option<&str>,
+        scope_at: &QualifiedAddress,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        use crate::infrastructure::platform::filesystem::RetainedChildCapability;
+
+        let root = self.binding.retained_root();
+        let (start_relative, start_directory) = match scope_prefix {
+            None => (std::path::PathBuf::new(), root.as_ref().clone()),
+            Some(prefix) => {
+                let mut relative = std::path::PathBuf::new();
+                let mut directory = root.as_ref().clone();
+                for component in prefix.split('/') {
+                    if component.is_empty() || matches!(component, "." | "..") {
+                        return Err("canonical search scope prefix is invalid".to_string());
+                    }
+                    relative.push(component);
+                    let child = directory
+                        .retain_immediate_child_nofollow(std::ffi::OsStr::new(component))
+                        .map_err(|error| error.to_string())?;
+                    match child {
+                        RetainedChildCapability::Directory(next) => directory = next,
+                        RetainedChildCapability::ReparsePoint => {
+                            return Err(
+                                "canonical search scope crosses a link/reparse point".to_string()
+                            )
+                        }
+                        RetainedChildCapability::RegularFile(_)
+                        | RetainedChildCapability::Unsupported => return Ok(Vec::new()),
+                    }
+                }
+                (relative, directory)
+            }
+        };
+        let mut stack = vec![(start_relative, start_directory, 0_usize)];
+        let mut visited_entries = 0_usize;
+        let mut read_bytes = 0_usize;
+        let mut matches = Vec::new();
+        while let Some((relative_directory, directory, depth)) = stack.pop() {
+            if cancellation.is_cancelled() {
+                return Err("canonical search was cancelled".to_string());
+            }
+            if self.deadline.remaining().is_zero() {
+                return Err("canonical search operation deadline elapsed".to_string());
+            }
+            directory
+                .validate_named_identity()
+                .map_err(|error| error.to_string())?;
+            let remaining_entries = CANONICAL_SEARCH_MAX_ENTRIES.saturating_sub(visited_entries);
+            if remaining_entries == 0 {
+                return Err("canonical search exceeded its retained entry limit".to_string());
+            }
+            let mut names = directory
+                .read_immediate_names_bounded(remaining_entries, || {
+                    if cancellation.is_cancelled() {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::Interrupted,
+                            "canonical search was cancelled",
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .map_err(|error| error.to_string())?;
+            names.sort();
+            for name in names {
+                visited_entries = visited_entries.saturating_add(1);
+                if visited_entries > CANONICAL_SEARCH_MAX_ENTRIES {
+                    return Err("canonical search exceeded its retained entry limit".to_string());
+                }
+                let Some(name_text) = name.to_str() else {
+                    continue;
+                };
+                let relative = relative_directory.join(name_text);
+                let child = directory
+                    .retain_immediate_child_nofollow(&name)
+                    .map_err(|error| error.to_string())?;
+                match child {
+                    RetainedChildCapability::Directory(child_directory)
+                        if depth < CANONICAL_SEARCH_MAX_DEPTH =>
+                    {
+                        stack.push((relative, child_directory, depth + 1));
+                    }
+                    RetainedChildCapability::RegularFile(file)
+                        if relative
+                            .extension()
+                            .and_then(std::ffi::OsStr::to_str)
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl")) =>
+                    {
+                        file.validate_named_identity()
+                            .map_err(|error| error.to_string())?;
+                        let bytes = file
+                            .read_bounded(CANONICAL_SEARCH_MAX_FILE_BYTES)
+                            .map_err(|error| error.to_string())?;
+                        read_bytes = read_bytes.saturating_add(bytes.len());
+                        if read_bytes > CANONICAL_SEARCH_MAX_TOTAL_BYTES {
+                            return Err(
+                                "canonical search exceeded its retained byte limit".to_string()
+                            );
+                        }
+                        let Ok(text) = std::str::from_utf8(&bytes) else {
+                            continue;
+                        };
+                        for (line_index, line) in text.lines().enumerate() {
+                            for (byte_column, _) in line.match_indices(query) {
+                                let mut item = serde_json::Map::new();
+                                item.insert(
+                                    "scope".to_string(),
+                                    serde_json::Value::String(scope_at.to_string()),
+                                );
+                                item.insert(
+                                    "line".to_string(),
+                                    serde_json::Value::from(line_index + 1),
+                                );
+                                item.insert(
+                                    "column".to_string(),
+                                    serde_json::Value::from(
+                                        line[..byte_column].chars().count() + 1,
+                                    ),
+                                );
+                                item.insert(
+                                    "snippet".to_string(),
+                                    serde_json::Value::String(
+                                        line.chars().take(512).collect::<String>(),
+                                    ),
+                                );
+                                matches.push(serde_json::Value::Object(item));
+                                if matches.len() == limit {
+                                    return Ok(matches);
+                                }
+                            }
+                        }
+                    }
+                    RetainedChildCapability::Directory(_)
+                    | RetainedChildCapability::RegularFile(_)
+                    | RetainedChildCapability::ReparsePoint
+                    | RetainedChildCapability::Unsupported => {}
+                }
+            }
+        }
+        Ok(matches)
     }
 }
 
@@ -209,10 +364,14 @@ impl ActorBoundInvocation {
     ) -> Result<ActorBoundExecution, String> {
         let revision = match self.tool {
             crate::application::invocation_store::ToolIdentity::Apply => {
-                ActorExecutionRevision::UnpublishedApply
+                ActorExecutionRevision::UnpublishedApply(std::sync::atomic::AtomicBool::new(false))
             }
             crate::application::invocation_store::ToolIdentity::View
-            | crate::application::invocation_store::ToolIdentity::Find => {
+            | crate::application::invocation_store::ToolIdentity::Find
+            | crate::application::invocation_store::ToolIdentity::Search
+            | crate::application::invocation_store::ToolIdentity::Check
+            | crate::application::invocation_store::ToolIdentity::Diff
+            | crate::application::invocation_store::ToolIdentity::Docs => {
                 let (selected, route) = match self.tool {
                     crate::application::invocation_store::ToolIdentity::View => {
                         match self.arguments.get("at").and_then(serde_json::Value::as_str) {
@@ -308,7 +467,7 @@ pub(crate) struct ActorBoundExecution {
 enum ActorExecutionRevision {
     Legacy(WorkspaceRevisionFence),
     LogicalRead(ActorLogicalReadLease),
-    UnpublishedApply,
+    UnpublishedApply(std::sync::atomic::AtomicBool),
 }
 
 impl ActorBoundExecution {
@@ -338,11 +497,20 @@ impl ActorBoundExecution {
             .collect()
     }
 
+    pub(in crate::infrastructure::daemon) fn workspace_context(
+        &self,
+    ) -> &crate::domain::workspace::WorkspaceContext {
+        self.invocation.actor.context()
+    }
+
     pub(in crate::infrastructure::daemon) fn admit_apply(
         &self,
         request: &ApplyRequest,
         cancellation: &CancellationToken,
     ) -> Result<(ProviderRootBinding, ApplyAdmission), String> {
+        if !matches!(self.revision, ActorExecutionRevision::UnpublishedApply(_)) {
+            return Err("apply admission belongs to a non-apply invocation".to_string());
+        }
         let binding = self
             .invocation
             .read_sources
@@ -361,6 +529,26 @@ impl ActorBoundExecution {
             cancellation,
         )?;
         Ok((binding, admission))
+    }
+
+    pub(in crate::infrastructure::daemon) fn publish_prepared_apply(
+        &self,
+        prepared: crate::infrastructure::workspace_actor::PreparedApplyBatch,
+    ) -> Result<
+        crate::infrastructure::workspace_actor::ApplyPublicationResult,
+        crate::infrastructure::workspace_actor::ApplyPublicationError,
+    > {
+        let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision else {
+            return Err(
+                crate::infrastructure::workspace_actor::ApplyPublicationError::new(
+                    crate::infrastructure::workspace_actor::ApplyPublicationErrorKind::Invariant,
+                    "prepared apply publication belongs to a non-apply invocation",
+                ),
+            );
+        };
+        let published = self.invocation.actor.publish_prepared_apply(prepared)?;
+        confirmed.store(true, std::sync::atomic::Ordering::Release);
+        Ok(published)
     }
 
     #[allow(dead_code)]
@@ -522,9 +710,25 @@ impl ActorBoundExecution {
                     cancellation,
                 )
             }
-            ActorExecutionRevision::UnpublishedApply => {
+            ActorExecutionRevision::UnpublishedApply(confirmed) => {
+                if confirmed.load(std::sync::atomic::Ordering::Acquire) {
+                    return Ok(staged);
+                }
+                let dry_run = self
+                    .invocation
+                    .arguments
+                    .get("dryRun")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true);
                 let requires_actor_publication = match &staged {
-                    Ok(result) => result.ok || !result.changed.is_empty() || result.rev.is_some(),
+                    Ok(result) => {
+                        let closed_dry_run_result = dry_run
+                            && result.ok
+                            && result.changed.is_empty()
+                            && result.rev.is_none();
+                        !closed_dry_run_result
+                            && (result.ok || !result.changed.is_empty() || result.rev.is_some())
+                    }
                     Err(_) => false,
                 };
                 if requires_actor_publication {

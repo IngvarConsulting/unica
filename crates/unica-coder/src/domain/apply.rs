@@ -370,6 +370,23 @@ impl OperationDescriptor {
         self.applicability.matches(kind)
     }
 
+    pub(crate) fn applies_to_operation_target(self, target: &QualifiedAddress) -> bool {
+        let Some(terminal) = target.segments().last() else {
+            return false;
+        };
+        if self.applies_to(terminal.kind()) {
+            return true;
+        }
+        matches!(
+            self.applicability,
+            OperationApplicability::MetadataAttributes
+        ) && terminal.kind() == NodeKind::Attribute
+            && target
+                .segments()
+                .first()
+                .is_some_and(|owner| self.applies_to(owner.kind()))
+    }
+
     pub(crate) fn copyable_skeleton(self) -> OperationRef {
         OperationRef::new(self.name, self.skeleton.args())
     }

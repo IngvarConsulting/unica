@@ -9,7 +9,7 @@ use serde_json::json;
 use unica_bootstrap::{verify_mcp_runtime, Failure};
 
 #[test]
-fn verify_requires_both_lifecycles_and_the_three_public_tools() {
+fn verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface() {
     let root = temp_root("valid");
     let record = root.join("provider-state.txt");
     let runtime = write_fake_runtime(
@@ -17,6 +17,7 @@ fn verify_requires_both_lifecycles_and_the_three_public_tools() {
         &record,
         None,
         None,
+        &[],
         &["2025-06-18", "2025-11-25", "2026-07-28"],
     );
     let provider_state = root.join("private-provider-state");
@@ -41,10 +42,18 @@ fn verify_requires_both_lifecycles_and_the_three_public_tools() {
 
 #[test]
 fn verify_requires_each_lifecycle_to_expose_each_public_tool() {
-    const REQUIRED: [&str; 3] = [
-        "unica.project.status",
-        "unica.standards.search",
-        "unica.standards.explain",
+    const REQUIRED: [&str; 11] = [
+        "unica.view",
+        "unica.apply",
+        "unica.find",
+        "unica.search",
+        "unica.check",
+        "unica.diff",
+        "unica.run",
+        "unica.docs",
+        "unica.task.get",
+        "unica.task.result",
+        "unica.task.cancel",
     ];
     for lifecycle in ["legacy", "direct"] {
         for missing in REQUIRED {
@@ -63,6 +72,7 @@ fn verify_requires_each_lifecycle_to_expose_each_public_tool() {
                 &record,
                 legacy_missing,
                 direct_missing,
+                &[],
                 &["2025-06-18", "2025-11-25", "2026-07-28"],
             );
 
@@ -83,6 +93,63 @@ fn verify_requires_each_lifecycle_to_expose_each_public_tool() {
 }
 
 #[test]
+fn verify_rejects_legacy_names_mixed_into_the_v13_surface() {
+    let root = temp_root("mixed-v12-v13");
+    let record = root.join("provider-state.txt");
+    let runtime = write_fake_runtime(
+        &root,
+        &record,
+        None,
+        None,
+        &[
+            "unica.project.status",
+            "unica.standards.search",
+            "unica.standards.explain",
+        ],
+        &["2025-06-18", "2025-11-25", "2026-07-28"],
+    );
+
+    let error = verify_mcp_runtime(
+        &runtime,
+        &root,
+        &root.join("private-provider-state"),
+        Duration::from_secs(2),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("unexpected"), "{error}");
+    assert!(
+        error.to_string().contains("unica.project.status"),
+        "{error}"
+    );
+}
+
+#[test]
+fn verify_rejects_duplicate_names_in_the_v13_surface() {
+    let root = temp_root("duplicate-v13-name");
+    let record = root.join("provider-state.txt");
+    let runtime = write_fake_runtime(
+        &root,
+        &record,
+        None,
+        None,
+        &["unica.view"],
+        &["2025-06-18", "2025-11-25", "2026-07-28"],
+    );
+
+    let error = verify_mcp_runtime(
+        &runtime,
+        &root,
+        &root.join("private-provider-state"),
+        Duration::from_secs(2),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("duplicate"), "{error}");
+    assert!(error.to_string().contains("unica.view"), "{error}");
+}
+
+#[test]
 fn verify_rejects_discover_without_the_guaranteed_versions() {
     const GUARANTEED: [&str; 3] = ["2025-06-18", "2025-11-25", "2026-07-28"];
     for missing in GUARANTEED {
@@ -92,7 +159,7 @@ fn verify_rejects_discover_without_the_guaranteed_versions() {
             .into_iter()
             .filter(|version| *version != missing)
             .collect::<Vec<_>>();
-        let runtime = write_fake_runtime(&root, &record, None, None, &supported);
+        let runtime = write_fake_runtime(&root, &record, None, None, &[], &supported);
         let provider_state = root.join("private-provider-state");
 
         let error = verify_mcp_runtime(&runtime, &root, &provider_state, Duration::from_secs(2))
@@ -110,11 +177,12 @@ fn write_fake_runtime(
     provider_state_record: &Path,
     legacy_missing_tool: Option<&str>,
     direct_missing_tool: Option<&str>,
+    extra_tools: &[&str],
     supported_versions: &[&str],
 ) -> PathBuf {
     let path = root.join("fake-unica");
-    let legacy_tools = tools_list_response(legacy_missing_tool);
-    let direct_tools = tools_list_response(direct_missing_tool);
+    let legacy_tools = tools_list_response(legacy_missing_tool, extra_tools);
+    let direct_tools = tools_list_response(direct_missing_tool, extra_tools);
     let supported = serde_json::to_string(supported_versions).unwrap();
     let requests = root.join("requests.txt");
     let tools_list_seen = root.join("tools-list-seen");
@@ -150,13 +218,22 @@ done
     path
 }
 
-fn tools_list_response(missing: Option<&str>) -> String {
+fn tools_list_response(missing: Option<&str>, extra_tools: &[&str]) -> String {
     let tools = [
-        "unica.project.status",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.view",
+        "unica.apply",
+        "unica.find",
+        "unica.search",
+        "unica.check",
+        "unica.diff",
+        "unica.run",
+        "unica.docs",
+        "unica.task.get",
+        "unica.task.result",
+        "unica.task.cancel",
     ]
     .into_iter()
+    .chain(extra_tools.iter().copied())
     .filter(|name| Some(*name) != missing)
     .map(|name| json!({"name": name}))
     .collect::<Vec<_>>();

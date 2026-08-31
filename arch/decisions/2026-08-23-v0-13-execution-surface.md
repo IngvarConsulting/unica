@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-08-23.V0-13-EXECUTION-SURFACE
-status: planned
+status: superseded
 governs: product
 realized: null
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-08-31.V0-13-SURFACE-FIRST-CUTOVER
 establishes: []
 changes: [CTR.WIRE.TOOL-SURFACE]
 design: docs/design/2026-08-23-v0-13-execution-surface-design.md

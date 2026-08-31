@@ -2,6 +2,7 @@ use crate::infrastructure::daemon::client::{DaemonClient, DaemonClientConfig, Da
 use crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner;
 use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonProtocolIdentity};
 use crate::infrastructure::daemon::server::DaemonServerConfig;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
@@ -34,10 +35,40 @@ fn runtime_selection(core_identity: &CoreIdentity) -> DaemonRuntimeSelection {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "Task 7 routes invocations through this dormant lazy client seam"
-)]
+/// Resolve the persistent state root of the user daemon without mutating the
+/// process environment. Packaged hosts supply the provider root explicitly;
+/// an interactive user falls back to a private directory beneath their home.
+pub(crate) fn default_user_daemon_state_root() -> Result<PathBuf, String> {
+    resolve_default_user_daemon_state_root(&|name| std::env::var_os(name))
+}
+
+fn resolve_default_user_daemon_state_root(
+    read_env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<PathBuf, String> {
+    let root = read_env("UNICA_PROVIDER_STATE_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            read_env("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".unica").join("provider-state"))
+        })
+        .or_else(|| {
+            read_env("USERPROFILE")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".unica").join("provider-state"))
+        })
+        .ok_or_else(|| {
+            "UNICA_PROVIDER_STATE_DIR, HOME, or USERPROFILE is required for the user daemon state"
+                .to_string()
+        })?;
+    if !root.is_absolute() {
+        return Err("user daemon state root must be absolute".to_string());
+    }
+    Ok(root)
+}
+
+/// Connect to the production v3 user daemon, starting it if it is absent.
 pub(crate) fn connect_default_user_daemon(state_root: &Path) -> Result<DaemonOwner, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("failed to locate current unica executable: {error}"))?;
@@ -199,7 +230,10 @@ fn parse_daemon_args(args: &[String]) -> Result<ParsedDaemonArgs, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_daemon_args, runtime_selection, DaemonRuntimeSelection};
+    use super::{
+        parse_daemon_args, resolve_default_user_daemon_state_root, runtime_selection,
+        DaemonRuntimeSelection,
+    };
     use crate::infrastructure::daemon::identity::CoreIdentity;
     use std::str::FromStr;
 
@@ -247,6 +281,34 @@ mod tests {
                 DaemonRuntimeSelection::V3
             );
         }
+    }
+
+    #[test]
+    fn default_user_daemon_state_root_is_pure_and_requires_an_absolute_root() {
+        let environment = |name: &str| match name {
+            "UNICA_PROVIDER_STATE_DIR" => Some("/provider-state".into()),
+            "HOME" => Some("/Users/alice".into()),
+            _ => None,
+        };
+        assert_eq!(
+            resolve_default_user_daemon_state_root(&environment).unwrap(),
+            std::path::PathBuf::from("/provider-state")
+        );
+
+        let home_only = |name: &str| (name == "HOME").then(|| "/Users/alice".into());
+        assert_eq!(
+            resolve_default_user_daemon_state_root(&home_only).unwrap(),
+            std::path::PathBuf::from("/Users/alice/.unica/provider-state")
+        );
+
+        let user_profile_only = |name: &str| (name == "USERPROFILE").then(|| "/Users/bob".into());
+        assert_eq!(
+            resolve_default_user_daemon_state_root(&user_profile_only).unwrap(),
+            std::path::PathBuf::from("/Users/bob/.unica/provider-state")
+        );
+
+        let relative = |name: &str| (name == "UNICA_PROVIDER_STATE_DIR").then(|| "state".into());
+        assert!(resolve_default_user_daemon_state_root(&relative).is_err());
     }
 
     #[test]

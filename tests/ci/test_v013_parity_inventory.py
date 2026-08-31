@@ -150,7 +150,6 @@ RUN_OPERATIONS = {
     "test.run",
     "client.run",
     "extension.sync",
-    "query.execute",
 }
 DISPOSITIONS = {"mapped", "absorbed", "transport-replaced", "removed"}
 RUNTIME_JOB_NAMES = {
@@ -583,7 +582,7 @@ def validate_inventory(
             raise InventoryError("complete inventory must cover all eight native entries")
         if run_case_operations != RUN_OPERATIONS:
             raise InventoryError(
-                "complete inventory must cover all thirteen run operations"
+                "complete inventory must cover all twelve run operations"
             )
         unowned_cases = set(case_identities) - set(case_references)
         if unowned_cases:
@@ -771,27 +770,9 @@ class V013ParityInventoryTest(unittest.TestCase):
                 if operation is not None:
                     case["operation"] = operation
                 cases.append(case)
-        query_case_id = "new-run-query-execute"
-        cases.append(
-            {
-                "caseId": query_case_id,
-                "entry": "run",
-                "operation": "query.execute",
-                "mode": "direct",
-                "fixture": self.fixture,
-                "expected": {"outcome": "ok"},
-            }
-        )
         documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = rows
         documents[EXPECTED_SHARDS[1]]["cases"] = cases
-        documents[EXPECTED_SHARDS[1]]["newCapabilities"] = [
-            {
-                "capabilityId": "run.query.execute",
-                "successor": {"entry": "run", "operation": "query.execute"},
-                "caseIds": [query_case_id],
-                "rationale": "No v0.12.3 public capability executes a typed query.",
-            }
-        ]
+        documents[EXPECTED_SHARDS[1]]["newCapabilities"] = []
         return documents
 
     def test_repository_inventory_is_valid_and_uses_exact_seven_shards(self) -> None:
@@ -881,9 +862,9 @@ class V013ParityInventoryTest(unittest.TestCase):
                 "expected": {"outcome": "ok"},
             },
             {
-                "caseId": "run-query-new",
+                "caseId": "run-artifact-make-new",
                 "entry": "run",
-                "operation": "query.execute",
+                "operation": "artifact.make",
                 "mode": "direct",
                 "fixture": self.fixture,
                 "expected": {"outcome": "ok"},
@@ -891,10 +872,10 @@ class V013ParityInventoryTest(unittest.TestCase):
         ]
         documents[EXPECTED_SHARDS[0]]["newCapabilities"] = [
             {
-                "capabilityId": "run.query.execute",
-                "successor": {"entry": "run", "operation": "query.execute"},
-                "caseIds": ["run-query-new"],
-                "rationale": "No v0.12.3 public capability executes a typed query.",
+                "capabilityId": "run.artifact.make.new",
+                "successor": {"entry": "run", "operation": "artifact.make"},
+                "caseIds": ["run-artifact-make-new"],
+                "rationale": "Synthetic new capability without a legacy predecessor.",
             }
         ]
 
@@ -1208,7 +1189,7 @@ class V013ParityInventoryTest(unittest.TestCase):
         self._set_first_case(case)
         self._validate()
 
-    def test_all_thirteen_run_operations_are_the_literal_test_oracle(self) -> None:
+    def test_all_twelve_run_operations_are_the_literal_test_oracle(self) -> None:
         expected = (
             "source.create",
             "source.attach",
@@ -1222,7 +1203,6 @@ class V013ParityInventoryTest(unittest.TestCase):
             "test.run",
             "client.run",
             "extension.sync",
-            "query.execute",
         )
         self.assertEqual(RUN_OPERATIONS, set(expected))
         for operation in expected:
@@ -1521,26 +1501,27 @@ class V013ParityInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(InventoryError, "all eight native entries"):
             self._validate(documents)
 
-    def test_all_true_requires_executable_coverage_of_all_thirteen_run_operations(
+    def test_all_true_requires_executable_coverage_of_all_twelve_run_operations(
         self,
     ) -> None:
         documents = self._complete_documents()
         case = next(
             case
             for case in documents[EXPECTED_SHARDS[1]]["cases"]
-            if case.get("operation") == "query.execute"
+            if case.get("operation") == "extension.sync"
         )
         case["operation"] = "source.create"
-        owning_capability = next(
-            capability
-            for capability in documents[EXPECTED_SHARDS[1]]["newCapabilities"]
-            if case["caseId"] in capability["caseIds"]
+        owning_variant = next(
+            variant
+            for row in documents[EXPECTED_SHARDS[0]]["baselineDispositions"]
+            for variant in row["variants"]
+            if case["caseId"] in variant.get("caseIds", [])
         )
-        owning_capability["successor"] = {
+        owning_variant["successor"] = {
             "entry": "run",
             "operation": "source.create",
         }
-        with self.assertRaisesRegex(InventoryError, "all thirteen run operations"):
+        with self.assertRaisesRegex(InventoryError, "all twelve run operations"):
             self._validate(documents)
 
     def test_all_true_cross_links_exact_successor_operation_to_a_case(self) -> None:
@@ -1551,7 +1532,7 @@ class V013ParityInventoryTest(unittest.TestCase):
             for variant in row["variants"]
             if variant["disposition"] == "absorbed"
         )
-        variant["successor"] = {"entry": "run", "operation": "query.execute"}
+        variant["successor"] = {"entry": "run", "operation": "source.create"}
         with self.assertRaisesRegex(
             InventoryError, "successor identity"
         ):

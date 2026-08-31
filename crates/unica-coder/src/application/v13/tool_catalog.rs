@@ -49,7 +49,6 @@ pub(crate) enum RunIntent {
     TestRun,
     ClientRun,
     ExtensionSync,
-    QueryExecute,
 }
 
 #[derive(Debug)]
@@ -57,6 +56,7 @@ pub(crate) struct RunOperation {
     pub(crate) intent: RunIntent,
     pub(crate) terminal: bool,
     pub(crate) rejects_sessions: bool,
+    pub(crate) implemented: bool,
 }
 
 impl RunOperation {
@@ -74,7 +74,6 @@ impl RunOperation {
             RunIntent::TestRun => "test.run",
             RunIntent::ClientRun => "client.run",
             RunIntent::ExtensionSync => "extension.sync",
-            RunIntent::QueryExecute => "query.execute",
         }
     }
 }
@@ -87,8 +86,9 @@ pub(crate) struct V13Catalog {
     pub(crate) result_envelope_schema: Value,
 }
 
-/// Returns the not-yet-public v0.13 catalog only when a caller constructs the
-/// hidden profile explicitly. Package routing remains v0.12.
+/// Returns the canonical v0.13 catalog selected by package routing. V12 is
+/// retained only as an explicit compatibility/test seam and has no v0.13
+/// catalog.
 pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
     match release {
         SurfaceRelease::V12 => None,
@@ -260,12 +260,12 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::TestRun,
         RunIntent::ClientRun,
         RunIntent::ExtensionSync,
-        RunIntent::QueryExecute,
     ]
     .into_iter()
     .map(|intent| RunOperation {
         terminal: intent == RunIntent::ClientRun,
         rejects_sessions: intent == RunIntent::ClientRun,
+        implemented: intent == RunIntent::SyntaxCheck,
         intent,
     })
     .collect()
@@ -387,7 +387,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["view", "apply", "find", "search", "check", "diff", "run", "docs"]
         );
-        assert_eq!(SurfaceRelease::from_package_version(), SurfaceRelease::V12);
+        assert_eq!(
+            SurfaceRelease::from_package_version(),
+            SurfaceRelease::V13,
+            "the package-selected release must expose the canonical v0.13 surface"
+        );
         assert!(catalog_for(SurfaceRelease::V12).is_none());
 
         assert_schema(
@@ -596,7 +600,6 @@ mod tests {
                 RunIntent::TestRun,
                 RunIntent::ClientRun,
                 RunIntent::ExtensionSync,
-                RunIntent::QueryExecute,
             ]
         );
         assert!(catalog
@@ -610,6 +613,15 @@ mod tests {
             .expect("client.run belongs to the v0.13 dictionary");
         assert!(client_run.terminal);
         assert!(client_run.rejects_sessions);
+        assert_eq!(
+            catalog
+                .run_dictionary
+                .iter()
+                .filter(|operation| operation.implemented)
+                .map(|operation| operation.name())
+                .collect::<Vec<_>>(),
+            ["syntax.check"]
+        );
 
         let output = &catalog.result_envelope_schema;
         assert_eq!(output["type"], "object");
@@ -646,5 +658,22 @@ mod tests {
                 "empty `{slot}` must be omitted rather than serialized"
             );
         }
+    }
+
+    #[test]
+    fn v13_run_dictionary_has_twelve_operations_without_query_execution() {
+        let catalog =
+            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
+        let names = catalog
+            .run_dictionary
+            .iter()
+            .map(|operation| operation.name())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names.len(), 12, "v0.13 Run dictionary drifted: {names:?}");
+        assert!(
+            !names.contains(&"query.execute"),
+            "v0.13 must not publish query execution: {names:?}"
+        );
     }
 }

@@ -98,8 +98,32 @@ mod validation_context;
 mod xml_model;
 
 pub(crate) use edit::{
-    prepare_typed_edit, resolve_typed_edit_object, resolve_typed_metadata_object,
+    meta_edit_object_identity, prepare_typed_edit, resolve_typed_edit_object,
+    resolve_typed_metadata_object,
 };
+pub(crate) fn apply_typed_operations_to_image_with_seed(
+    xml_text: &mut String,
+    operations: &[crate::domain::metadata::MetaEditOperation],
+    seed: &[u8],
+) -> Result<(), crate::application::metadata::MetaFailure> {
+    use sha2::{Digest, Sha256};
+
+    let mut counter = 0_u64;
+    let mut next_uuid = || {
+        let mut hasher = Sha256::new();
+        hasher.update(b"unica-v13-metadata-uuid-v1\0");
+        hasher.update(seed);
+        hasher.update(counter.to_be_bytes());
+        counter = counter.saturating_add(1);
+        let digest = hasher.finalize();
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&digest[..16]);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        uuid::Uuid::from_bytes(bytes).to_string()
+    };
+    edit::apply_typed_operations_with_uuid(xml_text, operations, &mut next_uuid).map(|_| ())
+}
 pub(crate) use info::{parse_typed_meta_local_info, read_typed_meta_info};
 #[cfg(test)]
 pub(crate) use info::{

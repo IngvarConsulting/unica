@@ -1147,6 +1147,81 @@ fn documentation_registry(
     ])
 }
 
+/// Canonical v0.13 documentation search adapter.
+///
+/// `source` is deliberately one source-kind scalar because that is the v0.13
+/// wire contract.  Legacy locale, platform-version and result-limit knobs are
+/// not accepted here; the application request uses the canonical defaults and
+/// the workspace-selected platform context.
+pub(crate) fn canonical_v13_docs_search(
+    workspace: &WorkspaceContext,
+    query: &str,
+    source: Option<&str>,
+    cancellation: &CancellationToken,
+) -> crate::domain::invocation::DomainResult {
+    let source_kinds = match source {
+        None => vec![
+            crate::domain::documentation::SourceKind::PlatformHelp,
+            crate::domain::documentation::SourceKind::DevelopmentStandard,
+        ],
+        Some(source) => match crate::domain::documentation::SourceKind::parse(source) {
+            Some(crate::domain::documentation::SourceKind::ConfigurationDocumentation) => {
+                return crate::domain::invocation::DomainResult::canonical_rejection(
+                    None,
+                    "unsupported_source",
+                    "docs source `configuration-documentation` is not available until its workspace reader uses the actor-owned nofollow and cancellation boundary",
+                )
+            }
+            Some(source_kind) => vec![source_kind],
+            None => {
+                return crate::domain::invocation::DomainResult::canonical_rejection(
+                    None,
+                    "unsupported_source",
+                    format!(
+                        "docs source `{source}` is unsupported; allowed: platform-help, development-standard, configuration-documentation"
+                    ),
+                )
+            }
+        },
+    };
+    if query.trim().is_empty() {
+        return crate::domain::invocation::DomainResult::canonical_rejection(
+            None,
+            "bad_value",
+            "docs query must be non-blank",
+        );
+    }
+
+    let request = crate::domain::documentation::DocumentationSearchRequest {
+        query: query.to_string(),
+        source_kinds,
+        limit: 20,
+        language: "ru".to_string(),
+    };
+    let result = (|| {
+        let registry = documentation_registry(workspace, cancellation)?;
+        let context = documentation_context(
+            &crate::infrastructure::platform::full_dump_publication::default_platform_roots(),
+            None,
+            workspace,
+        );
+        crate::application::documentation::search(&registry, &request, &context)
+    })();
+    match result {
+        Ok(data) => {
+            let mut result =
+                crate::domain::invocation::DomainResult::success("unica.docs completed");
+            result.data = Some(data);
+            result
+        }
+        Err(error) => crate::domain::invocation::DomainResult::canonical_rejection(
+            None,
+            "documentation_search_failed",
+            error,
+        ),
+    }
+}
+
 /// Подмена реестра для тестов — та самая, которую допускает п.5 ADR-0029
 /// («реестр собирается в корне композиции и допускает внедрение подмен для
 /// тестов»). Без неё ветку диспетчера `unica.documentation.search` не
@@ -1157,6 +1232,36 @@ fn documentation_registry(
 static DOCUMENTATION_REGISTRY_STAND_IN: std::sync::Mutex<
     Option<std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>>,
 > = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+static DOCUMENTATION_REGISTRY_STAND_IN_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) struct DocumentationRegistryStandInGuard {
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for DocumentationRegistryStandInGuard {
+    fn drop(&mut self) {
+        *DOCUMENTATION_REGISTRY_STAND_IN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_documentation_registry_stand_in(
+    provider: std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>,
+) -> DocumentationRegistryStandInGuard {
+    let serial = DOCUMENTATION_REGISTRY_STAND_IN_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *DOCUMENTATION_REGISTRY_STAND_IN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(provider);
+    DocumentationRegistryStandInGuard { _serial: serial }
+}
 
 #[cfg(test)]
 fn documentation_registry_stand_in(
@@ -1416,9 +1521,9 @@ fn select_platform_version(
 #[cfg(test)]
 mod tests {
     use super::{
-        documentation_context, documentation_registry, normalize_code_intelligence_read_request,
-        project_platform_version, select_installation_root, select_platform_version,
-        verified_full_dump_invocation,
+        canonical_v13_docs_search, documentation_context, documentation_registry,
+        normalize_code_intelligence_read_request, project_platform_version,
+        select_installation_root, select_platform_version, verified_full_dump_invocation,
     };
     use crate::application::metadata::MetaInfoRequest;
     use crate::application::ports::ApplicationPorts;
@@ -3533,41 +3638,122 @@ mod tests {
         }
     }
 
-    /// Слот подмены один на процесс, поэтому тесты, которые его пишут, идут по
-    /// одному: страж несёт замок сериализации и держит его до конца теста, а
-    /// подмена снимается на выходе даже при панике теста. Без замка два
-    /// стенд-теста под параллельным прогоном перезаписывали бы слот друг
-    /// друга — тот же приём, что и `index_test_lock` у поставщика.
-    struct StandInGuard {
-        _serial: std::sync::MutexGuard<'static, ()>,
+    fn install_stand_in(
+        provider: std::sync::Arc<RecordingProvider>,
+    ) -> super::DocumentationRegistryStandInGuard {
+        super::install_documentation_registry_stand_in(
+            provider as std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>,
+        )
     }
 
-    impl Drop for StandInGuard {
-        fn drop(&mut self) {
-            *super::DOCUMENTATION_REGISTRY_STAND_IN
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        }
-    }
-
-    /// Один замок на писателей слота подмены И на читателей настоящего
-    /// реестра: `documentation_registry()` под параллельным прогоном иначе
-    /// видел бы стенд соседнего теста вместо настоящего поставщика.
     fn documentation_registry_serial() -> std::sync::MutexGuard<'static, ()> {
-        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        SERIAL
+        super::DOCUMENTATION_REGISTRY_STAND_IN_SERIAL
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn install_stand_in(provider: std::sync::Arc<RecordingProvider>) -> StandInGuard {
-        let serial = documentation_registry_serial();
-        *super::DOCUMENTATION_REGISTRY_STAND_IN
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(
-            provider as std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>,
+    #[test]
+    fn canonical_v13_docs_search_passes_the_scalar_source_kind_to_the_shared_registry() {
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+        let dir = tempfile::tempdir().expect("workspace");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let result = canonical_v13_docs_search(
+            &context,
+            "syntax",
+            Some("platform-help"),
+            &CancellationToken::default(),
         );
-        StandInGuard { _serial: serial }
+
+        assert!(result.ok, "{result:?}");
+        let seen = recorder.seen.lock().expect("recorded request");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].0.source_kinds,
+            vec![crate::domain::documentation::SourceKind::PlatformHelp]
+        );
+    }
+
+    #[test]
+    fn canonical_v13_docs_search_rejects_unknown_source_as_typed_unsupported_source() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let result = canonical_v13_docs_search(
+            &context,
+            "syntax",
+            Some("vendor-private"),
+            &CancellationToken::default(),
+        );
+
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "unsupported_source");
+    }
+
+    #[test]
+    fn canonical_v13_docs_search_rejects_configuration_help_until_it_is_actor_safe() {
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+        let dir = tempfile::tempdir().expect("workspace");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let result = canonical_v13_docs_search(
+            &context,
+            "Items",
+            Some("configuration-documentation"),
+            &CancellationToken::default(),
+        );
+
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "unsupported_source");
+        assert!(recorder.seen.lock().expect("recorded request").is_empty());
+    }
+
+    #[test]
+    fn canonical_v13_docs_search_omits_unsafe_configuration_help_by_default() {
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+        let dir = tempfile::tempdir().expect("workspace");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let result =
+            canonical_v13_docs_search(&context, "syntax", None, &CancellationToken::default());
+
+        assert!(result.ok, "{result:?}");
+        let seen = recorder.seen.lock().expect("recorded request");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].0.source_kinds,
+            vec![
+                crate::domain::documentation::SourceKind::PlatformHelp,
+                crate::domain::documentation::SourceKind::DevelopmentStandard,
+            ]
+        );
     }
 
     /// `tools.platform.path` — вторая половина закрепления платформы у

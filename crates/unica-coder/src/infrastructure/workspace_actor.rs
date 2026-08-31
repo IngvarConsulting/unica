@@ -901,6 +901,7 @@ impl ApplyAdmission {
             ));
         }
         let source_changes = state.planned_changes();
+        let no_op = source_changes.is_empty() && events.is_empty();
         let source_transaction = state.finalize()?;
         let revision_reconciliation = self
             .revision_service
@@ -967,6 +968,7 @@ impl ApplyAdmission {
             revision_service: self.revision_service,
             revision: self.revision,
             dry_run: self.dry_run,
+            no_op,
             deadline: self.deadline,
             cancellation: self.cancellation,
             transaction,
@@ -1006,6 +1008,7 @@ pub(crate) struct PreparedApplyBatch {
     revision_service: Arc<SourceRevisionService>,
     revision: RetainedRevisionLease,
     dry_run: bool,
+    no_op: bool,
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
     transaction: CompileTransaction,
@@ -1713,7 +1716,7 @@ impl<R> WorkspaceActor<R> {
             .source_selection
             .validate(prepared.deadline, &prepared.cancellation)
             .map_err(source_selection_publication_error)?;
-        if prepared.dry_run {
+        if prepared.dry_run || prepared.no_op {
             prepared
                 .transaction
                 .validate_retained_for_apply_typed()
@@ -1747,9 +1750,11 @@ impl<R> WorkspaceActor<R> {
             )?;
             return Ok(ApplyPublicationResult {
                 rev: prepared.revision.revision_identity(),
-                effects: prepared
-                    .effects
-                    .into_terminal(ApplyEffectDisposition::Projected),
+                effects: prepared.effects.into_terminal(if prepared.dry_run {
+                    ApplyEffectDisposition::Projected
+                } else {
+                    ApplyEffectDisposition::Committed
+                }),
                 commit_count: 0,
                 cleanup_diagnostics: Vec::new(),
             });

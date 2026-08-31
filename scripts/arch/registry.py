@@ -147,15 +147,15 @@ def validation_errors(found: list[Record]) -> list[str]:
     errors: list[str] = []
     for record in found:
         for key in REQUIRED_PROPS[record.kind]:
-            realized_is_planned = (
+            realized_may_be_absent = (
                 record.kind == "decision"
                 and key == "realized"
-                and record.props.get("status") == "planned"
+                and record.props.get("status") in {"planned", "superseded"}
             )
             if (
                 key not in record.props
                 or record.props[key] == ""
-                or (record.props[key] is None and not realized_is_planned)
+                or (record.props[key] is None and not realized_may_be_absent)
             ):
                 errors.append(f"{record.relative}: missing prop `{key}`")
         if record.kind in {"invariant", "contract"}:
@@ -196,13 +196,9 @@ def validation_errors(found: list[Record]) -> list[str]:
                                 f"{record.relative}: changes cites non-contract "
                                 f"{contract_id}"
                             )
-            for rule_id in record.props.get("establishes") or []:
-                rule = by_id.get(rule_id)
-                if rule is not None and rule.props.get("decision") != record.id:
-                    errors.append(
-                        f"{record.relative}: establishes a rule owned by "
-                        f"{rule.props.get('decision')}: {rule_id}"
-                    )
+            # `establishes` is historical on an immutable decision. A later
+            # decision may become the current owner of the same mutable rule;
+            # the rule -> current owner direction above remains mandatory.
     return errors
 
 

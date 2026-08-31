@@ -1,4 +1,4 @@
-use super::identity::{CoreIdentity, DaemonStateDirectory};
+use super::identity::{CoreIdentity, DaemonProtocolIdentity, DaemonStateDirectory};
 #[path = "invocation_service.rs"]
 mod invocation_service;
 #[cfg(test)]
@@ -46,9 +46,11 @@ const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const MAX_HANDSHAKES: usize = 8;
 pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
 
-struct DormantCanonicalV13Service;
+/// v5 keeps this explicit unavailable service while its distinct runtime is
+/// migrated. Production v3 uses `CanonicalV13ReadService` directly.
+struct UnavailableV5InvocationService;
 
-impl CanonicalInvocationService for DormantCanonicalV13Service {
+impl CanonicalInvocationService for UnavailableV5InvocationService {
     fn prepare(
         &self,
         _invocation: &ActorBoundInvocation,
@@ -62,7 +64,7 @@ impl CanonicalInvocationService for DormantCanonicalV13Service {
         _cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure> {
         Ok(failed_domain_result(
-            "canonical v0.13 handler is not installed before the Task 22 cutover",
+            "canonical v0.13 invocation is unavailable in the v5 daemon runtime",
         ))
     }
 }
@@ -348,7 +350,11 @@ impl DaemonInvocationRuntime {
                     }
                 }
             }
-            Err(summary) => Err(failed_domain_result(&summary)),
+            Err(summary) => Err(DomainResult::canonical_rejection(
+                None,
+                "bad_value",
+                summary,
+            )),
         };
         let prepared = match &actor_bound {
             Ok(invocation) => self.service.prepare(invocation).map_err(|result| *result),
@@ -464,11 +470,18 @@ impl DaemonServerConfig {
         core_identity: CoreIdentity,
         idle_grace: Duration,
     ) -> Self {
+        let invocation_service: Arc<dyn CanonicalInvocationService> =
+            match core_identity.protocol_identity() {
+                DaemonProtocolIdentity::V3 => Arc::new(
+                    crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+                ),
+                DaemonProtocolIdentity::V5 => Arc::new(UnavailableV5InvocationService),
+            };
         Self {
             state_root,
             core_identity,
             idle_grace,
-            invocation_service: Arc::new(DormantCanonicalV13Service),
+            invocation_service,
             #[cfg(test)]
             invocation_store: None,
             #[cfg(test)]
@@ -1351,6 +1364,74 @@ pub(crate) mod actor_capacity_tests {
             Ok(())
         }
 
+        fn audit_literal_search_body(method: &syn::ImplItemFn) -> Result<(), String> {
+            #[derive(Default)]
+            struct SearchCalls {
+                names: std::collections::BTreeSet<String>,
+            }
+
+            impl<'ast> Visit<'ast> for SearchCalls {
+                fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+                    self.names.insert(call.method.to_string());
+                    syn::visit::visit_expr_method_call(self, call);
+                }
+            }
+
+            let mut calls = SearchCalls::default();
+            calls.visit_block(&method.block);
+            for required in [
+                "retained_root",
+                "validate_named_identity",
+                "read_immediate_names_bounded",
+                "retain_immediate_child_nofollow",
+                "read_bounded",
+                "remaining",
+                "is_cancelled",
+                "match_indices",
+            ] {
+                if !calls.names.contains(required) {
+                    return Err(format!(
+                        "literal search must retain closed `{required}` authority; found {:?}",
+                        calls.names
+                    ));
+                }
+            }
+            for ambient in [
+                "canonicalize",
+                "metadata",
+                "read",
+                "read_dir",
+                "read_to_string",
+                "symlink_metadata",
+            ] {
+                if calls.names.contains(ambient) {
+                    return Err(format!(
+                        "literal search must not use ambient filesystem method `{ambient}`"
+                    ));
+                }
+            }
+            let body = tokens(&method.block);
+            for bound in [
+                "CANONICAL_SEARCH_MAX_ENTRIES",
+                "CANONICAL_SEARCH_MAX_DEPTH",
+                "CANONICAL_SEARCH_MAX_FILE_BYTES",
+                "CANONICAL_SEARCH_MAX_TOTAL_BYTES",
+            ] {
+                if !body.contains(bound) {
+                    return Err(format!("literal search must preserve the `{bound}` bound"));
+                }
+            }
+            if !body.contains(&tokens(
+                &syn::parse_str::<syn::Expr>("self.binding.retained_root()")
+                    .expect("retained search root expression parses"),
+            )) {
+                return Err(
+                    "literal search root must come from the private retained binding".to_string(),
+                );
+            }
+            Ok(())
+        }
+
         fn is_exact_cfg_test(attributes: &[syn::Attribute]) -> bool {
             attributes.iter().any(|attribute| {
                 attribute.path().leading_colon.is_none()
@@ -2055,6 +2136,22 @@ pub(crate) mod actor_capacity_tests {
                     "",
                 ),
             ),
+            (
+                "revision_identity",
+                (
+                    true,
+                    "fn revision_identity(&self) -> String",
+                    "self.fence.revision().revision_identity()",
+                ),
+            ),
+            (
+                "search_bsl_literal",
+                (
+                    true,
+                    "fn search_bsl_literal(&self, query: &str, limit: usize, scope_prefix: Option<&str>, scope_at: &QualifiedAddress, cancellation: &CancellationToken,) -> Result<Vec<serde_json::Value>, String>",
+                    "",
+                ),
+            ),
         ]);
         let mut seen_methods = std::collections::BTreeSet::new();
         for item in &implementation.items {
@@ -2082,6 +2179,8 @@ pub(crate) mod actor_capacity_tests {
             }
             if name == "logical_view_read_authority" {
                 audit_builder_body(method)?;
+            } else if name == "search_bsl_literal" {
+                audit_literal_search_body(method)?;
             } else {
                 let [syn::Stmt::Expr(expression, None)] = method.block.stmts.as_slice() else {
                     return Err(format!(
@@ -3429,6 +3528,404 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
+    fn production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools() {
+        struct PlatformDocsStandIn;
+
+        impl crate::domain::documentation::DocumentationProvider for PlatformDocsStandIn {
+            fn id(&self) -> crate::domain::documentation::DocumentationProviderId {
+                crate::domain::documentation::DocumentationProviderId::new("platform-test")
+            }
+
+            fn corpora(&self) -> Vec<crate::domain::documentation::DocumentationCorpus> {
+                vec![crate::domain::documentation::DocumentationCorpus {
+                    id: "platform-test".to_string(),
+                    source_kind: crate::domain::documentation::SourceKind::PlatformHelp,
+                    authority: crate::domain::documentation::Authority::Vendor,
+                }]
+            }
+
+            fn needs_network(&self) -> bool {
+                false
+            }
+
+            fn search(
+                &self,
+                request: &crate::domain::documentation::DocumentationSearchRequest,
+                _: &crate::domain::documentation::DocumentationContext,
+            ) -> Vec<crate::domain::documentation::DocumentationSection> {
+                vec![crate::domain::documentation::DocumentationSection::empty(
+                    self.id(),
+                    "platform-test",
+                    crate::domain::documentation::SourceKind::PlatformHelp,
+                    crate::domain::documentation::Authority::Vendor,
+                    &request.language,
+                )]
+            }
+        }
+
+        let _docs =
+            crate::infrastructure::application_ports::install_documentation_registry_stand_in(
+                Arc::new(PlatformDocsStandIn),
+            );
+        let state_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Catalogs/Items/Ext")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items/Ext/ObjectModule.bsl"),
+            "Процедура Проверка()\n    UniqueSearchNeedle = Истина;\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let (store, _) =
+            FileInvocationStore::open(state_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let config = DaemonServerConfig::new(
+            std::fs::canonicalize(state_root.path()).unwrap(),
+            CoreIdentity::production(),
+            Duration::from_millis(50),
+        );
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            config.invocation_service,
+            Arc::new(TokioClock),
+        );
+        let workspace_hint = std::fs::canonicalize(workspace.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let call = |tool, arguments| {
+            let request =
+                InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap();
+            let response = runtime
+                .submit(request, runtime.capture_response_deadline())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "production v3 daemon must accept {} invocation: {error:?}",
+                        tool.catalog_name()
+                    )
+                });
+            let InvocationResponse::Direct(result) = response else {
+                panic!("useful canonical mode should complete directly")
+            };
+            result
+        };
+        let cases = [
+            (
+                ToolIdentity::View,
+                serde_json::json!({"at": "main:Catalog.Items"}),
+                "kind",
+            ),
+            (
+                ToolIdentity::View,
+                serde_json::json!({
+                    "at": "main:Catalog.Items",
+                    "filter": {"sections": ["props", "can"]}
+                }),
+                "props",
+            ),
+            (
+                ToolIdentity::Find,
+                serde_json::json!({"query": "Items"}),
+                "candidates",
+            ),
+            (
+                ToolIdentity::Search,
+                serde_json::json!({
+                    "query": "UniqueSearchNeedle",
+                    "scope": "main:Configuration"
+                }),
+                "matches",
+            ),
+            (
+                ToolIdentity::Search,
+                serde_json::json!({
+                    "query": "UniqueSearchNeedle",
+                    "scope": "main:Catalog.Items"
+                }),
+                "matches",
+            ),
+            (ToolIdentity::Check, serde_json::json!({}), "sources"),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({
+                    "left": "main:Catalog.Items",
+                    "right": "main:Catalog.Items",
+                    "filter": {"paths": ["/props"]}
+                }),
+                "equal",
+            ),
+            (ToolIdentity::Run, serde_json::json!({}), "operations"),
+            (
+                ToolIdentity::Docs,
+                serde_json::json!({
+                    "query": "Items",
+                    "source": "platform-help"
+                }),
+                "sections",
+            ),
+            (
+                ToolIdentity::Apply,
+                serde_json::json!({
+                    "at": "main:Catalog.Items",
+                    "ops": [{"op": "props.set", "args": {"values": {"Comment": "Preview"}}}],
+                    "dryRun": true
+                }),
+                "validated",
+            ),
+        ];
+        for (tool, arguments, expected_data_key) in cases {
+            let result = call(tool, arguments);
+            assert!(
+                result.ok,
+                "{} useful mode failed: {} {:?}",
+                tool.catalog_name(),
+                result.summary,
+                result.diagnostics
+            );
+            assert!(
+                result
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get(expected_data_key))
+                    .is_some(),
+                "{} omitted data.{expected_data_key}: {:?}",
+                tool.catalog_name(),
+                result.data
+            );
+        }
+        let run_dictionary = call(ToolIdentity::Run, serde_json::json!({}));
+        let operations = run_dictionary
+            .data
+            .as_ref()
+            .and_then(|data| data.get("operations"))
+            .and_then(serde_json::Value::as_array)
+            .expect("run dictionary has operations");
+        assert_eq!(
+            operations
+                .iter()
+                .find(|operation| operation["op"] == "syntax.check")
+                .and_then(|operation| operation["implemented"].as_bool()),
+            Some(true)
+        );
+        assert!(
+            operations
+                .iter()
+                .all(|operation| operation["op"] != "query.execute"),
+            "v0.13 Run discovery must omit query execution: {operations:?}"
+        );
+        let object_search = call(
+            ToolIdentity::Search,
+            serde_json::json!({
+                "query": "UniqueSearchNeedle",
+                "scope": "main:Catalog.Items"
+            }),
+        );
+        let first_match = &object_search.data.as_ref().unwrap()["matches"][0];
+        assert_eq!(first_match["scope"], "main:Catalog.Items");
+        assert!(first_match.get("file").is_none());
+        assert!(first_match.get("at").is_none());
+        assert!(
+            !std::fs::read_to_string(source.join("Catalogs/Items.xml"))
+                .unwrap()
+                .contains("<Comment>Preview</Comment>"),
+            "dryRun must use the real planner without publishing its postimage"
+        );
+        let published_apply = call(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Catalog.Items",
+                "ops": [{
+                    "op": "props.set",
+                    "args": {"values": {"Comment": "Published through v0.13"}}
+                }],
+                "dryRun": false
+            }),
+        );
+        assert!(
+            published_apply.ok,
+            "supported metadata apply must publish: {published_apply:?}"
+        );
+        assert!(published_apply.rev.is_some());
+        assert_eq!(
+            published_apply
+                .data
+                .as_ref()
+                .and_then(|data| data.get("mode")),
+            Some(&serde_json::json!("published"))
+        );
+        assert!(std::fs::read_to_string(source.join("Catalogs/Items.xml"))
+            .unwrap()
+            .contains("<Comment>Published through v0.13</Comment>"));
+        let rejected_batch = call(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Catalog.Items",
+                "ops": [
+                    {
+                        "op": "props.set",
+                        "args": {"values": {"Comment": "must not publish"}}
+                    },
+                    {"op": "relation.replace", "args": {"items": []}}
+                ],
+                "dryRun": false
+            }),
+        );
+        assert!(!rejected_batch.ok);
+        assert_eq!(
+            rejected_batch.diagnostics[0]["code"],
+            "unsupported_operation"
+        );
+        let after_rejected_batch =
+            std::fs::read_to_string(source.join("Catalogs/Items.xml")).unwrap();
+        assert!(after_rejected_batch.contains("<Comment>Published through v0.13</Comment>"));
+        assert!(!after_rejected_batch.contains("must not publish"));
+        let unsupported_cases = [
+            (
+                ToolIdentity::Run,
+                serde_json::json!({"op": "syntax.check", "args": {"mode": "shell"}}),
+                "bad_value",
+            ),
+            (
+                ToolIdentity::Run,
+                serde_json::json!({"op": "client.run", "args": {}}),
+                "unsupported_operation",
+            ),
+            (
+                ToolIdentity::Run,
+                serde_json::json!({"op": "query.execute", "args": {}}),
+                "unsupported_operation",
+            ),
+            (
+                ToolIdentity::Search,
+                serde_json::json!({"query": "needle", "regex": true}),
+                "unsupported_operation",
+            ),
+            (
+                ToolIdentity::Search,
+                serde_json::json!({"query": "needle", "regex": "yes"}),
+                "bad_value",
+            ),
+            (
+                ToolIdentity::Search,
+                serde_json::json!({
+                    "query": "needle",
+                    "scope": "main:Catalog.Items.Attribute.Code"
+                }),
+                "unsupported_scope",
+            ),
+            (
+                ToolIdentity::Check,
+                serde_json::json!({"filter": {"severity": "warning"}}),
+                "unsupported_filter",
+            ),
+            (
+                ToolIdentity::Check,
+                serde_json::json!({
+                    "at": "main:Catalog.Items",
+                    "filter": {"validation": {"profile": "meta"}}
+                }),
+                "unsupported_operation",
+            ),
+            (
+                ToolIdentity::Check,
+                serde_json::json!({"filter": "severity"}),
+                "bad_value",
+            ),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({
+                    "left": "main:Catalog.Items",
+                    "right": "main:Catalog.Items",
+                    "cursor": "opaque"
+                }),
+                "unsupported_cursor",
+            ),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({
+                    "left": "main:Catalog.Items",
+                    "right": "main:Catalog.Items",
+                    "filter": "changes"
+                }),
+                "bad_value",
+            ),
+            (
+                ToolIdentity::Docs,
+                serde_json::json!({"query": "Items", "source": "unknown"}),
+                "unsupported_source",
+            ),
+            (
+                ToolIdentity::Docs,
+                serde_json::json!({
+                    "query": "Items",
+                    "source": "configuration-documentation"
+                }),
+                "unsupported_source",
+            ),
+        ];
+        for (tool, arguments, expected_code) in unsupported_cases {
+            let unsupported = call(tool, arguments);
+            assert!(
+                !unsupported.ok,
+                "{} must reject honestly",
+                tool.catalog_name()
+            );
+            let diagnostic = unsupported.diagnostics.first().unwrap_or_else(|| {
+                panic!(
+                    "{} rejected without a diagnostic: {unsupported:?}",
+                    tool.catalog_name()
+                )
+            });
+            assert_eq!(
+                diagnostic["code"],
+                expected_code,
+                "{} returned a misleading diagnostic: {unsupported:?}",
+                tool.catalog_name()
+            );
+        }
+        let syntax_request = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({
+                "op": "syntax.check",
+                "args": {"mode": "designer-config"}
+            }),
+            workspace_hint.as_str(),
+            7_000,
+        )
+        .unwrap();
+        let InvocationResponse::Task(syntax_task) = runtime
+            .submit(syntax_request, runtime.capture_response_deadline())
+            .unwrap()
+        else {
+            panic!("valid syntax.check must hand off before external-process execution")
+        };
+        let terminal = runtime.wait(syntax_task.task_id, 7_000).unwrap();
+        assert_eq!(
+            terminal.status,
+            crate::domain::invocation::InvocationStatus::Completed
+        );
+        let result = terminal.result.expect("terminal syntax Task has a result");
+        assert!(!result.ok, "missing provider must be a typed result");
+        assert!(result.artifacts.is_empty());
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(!serialized.contains(&workspace_hint), "{serialized}");
+    }
+
+    #[test]
     pub(crate) fn subsequent_daemon_invocation_after_same_root_kind_change_gets_new_actor_identity()
     {
         let task_root = tempfile::tempdir().unwrap();
@@ -3746,6 +4243,229 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
+    fn non_apply_execution_rejects_prepared_apply_before_actor_publication() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Documents")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let descriptor = source.join("Documents/Order.xml");
+        let preimage = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Order</Name><Synonym/><Comment/></Properties><ChildObjects/></Document></MetaDataObject>"#;
+        std::fs::write(&descriptor, preimage).unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
+        let view = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Document.Order"}),
+            workspace_hint.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let execution = bind_workspace_invocation(
+            &view,
+            &runtime.workspace_actors,
+            Arc::clone(&runtime.deliveries),
+            Arc::clone(&runtime.provider_hosts),
+            Arc::clone(&runtime.runtime_resources),
+            None,
+            runtime.capture_response_deadline(),
+        )
+        .unwrap()
+        .begin_execution(&cancellation)
+        .unwrap();
+        let apply_arguments = serde_json::json!({
+            "at": "main:Document.Order",
+            "ops": [{"op": "props.set", "args": {"values": {"Comment": "forbidden"}}}],
+            "dryRun": false,
+        });
+        let request = crate::application::v13::apply::parse_request(
+            apply_arguments.as_object().unwrap(),
+            &["main"],
+        )
+        .unwrap();
+        let binding = execution.provider_root_for_test().clone();
+        let admission = execution
+            .actor_for_test()
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let (staged, effects) =
+            crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply(
+                &request, &binding, &admission,
+            )
+            .unwrap();
+        let prepared = admission.prepare_with_effects(staged, effects).unwrap();
+
+        let error = execution.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            crate::infrastructure::workspace_actor::ApplyPublicationErrorKind::Invariant
+        );
+        assert_eq!(std::fs::read_to_string(descriptor).unwrap(), preimage);
+    }
+
+    #[test]
+    fn public_metadata_apply_keeps_dry_run_and_real_plans_identical_for_four_supported_ops() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Documents")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let descriptor = source.join("Documents/Order.xml");
+        std::fs::write(
+            &descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Document uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Order</Name><Synonym/><Comment/></Properties><ChildObjects/></Document></MetaDataObject>"#,
+        )
+        .unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
+        let call = |arguments| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Apply,
+                arguments,
+                workspace_hint.to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let response = runtime
+                .submit(request, runtime.capture_response_deadline())
+                .unwrap();
+            let InvocationResponse::Direct(result) = response else {
+                panic!("bounded metadata apply must complete directly")
+            };
+            result
+        };
+        let apply_pair = |operation: serde_json::Value| {
+            let before = std::fs::read(&descriptor).unwrap();
+            let dry = call(serde_json::json!({
+                "at": "main:Document.Order",
+                "ops": [operation.clone()],
+                "dryRun": true,
+            }));
+            assert!(dry.ok, "dry-run failed: {dry:?}");
+            assert_eq!(std::fs::read(&descriptor).unwrap(), before);
+            let repeated_dry = call(serde_json::json!({
+                "at": "main:Document.Order",
+                "ops": [operation.clone()],
+                "dryRun": true,
+            }));
+            assert_eq!(
+                dry.data.as_ref().unwrap()["planHash"],
+                repeated_dry.data.as_ref().unwrap()["planHash"],
+                "dry-run planning must be deterministic"
+            );
+            let real = call(serde_json::json!({
+                "at": "main:Document.Order",
+                "ops": [operation],
+                "dryRun": false,
+            }));
+            assert!(real.ok, "real apply failed: {real:?}");
+            assert_ne!(std::fs::read(&descriptor).unwrap(), before);
+            assert_eq!(
+                dry.data.as_ref().unwrap()["operations"],
+                real.data.as_ref().unwrap()["operations"]
+            );
+            assert_eq!(
+                dry.data.as_ref().unwrap()["effects"],
+                real.data.as_ref().unwrap()["effects"]
+            );
+            assert_eq!(
+                dry.data.as_ref().unwrap()["planHash"],
+                real.data.as_ref().unwrap()["planHash"]
+            );
+            assert_eq!(dry.changed, real.changed);
+        };
+
+        apply_pair(serde_json::json!({
+            "op": "props.set",
+            "args": {"values": {"Comment": "planned"}}
+        }));
+        apply_pair(serde_json::json!({
+            "op": "attribute.add",
+            "args": {"items": [{"name": "Total"}]}
+        }));
+        apply_pair(serde_json::json!({
+            "op": "attribute.set",
+            "args": {
+                "at": "main:Document.Order.Attribute.Total",
+                "values": {"comment": "updated"}
+            }
+        }));
+        apply_pair(serde_json::json!({
+            "op": "attribute.remove",
+            "args": {"at": "main:Document.Order.Attribute.Total"}
+        }));
+
+        let before_rejected = std::fs::read(&descriptor).unwrap();
+        let rejected = call(serde_json::json!({
+            "at": "main:Document.Order",
+            "ops": [
+                {"op": "props.set", "args": {"values": {"Comment": "must not publish"}}},
+                {"op": "relation.replace", "args": {"items": []}}
+            ],
+            "dryRun": false,
+        }));
+        assert!(!rejected.ok);
+        assert_eq!(rejected.diagnostics[0]["code"], "unsupported_operation");
+        assert_eq!(std::fs::read(&descriptor).unwrap(), before_rejected);
+
+        let before_reverted = std::fs::read(&descriptor).unwrap();
+        let reverted = call(serde_json::json!({
+            "at": "main:Document.Order",
+            "ops": [
+                {"op": "props.set", "args": {"values": {"Comment": "transient"}}},
+                {"op": "props.set", "args": {"values": {"Comment": "planned"}}}
+            ],
+            "dryRun": false,
+        }));
+        assert!(reverted.ok, "net-zero apply failed: {reverted:?}");
+        assert!(reverted.changed.is_empty());
+        assert_eq!(reverted.data.as_ref().unwrap()["effects"], 0);
+        assert_eq!(std::fs::read(&descriptor).unwrap(), before_reverted);
+    }
+
+    #[test]
     pub(crate) fn working_task_recovery_is_resume_unsupported_without_apply_reexecution() {
         let task_root = tempfile::tempdir().unwrap();
         let (store, _) =
@@ -3994,8 +4714,8 @@ struct ActorLogicalReadLease {"#,
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
         let result = service
             .execute(&execution, cancellation.clone())
-            .expect("hidden V13 execution");
-        assert!(result.ok, "hidden V13 execution must succeed");
+            .expect("canonical v0.13 execution");
+        assert!(result.ok, "canonical v0.13 execution must succeed");
         let actor = Arc::clone(execution.actor_for_test());
         let legacy_fence = actor
             .capture_revision(execution.provider_root_for_test(), deadline, &cancellation)
@@ -4060,8 +4780,11 @@ struct ActorLogicalReadLease {"#,
         );
         let find_result = service
             .execute(&find_execution, cancellation.clone())
-            .expect("hidden V13 find execution");
-        assert!(find_result.ok, "hidden V13 find execution must succeed");
+            .expect("canonical v0.13 find execution");
+        assert!(
+            find_result.ok,
+            "canonical v0.13 find execution must succeed"
+        );
         let find_actor = Arc::clone(find_execution.actor_for_test());
         let legacy_fence = find_actor
             .capture_revision(
@@ -4136,7 +4859,7 @@ struct ActorLogicalReadLease {"#,
             .unwrap();
         let find_result = service
             .execute(&find_execution, cancellation.clone())
-            .expect("second hidden V13 find execution");
+            .expect("second canonical v0.13 find execution");
         std::fs::write(
             sibling.join("Configuration.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>ChangedAgain</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
@@ -4165,7 +4888,7 @@ struct ActorLogicalReadLease {"#,
             .unwrap();
         let result = service
             .execute(&execution, cancellation.clone())
-            .expect("second hidden V13 execution");
+            .expect("second canonical v0.13 execution");
         std::fs::write(
             source.join("Catalogs/Items.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>ItemsChanged</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
