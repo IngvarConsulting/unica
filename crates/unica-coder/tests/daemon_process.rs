@@ -12,6 +12,7 @@ const IDENTITY_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const IDENTITY_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const PRODUCTION_V5_IDENTITY: &str =
     "884b76181583ce34907a2a9758e2b493e5b40883e7cbb0d7f88dcec0e468cfa0";
+const STALE_ENDPOINT_INITIAL_IDLE_GRACE_MS: u64 = 500;
 
 #[test]
 fn daemon_frontend_process_fixture() {
@@ -190,7 +191,7 @@ fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
         &state_root,
         PRODUCTION_V5_IDENTITY,
         &executable,
-        20,
+        STALE_ENDPOINT_INITIAL_IDLE_GRACE_MS,
     )
     .expect("spawn the initial exact protocol-v5 daemon");
     let initial_pid = owner.daemon_pid();
@@ -212,7 +213,9 @@ fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
         .expect("persist stale endpoint on the same owner-only file identity");
     drop(endpoint_file);
     drop(owner);
-    thread::sleep(Duration::from_millis(250));
+    thread::sleep(Duration::from_millis(
+        STALE_ENDPOINT_INITIAL_IDLE_GRACE_MS + 250,
+    ));
     assert_eq!(
         read_endpoint(&state_root, PRODUCTION_V5_IDENTITY),
         stale_endpoint,
