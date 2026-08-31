@@ -5,7 +5,7 @@ governs: process
 realized: tests/arch/test_registry.py::test_every_rule_names_a_check_that_exists
 supersedes: []
 superseded-by: null
-establishes: [INV.APP.HIDDEN-SERVICES]
+establishes: []
 ---
 
 # Правило заявляет ровно то, что проверяет

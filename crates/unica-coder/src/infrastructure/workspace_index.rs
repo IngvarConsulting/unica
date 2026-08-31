@@ -5,12 +5,13 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::filesystem::{
     metadata_is_link_or_reparse_point, path_starts_with_host_root, provider_state_path_identity,
+    RetainedDirectoryCapability,
 };
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
 };
 use crate::infrastructure::plugin_runtime::find_plugin_root;
-use crate::infrastructure::source_revision::SourceRevisionService;
+use crate::infrastructure::source_revision::{SourceRevisionService, WorkspaceStateScope};
 use crate::infrastructure::source_roots::{
     normalize_path_identity, resolve_source_root, source_generation,
 };
@@ -267,6 +268,7 @@ pub struct IndexBackgroundJob {
     pub source_generation: u64,
     pub source_revision: Option<SourceRevision>,
     pub(crate) source_revision_service: Option<Arc<SourceRevisionService>>,
+    pub(crate) root_capability: Option<Arc<RetainedDirectoryCapability>>,
     pub primary: IndexCommand,
     pub info: IndexCommand,
     pub recovery_build: Option<IndexCommand>,
@@ -333,6 +335,8 @@ pub static SYSTEM_INDEX_RUNNER: SystemIndexRunner = SystemIndexRunner { tracker:
 pub struct WorkspaceIndexService<'a> {
     runner: &'a dyn IndexRunner,
     source_revision_service: Option<Arc<SourceRevisionService>>,
+    bound_source_root: Option<Arc<RetainedDirectoryCapability>>,
+    state_scope: WorkspaceStateScope,
     /// Memoises the source-generation walk for the lifetime of one service
     /// instance. Walking a vendor-class configuration costs hundreds of
     /// milliseconds, and `handle_rlm_ready` asks this service to start indexing
@@ -347,6 +351,8 @@ impl<'a> WorkspaceIndexService<'a> {
         Self {
             runner: &SYSTEM_INDEX_RUNNER,
             source_revision_service: None,
+            bound_source_root: None,
+            state_scope: WorkspaceStateScope::LegacyPhysical,
             generation: RefCell::new(None),
         }
     }
@@ -355,6 +361,8 @@ impl<'a> WorkspaceIndexService<'a> {
         Self {
             runner,
             source_revision_service: None,
+            bound_source_root: None,
+            state_scope: WorkspaceStateScope::LegacyPhysical,
             generation: RefCell::new(None),
         }
     }
@@ -364,6 +372,19 @@ impl<'a> WorkspaceIndexService<'a> {
         service: Arc<SourceRevisionService>,
     ) -> Self {
         self.source_revision_service = Some(service);
+        self
+    }
+
+    pub(crate) fn with_bound_source_root(
+        mut self,
+        source_root: Arc<RetainedDirectoryCapability>,
+    ) -> Self {
+        self.bound_source_root = Some(source_root);
+        self
+    }
+
+    pub(crate) fn with_state_scope(mut self, state_scope: WorkspaceStateScope) -> Self {
+        self.state_scope = state_scope;
         self
     }
 
@@ -410,6 +431,14 @@ impl<'a> WorkspaceIndexService<'a> {
                 Ok(resolved) => resolved.path,
                 Err(_) => return IndexStartReport::default(),
             };
+        if let Err(error) = self.validate_bound_source_root(&source_root) {
+            return unavailable_start_report(error);
+        }
+        let state_context = match self.state_context(context, &source_root) {
+            Ok(context) => context,
+            Err(error) => return unavailable_start_report(error),
+        };
+        let context = &state_context;
         // Observed before `info` runs: a change during the probe leaves the
         // generation older than the sources, which only ever reads as stale.
         // The execution boundary in `handle_rlm_mcp` is what gates actual reads.
@@ -451,6 +480,9 @@ impl<'a> WorkspaceIndexService<'a> {
         };
 
         let info = self.runner.run(&commands.info);
+        if let Err(error) = self.validate_bound_source_root(&source_root) {
+            return unavailable_start_report(error);
+        }
         match active_lock(context, &source_root) {
             Ok(true) => {
                 return IndexStartReport {
@@ -588,6 +620,14 @@ impl<'a> WorkspaceIndexService<'a> {
                 Ok(resolved) => resolved.path,
                 Err(error) => return IndexReadiness::Unavailable(error),
             };
+        if let Err(error) = self.validate_bound_source_root(&source_root) {
+            return IndexReadiness::Unavailable(error);
+        }
+        let state_context = match self.state_context(context, &source_root) {
+            Ok(context) => context,
+            Err(error) => return IndexReadiness::Unavailable(error),
+        };
+        let context = &state_context;
         let source_revision = revision_from_args(args);
         let generation = source_revision
             .as_ref()
@@ -615,6 +655,9 @@ impl<'a> WorkspaceIndexService<'a> {
         };
 
         let output = self.runner.run(&commands.info);
+        if let Err(error) = self.validate_bound_source_root(&source_root) {
+            return IndexReadiness::Unavailable(error);
+        }
         match active_lock(context, &source_root) {
             Ok(true) => return IndexReadiness::Building,
             Ok(false) => {}
@@ -681,6 +724,57 @@ impl<'a> WorkspaceIndexService<'a> {
         })
     }
 
+    fn validate_bound_source_root(&self, source_root: &Path) -> Result<(), String> {
+        if let Some(bound) = &self.bound_source_root {
+            if bound.path() != source_root {
+                return Err(format!(
+                    "workspace index request escaped its actor-bound source root: {}",
+                    source_root.display()
+                ));
+            }
+            bound.validate_named_identity().map_err(|error| {
+                format!(
+                    "workspace index actor-bound source root changed after admission: {}: {error}",
+                    source_root.display()
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    fn state_context(
+        &self,
+        context: &WorkspaceContext,
+        source_root: &Path,
+    ) -> Result<WorkspaceContext, String> {
+        let Some(scope) = self.state_scope.scoped_digest() else {
+            return Ok(context.clone());
+        };
+        let legacy_pair_root = rlm_provider_state_root(context, source_root)?;
+        let cache_root = normalize_path_identity(
+            &legacy_pair_root
+                .join("actor-scopes")
+                .join(scope)
+                .join("cache"),
+        )?;
+        if path_starts_with_host_root(&cache_root, source_root) {
+            return Err("actor-scoped RLM state resolved inside sourceRoot".to_string());
+        }
+        let mut scoped = context.clone();
+        scoped.cache_root = cache_root;
+        Ok(scoped)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn provider_state_root_for_test(
+        &self,
+        context: &WorkspaceContext,
+        source_root: &Path,
+    ) -> Result<PathBuf, String> {
+        let scoped = self.state_context(context, source_root)?;
+        rlm_provider_state_root(&scoped, source_root)
+    }
+
     fn start_background(
         &self,
         context: &WorkspaceContext,
@@ -700,6 +794,9 @@ impl<'a> WorkspaceIndexService<'a> {
             Ok(lock) => lock,
             Err(error) => return unavailable_start_report(error),
         };
+        if let Err(error) = self.validate_bound_source_root(&source_root) {
+            return unavailable_start_report(error);
+        }
         if let Some(parent) = lock.parent() {
             if let Err(error) = fs::create_dir_all(parent) {
                 let message = format!("failed to create RLM index lock directory: {error}");
@@ -746,6 +843,7 @@ impl<'a> WorkspaceIndexService<'a> {
             source_generation,
             source_revision,
             source_revision_service: self.source_revision_service.clone(),
+            root_capability: self.bound_source_root.clone(),
             primary,
             info,
             recovery_build,
@@ -754,7 +852,11 @@ impl<'a> WorkspaceIndexService<'a> {
             lock_path: lock.clone(),
             lock_lease,
         };
-        if let Err(error) = self.runner.start_background(job) {
+        let start_result = self.runner.start_background(job);
+        if let Err(error) = self.validate_bound_source_root(&error_source_root) {
+            return unavailable_start_report(error);
+        }
+        if let Err(error) = start_result {
             let _ = write_status(
                 context,
                 &error_source_root,
@@ -1118,7 +1220,12 @@ where
 {
     let mut job = job;
     let started_at = now_secs();
-    let Some(primary) = run_background_command(&job.primary, &mut job.lock_lease, &mut run) else {
+    let Some(primary) = run_background_command(
+        &job.primary,
+        &mut job.lock_lease,
+        job.root_capability.as_deref(),
+        &mut run,
+    ) else {
         return;
     };
     let primary = match primary {
@@ -1144,8 +1251,12 @@ where
         return;
     }
 
-    let Some(post_primary) = run_background_command(&job.info, &mut job.lock_lease, &mut run)
-    else {
+    let Some(post_primary) = run_background_command(
+        &job.info,
+        &mut job.lock_lease,
+        job.root_capability.as_deref(),
+        &mut run,
+    ) else {
         return;
     };
     let post_primary = match post_primary {
@@ -1193,6 +1304,7 @@ where
                     .as_ref()
                     .expect("guarded recovery command"),
                 &mut job.lock_lease,
+                job.root_capability.as_deref(),
                 &mut run,
             ) else {
                 return;
@@ -1240,9 +1352,12 @@ where
                 finished_at,
                 primary.duration_ms.saturating_add(recovery.duration_ms),
             );
-            let Some(final_readiness) =
-                run_background_command(&job.info, &mut job.lock_lease, &mut run)
-            else {
+            let Some(final_readiness) = run_background_command(
+                &job.info,
+                &mut job.lock_lease,
+                job.root_capability.as_deref(),
+                &mut run,
+            ) else {
                 return;
             };
             let final_readiness = match final_readiness {
@@ -1394,16 +1509,21 @@ fn recovery_failure_message(context: &str, detail: &str) -> String {
 fn run_background_command<F>(
     command: &IndexCommand,
     lease: &mut IndexLockLease,
+    root_capability: Option<&RetainedDirectoryCapability>,
     run: &mut F,
 ) -> Option<Result<IndexOutput, String>>
 where
     F: FnMut(&IndexCommand, &mut IndexLockLease) -> Result<IndexOutput, String>,
 {
-    if !lease.validate_ownership() {
+    if !lease.validate_ownership() || !root_capability_is_current(root_capability) {
         return None;
     }
     let result = run(command, lease);
-    lease.validate_ownership().then_some(result)
+    (lease.validate_ownership() && root_capability_is_current(root_capability)).then_some(result)
+}
+
+fn root_capability_is_current(capability: Option<&RetainedDirectoryCapability>) -> bool {
+    capability.is_none_or(|capability| capability.validate_named_identity().is_ok())
 }
 
 fn db_path_belongs_to_command_generation(command: &IndexCommand, db_path: &Path) -> bool {
@@ -1415,7 +1535,9 @@ fn db_path_belongs_to_command_generation(command: &IndexCommand, db_path: &Path)
 }
 
 fn write_background_status(job: &IndexBackgroundJob, status: BslIndexStatus) -> bool {
-    if !job.lock_lease.validate_ownership() {
+    if !job.lock_lease.validate_ownership()
+        || !root_capability_is_current(job.root_capability.as_deref())
+    {
         return false;
     }
     let _ = write_status_path(&job.status_path, status);
@@ -4425,6 +4547,7 @@ source-set:
             source_generation: 42,
             source_revision: None,
             source_revision_service: None,
+            root_capability: None,
             primary: print_lines_command(
                 &context.workspace_root,
                 true,
@@ -4471,6 +4594,138 @@ source-set:
         let current = read_lock_path(&lock).expect("completed job should leave a marker");
         assert_eq!(current.state, "released");
         assert!(current.child_pid.is_some());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn actor_bound_index_discards_synchronous_output_after_root_replacement() {
+        struct ReplacingRunner {
+            source_root: PathBuf,
+            displaced: PathBuf,
+        }
+
+        impl IndexRunner for ReplacingRunner {
+            fn run(&self, _command: &IndexCommand) -> Result<IndexOutput, String> {
+                fs::rename(&self.source_root, &self.displaced).unwrap();
+                fs::create_dir_all(&self.source_root).unwrap();
+                Ok(IndexOutput::success("Index not found: /tmp/bsl_index.db"))
+            }
+
+            fn start_background(&self, _job: IndexBackgroundJob) -> Result<(), String> {
+                panic!("a replaced root must not schedule background work")
+            }
+        }
+
+        let context = test_context("actor-bound-sync-root-replacement");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let source_root = normalize_path_identity(&source_root).unwrap();
+        let capability = Arc::new(RetainedDirectoryCapability::open(&source_root).unwrap());
+        let runner = ReplacingRunner {
+            source_root: source_root.clone(),
+            displaced: context.workspace_root.join("src-displaced"),
+        };
+        let service =
+            WorkspaceIndexService::with_runner(&runner).with_bound_source_root(capability);
+        let args = serde_json::json!({ "sourceDir": source_root })
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let readiness = service.ready_index(&context, &args);
+
+        assert!(
+            matches!(
+                readiness,
+                IndexReadiness::Unavailable(ref message)
+                    if message.contains("changed after admission")
+            ),
+            "{readiness:?}"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn actor_bound_background_job_publishes_no_result_after_mid_command_root_swap() {
+        let context = test_context("actor-bound-background-root-replacement");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let source_root = fs::canonicalize(source_root).unwrap();
+        let capability = Arc::new(RetainedDirectoryCapability::open(&source_root).unwrap());
+        let mut job = test_background_job(&context, "build");
+        job.root_capability = Some(capability);
+        write_status_path(
+            &job.status_path,
+            BslIndexStatus::building("build", Some(&source_root)),
+        )
+        .unwrap();
+        let before = fs::read(&job.status_path).unwrap();
+        let displaced = context.workspace_root.join("src-displaced");
+        let replacement = source_root.clone();
+
+        run_background_job_with(job, move |_command, _lease| {
+            fs::rename(&replacement, &displaced).unwrap();
+            fs::create_dir_all(&replacement).unwrap();
+            Ok(IndexOutput::success("Index built"))
+        });
+
+        assert_eq!(fs::read(status_path(&context)).unwrap(), before);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn actor_bound_index_discards_background_start_error_after_root_replacement() {
+        struct ReplacingStartRunner {
+            source_root: PathBuf,
+            displaced: PathBuf,
+        }
+
+        impl IndexRunner for ReplacingStartRunner {
+            fn run(&self, _command: &IndexCommand) -> Result<IndexOutput, String> {
+                Ok(IndexOutput::success("Index not found: /tmp/bsl_index.db"))
+            }
+
+            fn start_background(&self, _job: IndexBackgroundJob) -> Result<(), String> {
+                fs::rename(&self.source_root, &self.displaced).unwrap();
+                fs::create_dir_all(&self.source_root).unwrap();
+                Err("FOREIGN-REPLACEMENT-DIAGNOSTICS".to_string())
+            }
+        }
+
+        let context = test_context("actor-bound-background-start-root-replacement");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let source_root = normalize_path_identity(&source_root).unwrap();
+        let capability = Arc::new(RetainedDirectoryCapability::open(&source_root).unwrap());
+        let runner = ReplacingStartRunner {
+            source_root: source_root.clone(),
+            displaced: context.workspace_root.join("src-displaced"),
+        };
+        let service =
+            WorkspaceIndexService::with_runner(&runner).with_bound_source_root(capability);
+        let args = serde_json::json!({ "sourceDir": source_root })
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let report = service.start_for_workspace(&context, &args, false);
+
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("changed after admission")),
+            "{report:?}"
+        );
+        let status = read_bsl_index_status(&context).unwrap();
+        assert_eq!(status.status, "building", "{status:?}");
+        assert!(
+            !status
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("FOREIGN-REPLACEMENT-DIAGNOSTICS")),
+            "{status:?}"
+        );
         cleanup(&context);
     }
 
@@ -4773,6 +5028,7 @@ source-set:
             source_generation: source_generation(&context.workspace_root.join("src")),
             source_revision: None,
             source_revision_service: None,
+            root_capability: None,
             primary: print_lines_command(
                 &context.workspace_root,
                 true,
@@ -5087,6 +5343,7 @@ source-set:
             source_generation: source_generation(&context.workspace_root.join("src")),
             source_revision: None,
             source_revision_service: None,
+            root_capability: None,
             primary: inert_index_command(context, action),
             info: inert_index_command(context, "info"),
             recovery_build: None,

@@ -3,11 +3,27 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::source_revision::SourceRevisionTrustLoss;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FenceCapability {
     ProvenFast,
     Unsupported,
+}
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn expected_platform_fence_capability_for_test(root: &Path) -> FenceCapability {
+    if macos::is_local_apfs(root) {
+        FenceCapability::ProvenFast
+    } else {
+        FenceCapability::Unsupported
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+pub(crate) fn expected_platform_fence_capability_for_test(_root: &Path) -> FenceCapability {
+    FenceCapability::Unsupported
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +39,63 @@ pub(crate) trait SourceRevisionFence: Send + Sync {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<FenceOutcome, String>;
+}
+
+/// Defers the macOS watcher/cache initialization until a caller actually uses
+/// the fence. Retained apply observation never calls the fence, while logical
+/// reads keep the exact same platform capability on first use.
+#[cfg(target_os = "macos")]
+pub(crate) fn deferred_platform_fence(
+    root: &Path,
+    cache_root: &Path,
+) -> Arc<dyn SourceRevisionFence> {
+    Arc::new(DeferredPlatformFence {
+        root: root.to_path_buf(),
+        cache_root: cache_root.to_path_buf(),
+        initialized: OnceLock::new(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn deferred_platform_fence(
+    root: &Path,
+    cache_root: &Path,
+) -> Arc<dyn SourceRevisionFence> {
+    platform_fence(root, cache_root).expect("non-macOS platform fence construction is infallible")
+}
+
+#[cfg(target_os = "macos")]
+struct DeferredPlatformFence {
+    root: PathBuf,
+    cache_root: PathBuf,
+    initialized: OnceLock<Result<Arc<dyn SourceRevisionFence>, String>>,
+}
+
+#[cfg(target_os = "macos")]
+impl DeferredPlatformFence {
+    fn initialized(&self) -> Result<&Arc<dyn SourceRevisionFence>, String> {
+        self.initialized
+            .get_or_init(|| platform_fence(&self.root, &self.cache_root))
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl SourceRevisionFence for DeferredPlatformFence {
+    fn capability(&self) -> FenceCapability {
+        self.initialized()
+            .map(|fence| fence.capability())
+            .unwrap_or(FenceCapability::Unsupported)
+    }
+
+    fn flush(
+        &self,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<FenceOutcome, String> {
+        self.initialized()?.flush(deadline, cancellation)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -102,11 +175,11 @@ mod macos {
     use objc2_core_foundation::{CFArray, CFString};
     use objc2_core_services::*;
     use std::collections::BTreeSet;
-    use std::ffi::{c_void, CStr, OsString};
+    use std::ffi::{c_void, CStr, OsStr, OsString};
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::os::fd::AsRawFd;
-    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
     use std::path::PathBuf;
     use std::ptr::NonNull;
     use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -120,6 +193,7 @@ mod macos {
     struct WatcherState {
         trust_loss: AtomicU8,
         source_root: Vec<u8>,
+        source_case_sensitive: bool,
         marker_root: Vec<u8>,
         // Set only when the cache root lies strictly inside the watched
         // source root. Everything Unica writes there is invisible to the
@@ -166,6 +240,13 @@ mod macos {
             let source_root = fs::canonicalize(root)
                 .map_err(|error| format!("failed to resolve source revision root: {error}"))?;
             let source_root_bytes = path_bytes(&source_root, "source revision root")?;
+            let source_case_sensitive =
+                crate::infrastructure::platform::filesystem::host_filesystem_case_sensitive(
+                    &source_root,
+                )
+                .map_err(|error| {
+                    format!("failed to prove source revision root case policy: {error}")
+                })?;
             let cache_root_bytes = fs::canonicalize(cache_root)
                 .ok()
                 .and_then(|cache_root| path_bytes(&cache_root, "source revision cache root").ok())
@@ -187,6 +268,7 @@ mod macos {
             let mut state = Box::new(WatcherState {
                 trust_loss: AtomicU8::new(TRUSTED),
                 source_root: source_root_bytes,
+                source_case_sensitive,
                 marker_root: marker_root_bytes,
                 cache_root: cache_root_bytes,
                 changed_paths: Mutex::new(BTreeSet::new()),
@@ -422,6 +504,7 @@ mod macos {
                             path,
                             &state.source_root,
                             state.cache_root.as_deref(),
+                            state.source_case_sensitive,
                         );
                     if !ignorable {
                         state.trust_loss.store(loss, Ordering::Release);
@@ -457,7 +540,7 @@ mod macos {
                 // there — index databases, service records, revision records —
                 // and without this the tool's own writes read as source
                 // changes and the reconcile never stabilizes.
-                if is_within_generated_dir(relative) {
+                if is_within_generated_dir(relative, state.source_case_sensitive) {
                     continue;
                 }
                 if flags & kFSEventStreamEventFlagItemIsDir != 0
@@ -477,9 +560,14 @@ mod macos {
         });
     }
 
-    fn is_within_generated_dir(relative: &[u8]) -> bool {
+    fn is_within_generated_dir(relative: &[u8], case_sensitive: bool) -> bool {
         relative.split(|byte| *byte == b'/').any(|component| {
-            component == crate::infrastructure::source_roots::GENERATED_DIR_NAME.as_bytes()
+            crate::infrastructure::platform::filesystem::host_component_names_equivalent(
+                OsStr::from_bytes(component),
+                OsStr::new(crate::infrastructure::source_roots::GENERATED_DIR_NAME),
+                case_sensitive,
+            )
+            .unwrap_or(false)
         })
     }
 
@@ -491,12 +579,14 @@ mod macos {
         path: &[u8],
         source_root: &[u8],
         cache_root: Option<&[u8]>,
+        case_sensitive: bool,
     ) -> bool {
         if path_is_within(path, source_root) {
             if cache_root.is_some_and(|cache_root| path_is_within(path, cache_root)) {
                 return false;
             }
-            return !relative_path_bytes(path, source_root).is_some_and(is_within_generated_dir);
+            return !relative_path_bytes(path, source_root)
+                .is_some_and(|relative| is_within_generated_dir(relative, case_sensitive));
         }
         // Outside the source root the gap matters only when its subtree
         // contains the source root itself. The filesystem root is its own
@@ -568,46 +658,65 @@ mod tests {
         let cache = Some(b"/ws/src/unica-cache".as_slice());
 
         // Gaps that can hide a source change must lose trust.
-        assert!(macos::scoped_gap_touches_corpus(b"/ws/src", source, cache));
+        assert!(macos::scoped_gap_touches_corpus(
+            b"/ws/src", source, cache, false
+        ));
         assert!(macos::scoped_gap_touches_corpus(
             b"/ws/src/Catalogs",
             source,
-            cache
+            cache,
+            false
         ));
-        assert!(macos::scoped_gap_touches_corpus(b"/ws", source, cache));
-        assert!(macos::scoped_gap_touches_corpus(b"/", source, cache));
+        assert!(macos::scoped_gap_touches_corpus(
+            b"/ws", source, cache, false
+        ));
+        assert!(macos::scoped_gap_touches_corpus(b"/", source, cache, false));
 
         // Gaps confined to pruned or disjoint subtrees prove nothing.
         assert!(!macos::scoped_gap_touches_corpus(
             b"/ws/src/.build",
             source,
-            cache
+            cache,
+            false
         ));
         assert!(!macos::scoped_gap_touches_corpus(
             b"/ws/src/.build/unica/caches",
             source,
-            cache
+            cache,
+            false
         ));
+        assert!(
+            !macos::scoped_gap_touches_corpus(b"/ws/src/.BUILD/unica/caches", source, cache, false),
+            "platform-equivalent generated directory must remain outside the revision corpus"
+        );
+        assert!(
+            macos::scoped_gap_touches_corpus(b"/ws/src/.BUILD/unica/caches", source, cache, true),
+            "case-sensitive source volume must keep the distinct component in the corpus"
+        );
         assert!(!macos::scoped_gap_touches_corpus(
             b"/ws/src/unica-cache/source-revision-fences",
             source,
-            cache
+            cache,
+            false
         ));
         assert!(!macos::scoped_gap_touches_corpus(
             b"/ws/other",
             source,
-            cache
+            cache,
+            false
         ));
         assert!(!macos::scoped_gap_touches_corpus(
             b"/ws/srcX",
             source,
-            cache
+            cache,
+            false
         ));
         // Without an in-root cache root the same path is ordinary corpus.
         assert!(macos::scoped_gap_touches_corpus(
             b"/ws/src/unica-cache",
             source,
-            None
+            None,
+            false
         ));
     }
 

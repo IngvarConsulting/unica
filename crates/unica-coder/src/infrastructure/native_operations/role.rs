@@ -365,6 +365,134 @@ fn role_attribute(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+pub(crate) fn parse_role_info_xml(
+    rights_text: &str,
+    descriptor_text: Option<&str>,
+    fallback_name: &str,
+    support: DomainObjectSupportData,
+) -> Result<RoleInfoData, String> {
+    let (role_name, role_synonym) = role_info_metadata_xml(descriptor_text, fallback_name);
+    let doc = Document::parse(rights_text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error in Rights.xml: {err}"))?;
+    let root = doc.root_element();
+    let set_for_new = root.attribute("setForNewObjects").unwrap_or("");
+    let set_for_attrs = root.attribute("setForAttributesByDefault").unwrap_or("");
+    let independent_child = root
+        .attribute("independentRightsOfChildObjects")
+        .unwrap_or("");
+    let mut allowed = Vec::<RoleInfoGroup>::new();
+    let mut denied = Vec::<RoleInfoGroup>::new();
+    let mut rls_objects = Vec::<String>::new();
+    let mut total_allowed = 0usize;
+    let mut total_denied = 0usize;
+    for obj in root
+        .children()
+        .filter(|node| role_info_element(*node, "object", Some("http://v8.1c.ru/8.2/roles")))
+    {
+        let mut obj_name = String::new();
+        let mut rights = Vec::<RoleRight>::new();
+        for child in obj.children().filter(|node| node.is_element()) {
+            if role_info_element(child, "name", Some("http://v8.1c.ru/8.2/roles")) {
+                obj_name = child.text().unwrap_or("").to_string();
+            }
+            if role_info_element(child, "right", Some("http://v8.1c.ru/8.2/roles")) {
+                let mut right_name = String::new();
+                let mut right_value = String::new();
+                let mut has_rls = false;
+                for rc in child.children().filter(|node| node.is_element()) {
+                    match rc.tag_name().name() {
+                        "name" => right_name = rc.text().unwrap_or("").to_string(),
+                        "value" => right_value = rc.text().unwrap_or("").to_string(),
+                        "restrictionByCondition" => has_rls = true,
+                        _ => {}
+                    }
+                }
+                if !right_name.is_empty() && !right_value.is_empty() {
+                    rights.push(RoleRight {
+                        name: right_name,
+                        value: right_value,
+                        condition: has_rls.then(String::new),
+                    });
+                }
+            }
+        }
+        if obj_name.is_empty() || rights.is_empty() {
+            continue;
+        }
+        let Some(dot_idx) = obj_name.find('.') else {
+            continue;
+        };
+        let type_prefix = &obj_name[..dot_idx];
+        let short_name = &obj_name[dot_idx + 1..];
+        for right in rights {
+            if right.value == "true" {
+                total_allowed += 1;
+                if right.condition.is_some() {
+                    rls_objects.push(format!("{type_prefix}.{short_name} ({})", right.name));
+                }
+                add_role_info_right(
+                    &mut allowed,
+                    type_prefix,
+                    short_name,
+                    RoleInfoRightSummary {
+                        name: right.name,
+                        rls: right.condition.is_some(),
+                    },
+                );
+            } else {
+                total_denied += 1;
+                add_role_info_right(
+                    &mut denied,
+                    type_prefix,
+                    short_name,
+                    RoleInfoRightSummary {
+                        name: right.name,
+                        rls: false,
+                    },
+                );
+            }
+        }
+    }
+    let mut templates = Vec::<String>::new();
+    for template in root.children().filter(|node| {
+        role_info_element(
+            *node,
+            "restrictionTemplate",
+            Some("http://v8.1c.ru/8.2/roles"),
+        )
+    }) {
+        for child in template.children().filter(|node| node.is_element()) {
+            if child.tag_name().name() == "name" {
+                let mut name = child.text().unwrap_or("").to_string();
+                if let Some(paren_idx) = name.find('(') {
+                    if paren_idx > 0 {
+                        name.truncate(paren_idx);
+                    }
+                }
+                templates.push(name);
+            }
+        }
+    }
+    Ok(RoleInfoData {
+        name: role_name,
+        synonym: (!role_synonym.is_empty()).then_some(role_synonym),
+        support,
+        defaults: RoleDefaultsData {
+            set_for_new_objects: role_attribute(set_for_new),
+            set_for_attributes_by_default: role_attribute(set_for_attrs),
+            independent_rights_of_child_objects: role_attribute(independent_child),
+        },
+        allowed: role_group_data(allowed),
+        denied: role_group_data(denied),
+        totals: RoleTotalsData {
+            allowed: total_allowed,
+            denied: total_denied,
+        },
+        restricted_objects: rls_objects,
+        templates,
+    })
+}
+
 pub(crate) fn analyze_role_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -377,140 +505,18 @@ pub(crate) fn analyze_role_info(
             return Err(format!("[ERROR] File not found: {}", rights_path.display()));
         }
 
-        let (role_name, role_synonym) = role_info_metadata(&rights_path);
+        let layout = role_read_layout(&rights_path);
+        let descriptor_text = fs::read_to_string(&layout.metadata_path).ok();
         let rights_text = fs::read_to_string(&rights_path)
             .map_err(|err| format!("failed to read {}: {err}", rights_path.display()))?;
-        let doc = Document::parse(rights_text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", rights_path.display()))?;
-        let root = doc.root_element();
-
-        let set_for_new = root.attribute("setForNewObjects").unwrap_or("");
-        let set_for_attrs = root.attribute("setForAttributesByDefault").unwrap_or("");
-        let independent_child = root
-            .attribute("independentRightsOfChildObjects")
-            .unwrap_or("");
-
-        let mut allowed = Vec::<RoleInfoGroup>::new();
-        let mut denied = Vec::<RoleInfoGroup>::new();
-        let mut rls_objects = Vec::<String>::new();
-        let mut total_allowed = 0usize;
-        let mut total_denied = 0usize;
-
-        for obj in root
-            .children()
-            .filter(|node| role_info_element(*node, "object", Some("http://v8.1c.ru/8.2/roles")))
-        {
-            let mut obj_name = String::new();
-            let mut rights = Vec::<RoleRight>::new();
-
-            for child in obj.children().filter(|node| node.is_element()) {
-                if role_info_element(child, "name", Some("http://v8.1c.ru/8.2/roles")) {
-                    obj_name = child.text().unwrap_or("").to_string();
-                }
-                if role_info_element(child, "right", Some("http://v8.1c.ru/8.2/roles")) {
-                    let mut right_name = String::new();
-                    let mut right_value = String::new();
-                    let mut has_rls = false;
-                    for rc in child.children().filter(|node| node.is_element()) {
-                        match rc.tag_name().name() {
-                            "name" => right_name = rc.text().unwrap_or("").to_string(),
-                            "value" => right_value = rc.text().unwrap_or("").to_string(),
-                            "restrictionByCondition" => has_rls = true,
-                            _ => {}
-                        }
-                    }
-                    if !right_name.is_empty() && !right_value.is_empty() {
-                        rights.push(RoleRight {
-                            name: right_name,
-                            value: right_value,
-                            condition: has_rls.then(String::new),
-                        });
-                    }
-                }
-            }
-
-            if obj_name.is_empty() || rights.is_empty() {
-                continue;
-            }
-            let Some(dot_idx) = obj_name.find('.') else {
-                continue;
-            };
-            let type_prefix = &obj_name[..dot_idx];
-            let short_name = &obj_name[dot_idx + 1..];
-
-            for right in rights {
-                if right.value == "true" {
-                    total_allowed += 1;
-                    if right.condition.is_some() {
-                        rls_objects.push(format!("{type_prefix}.{short_name} ({})", right.name));
-                    }
-                    add_role_info_right(
-                        &mut allowed,
-                        type_prefix,
-                        short_name,
-                        RoleInfoRightSummary {
-                            name: right.name,
-                            rls: right.condition.is_some(),
-                        },
-                    );
-                } else {
-                    total_denied += 1;
-                    add_role_info_right(
-                        &mut denied,
-                        type_prefix,
-                        short_name,
-                        RoleInfoRightSummary {
-                            name: right.name,
-                            rls: false,
-                        },
-                    );
-                }
-            }
-        }
-
-        let mut templates = Vec::<String>::new();
-        for template in root.children().filter(|node| {
-            role_info_element(
-                *node,
-                "restrictionTemplate",
-                Some("http://v8.1c.ru/8.2/roles"),
-            )
-        }) {
-            for child in template.children().filter(|node| node.is_element()) {
-                if child.tag_name().name() == "name" {
-                    let mut name = child.text().unwrap_or("").to_string();
-                    if let Some(paren_idx) = name.find('(') {
-                        if paren_idx > 0 {
-                            name.truncate(paren_idx);
-                        }
-                    }
-                    templates.push(name);
-                }
-            }
-        }
-
-        let data = RoleInfoData {
-            name: role_name,
-            synonym: (!role_synonym.is_empty()).then_some(role_synonym),
-            support: support_reader
+        let data = parse_role_info_xml(
+            &rights_text,
+            descriptor_text.as_deref(),
+            &layout.role_dir_name,
+            support_reader
                 .object_support(&selection.target)
                 .map_err(|error| error.to_string())?,
-            defaults: RoleDefaultsData {
-                set_for_new_objects: role_attribute(set_for_new),
-                set_for_attributes_by_default: role_attribute(set_for_attrs),
-                independent_rights_of_child_objects: role_attribute(independent_child),
-            },
-            allowed: role_group_data(allowed),
-            // `ShowDenied` used to gate this list, so an empty answer could
-            // mean "none" or "not asked for". Data always carries both.
-            denied: role_group_data(denied),
-            totals: RoleTotalsData {
-                allowed: total_allowed,
-                denied: total_denied,
-            },
-            restricted_objects: rls_objects,
-            templates,
-        };
+        )?;
         Ok((data, rights_path))
     })();
 
@@ -551,53 +557,53 @@ pub(crate) fn analyze_role_info(
 
 pub(crate) fn role_info_metadata(rights_path: &Path) -> (String, String) {
     let layout = role_read_layout(rights_path);
-    let role_folder_name = layout.role_dir_name;
-    let meta_path = layout.metadata_path;
+    let descriptor = fs::read_to_string(layout.metadata_path).ok();
+    role_info_metadata_xml(descriptor.as_deref(), &layout.role_dir_name)
+}
 
+fn role_info_metadata_xml(descriptor_text: Option<&str>, fallback_name: &str) -> (String, String) {
     let mut role_name = String::new();
     let mut role_synonym = String::new();
-    if meta_path.is_file() {
-        if let Ok(meta_text) = fs::read_to_string(&meta_path) {
-            if let Ok(meta_doc) = Document::parse(meta_text.trim_start_matches('\u{feff}')) {
-                for role in meta_doc
-                    .descendants()
-                    .filter(|node| role_info_element(*node, "Role", None))
+    if let Some(meta_text) = descriptor_text {
+        if let Ok(meta_doc) = Document::parse(meta_text.trim_start_matches('\u{feff}')) {
+            for role in meta_doc
+                .descendants()
+                .filter(|node| role_info_element(*node, "Role", None))
+            {
+                for props in role
+                    .children()
+                    .filter(|node| role_info_element(*node, "Properties", None))
                 {
-                    for props in role
-                        .children()
-                        .filter(|node| role_info_element(*node, "Properties", None))
-                    {
-                        if role_name.is_empty() {
-                            role_name = props
+                    if role_name.is_empty() {
+                        role_name = props
+                            .children()
+                            .find(|node| role_info_element(*node, "Name", None))
+                            .and_then(|node| node.text())
+                            .unwrap_or("")
+                            .to_string();
+                    }
+                    if role_synonym.is_empty() {
+                        for synonym in props
+                            .children()
+                            .filter(|node| role_info_element(*node, "Synonym", None))
+                        {
+                            for item in synonym
                                 .children()
-                                .find(|node| role_info_element(*node, "Name", None))
-                                .and_then(|node| node.text())
-                                .unwrap_or("")
-                                .to_string();
-                        }
-                        if role_synonym.is_empty() {
-                            for synonym in props
-                                .children()
-                                .filter(|node| role_info_element(*node, "Synonym", None))
+                                .filter(|node| role_info_element(*node, "item", None))
                             {
-                                for item in synonym
+                                let lang = item
                                     .children()
-                                    .filter(|node| role_info_element(*node, "item", None))
-                                {
-                                    let lang = item
+                                    .find(|node| role_info_element(*node, "lang", None))
+                                    .and_then(|node| node.text())
+                                    .unwrap_or("");
+                                if lang == "ru" {
+                                    role_synonym = item
                                         .children()
-                                        .find(|node| role_info_element(*node, "lang", None))
+                                        .find(|node| role_info_element(*node, "content", None))
                                         .and_then(|node| node.text())
-                                        .unwrap_or("");
-                                    if lang == "ru" {
-                                        role_synonym = item
-                                            .children()
-                                            .find(|node| role_info_element(*node, "content", None))
-                                            .and_then(|node| node.text())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        break;
-                                    }
+                                        .unwrap_or("")
+                                        .to_string();
+                                    break;
                                 }
                             }
                         }
@@ -608,7 +614,7 @@ pub(crate) fn role_info_metadata(rights_path: &Path) -> (String, String) {
     }
 
     if role_name.is_empty() {
-        role_name = role_folder_name;
+        role_name = fallback_name.to_string();
     }
 
     (role_name, role_synonym)

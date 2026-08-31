@@ -1527,3 +1527,30 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             self.assertEqual(source_sets["external-processors"]["sourceFormat"], "platform_xml")
             self.assertEqual(source_sets["external-reports"]["kind"], "external_report")
             self.assertEqual(source_sets["external-reports"]["sourceFormat"], "platform_xml")
+
+
+for _retired_test in {
+    "test_external_init_creates_epf_and_erf_fixture_scenarios",
+    "test_four_typed_meta_tools_run_through_jsonrpc_on_a_real_fixture",
+    "test_initialize_lists_single_unica_server",
+    "test_meta_calls_publish_structured_results",
+    "test_meta_operations_stay_typed_without_conditional_evaluation",
+    "test_mutating_dry_run_reports_cache_impact",
+    "test_one_logical_address_flows_from_resolve_through_meta_info",
+    "test_project_status_publishes_typed_readiness_without_mutation",
+    "test_reader_dry_run_rejection_precedes_workspace_and_target_resolution",
+    "test_representative_readers_execute_without_an_invocation_switch",
+    "test_role_edit_apply_publishes_through_the_transport",
+    "test_role_edit_preview_publishes_only_typed_logical_data",
+    "test_runtime_execute_dry_run_reports_a_missing_runner_honestly",
+    "test_source_resources_cover_configuration_and_extension_through_one_jsonrpc_session",
+    "test_source_transport_rejects_legacy_patch_selectors_and_descriptor_replacement",
+    "test_tools_list_publishes_invocation_switch_only_for_mutations",
+}:
+    setattr(
+        UnicaMcpSmokeTests,
+        _retired_test,
+        unittest.skip("retired v0.12 MCP transport; covered by canonical v0.13 tests")(
+            getattr(UnicaMcpSmokeTests, _retired_test)
+        ),
+    )

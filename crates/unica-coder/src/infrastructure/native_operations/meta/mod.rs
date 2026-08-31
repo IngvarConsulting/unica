@@ -98,9 +98,33 @@ mod validation_context;
 mod xml_model;
 
 pub(crate) use edit::{
-    prepare_typed_edit, resolve_typed_edit_object, resolve_typed_metadata_object,
+    meta_edit_object_identity, prepare_typed_edit, resolve_typed_edit_object,
+    resolve_typed_metadata_object,
 };
-pub(crate) use info::read_typed_meta_info;
+pub(crate) fn apply_typed_operations_to_image_with_seed(
+    xml_text: &mut String,
+    operations: &[crate::domain::metadata::MetaEditOperation],
+    seed: &[u8],
+) -> Result<(), crate::application::metadata::MetaFailure> {
+    use sha2::{Digest, Sha256};
+
+    let mut counter = 0_u64;
+    let mut next_uuid = || {
+        let mut hasher = Sha256::new();
+        hasher.update(b"unica-v13-metadata-uuid-v1\0");
+        hasher.update(seed);
+        hasher.update(counter.to_be_bytes());
+        counter = counter.saturating_add(1);
+        let digest = hasher.finalize();
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&digest[..16]);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        uuid::Uuid::from_bytes(bytes).to_string()
+    };
+    edit::apply_typed_operations_with_uuid(xml_text, operations, &mut next_uuid).map(|_| ())
+}
+pub(crate) use info::{parse_typed_meta_local_info, read_typed_meta_info};
 #[cfg(test)]
 pub(crate) use info::{
     with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
@@ -119,12 +143,48 @@ pub(crate) use remove::with_meta_remove_before_reauthorization_hook;
 pub(crate) use template_catalog::emit_meta_internal_info;
 pub(crate) use template_catalog::metadata_generated_types_8_3_27;
 pub(crate) use usage_scan::{scan_local_enrichment, LocalEnrichment, LocalSection};
+pub(crate) use validation::parse_child_profile_from_bytes;
 pub(crate) use validation::{
     service_child_semantics, validate_metadata_owner_shape_8_3_27, MetadataValidator,
 };
 pub(crate) use xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
 };
+
+/// The hidden v0.13 tree delegates metadata branches to the current typed
+/// metadata reader. This predicate describes only reader ownership; it never
+/// resolves a path or treats a physical resource as logical identity.
+pub(crate) fn logical_metadata_reader_target(
+    address: &crate::domain::address::QualifiedAddress,
+) -> Option<crate::domain::source_target::MetadataAddress> {
+    let owner = address.segments().first()?;
+    if !owner.kind().is_metadata_kind() || owner.name().is_none() {
+        return None;
+    }
+    crate::infrastructure::native_operations::logical_selector::typed_reader_metadata_target(
+        address,
+        &[owner.kind().as_str()],
+    )
+}
+
+pub(crate) fn accepts_logical_metadata_address(
+    address: &crate::domain::address::QualifiedAddress,
+) -> bool {
+    let Some(owner) = address.segments().first() else {
+        return false;
+    };
+    if !owner.kind().is_metadata_kind() {
+        return false;
+    }
+    if owner.name().is_some() {
+        return logical_metadata_reader_target(address).is_some();
+    }
+    crate::domain::source_target::MetadataAddressPrefix::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        owner.kind().as_str(),
+    )
+    .is_ok()
+}
 
 #[cfg(test)]
 mod info_projection_tests;

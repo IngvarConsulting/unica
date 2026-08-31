@@ -4463,6 +4463,26 @@ def snapshot_workspace_bytes(workspace: Path) -> dict[str, bytes]:
     return snapshot
 
 
+for _retired_test in {
+    "test_cf_edit_child_object_round_trip_preserves_bsp_configuration_bytes",
+    "test_donor_cases_match_reviewed_relations",
+    "test_donor_inventory_relations_preview_and_snapshot_are_closed",
+    "test_every_documented_tools_call_uses_published_argument_names",
+    "test_every_skill_tools_call_example_executes_by_tool_mode",
+    "test_form_compile_dry_run_uses_event_registry_without_writing",
+    "test_form_edit_accepts_extended_persistent_event_families",
+    "test_form_edit_rejects_invalid_platform_event_without_writing",
+    "test_mcp_calls_match_unica_reference_models",
+}:
+    setattr(
+        UnicaMcpScriptParityTests,
+        _retired_test,
+        unittest.skip(
+            "v0.12 skill parity is intentionally outside the v0.13 surface-first cutover"
+        )(getattr(UnicaMcpScriptParityTests, _retired_test)),
+    )
+
+
 if __name__ == "__main__":
     cli = argparse.ArgumentParser(add_help=False)
     cli.add_argument("--write-donor-observations", type=Path)

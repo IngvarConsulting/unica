@@ -98,32 +98,24 @@ class ReleaseAssessmentTests(unittest.TestCase):
             errors=errors,
         )
 
-    def test_release_gate_requires_only_the_four_current_meta_tools(self) -> None:
+    def test_release_gate_requires_exact_v13_compatibility_surface(self) -> None:
         module = load_assessment_module()
-        meta_tools = {
-            name
-            for name in module.EXPECTED_PUBLIC_TOOLS
-            if name.startswith("unica.meta.")
-        }
 
         self.assertEqual(
-            meta_tools,
+            module.EXPECTED_PUBLIC_TOOLS,
             {
-                "unica.meta.info",
-                "unica.meta.add",
-                "unica.meta.edit",
-                "unica.meta.remove",
+                "unica.view",
+                "unica.apply",
+                "unica.find",
+                "unica.search",
+                "unica.check",
+                "unica.diff",
+                "unica.run",
+                "unica.docs",
+                "unica.task.get",
+                "unica.task.result",
+                "unica.task.cancel",
             },
-        )
-        self.assertTrue(
-            all(
-                name not in module.EXPECTED_PUBLIC_TOOLS
-                for name in (
-                    "unica.meta.compile",
-                    "unica.meta.profile",
-                    "unica.meta.validate",
-                )
-            )
         )
 
     def write_response_id_mcp(self, path: Path, response_ids: list[int]) -> None:
@@ -243,18 +235,17 @@ import json
 import sys
 
 TOOLS = [
-    "unica.project.status",
-    "unica.project.map",
-    "unica.cf.info",
-    "unica.cf.validate",
-    "unica.code.diagnostics",
-    "unica.code.search",
-    "unica.code.outline",
-    "unica.meta.info",
-    "unica.meta.add",
-    "unica.meta.edit",
-    "unica.meta.remove",
-    "unica.standards.explain",
+    "unica.view",
+    "unica.apply",
+    "unica.find",
+    "unica.search",
+    "unica.check",
+    "unica.diff",
+    "unica.run",
+    "unica.docs",
+    "unica.task.get",
+    "unica.task.result",
+    "unica.task.cancel",
 ]
 
 for raw in sys.stdin:
@@ -274,74 +265,47 @@ for raw in sys.stdin:
         payload = {
             "ok": True,
             "summary": f"{name} completed",
-            "stdout": "",
             "warnings": [],
             "errors": [],
             "artifacts": [],
         }
-        if name == "unica.project.map":
-            # ADR-0023: the map is typed data, not a JSON string in stdout.
-            payload.pop("stdout")
-            payload["data"] = {
-                "sourceSets": [
-                    {"name": "main", "path": "src/cf", "sourceFormat": "platform_xml"}
-                ]
+        if name == "unica.check":
+            payload = {
+                "ok": True,
+                "summary": "Task is still working",
+                "data": {"task": {
+                    "taskId": "check-task",
+                    "status": "working",
+                    "pollIntervalMs": 1,
+                }},
             }
-        elif name == "unica.code.diagnostics" and arguments.get("action") == "analyze":
-            payload.pop("stdout")
+        elif name == "unica.task.result":
+            payload = {
+                "ok": True,
+                "summary": "workspace source sets are admitted",
+                "data": {"status": "admitted", "sources": ["main"]},
+            }
+        elif name == "unica.view":
+            payload["data"] = {"kind": "Configuration", "branches": []}
+        elif name == "unica.find":
+            payload["data"] = {"candidates": [{"at": "main:CommonModule.Shared"}]}
+        elif name == "unica.search":
             payload["data"] = {
-                "action": "analyze",
-                "state": "completed",
-                "complete": True,
-                "providers": [],
-                "itemsTotal": 1,
-                "itemsReturned": 1,
-                "truncated": False,
-                "items": [{
-                    "kind": "diagnostic",
-                    "provider": "bsl-analyzer",
-                    "location": {
-                        "kind": "addressed",
-                        "sourceSet": "main",
-                        "targetKind": "sourceRoot",
-                    },
-                    "focus": {"kind": "target"},
-                    "code": "UnusedLocalVariable",
-                    "severity": "warning",
-                    "message": "fixture",
-                    "tags": [],
+                "mode": "literal",
+                "matches": [{
+                    "scope": "main:Configuration",
+                    "line": 1,
+                    "column": 1,
+                    "snippet": "Процедура Smoke()",
                 }],
             }
-        elif name == "unica.code.search":
-            print(json.dumps({
-                "jsonrpc": "2.0",
-                "method": "notifications/progress",
-                "params": {
-                    "progressToken": "release-assessment-code-search",
-                    "progress": 3,
-                    "total": 3,
-                    "_meta": {"io.unica/searchProgress": {
-                        "schemaVersion": 1,
-                        "providers": [
-                            {"role": "semantic", "provider": "rlm", "state": "completed", "phase": "searching", "resultsFound": 0},
-                            {"role": "symbol", "provider": "bsl-analyzer", "state": "completed", "phase": "searching", "resultsFound": 0},
-                            {"role": "lexical", "provider": "git-grep", "state": "completed", "phase": "searching", "resultsFound": 0},
-                        ],
-                    }},
-                },
-            }), flush=True)
-            payload["data"] = {
-                "coverage": "complete",
-                "elapsedMs": 1,
-                "sections": [
-                    {"role": "semantic", "provider": "rlm", "status": "empty", "termination": None, "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
-                    {"role": "symbol", "provider": "bsl-analyzer", "status": "empty", "termination": None, "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
-                    {"role": "lexical", "provider": "git-grep", "status": "empty", "termination": None, "searchComplete": True, "ranking": "none", "ordering": "providerTraversal", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
-                ]
-            }
-        elif name == "unica.standards.explain":
-            payload["stdout"] = "UnusedLocalVariable: standard explanation"
-        response["result"] = {"content": [{"type": "text", "text": json.dumps(payload)}]}
+        elif name == "unica.diff":
+            payload["data"] = {"equal": True, "changes": [], "truncated": False}
+        response["result"] = {
+            "content": [],
+            "structuredContent": payload,
+            "isError": False,
+        }
     else:
         response["error"] = {"code": -32601, "message": f"unsupported {method}"}
     print(json.dumps(response), flush=True)
@@ -391,7 +355,35 @@ for raw in sys.stdin:
                 persisted["bsp"]["requestedRef"], "review/non-default-ref"
             )
             self.assertTrue(all(scenario["durationMs"] >= 0 for scenario in report["scenarios"]))
-            self.assertIn("UnusedLocalVariable", report["summary"]["qualityFindings"]["diagnosticCodes"])
+            self.assertEqual(
+                report["summary"]["qualityFindings"]["diagnosticCodes"], []
+            )
+            self.assertEqual(
+                [scenario["id"] for scenario in report["scenarios"]],
+                [
+                    "mcp-tools-list",
+                    "workspace-check",
+                    "configuration-view",
+                    "logical-find",
+                    "literal-search",
+                    "identity-diff",
+                ],
+            )
+            self.assertGreater(
+                next(
+                    scenario["metrics"]["taskPolls"]
+                    for scenario in report["scenarios"]
+                    if scenario["id"] == "workspace-check"
+                ),
+                0,
+            )
+            self.assertFalse(
+                next(
+                    scenario["blocking"]
+                    for scenario in report["scenarios"]
+                    if scenario["id"] == "logical-find"
+                )
+            )
             self.assertTrue((out_dir / "assessment.json").is_file())
             self.assertTrue((out_dir / "assessment.ndjson").is_file())
             lines = (out_dir / "assessment.ndjson").read_text(encoding="utf-8").splitlines()

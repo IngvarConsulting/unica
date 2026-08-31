@@ -830,6 +830,10 @@ fn an_interrupted_download_resumes_in_the_next_session() {
     RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
         .ensure(&manifest, HostTarget::LinuxX64)
         .expect_err("первая сессия обрывается посреди загрузки");
+    assert!(
+        !contains_ready(&cache),
+        "an interrupted archive is resumable bytes, never ArtifactReady"
+    );
 
     let installed = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
         .ensure(&manifest, HostTarget::LinuxX64)

@@ -2,6 +2,7 @@
 
 use crate::application::operation_descriptors::{FORM_PATH, OBJECT_PATH};
 use crate::application::AdapterOutcome;
+use crate::domain::address::QualifiedAddress;
 use crate::domain::form_edit::validate_form_edit_definition;
 use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
 use crate::domain::support_state::{
@@ -9,7 +10,8 @@ use crate::domain::support_state::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
+    logical_selection, physical_selection, typed_reader_metadata_target, AttachedResource,
+    ResolvedReadTarget,
 };
 use crate::infrastructure::platform_xml_owner::{root_version_literal, MANAGED_FORM_ROOT};
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -1478,6 +1480,10 @@ pub(crate) struct FormInfoData {
     pub(crate) attributes: Vec<FormInfoAttribute>,
     pub(crate) parameters: Vec<FormInfoParameter>,
     pub(crate) commands: Vec<FormInfoCommand>,
+    /// Parsed semantic context retained for the hidden V13 event projector.
+    /// V12 `form.info` keeps its established public JSON shape.
+    #[serde(skip)]
+    pub(crate) event_context: FormEventContext,
 }
 
 #[derive(Debug, Serialize)]
@@ -1487,7 +1493,7 @@ pub(crate) struct FormInfoProperty {
     pub(crate) value: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoEvent {
     pub(crate) name: String,
@@ -1496,10 +1502,14 @@ pub(crate) struct FormInfoEvent {
     pub(crate) call_type: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoElement {
     pub(crate) tag: String,
+    /// Closed platform element kind retained for internal event projection.
+    /// The V12 serialized `tag` remains the human-readable tree marker.
+    #[serde(skip)]
+    pub(crate) event_kind: Option<FormElementKind>,
     pub(crate) name: String,
     /// The data path or command the element is bound to; `null` when unbound.
     pub(crate) binding: Option<FormInfoBinding>,
@@ -1512,7 +1522,7 @@ pub(crate) struct FormInfoElement {
     pub(crate) children: Vec<FormInfoElement>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoBinding {
     /// `dataPath`, `standardCommand`, `command` or `other`.
@@ -1550,13 +1560,35 @@ pub(crate) struct FormInfoParameter {
     pub(crate) is_key: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoCommand {
     pub(crate) name: String,
     pub(crate) actions: Vec<FormInfoEvent>,
     /// The keyboard shortcut; `null` when the command declares none.
     pub(crate) shortcut: Option<String>,
+}
+
+/// Minimal, provider-neutral form evidence consumed by the hidden event
+/// projector. It deliberately excludes support state, report properties and
+/// every other V12 `form.info` concern.
+#[derive(Debug, Clone)]
+pub(crate) struct FormEventEvidence {
+    pub(crate) context: FormEventContext,
+    pub(crate) events: Vec<FormInfoEvent>,
+    pub(crate) elements: Vec<FormInfoElement>,
+    pub(crate) commands: Vec<FormInfoCommand>,
+}
+
+impl FormEventEvidence {
+    pub(crate) fn from_info(data: &FormInfoData) -> Self {
+        Self {
+            context: data.event_context.clone(),
+            events: data.events.clone(),
+            elements: data.elements.clone(),
+            commands: data.commands.clone(),
+        }
+    }
 }
 
 pub(crate) struct FormInfoExecution {
@@ -1618,6 +1650,7 @@ fn form_info_tree(child_items: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> 
             let name = child.attribute("name").unwrap_or("").to_string();
             FormInfoElement {
                 tag: form_element_tag(child),
+                event_kind: FormElementKind::from_xml_tag(child.tag_name().name()),
                 title: form_title_differs(child, &name),
                 name,
                 binding: form_info_binding(child),
@@ -1695,7 +1728,7 @@ fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand>
             actions: form_children(command, "Action")
                 .into_iter()
                 .map(|action| FormInfoEvent {
-                    name: action.attribute("name").unwrap_or("").to_string(),
+                    name: "Execute".to_string(),
                     handler: action.text().unwrap_or("").to_string(),
                     call_type: action.attribute("callType").map(str::to_string),
                 })
@@ -1703,6 +1736,29 @@ fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand>
             shortcut: form_child_text(command, "Shortcut"),
         })
         .collect()
+}
+
+fn form_event_evidence_from_root(root: roxmltree::Node<'_, '_>) -> FormEventEvidence {
+    FormEventEvidence {
+        context: context_from_root(root),
+        events: form_child(root, "Events")
+            .map(form_info_events_section)
+            .unwrap_or_default(),
+        elements: form_child(root, "ChildItems")
+            .map(form_info_tree)
+            .unwrap_or_default(),
+        commands: form_child(root, "Commands")
+            .map(form_info_commands)
+            .unwrap_or_default(),
+    }
+}
+
+pub(crate) fn parse_form_event_evidence_xml(text: &str) -> Result<FormEventEvidence, String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("Form XML parse error: {err}"))?;
+    let root = doc.root_element();
+    require_form_root(root)?;
+    Ok(form_event_evidence_from_root(root))
 }
 
 pub(crate) fn analyze_form_info(
@@ -1716,6 +1772,12 @@ pub(crate) fn analyze_form_info(
 /// The address kinds a form reader accepts: a nested `Catalog.X.Form.Y` and a
 /// top-level `CommonForm.Y`.
 pub(crate) const FORM_KINDS: &[&str] = &["Form", "CommonForm"];
+
+pub(crate) fn typed_form_reader_target(
+    address: &QualifiedAddress,
+) -> Option<crate::domain::source_target::MetadataAddress> {
+    typed_reader_metadata_target(address, FORM_KINDS)
+}
 
 /// The single args→path entry point of `form.info` and `form.validate`, and the
 /// one the format guard calls.
@@ -1744,6 +1806,91 @@ pub(crate) fn resolve_form_info_target(
         .map_err(|failure| failure.to_string())
 }
 
+pub(crate) fn parse_form_info_xml(
+    text: &str,
+    form_name: String,
+    object_context: String,
+    support: DomainObjectSupportData,
+) -> Result<FormInfoData, String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("Form XML parse error: {err}"))?;
+    let root = doc.root_element();
+    require_form_root(root)?;
+    let base_form = form_child(root, "BaseForm");
+    let is_extension = base_form.is_some();
+    let form_title = form_child(root, "Title")
+        .map(form_ml_text)
+        .filter(|value| !value.is_empty());
+    let prop_names = [
+        "Width",
+        "Height",
+        "Group",
+        "WindowOpeningMode",
+        "EnterKeyBehavior",
+        "AutoTitle",
+        "AutoURL",
+        "AutoFillCheck",
+        "Customizable",
+        "CommandBarLocation",
+        "SaveDataInSettings",
+        "AutoSaveDataInSettings",
+        "AutoTime",
+        "UsePostingMode",
+        "RepostOnWrite",
+        "UseForFoldersAndItems",
+        "ReportResult",
+        "DetailsData",
+        "ReportFormType",
+        "VerticalScroll",
+        "ScalingMode",
+    ];
+    let properties = prop_names
+        .iter()
+        .filter_map(|name| {
+            form_child(root, name).and_then(|node| {
+                let value = form_ml_text(node);
+                (!value.is_empty()).then(|| FormInfoProperty {
+                    name: (*name).to_string(),
+                    value,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let command_bar_location = form_child_text(root, "CommandBarLocation")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Auto".to_string());
+    let auto_command_bar = if command_bar_location != "None" {
+        form_child(root, "AutoCommandBar")
+            .map(form_main_command_bar_lines)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let event_evidence = form_event_evidence_from_root(root);
+    Ok(FormInfoData {
+        name: form_name,
+        title: form_title,
+        object_context: (!object_context.is_empty()).then_some(object_context),
+        is_extension,
+        base_form_version: base_form
+            .map(|node| node.attribute("version").unwrap_or("").to_string()),
+        support,
+        properties,
+        events: event_evidence.events,
+        auto_command_bar,
+        command_bar_location,
+        elements: event_evidence.elements,
+        attributes: form_child(root, "Attributes")
+            .map(form_info_attributes)
+            .unwrap_or_default(),
+        parameters: form_child(root, "Parameters")
+            .map(form_info_parameters)
+            .unwrap_or_default(),
+        commands: event_evidence.commands,
+        event_context: event_evidence.context,
+    })
+}
+
 pub(crate) fn analyze_form_info_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -1757,94 +1904,11 @@ pub(crate) fn analyze_form_info_with_data(
         }
 
         let text = read_utf8_sig(&form_path)?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", form_path.display()))?;
-        let root = doc.root_element();
-        require_form_root(root)?;
-        let base_form = form_child(root, "BaseForm");
-        let is_extension = base_form.is_some();
         let (form_name, object_context) = form_info_context(&form_path);
-
-        let form_title = form_child(root, "Title")
-            .map(form_ml_text)
-            .filter(|value| !value.is_empty());
-
-        let prop_names = [
-            "Width",
-            "Height",
-            "Group",
-            "WindowOpeningMode",
-            "EnterKeyBehavior",
-            "AutoTitle",
-            "AutoURL",
-            "AutoFillCheck",
-            "Customizable",
-            "CommandBarLocation",
-            "SaveDataInSettings",
-            "AutoSaveDataInSettings",
-            "AutoTime",
-            "UsePostingMode",
-            "RepostOnWrite",
-            "UseForFoldersAndItems",
-            "ReportResult",
-            "DetailsData",
-            "ReportFormType",
-            "VerticalScroll",
-            "ScalingMode",
-        ];
-        let properties = prop_names
-            .iter()
-            .filter_map(|name| {
-                form_child(root, name).and_then(|node| {
-                    let value = form_ml_text(node);
-                    (!value.is_empty()).then(|| FormInfoProperty {
-                        name: (*name).to_string(),
-                        value,
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let command_bar_location = form_child_text(root, "CommandBarLocation")
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "Auto".to_string());
-        let auto_command_bar = if command_bar_location != "None" {
-            form_child(root, "AutoCommandBar")
-                .map(form_main_command_bar_lines)
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let data = FormInfoData {
-            name: form_name,
-            title: form_title,
-            object_context: (!object_context.is_empty()).then_some(object_context),
-            is_extension,
-            base_form_version: base_form
-                .map(|node| node.attribute("version").unwrap_or("").to_string()),
-            support: support_reader
-                .object_support(&selection.target)
-                .map_err(|error| error.to_string())?,
-            properties,
-            events: form_child(root, "Events")
-                .map(form_info_events_section)
-                .unwrap_or_default(),
-            auto_command_bar,
-            command_bar_location,
-            elements: form_child(root, "ChildItems")
-                .map(form_info_tree)
-                .unwrap_or_default(),
-            attributes: form_child(root, "Attributes")
-                .map(form_info_attributes)
-                .unwrap_or_default(),
-            parameters: form_child(root, "Parameters")
-                .map(form_info_parameters)
-                .unwrap_or_default(),
-            commands: form_child(root, "Commands")
-                .map(form_info_commands)
-                .unwrap_or_default(),
-        };
+        let support = support_reader
+            .object_support(&selection.target)
+            .map_err(|error| error.to_string())?;
+        let data = parse_form_info_xml(&text, form_name, object_context, support)?;
 
         Ok((data, form_path))
     })();
@@ -7499,9 +7563,12 @@ pub(crate) fn form_compile_xml(
     let context = form_project_event_context(
         FormEventContext {
             definition: FormDefinitionKind::Regular,
+            direct_part_writable: true,
             main_attribute: MainAttributeKind::Unknown,
             main_attribute_type: None,
             main_attribute_provenance: MainAttributeProvenance::Missing,
+            main_attribute_name: None,
+            metadata_owner: None,
         },
         0,
         defn,
@@ -10930,6 +10997,34 @@ pub(crate) mod tests {
             .iter()
             .any(|error| { error.contains("urn:not-logform") && error.contains(FORM_LOGFORM_NS) }));
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_info_projects_direct_command_action_as_execute_binding() {
+        let data = parse_form_info_xml(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+  <ChildItems/>
+  <Commands>
+    <Command name="Refresh" id="1">
+      <Action>RefreshAction</Action>
+    </Command>
+  </Commands>
+</Form>"#,
+            "Test".to_string(),
+            String::new(),
+            DomainObjectSupportData {
+                state: crate::domain::support_state::ObjectSupportState::NotSupported,
+                direct_edit_safe: Some(true),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(data.commands.len(), 1);
+        assert_eq!(data.commands[0].actions.len(), 1);
+        let action = &data.commands[0].actions[0];
+        assert_eq!(action.name, "Execute");
+        assert_eq!(action.handler, "RefreshAction");
+        assert_eq!(action.call_type, None);
     }
 
     #[test]
@@ -18545,7 +18640,8 @@ pub(crate) mod tests {
                         "attributes": [projected_attribute],
                         "formEvents": [{
                             "name": "OnReadAtServer",
-                            "handler": "OnReadAtServer"
+                            "handler": "OnReadAtServer",
+                            "callType": "After"
                         }]
                     }),
                 ),
@@ -19494,6 +19590,40 @@ pub(crate) mod tests {
             }
             let _ = fs::remove_dir_all(&context.cwd);
         }
+    }
+
+    #[test]
+    fn edit_form_rejects_borrowed_event_without_call_type_before_write() {
+        let context = temp_context("edit-borrowed-event-missing-call-type");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(Some("CatalogObject.Goods"), "", "", true).into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "formEvents": [{
+                        "name": "OnOpen",
+                        "handler": "OnOpenAfter"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("FORM_EVENT_CALL_TYPE_REQUIRED")));
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
     }
 
     fn event_form_xml(

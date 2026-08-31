@@ -1,6 +1,30 @@
+use crate::application::invocation_store::InvocationStore;
 use crate::application::UnicaApplication;
 use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
+use crate::infrastructure::task_store::{
+    FileInvocationStore, RecoveryReport, SystemEpochMillisClock,
+};
+use std::fs::File;
 use std::sync::Arc;
+
+pub(crate) struct OpenedDaemonInvocationStore {
+    pub(crate) store: Arc<dyn InvocationStore>,
+    pub(crate) recovery: RecoveryReport,
+}
+
+pub(crate) fn open_daemon_invocation_store_from_directory(
+    private_store_root: File,
+) -> Result<OpenedDaemonInvocationStore, String> {
+    let (store, recovery) = FileInvocationStore::open_retained_directory(
+        private_store_root,
+        Arc::new(SystemEpochMillisClock),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(OpenedDaemonInvocationStore {
+        store: Arc::new(store),
+        recovery,
+    })
+}
 
 impl UnicaApplication {
     pub fn new() -> Self {

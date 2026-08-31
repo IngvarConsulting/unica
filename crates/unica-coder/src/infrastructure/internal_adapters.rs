@@ -488,6 +488,31 @@ impl<'a> RuntimeAdapter<'a> {
         invocation: RuntimeInvocation<'_>,
         cancellation: &CancellationToken,
     ) -> Result<RuntimeAdapterOutcome, String> {
+        self.invoke_cancellable_with_limits(invocation, cancellation, None, None)
+    }
+
+    pub(crate) fn invoke_cancellable_bounded(
+        &self,
+        invocation: RuntimeInvocation<'_>,
+        cancellation: &CancellationToken,
+        process_timeout: Duration,
+        capture_limits: (usize, usize),
+    ) -> Result<RuntimeAdapterOutcome, String> {
+        self.invoke_cancellable_with_limits(
+            invocation,
+            cancellation,
+            Some(process_timeout),
+            Some(capture_limits),
+        )
+    }
+
+    fn invoke_cancellable_with_limits(
+        &self,
+        invocation: RuntimeInvocation<'_>,
+        cancellation: &CancellationToken,
+        process_timeout: Option<Duration>,
+        capture_limits: Option<(usize, usize)>,
+    ) -> Result<RuntimeAdapterOutcome, String> {
         let RuntimeInvocation {
             tool_name,
             args,
@@ -538,14 +563,13 @@ impl<'a> RuntimeAdapter<'a> {
             )));
         }
 
-        let process_timeout = None;
         let process_command = ProcessCommand {
             program: bundled_tool.program.clone(),
             args: execution_args,
             cwd: context.cwd.clone(),
             env: Vec::new(),
             env_remove: Vec::new(),
-            capture_limits: None,
+            capture_limits,
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         };
@@ -6018,6 +6042,52 @@ analyze_timeout_seconds = 900
             .iter()
             .any(|error| error == "internal v8-runner runtime adapter timed out"));
         assert!(outcome.errors.iter().all(|error| !error.contains("120")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn bounded_runtime_adapter_records_process_timeout_and_capture_limits() {
+        let mut context = temp_context("runtime-bounded-record");
+        configure_designer_source(&mut context);
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            },
+        };
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("syntax")),
+            ("mode".to_string(), json!("designer-config")),
+        ]);
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke_cancellable_bounded(
+                RuntimeInvocation {
+                    tool_name: "unica.run",
+                    args: &args,
+                    context: &context,
+                    dry_run: false,
+                    mutating: false,
+                },
+                &CancellationToken::new(),
+                Duration::from_secs(300),
+                (1024 * 1024, 256 * 1024),
+            )
+            .unwrap();
+
+        assert!(outcome.outcome.ok);
+        let command = &runner.commands.borrow()[0];
+        assert_eq!(command.timeout, Some(Duration::from_secs(300)));
+        assert_eq!(command.capture_limits, Some((1024 * 1024, 256 * 1024)));
         cleanup_context(&context);
     }
 

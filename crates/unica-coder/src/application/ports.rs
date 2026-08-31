@@ -17,7 +17,6 @@ use crate::domain::diagnostics::{
 };
 use crate::domain::engine::MissingEngine;
 use crate::domain::events::DomainEvent;
-use crate::domain::long_work::WorkState;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaInfoDeclarations,
     MetaInfoDetails, MetaInfoPropertyData, MetaMutationData, MetaPredefinedItemsData,
@@ -36,6 +35,22 @@ use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 use std::fmt;
 use std::path::PathBuf;
+use std::time::Instant;
+
+#[allow(dead_code)] // The v0.13 invocation seam consumes this after the hidden phase.
+pub(crate) trait Clock: Send + Sync {
+    fn now(&self) -> Instant;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+#[allow(dead_code)] // Production implementation for the hidden v0.13 clock port.
+pub(crate) struct TokioClock;
+
+impl Clock for TokioClock {
+    fn now(&self) -> Instant {
+        tokio::time::Instant::now().into_std()
+    }
+}
 
 pub(crate) struct HandlerOutcome {
     pub(crate) adapter: AdapterOutcome,
@@ -526,17 +541,16 @@ pub(crate) trait ApplicationPorts: Send + Sync {
 
     /// Дождаться движка, которого инструменту не хватает.
     ///
-    /// `None` — ждать нечего: движок на месте, не нужен вовсе или доставке
-    /// взяться неоткуда; вызов идёт дальше. `Some` — доставка не успела за
-    /// окно, и вызывающий получает её состояние вместо результата работы.
+    /// Возвращает состояние exact SharedWork. `NotRequired`/`Ready` продолжают
+    /// вызов; `Working`/`Failed` V12-адаптер проецирует в прежний `WorkState`.
     fn deliver_engine_if_missing(
         &self,
         _spec: ToolSpec,
         _context: &WorkspaceContext,
         _cancellation: &CancellationToken,
         _progress: &dyn ProgressSink,
-    ) -> Option<WorkState> {
-        None
+    ) -> crate::application::shared_work::EngineDeliveryState {
+        crate::application::shared_work::EngineDeliveryState::NotRequired
     }
 
     fn read_metadata_local(

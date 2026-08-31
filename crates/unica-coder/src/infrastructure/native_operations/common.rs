@@ -2,6 +2,7 @@
 
 use crate::application::operation_descriptors::{CFE_VALIDATE_PATH, CF_PATH, RIGHTS_PATH};
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
+use crate::domain::address::QualifiedAddress;
 use crate::domain::format_profile::{
     classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
@@ -12,7 +13,8 @@ use crate::domain::source_target::{
 use crate::domain::support_state::{SupportReadError, SupportReadErrorCode};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
+    logical_selection, physical_selection, typed_reader_metadata_target, AttachedResource,
+    ResolvedReadTarget,
 };
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_source_targets::{
@@ -702,6 +704,18 @@ pub(crate) fn parse_subsystem_info_data(
     path: &Path,
     text: &str,
 ) -> Result<(SubsystemInfoData, Vec<String>), String> {
+    let has_ci = subsystem_dir_for_xml(path)
+        .join("Ext")
+        .join("CommandInterface.xml")
+        .is_file();
+    parse_subsystem_info_xml(path, text, has_ci)
+}
+
+pub(crate) fn parse_subsystem_info_xml(
+    path: &Path,
+    text: &str,
+    has_ci: bool,
+) -> Result<(SubsystemInfoData, Vec<String>), String> {
     let doc = Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error in {}: {err}", path.display()))?;
     let root = doc.root_element();
@@ -759,9 +773,6 @@ pub(crate) fn parse_subsystem_info_data(
     let content_items = subsystem_content_items(props);
     let groups = subsystem_group_content(&content_items);
     let child_names = subsystem_child_names(sub);
-    let sub_dir = subsystem_dir_for_xml(path);
-    let has_ci = sub_dir.join("Ext").join("CommandInterface.xml").is_file();
-
     Ok((
         SubsystemInfoData {
             name,
@@ -1141,11 +1152,18 @@ pub(crate) fn resolve_role_validate_rights_path(path: PathBuf) -> PathBuf {
     rights_path
 }
 
+const ROLE_KINDS: &[&str] = &["Role"];
+
+pub(crate) fn typed_role_reader_target(address: &QualifiedAddress) -> Option<MetadataAddress> {
+    typed_reader_metadata_target(address, ROLE_KINDS)
+}
+
 pub(crate) fn resolve_role_read_rights_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
-    if let Some(selection) = logical_selection(args, context, AttachedResource::Rights, &["Role"]) {
+    if let Some(selection) = logical_selection(args, context, AttachedResource::Rights, ROLE_KINDS)
+    {
         return selection
             .map(|selection| selection.resource_path)
             .map_err(|failure| failure.to_string());
@@ -1161,7 +1179,8 @@ pub(crate) fn resolve_role_info_target(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<ResolvedReadTarget, String> {
-    if let Some(selection) = logical_selection(args, context, AttachedResource::Rights, &["Role"]) {
+    if let Some(selection) = logical_selection(args, context, AttachedResource::Rights, ROLE_KINDS)
+    {
         return selection.map_err(|failure| failure.to_string());
     }
     let rights_path = resolve_role_read_rights_path(args, context)?;
@@ -2472,6 +2491,13 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
         return None;
     }
     let data = fs::read(bin_path).ok()?;
+    parse_support_state_compat_bytes(Some(&data))
+}
+
+/// Parses already-read support marker bytes with the current V12 mutating
+/// guard semantics. Identity and no-follow proof remain the caller's job.
+pub(crate) fn parse_support_state_compat_bytes(data: Option<&[u8]>) -> Option<SupportState> {
+    let data = data?;
     if data.len() <= 32 {
         return Some(SupportState {
             global_editing_enabled: true,
@@ -2482,7 +2508,7 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
             vendors: Vec::new(),
         });
     }
-    let text = String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data));
+    let text = String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(data));
     let (global_flag, vendor_count) = parse_support_header(&text)?;
     if vendor_count == 0 {
         return Some(SupportState {
@@ -2558,6 +2584,17 @@ pub(crate) fn read_support_state_strict(
             "support-state marker bytes are unreadable",
         )
     })?;
+    parse_support_state_strict_bytes(Some(&data))
+}
+
+/// Parses already-admitted support-state bytes with the same semantics as the
+/// path wrapper. The caller owns file identity/no-follow checks.
+pub(crate) fn parse_support_state_strict_bytes(
+    data: Option<&[u8]>,
+) -> Result<Option<SupportState>, SupportReadError> {
+    let Some(data) = data else {
+        return Ok(None);
+    };
     if data.is_empty() {
         return Ok(Some(SupportState {
             global_editing_enabled: true,
@@ -2568,7 +2605,7 @@ pub(crate) fn read_support_state_strict(
             vendors: Vec::new(),
         }));
     }
-    let text = std::str::from_utf8(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data))
+    let text = std::str::from_utf8(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(data))
         .map_err(|_| {
             SupportReadError::new(
                 SupportReadErrorCode::StateInvalid,

@@ -968,13 +968,22 @@ class FateCoverageTests(unittest.TestCase):
             records.get(narrowing, {}).get("establishes"),
             "[INV.PKG.PACKAGED-PUBLIC-SURFACE, INV.TOKEN.CACHE-IMPACT-IN-RESULT]",
         )
-        for identifier in (
-            "INV.PKG.PACKAGED-PUBLIC-SURFACE",
-            "INV.TOKEN.CACHE-IMPACT-IN-RESULT",
-        ):
-            with self.subTest(identifier=identifier):
-                self.assertEqual(records[identifier].get("decision"), narrowing)
-                self.assertEqual(records[identifier].get("governs"), "product")
+        self.assertEqual(
+            records["INV.TOKEN.CACHE-IMPACT-IN-RESULT"].get("decision"), narrowing
+        )
+        self.assertEqual(
+            records["INV.TOKEN.CACHE-IMPACT-IN-RESULT"].get("governs"), "product"
+        )
+
+        cutover = "DEC.2026-08-31.V0-13-SURFACE-FIRST-CUTOVER"
+        self.assertEqual(records[cutover].get("governs"), "product")
+        self.assertEqual(
+            records["INV.PKG.PACKAGED-PUBLIC-SURFACE"].get("decision"), cutover
+        )
+        self.assertEqual(
+            records["INV.PERF.BOOTSTRAP-VERIFY-LIFECYCLES"].get("decision"),
+            cutover,
+        )
 
         atomic = bodies["INV.PKG.VERIFIED-ATOMIC-INSTALL"].lower()
         self.assertNotIn("размер", atomic)
@@ -991,9 +1000,17 @@ class FateCoverageTests(unittest.TestCase):
         self.assertIn("initialize", packaged)
         self.assertIn("tools/list", packaged)
         for required_tool in (
-            "unica.project.status",
-            "unica.standards.search",
-            "unica.standards.explain",
+            "unica.view",
+            "unica.apply",
+            "unica.find",
+            "unica.search",
+            "unica.check",
+            "unica.diff",
+            "unica.run",
+            "unica.docs",
+            "unica.task.get",
+            "unica.task.result",
+            "unica.task.cancel",
         ):
             with self.subTest(required_tool=required_tool):
                 self.assertIn(required_tool, packaged)

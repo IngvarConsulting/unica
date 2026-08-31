@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "surfaceRelease": "v0.13",
+  "subjectTools": {
+    "unica.view": {
+      "status": "partial",
+      "reason": "Base logical-node projection and closed props/branches/can/limits/items section selection are implemented; richer domain projections remain incomplete.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }]
+    },
+    "unica.apply": {
+      "status": "partial",
+      "reason": "Retained atomic publication is proven for props.set and attribute.add/set/remove; dry-run and real execution expose the same postimage/effect plan hash, while object, relation and other families remain unsupported.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs",
+        "test": "metadata_planner_preserves_operation_order_in_one_staged_postimage_without_disk_mutation"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "public_metadata_apply_keeps_dry_run_and_real_plans_identical_for_four_supported_ops"
+      }]
+    },
+    "unica.find": {
+      "status": "partial",
+      "reason": "Qualified logical address candidates are implemented, while additional closed find kinds remain incomplete.",
+      "evidence": []
+    },
+    "unica.search": {
+      "status": "partial",
+      "reason": "Bounded literal BSL search supports Configuration and resolved metadata-object subtrees; regex and symbol search remain incomplete.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }]
+    },
+    "unica.check": {
+      "status": "partial",
+      "reason": "Workspace admission and logical readability are implemented; validation filter parsing and meta/cf kind routing are provisional because no real validator execution is proven.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }]
+    },
+    "unica.diff": {
+      "status": "partial",
+      "reason": "Same-kind bounded structural JSON diff supports closed paths/sections filters; revision-bound pagination remains incomplete.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }]
+    },
+    "unica.run": {
+      "status": "partial",
+      "reason": "The closed twelve-operation dictionary and bounded syntax.check Task execution are implemented; the other eleven run operations remain unsupported.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }]
+    },
+    "unica.docs": {
+      "status": "partial",
+      "reason": "Platform-help and development-standard search are implemented, while configuration documentation remains unsupported.",
+      "evidence": []
+    }
+  },
+  "runOperations": {
+    "source.create": {
+      "status": "unsupported",
+      "reason": "Source creation execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "source.attach": {
+      "status": "unsupported",
+      "reason": "Source attachment execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "infobase.create": {
+      "status": "unsupported",
+      "reason": "Infobase creation execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "infobase.build": {
+      "status": "unsupported",
+      "reason": "Infobase build execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "source.dump": {
+      "status": "unsupported",
+      "reason": "Source dump execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "source.convert": {
+      "status": "unsupported",
+      "reason": "Source conversion execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "artifact.make": {
+      "status": "unsupported",
+      "reason": "Artifact build execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "artifact.load": {
+      "status": "unsupported",
+      "reason": "Artifact loading execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "syntax.check": {
+      "status": "supported",
+      "reason": "Closed syntax arguments execute as a durable cancellable Task through a five-minute process timeout and bounded capture; terminal provider failures publish no raw output, command or artifact paths.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_syntax_run.rs",
+        "test": "canonical_syntax_args_are_closed_and_map_without_raw_command_fields"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/internal_adapters.rs",
+        "test": "bounded_runtime_adapter_records_process_timeout_and_capture_limits"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_syntax_run.rs",
+        "test": "syntax_cancellation_and_provider_failure_publish_only_closed_results"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }]
+    },
+    "test.run": {
+      "status": "unsupported",
+      "reason": "Test execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "client.run": {
+      "status": "unsupported",
+      "reason": "Interactive client execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "extension.sync": {
+      "status": "unsupported",
+      "reason": "Extension synchronization has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    }
+  },
+  "compatibilityTools": {
+    "unica.task.get": {
+      "status": "supported",
+      "reason": "Durable compatibility Task state projection is implemented.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/interfaces/mcp.rs",
+          "test": "v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free"
+        }
+      ]
+    },
+    "unica.task.result": {
+      "status": "supported",
+      "reason": "Bounded durable compatibility Task result projection is implemented.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/interfaces/mcp.rs",
+          "test": "v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free"
+        }
+      ]
+    },
+    "unica.task.cancel": {
+      "status": "supported",
+      "reason": "Idempotent durable compatibility Task cancellation is implemented.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/interfaces/mcp.rs",
+          "test": "v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free"
+        }
+      ]
+    }
+  }
+}

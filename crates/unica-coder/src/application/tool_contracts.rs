@@ -22,6 +22,27 @@ use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "confirm"];
 const MUTATION_ARGS: &[&str] = &["dryRun"];
+
+/// The package-selected surface is the canonical v0.13 registry. The v0.12
+/// variant remains available only to focused compatibility tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceRelease {
+    #[allow(dead_code)] // retained only as the explicit no-fallback test seam
+    V12,
+    V13,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V13TaskProfile {
+    Native,
+    Compatibility,
+}
+
+impl SurfaceRelease {
+    pub(crate) const fn from_package_version() -> Self {
+        Self::V13
+    }
+}
 /// How much of a logical address a bridged reader can actually use. Publishing
 /// `metadataPath` on a tool that never reads one would be a lie in the schema,
 /// so the three cases are distinguished rather than collapsed into a flag.

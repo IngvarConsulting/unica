@@ -3,6 +3,70 @@ use std::fs;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_BEFORE_IDENTITY_BOUND_NO_REPLACE_RENAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static TEST_BEFORE_IDENTITY_BOUND_CLEANUP_MUTATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static TEST_BEFORE_IDENTITY_BOUND_DIRECTORY_CLEANUP_MUTATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn inject_post_rename_sync_failure_for_test() {
+    TEST_POST_RENAME_SYNC_FAILURE.with(|slot| slot.set(true));
+}
+
+#[cfg(test)]
+pub(crate) fn set_before_identity_bound_no_replace_rename_hook(hook: impl FnOnce() + 'static) {
+    TEST_BEFORE_IDENTITY_BOUND_NO_REPLACE_RENAME.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+fn run_before_identity_bound_no_replace_rename_hook() {
+    if let Some(hook) =
+        TEST_BEFORE_IDENTITY_BOUND_NO_REPLACE_RENAME.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_before_identity_bound_cleanup_mutation_hook(hook: impl FnOnce() + 'static) {
+    TEST_BEFORE_IDENTITY_BOUND_CLEANUP_MUTATION.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+fn run_before_identity_bound_cleanup_mutation_hook() {
+    if let Some(hook) =
+        TEST_BEFORE_IDENTITY_BOUND_CLEANUP_MUTATION.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_before_identity_bound_directory_cleanup_mutation_hook(
+    hook: impl FnOnce() + 'static,
+) {
+    TEST_BEFORE_IDENTITY_BOUND_DIRECTORY_CLEANUP_MUTATION.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+fn run_before_identity_bound_directory_cleanup_mutation_hook() {
+    if let Some(hook) =
+        TEST_BEFORE_IDENTITY_BOUND_DIRECTORY_CLEANUP_MUTATION.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
 
 /// Returns a short, private directory suitable as a child process' Unix runtime
 /// directory.  It deliberately lives below `/tmp`: macOS's `TMPDIR` and a
@@ -149,6 +213,26 @@ pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Resu
     std::os::unix::fs::symlink(target, link)
 }
 
+/// Classifies the platform error produced when a no-follow open encounters a
+/// symbolic link. Keeping the OS errno inside this facade lets retained-tree
+/// callers preserve one portable fail-closed policy.
+pub(crate) fn is_nofollow_link_error(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::ELOOP)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn supports_retained_root_replacement_test() -> bool {
+    cfg!(unix)
+}
+
 #[cfg(all(test, windows))]
 pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Result<()> {
     std::os::windows::fs::symlink_dir(target, link)
@@ -157,6 +241,46 @@ pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Resu
 #[cfg(all(test, windows))]
 thread_local! {
     static TEST_CASE_SENSITIVITY_QUERY_ERROR: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+type RetainedDirectoryCasePolicyForTest = Box<dyn Fn(FileIdentity) -> Option<bool>>;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_RETAINED_DIRECTORY_CASE_POLICY: std::cell::RefCell<Option<RetainedDirectoryCasePolicyForTest>> = const { std::cell::RefCell::new(None) };
+    static TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) struct RetainedDirectoryCasePolicyTestGuard;
+
+#[cfg(test)]
+impl Drop for RetainedDirectoryCasePolicyTestGuard {
+    fn drop(&mut self) {
+        TEST_RETAINED_DIRECTORY_CASE_POLICY.with(|slot| slot.borrow_mut().take());
+        TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES.with(|slot| slot.set(0));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_directory_case_policy_for_test(
+    policy: impl Fn(FileIdentity) -> Option<bool> + 'static,
+) -> RetainedDirectoryCasePolicyTestGuard {
+    TEST_RETAINED_DIRECTORY_CASE_POLICY.with(|slot| {
+        assert!(
+            slot.borrow().is_none(),
+            "retained case-policy test seam is busy"
+        );
+        *slot.borrow_mut() = Some(Box::new(policy));
+    });
+    TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES.with(|slot| slot.set(0));
+    RetainedDirectoryCasePolicyTestGuard
+}
+
+#[cfg(test)]
+pub(crate) fn retained_directory_case_policy_queries_for_test() -> usize {
+    TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES.with(std::cell::Cell::get)
 }
 
 #[cfg(all(test, windows))]
@@ -187,10 +311,1107 @@ pub(crate) struct PortablePermissions {
     key: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FileIdentity {
     volume: u64,
     file: u64,
+}
+
+impl FileIdentity {
+    pub(crate) fn stable_bytes(self) -> [u8; 16] {
+        let mut bytes = [0_u8; 16];
+        bytes[..8].copy_from_slice(&self.volume.to_le_bytes());
+        bytes[8..].copy_from_slice(&self.file.to_le_bytes());
+        bytes
+    }
+}
+
+/// Retained, no-follow capability for one named absolute directory.
+///
+/// The descriptor keeps the originally admitted directory available for
+/// descriptor-relative reads. `validate_named_identity` separately proves
+/// that the current namespace entry still names that same physical object;
+/// callers must check it both before and after ambient path-based work.
+#[derive(Clone)]
+pub(crate) struct RetainedDirectoryCapability {
+    path: PathBuf,
+    retained: Arc<RetainedDirectoryCapabilityInner>,
+    parent: Option<Arc<RetainedDirectoryParent>>,
+}
+
+pub(crate) struct RetainedChildNameComparator {
+    case_sensitive: bool,
+}
+
+impl RetainedChildNameComparator {
+    pub(crate) fn names_equivalent(
+        &self,
+        left: &std::ffi::OsStr,
+        right: &std::ffi::OsStr,
+    ) -> io::Result<bool> {
+        if left == right {
+            return Ok(true);
+        }
+        host_component_names_equivalent(left, right, self.case_sensitive)
+    }
+}
+
+/// Retained no-follow authority for one regular child of an admitted directory.
+/// The open descriptor is the physical identity; validation proves the current
+/// name still resolves to that exact object before a caller publishes or joins.
+#[derive(Debug)]
+pub(crate) struct RetainedRegularFileCapability {
+    parent: RetainedDirectoryCapability,
+    name: std::ffi::OsString,
+    file: fs::File,
+    identity: FileIdentity,
+}
+
+/// A retained publication can fail after its destination name has already
+/// changed (for example while flushing the renamed file).  The optional
+/// capability makes that namespace mutation journalable by the caller instead
+/// of reducing it to an `io::Error` that cannot be rolled back.
+#[derive(Debug)]
+pub(crate) struct RetainedPublicationError {
+    error: io::Error,
+    published: Option<RetainedRegularFileCapability>,
+}
+
+/// Directory publication mirrors regular-file publication: a reported error
+/// may still own an exact private or already-published directory that the
+/// caller must put in its rollback journal.
+#[derive(Debug)]
+pub(crate) struct RetainedDirectoryPublicationError {
+    error: io::Error,
+    artifact: Option<(RetainedDirectoryCapability, std::ffi::OsString, bool)>,
+}
+
+impl RetainedDirectoryPublicationError {
+    fn without_artifact(error: io::Error) -> Self {
+        Self {
+            error,
+            artifact: None,
+        }
+    }
+
+    fn with_artifact(
+        error: io::Error,
+        directory: RetainedDirectoryCapability,
+        name: std::ffi::OsString,
+        published: bool,
+    ) -> Self {
+        Self {
+            error,
+            artifact: Some((directory, name, published)),
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        io::Error,
+        Option<(RetainedDirectoryCapability, std::ffi::OsString, bool)>,
+    ) {
+        (self.error, self.artifact)
+    }
+}
+
+impl std::fmt::Display for RetainedDirectoryPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RetainedDirectoryPublicationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+#[derive(Debug)]
+enum RetainedMoveOutcome {
+    Expected(RetainedRegularFileCapability),
+    Different(RetainedRegularFileCapability),
+}
+
+impl RetainedPublicationError {
+    fn before_rename(error: io::Error) -> Self {
+        Self {
+            error,
+            published: None,
+        }
+    }
+
+    fn after_rename(error: io::Error, published: RetainedRegularFileCapability) -> Self {
+        Self {
+            error,
+            published: Some(published),
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (io::Error, Option<RetainedRegularFileCapability>) {
+        (self.error, self.published)
+    }
+
+    pub(crate) fn io_error(&self) -> &io::Error {
+        &self.error
+    }
+}
+
+impl std::fmt::Display for RetainedPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RetainedPublicationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// One immediate child classified and retained relative to an exact directory
+/// capability. Directory and regular-file variants own the same physical
+/// handles used for classification; reparse and unsupported entries are never
+/// promoted into a readable tree authority.
+#[derive(Debug)]
+pub(crate) enum RetainedChildCapability {
+    Directory(RetainedDirectoryCapability),
+    RegularFile(RetainedRegularFileCapability),
+    ReparsePoint,
+    Unsupported,
+}
+
+struct RetainedDirectoryCapabilityInner {
+    directory: fs::File,
+    identity: FileIdentity,
+}
+
+struct RetainedDirectoryParent {
+    directory: RetainedDirectoryCapability,
+    name: std::ffi::OsString,
+}
+
+impl std::fmt::Debug for RetainedDirectoryCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RetainedDirectoryCapability")
+            .field("path", &self.path)
+            .field("identity", &self.retained.identity)
+            .finish()
+    }
+}
+
+impl RetainedDirectoryCapability {
+    pub(crate) fn open(path: &Path) -> io::Result<Self> {
+        let directory = open_absolute_directory_path_nofollow(path)?;
+        let identity = file_identity(&directory)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            retained: Arc::new(RetainedDirectoryCapabilityInner {
+                directory,
+                identity,
+            }),
+            parent: None,
+        })
+    }
+
+    pub(crate) fn open_or_create(path: &Path) -> io::Result<Self> {
+        let directory = open_or_create_absolute_directory_path_nofollow(path)?;
+        let identity = file_identity(&directory)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            retained: Arc::new(RetainedDirectoryCapabilityInner {
+                directory,
+                identity,
+            }),
+            parent: None,
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn identity(&self) -> FileIdentity {
+        self.retained.identity
+    }
+
+    /// Clones the already-retained physical directory handle without
+    /// rediscovering it through an ambient path. Store owners use the clone for
+    /// descriptor-relative platform operations while this capability remains
+    /// the authority that validates the directory's current namespace name.
+    pub(crate) fn try_clone_directory(&self) -> io::Result<fs::File> {
+        self.retained.directory.try_clone()
+    }
+
+    /// Compares two absent immediate-child names using the lookup semantics of
+    /// this exact retained directory. The directory descriptor, not its
+    /// ambient path, supplies the filesystem case policy.
+    pub(crate) fn child_names_equivalent(
+        &self,
+        left: &std::ffi::OsStr,
+        right: &std::ffi::OsStr,
+    ) -> io::Result<bool> {
+        self.child_name_comparator()?.names_equivalent(left, right)
+    }
+
+    pub(crate) fn child_name_comparator(&self) -> io::Result<RetainedChildNameComparator> {
+        Ok(RetainedChildNameComparator {
+            case_sensitive: self.case_sensitive_child_names()?,
+        })
+    }
+
+    fn case_sensitive_child_names(&self) -> io::Result<bool> {
+        #[cfg(test)]
+        {
+            TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES
+                .with(|slot| slot.set(slot.get().saturating_add(1)));
+            if let Some(policy) = TEST_RETAINED_DIRECTORY_CASE_POLICY.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .and_then(|policy| policy(self.identity()))
+            }) {
+                return Ok(policy);
+            }
+        }
+        filesystem_case_sensitive_for_directory(&self.retained.directory)
+    }
+
+    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+        let rebound = if let Some(parent) = &self.parent {
+            parent.directory.validate_named_identity()?;
+            open_directory_child_nofollow(&parent.directory.retained.directory, &parent.name)?
+        } else {
+            open_absolute_directory_path_nofollow(&self.path)?
+        };
+        let rebound_identity = file_identity(&rebound)?;
+        if rebound_identity != self.retained.identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "named directory identity changed after capability admission",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Retains one no-follow child directory relative to this exact directory
+    /// descriptor. Its later validation also walks through the retained parent
+    /// descriptor rather than reopening the child through an ambient path.
+    pub(crate) fn retain_directory_child(&self, name: &std::ffi::OsStr) -> io::Result<Self> {
+        let directory = open_directory_child_nofollow(&self.retained.directory, name)?;
+        let identity = file_identity(&directory)?;
+        Ok(Self {
+            path: self.path.join(name),
+            retained: Arc::new(RetainedDirectoryCapabilityInner {
+                directory,
+                identity,
+            }),
+            parent: Some(Arc::new(RetainedDirectoryParent {
+                directory: self.clone(),
+                name: name.to_os_string(),
+            })),
+        })
+    }
+
+    /// Creates one new immediate directory through this retained parent and
+    /// returns authority over the exact directory handle created by the
+    /// platform primitive. Existing children are never opened or adopted.
+    pub(crate) fn create_directory_child(&self, name: &std::ffi::OsStr) -> io::Result<Self> {
+        let directory = create_new_directory_child(&self.retained.directory, name)?;
+        let identity = file_identity(&directory)?;
+        Ok(Self {
+            path: self.path.join(name),
+            retained: Arc::new(RetainedDirectoryCapabilityInner {
+                directory,
+                identity,
+            }),
+            parent: Some(Arc::new(RetainedDirectoryParent {
+                directory: self.clone(),
+                name: name.to_os_string(),
+            })),
+        })
+    }
+
+    /// Creates a transaction-private directory, retains its exact handle, and
+    /// publishes that handle to an absent public name with a no-replace move.
+    /// A concurrent public child is never opened as authority.
+    pub(crate) fn create_directory_child_atomically(
+        &self,
+        private_name: &std::ffi::OsStr,
+        destination_name: &std::ffi::OsStr,
+    ) -> Result<Self, RetainedDirectoryPublicationError> {
+        let private = self
+            .create_directory_child(private_name)
+            .map_err(RetainedDirectoryPublicationError::without_artifact)?;
+        if let Err(error) = rename_identity_bound_directory_child_no_replace(
+            &self.retained.directory,
+            private_name,
+            private.identity(),
+            &private.retained.directory,
+            &self.retained.directory,
+            destination_name,
+        ) {
+            return match private.remove_empty_named_identity_relative() {
+                Ok(()) => Err(RetainedDirectoryPublicationError::without_artifact(error)),
+                Err(cleanup) => Err(RetainedDirectoryPublicationError::with_artifact(
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "{error}; transaction-private directory was preserved after cleanup failed: {cleanup}"
+                        ),
+                    ),
+                    private,
+                    private_name.to_os_string(),
+                    false,
+                )),
+            };
+        }
+        let published = match self.retain_directory_child(destination_name) {
+            Ok(published) if published.identity() == private.identity() => published,
+            Ok(different) => {
+                let restoration = rename_identity_bound_directory_child_no_replace(
+                    &self.retained.directory,
+                    destination_name,
+                    different.identity(),
+                    &different.retained.directory,
+                    &self.retained.directory,
+                    private_name,
+                );
+                let message = match restoration {
+                    Ok(()) => "published directory identity changed at observation boundary; unexpected directory was restored to the private name and preserved".to_string(),
+                    Err(error) => format!(
+                        "published directory identity changed at observation boundary; unexpected directory was preserved because restoration failed: {error}"
+                    ),
+                };
+                return Err(RetainedDirectoryPublicationError::without_artifact(
+                    io::Error::other(message),
+                ));
+            }
+            Err(error) => {
+                let published = Self {
+                    path: self.path.join(destination_name),
+                    retained: Arc::clone(&private.retained),
+                    parent: Some(Arc::new(RetainedDirectoryParent {
+                        directory: self.clone(),
+                        name: destination_name.to_os_string(),
+                    })),
+                };
+                return Err(RetainedDirectoryPublicationError::with_artifact(
+                    error,
+                    published,
+                    destination_name.to_os_string(),
+                    true,
+                ));
+            }
+        };
+        if let Err(error) = sync_directory(&self.retained.directory)
+            .and_then(|()| published.validate_named_identity())
+        {
+            return Err(RetainedDirectoryPublicationError::with_artifact(
+                error,
+                published,
+                destination_name.to_os_string(),
+                true,
+            ));
+        }
+        Ok(published)
+    }
+
+    /// Removes this retained directory only while its admitted parent/name
+    /// still resolves to the retained identity and the directory is empty.
+    pub(crate) fn remove_empty_named_identity_relative(&self) -> io::Result<()> {
+        let parent = self.parent.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "source-root directory cannot be removed as a created child",
+            )
+        })?;
+        remove_identity_bound_empty_directory_child(
+            &parent.directory.retained.directory,
+            &parent.name,
+            self.retained.identity,
+            &self.retained.directory,
+        )
+    }
+
+    /// Removes one batch-created retained-apply directory without unlinking
+    /// its admitted public name on Unix. The public entry is first moved to a
+    /// fresh transaction-private quarantine with no replacement, then the
+    /// moved identity is observed. If a concurrent directory was moved, it is
+    /// restored to the public name when possible and never deleted here.
+    /// Windows keeps its handle-based directory deletion.
+    pub(crate) fn remove_empty_named_identity_relative_for_retained_apply(
+        &self,
+        quarantine_name: &std::ffi::OsStr,
+    ) -> io::Result<()> {
+        let parent = self.parent.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "source-root directory cannot be removed as a created child",
+            )
+        })?;
+        #[cfg(unix)]
+        {
+            rename_identity_bound_directory_child_no_replace_after_cleanup_hook(
+                &parent.directory.retained.directory,
+                &parent.name,
+                self.retained.identity,
+                &self.retained.directory,
+                &parent.directory.retained.directory,
+                quarantine_name,
+            )?;
+            let moved = parent.directory.retain_directory_child(quarantine_name)?;
+            if moved.identity() != self.identity() {
+                let restoration = rename_identity_bound_directory_child_no_replace(
+                    &parent.directory.retained.directory,
+                    quarantine_name,
+                    moved.identity(),
+                    &moved.retained.directory,
+                    &parent.directory.retained.directory,
+                    &parent.name,
+                );
+                return Err(match restoration {
+                    Ok(()) => io::Error::other(
+                        "directory cleanup target identity changed at quarantine boundary; concurrent public directory was restored and batch-owned directory left untouched",
+                    ),
+                    Err(error) => io::Error::other(format!(
+                        "directory cleanup target identity changed at quarantine boundary; unexpected directory was preserved in quarantine because restoration failed: {error}"
+                    )),
+                });
+            }
+            let cleanup = moved
+                .validate_named_identity()
+                .and_then(|()| moved.remove_empty_named_identity_relative());
+            if let Err(error) = cleanup {
+                let restoration = rename_identity_bound_directory_child_no_replace(
+                    &parent.directory.retained.directory,
+                    quarantine_name,
+                    moved.identity(),
+                    &moved.retained.directory,
+                    &parent.directory.retained.directory,
+                    &parent.name,
+                );
+                return Err(match restoration {
+                    Ok(()) => io::Error::new(
+                        error.kind(),
+                        format!(
+                            "verified directory cleanup quarantine {} could not be deleted and was restored to its public name: {error}",
+                            Path::new(quarantine_name).display()
+                        ),
+                    ),
+                    Err(restoration) => io::Error::new(
+                        error.kind(),
+                        format!(
+                            "verified directory cleanup quarantine {} in retained parent {:?} could not be deleted and was preserved because public-name restoration failed: {error}; restoration: {restoration}",
+                            Path::new(quarantine_name).display(),
+                            parent.directory.identity()
+                        ),
+                    ),
+                });
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = quarantine_name;
+            remove_identity_bound_empty_directory_child(
+                &parent.directory.retained.directory,
+                &parent.name,
+                self.retained.identity,
+                &self.retained.directory,
+            )
+        }
+    }
+
+    /// Publishes bytes atomically inside this retained directory. Both the
+    /// staging child and rename destination are resolved through the retained
+    /// directory handle, so replacing the lexical path cannot redirect bytes.
+    pub(crate) fn replace_regular_child_atomically(
+        &self,
+        stage_name: &std::ffi::OsStr,
+        destination_name: &std::ffi::OsStr,
+        bytes: &[u8],
+    ) -> Result<RetainedRegularFileCapability, RetainedPublicationError> {
+        use std::io::Write;
+
+        let mut stage = create_new_regular_child(&self.retained.directory, stage_name)
+            .map_err(RetainedPublicationError::before_rename)?;
+        let identity = file_identity(&stage).map_err(RetainedPublicationError::before_rename)?;
+        if let Err(error) = stage.write_all(bytes).and_then(|()| stage.sync_data()) {
+            let _ = remove_identity_bound_regular_child(
+                &self.retained.directory,
+                stage_name,
+                identity,
+                &stage,
+            );
+            return Err(RetainedPublicationError::before_rename(error));
+        }
+        let staged = RetainedRegularFileCapability {
+            parent: self.clone(),
+            name: stage_name.to_os_string(),
+            file: stage,
+            identity,
+        };
+        if let Err(error) = replace_identity_bound_regular_child(
+            &self.retained.directory,
+            stage_name,
+            identity,
+            &staged.file,
+            destination_name,
+        ) {
+            let _ = staged.remove_named_identity_relative();
+            return Err(RetainedPublicationError::before_rename(error));
+        }
+        let published = match self.observe_moved_regular_child(destination_name, identity) {
+            Ok(RetainedMoveOutcome::Expected(published)) => published,
+            Ok(RetainedMoveOutcome::Different(different)) => {
+                let error = self.restore_unexpected_regular_child_move(
+                    destination_name,
+                    &different,
+                    stage_name,
+                );
+                return Err(match error {
+                    Ok(()) => RetainedPublicationError::before_rename(io::Error::other(
+                        "staged source identity changed at replacement boundary; moved child restored to its source name",
+                    )),
+                    Err(restore) => RetainedPublicationError::after_rename(
+                        io::Error::other(format!(
+                            "staged source identity changed at replacement boundary; moved child could not be restored: {restore}"
+                        )),
+                        different,
+                    ),
+                });
+            }
+            Err(error) => {
+                return Err(RetainedPublicationError::after_rename(
+                    error,
+                    RetainedRegularFileCapability {
+                        parent: self.clone(),
+                        name: destination_name.to_os_string(),
+                        file: staged.file,
+                        identity,
+                    },
+                ));
+            }
+        };
+        if let Err(error) = sync_renamed_regular_child(&staged.file)
+            .and_then(|()| sync_directory(&self.retained.directory))
+            .and_then(|()| published.validate_named_identity())
+        {
+            return Err(RetainedPublicationError::after_rename(error, published));
+        }
+        Ok(published)
+    }
+
+    /// Publishes a new regular child without replacing a concurrently-created
+    /// destination. Staging and the final no-replace rename are both relative
+    /// to this retained directory descriptor.
+    pub(crate) fn create_regular_child_atomically(
+        &self,
+        stage_name: &std::ffi::OsStr,
+        destination_name: &std::ffi::OsStr,
+        bytes: &[u8],
+    ) -> Result<RetainedRegularFileCapability, RetainedPublicationError> {
+        use std::io::Write;
+
+        let mut stage = create_new_regular_child(&self.retained.directory, stage_name)
+            .map_err(RetainedPublicationError::before_rename)?;
+        let identity = file_identity(&stage).map_err(RetainedPublicationError::before_rename)?;
+        if let Err(error) = stage.write_all(bytes).and_then(|()| stage.sync_data()) {
+            let _ = remove_identity_bound_regular_child(
+                &self.retained.directory,
+                stage_name,
+                identity,
+                &stage,
+            );
+            return Err(RetainedPublicationError::before_rename(error));
+        }
+        let staged = RetainedRegularFileCapability {
+            parent: self.clone(),
+            name: stage_name.to_os_string(),
+            file: stage,
+            identity,
+        };
+        let published = match self.move_regular_child_no_replace_observed(
+            stage_name,
+            &staged,
+            destination_name,
+        ) {
+            Ok(RetainedMoveOutcome::Expected(published)) => published,
+            Ok(RetainedMoveOutcome::Different(different)) => {
+                let error = self.restore_unexpected_regular_child_move(
+                    destination_name,
+                    &different,
+                    stage_name,
+                );
+                return Err(match error {
+                    Ok(()) => RetainedPublicationError::before_rename(io::Error::other(
+                        "staged source identity changed at create boundary; moved child restored to its source name",
+                    )),
+                    Err(restore) => RetainedPublicationError::after_rename(
+                        io::Error::other(format!(
+                            "staged source identity changed at create boundary; moved child could not be restored: {restore}"
+                        )),
+                        different,
+                    ),
+                });
+            }
+            Err(error) => {
+                let _ = staged.remove_named_identity_relative();
+                return Err(RetainedPublicationError::before_rename(error));
+            }
+        };
+        if let Err(error) = sync_renamed_regular_child(&staged.file)
+            .and_then(|()| sync_directory(&self.retained.directory))
+            .and_then(|()| published.validate_named_identity_relative())
+        {
+            return Err(RetainedPublicationError::after_rename(error, published));
+        }
+        Ok(published)
+    }
+
+    /// Moves the exact retained destination to an unoccupied recovery name.
+    /// The destination is never overwritten: if its name no longer resolves to
+    /// `expected`, the move is refused (or a raced move is restored) and the
+    /// concurrent child remains authoritative.
+    pub(crate) fn displace_regular_child_no_replace(
+        &self,
+        destination_name: &std::ffi::OsStr,
+        expected: &RetainedRegularFileCapability,
+        recovery_name: &std::ffi::OsStr,
+    ) -> io::Result<RetainedRegularFileCapability> {
+        if expected.parent.identity() != self.identity() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "retained destination belongs to another parent",
+            ));
+        }
+        match self.move_regular_child_no_replace_observed(
+            destination_name,
+            expected,
+            recovery_name,
+        )? {
+            RetainedMoveOutcome::Expected(displaced) => Ok(displaced),
+            RetainedMoveOutcome::Different(different) => {
+                let restore = self.restore_unexpected_regular_child_move(
+                    recovery_name,
+                    &different,
+                    destination_name,
+                );
+                Err(match restore {
+                    Ok(()) => io::Error::other(
+                        "retained destination identity changed at mutation boundary; moved child restored",
+                    ),
+                    Err(restore) => io::Error::other(format!(
+                        "retained destination identity changed at mutation boundary; moved child was preserved because restore failed: {restore}"
+                    )),
+                })
+            }
+        }
+    }
+
+    /// Restores one previously displaced child without replacing any child
+    /// that appeared concurrently at the destination.
+    pub(crate) fn restore_displaced_regular_child_no_replace(
+        &self,
+        displaced: &RetainedRegularFileCapability,
+        destination_name: &std::ffi::OsStr,
+    ) -> io::Result<()> {
+        if displaced.parent.identity() != self.identity() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "retained recovery child belongs to another parent",
+            ));
+        }
+        match self.move_regular_child_no_replace_observed(
+            &displaced.name,
+            displaced,
+            destination_name,
+        )? {
+            RetainedMoveOutcome::Expected(_) => sync_directory(&self.retained.directory),
+            RetainedMoveOutcome::Different(different) => {
+                let restore = self.restore_unexpected_regular_child_move(
+                    destination_name,
+                    &different,
+                    &displaced.name,
+                );
+                Err(match restore {
+                    Ok(()) => io::Error::other(
+                        "retained recovery identity changed at restore boundary; moved child restored to recovery name",
+                    ),
+                    Err(restore) => io::Error::other(format!(
+                        "retained recovery identity changed at restore boundary; moved child could not be restored: {restore}"
+                    )),
+                })
+            }
+        }
+    }
+
+    fn move_regular_child_no_replace_observed(
+        &self,
+        source_name: &std::ffi::OsStr,
+        expected: &RetainedRegularFileCapability,
+        destination_name: &std::ffi::OsStr,
+    ) -> io::Result<RetainedMoveOutcome> {
+        rename_identity_bound_regular_child_no_replace(
+            &self.retained.directory,
+            source_name,
+            expected.identity,
+            &expected.file,
+            &self.retained.directory,
+            destination_name,
+        )?;
+        self.observe_moved_regular_child(destination_name, expected.identity)
+    }
+
+    fn observe_moved_regular_child(
+        &self,
+        destination_name: &std::ffi::OsStr,
+        expected_identity: FileIdentity,
+    ) -> io::Result<RetainedMoveOutcome> {
+        let observed = self.retain_regular_child(destination_name)?;
+        if observed.identity == expected_identity {
+            Ok(RetainedMoveOutcome::Expected(observed))
+        } else {
+            Ok(RetainedMoveOutcome::Different(observed))
+        }
+    }
+
+    fn restore_unexpected_regular_child_move(
+        &self,
+        moved_name: &std::ffi::OsStr,
+        moved: &RetainedRegularFileCapability,
+        source_name: &std::ffi::OsStr,
+    ) -> io::Result<()> {
+        match self.move_regular_child_no_replace_observed(moved_name, moved, source_name)? {
+            RetainedMoveOutcome::Expected(_) => Ok(()),
+            RetainedMoveOutcome::Different(_) => Err(io::Error::other(
+                "a second identity change raced restoration; an observed child may remain preserved outside its original name",
+            )),
+        }
+    }
+
+    pub(crate) fn read_relative_regular_bounded(
+        &self,
+        relative: &Path,
+        max_bytes: usize,
+    ) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        use std::path::Component;
+
+        let mut components = relative.components().peekable();
+        if components.peek().is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relative file path must not be empty",
+            ));
+        }
+        let mut directory = self.retained.directory.try_clone()?;
+        let mut file = None;
+        while let Some(component) = components.next() {
+            let Component::Normal(name) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "relative file path contains a non-normal component",
+                ));
+            };
+            if components.peek().is_some() {
+                directory = open_directory_child_nofollow(&directory, name)?;
+            } else {
+                file = Some(open_regular_child_nofollow(&directory, name)?);
+            }
+        }
+        let mut file = file.expect("non-empty relative path has a final component");
+        let limit = u64::try_from(max_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let mut bytes = Vec::new();
+        file.by_ref().take(limit).read_to_end(&mut bytes)?;
+        if bytes.len() > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("relative file exceeds the {max_bytes}-byte read limit"),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    /// Enumerates the immediate members of this exact retained directory.
+    /// Names are bounded and resolved from the retained descriptor, never by
+    /// reopening the ambient path.
+    pub(crate) fn read_immediate_names_bounded(
+        &self,
+        maximum_entries: usize,
+        checkpoint: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Vec<std::ffi::OsString>> {
+        read_directory_names_bounded(&self.retained.directory, maximum_entries, checkpoint)
+    }
+
+    /// Classifies and retains one immediate child through this directory
+    /// descriptor. The typed reopen on Windows is identity-checked against the
+    /// classification handle; Unix keeps the original `openat(O_NOFOLLOW)`
+    /// handle. No ambient path is consulted.
+    pub(crate) fn retain_immediate_child_nofollow(
+        &self,
+        name: &std::ffi::OsStr,
+    ) -> io::Result<RetainedChildCapability> {
+        let (classification_anchor, kind) =
+            open_any_child_nofollow(&self.retained.directory, name)?;
+        match kind {
+            OpenedChildKind::Directory => {
+                let directory = open_child_for_secure_tree_use(
+                    &self.retained.directory,
+                    name,
+                    classification_anchor,
+                    kind,
+                )?;
+                let identity = file_identity(&directory)?;
+                Ok(RetainedChildCapability::Directory(Self {
+                    path: self.path.join(name),
+                    retained: Arc::new(RetainedDirectoryCapabilityInner {
+                        directory,
+                        identity,
+                    }),
+                    parent: Some(Arc::new(RetainedDirectoryParent {
+                        directory: self.clone(),
+                        name: name.to_os_string(),
+                    })),
+                }))
+            }
+            OpenedChildKind::RegularFile => {
+                let file = open_child_for_secure_tree_use(
+                    &self.retained.directory,
+                    name,
+                    classification_anchor,
+                    kind,
+                )?;
+                let identity = file_identity(&file)?;
+                Ok(RetainedChildCapability::RegularFile(
+                    RetainedRegularFileCapability {
+                        parent: self.clone(),
+                        name: name.to_os_string(),
+                        file,
+                        identity,
+                    },
+                ))
+            }
+            OpenedChildKind::ReparsePoint => Ok(RetainedChildCapability::ReparsePoint),
+            OpenedChildKind::Unsupported => Ok(RetainedChildCapability::Unsupported),
+        }
+    }
+
+    pub(crate) fn retain_regular_child(
+        &self,
+        name: &std::ffi::OsStr,
+    ) -> io::Result<RetainedRegularFileCapability> {
+        let file = open_regular_child_nofollow(&self.retained.directory, name)?;
+        let identity = file_identity(&file)?;
+        Ok(RetainedRegularFileCapability {
+            parent: self.clone(),
+            name: name.to_os_string(),
+            file,
+            identity,
+        })
+    }
+
+    pub(crate) fn retain_or_create_regular_child(
+        &self,
+        name: &std::ffi::OsStr,
+    ) -> io::Result<RetainedRegularFileCapability> {
+        let file =
+            open_or_create_regular_child_read_write_nofollow(&self.retained.directory, name)?;
+        let identity = file_identity(&file)?;
+        Ok(RetainedRegularFileCapability {
+            parent: self.clone(),
+            name: name.to_os_string(),
+            file,
+            identity,
+        })
+    }
+}
+
+/// Compares two path components using the native lookup identity for a proven
+/// filesystem case policy. Callers obtain that policy from a retained or
+/// canonical host directory; no consumer performs its own Unicode folding.
+#[cfg(target_vendor = "apple")]
+pub(crate) fn host_component_names_equivalent(
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
+    case_sensitive: bool,
+) -> io::Result<bool> {
+    use objc2_core_foundation::{CFComparisonResult, CFString, CFStringCompareFlags};
+
+    if left == right {
+        return Ok(true);
+    }
+    let left = left.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "left child name is not valid Unicode",
+        )
+    })?;
+    let right = right.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "right child name is not valid Unicode",
+        )
+    })?;
+    let mut flags = CFStringCompareFlags::CompareNonliteral;
+    if !case_sensitive {
+        flags |= CFStringCompareFlags::CompareCaseInsensitive;
+    }
+    let left = CFString::from_str(left);
+    let right = CFString::from_str(right);
+    Ok(left.compare(Some(&right), flags) == CFComparisonResult::CompareEqualTo)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+pub(crate) fn host_component_names_equivalent(
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
+    case_sensitive: bool,
+) -> io::Result<bool> {
+    host_path_components_equal(left, right, case_sensitive)
+}
+
+fn sync_renamed_regular_child(file: &fs::File) -> io::Result<()> {
+    #[cfg(test)]
+    if TEST_POST_RENAME_SYNC_FAILURE.with(|slot| slot.replace(false)) {
+        return Err(io::Error::other(
+            "injected post-rename regular-file sync failure",
+        ));
+    }
+    file.sync_all()
+}
+
+impl RetainedRegularFileCapability {
+    pub(crate) fn identity(&self) -> FileIdentity {
+        self.identity
+    }
+
+    pub(crate) fn read_bounded(&self, max_bytes: usize) -> io::Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let mut file = self.file.try_clone()?;
+        file.seek(SeekFrom::Start(0))?;
+        let limit = u64::try_from(max_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let mut bytes = Vec::new();
+        file.by_ref().take(limit).read_to_end(&mut bytes)?;
+        if bytes.len() > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("regular file exceeds the {max_bytes}-byte read limit"),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    pub(crate) fn try_clone_file(&self) -> io::Result<fs::File> {
+        self.file.try_clone()
+    }
+
+    pub(crate) fn hard_link_count(&self) -> io::Result<u64> {
+        hard_link_count(&self.file)
+    }
+
+    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+        self.parent.validate_named_identity()?;
+        self.validate_named_identity_relative()
+    }
+
+    pub(crate) fn validate_named_identity_relative(&self) -> io::Result<()> {
+        let rebound = open_regular_child_nofollow(&self.parent.retained.directory, &self.name)?;
+        if file_identity(&rebound)? != self.identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "named regular-file identity changed after capability admission",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remove_named_identity(&self) -> io::Result<()> {
+        self.parent.validate_named_identity()?;
+        self.remove_named_identity_relative()
+    }
+
+    pub(crate) fn remove_named_identity_relative(&self) -> io::Result<()> {
+        remove_identity_bound_regular_child(
+            &self.parent.retained.directory,
+            &self.name,
+            self.identity,
+            &self.file,
+        )
+    }
+
+    /// Removes this retained apply child without exposing the admitted public
+    /// name to Unix's validate-then-`unlinkat` race. Unix first moves the
+    /// identity to a unique transaction-owned quarantine name, verifies the
+    /// move outcome, and only then performs best-effort artifact deletion.
+    /// Windows keeps its stronger handle-based delete. Portable Unix has no
+    /// unlink-by-descriptor operation: the final unlink of the verified,
+    /// transaction-unique quarantine is still name-based. A hostile same-user
+    /// process that discovers and swaps that internal name in the final gap can
+    /// redirect artifact deletion, but it cannot redirect deletion at the
+    /// admitted public/recovery name because that name is never unlinked.
+    pub(crate) fn remove_named_identity_relative_for_retained_apply(
+        &self,
+        quarantine_name: &std::ffi::OsStr,
+    ) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            rename_identity_bound_regular_child_no_replace_after_cleanup_hook(
+                &self.parent.retained.directory,
+                &self.name,
+                self.identity,
+                &self.file,
+                &self.parent.retained.directory,
+                quarantine_name,
+            )?;
+            let outcome = self
+                .parent
+                .observe_moved_regular_child(quarantine_name, self.identity)?;
+            let quarantined = match outcome {
+                RetainedMoveOutcome::Expected(quarantined) => quarantined,
+                RetainedMoveOutcome::Different(different) => {
+                    let restore = self.parent.restore_unexpected_regular_child_move(
+                        quarantine_name,
+                        &different,
+                        &self.name,
+                    );
+                    return Err(match restore {
+                        Ok(()) => io::Error::other(
+                            "cleanup target identity changed at quarantine boundary; concurrent child restored and retained child left untouched",
+                        ),
+                        Err(restore) => io::Error::other(format!(
+                            "cleanup target identity changed at quarantine boundary; concurrent child could not be restored: {restore}"
+                        )),
+                    });
+                }
+            };
+            quarantined
+                .validate_named_identity_relative()
+                .and_then(|()| quarantined.remove_named_identity_relative())
+                .map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "verified cleanup quarantine {} in retained parent {:?} could not be deleted: {error}",
+                            Path::new(quarantine_name).display(),
+                            self.parent.identity()
+                        ),
+                    )
+                })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = quarantine_name;
+            self.remove_named_identity_relative()
+        }
+    }
 }
 
 impl PortablePermissions {
@@ -336,10 +1557,10 @@ fn open_unix_child(
 ) -> io::Result<fs::File> {
     use std::os::fd::{AsRawFd, FromRawFd};
 
-    let name = unix_child_name(name)?;
+    let encoded_name = unix_child_name(name)?;
     // SAFETY: parent owns a live descriptor, name is a NUL-terminated single component, and a
     // successful openat result transfers one newly owned descriptor to this function.
-    let descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+    let descriptor = unsafe { libc::openat(parent.as_raw_fd(), encoded_name.as_ptr(), flags) };
     if descriptor < 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -355,7 +1576,7 @@ pub(crate) fn create_new_regular_child(
 ) -> io::Result<fs::File> {
     use std::os::fd::{AsRawFd, FromRawFd};
 
-    let name = unix_child_name(name)?;
+    let encoded_name = unix_child_name(name)?;
     // SAFETY: parent owns a live descriptor, name is one NUL-terminated child component, and a
     // successful openat result transfers one newly owned descriptor to this function. Mode 0666
     // preserves the process-umask default captured by the publication protocol before the file is
@@ -363,7 +1584,7 @@ pub(crate) fn create_new_regular_child(
     let descriptor = unsafe {
         libc::openat(
             parent.as_raw_fd(),
-            name.as_ptr(),
+            encoded_name.as_ptr(),
             libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
             0o666,
         )
@@ -452,6 +1673,52 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
     Ok(current)
 }
 
+/// Opens an absolute directory path component-by-component and creates only absent directory
+/// components relative to an already-retained parent. Existing links are never followed and no
+/// ambient write occurs before the parent descriptor is verified.
+#[cfg(unix)]
+pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure directory path must be absolute",
+        ));
+    }
+    let mut current = open_directory_nofollow(Path::new("/"))?;
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(name) => {
+                current = match open_directory_child_nofollow(&current, name) {
+                    Ok(directory) => directory,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        match create_new_directory_child(&current, name) {
+                            Ok(directory) => {
+                                sync_directory(&current)?;
+                                directory
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                                open_directory_child_nofollow(&current, name)?
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    Err(error) => return Err(error),
+                };
+            }
+            Component::ParentDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "secure directory path contains a non-normal component",
+                ));
+            }
+        }
+    }
+    Ok(current)
+}
+
 #[cfg(unix)]
 pub(crate) fn open_directory_child_nofollow(
     parent: &fs::File,
@@ -478,6 +1745,38 @@ pub(crate) fn open_regular_child_nofollow(
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "entry is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_or_create_regular_child_read_write_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let encoded_name = unix_child_name(name)?;
+    // SAFETY: parent is a retained directory descriptor and name is one
+    // NUL-terminated component. The returned descriptor is newly owned.
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            encoded_name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o666,
+        )
+    };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: descriptor is the owned successful openat result above.
+    let file = unsafe { fs::File::from_raw_fd(descriptor) };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "descriptor-relative lifecycle lock is not a regular file",
         ));
     }
     Ok(file)
@@ -602,6 +1901,22 @@ fn windows_api_path(path: &Path) -> io::Result<Vec<u16>> {
         ));
     }
     Ok(windows_api_path_from_utf16(encoded, true))
+}
+
+#[cfg(unix)]
+pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let metadata = file.metadata()?;
+    // SAFETY: geteuid has no preconditions and reads only process credentials.
+    let current_uid = unsafe { libc::geteuid() };
+    if metadata.uid() != current_uid || metadata.permissions().mode() & 0o077 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "state object must be owned by the current user and owner-only",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -1361,11 +2676,77 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
     Ok(current)
 }
 
+#[cfg(windows)]
+pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure directory path must be absolute",
+        ));
+    }
+    let absolute = std::path::absolute(path)?;
+    let mut components = absolute.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure Windows directory path has no prefix",
+        ));
+    };
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure Windows directory path has no root component",
+        ));
+    }
+    let mut anchor = PathBuf::from(prefix.as_os_str());
+    anchor.push(r"\");
+    let mut current = open_directory_nofollow(&anchor)?;
+    for component in components {
+        match component {
+            Component::Normal(name) => {
+                current = match open_directory_child_nofollow(&current, name) {
+                    Ok(directory) => directory,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        match create_new_directory_child(&current, name) {
+                            Ok(directory) => directory,
+                            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                                open_directory_child_nofollow(&current, name)?
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    Err(error) => return Err(error),
+                };
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "secure directory path contains a non-normal component",
+                ));
+            }
+        }
+    }
+    Ok(current)
+}
+
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn open_absolute_directory_path_nofollow(_path: &Path) -> io::Result<fs::File> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "secure no-follow directory paths are unavailable on this host",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn open_or_create_absolute_directory_path_nofollow(
+    _path: &Path,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "secure no-follow directory creation is unavailable on this host",
     ))
 }
 
@@ -1689,12 +3070,37 @@ fn open_relative_child(
     create_options: u32,
     security_descriptor: Option<windows_sys::Win32::Security::PSECURITY_DESCRIPTOR>,
 ) -> io::Result<fs::File> {
-    use std::mem::size_of;
-    use std::os::windows::io::{AsRawHandle, FromRawHandle};
-    use std::ptr;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
+
+    open_relative_child_with_share_access(
+        parent,
+        name,
+        desired_access,
+        file_attributes,
+        create_disposition,
+        create_options,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        security_descriptor,
+    )
+}
+
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+fn open_relative_child_with_share_access(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    desired_access: u32,
+    file_attributes: u32,
+    create_disposition: u32,
+    create_options: u32,
+    share_access: u32,
+    security_descriptor: Option<windows_sys::Win32::Security::PSECURITY_DESCRIPTOR>,
+) -> io::Result<fs::File> {
+    use std::mem::size_of;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use std::ptr;
 
     let create_options = nt_create_options_for_std_file(desired_access, create_options)?;
     let object_attributes = relative_child_object_attributes(parent)?;
@@ -1733,7 +3139,7 @@ fn open_relative_child(
             &mut status,
             ptr::null_mut(),
             file_attributes,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            share_access,
             create_disposition,
             create_options,
             ptr::null_mut(),
@@ -1804,6 +3210,44 @@ pub(crate) fn open_regular_child_nofollow(
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "entry is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn open_or_create_regular_child_read_write_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN_IF: u32 = 0x0000_0003;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, SYNCHRONIZE,
+    };
+
+    let file = open_relative_child(
+        parent,
+        name,
+        GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_OPEN_IF,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    let attributes = windows_file_information(&file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "descriptor-relative lifecycle lock resolves to a reparse point",
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "descriptor-relative lifecycle lock is not a regular file",
         ));
     }
     Ok(file)
@@ -2174,25 +3618,41 @@ fn rename_open_child_no_replace(
     destination_parent: &fs::File,
     destination_name: &std::ffi::OsStr,
 ) -> io::Result<()> {
+    rename_open_child(source, destination_parent, destination_name, false)
+}
+
+#[cfg(windows)]
+fn rename_open_child(
+    source: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+    replace_if_exists: bool,
+) -> io::Result<()> {
     use std::mem::{offset_of, size_of};
     use std::os::windows::io::AsRawHandle;
     use std::ptr;
 
     #[repr(C)]
-    union RenameFlags {
-        replace_if_exists: u8,
-        flags: u32,
-    }
-
-    #[repr(C)]
     struct RenameInformation {
-        anonymous: RenameFlags,
+        flags: u32,
         root_directory: windows_sys::Win32::Foundation::HANDLE,
         file_name_length: u32,
         file_name: [u16; 1],
     }
 
     const FILE_RENAME_INFORMATION_CLASS: u32 = 10;
+    const FILE_RENAME_INFORMATION_EX_CLASS: u32 = 65;
+    const FILE_RENAME_REPLACE_IF_EXISTS: u32 = 0x0000_0001;
+    const FILE_RENAME_POSIX_SEMANTICS: u32 = 0x0000_0002;
+
+    let (information_class, rename_flags) = if replace_if_exists {
+        (
+            FILE_RENAME_INFORMATION_EX_CLASS,
+            FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS,
+        )
+    } else {
+        (FILE_RENAME_INFORMATION_CLASS, 0)
+    };
 
     let name = relative_child_name(destination_name)?;
     let name_bytes = name
@@ -2207,11 +3667,11 @@ fn rename_open_child_no_replace(
     let mut storage = vec![0usize; word_count];
     let information = storage.as_mut_ptr().cast::<RenameInformation>();
     // SAFETY: storage is pointer-aligned and large enough for the fixed header plus the complete
-    // UTF-16 name. All fields are initialized before NtSetInformationFile reads the buffer.
+    // UTF-16 name. All fields are initialized before NtSetInformationFile reads the buffer. The
+    // legacy no-replace class interprets the zero low byte as ReplaceIfExists=false; the extended
+    // replacement class consumes the complete flags word.
     unsafe {
-        ptr::addr_of_mut!((*information).anonymous).write(RenameFlags {
-            replace_if_exists: 0,
-        });
+        ptr::addr_of_mut!((*information).flags).write(rename_flags);
         ptr::addr_of_mut!((*information).root_directory).write(destination_parent.as_raw_handle());
         ptr::addr_of_mut!((*information).file_name_length).write(name_bytes as u32);
         ptr::copy_nonoverlapping(
@@ -2232,7 +3692,7 @@ fn rename_open_child_no_replace(
             &mut status,
             information.cast(),
             information_length,
-            FILE_RENAME_INFORMATION_CLASS,
+            information_class,
         )
     };
     if result < 0 {
@@ -2240,6 +3700,56 @@ fn rename_open_child_no_replace(
     } else {
         Ok(())
     }
+}
+
+#[cfg(unix)]
+pub(crate) fn create_owner_only_directory_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::PermissionsExt;
+
+    let encoded_name = unix_child_name(name)?;
+    // SAFETY: the retained parent descriptor and validated child name remain live. 0700 is
+    // owner-only even before the process umask is applied, so there is no permissive creation
+    // window before the retained handle is normalized below.
+    let status = unsafe { libc::mkdirat(parent.as_raw_fd(), encoded_name.as_ptr(), 0o700) };
+    if status != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let directory = open_directory_child_nofollow(parent, name)?;
+    directory.set_permissions(fs::Permissions::from_mode(0o700))?;
+    verify_owner_only_acl(&directory)?;
+    Ok(directory)
+}
+
+#[cfg(unix)]
+pub(crate) fn create_owner_only_file_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let name = unix_child_name(name)?;
+    // SAFETY: parent and name remain live, and a successful result transfers one newly owned
+    // descriptor. Mode 0600 is private before umask filtering and O_NOFOLLOW rejects links.
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: descriptor is a newly owned successful openat result.
+    let file = unsafe { fs::File::from_raw_fd(descriptor) };
+    restrict_stage_to_owner(&file)?;
+    verify_owner_only_acl(&file)?;
+    Ok(file)
 }
 
 #[cfg(windows)]
@@ -2350,6 +3860,28 @@ pub(crate) fn create_owner_only_file_child(
     )
 }
 
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn create_owner_only_directory_child(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "owner-only directory creation is unavailable on this host",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn create_owner_only_file_child(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "owner-only file creation is unavailable on this host",
+    ))
+}
+
 #[cfg(windows)]
 pub(crate) fn create_new_regular_child(
     parent: &fs::File,
@@ -2370,6 +3902,72 @@ pub(crate) fn create_new_regular_child(
         FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
         None,
     )
+}
+
+/// Returns the stable object on which a store can hold its lifetime ownership
+/// lock without rediscovering ownership through a replaceable name.
+///
+/// Unix locks the retained physical directory object itself. Windows uses a
+/// descriptor-relative child opened without delete sharing, so its directory
+/// entry cannot be renamed, unlinked, or replaced while the handle is live.
+#[cfg(unix)]
+pub(crate) fn open_directory_ownership_lock(
+    directory: &fs::File,
+    _lock_name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    directory.try_clone()
+}
+
+#[cfg(windows)]
+pub(crate) fn open_directory_ownership_lock(
+    directory: &fs::File,
+    lock_name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN_IF: u32 = 0x0000_0003;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
+    };
+
+    let security = OwnerOnlySecurityAttributes::current_user()?;
+    let file = open_relative_child_with_share_access(
+        directory,
+        lock_name,
+        GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_OPEN_IF,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        Some(security.security_descriptor()),
+    )?;
+    let attributes = windows_file_information(&file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory ownership lock resolves to a reparse point",
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "directory ownership lock is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn open_directory_ownership_lock(
+    _directory: &fs::File,
+    _lock_name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "stable directory ownership locking is unavailable on this host",
+    ))
 }
 
 #[cfg(windows)]
@@ -2505,6 +4103,17 @@ pub(crate) fn create_new_regular_child(
 }
 
 #[cfg(not(any(unix, windows)))]
+fn open_or_create_regular_child_read_write_nofollow(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "descriptor-relative lifecycle locking is unavailable on this host",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn create_new_directory_child(
     _parent: &fs::File,
     _name: &std::ffi::OsStr,
@@ -2632,6 +4241,14 @@ pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
     }
     let descriptor = LocalSecurityDescriptor(descriptor);
     verify_owner_only_security_descriptor(descriptor.0)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn verify_owner_only_acl(_file: &fs::File) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "owner-only ACL verification is unavailable on this host",
+    ))
 }
 
 #[cfg(windows)]
@@ -2925,16 +4542,25 @@ pub(crate) fn distinct_non_unicode_paths_for_test() -> Option<(PathBuf, PathBuf)
 
 #[cfg(windows)]
 pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
-    open_absolute_directory_path_nofollow(path)
-        .and_then(|directory| relative_child_object_attributes(&directory))
-        .map(|attributes| attributes == 0)
+    let directory = open_absolute_directory_path_nofollow(path)?;
+    filesystem_case_sensitive_for_directory(&directory)
+}
+
+#[cfg(windows)]
+fn filesystem_case_sensitive_for_directory(directory: &fs::File) -> io::Result<bool> {
+    relative_child_object_attributes(directory).map(|attributes| attributes == 0)
 }
 
 #[cfg(target_vendor = "apple")]
 pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
+    let directory = open_absolute_directory_path_nofollow(path)?;
+    filesystem_case_sensitive_for_directory(&directory)
+}
+
+#[cfg(target_vendor = "apple")]
+fn filesystem_case_sensitive_for_directory(directory: &fs::File) -> io::Result<bool> {
     use std::os::fd::AsRawFd;
 
-    let directory = open_absolute_directory_path_nofollow(path)?;
     // SAFETY: directory owns a valid descriptor and fpathconf only queries it.
     let result = unsafe { libc::fpathconf(directory.as_raw_fd(), libc::_PC_CASE_SENSITIVE) };
     if result == -1 {
@@ -2946,10 +4572,15 @@ pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
+    let directory = open_absolute_directory_path_nofollow(path)?;
+    filesystem_case_sensitive_for_directory(&directory)
+}
+
+#[cfg(target_os = "linux")]
+fn filesystem_case_sensitive_for_directory(directory: &fs::File) -> io::Result<bool> {
     use std::mem::MaybeUninit;
     use std::os::fd::AsRawFd;
 
-    let directory = open_absolute_directory_path_nofollow(path)?;
     let mut filesystem = MaybeUninit::<libc::statfs>::uninit();
     // SAFETY: directory owns a valid descriptor and fstatfs initializes the
     // pointed structure on success.
@@ -3021,6 +4652,14 @@ fn linux_filesystem_case_sensitive_from_metadata(
 
 #[cfg(all(not(windows), not(target_vendor = "apple"), not(target_os = "linux")))]
 pub(crate) fn host_filesystem_case_sensitive(_path: &Path) -> io::Result<bool> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "filesystem case-sensitivity cannot be proven on this host",
+    ))
+}
+
+#[cfg(all(not(windows), not(target_vendor = "apple"), not(target_os = "linux")))]
+fn filesystem_case_sensitive_for_directory(_directory: &fs::File) -> io::Result<bool> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "filesystem case-sensitivity cannot be proven on this host",
@@ -3129,6 +4768,19 @@ pub(crate) fn host_directory_child_names_equal(
         (Err(error), _) | (_, Err(error)) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         (Err(error), _) | (_, Err(error)) => Err(error),
     }
+}
+
+/// Compares two path-component names using the lookup semantics of one
+/// existing host directory. This is the ambient-path counterpart of
+/// `RetainedDirectoryCapability::child_names_equivalent`.
+pub(crate) fn host_directory_component_names_equivalent(
+    parent_path: &Path,
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
+) -> io::Result<bool> {
+    let parent_path = fs::canonicalize(parent_path)?;
+    let case_sensitive = host_filesystem_case_sensitive(&parent_path)?;
+    host_directory_child_names_equal(&parent_path, left, right, case_sensitive)
 }
 
 pub(crate) fn host_directory_child_identity(
@@ -3411,6 +5063,18 @@ pub(crate) fn sync_parent_directory(_parent: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Flushes mutations made through a retained directory handle where the host
+/// supports durable directory synchronization.
+#[cfg(unix)]
+pub(crate) fn sync_directory(directory: &fs::File) -> io::Result<()> {
+    directory.sync_all()
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_directory(_directory: &fs::File) -> io::Result<()> {
+    Ok(())
+}
+
 #[cfg(not(windows))]
 pub(crate) fn prepare_file_for_removal(_path: &Path) -> io::Result<()> {
     Ok(())
@@ -3502,12 +5166,239 @@ pub(crate) fn rename_identity_bound_regular_child_no_replace(
             "regular child identity changed; replacement left untouched",
         ));
     }
+    #[cfg(test)]
+    run_before_identity_bound_no_replace_rename_hook();
     rename_regular_child_at_no_replace(
         source_parent,
         source_name,
         destination_parent,
         destination_name,
     )
+}
+
+/// Moves one exact retained directory child without replacing an occupied
+/// destination. Unix binds the source name to the retained inode before its
+/// descriptor-relative rename; Windows performs the move through a verified
+/// delete-capable directory handle.
+#[cfg(unix)]
+pub(crate) fn rename_identity_bound_directory_child_no_replace(
+    source_parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "retained directory child identity changed; destination left untouched",
+        ));
+    }
+    let named = open_directory_child_nofollow(source_parent, source_name)?;
+    if file_identity(&named)? != expected_identity {
+        return Err(io::Error::other(
+            "directory child identity changed; destination left untouched",
+        ));
+    }
+    #[cfg(test)]
+    run_before_identity_bound_no_replace_rename_hook();
+    rename_regular_child_at_no_replace(
+        source_parent,
+        source_name,
+        destination_parent,
+        destination_name,
+    )
+}
+
+#[cfg(unix)]
+fn rename_identity_bound_directory_child_no_replace_after_cleanup_hook(
+    source_parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "retained directory child identity changed; destination left untouched",
+        ));
+    }
+    let named = open_directory_child_nofollow(source_parent, source_name)?;
+    if file_identity(&named)? != expected_identity {
+        return Err(io::Error::other(
+            "directory child identity changed; destination left untouched",
+        ));
+    }
+    #[cfg(test)]
+    run_before_identity_bound_directory_cleanup_mutation_hook();
+    rename_regular_child_at_no_replace(
+        source_parent,
+        source_name,
+        destination_parent,
+        destination_name,
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn rename_identity_bound_directory_child_no_replace(
+    source_parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    let named = open_directory_child_for_rename(source_parent, source_name)?;
+    if file_identity(&named)? != expected_identity || file_identity(retained)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "directory child identity changed; destination left untouched",
+        ));
+    }
+    #[cfg(test)]
+    run_before_identity_bound_no_replace_rename_hook();
+    let named = open_directory_child_for_rename(source_parent, source_name)?;
+    if file_identity(&named)? != expected_identity {
+        return Err(io::Error::other(
+            "directory child identity changed at publication boundary; destination left untouched",
+        ));
+    }
+    rename_directory_handle_child_no_replace(&named, destination_parent, destination_name)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn rename_identity_bound_directory_child_no_replace(
+    _source_parent: &fs::File,
+    _source_name: &std::ffi::OsStr,
+    _expected_identity: FileIdentity,
+    _retained: &fs::File,
+    _destination_parent: &fs::File,
+    _destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "identity-bound directory rename is unavailable on this host",
+    ))
+}
+
+/// Cleanup has its own deterministic mutation-boundary hook. Keeping the
+/// generic no-replace hook out of this second path lets recovery tests target
+/// the later restore move while the same production checks remain in force.
+#[cfg(unix)]
+fn rename_identity_bound_regular_child_no_replace_after_cleanup_hook(
+    source_parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "retained regular child identity changed; replacement left untouched",
+        ));
+    }
+    let named = open_regular_child_nofollow(source_parent, source_name)?;
+    if file_identity(&named)? != expected_identity {
+        return Err(io::Error::other(
+            "regular child identity changed; replacement left untouched",
+        ));
+    }
+    #[cfg(test)]
+    run_before_identity_bound_cleanup_mutation_hook();
+    rename_regular_child_at_no_replace(
+        source_parent,
+        source_name,
+        destination_parent,
+        destination_name,
+    )
+}
+
+/// Atomically replaces a child in one retained directory with an
+/// identity-bound staged regular file from that same directory.
+///
+/// Both source lookup and destination resolution stay relative to the retained
+/// parent handle, so replacing the lexical route to the directory cannot
+/// redirect publication.
+#[cfg(unix)]
+pub(crate) fn replace_identity_bound_regular_child(
+    parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "retained regular child identity changed; replacement left untouched",
+        ));
+    }
+    let named = open_regular_child_nofollow(parent, source_name)?;
+    if file_identity(&named)? != expected_identity {
+        return Err(io::Error::other(
+            "regular child identity changed; replacement left untouched",
+        ));
+    }
+    let source_name = unix_child_name(source_name)?;
+    let destination_name = unix_child_name(destination_name)?;
+    // SAFETY: the retained directory descriptor and both validated,
+    // NUL-terminated child names remain live for the atomic same-directory call.
+    let status = unsafe {
+        libc::renameat(
+            parent.as_raw_fd(),
+            source_name.as_ptr(),
+            parent.as_raw_fd(),
+            destination_name.as_ptr(),
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn replace_identity_bound_regular_child(
+    parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    let named = open_any_child_for_delete(parent, source_name)?;
+    if opened_child_kind(&named)? != OpenedChildKind::RegularFile
+        || file_identity(&named)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "regular child identity changed; replacement left untouched",
+        ));
+    }
+    if opened_child_kind(retained)? != OpenedChildKind::RegularFile
+        || file_identity(retained)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "retained regular child identity changed; replacement left untouched",
+        ));
+    }
+    rename_open_child(&named, parent, destination_name, true)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn replace_identity_bound_regular_child(
+    _parent: &fs::File,
+    _source_name: &std::ffi::OsStr,
+    _expected_identity: FileIdentity,
+    _retained: &fs::File,
+    _destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "identity-bound regular-file replacement is unavailable on this host",
+    ))
 }
 
 #[cfg(windows)]
@@ -3532,6 +5423,16 @@ pub(crate) fn rename_identity_bound_regular_child_no_replace(
     {
         return Err(io::Error::other(
             "retained regular child identity changed; replacement left untouched",
+        ));
+    }
+    #[cfg(test)]
+    run_before_identity_bound_no_replace_rename_hook();
+    let named = open_any_child_for_delete(source_parent, source_name)?;
+    if opened_child_kind(&named)? != OpenedChildKind::RegularFile
+        || file_identity(&named)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "regular child identity changed at publication boundary; replacement left untouched",
         ));
     }
     rename_open_child_no_replace(&named, destination_parent, destination_name)
@@ -3636,10 +5537,11 @@ pub(crate) fn discard_created_regular_child(
 /// identity still name the object captured by the caller.
 ///
 /// The parent handle is the mutation anchor, so replacing the lexical parent
-/// route cannot redirect cleanup into another directory. The child name is
-/// rechecked immediately before the descriptor-relative unlink used under the
-/// publication lock; Windows additionally deletes through the verified child
-/// handle.
+/// route cannot redirect cleanup into another directory. Unix first moves the
+/// public name without replacement to a fresh private quarantine and observes
+/// the identity that was actually moved. A raced successor is restored and is
+/// never passed to unlink; only an observed expected quarantine is unlinked.
+/// Windows deletes through the verified child handle.
 #[cfg(unix)]
 pub(crate) fn remove_identity_bound_regular_child(
     parent: &fs::File,
@@ -3647,18 +5549,78 @@ pub(crate) fn remove_identity_bound_regular_child(
     expected_identity: FileIdentity,
     retained: &fs::File,
 ) -> io::Result<()> {
-    if file_identity(retained)? != expected_identity {
+    let quarantine_name =
+        std::ffi::OsString::from(format!(".unica-cleanup-{}", uuid::Uuid::new_v4()));
+    rename_identity_bound_regular_child_no_replace_after_cleanup_hook(
+        parent,
+        name,
+        expected_identity,
+        retained,
+        parent,
+        &quarantine_name,
+    )?;
+
+    let quarantined = open_regular_child_nofollow(parent, &quarantine_name).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cleanup quarantine could not be observed and was preserved: {error}"),
+        )
+    })?;
+    let quarantined_identity = file_identity(&quarantined).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cleanup quarantine identity could not be read and was preserved: {error}"),
+        )
+    })?;
+    if quarantined_identity != expected_identity {
+        let restoration = restore_regular_child_from_cleanup_quarantine(
+            parent,
+            &quarantine_name,
+            quarantined_identity,
+            &quarantined,
+            name,
+        );
+        return Err(match restoration {
+            Ok(()) => io::Error::other(
+                "regular child identity changed at cleanup quarantine boundary; replacement restored and retained child left untouched",
+            ),
+            Err(restoration) => io::Error::other(format!(
+                "regular child identity changed at cleanup quarantine boundary; replacement preserved in quarantine because restoration failed: {restoration}"
+            )),
+        });
+    }
+
+    unlink_child_at(parent, &quarantine_name, 0).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("verified cleanup quarantine could not be deleted and was preserved: {error}"),
+        )
+    })
+}
+
+#[cfg(unix)]
+fn restore_regular_child_from_cleanup_quarantine(
+    parent: &fs::File,
+    quarantine_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    public_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    rename_identity_bound_regular_child_no_replace(
+        parent,
+        quarantine_name,
+        expected_identity,
+        retained,
+        parent,
+        public_name,
+    )?;
+    let restored = open_regular_child_nofollow(parent, public_name)?;
+    if file_identity(&restored)? != expected_identity {
         return Err(io::Error::other(
-            "retained regular child identity changed; replacement left untouched",
+            "regular child identity changed again while restoring cleanup quarantine; observed child left untouched",
         ));
     }
-    let child = open_regular_child_nofollow(parent, name)?;
-    if file_identity(&child)? != expected_identity {
-        return Err(io::Error::other(
-            "regular child identity changed; replacement left untouched",
-        ));
-    }
-    unlink_child_at(parent, name, 0)
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -3691,6 +5653,8 @@ pub(crate) fn remove_identity_bound_regular_child(
             "regular child identity changed; replacement left untouched",
         ));
     }
+    #[cfg(test)]
+    run_before_identity_bound_cleanup_mutation_hook();
     let mut permissions = named.metadata()?.permissions();
     if permissions.readonly() {
         permissions.set_readonly(false);
@@ -3840,6 +5804,55 @@ mod tests {
     #[cfg(windows)]
     use super::strip_windows_extended_length_prefix;
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_absolute_directory_creation_builds_missing_components_from_anchors() {
+        use super::{
+            file_identity, open_directory_nofollow, open_or_create_absolute_directory_path_nofollow,
+        };
+
+        let root = unique_temp_root("secure-open-or-create");
+        fs::create_dir_all(&root).unwrap();
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let requested = physical_root.join("provider").join("state");
+
+        let opened = open_or_create_absolute_directory_path_nofollow(&requested).unwrap();
+
+        assert_eq!(
+            file_identity(&opened).unwrap(),
+            file_identity(&open_directory_nofollow(&requested).unwrap()).unwrap()
+        );
+        drop(opened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_absolute_directory_creation_rejects_link_ancestor_without_writing_through_it() {
+        use super::{create_test_directory_link, open_or_create_absolute_directory_path_nofollow};
+
+        #[cfg(windows)]
+        const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+        let root = unique_temp_root("secure-open-or-create-link");
+        fs::create_dir_all(&root).unwrap();
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let redirected = physical_root.join("redirected");
+        fs::create_dir(&redirected).unwrap();
+        let link = physical_root.join("link");
+        if let Err(error) = create_test_directory_link(&redirected, &link) {
+            #[cfg(windows)]
+            if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD) {
+                fs::remove_dir_all(root).unwrap();
+                return;
+            }
+            panic!("failed to create directory link fixture: {error}");
+        }
+
+        assert!(open_or_create_absolute_directory_path_nofollow(&link.join("state")).is_err());
+        assert!(!redirected.join("state").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(windows)]
     mod windows {
         use super::{fs, io, unique_temp_root};
@@ -3857,7 +5870,8 @@ mod tests {
             verify_windows_elevation_value, verify_windows_immutable_security_descriptor,
             verify_windows_local_fixed_device_info, verify_windows_local_fixed_volume,
             with_case_sensitivity_query_error, EffectiveTokenSource, OpenedChildKind,
-            OwnerOnlySecurityAttributes, ProcessToken, WindowsImmutableAclProfile,
+            OwnerOnlySecurityAttributes, ProcessToken, RetainedDirectoryCapability,
+            WindowsImmutableAclProfile,
         };
         use std::ffi::OsString;
         use std::mem::{offset_of, size_of};
@@ -4443,6 +6457,99 @@ mod tests {
         }
 
         #[test]
+        fn identity_bound_regular_child_atomically_replaces_in_retained_parent() {
+            use crate::infrastructure::platform::filesystem::{
+                create_new_regular_child, replace_identity_bound_regular_child,
+            };
+            use std::io::Write;
+
+            let root = unique_temp_root("identity-bound-file-replace");
+            fs::create_dir_all(&root).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+            let stage_name = std::ffi::OsStr::new("stage.bin");
+            let target_name = std::ffi::OsStr::new("record.bin");
+            fs::write(root.join(target_name), b"old").unwrap();
+            let mut stage = create_new_regular_child(&parent, stage_name).unwrap();
+            stage.write_all(b"new").unwrap();
+            stage.sync_all().unwrap();
+            let identity = file_identity(&stage).unwrap();
+
+            replace_identity_bound_regular_child(
+                &parent,
+                stage_name,
+                identity,
+                &stage,
+                target_name,
+            )
+            .unwrap();
+
+            assert_eq!(fs::read(root.join(target_name)).unwrap(), b"new");
+            drop(stage);
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_retained_atomic_replace_returns_the_named_destination_capability() {
+            let root = unique_temp_root("retained-atomic-replace-destination");
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join("record.json"), b"old").unwrap();
+            let directory = RetainedDirectoryCapability::open(&root).unwrap();
+            let previous = directory
+                .retain_regular_child(std::ffi::OsStr::new("record.json"))
+                .unwrap();
+
+            let published = directory
+                .replace_regular_child_atomically(
+                    std::ffi::OsStr::new("stage.tmp"),
+                    std::ffi::OsStr::new("record.json"),
+                    b"new",
+                )
+                .expect("native Windows replacement must flush and retain its renamed handle");
+
+            published.validate_named_identity().unwrap();
+            assert_eq!(published.read_bounded(16).unwrap(), b"new");
+            assert_eq!(
+                previous.read_bounded(16).unwrap(),
+                b"old",
+                "an already-retained preimage must remain readable after POSIX replacement"
+            );
+            drop(previous);
+            drop(published);
+            drop(directory);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn ownership_lock_child_cannot_be_replaced_or_deleted_while_locked() {
+            use crate::infrastructure::platform::filesystem::{
+                open_directory_ownership_lock, replace_file_atomically,
+            };
+            use fs2::FileExt;
+
+            let root = unique_temp_root("directory-ownership-lock-sharing");
+            fs::create_dir_all(&root).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+            let lock_name = std::ffi::OsStr::new(".owner.lock");
+            let owner = open_directory_ownership_lock(&parent, lock_name).unwrap();
+            owner.try_lock_exclusive().unwrap();
+
+            assert!(fs::rename(root.join(lock_name), root.join("displaced.lock")).is_err());
+            assert!(fs::remove_file(root.join(lock_name)).is_err());
+            let replacement = root.join("replacement.lock");
+            fs::write(&replacement, b"replacement").unwrap();
+            assert!(replace_file_atomically(&replacement, &root.join(lock_name)).is_err());
+            let contender = open_directory_ownership_lock(&parent, lock_name).unwrap();
+            assert!(contender.try_lock_exclusive().is_err());
+
+            drop(contender);
+            drop(owner);
+            drop(parent);
+            fs::remove_file(replacement).unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
         fn generic_delete_child_open_does_not_require_attribute_write_access() {
             use std::os::windows::ffi::OsStrExt;
             use windows_sys::Win32::Security::{
@@ -4863,6 +6970,146 @@ mod tests {
         drop(retained);
         drop(parent);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn old_owner_cleanup_never_unlinks_successor_published_after_identity_check() {
+        use crate::infrastructure::platform::filesystem::{
+            create_new_regular_child, file_identity, open_directory_nofollow,
+            remove_identity_bound_regular_child, set_before_identity_bound_cleanup_mutation_hook,
+        };
+        use std::ffi::OsStr;
+        use std::io::Write;
+
+        let root = unique_temp_root("identity-bound-file-cleanup-successor-race");
+        fs::create_dir_all(&root).unwrap();
+        let parent = open_directory_nofollow(&root).unwrap();
+        let name = OsStr::new("record.json");
+        let route = root.join(name);
+        let displaced = root.join("old-owner.json");
+        let mut retained = create_new_regular_child(&parent, name).unwrap();
+        retained.write_all(b"old owner").unwrap();
+        let expected = file_identity(&retained).unwrap();
+
+        let route_for_hook = route.clone();
+        let displaced_for_hook = displaced.clone();
+        set_before_identity_bound_cleanup_mutation_hook(move || {
+            fs::rename(&route_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&route_for_hook, b"successor").unwrap();
+        });
+
+        let error =
+            remove_identity_bound_regular_child(&parent, name, expected, &retained).unwrap_err();
+
+        assert!(error.to_string().contains("identity changed"), "{error}");
+        assert_eq!(fs::read(&route).unwrap(), b"successor");
+        assert_eq!(fs::read(&displaced).unwrap(), b"old owner");
+
+        drop(retained);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_bound_replace_stays_with_retained_parent_after_symlink_swap() {
+        use crate::infrastructure::platform::filesystem::{
+            create_new_regular_child, file_identity, open_directory_nofollow,
+            replace_identity_bound_regular_child,
+        };
+        use std::ffi::OsStr;
+        use std::io::Write;
+        use std::os::unix::fs::symlink;
+
+        let parent_path = unique_temp_root("identity-bound-replace-parent-swap");
+        let root_path = parent_path.join("root");
+        let retained_path = parent_path.join("retained");
+        let attacker_path = parent_path.join("attacker");
+        fs::create_dir_all(&root_path).unwrap();
+        fs::create_dir(&attacker_path).unwrap();
+        fs::write(root_path.join("record.json"), b"old").unwrap();
+        fs::write(attacker_path.join("record.json"), b"attacker").unwrap();
+        let root = open_directory_nofollow(&root_path).unwrap();
+        let stage_name = OsStr::new("stage.tmp");
+        let mut stage = create_new_regular_child(&root, stage_name).unwrap();
+        stage.write_all(b"new").unwrap();
+        stage.sync_all().unwrap();
+        let identity = file_identity(&stage).unwrap();
+        fs::rename(&root_path, &retained_path).unwrap();
+        symlink(&attacker_path, &root_path).unwrap();
+
+        replace_identity_bound_regular_child(
+            &root,
+            stage_name,
+            identity,
+            &stage,
+            OsStr::new("record.json"),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(retained_path.join("record.json")).unwrap(), b"new");
+        assert_eq!(
+            fs::read(attacker_path.join("record.json")).unwrap(),
+            b"attacker"
+        );
+        drop(stage);
+        drop(root);
+        fs::remove_file(&root_path).unwrap();
+        fs::remove_dir_all(parent_path).unwrap();
+    }
+
+    #[test]
+    fn retained_atomic_replace_flushes_renamed_handle_before_directory_sync() {
+        let source = include_str!("filesystem.rs").replace("\r\n", "\n");
+        let start = source
+            .find("pub(crate) fn replace_regular_child_atomically(")
+            .expect("retained atomic publisher exists");
+        let end = source[start..]
+            .find("pub(crate) fn read_relative_regular_bounded(")
+            .map(|offset| start + offset)
+            .expect("publisher has a bounded source slice");
+        let publisher = &source[start..end];
+        let rename = publisher
+            .find("replace_identity_bound_regular_child(")
+            .expect("publisher retains descriptor-relative rename");
+        let renamed_flush = publisher
+            .find("sync_renamed_regular_child(")
+            .expect("publisher flushes the renamed writable handle");
+        let directory_sync = publisher
+            .find("sync_directory(")
+            .expect("publisher retains supported directory durability");
+
+        assert!(
+            rename < renamed_flush && renamed_flush < directory_sync,
+            "rename must precede descriptor flush, which must precede directory sync"
+        );
+        assert!(
+            publisher.contains("sync_renamed_regular_child(&staged.file)"),
+            "the still-writable staged handle must flush the physical object after rename"
+        );
+
+        let windows_start = source
+            .find("#[cfg(windows)]\npub(crate) fn replace_identity_bound_regular_child(")
+            .expect("Windows descriptor-relative replacement exists");
+        let windows_end = source[windows_start..]
+            .find("#[cfg(not(any(unix, windows)))]")
+            .map(|offset| windows_start + offset)
+            .expect("Windows replacement has a bounded source slice");
+        let windows_replace = &source[windows_start..windows_end];
+        assert!(windows_replace.contains("rename_open_child("));
+        assert!(!windows_replace.contains("MoveFileExW"));
+
+        let rename_start = source
+            .find("#[cfg(windows)]\nfn rename_open_child(")
+            .expect("Windows handle-bound rename exists");
+        let rename_end = source[rename_start..]
+            .find("#[cfg(unix)]\npub(crate) fn create_owner_only_directory_child(")
+            .map(|offset| rename_start + offset)
+            .expect("Windows handle-bound rename has a bounded source slice");
+        let windows_rename = &source[rename_start..rename_end];
+        assert!(windows_rename.contains("FILE_RENAME_INFORMATION_EX_CLASS"));
+        assert!(windows_rename.contains("FILE_RENAME_POSIX_SEMANTICS"));
     }
 
     #[cfg(windows)]

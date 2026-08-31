@@ -3,6 +3,35 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum EagerCacheKey {
+    Workspace,
+    Metadata,
+    Rights,
+    Subsystem,
+}
+
+impl EagerCacheKey {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace_graph",
+            Self::Metadata => "metadata_graph",
+            Self::Rights => "rights_graph",
+            Self::Subsystem => "subsystem_graph",
+        }
+    }
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "workspace_graph" => Some(Self::Workspace),
+            "metadata_graph" => Some(Self::Metadata),
+            "rights_graph" => Some(Self::Rights),
+            "subsystem_graph" => Some(Self::Subsystem),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CacheReport {
     pub mode: String,

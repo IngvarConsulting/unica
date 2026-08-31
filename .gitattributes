@@ -1,4 +1,10 @@
 *.sh text eol=lf
+*.rs text eol=lf
+
+# Source-scanned V13 fixtures and the hashed catalog must not inherit
+# Git-for-Windows CRLF conversion from the runner's global configuration.
+tests/fixtures/v013/modules/*.bsl text eol=lf
+crates/unica-coder/src/infrastructure/platform-event-catalog-8.3.27.2074.json text eol=lf
 
 # BSP parity fixtures preserve harvested bytes, including BOM and CRLF.
 tests/fixtures/unica_mcp_script_parity/bsp/** -text -whitespace

@@ -309,7 +309,7 @@ class RecordShapeTests(unittest.TestCase):
 
         self.assertTrue(any("active rule cites a non-active decision" in error for error in errors), errors)
 
-    def test_rule_ownership_is_reciprocal(self) -> None:
+    def test_current_rule_owner_establishes_the_rule(self) -> None:
         rule = contract_record(self.contract_props())
 
         missing_from_decision = REGISTRY.validation_errors([self.active_decision(), rule])
@@ -328,7 +328,7 @@ class RecordShapeTests(unittest.TestCase):
                 "scope": ["wire"],
             }
         )
-        stale_establishes = REGISTRY.validation_errors(
+        historical_establishes = REGISTRY.validation_errors(
             [
                 self.active_decision(establishes=["INV.WIRE.EXAMPLE"]),
                 decision_record(
@@ -343,10 +343,7 @@ class RecordShapeTests(unittest.TestCase):
                 unrelated,
             ]
         )
-        self.assertTrue(
-            any("establishes a rule owned by" in error for error in stale_establishes),
-            stale_establishes,
-        )
+        self.assertEqual(historical_establishes, [])
 
     def test_scope_and_consumers_are_non_empty_lists(self) -> None:
         errors = REGISTRY.validation_errors(
@@ -399,8 +396,18 @@ class RecordShapeTests(unittest.TestCase):
                 "realized": "",
             }
         )
+        superseded_unbuilt = decision_record(
+            {
+                "id": "DEC.2026-08-21.EXAMPLE",
+                "status": "superseded",
+                "governs": "product",
+                "realized": None,
+                "superseded-by": "DEC.2026-08-22.SUCCESSOR",
+            }
+        )
 
         self.assertEqual(REGISTRY.validation_errors([planned]), [])
+        self.assertEqual(REGISTRY.validation_errors([superseded_unbuilt]), [])
         self.assertTrue(
             any("missing prop `realized`" in error for error in REGISTRY.validation_errors([active]))
         )
@@ -533,7 +540,7 @@ class ReferenceTests(unittest.TestCase):
                             offenders.append(f"{record.relative}: {key} cites {item}")
         self.assertEqual(offenders, [])
 
-    def test_rule_decision_and_establishes_are_reciprocal(self) -> None:
+    def test_current_rule_owner_establishes_the_rule(self) -> None:
         by_id = {record.id: record for record in REGISTRY.records()}
         offenders = []
         for record in REGISTRY.records():
@@ -544,14 +551,6 @@ class ReferenceTests(unittest.TestCase):
                 offenders.append(
                     f"{record.relative}: {record.props.get('decision')} does not establish {record.id}"
                 )
-        for decision in (record for record in REGISTRY.records() if record.kind == "decision"):
-            for rule_id in decision.props.get("establishes") or []:
-                rule = by_id.get(rule_id)
-                if rule is not None and rule.props.get("decision") != decision.id:
-                    offenders.append(
-                        f"{decision.relative}: establishes {rule_id}, owned by "
-                        f"{rule.props.get('decision')}"
-                    )
         self.assertEqual(offenders, [])
 
     def test_record_ids_are_globally_unique_and_not_reused(self) -> None:
@@ -969,6 +968,134 @@ class LayerBoundaryTests(unittest.TestCase):
             (ARCHIVE / "MANIFEST.sha256").read_text(encoding="utf-8"),
             base.stdout,
             "the accepted archive manifest is immutable",
+        )
+
+
+class RetainedApplyFoundationTests(unittest.TestCase):
+    def test_closed_transaction_slice_has_narrow_active_records(self) -> None:
+        decision = ARCH_ROOT / "decisions/2026-08-26-retained-apply-transaction-foundation-slice.md"
+        participants = ARCH_ROOT / "invariants/INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS.md"
+        rollback = ARCH_ROOT / "invariants/INV.CACHE.RETAINED-APPLY-REVISION-ROLLBACK.md"
+        order = ARCH_ROOT / "invariants/INV.CACHE.RETAINED-APPLY-DETERMINISTIC-ORDER.md"
+        write_free = ARCH_ROOT / "invariants/INV.SOURCE.RETAINED-APPLY-WRITE-FREE.md"
+
+        self.assertTrue(decision.is_file())
+        self.assertTrue(participants.is_file())
+        self.assertTrue(rollback.is_file())
+        self.assertTrue(order.is_file())
+        self.assertTrue(write_free.is_file())
+        self.assertIn("status: active", decision.read_text(encoding="utf-8"))
+        self.assertIn(
+            "retained_apply_transaction_foundation_contract_is_complete",
+            decision.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "retained_apply_closed_participant_contract_is_complete",
+            participants.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "retained_apply_failures_restore_source_cache_and_revision_machine_exactly",
+            rollback.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "retained_apply_deterministic_success_and_rollback_order_is_complete",
+            order.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "apply_admission_and_dry_run_revision_observation_are_cache_tree_write_free",
+            write_free.read_text(encoding="utf-8"),
+        )
+
+    def test_process_cache_rule_claims_only_application_dispatch(self) -> None:
+        text = (ARCH_ROOT / "invariants/INV.CACHE.ORCHESTRATOR-OWNED.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("отдельно", text)
+        self.assertNotIn("Обработчик не публикует кеш", text)
+        self.assertIn("application dispatch", text.lower())
+
+
+class RetainedApplyEffectResultTests(unittest.TestCase):
+    def test_retained_effect_result_slice_has_exact_active_records_and_witness(self) -> None:
+        decision = (
+            ARCH_ROOT
+            / "decisions/2026-08-26-retained-apply-effect-publication-slice.md"
+        )
+        invariant = (
+            ARCH_ROOT
+            / "invariants/INV.CACHE.RETAINED-APPLY-EFFECT-RESULT.md"
+        )
+
+        self.assertTrue(
+            decision.is_file(),
+            "retained apply effect publication decision is absent",
+        )
+        self.assertTrue(
+            invariant.is_file(),
+            "retained apply effect result invariant is absent",
+        )
+        decision_text = decision.read_text(encoding="utf-8")
+        invariant_text = invariant.read_text(encoding="utf-8")
+        self.assertIn("status: active", decision_text)
+        self.assertIn(
+            "retained_apply_effect_result_contract_is_complete",
+            decision_text,
+        )
+        self.assertIn(
+            "decision: DEC.2026-08-26.RETAINED-APPLY-EFFECT-PUBLICATION-SLICE",
+            invariant_text,
+        )
+        self.assertIn(
+            "retained_apply_effect_result_contract_is_complete",
+            invariant_text,
+        )
+        self.assertNotIn("CTR.", decision_text)
+        self.assertNotIn("wire", invariant_text.lower())
+
+    def test_active_witness_invokes_real_effect_foreign_actor_and_late_gates(self) -> None:
+        source = (
+            REPO_ROOT / "crates/unica-coder/src/infrastructure/workspace_actor.rs"
+        ).read_bytes()
+        parser = Parser(Language(tree_sitter_rust.language()))
+        tree = parser.parse(source)
+        stack = [tree.root_node]
+        witness = None
+        while stack:
+            node = stack.pop()
+            if node.type == "function_item":
+                name = node.child_by_field_name("name")
+                if (
+                    name is not None
+                    and source[name.start_byte : name.end_byte]
+                    == b"retained_apply_effect_result_contract_is_complete"
+                ):
+                    witness = node.child_by_field_name("body")
+                    break
+            stack.extend(node.named_children)
+        self.assertIsNotNone(witness, "active retained-effect witness is absent")
+
+        calls = set()
+        stack = [witness]
+        while stack:
+            node = stack.pop()
+            if node.type == "call_expression":
+                function = node.child_by_field_name("function")
+                if function is not None and function.type == "identifier":
+                    calls.add(source[function.start_byte : function.end_byte].decode())
+            stack.extend(node.named_children)
+
+        required = {
+            "real_effect_foreign_actor_replay_preserves_both_actor_states",
+            "real_effect_mutation_lane_cancellation_preserves_exact_state",
+            "real_effect_mutation_lane_deadline_preserves_exact_state",
+            "real_effect_mid_scan_cancellation_preserves_exact_state",
+            "real_effect_mid_scan_deadline_preserves_exact_state",
+            "real_effect_after_all_postimages_cancellation_rolls_back_exact_state",
+            "real_effect_after_all_postimages_deadline_rolls_back_exact_state",
+        }
+        self.assertFalse(
+            required - calls,
+            f"active retained-effect witness is missing real-effect calls: {sorted(required - calls)}",
         )
 
 

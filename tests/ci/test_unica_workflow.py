@@ -243,7 +243,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("cargo test", source)
         self.assertIn("search_integration_changed == 'true'", search_integration)
         self.assertIn("ci_changed == 'true'", search_integration)
-        self.assertIn("--test issue_89_workspace_service -- --ignored", search_integration)
+        self.assertIn("--test v13_search_integration -- --ignored", search_integration)
         self.assertNotIn("dtolnay/rust-toolchain", source)
         self.assertIn("runs-on: macos-14", primary)
         self.assertIn("rust_changed == 'true'", primary)

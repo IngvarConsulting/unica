@@ -335,7 +335,13 @@ fn read_source_children(
         let name = entry.file_name();
         let is_directory = file_type.is_dir();
         if is_directory {
-            if name.as_encoded_bytes() == GENERATED_DIR_NAME.as_bytes() {
+            if crate::infrastructure::platform::filesystem::host_directory_component_names_equivalent(
+                directory,
+                &name,
+                std::ffi::OsStr::new(GENERATED_DIR_NAME),
+            )
+            .map_err(|_| ())?
+            {
                 continue;
             }
         } else if !is_source_file_name(&name) {
