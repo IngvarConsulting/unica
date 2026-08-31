@@ -29,18 +29,17 @@ BSP_REPO = "https://github.com/1c-syntax/ssl_3_2"
 BSP_REF = "3.2.1.446"
 SOURCE_DIR = "src/cf"
 EXPECTED_PUBLIC_TOOLS = {
-    "unica.project.status",
-    "unica.project.map",
-    "unica.cf.info",
-    "unica.cf.validate",
-    "unica.code.diagnostics",
-    "unica.code.search",
-    "unica.code.outline",
-    "unica.meta.info",
-    "unica.meta.add",
-    "unica.meta.edit",
-    "unica.meta.remove",
-    "unica.standards.explain",
+    "unica.view",
+    "unica.apply",
+    "unica.find",
+    "unica.search",
+    "unica.check",
+    "unica.diff",
+    "unica.run",
+    "unica.docs",
+    "unica.task.get",
+    "unica.task.result",
+    "unica.task.cancel",
 }
 INDEX_WAIT_TIMEOUT_SECONDS = 300
 INDEX_POLL_INTERVAL_SECONDS = 1
@@ -477,6 +476,14 @@ def parse_tool_payload(response: dict[str, Any]) -> tuple[dict[str, Any] | None,
     if "error" in response:
         error = response["error"]
         return None, [str(error.get("message", error))]
+    result = response.get("result")
+    if isinstance(result, dict) and "structuredContent" in result:
+        payload = result.get("structuredContent")
+        if not isinstance(payload, dict):
+            return None, ["tool structuredContent is not a JSON object"]
+        if result.get("content") not in (None, []):
+            return None, ["canonical v0.13 tool response duplicates structuredContent"]
+        return payload, []
     try:
         text = response["result"]["content"][0]["text"]
     except (KeyError, IndexError, TypeError):
@@ -575,8 +582,11 @@ def run_tools_list_scenario(run_unica: Path, bsp_root: Path, cache_dir: Path, ti
             errors.append(f"expected serverInfo.name=unica, got {server_name!r}")
         tools = {tool.get("name", "") for tool in responses[1].get("result", {}).get("tools", [])}
         missing = sorted(EXPECTED_PUBLIC_TOOLS - tools)
+        unexpected = sorted(tools - EXPECTED_PUBLIC_TOOLS)
         if missing:
             errors.append(f"missing expected public tools: {', '.join(missing)}")
+        if unexpected:
+            errors.append(f"unexpected public tools: {', '.join(unexpected)}")
     metrics = {
         "toolsCount": len(tools),
         "outputBytes": response_output_size(stdout, stderr, None),
@@ -685,6 +695,146 @@ def run_tool_scenario(
         artifacts=[str(item) for item in payload.get("artifacts", [])] if payload else [],
     )
     return result, payload
+
+
+def pending_v13_task(payload: dict[str, Any] | None) -> tuple[str, int] | None:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    task = data.get("task") if isinstance(data, dict) else None
+    if not isinstance(task, dict) or task.get("status") not in {"submitted", "working"}:
+        return None
+    task_id = task.get("taskId")
+    poll_interval_ms = task.get("pollIntervalMs", 250)
+    if not isinstance(task_id, str) or not task_id:
+        return None
+    if not isinstance(poll_interval_ms, int) or isinstance(poll_interval_ms, bool):
+        poll_interval_ms = 250
+    return task_id, max(1, min(poll_interval_ms, 1_000))
+
+
+def run_v13_tool_scenario(
+    run_unica: Path,
+    *,
+    bsp_root: Path,
+    cache_dir: Path,
+    scenario_id: str,
+    title: str,
+    tool: str,
+    arguments: dict[str, Any],
+    timeout_seconds: float,
+    blocking: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    deadline = time.monotonic() + timeout_seconds
+    payload: dict[str, Any] | None = None
+    errors: list[str] = []
+    total_duration_ms = 0
+    total_output_bytes = 0
+    task_polls = 0
+    next_tool = tool
+    next_arguments = dict(arguments)
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            errors.append(f"{tool} did not reach a terminal result within {timeout_seconds:g}s")
+            break
+        responses, duration_ms, stdout, stderr, returncode = call_mcp(
+            run_unica,
+            [tool_call_message(task_polls + 1, next_tool, next_arguments)],
+            cwd=bsp_root,
+            cache_dir=cache_dir,
+            timeout_seconds=remaining,
+        )
+        total_duration_ms += duration_ms
+        if returncode != 0:
+            errors.append(f"unica exited with {returncode}: {stderr.strip()}")
+        if len(responses) != 1:
+            errors.append(f"expected 1 JSON-RPC response, got {len(responses)}")
+            payload = None
+        elif not errors:
+            payload, payload_errors = parse_tool_payload(responses[0])
+            errors.extend(payload_errors)
+        total_output_bytes += response_output_size(stdout, stderr, payload)
+        if errors:
+            break
+        pending = pending_v13_task(payload)
+        if pending is None:
+            break
+        task_id, poll_interval_ms = pending
+        task_polls += 1
+        next_tool = "unica.task.result"
+        next_arguments = {"taskId": task_id, "waitMs": poll_interval_ms}
+
+    if payload is not None and payload.get("ok") is not True:
+        code = payload.get("data", {}).get("code")
+        summary = str(payload.get("summary", f"{tool} reported ok=false"))
+        errors.append(f"{code}: {summary}" if code else summary)
+
+    metrics: dict[str, Any] = {
+        "outputBytes": total_output_bytes,
+        "taskPolls": task_polls,
+        "warningsCount": len(payload.get("warnings", [])) if payload else 0,
+        "errorsCount": len(errors),
+    }
+    result = scenario_result(
+        scenario_id=scenario_id,
+        title=title,
+        tool=tool,
+        arguments=arguments,
+        status="failed" if errors else "passed",
+        duration_ms=total_duration_ms,
+        blocking=blocking,
+        metrics=metrics,
+        errors=errors,
+    )
+    return result, payload
+
+
+def fail_v13_scenario(scenario: dict[str, Any], message: str) -> None:
+    scenario["status"] = "failed"
+    scenario["errors"].append(message)
+
+
+def validate_v13_scenario(
+    scenario: dict[str, Any], payload: dict[str, Any] | None
+) -> None:
+    if payload is None or scenario["status"] == "failed":
+        return
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        fail_v13_scenario(scenario, "canonical v0.13 result does not contain object data")
+        return
+    scenario_id = scenario["id"]
+    if scenario_id == "workspace-check":
+        sources = data.get("sources")
+        if data.get("status") != "admitted" or not isinstance(sources, list) or "main" not in sources:
+            fail_v13_scenario(scenario, "check did not admit the BSP main source set")
+    elif scenario_id == "configuration-view":
+        if data.get("kind") != "Configuration" or not isinstance(data.get("branches"), list):
+            fail_v13_scenario(scenario, "view did not return the BSP Configuration projection")
+    elif scenario_id == "logical-find":
+        candidates = data.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            fail_v13_scenario(scenario, "find did not return a BSP logical address")
+        elif any(
+            not isinstance(candidate, dict)
+            or not str(candidate.get("at", "")).startswith("main:")
+            for candidate in candidates
+        ):
+            fail_v13_scenario(scenario, "find returned a non-logical BSP candidate")
+    elif scenario_id == "literal-search":
+        matches = data.get("matches")
+        if data.get("mode") != "literal" or not isinstance(matches, list) or not matches:
+            fail_v13_scenario(scenario, "search did not return a literal BSP match")
+        elif any(
+            not isinstance(match, dict)
+            or match.get("scope") != "main:Configuration"
+            or any(key in match for key in ("path", "root", "cwd", "sourceDir"))
+            for match in matches
+        ):
+            fail_v13_scenario(scenario, "search escaped the BSP logical scope")
+    elif scenario_id == "identity-diff":
+        if data.get("equal") is not True or data.get("changes") != []:
+            fail_v13_scenario(scenario, "diff did not prove the BSP projection equal to itself")
 
 
 def validate_project_map(scenario: dict[str, Any], payload: dict[str, Any] | None) -> None:
@@ -1181,10 +1331,45 @@ def build_assessment_report(
     diagnostic_codes: list[str] = []
 
     scenarios.append(run_tools_list_scenario(run_unica, bsp_root, cache_dir, timeout_seconds))
-
-    project_map_payload: dict[str, Any] | None = None
-    for scenario_id, title, tool, arguments, blocking, require_payload_ok in project_probe_scenarios():
-        scenario, payload = run_tool_scenario(
+    v13_scenarios = [
+        (
+            "workspace-check",
+            "Admit the BSP workspace",
+            "unica.check",
+            {},
+            True,
+        ),
+        (
+            "configuration-view",
+            "Read the BSP Configuration projection",
+            "unica.view",
+            {"at": "main:Configuration"},
+            True,
+        ),
+        (
+            "logical-find",
+            "Resolve a BSP common module by logical identity",
+            "unica.find",
+            {"query": "ОбщегоНазначения", "kind": "CommonModule", "limit": 10},
+            False,
+        ),
+        (
+            "literal-search",
+            "Search BSP BSL inside a logical scope",
+            "unica.search",
+            {"query": "Процедура", "scope": "main:Configuration", "limit": 20},
+            True,
+        ),
+        (
+            "identity-diff",
+            "Compare the BSP Configuration projection with itself",
+            "unica.diff",
+            {"left": "main:Configuration", "right": "main:Configuration"},
+            True,
+        ),
+    ]
+    for scenario_id, title, tool, arguments, blocking in v13_scenarios:
+        scenario, payload = run_v13_tool_scenario(
             run_unica,
             bsp_root=bsp_root,
             cache_dir=cache_dir,
@@ -1194,91 +1379,8 @@ def build_assessment_report(
             arguments=arguments,
             timeout_seconds=timeout_seconds,
             blocking=blocking,
-            require_payload_ok=require_payload_ok,
         )
-        if scenario_id == "project-map":
-            validate_project_map(scenario, payload)
-            project_map_payload = payload
-        scenarios.append(scenario)
-        diagnostic_codes.extend(extract_diagnostic_codes(payload))
-
-    try:
-        base_scenarios = base_tool_scenarios(bsp_root, project_map_payload or {})
-    except ValueError as error:
-        scenarios.append(
-            scenario_result(
-                scenario_id="logical-source-set-resolution",
-                title="Resolve BSP logical source set",
-                tool="unica.project.map",
-                arguments={"path": SOURCE_DIR},
-                status="failed",
-                duration_ms=0,
-                blocking=True,
-                errors=[str(error)],
-            )
-        )
-        base_scenarios = []
-
-    for scenario_id, title, tool, arguments, blocking, require_payload_ok in base_scenarios:
-        def run_attempt(attempt_timeout_seconds: float) -> tuple[dict[str, Any], dict[str, Any] | None]:
-            return run_tool_scenario(
-                run_unica,
-                bsp_root=bsp_root,
-                cache_dir=cache_dir,
-                scenario_id=scenario_id,
-                title=title,
-                tool=tool,
-                arguments=arguments,
-                timeout_seconds=attempt_timeout_seconds,
-                blocking=blocking,
-                require_payload_ok=require_payload_ok,
-            )
-
-        # A fresh BSP has no index yet, so the search scenario is allowed to
-        # retry until one indexed role is ready. Every attempt draws from the
-        # one readiness deadline, so retrying cannot extend the assessment by
-        # another full per-attempt timeout.
-        if scenario_id == "code-search":
-            scenario, payload = wait_for_indexed_code_search(
-                run_attempt,
-                timeout_seconds=min(timeout_seconds, INDEX_WAIT_TIMEOUT_SECONDS),
-            )
-            validate_code_search(scenario, payload)
-        else:
-            scenario, payload = run_attempt(float(timeout_seconds))
-        scenarios.append(scenario)
-        diagnostic_codes.extend(extract_diagnostic_codes(payload))
-
-    for scenario_id, title, tool, arguments, require_payload_ok in optional_sample_scenarios(bsp_root):
-        scenario, payload = run_tool_scenario(
-            run_unica,
-            bsp_root=bsp_root,
-            cache_dir=cache_dir,
-            scenario_id=scenario_id,
-            title=title,
-            tool=tool,
-            arguments=arguments,
-            timeout_seconds=timeout_seconds,
-            blocking=False,
-            require_payload_ok=require_payload_ok,
-        )
-        scenarios.append(scenario)
-        diagnostic_codes.extend(extract_diagnostic_codes(payload))
-
-    diagnostic_codes = sorted(set(diagnostic_codes))[:20]
-    if diagnostic_codes:
-        scenario, _payload = run_tool_scenario(
-            run_unica,
-            bsp_root=bsp_root,
-            cache_dir=cache_dir,
-            scenario_id="standards-explain-diagnostics",
-            title="Explain top diagnostic codes through standards adapter",
-            tool="unica.standards.explain",
-            arguments={"codes": diagnostic_codes[:10]},
-            timeout_seconds=timeout_seconds,
-            blocking=False,
-            require_payload_ok=True,
-        )
+        validate_v13_scenario(scenario, payload)
         scenarios.append(scenario)
 
     description = read_json(bsp_root / "description.json")
