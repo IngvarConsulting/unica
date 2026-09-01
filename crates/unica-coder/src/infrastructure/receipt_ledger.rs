@@ -1301,6 +1301,21 @@ impl ReceiptLedgerStore {
                     )?;
                     expires_at_epoch_ms
                 }
+                ReceiptState::Reserved(receipt) if receipt.cancel_requested() => {
+                    return Ok(CancelResolution::ExistingWinner(Box::new(
+                        ReceiptState::Reserved(receipt),
+                    )));
+                }
+                ReceiptState::Reserved(_) => {
+                    let cancelled = self.commit_reserved_cancel_under_writer_lock(
+                        &mut catalog,
+                        persisted,
+                        deadline,
+                    )?;
+                    return Ok(CancelResolution::ExistingWinner(Box::new(
+                        ReceiptState::Reserved(cancelled),
+                    )));
+                }
                 winner => return Ok(CancelResolution::ExistingWinner(Box::new(winner))),
             }
         } else {
@@ -1404,6 +1419,69 @@ impl ReceiptLedgerStore {
                 })
             }
         }
+    }
+
+    fn commit_reserved_cancel_under_writer_lock(
+        &self,
+        catalog: &mut ReceiptCatalog,
+        persisted: CatalogEntry,
+        deadline: Instant,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        let key_digest = persisted.record.key_digest.clone();
+        let expected_version = persisted.record.record_version;
+        let next_record_version =
+            expected_version
+                .checked_next()
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "receipt record version exhausted u64",
+                ))?;
+        let generation = latch_catalog_result(catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = generation
+            .checked_add(1)
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt generation exhausted u64",
+            ))?;
+        let record =
+            build_reserved_cancel_record(&persisted, mutation_sequence, next_record_version)?;
+        let (record, encoded) =
+            serialize_reserved_record(record, MAX_TASK_RECORD_ENVELOPE_BYTES as u64)?;
+        let replacement = CatalogEntry {
+            record: record.clone(),
+            encoded_bytes: u64::try_from(encoded.len())
+                .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
+        };
+        validate_catalog_replace(catalog, &persisted, &replacement)?;
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_replace(catalog, replacement);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        match self.read_active_record_bytes(&key_digest) {
+            Ok(Some(committed)) if committed == encoded => {}
+            Ok(Some(_)) | Ok(None) | Err(_) => {
+                catalog.unavailable = true;
+                return Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                });
+            }
+        }
+        let committed =
+            catalog
+                .records
+                .get(&key_digest)
+                .ok_or(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest.clone(),
+                })?;
+        committed.reservation()
     }
 
     pub(crate) fn expire_cancel_reserved(
@@ -2449,6 +2527,9 @@ impl ReceiptLedgerStore {
             });
         }
         let reserved = persisted.reservation()?;
+        if reserved.cancel_requested() {
+            return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
+        }
         let next_phase = match (transition, reserved.phase()) {
             (ReservedPhaseTransition::BindActor(identity), ReservedPhase::Unbound) => {
                 ReservedPhase::ActorBound {
@@ -4954,6 +5035,45 @@ fn build_reserved_phase_record(
             original_cutoff: *reserved.original_cutoff(),
             bound_workspace_identity,
             cancel_requested: reserved.cancel_requested(),
+        },
+    };
+    Ok(StoredActiveReceiptV1 {
+        schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+        mutation_sequence,
+        record_version,
+        key: expected.record.key.clone(),
+        key_digest: expected.record.key_digest.clone(),
+        lifecycle,
+    })
+}
+
+fn build_reserved_cancel_record(
+    expected: &CatalogEntry,
+    mutation_sequence: u64,
+    record_version: ReceiptVersion,
+) -> Result<StoredActiveReceiptV1, ReceiptLedgerError> {
+    let reserved = expected.reservation()?;
+    let lifecycle = match reserved.phase() {
+        ReservedPhase::Unbound => StoredActiveLifecycleV1::ReservedUnbound {
+            reserved_at_epoch_ms: reserved.reserved_at_epoch_ms(),
+            original_cutoff: *reserved.original_cutoff(),
+            cancel_requested: true,
+        },
+        ReservedPhase::ActorBound {
+            bound_workspace_identity,
+        } => StoredActiveLifecycleV1::ReservedActorBound {
+            reserved_at_epoch_ms: reserved.reserved_at_epoch_ms(),
+            original_cutoff: *reserved.original_cutoff(),
+            bound_workspace_identity: bound_workspace_identity.clone(),
+            cancel_requested: true,
+        },
+        ReservedPhase::Begun {
+            bound_workspace_identity,
+        } => StoredActiveLifecycleV1::ReservedBegun {
+            reserved_at_epoch_ms: reserved.reserved_at_epoch_ms(),
+            original_cutoff: *reserved.original_cutoff(),
+            bound_workspace_identity: bound_workspace_identity.clone(),
+            cancel_requested: true,
         },
     };
     Ok(StoredActiveReceiptV1 {
@@ -7691,6 +7811,64 @@ mod tests {
             ReceiptState::TaskHandoffActorBound(handoff)
         );
         assert_eq!(reopened.generation().expect("reopened generation"), 4);
+    }
+
+    #[test]
+    fn actor_bound_cancel_is_durable_and_prevents_begun_transition() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let cutoff =
+            OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid original response cutoff");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let reserved = store
+            .reserve(key.clone(), cutoff, reserve_deadline())
+            .expect("reserve exact receipt")
+            .into_reservation()
+            .expect("receipt remains reserved");
+        let actor_bound = store
+            .bind_reserved_actor(
+                &key,
+                reserved.record_version(),
+                SafeIdentityHash::from_sha256([0x77; 32]),
+                reserve_deadline(),
+            )
+            .expect("bind exact actor");
+        assert_eq!(actor_bound.record_version().get(), 2);
+
+        let CancelResolution::ExistingWinner(cancelled) = store
+            .request_cancel_or_reserve(key.clone(), 1_001, reserve_deadline())
+            .expect("commit actor-bound cancellation")
+        else {
+            panic!("existing actor-bound receipt must remain the cancellation owner");
+        };
+        let ReceiptState::Reserved(cancelled) = *cancelled else {
+            panic!("actor-bound cancellation changed receipt family");
+        };
+        assert!(cancelled.cancel_requested());
+        assert_eq!(cancelled.record_version().get(), 3);
+        assert_eq!(cancelled.mutation_sequence(), 3);
+        assert!(matches!(
+            store.mark_reserved_begun(&key, cancelled.record_version(), reserve_deadline()),
+            Err(ReceiptLedgerError::ReceiptRowPresentUnsupported)
+        ));
+
+        let reopened = match ReceiptLedgerStore::open(&receipts) {
+            Ok(_) => panic!("the first writer still owns the ledger"),
+            Err(error) => error,
+        };
+        assert_eq!(reopened, ReceiptLedgerError::AlreadyOwned);
+        drop(store);
+        let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen receipt ledger");
+        let ReceiptState::Reserved(recovered) = reopened
+            .recover_exact(&key, reserve_deadline())
+            .expect("recover cancelled actor-bound receipt")
+        else {
+            panic!("reopened cancellation changed receipt family");
+        };
+        assert_eq!(recovered, cancelled);
     }
 
     #[test]
