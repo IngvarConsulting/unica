@@ -284,8 +284,9 @@ impl V5DaemonProcessOwner {
             core_identity,
             owner_lease,
         };
-        let client_hello_frame =
+        let mut client_hello_frame =
             serde_json::to_vec(&hello).map_err(|_| "serialize protocol-v5 handshake request")?;
+        client_hello_frame.push(b'\n');
         owner.write_raw_before(&client_hello_frame, true, deadline, "handshake request")?;
         let server_response_frame = owner.read_before(deadline, "handshake response")?;
         match serde_json::from_slice::<V5HandshakeServerResponse>(&server_response_frame) {

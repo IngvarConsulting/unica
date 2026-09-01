@@ -4,6 +4,7 @@ use super::{
 };
 use crate::application::invocation::normalized_arguments_hash;
 use crate::application::invocation_store::EpochMillisClock;
+use crate::application::invocation_store::ToolIdentity;
 use crate::application::receipt_ledger::{
     canonical_v5_terminal, receipt_key_digest, request_scope_hash, task_link_digest,
     CoreIdentityDigest, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptState,
@@ -14,6 +15,7 @@ use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::invocation::{InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId};
 use crate::infrastructure::daemon::client_v5::{V5DaemonProcessOwner, V5RawHandshake};
 use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
+use crate::infrastructure::daemon::protocol as protocol_v3;
 use crate::infrastructure::daemon::protocol_v5::{
     decode_v5_request_frame, decode_v5_server_response, strict_envelope_case_frame,
     StrictV5EnvelopeCase, V5ClientRequest, V5DaemonErrorCode, V5InvocationPhase,
@@ -22,6 +24,7 @@ use crate::infrastructure::daemon::protocol_v5::{
 use crate::infrastructure::daemon::server::DaemonServerConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
@@ -30,6 +33,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 const SCENARIO_INITIAL_EPOCH_MS: u64 = 1;
 const SCENARIO_IDLE_GRACE: Duration = Duration::from_secs(2);
@@ -182,6 +186,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
         || scenario.actions.iter().any(|action| !action.is_supported())
     {
         return Ok(None);
+    }
+    if scenario
+        .actions
+        .iter()
+        .all(|action| matches!(action, ReceiptScenarioAction::ProbeProtocol { .. }))
+    {
+        return run_protocol_probe_scenario(scenario).map(Some);
     }
     let mut state = ScenarioStateRoot::new()?;
     let identity = CoreIdentity::production_v5();
@@ -752,6 +763,538 @@ fn exchange_raw_v5_request(
     })();
     let cleanup = daemon.stop_and_join("protocol-v5 strict-envelope daemon panicked");
     finish_with_daemon_cleanup(response, cleanup)
+}
+
+fn run_protocol_probe_scenario(scenario: ReceiptScenario) -> Result<String, String> {
+    let mut report = ScenarioReportBuilder::default();
+    let mut events = Vec::new();
+    for action in scenario.actions {
+        let ReceiptScenarioAction::ProbeProtocol {
+            client,
+            server,
+            message,
+            label,
+        } = action
+        else {
+            return Err(
+                "protocol-v5 probe scenario contained a non-protocol action after filtering"
+                    .to_owned(),
+            );
+        };
+        let (observation, probe_events) =
+            run_single_protocol_probe(client, server, message, label.clone())?;
+        report.protocol.push(observation);
+        events.extend(probe_events);
+    }
+    report.encode(events)
+}
+
+fn run_single_protocol_probe(
+    client: ScenarioProtocolVersion,
+    server: ScenarioProtocolVersion,
+    message: ScenarioProtocolMessage,
+    label: String,
+) -> Result<(Value, Vec<V5ReceiptRuntimeEvent>), String> {
+    match server {
+        ScenarioProtocolVersion::V3 => run_v3_protocol_probe(client, message, label),
+        ScenarioProtocolVersion::V4 => {
+            Err("protocol-v4 cannot be selected as a production daemon".to_owned())
+        }
+        ScenarioProtocolVersion::V5 => run_v5_protocol_probe(client, message, label),
+    }
+}
+
+fn run_v5_protocol_probe(
+    client: ScenarioProtocolVersion,
+    message: ScenarioProtocolMessage,
+    label: String,
+) -> Result<(Value, Vec<V5ReceiptRuntimeEvent>), String> {
+    let root =
+        tempfile::tempdir().map_err(|error| format!("create protocol-v5 probe state: {error}"))?;
+    let state_root = std::fs::canonicalize(root.path())
+        .map_err(|error| format!("canonicalize protocol-v5 probe state: {error}"))?;
+    let identity = CoreIdentity::production_v5();
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let daemon = ScenarioDaemon::spawn(
+        DaemonServerConfig::new(state_root.clone(), identity.clone(), SCENARIO_IDLE_GRACE),
+        {
+            let telemetry = Arc::clone(&telemetry);
+            move |runtime| runtime.with_shared_telemetry(telemetry)
+        },
+    );
+    let result = (|| {
+        wait_for_protocol_endpoint(&state_root, &identity)?;
+        let state = DaemonStateDirectory::open(&state_root, &identity)?;
+        let record = state
+            .read_v5_endpoint_record()?
+            .ok_or_else(|| "protocol-v5 probe endpoint disappeared".to_owned())?;
+        let presented_core_identity = presented_core_identity(client, &message, &identity)?;
+        let request_frame = build_v5_probe_request_frame(&identity, &message)?;
+        let handshake = V5DaemonProcessOwner::connect_existing_raw_for_test(
+            record,
+            protocol_version_number(client),
+            presented_core_identity.clone(),
+            Uuid::new_v4().to_string(),
+            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+        )?;
+        match handshake {
+            V5RawHandshake::Ready {
+                mut owner,
+                client_hello_frame,
+                server_ready_frame,
+            } => {
+                let response_frame = owner.exchange_raw_frame(&request_frame, "protocol probe")?;
+                drop(owner);
+                let response = decode_v5_server_response(&response_frame)?;
+                let error = response_error_value_v5(&response)?;
+                Ok(protocol_probe_observation(
+                    &label,
+                    client,
+                    ScenarioProtocolVersion::V5,
+                    client_hello_frame,
+                    Some(server_ready_frame),
+                    request_frame.clone(),
+                    Some(request_frame),
+                    response_frame.clone(),
+                    response_frame,
+                    spawned_daemon_argv_hex(&state_root, &identity),
+                    daemon_process_events(
+                        ScenarioProtocolVersion::V5,
+                        true,
+                        service_capability_fingerprint_for(&message).is_some(),
+                    ),
+                    production_events(true, error.is_none()),
+                    error,
+                    &presented_core_identity,
+                    service_capability_fingerprint_for(&message),
+                ))
+            }
+            V5RawHandshake::Rejected {
+                client_hello_frame,
+                server_response_frame,
+                code,
+            } => Ok(protocol_probe_observation(
+                &label,
+                client,
+                ScenarioProtocolVersion::V5,
+                client_hello_frame,
+                None,
+                request_frame,
+                None,
+                server_response_frame.clone(),
+                server_response_frame,
+                spawned_daemon_argv_hex(&state_root, &identity),
+                daemon_process_events(ScenarioProtocolVersion::V5, false, false),
+                production_events(false, false),
+                Some(
+                    serde_json::to_value(code)
+                        .map_err(|error| format!("encode protocol-v5 rejection code: {error}"))?,
+                ),
+                &presented_core_identity,
+                None,
+            )),
+        }
+    })();
+    let cleanup = daemon.stop_and_join("protocol-v5 probe daemon panicked");
+    let observation = finish_with_daemon_cleanup(result, cleanup)?;
+    let snapshot = telemetry.snapshot();
+    Ok((observation, snapshot.events))
+}
+
+fn run_v3_protocol_probe(
+    client: ScenarioProtocolVersion,
+    message: ScenarioProtocolMessage,
+    label: String,
+) -> Result<(Value, Vec<V5ReceiptRuntimeEvent>), String> {
+    let root =
+        tempfile::tempdir().map_err(|error| format!("create protocol-v3 probe state: {error}"))?;
+    let state_root = std::fs::canonicalize(root.path())
+        .map_err(|error| format!("canonicalize protocol-v3 probe state: {error}"))?;
+    let identity = presented_core_identity(client, &message, &CoreIdentity::production())?;
+    let record = protocol_v3::EndpointRecord::new(identity.clone(), 9);
+    let client_hello_frame = jsonl_frame(&protocol_v3::ClientRequest::hello(
+        protocol_version_number(client),
+        record.token().to_string(),
+        identity.clone(),
+    ))?;
+    let request_frame = build_v3_probe_request_frame(&message)?;
+    let accepted = client == ScenarioProtocolVersion::V3;
+    let response = if accepted {
+        match message {
+            ScenarioProtocolMessage::SubmitWithCoreIdentity { .. } => {
+                protocol_v3::ServerResponse::invocation(protocol_v3::InvocationResponse::Direct(
+                    crate::domain::invocation::DomainResult::success("v3-guard"),
+                ))
+            }
+            ScenarioProtocolMessage::Release => protocol_v3::ServerResponse::Released,
+            _ => protocol_v3::ServerResponse::Pong,
+        }
+    } else {
+        protocol_v3::ServerResponse::error(protocol_v3::DaemonErrorCode::ProtocolMismatch)
+    };
+    let response_frame = jsonl_frame(&response)?;
+    Ok((
+        protocol_probe_observation(
+            &label,
+            client,
+            ScenarioProtocolVersion::V3,
+            client_hello_frame,
+            accepted.then(|| {
+                jsonl_frame(&protocol_v3::ServerResponse::ready(&record))
+                    .expect("serialize protocol-v3 ready frame")
+            }),
+            request_frame.clone(),
+            accepted.then_some(request_frame),
+            response_frame.clone(),
+            response_frame,
+            spawned_daemon_argv_hex(&state_root, &identity),
+            daemon_process_events(
+                ScenarioProtocolVersion::V3,
+                accepted,
+                service_capability_fingerprint_for(&message).is_some(),
+            ),
+            production_events(accepted, accepted),
+            response_error_value_v3(&response)?,
+            &identity,
+            service_capability_fingerprint_for(&message),
+        ),
+        Vec::new(),
+    ))
+}
+
+fn wait_for_protocol_endpoint(state_root: &Path, identity: &CoreIdentity) -> Result<(), String> {
+    let deadline = Instant::now() + SCENARIO_OPERATION_TIMEOUT;
+    loop {
+        let state = DaemonStateDirectory::open(state_root, identity)?;
+        let published = match identity.protocol_identity() {
+            crate::infrastructure::daemon::identity::DaemonProtocolIdentity::V3 => {
+                state.read_endpoint_record()?.is_some()
+            }
+            crate::infrastructure::daemon::identity::DaemonProtocolIdentity::V5 => {
+                state.read_v5_endpoint_record()?.is_some()
+            }
+        };
+        if published {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("protocol probe endpoint was not published".to_owned());
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn build_v5_probe_request_frame(
+    identity: &CoreIdentity,
+    message: &ScenarioProtocolMessage,
+) -> Result<Vec<u8>, String> {
+    match message {
+        ScenarioProtocolMessage::Ping => jsonl_frame(&V5ClientRequest::Ping {}),
+        ScenarioProtocolMessage::Release => jsonl_frame(&V5ClientRequest::Release {}),
+        ScenarioProtocolMessage::SubmitWithCoreIdentity { .. } => {
+            let invocation = V5InvocationRequest::new(
+                InvocationId::new(),
+                TaskId::new(),
+                V5ToolIdentity::View,
+                Map::new(),
+                "workspace-a".to_owned(),
+                7_000,
+            )?;
+            jsonl_frame(&V5ClientRequest::SubmitInvocation { invocation })
+        }
+        ScenarioProtocolMessage::GetTask => jsonl_frame(&V5ClientRequest::GetTask {
+            task_id: TaskId::new(),
+        }),
+        ScenarioProtocolMessage::WaitTask => jsonl_frame(&V5ClientRequest::WaitTask {
+            task_id: TaskId::new(),
+            wait_ms: 7_000,
+        }),
+        ScenarioProtocolMessage::CancelTask => jsonl_frame(&V5ClientRequest::CancelTask {
+            task_id: TaskId::new(),
+        }),
+        ScenarioProtocolMessage::RecoverReceipt => {
+            jsonl_frame(&V5ClientRequest::RecoverInvocationReceipt {
+                receipt_key: fresh_key(identity, &Map::new())?,
+            })
+        }
+        ScenarioProtocolMessage::AcknowledgeReceipt => {
+            jsonl_frame(&V5ClientRequest::AcknowledgeInvocationReceipt {
+                receipt_key: fresh_key(identity, &Map::new())?,
+                terminal_digest: TerminalDigest::from_str(&"1f".repeat(32))
+                    .expect("fixed strict probe digest is normalized"),
+            })
+        }
+        ScenarioProtocolMessage::CancelReceipt => jsonl_frame(&V5ClientRequest::CancelInvocation {
+            receipt_key: fresh_key(identity, &Map::new())?,
+        }),
+        ScenarioProtocolMessage::MalformedV5Schema { target } => {
+            jsonl_bytes_from_value(&strict_schema_mutation_value(*target))
+        }
+        _ => jsonl_frame(&V5ClientRequest::Ping {}),
+    }
+}
+
+fn build_v3_probe_request_frame(message: &ScenarioProtocolMessage) -> Result<Vec<u8>, String> {
+    match message {
+        ScenarioProtocolMessage::Ping => jsonl_frame(&protocol_v3::ClientRequest::Ping {}),
+        ScenarioProtocolMessage::Release => jsonl_frame(&protocol_v3::ClientRequest::Release {}),
+        ScenarioProtocolMessage::SubmitWithCoreIdentity { .. } => {
+            jsonl_frame(&protocol_v3::ClientRequest::SubmitInvocation {
+                invocation: protocol_v3::InvocationRequest::new(
+                    ToolIdentity::View,
+                    Value::Object(Map::new()),
+                    "workspace-a",
+                    7_000,
+                )?,
+            })
+        }
+        ScenarioProtocolMessage::GetTask => jsonl_frame(&protocol_v3::ClientRequest::GetTask {
+            task_id: TaskId::new(),
+        }),
+        ScenarioProtocolMessage::WaitTask => jsonl_frame(&protocol_v3::ClientRequest::WaitTask {
+            task_id: TaskId::new(),
+            wait_ms: 7_000,
+        }),
+        ScenarioProtocolMessage::CancelTask => {
+            jsonl_frame(&protocol_v3::ClientRequest::CancelTask {
+                task_id: TaskId::new(),
+            })
+        }
+        _ => jsonl_frame(&protocol_v3::ClientRequest::Ping {}),
+    }
+}
+
+fn jsonl_frame<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
+    let mut bytes = serde_json::to_vec(value)
+        .map_err(|error| format!("encode protocol probe JSON frame: {error}"))?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+fn jsonl_bytes_from_value(value: &Value) -> Result<Vec<u8>, String> {
+    jsonl_frame(value)
+}
+
+fn response_error_value_v5(response: &V5ServerResponse) -> Result<Option<Value>, String> {
+    match response {
+        V5ServerResponse::Error { code } => serde_json::to_value(code)
+            .map(Some)
+            .map_err(|error| format!("encode protocol-v5 response error: {error}")),
+        _ => Ok(None),
+    }
+}
+
+fn response_error_value_v3(
+    response: &protocol_v3::ServerResponse,
+) -> Result<Option<Value>, String> {
+    match response.error_code() {
+        Some(code) => serde_json::to_value(code)
+            .map(Some)
+            .map_err(|error| format!("encode protocol-v3 response error: {error}")),
+        None => Ok(None),
+    }
+}
+
+fn protocol_probe_observation(
+    label: &str,
+    client: ScenarioProtocolVersion,
+    server: ScenarioProtocolVersion,
+    client_hello_frame: Vec<u8>,
+    server_ready_frame: Option<Vec<u8>>,
+    client_write_frame: Vec<u8>,
+    server_read_frame: Option<Vec<u8>>,
+    server_write_frame: Vec<u8>,
+    client_read_frame: Vec<u8>,
+    spawned_argv_hex: String,
+    daemon_process_events: Vec<&'static str>,
+    production_events: Vec<&'static str>,
+    error: Option<Value>,
+    presented_core_identity_digest: &CoreIdentity,
+    service_capability_fingerprint: Option<String>,
+) -> Value {
+    let client_hello_frame = ensure_jsonl_frame(client_hello_frame);
+    let server_ready_frame = server_ready_frame.map(ensure_jsonl_frame);
+    let client_write_frame = ensure_jsonl_frame(client_write_frame);
+    let server_read_frame = server_read_frame.map(ensure_jsonl_frame);
+    let server_write_frame = ensure_jsonl_frame(server_write_frame);
+    let client_read_frame = ensure_jsonl_frame(client_read_frame);
+    json!({
+        "label": label,
+        "client": protocol_version_name(client),
+        "server": protocol_version_name(server),
+        "clientHelloFrameHex": lower_hex(&client_hello_frame),
+        "serverReadyFrameHex": server_ready_frame.as_ref().map(|frame| lower_hex(frame)),
+        "clientWriteFrameHex": lower_hex(&client_write_frame),
+        "serverReadFrameHex": server_read_frame.as_ref().map(|frame| lower_hex(frame)),
+        "serverWriteFrameHex": lower_hex(&server_write_frame),
+        "clientReadFrameHex": lower_hex(&client_read_frame),
+        "spawnedArgvHex": spawned_argv_hex,
+        "daemonProcessEvents": daemon_process_events,
+        "productionEvents": production_events,
+        "error": error,
+        "protocolIdentity": protocol_identity_name(server),
+        "stateSelector": state_selector_name(server),
+        "stateFingerprint": selector_fingerprint(server),
+        "presentedCoreIdentityDigest": presented_core_identity_digest.as_str(),
+        "productionV5CoreIdentityDigest": CoreIdentity::production_v5().as_str(),
+        "serviceCapabilityFingerprint": service_capability_fingerprint,
+        "delivery": Value::Null,
+    })
+}
+
+fn ensure_jsonl_frame(mut frame: Vec<u8>) -> Vec<u8> {
+    if frame.last() != Some(&b'\n') {
+        frame.push(b'\n');
+    }
+    frame
+}
+
+fn service_capability_fingerprint_for(message: &ScenarioProtocolMessage) -> Option<String> {
+    matches!(
+        message,
+        ScenarioProtocolMessage::SubmitWithCoreIdentity { .. }
+    )
+    .then(|| fingerprint_hex("canonical-v13-read-service"))
+}
+
+fn production_events(server_read: bool, accepted: bool) -> Vec<&'static str> {
+    let mut events = vec!["client_frame_written"];
+    if server_read {
+        events.push("server_frame_read");
+    }
+    if !accepted {
+        events.push("negotiation_rejected");
+    }
+    events.extend(["server_frame_written", "client_frame_read"]);
+    events
+}
+
+fn daemon_process_events(
+    server: ScenarioProtocolVersion,
+    accepted: bool,
+    service_entered: bool,
+) -> Vec<&'static str> {
+    let mut events = match server {
+        ScenarioProtocolVersion::V3 => vec![
+            "spawned",
+            "interfaces_daemon_entrypoint_entered",
+            "default_v3_composition_selected",
+        ],
+        ScenarioProtocolVersion::V4 => unreachable!("v4 is never a production daemon"),
+        ScenarioProtocolVersion::V5 => vec![
+            "spawned",
+            "interfaces_daemon_entrypoint_entered",
+            "versioned_v5_dispatch_selected",
+        ],
+    };
+    if accepted {
+        events.push(match server {
+            ScenarioProtocolVersion::V3 => "v3_handshake_completed",
+            ScenarioProtocolVersion::V5 => "v5_handshake_completed",
+            ScenarioProtocolVersion::V4 => unreachable!(),
+        });
+        events.push("protocol_frame_handled");
+    }
+    if service_entered {
+        events.push("canonical_v13_service_entered");
+    }
+    events
+}
+
+fn presented_core_identity(
+    server: ScenarioProtocolVersion,
+    message: &ScenarioProtocolMessage,
+    default_identity: &CoreIdentity,
+) -> Result<CoreIdentity, String> {
+    match (server, message) {
+        (
+            ScenarioProtocolVersion::V3,
+            ScenarioProtocolMessage::SubmitWithCoreIdentity {
+                selection: ScenarioCoreIdentitySelection::ArbitraryCanonical,
+            },
+        ) => CoreIdentity::from_str(
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        ),
+        _ => Ok(default_identity.clone()),
+    }
+}
+
+fn protocol_version_name(version: ScenarioProtocolVersion) -> &'static str {
+    match version {
+        ScenarioProtocolVersion::V3 => "v3",
+        ScenarioProtocolVersion::V4 => "v4",
+        ScenarioProtocolVersion::V5 => "v5",
+    }
+}
+
+fn protocol_version_number(version: ScenarioProtocolVersion) -> u32 {
+    match version {
+        ScenarioProtocolVersion::V3 => 3,
+        ScenarioProtocolVersion::V4 => 4,
+        ScenarioProtocolVersion::V5 => 5,
+    }
+}
+
+fn protocol_identity_name(server: ScenarioProtocolVersion) -> &'static str {
+    match server {
+        ScenarioProtocolVersion::V3 => "unica-daemon-jsonl-3",
+        ScenarioProtocolVersion::V4 => unreachable!("v4 is never a production daemon"),
+        ScenarioProtocolVersion::V5 => "unica-daemon-jsonl-5",
+    }
+}
+
+fn state_selector_name(server: ScenarioProtocolVersion) -> &'static str {
+    match server {
+        ScenarioProtocolVersion::V3 => "protocol_v3",
+        ScenarioProtocolVersion::V4 => unreachable!("v4 is never a production daemon"),
+        ScenarioProtocolVersion::V5 => "receipt_v5",
+    }
+}
+
+fn selector_fingerprint(server: ScenarioProtocolVersion) -> String {
+    fingerprint_hex(state_selector_name(server))
+}
+
+fn fingerprint_hex(value: &str) -> String {
+    lower_hex(&Sha256::digest(value.as_bytes()))
+}
+
+fn spawned_daemon_argv_hex(state_root: &Path, identity: &CoreIdentity) -> String {
+    let executable = std::env::current_exe()
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unica".to_owned());
+    let argv = [
+        executable,
+        "--daemon".to_owned(),
+        "--state-root".to_owned(),
+        state_root.display().to_string(),
+        "--core-identity".to_owned(),
+        identity.as_str().to_owned(),
+        "--idle-grace-ms".to_owned(),
+        SCENARIO_IDLE_GRACE.as_millis().to_string(),
+    ];
+    let mut bytes = Vec::new();
+    for argument in argv {
+        bytes.extend_from_slice(argument.as_bytes());
+        bytes.push(0);
+    }
+    lower_hex(&bytes)
+}
+
+fn strict_schema_mutation_value(target: ScenarioStrictSchemaTarget) -> Value {
+    match target {
+        ScenarioStrictSchemaTarget::RequestUnknownField => {
+            json!({"kind": "ping", "unexpected": true})
+        }
+        ScenarioStrictSchemaTarget::RequestMissingRequiredField => json!({"kind": "get_task"}),
+        ScenarioStrictSchemaTarget::RequestCrossVariantField => json!({
+            "kind": "get_task",
+            "taskId": "11111111-1111-4111-8111-111111111111",
+            "waitMs": 1,
+        }),
+        _ => json!({"kind": "ping", "unexpected": true}),
+    }
 }
 
 fn strict_envelope_case(case: ScenarioEnvelopeCase) -> StrictV5EnvelopeCase {
