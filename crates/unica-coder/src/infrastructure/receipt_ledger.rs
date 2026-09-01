@@ -207,6 +207,13 @@ enum StoredActiveLifecycleV1 {
         prior_acknowledged_at_epoch_ms: u64,
         prior_terminal_digest: TerminalDigest,
     },
+    ExpiredDirectDeletion {
+        observed_at_epoch_ms: u64,
+        prior_record_version: ReceiptVersion,
+        prior_mutation_sequence: u64,
+        prior_terminal_epoch_ms: u64,
+        prior_terminal_digest: TerminalDigest,
+    },
     ReservedUnbound {
         reserved_at_epoch_ms: u64,
         original_cutoff: OriginalCutoffDescriptor,
@@ -315,6 +322,7 @@ impl CatalogEntry {
             StoredActiveLifecycleV1::CancelReserved { .. }
             | StoredActiveLifecycleV1::ExpiredDeletion { .. }
             | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
+            | StoredActiveLifecycleV1::ExpiredDirectDeletion { .. }
             | StoredActiveLifecycleV1::AcknowledgementCommit { .. }
             | StoredActiveLifecycleV1::AcknowledgedTombstone { .. } => 0,
             StoredActiveLifecycleV1::ReservedUnbound { .. }
@@ -378,7 +386,8 @@ impl CatalogEntry {
                 Ok(ReceiptState::CancelReserved(receipt))
             }
             StoredActiveLifecycleV1::ExpiredDeletion { .. }
-            | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. } => Err(
+            | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
+            | StoredActiveLifecycleV1::ExpiredDirectDeletion { .. } => Err(
                 ReceiptLedgerError::Corrupt("expired deletion witness is not a live receipt state"),
             ),
             StoredActiveLifecycleV1::ReservedUnbound {
@@ -631,6 +640,7 @@ impl CatalogEntry {
             &self.record.lifecycle,
             StoredActiveLifecycleV1::ExpiredDeletion { .. }
                 | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
+                | StoredActiveLifecycleV1::ExpiredDirectDeletion { .. }
         )
     }
 
@@ -1301,6 +1311,25 @@ impl ReceiptLedgerStore {
                     )?;
                     expires_at_epoch_ms
                 }
+                ReceiptState::DirectTerminalUnacked(receipt)
+                    if receipt
+                        .terminal_epoch_ms()
+                        .checked_add(DIRECT_TERMINAL_RETENTION_MS)
+                        .is_some_and(|expires_at_epoch_ms| {
+                            cancel_reserved_at_epoch_ms >= expires_at_epoch_ms
+                        }) =>
+                {
+                    let expires_at_epoch_ms = cancel_reserved_at_epoch_ms
+                        .checked_add(CANCEL_RESERVATION_TTL_MS)
+                        .ok_or(ReceiptLedgerError::TimestampOverflow)?;
+                    self.reclaim_expired_direct_terminal_under_writer_lock(
+                        &mut catalog,
+                        &key_digest,
+                        cancel_reserved_at_epoch_ms,
+                        deadline,
+                    )?;
+                    expires_at_epoch_ms
+                }
                 ReceiptState::Reserved(receipt) if receipt.cancel_requested() => {
                     return Ok(CancelResolution::ExistingWinner(Box::new(
                         ReceiptState::Reserved(receipt),
@@ -1659,7 +1688,10 @@ impl ReceiptLedgerStore {
                 .records
                 .iter()
                 .filter(|(digest, _)| !reclaim.contains(digest))
-                .filter(|(_, entry)| entry_is_expired_cancel_reserved(entry, observed_at_epoch_ms))
+                .filter(|(_, entry)| {
+                    entry_is_expired_cancel_reserved(entry, observed_at_epoch_ms)
+                        || entry_is_expired_direct_terminal(entry, observed_at_epoch_ms)
+                })
                 .map(|(digest, _)| digest.clone())
                 .min_by(|left, right| left.as_str().cmp(right.as_str()));
             let Some(capacity_candidate) = capacity_candidate else {
@@ -1689,6 +1721,14 @@ impl ReceiptLedgerStore {
                 }
                 Some(StoredActiveLifecycleV1::AcknowledgedTombstone { .. }) => {
                     self.reclaim_expired_tombstone_under_writer_lock(
+                        catalog,
+                        &digest,
+                        observed_at_epoch_ms,
+                        deadline,
+                    )?;
+                }
+                Some(StoredActiveLifecycleV1::DirectTerminalUnacked { .. }) => {
+                    self.reclaim_expired_direct_terminal_under_writer_lock(
                         catalog,
                         &digest,
                         observed_at_epoch_ms,
@@ -1892,6 +1932,21 @@ impl ReceiptLedgerStore {
                     if original_cutoff.accepted_epoch_ms() >= receipt.expires_at_epoch_ms() =>
                 {
                     self.reclaim_expired_tombstone_under_writer_lock(
+                        &mut catalog,
+                        &key_digest,
+                        original_cutoff.accepted_epoch_ms(),
+                        deadline,
+                    )?;
+                }
+                ReceiptState::DirectTerminalUnacked(receipt)
+                    if receipt
+                        .terminal_epoch_ms()
+                        .checked_add(DIRECT_TERMINAL_RETENTION_MS)
+                        .is_some_and(|expires_at_epoch_ms| {
+                            original_cutoff.accepted_epoch_ms() >= expires_at_epoch_ms
+                        }) =>
+                {
+                    self.reclaim_expired_direct_terminal_under_writer_lock(
                         &mut catalog,
                         &key_digest,
                         original_cutoff.accepted_epoch_ms(),
@@ -3212,6 +3267,21 @@ impl ReceiptLedgerStore {
                 return Ok(tombstone);
             }
             Ok(ReceiptState::DirectTerminalUnacked(receipt)) => {
+                if receipt
+                    .terminal_epoch_ms()
+                    .checked_add(DIRECT_TERMINAL_RETENTION_MS)
+                    .is_some_and(|expires_at_epoch_ms| {
+                        acknowledged_at_epoch_ms >= expires_at_epoch_ms
+                    })
+                {
+                    self.reclaim_expired_direct_terminal_under_writer_lock(
+                        &mut catalog,
+                        &key_digest,
+                        acknowledged_at_epoch_ms,
+                        deadline,
+                    )?;
+                    return Err(ReceiptLedgerError::ReceiptNotFound);
+                }
                 if receipt.terminal().digest() != terminal_digest {
                     return self.reject_before_mutation(
                         &mut catalog,
@@ -3350,27 +3420,50 @@ impl ReceiptLedgerStore {
         let mut expired = catalog
             .records
             .iter()
-            .filter_map(|(digest, entry)| match &entry.record.lifecycle {
-                StoredActiveLifecycleV1::AcknowledgedTombstone {
-                    acknowledged_at_epoch_ms,
-                    ..
-                } if acknowledged_at_epoch_ms
-                    .checked_add(ACKNOWLEDGED_TOMBSTONE_TTL_MS)
-                    .is_some_and(|expires| observed_at_epoch_ms >= expires) =>
-                {
-                    Some(digest.clone())
-                }
-                _ => None,
+            .filter(|(_, entry)| {
+                entry_is_expired_tombstone(entry, observed_at_epoch_ms)
+                    || entry_is_expired_direct_terminal(entry, observed_at_epoch_ms)
             })
+            .map(|(digest, _)| digest.clone())
             .collect::<Vec<_>>();
         expired.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
         for digest in &expired {
-            self.reclaim_expired_tombstone_under_writer_lock(
-                catalog,
-                digest,
-                observed_at_epoch_ms,
-                deadline,
-            )?;
+            match catalog
+                .records
+                .get(digest)
+                .map(|entry| &entry.record.lifecycle)
+            {
+                Some(StoredActiveLifecycleV1::AcknowledgedTombstone { .. }) => {
+                    self.reclaim_expired_tombstone_under_writer_lock(
+                        catalog,
+                        digest,
+                        observed_at_epoch_ms,
+                        deadline,
+                    )?;
+                }
+                Some(StoredActiveLifecycleV1::DirectTerminalUnacked { .. }) => {
+                    self.reclaim_expired_direct_terminal_under_writer_lock(
+                        catalog,
+                        digest,
+                        observed_at_epoch_ms,
+                        deadline,
+                    )?;
+                }
+                Some(_) => {
+                    return latch_catalog_error(
+                        catalog,
+                        ReceiptLedgerError::Corrupt(
+                            "expired retention candidate changed lifecycle",
+                        ),
+                    )
+                }
+                None => {
+                    return latch_catalog_error(
+                        catalog,
+                        ReceiptLedgerError::Corrupt("expired retention candidate disappeared"),
+                    )
+                }
+            }
         }
         Ok(expired.len())
     }
@@ -3497,6 +3590,100 @@ impl ReceiptLedgerStore {
         Ok(())
     }
 
+    fn reclaim_expired_direct_terminal_under_writer_lock(
+        &self,
+        catalog: &mut ReceiptCatalog,
+        key_digest: &ReceiptKeyDigest,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<(), ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let expected =
+            catalog
+                .records
+                .get(key_digest)
+                .cloned()
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "expired Direct receipt disappeared while the writer lock was held",
+                ))?;
+        let persisted = self
+            .read_entry_under_writer_lock(catalog, key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "catalogued expired Direct receipt row is missing",
+            ))?;
+        if persisted != expected {
+            return latch_catalog_error(
+                catalog,
+                ReceiptLedgerError::Corrupt("catalogued expired Direct receipt changed on disk"),
+            );
+        }
+        let expires_at_epoch_ms = match persisted.state() {
+            Ok(ReceiptState::DirectTerminalUnacked(receipt)) => receipt
+                .terminal_epoch_ms()
+                .checked_add(DIRECT_TERMINAL_RETENTION_MS)
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "Direct terminal expiry exceeds u64",
+                ))?,
+            Ok(_) => {
+                return latch_catalog_error(
+                    catalog,
+                    ReceiptLedgerError::Corrupt(
+                        "expired Direct candidate changed lifecycle under writer lock",
+                    ),
+                )
+            }
+            Err(error) => return latch_catalog_error(catalog, error),
+        };
+        if observed_at_epoch_ms < expires_at_epoch_ms {
+            return latch_catalog_error(
+                catalog,
+                ReceiptLedgerError::Corrupt("selected Direct terminal is not expired"),
+            );
+        }
+
+        let generation = latch_catalog_result(catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = generation
+            .checked_add(1)
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt generation exhausted u64",
+            ))?;
+        let record = build_expired_direct_deletion_record(
+            &persisted,
+            observed_at_epoch_ms,
+            mutation_sequence,
+        )?;
+        let (record, encoded) =
+            serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES)?;
+        if let Err(error) = validate_catalog_remove(catalog, &persisted) {
+            return latch_catalog_error(catalog, error);
+        }
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_remove(catalog, &persisted);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        if let Err(error) = self.remove_expired_deletion_witness(key_digest, &encoded, deadline) {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        if check_deadline(deadline).is_err() || self.verify_named_authority().is_err() {
+            catalog.unavailable = true;
+            return Err(ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: key_digest.clone(),
+            });
+        }
+        Ok(())
+    }
+
     fn reject_before_mutation<T>(
         &self,
         catalog: &mut ReceiptCatalog,
@@ -3586,6 +3773,22 @@ impl ReceiptLedgerStore {
                         .is_some_and(|observed| observed >= receipt.expires_at_epoch_ms()) =>
                 {
                     self.reclaim_expired_tombstone_under_writer_lock(
+                        &mut catalog,
+                        &key_digest,
+                        observed_at_epoch_ms.expect("expiry guard requires an epoch"),
+                        deadline,
+                    )?;
+                    return Err(ReceiptLedgerError::ReceiptNotFound);
+                }
+                Ok(ReceiptState::DirectTerminalUnacked(receipt))
+                    if observed_at_epoch_ms.is_some_and(|observed| {
+                        receipt
+                            .terminal_epoch_ms()
+                            .checked_add(DIRECT_TERMINAL_RETENTION_MS)
+                            .is_some_and(|expires_at_epoch_ms| observed >= expires_at_epoch_ms)
+                    }) =>
+                {
+                    self.reclaim_expired_direct_terminal_under_writer_lock(
                         &mut catalog,
                         &key_digest,
                         observed_at_epoch_ms.expect("expiry guard requires an epoch"),
@@ -4722,6 +4925,7 @@ fn read_active_record_from_retained(
         StoredActiveLifecycleV1::CancelReserved { .. }
             | StoredActiveLifecycleV1::ExpiredDeletion { .. }
             | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
+            | StoredActiveLifecycleV1::ExpiredDirectDeletion { .. }
             | StoredActiveLifecycleV1::ReservedUnbound { .. }
             | StoredActiveLifecycleV1::ReservedActorBound { .. }
             | StoredActiveLifecycleV1::ReservedBegun { .. }
@@ -5173,6 +5377,47 @@ fn build_expired_tombstone_deletion_record(
     })
 }
 
+fn build_expired_direct_deletion_record(
+    expected: &CatalogEntry,
+    observed_at_epoch_ms: u64,
+    mutation_sequence: u64,
+) -> Result<StoredActiveReceiptV1, ReceiptLedgerError> {
+    let (prior_terminal_epoch_ms, prior_terminal_digest) = match &expected.record.lifecycle {
+        StoredActiveLifecycleV1::DirectTerminalUnacked {
+            terminal_epoch_ms,
+            terminal_digest,
+            ..
+        } => (*terminal_epoch_ms, terminal_digest.clone()),
+        _ => {
+            return Err(ReceiptLedgerError::Corrupt(
+                "expired Direct deletion witness requires a Direct predecessor",
+            ))
+        }
+    };
+    let record_version =
+        expected
+            .record
+            .record_version
+            .checked_next()
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt record version exhausted u64",
+            ))?;
+    Ok(StoredActiveReceiptV1 {
+        schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+        mutation_sequence,
+        record_version,
+        key: expected.record.key.clone(),
+        key_digest: expected.record.key_digest.clone(),
+        lifecycle: StoredActiveLifecycleV1::ExpiredDirectDeletion {
+            observed_at_epoch_ms,
+            prior_record_version: expected.record.record_version,
+            prior_mutation_sequence: expected.record.mutation_sequence,
+            prior_terminal_epoch_ms,
+            prior_terminal_digest,
+        },
+    })
+}
+
 fn build_acknowledgement_commit_record(
     expected: &CatalogEntry,
     terminal_digest: TerminalDigest,
@@ -5282,6 +5527,7 @@ fn validate_persisted_reserved_record_bytes(
         StoredActiveLifecycleV1::CancelReserved { .. }
         | StoredActiveLifecycleV1::ExpiredDeletion { .. }
         | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
+        | StoredActiveLifecycleV1::ExpiredDirectDeletion { .. }
         | StoredActiveLifecycleV1::AcknowledgementCommit { .. } => MAX_CANCEL_RESERVED_RECORD_BYTES,
         StoredActiveLifecycleV1::ReservedUnbound { .. }
         | StoredActiveLifecycleV1::ReservedActorBound { .. }
@@ -5489,6 +5735,38 @@ fn validate_active_record(
             if *observed_at_epoch_ms < expires_at_epoch_ms {
                 return Err(ReceiptLedgerError::Corrupt(
                     "expired tombstone deletion witness predates the absolute expiry boundary",
+                ));
+            }
+            MAX_CANCEL_RESERVED_RECORD_BYTES
+        }
+        StoredActiveLifecycleV1::ExpiredDirectDeletion {
+            observed_at_epoch_ms,
+            prior_record_version,
+            prior_mutation_sequence,
+            prior_terminal_epoch_ms,
+            ..
+        } => {
+            if *prior_record_version == ReceiptVersion::initial()
+                || prior_record_version.checked_next() != Some(record.record_version)
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired Direct deletion witness does not advance a terminal predecessor",
+                ));
+            }
+            if *prior_mutation_sequence == 0 || *prior_mutation_sequence >= record.mutation_sequence
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired Direct deletion witness does not follow its predecessor mutation",
+                ));
+            }
+            let expires_at_epoch_ms = prior_terminal_epoch_ms
+                .checked_add(DIRECT_TERMINAL_RETENTION_MS)
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "expired Direct deletion witness expiry exceeds u64",
+                ))?;
+            if *observed_at_epoch_ms < expires_at_epoch_ms {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired Direct deletion witness predates the absolute expiry boundary",
                 ));
             }
             MAX_CANCEL_RESERVED_RECORD_BYTES
@@ -5859,7 +6137,8 @@ fn catalog_entry_is_expired_identity_reclaimable(
         ))?;
     Ok(
         entry_is_expired_cancel_reserved(entry, observed_at_epoch_ms)
-            || entry_is_expired_tombstone(entry, observed_at_epoch_ms),
+            || entry_is_expired_tombstone(entry, observed_at_epoch_ms)
+            || entry_is_expired_direct_terminal(entry, observed_at_epoch_ms),
     )
 }
 
@@ -5881,6 +6160,18 @@ fn entry_is_expired_tombstone(entry: &CatalogEntry, observed_at_epoch_ms: u64) -
             ..
         } if acknowledged_at_epoch_ms
             .checked_add(ACKNOWLEDGED_TOMBSTONE_TTL_MS)
+            .is_some_and(|expires_at_epoch_ms| observed_at_epoch_ms >= expires_at_epoch_ms)
+    )
+}
+
+fn entry_is_expired_direct_terminal(entry: &CatalogEntry, observed_at_epoch_ms: u64) -> bool {
+    matches!(
+        &entry.record.lifecycle,
+        StoredActiveLifecycleV1::DirectTerminalUnacked {
+            terminal_epoch_ms,
+            ..
+        } if terminal_epoch_ms
+            .checked_add(DIRECT_TERMINAL_RETENTION_MS)
             .is_some_and(|expires_at_epoch_ms| observed_at_epoch_ms >= expires_at_epoch_ms)
     )
 }
@@ -8775,6 +9066,123 @@ mod tests {
     }
 
     #[test]
+    fn direct_terminal_expires_at_absolute_boundary_and_releases_exact_quota() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let mut store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let key_digest = receipt_key_digest(&key);
+        let reserved = store
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                reserve_deadline(),
+            )
+            .expect("reserve exact receipt")
+            .into_reservation()
+            .expect("receipt remains reserved");
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("expiry-owned direct result")),
+        })
+        .expect("canonical direct terminal");
+        let committed = store
+            .publish_direct_terminal(
+                &key,
+                reserved.record_version(),
+                2_000,
+                terminal,
+                reserve_deadline(),
+            )
+            .expect("publish exact direct terminal");
+        let expires_at_epoch_ms = committed
+            .terminal_epoch_ms()
+            .checked_add(DIRECT_TERMINAL_RETENTION_MS)
+            .expect("direct expiry fits");
+        let row = receipts
+            .join(ACTIVE_DIRECTORY_NAME)
+            .join(format!("{}.json", key_digest.as_str()));
+        let (actual_bytes, reserved_result_bytes) = {
+            let catalog = store.writer.lock().expect("inspect terminal accounting");
+            assert_eq!(catalog.live_count(), 1);
+            assert_eq!(catalog.records.len(), 1);
+            assert_eq!(
+                catalog.invocation_index.get(&key.invocation_id()),
+                Some(&key_digest)
+            );
+            assert_eq!(
+                catalog.reserved_task_index.get(&key.reserved_task_id()),
+                Some(&key_digest)
+            );
+            (catalog.actual_bytes, catalog.reserved_result_bytes)
+        };
+        assert_eq!(
+            actual_bytes.checked_add(reserved_result_bytes),
+            Some(MAX_RECEIPT_ENTITLEMENT_BYTES)
+        );
+
+        assert_eq!(
+            ReceiptLedgerPort::recover_at(
+                &mut store,
+                &key,
+                expires_at_epoch_ms - 1,
+                reserve_deadline(),
+            ),
+            Ok(ReceiptState::DirectTerminalUnacked(committed))
+        );
+        {
+            let catalog = store.writer.lock().expect("inspect pre-expiry accounting");
+            assert_eq!(catalog.actual_bytes, actual_bytes);
+            assert_eq!(catalog.reserved_result_bytes, reserved_result_bytes);
+        }
+
+        assert_eq!(
+            store
+                .reclaim_expired_tombstones(expires_at_epoch_ms, reserve_deadline())
+                .expect("expiry-boundary retention sweep"),
+            1
+        );
+        assert_eq!(
+            ReceiptLedgerPort::recover_at(
+                &mut store,
+                &key,
+                expires_at_epoch_ms,
+                reserve_deadline(),
+            ),
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        );
+        assert_eq!(store.generation().expect("expiry generation"), 3);
+        {
+            let catalog = store.writer.lock().expect("inspect expired accounting");
+            assert_eq!(catalog.live_count(), 0);
+            assert!(catalog.records.is_empty());
+            assert!(catalog.invocation_index.is_empty());
+            assert!(catalog.reserved_task_index.is_empty());
+            assert_eq!(catalog.actual_bytes, 0);
+            assert_eq!(catalog.reserved_result_bytes, 0);
+            assert_eq!(catalog.tombstone_bytes, 0);
+        }
+        assert!(
+            !row.exists(),
+            "expiry physically removes the Direct payload row"
+        );
+
+        drop(store);
+        let mut reopened = ReceiptLedgerStore::open(&receipts).expect("reopen expired ledger");
+        assert_eq!(reopened.generation().expect("reopened generation"), 3);
+        assert_eq!(
+            ReceiptLedgerPort::recover_at(
+                &mut reopened,
+                &key,
+                expires_at_epoch_ms,
+                reserve_deadline(),
+            ),
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        );
+    }
+
+    #[test]
     fn direct_terminal_persists_the_original_cutoff_for_exact_response_identity() {
         let root = tempfile::tempdir().expect("temporary root");
         let receipts = fs::canonicalize(root.path())
@@ -10335,6 +10743,9 @@ mod tests {
             }
             StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. } => {
                 panic!("reserved fixture decoded as a tombstone deletion witness")
+            }
+            StoredActiveLifecycleV1::ExpiredDirectDeletion { .. } => {
+                panic!("reserved fixture decoded as a Direct deletion witness")
             }
             StoredActiveLifecycleV1::ReservedUnbound {
                 reserved_at_epoch_ms,
