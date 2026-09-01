@@ -436,22 +436,55 @@ fn project_data(data: &Value, filter: &Value) -> Result<Value, DiffError> {
             message: "diff paths must not be empty".to_string(),
         });
     }
-    for path in paths {
-        let path = path.as_str().ok_or_else(|| DiffError::BadValue {
-            field: "filter.paths".to_string(),
-            message: "diff paths must contain strings".to_string(),
-        })?;
-        if !path.starts_with('/') || path == "/" {
+    let mut paths = paths
+        .iter()
+        .map(|path| {
+            path.as_str().ok_or_else(|| DiffError::BadValue {
+                field: "filter.paths".to_string(),
+                message: "diff paths must contain strings".to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for path in &paths {
+        if !path.starts_with('/') || *path == "/" {
             return Err(DiffError::BadValue {
                 field: "filter.paths".to_string(),
                 message: "diff paths must be non-root JSON pointers".to_string(),
             });
         }
+    }
+    paths.sort_unstable_by(|left, right| {
+        pointer_depth(left)
+            .cmp(&pointer_depth(right))
+            .then_with(|| left.cmp(right))
+    });
+    let mut normalized: Vec<&str> = Vec::with_capacity(paths.len());
+    for path in paths {
+        if normalized
+            .iter()
+            .any(|ancestor| pointer_covers(ancestor, path))
+        {
+            continue;
+        }
+        normalized.push(path);
+    }
+    for path in normalized {
         if let Some(value) = data_value.pointer(path) {
             insert_pointer(&mut projected, path, value.clone())?;
         }
     }
     Ok(Value::Object(projected))
+}
+
+fn pointer_depth(pointer: &str) -> usize {
+    pointer.bytes().filter(|byte| *byte == b'/').count()
+}
+
+fn pointer_covers(ancestor: &str, candidate: &str) -> bool {
+    candidate == ancestor
+        || candidate
+            .strip_prefix(ancestor)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 fn insert_pointer(
@@ -629,5 +662,25 @@ mod tests {
             .unwrap();
         assert_eq!(page.changes()[0].path, "/props/value");
         assert!(!page.changes()[0].left.as_ref().unwrap().is_null());
+    }
+
+    #[test]
+    fn diff_overlapping_path_filters_are_order_independent() {
+        let handler = DiffHandler::default();
+        let parent_first = DiffRequest::new("main:Catalog.Items", "main:Catalog.Items")
+            .unwrap()
+            .with_filter(json!({"paths": ["/items", "/items/0"]}))
+            .unwrap();
+        let child_first = DiffRequest::new("main:Catalog.Items", "main:Catalog.Items")
+            .unwrap()
+            .with_filter(json!({"paths": ["/items/0", "/items"]}))
+            .unwrap();
+        let left = source("main:Catalog.Items", "Catalog", "left-1", 1);
+        let right = source("main:Catalog.Items", "Catalog", "right-1", 2);
+
+        let parent_first_page = handler.compare(&parent_first, &left, &right).unwrap();
+        let child_first_page = handler.compare(&child_first, &left, &right).unwrap();
+
+        assert_eq!(parent_first_page, child_first_page);
     }
 }
