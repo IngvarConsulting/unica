@@ -63,6 +63,7 @@ const SCENARIO_IDLE_GRACE: Duration = Duration::from_secs(2);
 const SCENARIO_OPERATION_TIMEOUT: Duration = Duration::from_secs(2);
 const SCENARIO_TASK_TTL_MS: u64 = 3_600_000;
 const SCENARIO_TASK_POLL_INTERVAL_MS: u64 = 100;
+const SCENARIO_FAIL_STOP_GRACE_MS: u64 = 2_000;
 
 pub(super) struct ReceiptScenarioControl {
     barriers: Mutex<BTreeMap<ScenarioBarrierPoint, ScenarioBarrierState>>,
@@ -82,6 +83,9 @@ pub(super) struct ReceiptScenarioControl {
     receipt_backed_terminals: Mutex<Vec<(TaskTerminalReceiptBackedReceipt, Vec<u8>)>>,
     provider: Mutex<Option<ScenarioProviderFixture>>,
     side_effect_markers: AtomicU64,
+    process_exit_elapsed_ms: AtomicU64,
+    fail_stop_deadline_plus_one: AtomicU64,
+    crash_after_side_effect: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -130,6 +134,9 @@ impl ReceiptScenarioControl {
             receipt_backed_terminals: Mutex::new(Vec::new()),
             provider: Mutex::new(None),
             side_effect_markers: AtomicU64::new(0),
+            process_exit_elapsed_ms: AtomicU64::new(0),
+            fail_stop_deadline_plus_one: AtomicU64::new(0),
+            crash_after_side_effect: AtomicBool::new(false),
         }
     }
 
@@ -356,6 +363,44 @@ impl ReceiptScenarioControl {
         self.side_effect_markers.load(Ordering::Acquire)
     }
 
+    fn record_process_exit(&self, elapsed_ms: u64) {
+        self.process_exit_elapsed_ms
+            .store(elapsed_ms, Ordering::Release);
+    }
+
+    fn process_exit_elapsed_ms(&self) -> Option<u64> {
+        match self.process_exit_elapsed_ms.load(Ordering::Acquire) {
+            0 => None,
+            elapsed => Some(elapsed),
+        }
+    }
+
+    pub(super) fn process_exited(&self) -> bool {
+        self.process_exit_elapsed_ms.load(Ordering::Acquire) != 0
+    }
+
+    fn arm_fail_stop_deadline(&self, deadline_ms: u64) -> Result<(), String> {
+        let encoded = deadline_ms
+            .checked_add(1)
+            .ok_or_else(|| "scenario fail-stop deadline overflowed".to_owned())?;
+        self.fail_stop_deadline_plus_one
+            .store(encoded, Ordering::Release);
+        Ok(())
+    }
+
+    fn fail_stop_deadline_reached(&self, now_ms: u64) -> bool {
+        let encoded = self.fail_stop_deadline_plus_one.load(Ordering::Acquire);
+        encoded != 0 && now_ms >= encoded - 1
+    }
+
+    fn arm_crash_after_side_effect(&self) {
+        self.crash_after_side_effect.store(true, Ordering::Release);
+    }
+
+    pub(super) fn take_crash_after_side_effect(&self) -> bool {
+        self.crash_after_side_effect.swap(false, Ordering::AcqRel)
+    }
+
     fn arm_ack_response_disconnect(&self) {
         self.drop_ack_response_after_commit
             .store(true, Ordering::Release);
@@ -474,6 +519,43 @@ impl ReceiptScenarioControl {
     pub(super) fn release_pre_actor_barriers(&self) {
         self.release(ScenarioBarrierPoint::ValidationEntered);
         self.release(ScenarioBarrierPoint::AdmissionEntered);
+    }
+
+    fn release_all_barriers(&self) {
+        let mut barriers = self
+            .barriers
+            .lock()
+            .expect("scenario barrier mutex poisoned");
+        for barrier in barriers.values_mut() {
+            barrier.released = true;
+        }
+        self.changed.notify_all();
+    }
+
+    fn reset_for_scenario(&self) {
+        self.barriers
+            .lock()
+            .expect("scenario barrier mutex poisoned")
+            .clear();
+        *self
+            .actor_workspace_identity
+            .lock()
+            .expect("scenario actor identity mutex poisoned") = None;
+        *self
+            .bound_task
+            .lock()
+            .expect("scenario bound Task mutex poisoned") = None;
+        *self
+            .terminal_bound_task
+            .lock()
+            .expect("scenario terminal Task mutex poisoned") = None;
+        self.actor_bindings
+            .lock()
+            .expect("scenario actor binding mutex poisoned")
+            .clear();
+        self.process_exit_elapsed_ms.store(0, Ordering::Release);
+        self.fail_stop_deadline_plus_one.store(0, Ordering::Release);
+        self.crash_after_side_effect.store(false, Ordering::Release);
     }
 
     fn has_unreleased_barriers(&self) -> bool {
@@ -704,10 +786,21 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         |owner| owner.cancel_invocation(wire_key.clone()),
                     )?
                 };
+                if pending_submit.is_some()
+                    && control
+                        .provider()
+                        .is_some_and(|provider| !provider.cooperative_cancel)
+                {
+                    control.arm_fail_stop_deadline(
+                        clock
+                            .now_monotonic_millis()
+                            .saturating_add(SCENARIO_FAIL_STOP_GRACE_MS),
+                    )?;
+                }
                 if !matches!(response, V5ServerResponse::Error { .. }) && is_exact {
                     push_known_key(&mut known_keys, exact_key.clone());
                 }
-                let observation = if matches!(
+                let mut observation = if matches!(
                     &response,
                     V5ServerResponse::Invocation {
                         outcome: V5InvocationResponse::Task { .. }
@@ -758,6 +851,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 } else {
                     response_observation(&response, None)?
                 };
+                if observation.get("kind").and_then(Value::as_str) == Some("pending") {
+                    observation["kind"] = Value::String("cancelled".to_owned());
+                }
                 report.responses.insert(label, observation);
                 if pending_submit.is_some() && !control.has_unreleased_barriers() {
                     let pending = pending_submit
@@ -970,6 +1066,16 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 if observation.get("kind").and_then(Value::as_str) == Some("direct") {
                     observation["kind"] = Value::String("recovered_direct".to_owned());
                 }
+                if let V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Direct { receipt },
+                } = &response
+                {
+                    if let ReceiptTerminalOutcome::Failed { reason } = receipt.terminal() {
+                        observation["error"] = serde_json::to_value(reason).map_err(|error| {
+                            format!("encode protocol-v5 recovery failure reason: {error}")
+                        })?;
+                    }
+                }
                 report.responses.insert(label, observation);
             }
             ReceiptScenarioAction::Acknowledge {
@@ -1093,7 +1199,10 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 clock.advance_monotonic(millis)?;
                 if let Some(pending) = pending_submit.as_mut() {
                     if !pending.response_projected
-                        && clock.now_monotonic_millis() >= pending.response_budget_ms
+                        && clock.now_monotonic_millis()
+                            >= pending
+                                .accepted_monotonic_ms
+                                .saturating_add(pending.response_budget_ms)
                     {
                         let receipt_state = pending
                             .actor
@@ -1101,7 +1210,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                 exact_key.clone(),
                                 Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                             )
-                            .map_err(|error| format!("inspect cutoff receipt: {error}"))?;
+                            .map_err(|error| {
+                                format!(
+                                    "inspect cutoff receipt for {} at monotonic {} (accepted {}, budget {}): {error}",
+                                    pending.label,
+                                    clock.now_monotonic_millis(),
+                                    pending.accepted_monotonic_ms,
+                                    pending.response_budget_ms
+                                )
+                            })?;
                         if let ReceiptState::Reserved(reserved) = receipt_state {
                             if matches!(reserved.phase(), ReservedPhase::Unbound) {
                                 let promised = pending
@@ -1150,13 +1267,190 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                     }),
                                 );
                                 pending.response_projected = true;
+                                control.arm_fail_stop_deadline(
+                                    pending
+                                        .accepted_monotonic_ms
+                                        .saturating_add(pending.response_budget_ms)
+                                        .saturating_add(SCENARIO_FAIL_STOP_GRACE_MS),
+                                )?;
+                            } else if matches!(reserved.phase(), ReservedPhase::ActorBound { .. }) {
+                                let handoff = pending
+                                    .actor
+                                    .begin_bound_task_handoff(
+                                        exact_key.clone(),
+                                        reserved.record_version(),
+                                        clock.now_epoch_millis(),
+                                        SCENARIO_TASK_TTL_MS,
+                                        SCENARIO_TASK_POLL_INTERVAL_MS,
+                                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                                    )
+                                    .map_err(|error| {
+                                        format!("commit not-begun cutoff handoff: {error}")
+                                    })?;
+                                telemetry.record_event(
+                                    V5ReceiptRuntimeEventKind::BoundHandoffCommitted,
+                                    clock.now_epoch_millis(),
+                                );
+                                let response = V5ServerResponse::Invocation {
+                                    outcome: V5InvocationResponse::Task {
+                                        snapshot: super::queued_receipt_task_snapshot(
+                                            handoff.task(),
+                                            handoff.key_digest().clone(),
+                                            handoff.cancel_requested(),
+                                        ),
+                                    },
+                                };
+                                report.responses.insert(
+                                    pending.label.clone(),
+                                    json!({
+                                        "kind": "task",
+                                        "error": null,
+                                        "terminal": null,
+                                        "key": receipt_key_observation(&exact_key),
+                                        "task": task_observation_from_response_with_workspace(
+                                            response,
+                                            &exact_key,
+                                            state.path(),
+                                            &identity,
+                                            control.actor_workspace_identity().map(|identity| {
+                                                serde_json::to_value(identity).ok().and_then(
+                                                    |value| value.as_str().map(str::to_owned),
+                                                )
+                                            }),
+                                        )?,
+                                        "acknowledgement": null,
+                                        "cutoffEpochMs": pending.accepted_epoch_ms
+                                            .checked_add(pending.response_budget_ms),
+                                        "originalBudgetMs": pending.response_budget_ms,
+                                        "latencyMs": pending.response_budget_ms,
+                                    }),
+                                );
+                                pending.response_projected = true;
+                            } else if matches!(reserved.phase(), ReservedPhase::Begun { .. }) {
+                                let handoff = pending
+                                    .actor
+                                    .begin_bound_task_handoff(
+                                        exact_key.clone(),
+                                        reserved.record_version(),
+                                        clock.now_epoch_millis(),
+                                        SCENARIO_TASK_TTL_MS,
+                                        SCENARIO_TASK_POLL_INTERVAL_MS,
+                                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                                    )
+                                    .map_err(|error| {
+                                        format!("commit begun cutoff handoff: {error}")
+                                    })?;
+                                telemetry.record_event(
+                                    V5ReceiptRuntimeEventKind::BoundHandoffCommitted,
+                                    clock.now_epoch_millis(),
+                                );
+                                let response = V5ServerResponse::Invocation {
+                                    outcome: V5InvocationResponse::Task {
+                                        snapshot: super::queued_receipt_task_snapshot(
+                                            handoff.task(),
+                                            handoff.key_digest().clone(),
+                                            handoff.cancel_requested(),
+                                        ),
+                                    },
+                                };
+                                report.responses.insert(
+                                    pending.label.clone(),
+                                    json!({
+                                        "kind": "task",
+                                        "error": null,
+                                        "terminal": null,
+                                        "key": receipt_key_observation(&exact_key),
+                                        "task": task_observation_from_response_with_workspace(
+                                            response,
+                                            &exact_key,
+                                            state.path(),
+                                            &identity,
+                                            control.actor_workspace_identity().map(|identity| {
+                                                serde_json::to_value(identity).ok().and_then(
+                                                    |value| value.as_str().map(str::to_owned),
+                                                )
+                                            }),
+                                        )?,
+                                        "acknowledgement": null,
+                                        "cutoffEpochMs": pending.accepted_epoch_ms
+                                            .checked_add(pending.response_budget_ms),
+                                        "originalBudgetMs": pending.response_budget_ms,
+                                        "latencyMs": pending.response_budget_ms,
+                                    }),
+                                );
+                                pending.response_projected = true;
                             }
                         }
                     }
                 }
+                if control.fail_stop_deadline_reached(clock.now_monotonic_millis()) {
+                    telemetry.record_forced_process_exit();
+                    control.record_process_exit(SCENARIO_FAIL_STOP_GRACE_MS);
+                }
             }
             ReceiptScenarioAction::Crash { point } => {
-                if matches!(point, ScenarioCrashPoint::TaskPromisedUnbound) {
+                if matches!(point, ScenarioCrashPoint::AfterSideEffectBeforeTerminal)
+                    && pending_submit.is_none()
+                {
+                    control.arm_crash_after_side_effect();
+                    continue;
+                }
+                if matches!(point, ScenarioCrashPoint::ReservedBegun) {
+                    let pending = pending_submit.as_ref().ok_or_else(|| {
+                        "protocol-v5 ReservedBegun crash has no live submit".to_owned()
+                    })?;
+                    let reserved = match pending.actor.recover(
+                        exact_key.clone(),
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    ) {
+                        Ok(ReceiptState::Reserved(reserved))
+                            if matches!(reserved.phase(), ReservedPhase::Begun { .. }) =>
+                        {
+                            reserved
+                        }
+                        Ok(other) => {
+                            return Err(format!(
+                                "protocol-v5 ReservedBegun crash observed {}",
+                                other.kind().diagnostic_name()
+                            ))
+                        }
+                        Err(error) => {
+                            return Err(format!("recover protocol-v5 ReservedBegun crash: {error}"))
+                        }
+                    };
+                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
+                        reason: V5SafeFailureReason::OutcomeUncertain,
+                    })
+                    .map_err(|error| format!("encode uncertain crash terminal: {error}"))?;
+                    pending
+                        .actor
+                        .publish_direct_terminal(
+                            exact_key.clone(),
+                            reserved.record_version(),
+                            clock.now_epoch_millis(),
+                            terminal,
+                            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                        )
+                        .map_err(|error| format!("terminalize crashed begun receipt: {error}"))?;
+                    control.release(ScenarioBarrierPoint::BeforePrepare);
+                    telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
+                        clock.now_epoch_millis(),
+                    );
+                    let pending = pending_submit
+                        .take()
+                        .expect("crashed begun submit was checked immediately before take");
+                    let (label, accepted, budget, response, actor, _, _, daemon) =
+                        pending.finish()?;
+                    drop(actor);
+                    daemon.stop_and_join(
+                        "protocol-v5 receipt scenario daemon panicked during begun crash",
+                    )?;
+                    report
+                        .responses
+                        .entry(label)
+                        .or_insert(response_observation(&response, Some((accepted, budget)))?);
+                } else if matches!(point, ScenarioCrashPoint::TaskPromisedUnbound) {
                     let pending = pending_submit.as_ref().ok_or_else(|| {
                         "protocol-v5 TaskPromisedUnbound crash has no live submit".to_owned()
                     })?;
@@ -1230,9 +1524,59 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             ReceiptScenarioAction::Restart => {
                 startup_listener_override = true;
                 if pending_submit.is_some() {
-                    return Err(
-                        "protocol-v5 receipt scenario cannot restart a live submit".to_owned()
-                    );
+                    if !control.process_exited() {
+                        return Err(
+                            "protocol-v5 receipt scenario cannot restart a live submit".to_owned()
+                        );
+                    }
+                    let pending = pending_submit.as_ref().expect("pending submit exists");
+                    if let ReceiptState::Reserved(reserved) = pending
+                        .actor
+                        .recover(
+                            exact_key.clone(),
+                            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                        )
+                        .map_err(|error| format!("recover fail-stopped submit: {error}"))?
+                    {
+                        if matches!(reserved.phase(), ReservedPhase::Begun { .. }) {
+                            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
+                                reason: V5SafeFailureReason::OutcomeUncertain,
+                            })
+                            .map_err(|error| {
+                                format!("encode fail-stopped begun terminal: {error}")
+                            })?;
+                            pending
+                                .actor
+                                .publish_direct_terminal(
+                                    exact_key.clone(),
+                                    reserved.record_version(),
+                                    clock.now_epoch_millis(),
+                                    terminal,
+                                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                                )
+                                .map_err(|error| {
+                                    format!("terminalize fail-stopped begun submit: {error}")
+                                })?;
+                            telemetry.record_event(
+                                V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
+                                clock.now_epoch_millis(),
+                            );
+                        }
+                    }
+                    control.release_all_barriers();
+                    let pending = pending_submit
+                        .take()
+                        .expect("fail-stopped pending submit exists");
+                    let (label, accepted, budget, response, actor, _, _, daemon) =
+                        pending.finish()?;
+                    drop(actor);
+                    daemon.stop_and_join(
+                        "protocol-v5 receipt scenario daemon panicked after fail-stop",
+                    )?;
+                    report
+                        .responses
+                        .entry(label)
+                        .or_insert(response_observation(&response, Some((accepted, budget)))?);
                 }
                 if let Some(daemon) = live_daemon.take() {
                     live_actor = None;
@@ -1344,6 +1688,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     snapshot["restartRequested"] = Value::Bool(startup_failed);
                     snapshot["daemonRunning"] = Value::Bool(listener_published && !startup_failed);
                 }
+                if let Some(elapsed_ms) = control.process_exit_elapsed_ms() {
+                    snapshot["processExitElapsedMs"] = Value::from(elapsed_ms);
+                }
                 report.terminal_publications = telemetry.snapshot().terminal_publications;
                 report.checkpoints.insert(label, snapshot);
             }
@@ -1360,6 +1707,8 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         "protocol-v5 receipt scenario live daemon panicked before reset",
                     )?;
                 }
+                telemetry.reset_for_scenario();
+                control.reset_for_scenario();
                 state = ScenarioStateRoot::new()?;
                 let reset_daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let reset_receipts =
@@ -1500,10 +1849,17 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                 .to_owned(),
                         );
                     }
-                    telemetry.wait_for_event(
-                        V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                    )?;
+                    if !telemetry.snapshot().events.iter().any(|event| {
+                        matches!(
+                            event.event,
+                            V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted
+                        )
+                    }) {
+                        telemetry.wait_for_event(
+                            V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
+                            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                        )?;
+                    }
                 }
                 ScenarioEvent::ResultSerialized => {
                     telemetry.wait_for_event(
@@ -1568,13 +1924,41 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         live_daemon = Some(daemon);
                     }
                     if !report.responses.contains_key(&label) {
-                        report.responses.insert(
-                            label,
+                        let observation = if matches!(
+                            &response,
+                            V5ServerResponse::Invocation {
+                                outcome: V5InvocationResponse::Task { .. }
+                            }
+                        ) {
+                            let task = task_observation_from_response_with_workspace(
+                                response.clone(),
+                                &exact_key,
+                                state.path(),
+                                &identity,
+                                Some(control.actor_workspace_identity().and_then(|identity| {
+                                    serde_json::to_value(identity)
+                                        .ok()
+                                        .and_then(|value| value.as_str().map(str::to_owned))
+                                })),
+                            )?;
+                            json!({
+                                "kind": "task",
+                                "error": null,
+                                "terminal": task.get("terminal").cloned().unwrap_or(Value::Null),
+                                "key": receipt_key_observation(&exact_key),
+                                "task": task,
+                                "acknowledgement": null,
+                                "cutoffEpochMs": accepted_epoch_ms.checked_add(response_budget_ms),
+                                "originalBudgetMs": response_budget_ms,
+                                "latencyMs": response_budget_ms,
+                            })
+                        } else {
                             response_observation(
                                 &response,
                                 Some((accepted_epoch_ms, response_budget_ms)),
-                            )?,
-                        );
+                            )?
+                        };
+                        report.responses.insert(label, observation);
                     }
                     for duplicate_label in pending_duplicate_labels.drain(..) {
                         let duplicate_response =
@@ -4655,6 +5039,7 @@ fn finish_with_daemon_cleanup<T>(
 struct PendingSubmit {
     label: String,
     accepted_epoch_ms: u64,
+    accepted_monotonic_ms: u64,
     response_budget_ms: u64,
     actor: ReceiptLedgerActor,
     task_projection: TaskProjectionObservation,
@@ -4707,6 +5092,7 @@ impl PendingSubmit {
         let Self {
             label,
             accepted_epoch_ms,
+            accepted_monotonic_ms: _,
             response_budget_ms,
             actor,
             task_projection,
@@ -4769,6 +5155,7 @@ fn start_blocked_submit(
     response_budget_ms: u64,
 ) -> Result<PendingSubmit, String> {
     control.set_operation_label(label.clone());
+    let accepted_monotonic_ms = clock.now_monotonic_millis();
     let task_projection = inspect_task_projection(
         state_root,
         identity,
@@ -4816,6 +5203,7 @@ fn start_blocked_submit(
     Ok(PendingSubmit {
         label,
         accepted_epoch_ms,
+        accepted_monotonic_ms,
         response_budget_ms,
         actor,
         task_projection,
@@ -5589,6 +5977,19 @@ fn response_observation(
         V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::Direct { receipt },
         } => {
+            let recovery_error = if submit_cutoff.is_none() {
+                match receipt.terminal() {
+                    ReceiptTerminalOutcome::Failed { reason } => {
+                        Some(serde_json::to_value(reason).map_err(|error| {
+                            format!("encode protocol-v5 recovery failure reason: {error}")
+                        })?)
+                    }
+                    ReceiptTerminalOutcome::Completed { .. }
+                    | ReceiptTerminalOutcome::Cancelled => None,
+                }
+            } else {
+                None
+            };
             let (accepted_epoch_ms, original_budget_ms) = submit_cutoff
                 .map(|(accepted, budget)| (Some(accepted), Some(budget)))
                 .unwrap_or((None, None));
@@ -5598,7 +5999,7 @@ fn response_observation(
                 } else {
                     "direct"
                 },
-                "error": null,
+                "error": recovery_error,
                 "terminal": terminal_observation(receipt.terminal(), receipt.terminal_epoch_ms())?,
                 "key": receipt_key_observation(receipt.receipt_key()),
                 "task": null,
@@ -6403,6 +6804,7 @@ impl ReceiptScenarioAction {
                 ScenarioCrashPoint::ReservedUnbound
                     | ScenarioCrashPoint::ReservedBegun
                     | ScenarioCrashPoint::TaskPromisedUnbound
+                    | ScenarioCrashPoint::AfterSideEffectBeforeTerminal
                     | ScenarioCrashPoint::AfterWorkingReadbackBeforeReceiptBegun
                     | ScenarioCrashPoint::AfterReceiptBegunBeforePrepare
             ),
@@ -7486,6 +7888,7 @@ mod tests {
         let pending = PendingSubmit {
             label: "pending".to_owned(),
             accepted_epoch_ms: 1,
+            accepted_monotonic_ms: 0,
             response_budget_ms: 7_000,
             actor,
             task_projection: TaskProjectionObservation {

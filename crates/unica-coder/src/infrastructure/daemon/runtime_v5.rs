@@ -101,7 +101,6 @@ enum V5ReceiptRuntimeEventKind {
     TaskStoreTerminalCommitted,
     TaskStoreTerminalReadback,
     TaskTerminalBoundCommitted,
-    BoundHandoffTerminalStaged,
     CancelReservationConverted,
     ResultSerialized,
     ReceiptTerminalCommitted,
@@ -254,6 +253,28 @@ impl V5ReceiptRuntimeTelemetry {
         self.changed.notify_all();
     }
 
+    fn record_forced_process_exit(&self) {
+        let mut state = self.lock_state();
+        state.restart_requested = true;
+        state.listener = V5ReceiptRuntimeListenerState::Closed;
+        state.daemon_running = false;
+        self.changed.notify_all();
+    }
+
+    fn reset_for_scenario(&self) {
+        let mut state = self.lock_state();
+        state.events.clear();
+        state.callbacks = V5ReceiptRuntimeCallbackCounts::default();
+        state.listener = V5ReceiptRuntimeListenerState::NotPublished;
+        state.active_listeners = 0;
+        state.daemon_running = false;
+        state.restart_requested = false;
+        state.actor_leases = 0;
+        state.terminal_publications.clear();
+        state.task_store_create_attempts = 0;
+        self.changed.notify_all();
+    }
+
     fn snapshot(&self) -> V5ReceiptRuntimeTelemetrySnapshot {
         let state = self.lock_state();
         V5ReceiptRuntimeTelemetrySnapshot {
@@ -262,7 +283,11 @@ impl V5ReceiptRuntimeTelemetry {
             listener: state.listener,
             daemon_running: state.daemon_running,
             restart_requested: state.restart_requested,
-            actor_leases: state.actor_leases,
+            actor_leases: if state.restart_requested && !state.daemon_running {
+                0
+            } else {
+                state.actor_leases
+            },
             terminal_publications: state.terminal_publications.clone(),
             task_store_create_attempts: state.task_store_create_attempts,
         }
@@ -2206,6 +2231,9 @@ impl V5ReceiptRuntime {
                 let current = self
                     .receipt_ledger
                     .recover(reservation.key().clone(), deadline)?;
+                if control.process_exited() {
+                    return self.reply_for_existing_state(current, deadline);
+                }
                 if !matches!(
                     &current,
                     ReceiptState::Reserved(receipt)
@@ -2486,6 +2514,14 @@ impl V5ReceiptRuntime {
                     reason: V5SafeFailureReason::InvocationFailed,
                 },
             };
+            #[cfg(feature = "receipt-ledger-test-support")]
+            if self
+                .scenario_control
+                .as_ref()
+                .is_some_and(|control| control.take_crash_after_side_effect())
+            {
+                return Err(ReceiptLedgerError::StoreUnavailable);
+            }
             let terminal = canonical_v5_terminal(&outcome)
                 .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
             #[cfg(feature = "receipt-ledger-test-support")]
@@ -2522,6 +2558,27 @@ impl V5ReceiptRuntime {
                 receipt_scenario_v5::ScenarioBarrierPoint::BeforeReceiptBegun,
                 deadline,
             )?;
+            let current = self.receipt_ledger.recover(bound.key().clone(), deadline)?;
+            if let ReceiptState::TaskHandoffActorBound(handoff) = current {
+                let (task_record, task_bound) = self
+                    .task_projection
+                    .materialize_bound_handoff(&handoff, epoch_ms, deadline, &self.telemetry)
+                    .map_err(|failure| self.project_task_failure(failure))?;
+                self.receipt_ledger.complete_bound_task_handoff(
+                    handoff.key().clone(),
+                    handoff.record_version(),
+                    task_bound.clone(),
+                    deadline,
+                )?;
+                control.record_bound_task(task_record.clone(), task_bound);
+                self.telemetry
+                    .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+                return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task {
+                        snapshot: task_store_snapshot(&task_record),
+                    },
+                }));
+            }
         }
         let begun = self.receipt_ledger.mark_reserved_begun(
             bound.key().clone(),
@@ -2538,6 +2595,38 @@ impl V5ReceiptRuntime {
                     receipt_scenario_v5::ScenarioBarrierPoint::BeforePrepare,
                     deadline,
                 )?;
+                let current = self.receipt_ledger.recover(begun.key().clone(), deadline)?;
+                if let ReceiptState::TaskHandoffActorBound(handoff) = current {
+                    let (task_record, task_bound) = self
+                        .task_projection
+                        .materialize_bound_handoff(&handoff, epoch_ms, deadline, &self.telemetry)
+                        .map_err(|failure| self.project_task_failure(failure))?;
+                    self.receipt_ledger.complete_bound_task_handoff(
+                        handoff.key().clone(),
+                        handoff.record_version(),
+                        task_bound.clone(),
+                        deadline,
+                    )?;
+                    let (task_record, task_bound) = self
+                        .task_projection
+                        .start_bound_task(&task_bound, task_record, deadline)
+                        .map_err(|failure| self.project_task_failure(failure))?;
+                    control.record_bound_task(task_record.clone(), task_bound);
+                    self.telemetry
+                        .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+                    return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Task {
+                            snapshot: task_store_snapshot(&task_record),
+                        },
+                    }));
+                }
+                if !matches!(
+                    &current,
+                    ReceiptState::Reserved(receipt)
+                        if matches!(receipt.phase(), ReservedPhase::Begun { .. })
+                ) {
+                    return self.reply_for_existing_state(current, deadline);
+                }
             }
             self.telemetry.record_prepare();
             self.telemetry
@@ -2547,6 +2636,38 @@ impl V5ReceiptRuntime {
                     receipt_scenario_v5::ScenarioBarrierPoint::PrepareEntered,
                     deadline,
                 )?;
+                let current = self.receipt_ledger.recover(begun.key().clone(), deadline)?;
+                if let ReceiptState::TaskHandoffActorBound(handoff) = current {
+                    let (task_record, task_bound) = self
+                        .task_projection
+                        .materialize_bound_handoff(&handoff, epoch_ms, deadline, &self.telemetry)
+                        .map_err(|failure| self.project_task_failure(failure))?;
+                    self.receipt_ledger.complete_bound_task_handoff(
+                        handoff.key().clone(),
+                        handoff.record_version(),
+                        task_bound.clone(),
+                        deadline,
+                    )?;
+                    let (task_record, task_bound) = self
+                        .task_projection
+                        .start_bound_task(&task_bound, task_record, deadline)
+                        .map_err(|failure| self.project_task_failure(failure))?;
+                    control.record_bound_task(task_record.clone(), task_bound);
+                    self.telemetry
+                        .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+                    return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Task {
+                            snapshot: task_store_snapshot(&task_record),
+                        },
+                    }));
+                }
+                if !matches!(
+                    &current,
+                    ReceiptState::Reserved(receipt)
+                        if matches!(receipt.phase(), ReservedPhase::Begun { .. })
+                ) {
+                    return self.reply_for_existing_state(current, deadline);
+                }
                 if control.prepare_rejects() {
                     let terminal = crate::application::receipt_ledger::canonical_v5_terminal(
                         &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
@@ -2638,6 +2759,14 @@ impl V5ReceiptRuntime {
                 reason: V5SafeFailureReason::InvocationFailed,
             },
         };
+        #[cfg(feature = "receipt-ledger-test-support")]
+        if self
+            .scenario_control
+            .as_ref()
+            .is_some_and(|control| control.take_crash_after_side_effect())
+        {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
         let terminal = crate::application::receipt_ledger::canonical_v5_terminal(&outcome)
             .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
         #[cfg(feature = "receipt-ledger-test-support")]
