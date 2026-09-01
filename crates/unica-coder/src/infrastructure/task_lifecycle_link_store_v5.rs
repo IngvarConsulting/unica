@@ -1448,7 +1448,7 @@ impl TaskLifecycleLinkStoreV5 {
         deadline: ProviderDeadline,
     ) -> Result<StoreCatalog, TaskLifecycleLinkStoreError> {
         validate_capacity(catalog, self.limits)?;
-        let snapshot = stored_catalog(catalog);
+        let snapshot = stored_catalog(catalog)?;
         let encoded = serde_json::to_vec(&snapshot)
             .map_err(|error| storage_message("serialize Task lifecycle-link snapshot", error))?;
         if encoded.len() > MAX_SNAPSHOT_BYTES {
@@ -1824,22 +1824,37 @@ fn exact_task_terminal_bound<'a>(
     }
 }
 
-fn stored_catalog(catalog: &StoreCatalog) -> StoredCatalogV1 {
+fn stored_catalog(catalog: &StoreCatalog) -> Result<StoredCatalogV1, TaskLifecycleLinkStoreError> {
     let mut entries: Vec<_> = catalog
         .entries
         .values()
         .map(StoredEntryV1::from_catalog_entry)
-        .collect();
-    entries.sort_by(|left, right| {
-        let left = serde_json::to_vec(left).expect("validated lifecycle-link record serializes");
-        let right = serde_json::to_vec(right).expect("validated lifecycle-link record serializes");
-        left.cmp(&right)
-    });
-    StoredCatalogV1 {
+        .map(|entry| {
+            serialize_stored_entry_for_order(&entry)
+                .map(|canonical_bytes| (canonical_bytes, entry))
+                .map_err(|error| {
+                    storage_message("serialize Task lifecycle-link catalog entry", error)
+                })
+        })
+        .collect::<Result<_, _>>()?;
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let entries = entries.into_iter().map(|(_, entry)| entry).collect();
+    Ok(StoredCatalogV1 {
         schema_version: STORE_SCHEMA_VERSION,
         mutation_sequence: catalog.mutation_sequence,
         entries,
-    }
+    })
+}
+
+fn serialize_stored_entry_for_order(entry: &StoredEntryV1) -> Result<Vec<u8>, serde_json::Error> {
+    #[cfg(test)]
+    STORED_ENTRY_SERIALIZATION_CALLS.with(|calls| calls.set(calls.get() + 1));
+    serde_json::to_vec(entry)
+}
+
+#[cfg(test)]
+thread_local! {
+    static STORED_ENTRY_SERIALIZATION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn validate_exact_identity(
@@ -1977,6 +1992,16 @@ mod tests {
     const INVOCATION_B: &str = "22222222-2222-4222-8222-222222222222";
     const TASK_A: &str = "33333333-3333-4333-8333-333333333333";
     const TASK_B: &str = "44444444-4444-4444-8444-444444444444";
+
+    fn generated_fixture(index: u128) -> (ReceiptKey, TaskLinkReference, ReceiptTaskProjection) {
+        let invocation_id = Uuid::from_u128(0x11111111_1111_4111_8111_000000000000 + index);
+        let task_id = Uuid::from_u128(0x33333333_3333_4333_8333_000000000000 + index);
+        fixture(
+            &invocation_id.to_string(),
+            &task_id.to_string(),
+            &format!("workspace-{index}"),
+        )
+    }
 
     fn deadline() -> ProviderDeadline {
         ProviderDeadline::from_budget(Duration::from_secs(7))
@@ -2294,5 +2319,31 @@ mod tests {
         assert_eq!(MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES, 1_024);
         assert_eq!(MAX_TASK_LIFECYCLE_LINK_RECORDS, 4_096);
         assert_eq!(MAX_TASK_LIFECYCLE_LINK_POOL_BYTES, 4 * 1_024 * 1_024);
+    }
+
+    #[test]
+    fn canonical_catalog_order_serializes_each_entry_once() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("open store");
+        for index in 0..8 {
+            let (key, link, _) = generated_fixture(index);
+            store
+                .reserve_task_link(key, link, deadline())
+                .expect("reserve distinct link");
+        }
+        let catalog = store.lock_writer(deadline()).expect("lock live catalog");
+        STORED_ENTRY_SERIALIZATION_CALLS.with(|calls| calls.set(0));
+
+        let snapshot = stored_catalog(&catalog).expect("build canonical stored catalog");
+
+        assert_eq!(snapshot.entries.len(), catalog.entries.len());
+        STORED_ENTRY_SERIALIZATION_CALLS.with(|calls| {
+            assert_eq!(
+                calls.get(),
+                catalog.entries.len(),
+                "canonical ordering must serialize each entry exactly once"
+            );
+        });
     }
 }
