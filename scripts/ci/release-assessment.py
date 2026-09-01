@@ -51,7 +51,7 @@ P0_LIFECYCLE_SCENARIOS = (
     "restart",
     "rollback",
 )
-SAFE_V13_RECEIPT_REPLAY_TOOLS = frozenset(
+SAFE_V13_AT_LEAST_ONCE_REPLAY_TOOLS = frozenset(
     {"unica.check", "unica.view", "unica.find", "unica.search", "unica.diff"}
 )
 LOST_DAEMON_SUBMIT_RESPONSE_CODE = -32000
@@ -798,7 +798,7 @@ def run_v13_tool_scenario(
         if (
             submit_retries == 0
             and next_tool == tool
-            and tool in SAFE_V13_RECEIPT_REPLAY_TOOLS
+            and tool in SAFE_V13_AT_LEAST_ONCE_REPLAY_TOOLS
             and returncode == 0
             and len(responses) == 1
             and responses[0].get("error")
@@ -807,10 +807,10 @@ def run_v13_tool_scenario(
                 "message": LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE,
             }
         ):
-            # The daemon may have durably accepted this exact read before its
-            # bounded submit response was lost. Replay once with identical
-            # arguments so receipt deduplication can return that authority;
-            # the original scenario deadline remains the only time budget.
+            # The daemon may have accepted this read before its bounded submit
+            # response was lost. V3 has no stable recovery identity, so replay
+            # is explicitly at-least-once and may execute the read twice. Keep
+            # it to read-only tools, one replay and the original scenario budget.
             total_output_bytes += response_output_size(stdout, stderr, None)
             submit_retries += 1
             continue
@@ -842,6 +842,7 @@ def run_v13_tool_scenario(
         "outputBytes": total_output_bytes,
         "taskPolls": task_polls,
         "submitRetries": submit_retries,
+        "submitReplaySemantics": "at-least-once" if submit_retries else "none",
         "warningsCount": len(payload.get("warnings", [])) if payload else 0,
         "errorsCount": len(errors),
     }

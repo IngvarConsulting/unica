@@ -465,7 +465,7 @@ for raw in sys.stdin:
             self.assertEqual(len(responses), 1)
             self.assertNotIn("error", responses[0])
 
-    def test_v13_read_replays_one_lost_daemon_submit_response(self) -> None:
+    def test_v13_read_replays_one_lost_submit_response_as_at_least_once(self) -> None:
         module = load_assessment_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -486,9 +486,10 @@ for raw in sys.stdin:
     if message["method"] == "initialize":
         response["result"] = {"serverInfo": {"name": "unica"}}
     elif message["method"] == "tools/call":
-        marker = Path(os.environ["UNICA_CACHE_DIR"]) / "view-submit-lost"
-        if not marker.exists():
-            marker.write_text("accepted", encoding="utf-8")
+        executions = Path(os.environ["UNICA_CACHE_DIR"]) / "view-executions"
+        count = int(executions.read_text(encoding="utf-8")) + 1 if executions.exists() else 1
+        executions.write_text(str(count), encoding="utf-8")
+        if count == 1:
             response["error"] = {
                 "code": -32000,
                 "message": "daemon deadline expired during invocation submit response",
@@ -525,6 +526,10 @@ for raw in sys.stdin:
 
             self.assertEqual(scenario["status"], "passed", scenario)
             self.assertEqual(scenario["metrics"]["submitRetries"], 1)
+            self.assertEqual(
+                scenario["metrics"]["submitReplaySemantics"], "at-least-once"
+            )
+            self.assertEqual((root / "cache" / "view-executions").read_text(), "2")
             self.assertEqual(payload["data"]["kind"], "Configuration")
 
     def test_mcp_client_surfaces_injected_handshake_error(self) -> None:
