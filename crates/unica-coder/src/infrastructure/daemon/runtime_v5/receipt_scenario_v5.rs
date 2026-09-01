@@ -15,8 +15,8 @@ use crate::domain::invocation::{InvocationId, NormalizedArgumentsHash, SafeIdent
 use crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner;
 use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
 use crate::infrastructure::daemon::protocol_v5::{
-    decode_v5_request_frame, V5ClientRequest, V5DaemonErrorCode, V5InvocationRequest,
-    V5InvocationResponse, V5ServerResponse,
+    decode_v5_request_frame, V5ClientRequest, V5DaemonErrorCode, V5InvocationPhase,
+    V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
 };
 use crate::infrastructure::daemon::server::DaemonServerConfig;
 use serde::{Deserialize, Serialize};
@@ -1104,12 +1104,19 @@ fn response_observation(
             outcome:
                 V5InvocationResponse::ReceiptPending {
                     receipt_key,
+                    phase,
                     accepted_epoch_ms,
                     original_budget_ms,
-                    ..
+                    cancel_requested,
                 },
         } => Ok(json!({
-            "kind": "cancelled",
+            "kind": match phase {
+                V5InvocationPhase::CancelReserved => "cancelled",
+                V5InvocationPhase::ReservedUnbound
+                | V5InvocationPhase::ReservedActorBound
+                | V5InvocationPhase::ReservedBegun => "pending",
+            },
+            "cancelRequested": cancel_requested,
             "error": null,
             "terminal": null,
             "key": receipt_key_observation(receipt_key),
@@ -1600,7 +1607,51 @@ mod tests {
     use crate::application::receipt_ledger::{
         OriginalCutoffDescriptor, ACKNOWLEDGED_TOMBSTONE_TTL_MS, MAX_RECEIPT_ENTITLEMENT_BYTES,
     };
+    use crate::infrastructure::daemon::protocol_v5::V5InvocationPhase as TestV5InvocationPhase;
     use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
+
+    #[test]
+    fn receipt_pending_observation_distinguishes_phase_and_projects_cancel_request() {
+        let identity = CoreIdentity::production_v5();
+        let key = fresh_key(&identity, &Map::new()).expect("construct pending receipt key");
+        let cases = [
+            (TestV5InvocationPhase::CancelReserved, true),
+            (TestV5InvocationPhase::ReservedUnbound, false),
+            (TestV5InvocationPhase::ReservedActorBound, true),
+            (TestV5InvocationPhase::ReservedBegun, false),
+        ];
+
+        let observed = cases
+            .into_iter()
+            .map(|(phase, cancel_requested)| {
+                let response = V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::ReceiptPending {
+                        receipt_key: key.clone(),
+                        phase,
+                        accepted_epoch_ms: 1_000,
+                        original_budget_ms: 6_000,
+                        cancel_requested,
+                    },
+                };
+                let projected = response_observation(&response, None)
+                    .expect("project protocol-v5 pending response");
+                json!({
+                    "kind": projected["kind"],
+                    "cancelRequested": projected["cancelRequested"],
+                })
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            observed,
+            vec![
+                json!({ "kind": "cancelled", "cancelRequested": true }),
+                json!({ "kind": "pending", "cancelRequested": false }),
+                json!({ "kind": "pending", "cancelRequested": true }),
+                json!({ "kind": "pending", "cancelRequested": false }),
+            ]
+        );
+    }
 
     #[test]
     fn protocol_ack_loss_retry_and_duplicate_read_the_same_compact_tombstone() {

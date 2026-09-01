@@ -468,8 +468,7 @@ impl V5ReceiptRuntime {
             CancelInvocationDecision::ExistingDirectTerminal(receipt) => self
                 .reply_for_existing_state(ReceiptState::DirectTerminalUnacked(receipt), deadline),
             CancelInvocationDecision::Rejected(rejection) => {
-                let _retained = rejection.into_state();
-                Err(ReceiptLedgerError::ReceiptRowPresentUnsupported)
+                self.reply_for_existing_state(rejection.into_state(), deadline)
             }
         }
     }
@@ -2047,6 +2046,52 @@ mod tests {
 
         assert!(error.requires_reopen());
         assert_eq!(daemon_error_code(&error), V5DaemonErrorCode::StoreFailed);
+    }
+
+    #[test]
+    fn cancel_existing_reserved_receipt_returns_the_typed_pending_winner() {
+        let root = tempfile::tempdir().expect("temporary existing-winner state root");
+        let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+        let identity = CoreIdentity::production_v5();
+        let state = DaemonStateDirectory::open(&state_root, &identity)
+            .expect("open existing-winner daemon state");
+        let runtime = V5ReceiptRuntime::open(
+            &state,
+            &DaemonServerConfig::new(state_root, identity.clone(), Duration::from_millis(50)),
+        )
+        .expect("open protocol-v5 runtime");
+        let key = ReceiptKey::new(
+            InvocationId::new(),
+            TaskId::new(),
+            RequestIdentity::new(
+                identity.digest().clone(),
+                V5ToolIdentity::View,
+                normalized_arguments_hash(&serde_json::Map::new()),
+                request_scope_hash("workspace-a").expect("request scope"),
+            ),
+        );
+        let cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff");
+        runtime
+            .receipt_ledger
+            .reserve(key.clone(), cutoff, Instant::now() + Duration::from_secs(2))
+            .expect("reserve exact receipt");
+
+        let reply = runtime
+            .cancel_invocation(key.clone(), 2_000, Instant::now() + Duration::from_secs(2))
+            .expect("return the existing reserved winner");
+
+        assert!(matches!(
+            reply,
+            V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::ReceiptPending {
+                    receipt_key,
+                    phase: V5InvocationPhase::ReservedUnbound,
+                    accepted_epoch_ms: 1_000,
+                    original_budget_ms: 7_000,
+                    cancel_requested: false,
+                },
+            }) if receipt_key == key
+        ));
     }
 
     #[test]
