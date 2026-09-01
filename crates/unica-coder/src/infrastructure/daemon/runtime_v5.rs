@@ -9,8 +9,8 @@ use super::protocol_v5::{
 #[cfg(feature = "receipt-ledger-test-support")]
 use super::protocol_v5::{decode_v5_server_response, read_bounded_v5_probe_response_frame};
 use super::server::{
-    CanonicalInvocationService, DaemonServerConfig, V5CanonicalInvocationRuntime,
-    V5CanonicalPrepareError, V5PreparedCanonicalInvocation,
+    CanonicalInvocationService, DaemonServerConfig, V5ActorBoundCanonicalInvocation,
+    V5CanonicalInvocationRuntime, V5CanonicalPrepareError,
 };
 use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
 use crate::application::invocation_store::{EpochMillisClock, ToolIdentity};
@@ -567,10 +567,10 @@ impl V5InvocationExecutor {
         }
     }
 
-    fn prepare(
+    fn bind(
         &self,
         invocation: V5InvocationRequest,
-    ) -> Result<V5PreparedCanonicalInvocation, V5CanonicalPrepareError> {
+    ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
         let tool = match invocation.tool() {
             crate::application::receipt_ledger::V5ToolIdentity::View => ToolIdentity::View,
             crate::application::receipt_ledger::V5ToolIdentity::Apply => ToolIdentity::Apply,
@@ -596,7 +596,7 @@ impl V5InvocationExecutor {
                 ),
             ))
         })?;
-        self.invocation_runtime.prepare(request)
+        self.invocation_runtime.bind(request)
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]
@@ -786,14 +786,12 @@ impl V5ReceiptRuntime {
         self.telemetry
             .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
         #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry.record_prepare();
-        #[cfg(feature = "receipt-ledger-test-support")]
         self.telemetry.record_event(
             V5ReceiptRuntimeEventKind::CanonicalV13ServiceEntered,
             epoch_ms,
         );
-        let prepared = match self.invocation_executor.prepare(invocation) {
-            Ok(prepared) => prepared,
+        let actor_bound = match self.invocation_executor.bind(invocation) {
+            Ok(actor_bound) => actor_bound,
             Err(error) => {
                 let outcome = match error {
                     V5CanonicalPrepareError::Rejected(result) => {
@@ -820,9 +818,28 @@ impl V5ReceiptRuntime {
         let bound = self.receipt_ledger.bind_reserved_actor(
             reservation.key().clone(),
             reservation.record_version(),
-            prepared.workspace_identity_hash().clone(),
+            actor_bound.workspace_identity_hash().clone(),
             deadline,
         )?;
+        let begun = self.receipt_ledger.mark_reserved_begun(
+            bound.key().clone(),
+            bound.record_version(),
+            deadline,
+        )?;
+        #[cfg(feature = "receipt-ledger-test-support")]
+        self.telemetry.record_prepare();
+        let prepared = match actor_bound.prepare() {
+            Ok(prepared) => prepared,
+            Err(result) => {
+                let terminal = crate::application::receipt_ledger::canonical_v5_terminal(
+                    &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
+                        result,
+                    },
+                )
+                .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                return self.publish_direct_terminal(begun, epoch_ms, terminal, deadline);
+            }
+        };
         if matches!(
             prepared.execution_class(),
             crate::application::operation_descriptors::ExecutionClass::KnownLong(_)
@@ -833,13 +850,8 @@ impl V5ReceiptRuntime {
                 },
             )
             .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-            return self.publish_direct_terminal(bound, epoch_ms, terminal, deadline);
+            return self.publish_direct_terminal(begun, epoch_ms, terminal, deadline);
         }
-        let begun = self.receipt_ledger.mark_reserved_begun(
-            bound.key().clone(),
-            bound.record_version(),
-            deadline,
-        )?;
         #[cfg(feature = "receipt-ledger-test-support")]
         self.telemetry.record_execute();
         let outcome = match prepared.execute() {

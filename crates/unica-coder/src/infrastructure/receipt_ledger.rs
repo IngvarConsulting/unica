@@ -4,7 +4,8 @@ use crate::application::receipt_ledger::{
     CancelResolution, CommittedDirectPublication, DirectTerminalUnackedReceipt,
     OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort,
     ReceiptRecordHeader, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
-    ReceiptVersion, ReserveOutcome, ReservedPhase, ReservedReceipt, TaskPromisedUnboundReceipt,
+    ReceiptVersion, ReserveOutcome, ReservedPhase, ReservedReceipt, TaskLinkDigest,
+    TaskLinkReference, TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt,
     TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal,
     ACKNOWLEDGED_TOMBSTONE_TTL_MS, CANCEL_RESERVATION_TTL_MS, DIRECT_TERMINAL_RETENTION_MS,
     MAX_ACKNOWLEDGED_TOMBSTONES, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
@@ -234,6 +235,19 @@ enum StoredActiveLifecycleV1 {
         task_version: u64,
         cancel_requested: bool,
     },
+    TaskPromisedActorBound {
+        original_cutoff: OriginalCutoffDescriptor,
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        task_version: u64,
+        workspace_identity_hash: SafeIdentityHash,
+        task_link_digest: TaskLinkDigest,
+        cancel_requested: bool,
+    },
     DirectTerminalUnacked {
         original_cutoff: OriginalCutoffDescriptor,
         terminal_epoch_ms: u64,
@@ -293,6 +307,7 @@ impl CatalogEntry {
             | StoredActiveLifecycleV1::ReservedActorBound { .. }
             | StoredActiveLifecycleV1::ReservedBegun { .. }
             | StoredActiveLifecycleV1::TaskPromisedUnbound { .. }
+            | StoredActiveLifecycleV1::TaskPromisedActorBound { .. }
             | StoredActiveLifecycleV1::DirectTerminalUnacked { .. }
             | StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. } => {
                 MAX_RECEIPT_ENTITLEMENT_BYTES
@@ -419,6 +434,49 @@ impl CatalogEntry {
                     self.reserved_result_bytes(),
                 )?,
             )),
+            StoredActiveLifecycleV1::TaskPromisedActorBound {
+                task_id,
+                invocation_id,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                task_version,
+                workspace_identity_hash,
+                task_link_digest,
+                cancel_requested,
+                ..
+            } => {
+                let task = ReceiptTaskProjection::new(
+                    *task_id,
+                    *invocation_id,
+                    *created_at_epoch_ms,
+                    *updated_at_epoch_ms,
+                    *ttl_ms,
+                    *poll_interval_ms,
+                    *task_version,
+                )?;
+                let link = TaskLinkReference::new(
+                    self.record.key_digest.clone(),
+                    *task_id,
+                    *invocation_id,
+                    workspace_identity_hash.clone(),
+                );
+                if link.digest() != task_link_digest {
+                    return Err(ReceiptLedgerError::Corrupt(
+                        "promised Task link digest contradicts its actor identity",
+                    ));
+                }
+                Ok(ReceiptState::TaskPromisedActorBound(
+                    TaskPromisedActorBoundReceipt::new(
+                        self.record_header(),
+                        task,
+                        link,
+                        *cancel_requested,
+                        self.reserved_result_bytes(),
+                    )?,
+                ))
+            }
             StoredActiveLifecycleV1::DirectTerminalUnacked {
                 original_cutoff,
                 terminal_epoch_ms,
@@ -1996,6 +2054,143 @@ impl ReceiptLedgerStore {
                 })?;
         match committed.state()? {
             ReceiptState::TaskPromisedUnbound(receipt) => Ok(receipt),
+            _ => Err(ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: key_digest,
+            }),
+        }
+    }
+
+    pub(crate) fn bind_promised_task_actor(
+        &self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        workspace_identity_hash: SafeIdentityHash,
+        deadline: Instant,
+    ) -> Result<TaskPromisedActorBoundReceipt, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let key_digest = receipt_key_digest(key);
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+        let expected = catalog
+            .records
+            .get(&key_digest)
+            .cloned()
+            .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
+        if &expected.record.key != key {
+            return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
+        }
+        let persisted = self
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "catalogued receipt row is missing",
+            ))?;
+        if persisted != expected {
+            return latch_catalog_error(
+                &mut catalog,
+                ReceiptLedgerError::Corrupt("catalogued receipt row changed on disk"),
+            );
+        }
+        if persisted.record.record_version != expected_version {
+            return Err(ReceiptLedgerError::ReceiptVersionMismatch {
+                expected: expected_version,
+                actual: persisted.record.record_version,
+            });
+        }
+        let original_cutoff = match &persisted.record.lifecycle {
+            StoredActiveLifecycleV1::TaskPromisedUnbound {
+                original_cutoff, ..
+            } => *original_cutoff,
+            _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+        };
+        let promised = match persisted.state()? {
+            ReceiptState::TaskPromisedUnbound(promised) => promised,
+            _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+        };
+        let link = TaskLinkReference::new(
+            key_digest.clone(),
+            promised.task().task_id(),
+            promised.task().invocation_id(),
+            workspace_identity_hash.clone(),
+        );
+        let next_record_version =
+            expected_version
+                .checked_next()
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "receipt record version exhausted u64",
+                ))?;
+        let generation = latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = generation
+            .checked_add(1)
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt generation exhausted u64",
+            ))?;
+        let task = promised.task();
+        let record = StoredActiveReceiptV1 {
+            schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+            mutation_sequence,
+            record_version: next_record_version,
+            key: key.clone(),
+            key_digest: key_digest.clone(),
+            lifecycle: StoredActiveLifecycleV1::TaskPromisedActorBound {
+                original_cutoff,
+                task_id: task.task_id(),
+                invocation_id: task.invocation_id(),
+                created_at_epoch_ms: task.created_at_epoch_ms(),
+                updated_at_epoch_ms: task.updated_at_epoch_ms(),
+                ttl_ms: task.ttl_ms(),
+                poll_interval_ms: task.poll_interval_ms(),
+                task_version: task.version(),
+                workspace_identity_hash,
+                task_link_digest: link.digest().clone(),
+                cancel_requested: promised.cancel_requested(),
+            },
+        };
+        let (record, encoded) =
+            serialize_reserved_record(record, MAX_TASK_RECORD_ENVELOPE_BYTES as u64)?;
+        let replacement = CatalogEntry {
+            record: record.clone(),
+            encoded_bytes: u64::try_from(encoded.len())
+                .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
+        };
+        validate_catalog_replace(&catalog, &expected, &replacement)?;
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_replace(&mut catalog, replacement);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        match self.read_active_record_bytes(&key_digest) {
+            Ok(Some(committed)) if committed == encoded => {}
+            Ok(Some(_)) | Ok(None) | Err(_) => {
+                catalog.unavailable = true;
+                return Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                });
+            }
+        }
+        let committed =
+            catalog
+                .records
+                .get(&key_digest)
+                .ok_or(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest.clone(),
+                })?;
+        match committed.state()? {
+            ReceiptState::TaskPromisedActorBound(receipt) => Ok(receipt),
             _ => Err(ReceiptLedgerError::CommitUncertain {
                 receipt_key_digest: key_digest,
             }),
@@ -4029,6 +4224,22 @@ impl ReceiptLedgerPort for ReceiptLedgerStore {
         )
     }
 
+    fn bind_promised_task_actor(
+        &mut self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        workspace_identity_hash: SafeIdentityHash,
+        deadline: Instant,
+    ) -> Result<TaskPromisedActorBoundReceipt, ReceiptLedgerError> {
+        ReceiptLedgerStore::bind_promised_task_actor(
+            self,
+            key,
+            expected_version,
+            workspace_identity_hash,
+            deadline,
+        )
+    }
+
     fn request_cancel_or_reserve(
         &mut self,
         key: ReceiptKey,
@@ -4205,6 +4416,7 @@ fn read_active_record_from_retained(
             | StoredActiveLifecycleV1::ReservedActorBound { .. }
             | StoredActiveLifecycleV1::ReservedBegun { .. }
             | StoredActiveLifecycleV1::TaskPromisedUnbound { .. }
+            | StoredActiveLifecycleV1::TaskPromisedActorBound { .. }
             | StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. }
             | StoredActiveLifecycleV1::AcknowledgementCommit { .. }
             | StoredActiveLifecycleV1::AcknowledgedTombstone { .. }
@@ -4724,7 +4936,8 @@ fn validate_persisted_reserved_record_bytes(
         StoredActiveLifecycleV1::ReservedUnbound { .. }
         | StoredActiveLifecycleV1::ReservedActorBound { .. }
         | StoredActiveLifecycleV1::ReservedBegun { .. }
-        | StoredActiveLifecycleV1::TaskPromisedUnbound { .. } => {
+        | StoredActiveLifecycleV1::TaskPromisedUnbound { .. }
+        | StoredActiveLifecycleV1::TaskPromisedActorBound { .. } => {
             MAX_TASK_RECORD_ENVELOPE_BYTES as u64
         }
         StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. } => MAX_RECEIPT_ENTITLEMENT_BYTES,
@@ -4973,6 +5186,41 @@ fn validate_active_record(
             {
                 return Err(ReceiptLedgerError::Corrupt(
                     "promised Task row contradicts its receipt identity or lifecycle",
+                ));
+            }
+            MAX_TASK_RECORD_ENVELOPE_BYTES as u64
+        }
+        StoredActiveLifecycleV1::TaskPromisedActorBound {
+            original_cutoff,
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            task_version,
+            workspace_identity_hash,
+            task_link_digest,
+            ..
+        } => {
+            let expected_link = TaskLinkReference::new(
+                record.key_digest.clone(),
+                *task_id,
+                *invocation_id,
+                workspace_identity_hash.clone(),
+            );
+            if record.record_version.get() < 3
+                || *task_id != record.key.reserved_task_id()
+                || *invocation_id != record.key.invocation_id()
+                || updated_at_epoch_ms < created_at_epoch_ms
+                || created_at_epoch_ms < &original_cutoff.accepted_epoch_ms()
+                || *ttl_ms == 0
+                || *poll_interval_ms == 0
+                || *task_version == 0
+                || expected_link.digest() != task_link_digest
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "actor-bound promised Task row contradicts its receipt or link identity",
                 ));
             }
             MAX_TASK_RECORD_ENVELOPE_BYTES as u64
@@ -7059,6 +7307,61 @@ mod tests {
             ReceiptState::TaskPromisedUnbound(promised)
         );
         assert_eq!(reopened.generation().expect("reopened generation"), 2);
+    }
+
+    #[test]
+    fn promised_task_actor_binding_is_exact_and_reopens() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let cutoff =
+            OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid original response cutoff");
+        let workspace_identity = SafeIdentityHash::from_sha256([0x77; 32]);
+
+        let bound = {
+            let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+            let reserved = store
+                .reserve(key.clone(), cutoff, reserve_deadline())
+                .expect("reserve exact receipt")
+                .into_reservation()
+                .expect("receipt remains reserved");
+            let promised = store
+                .promise_task_unbound(
+                    &key,
+                    reserved.record_version(),
+                    1_007,
+                    3_600_000,
+                    250,
+                    reserve_deadline(),
+                )
+                .expect("durably promise exact reserved Task");
+            store
+                .bind_promised_task_actor(
+                    &key,
+                    promised.record_version(),
+                    workspace_identity.clone(),
+                    reserve_deadline(),
+                )
+                .expect("durably bind promised Task actor")
+        };
+
+        assert_eq!(bound.key(), &key);
+        assert_eq!(bound.task().task_id(), key.reserved_task_id());
+        assert_eq!(bound.task().invocation_id(), key.invocation_id());
+        assert_eq!(bound.workspace_identity_hash(), &workspace_identity);
+        assert_eq!(bound.record_version().get(), 3);
+        assert_eq!(bound.mutation_sequence(), 3);
+
+        let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen receipt ledger");
+        assert_eq!(
+            reopened
+                .recover_exact(&key, reserve_deadline())
+                .expect("recover actor-bound promised Task"),
+            ReceiptState::TaskPromisedActorBound(bound)
+        );
+        assert_eq!(reopened.generation().expect("reopened generation"), 3);
     }
 
     #[test]
@@ -9536,6 +9839,9 @@ mod tests {
             }
             StoredActiveLifecycleV1::TaskPromisedUnbound { .. } => {
                 panic!("unbound fixture decoded as a promised Task")
+            }
+            StoredActiveLifecycleV1::TaskPromisedActorBound { .. } => {
+                panic!("unbound fixture decoded as an actor-bound promised Task")
             }
             StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
                 panic!("reserved fixture decoded as a direct terminal")

@@ -501,6 +501,16 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 
+    fn bind_promised_task_actor(
+        &mut self,
+        _key: &ReceiptKey,
+        _expected_version: ReceiptVersion,
+        _workspace_identity_hash: SafeIdentityHash,
+        _deadline: Instant,
+    ) -> Result<TaskPromisedActorBoundReceipt, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
     fn request_cancel_or_reserve(
         &mut self,
         key: ReceiptKey,
@@ -1016,6 +1026,32 @@ impl ReceiptTaskProjection {
 pub(crate) struct TaskLinkReference {
     identity: TaskLinkIdentity,
     digest: TaskLinkDigest,
+}
+
+impl TaskLinkReference {
+    pub(crate) fn new(
+        receipt_key_digest: ReceiptKeyDigest,
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        workspace_identity_hash: SafeIdentityHash,
+    ) -> Self {
+        let identity = TaskLinkIdentity::new(
+            receipt_key_digest,
+            task_id,
+            invocation_id,
+            workspace_identity_hash,
+        );
+        let digest = task_link_digest(&identity);
+        Self { identity, digest }
+    }
+
+    pub(crate) fn digest(&self) -> &TaskLinkDigest {
+        &self.digest
+    }
+
+    pub(crate) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
+        &self.identity.workspace_identity_hash
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1556,6 +1592,75 @@ pub(crate) struct TaskPromisedActorBoundReceipt {
     link: TaskLinkReference,
     cancel_requested: bool,
     reserved_result_bytes: u64,
+}
+
+impl TaskPromisedActorBoundReceipt {
+    pub(crate) fn new(
+        record: ReceiptRecordHeader,
+        task: ReceiptTaskProjection,
+        link: TaskLinkReference,
+        cancel_requested: bool,
+        reserved_result_bytes: u64,
+    ) -> Result<Self, ReceiptLedgerError> {
+        if task.task_id() != record.key.reserved_task_id()
+            || task.invocation_id() != record.key.invocation_id()
+            || link.identity.receipt_key_digest != record.key_digest
+            || link.identity.task_id != task.task_id()
+            || link.identity.invocation_id != task.invocation_id()
+            || task_link_digest(&link.identity) != link.digest
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "actor-bound promised Task contradicts its receipt or link identity",
+            ));
+        }
+        Ok(Self {
+            record,
+            task,
+            link,
+            cancel_requested,
+            reserved_result_bytes,
+        })
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        &self.record.key
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        &self.record.key_digest
+    }
+
+    pub(crate) fn task(&self) -> &ReceiptTaskProjection {
+        &self.task
+    }
+
+    pub(crate) fn link(&self) -> &TaskLinkReference {
+        &self.link
+    }
+
+    pub(crate) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
+        self.link.workspace_identity_hash()
+    }
+
+    pub(crate) const fn cancel_requested(&self) -> bool {
+        self.cancel_requested
+    }
+
+    pub(crate) const fn reserved_result_bytes(&self) -> u64 {
+        self.reserved_result_bytes
+    }
+
+    pub(crate) const fn record_version(&self) -> ReceiptVersion {
+        self.record.record_version
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        self.record.mutation_sequence
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.record.encoded_bytes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

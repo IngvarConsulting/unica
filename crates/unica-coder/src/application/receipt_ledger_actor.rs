@@ -2,7 +2,8 @@ use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelResolution,
     CommittedDirectPublication, OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest,
     ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion, ReserveOutcome,
-    ReservedReceipt, TaskPromisedUnboundReceipt, TerminalDigest, V5CanonicalTerminal,
+    ReservedReceipt, TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt, TerminalDigest,
+    V5CanonicalTerminal,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -239,6 +240,13 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<TaskPromisedUnboundReceipt>>,
     },
+    BindPromisedTaskActor {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        workspace_identity_hash: SafeIdentityHash,
+        deadline: Instant,
+        ticket: Arc<Ticket<TaskPromisedActorBoundReceipt>>,
+    },
     RequestCancelOrReserve {
         key: ReceiptKey,
         cancel_reserved_at_epoch_ms: u64,
@@ -445,6 +453,7 @@ enum TimeoutClass {
     BindReservedActor(ReceiptKeyDigest),
     MarkReservedBegun(ReceiptKeyDigest),
     PromiseTaskUnbound(ReceiptKeyDigest),
+    BindPromisedTaskActor(ReceiptKeyDigest),
     RequestCancelOrReserve(ReceiptKeyDigest),
     ExpireCancelReserved(ReceiptKeyDigest),
     PublishDirectTerminal(ReceiptKeyDigest),
@@ -464,6 +473,7 @@ impl TimeoutClass {
             | Self::BindReservedActor(receipt_key_digest)
             | Self::MarkReservedBegun(receipt_key_digest)
             | Self::PromiseTaskUnbound(receipt_key_digest)
+            | Self::BindPromisedTaskActor(receipt_key_digest)
             | Self::RequestCancelOrReserve(receipt_key_digest)
             | Self::ExpireCancelReserved(receipt_key_digest)
             | Self::PublishDirectTerminal(receipt_key_digest)
@@ -672,6 +682,39 @@ impl ReceiptLedgerActor {
                 created_at_epoch_ms,
                 ttl_ms,
                 poll_interval_ms,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn bind_promised_task_actor(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        workspace_identity_hash: SafeIdentityHash,
+        deadline: Instant,
+    ) -> Result<TaskPromisedActorBoundReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::BindPromisedTaskActor(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::BindPromisedTaskActor {
+                key,
+                expected_version,
+                workspace_identity_hash,
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -1054,6 +1097,30 @@ fn run_worker(
                         created_at_epoch_ms,
                         ttl_ms,
                         poll_interval_ms,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::BindPromisedTaskActor {
+                key,
+                expected_version,
+                workspace_identity_hash,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.bind_promised_task_actor(
+                        &key,
+                        expected_version,
+                        workspace_identity_hash,
                         deadline,
                     )
                 }))

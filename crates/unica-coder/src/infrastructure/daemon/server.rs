@@ -456,10 +456,16 @@ pub(super) struct V5CanonicalInvocationRuntime {
     runtime_resources: Arc<RuntimeResourceOwner>,
 }
 
+#[derive(Debug)]
 pub(super) enum V5CanonicalPrepareError {
     Rejected(Box<DomainResult>),
     WorkspaceCapacity,
     WorkspaceRegistryFailed,
+}
+
+pub(super) struct V5ActorBoundCanonicalInvocation {
+    invocation: ActorBoundInvocation,
+    service: Arc<dyn CanonicalInvocationService>,
 }
 
 pub(super) struct V5PreparedCanonicalInvocation {
@@ -480,10 +486,10 @@ impl V5CanonicalInvocationRuntime {
         }
     }
 
-    pub(super) fn prepare(
+    pub(super) fn bind(
         &self,
         request: InvocationRequest,
-    ) -> Result<V5PreparedCanonicalInvocation, V5CanonicalPrepareError> {
+    ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
         let response_deadline = InvocationResponseDeadline::capture(Arc::clone(&self.clock))
             .restrict_to_frontend_budget(Duration::from_millis(request.response_budget_ms()));
         if let Err(summary) = validate_hidden_v13_request(&request) {
@@ -509,23 +515,29 @@ impl V5CanonicalInvocationRuntime {
                 failed_domain_result("workspace actor admission failed"),
             )),
         })?;
-        let class = self
-            .service
-            .prepare(&invocation)
-            .map_err(V5CanonicalPrepareError::Rejected)?;
-        Ok(V5PreparedCanonicalInvocation {
+        Ok(V5ActorBoundCanonicalInvocation {
             invocation,
-            class,
             service: Arc::clone(&self.service),
         })
     }
 }
 
-impl V5PreparedCanonicalInvocation {
+impl V5ActorBoundCanonicalInvocation {
     pub(super) fn workspace_identity_hash(&self) -> &crate::domain::invocation::SafeIdentityHash {
         self.invocation.workspace_identity_hash()
     }
 
+    pub(super) fn prepare(self) -> Result<V5PreparedCanonicalInvocation, Box<DomainResult>> {
+        let class = self.service.prepare(&self.invocation)?;
+        Ok(V5PreparedCanonicalInvocation {
+            invocation: self.invocation,
+            class,
+            service: self.service,
+        })
+    }
+}
+
+impl V5PreparedCanonicalInvocation {
     pub(super) const fn execution_class(&self) -> &ExecutionClass {
         &self.class
     }
@@ -5869,6 +5881,10 @@ struct ActorLogicalReadLease {"#,
         executions: Arc<AtomicUsize>,
     }
 
+    struct CountingPrepareService {
+        preparations: Arc<AtomicUsize>,
+    }
+
     struct SharedDeliveryService {
         key: DeliveryWorkKey,
         ready_root: std::path::PathBuf,
@@ -6032,6 +6048,63 @@ struct ActorLogicalReadLease {"#,
             self.executions.fetch_add(1, Ordering::SeqCst);
             Ok(DomainResult::success("deadline-bound prepare result"))
         }
+    }
+
+    impl CanonicalInvocationService for CountingPrepareService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            self.preparations.fetch_add(1, Ordering::SeqCst);
+            Ok(ExecutionClass::InlineCandidate)
+        }
+
+        fn execute(
+            &self,
+            _invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            Ok(DomainResult::success("counted execution"))
+        }
+    }
+
+    #[test]
+    fn v5_actor_binding_does_not_enter_domain_prepare_before_explicit_begin() {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).expect("create source root");
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .expect("write workspace descriptor");
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .expect("write configuration root");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Configuration"}),
+            std::fs::canonicalize(workspace.path())
+                .expect("canonical workspace")
+                .to_string_lossy(),
+            7_000,
+        )
+        .expect("valid request");
+
+        let bound = runtime.bind(request).expect("bind workspace actor");
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+        let prepared = bound.prepare().expect("enter domain prepare explicitly");
+        assert_eq!(preparations.load(Ordering::SeqCst), 1);
+        assert_eq!(prepared.execution_class(), &ExecutionClass::InlineCandidate);
     }
 
     impl CanonicalInvocationService for SharedDeliveryService {
