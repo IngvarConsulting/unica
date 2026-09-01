@@ -5737,6 +5737,24 @@ struct ActorLogicalReadLease {"#,
         Arc<(Mutex<bool>, Condvar)>,
     );
 
+    const OWNERSHIP_CONTRACT_RECONCILIATION_BUDGET: Duration = Duration::from_secs(15);
+    const OWNERSHIP_CONTRACT_WAIT_MS: u64 = 15_000;
+
+    fn ownership_contract_runtime(
+        store: Arc<dyn InvocationStore>,
+        service: Arc<dyn CanonicalInvocationService>,
+    ) -> DaemonInvocationRuntime {
+        // These fixtures assert capability and actor ownership, not the production
+        // fail-stop deadline. Keep a loaded Windows runner from turning scheduler
+        // delay into an unrelated RestartRequested result.
+        DaemonInvocationRuntime::new_with_reconciliation_budget_for_test(
+            store,
+            service,
+            Arc::new(TokioClock),
+            OWNERSHIP_CONTRACT_RECONCILIATION_BUDGET,
+        )
+    }
+
     fn shared_capability_service(kind: LongCapabilityKind) -> SharedCapabilityFixture {
         let producers = Arc::new(AtomicUsize::new(0));
         let (producer_entered, producer_wait) = mpsc::channel();
@@ -6021,8 +6039,7 @@ struct ActorLogicalReadLease {"#,
                     .unwrap();
             let (service, producers, producer_wait, joined_wait, release) =
                 shared_capability_service(kind.clone());
-            let runtime =
-                DaemonInvocationRuntime::new(Arc::new(store), service, Arc::new(TokioClock));
+            let runtime = ownership_contract_runtime(Arc::new(store), service);
             let runtime = if matches!(kind, LongCapabilityKind::Runtime { .. }) {
                 runtime.with_runtime_service_for_test(Arc::clone(&runtime_service))
             } else {
@@ -6069,8 +6086,16 @@ struct ActorLogicalReadLease {"#,
             let (released, wake) = &*release;
             *released.lock().unwrap() = true;
             wake.notify_all();
-            let first_result = runtime.wait(first, 7_000).unwrap().result.unwrap();
-            let second_result = runtime.wait(second, 7_000).unwrap().result.unwrap();
+            let first_result = runtime
+                .wait(first, OWNERSHIP_CONTRACT_WAIT_MS)
+                .unwrap()
+                .result
+                .unwrap();
+            let second_result = runtime
+                .wait(second, OWNERSHIP_CONTRACT_WAIT_MS)
+                .unwrap()
+                .result
+                .unwrap();
             if matches!(kind, LongCapabilityKind::Index) {
                 assert_eq!(first_result.summary, "index");
                 assert_eq!(second_result.summary, "index");
@@ -6098,7 +6123,7 @@ struct ActorLogicalReadLease {"#,
             FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
         let (service, producers, producer_wait, joined_wait, release) =
             shared_capability_service(LongCapabilityKind::Index);
-        let runtime = DaemonInvocationRuntime::new(Arc::new(store), service, Arc::new(TokioClock));
+        let runtime = ownership_contract_runtime(Arc::new(store), service);
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
@@ -6124,7 +6149,10 @@ struct ActorLogicalReadLease {"#,
         *released.lock().unwrap() = true;
         wake.notify_all();
         assert_eq!(
-            runtime.wait(first, 7_000).unwrap().status,
+            runtime
+                .wait(first, OWNERSHIP_CONTRACT_WAIT_MS)
+                .unwrap()
+                .status,
             InvocationStatus::Completed
         );
         assert_eq!(
@@ -6160,7 +6188,7 @@ struct ActorLogicalReadLease {"#,
             mark_dirty: Mutex::new(dirty_request),
             dirty_done,
         });
-        let runtime = DaemonInvocationRuntime::new(Arc::new(store), service, Arc::new(TokioClock));
+        let runtime = ownership_contract_runtime(Arc::new(store), service);
         let first = task_id(submit_at_receipt(&runtime, request(&root)).unwrap());
         producer_wait.recv_timeout(Duration::from_secs(10)).unwrap();
         let old_key = joined_wait.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -6177,10 +6205,13 @@ struct ActorLogicalReadLease {"#,
         *released.lock().unwrap() = true;
         wake.notify_all();
         assert_eq!(
-            runtime.wait(first, 7_000).unwrap().status,
+            runtime
+                .wait(first, OWNERSHIP_CONTRACT_WAIT_MS)
+                .unwrap()
+                .status,
             InvocationStatus::Failed
         );
-        let second = runtime.wait(second, 7_000).unwrap();
+        let second = runtime.wait(second, OWNERSHIP_CONTRACT_WAIT_MS).unwrap();
         assert_eq!(second.status, InvocationStatus::Completed);
         assert_eq!(second.result.unwrap().summary, "new");
     }
@@ -6197,7 +6228,7 @@ struct ActorLogicalReadLease {"#,
             FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
         let (service, _, producer_wait, joined_wait, release) =
             shared_capability_service(LongCapabilityKind::Index);
-        let runtime = DaemonInvocationRuntime::new(Arc::new(store), service, Arc::new(TokioClock));
+        let runtime = ownership_contract_runtime(Arc::new(store), service);
         let request = || {
             InvocationRequest::new(
                 ToolIdentity::Run,
@@ -6220,37 +6251,55 @@ struct ActorLogicalReadLease {"#,
         *released.lock().unwrap() = true;
         wake.notify_all();
         assert_eq!(
-            runtime.wait(first, 7_000).unwrap().status,
+            runtime
+                .wait(first, OWNERSHIP_CONTRACT_WAIT_MS)
+                .unwrap()
+                .status,
             InvocationStatus::Failed
+        );
+    }
+
+    fn run_long_work_contract_obligation(name: &str, obligation: fn()) {
+        std::thread::Builder::new()
+            .name(name.to_owned())
+            // Each debug-only ownership oracle is independently valid on the
+            // test harness stack. Keep their stack frames isolated instead of
+            // compiling the whole named contract into one aggregate frame.
+            .stack_size(32 * 1024 * 1024)
+            .spawn(obligation)
+            .expect("long-work contract obligation thread should start")
+            .join()
+            .expect("long-work contract obligation thread should finish");
+    }
+
+    fn runtime_resource_tree_contract_obligation() {
+        crate::infrastructure::runtime_jobs::reset_runtime_resource_contract_executions_for_test();
+        crate::infrastructure::runtime_jobs::run_runtime_resource_tree_contract_for_test();
+        assert_eq!(
+            crate::infrastructure::runtime_jobs::runtime_resource_contract_executions_for_test(),
+            1,
+            "daemon CTR named check did not execute its runtime-tree obligations"
         );
     }
 
     #[test]
     fn daemon_exact_long_work_ownership_contract() {
-        std::thread::Builder::new()
-            .name("daemon-exact-long-work-contract".to_owned())
-            // The aggregate exercises several deeply nested debug-only
-            // ownership oracles. Windows' test harness stack is too small,
-            // and 8 MiB remained close enough to the limit to be flaky under
-            // the full workspace run.
-            .stack_size(32 * 1024 * 1024)
-            .spawn(|| {
-                crate::infrastructure::runtime_jobs::reset_runtime_resource_contract_executions_for_test();
-
-                daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership();
-                daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication();
-                daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication();
-                crate::infrastructure::runtime_jobs::run_runtime_resource_tree_contract_for_test();
-
-                assert_eq!(
-                    crate::infrastructure::runtime_jobs::runtime_resource_contract_executions_for_test(),
-                    1,
-                    "daemon CTR named check did not execute its runtime-tree obligations"
-                );
-            })
-            .expect("long-work contract thread should start")
-            .join()
-            .expect("long-work contract thread should finish");
+        run_long_work_contract_obligation(
+            "daemon-long-work-capabilities-contract",
+            daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership,
+        );
+        run_long_work_contract_obligation(
+            "daemon-index-revision-contract",
+            daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication,
+        );
+        run_long_work_contract_obligation(
+            "daemon-replaced-root-contract",
+            daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication,
+        );
+        run_long_work_contract_obligation(
+            "daemon-runtime-resource-contract",
+            runtime_resource_tree_contract_obligation,
+        );
     }
 
     fn live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root() {
