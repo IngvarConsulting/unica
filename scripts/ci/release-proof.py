@@ -109,7 +109,11 @@ def _validate_wire(profile: str, evidence: dict[str, Any]) -> dict[str, Any]:
     if evidence.get("toolCount") != len(names):
         raise ProofError(f"{profile} wire evidence toolCount disagrees with toolNames")
     server_info = evidence.get("serverInfo")
-    if not isinstance(server_info, dict) or server_info.get("name") != "unica":
+    if server_info is None and profile == "compatibility":
+        raise ProofError(f"{profile} wire evidence must identify server unica")
+    if server_info is not None and (
+        not isinstance(server_info, dict) or server_info.get("name") != "unica"
+    ):
         raise ProofError(f"{profile} wire evidence must identify server unica")
     protocol = _require_string(evidence.get("protocolVersion"), f"{profile} protocolVersion")
     negotiated = _require_string(

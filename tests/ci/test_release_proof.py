@@ -63,7 +63,11 @@ class ReleaseProofTests(unittest.TestCase):
             "profile": profile,
             "protocolVersion": "2026-07-28" if profile == "native" else "2025-06-18",
             "serverProtocolVersion": "2026-07-28" if profile == "native" else "2025-06-18",
-            "serverInfo": {"name": "unica", "version": "0.12.0"},
+            "serverInfo": (
+                None
+                if profile == "native"
+                else {"name": "unica", "version": "0.12.0"}
+            ),
             "tasksCapability": "on" if profile == "native" else "off",
             "toolCount": len(names),
             "toolNames": sorted(names),
@@ -188,6 +192,18 @@ class ReleaseProofTests(unittest.TestCase):
             report["guards"],
             {"noVersionBump": True, "noTag": True, "noPublication": True},
         )
+
+    def test_native_direct_first_proof_accepts_absent_server_info(self) -> None:
+        native_wires, compatibility_wires = self.wire_sets()
+        for evidence in native_wires.values():
+            evidence["serverInfo"] = None
+
+        report = self.evaluate(
+            native_wires=native_wires,
+            compatibility_wires=compatibility_wires,
+        )
+
+        self.assertEqual(report["status"], "passed")
 
     def test_proof_rejects_any_v0123_tool_name_in_the_rc_surface(self) -> None:
         baseline = json.loads(json.dumps(self.baseline))
