@@ -116,6 +116,7 @@ pub(crate) enum ReceiptLedgerError {
     DeadlineExceeded,
     InvocationIdentityMismatch,
     ReservedTaskIdentityMismatch,
+    TaskBoundMismatch,
     ReceiptVersionMismatch {
         expected: ReceiptVersion,
         actual: ReceiptVersion,
@@ -172,6 +173,9 @@ impl fmt::Display for ReceiptLedgerError {
             Self::ReservedTaskIdentityMismatch => {
                 formatter.write_str("reserved task id belongs to a different receipt key")
             }
+            Self::TaskBoundMismatch => formatter.write_str(
+                "confirmed TaskBound does not match the exact receipt handoff",
+            ),
             Self::ReceiptVersionMismatch { expected, actual } => write!(
                 formatter,
                 "receipt record version mismatch: expected {}, actual {}",
@@ -521,6 +525,18 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _poll_interval_ms: u64,
         _deadline: Instant,
     ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    /// Removes the receipt-owned handoff only after the sole lifecycle-link
+    /// store returned an exact durable/readback-confirmed `TaskBound` proof.
+    fn complete_bound_task_handoff(
+        &mut self,
+        _key: &ReceiptKey,
+        _expected_version: ReceiptVersion,
+        _confirmed_task_bound: TaskBoundReceipt,
+        _deadline: Instant,
+    ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 

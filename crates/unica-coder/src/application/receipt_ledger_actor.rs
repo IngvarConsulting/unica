@@ -2,7 +2,7 @@ use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelResolution,
     CommittedDirectPublication, OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest,
     ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion, ReserveOutcome,
-    ReservedReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
+    ReservedReceipt, TaskBoundReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
     TaskPromisedUnboundReceipt, TerminalDigest, V5CanonicalTerminal,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -256,6 +256,13 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<TaskHandoffActorBoundReceipt>>,
     },
+    CompleteBoundTaskHandoff {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        confirmed_task_bound: Box<TaskBoundReceipt>,
+        deadline: Instant,
+        ticket: Arc<Ticket<TaskBoundReceipt>>,
+    },
     RequestCancelOrReserve {
         key: ReceiptKey,
         cancel_reserved_at_epoch_ms: u64,
@@ -464,6 +471,7 @@ enum TimeoutClass {
     PromiseTaskUnbound(ReceiptKeyDigest),
     BindPromisedTaskActor(ReceiptKeyDigest),
     BeginBoundTaskHandoff(ReceiptKeyDigest),
+    CompleteBoundTaskHandoff(ReceiptKeyDigest),
     RequestCancelOrReserve(ReceiptKeyDigest),
     ExpireCancelReserved(ReceiptKeyDigest),
     PublishDirectTerminal(ReceiptKeyDigest),
@@ -485,6 +493,7 @@ impl TimeoutClass {
             | Self::PromiseTaskUnbound(receipt_key_digest)
             | Self::BindPromisedTaskActor(receipt_key_digest)
             | Self::BeginBoundTaskHandoff(receipt_key_digest)
+            | Self::CompleteBoundTaskHandoff(receipt_key_digest)
             | Self::RequestCancelOrReserve(receipt_key_digest)
             | Self::ExpireCancelReserved(receipt_key_digest)
             | Self::PublishDirectTerminal(receipt_key_digest)
@@ -763,6 +772,39 @@ impl ReceiptLedgerActor {
                 created_at_epoch_ms,
                 ttl_ms,
                 poll_interval_ms,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn complete_bound_task_handoff(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        confirmed_task_bound: TaskBoundReceipt,
+        deadline: Instant,
+    ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::CompleteBoundTaskHandoff(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::CompleteBoundTaskHandoff {
+                key,
+                expected_version,
+                confirmed_task_bound: Box::new(confirmed_task_bound),
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -1205,6 +1247,30 @@ fn run_worker(
                 }));
                 ticket.finish(result, &health);
             }
+            Command::CompleteBoundTaskHandoff {
+                key,
+                expected_version,
+                confirmed_task_bound,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.complete_bound_task_handoff(
+                        &key,
+                        expected_version,
+                        *confirmed_task_bound,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
             Command::RequestCancelOrReserve {
                 key,
                 cancel_reserved_at_epoch_ms,
@@ -1356,12 +1422,14 @@ mod tests {
     use crate::application::invocation::normalized_arguments_hash;
     use crate::application::receipt_ledger::{
         canonical_v5_terminal, receipt_key_digest, request_scope_hash,
-        AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelReservedReceipt, CancelResolution,
-        CommittedDirectPublication, CoreIdentityDigest, OriginalCutoffDescriptor, ReceiptKey,
-        ReceiptLedgerError, ReceiptState, ReceiptTerminalOutcome, ReceiptVersion, RequestIdentity,
-        ReserveOutcome, TerminalDigest, V5CanonicalTerminal, V5ToolIdentity,
+        AcknowledgedTombstoneReceipt, AttemptPhase, CancelExpiryOutcome, CancelReservedReceipt,
+        CancelResolution, CommittedDirectPublication, CoreIdentityDigest,
+        LifecycleLinkRecordHeader, OriginalCutoffDescriptor, ReceiptKey, ReceiptLedgerError,
+        ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome, ReceiptVersion,
+        RequestIdentity, ReserveOutcome, TaskBoundReceipt, TaskLinkReference, TerminalDigest,
+        V5CanonicalTerminal, V5ToolIdentity,
     };
-    use crate::domain::invocation::{InvocationId, TaskId};
+    use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
     use std::cell::Cell;
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1784,6 +1852,124 @@ mod tests {
     fn cancelled_terminal() -> V5CanonicalTerminal {
         canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
             .expect("cancelled terminal is canonical")
+    }
+
+    fn confirmed_task_bound_proof() -> TaskBoundReceipt {
+        let key = receipt_key();
+        let link = TaskLinkReference::new(
+            receipt_key_digest(&key),
+            key.reserved_task_id(),
+            key.invocation_id(),
+            SafeIdentityHash::from_sha256([0x77; 32]),
+        );
+        let header = LifecycleLinkRecordHeader::new(key.clone(), link, 2, 1, 512)
+            .expect("valid lifecycle-link header");
+        TaskBoundReceipt::new(
+            header,
+            ReceiptTaskProjection::new(
+                key.reserved_task_id(),
+                key.invocation_id(),
+                1_000,
+                1_000,
+                3_600_000,
+                250,
+                1,
+            )
+            .expect("valid Task projection"),
+            1,
+            1_001,
+            AttemptPhase::Begun,
+        )
+        .expect("valid confirmed TaskBound proof")
+    }
+
+    struct CompleteHandoffPort {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ReceiptLedgerPort for CompleteHandoffPort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: Instant,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn complete_bound_task_handoff(
+            &mut self,
+            key: &ReceiptKey,
+            expected_version: ReceiptVersion,
+            confirmed_task_bound: TaskBoundReceipt,
+            _deadline: Instant,
+        ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(key, confirmed_task_bound.key());
+            assert_eq!(expected_version.get(), 4);
+            assert_eq!(confirmed_task_bound.phase(), AttemptPhase::Begun);
+            Ok(confirmed_task_bound)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: Instant,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn expire_cancel_reserved(
+            &mut self,
+            _key: ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _expected_mutation_sequence: u64,
+            _observed_at_epoch_ms: u64,
+            _deadline: Instant,
+        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: Instant,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: Instant,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+    }
+
+    #[test]
+    fn complete_bound_task_handoff_round_trips_through_serial_actor() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(CompleteHandoffPort {
+            calls: Arc::clone(&calls),
+        });
+        let proof = confirmed_task_bound_proof();
+        let completed = actor
+            .complete_bound_task_handoff(
+                proof.key().clone(),
+                ReceiptVersion::new(4).expect("nonzero receipt version"),
+                proof.clone(),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .expect("serial actor completes exact handoff");
+
+        assert_eq!(completed, proof);
+        assert_eq!(completed.phase(), AttemptPhase::Begun);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     struct AcknowledgePort {
