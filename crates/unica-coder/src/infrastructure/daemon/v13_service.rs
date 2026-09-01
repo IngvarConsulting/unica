@@ -20,7 +20,9 @@ use crate::infrastructure::native_operations::apply::{
 };
 use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder};
-use crate::infrastructure::workspace_actor::{ApplyEffectDisposition, ApplyPublicationErrorKind};
+use crate::infrastructure::workspace_actor::{
+    ApplyAdmissionError, ApplyEffectDisposition, ApplyPublicationErrorKind,
+};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -131,7 +133,17 @@ impl CanonicalV13ReadService {
         };
         let (binding, admission) = match invocation.admit_apply(&request, cancellation) {
             Ok(admitted) => admitted,
-            Err(error) => {
+            // A stale `ifRev` is a caller conflict with a known recovery —
+            // re-read the revision and retry — so it answers with its own
+            // code instead of masquerading as an unavailable provider.
+            Err(error @ ApplyAdmissionError::StaleRevision { .. }) => {
+                return error_result(
+                    Some(request.at().to_string()),
+                    "stale_revision",
+                    error.to_string(),
+                )
+            }
+            Err(ApplyAdmissionError::Other(error)) => {
                 return error_result(
                     Some(request.at().to_string()),
                     "provider_unavailable",
