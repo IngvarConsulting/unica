@@ -57,10 +57,11 @@ class ReleaseProofTests(unittest.TestCase):
             "unica.task.cancel",
         }
 
-    def wire(self, profile: str, names: set[str]) -> dict:
+    def wire(self, profile: str, target: str, names: set[str]) -> dict:
         return {
             "schemaVersion": 1,
             "profile": profile,
+            "target": target,
             "protocolVersion": "2026-07-28" if profile == "native" else "2025-06-18",
             "serverProtocolVersion": "2026-07-28" if profile == "native" else "2025-06-18",
             "serverInfo": (
@@ -79,11 +80,11 @@ class ReleaseProofTests(unittest.TestCase):
     def wire_sets(self) -> tuple[dict[str, dict], dict[str, dict]]:
         return (
             {
-                target: self.wire("native", self.native_names)
+                target: self.wire("native", target, self.native_names)
                 for target in self.module.TARGETS
             },
             {
-                target: self.wire("compatibility", self.compatibility_names)
+                target: self.wire("compatibility", target, self.compatibility_names)
                 for target in self.module.TARGETS
             },
         )
@@ -300,6 +301,16 @@ class ReleaseProofTests(unittest.TestCase):
         del native_wires["win-x64"]
 
         with self.assertRaisesRegex(self.module.ProofError, "all targets"):
+            self.evaluate(
+                native_wires=native_wires,
+                compatibility_wires=compatibility_wires,
+            )
+
+    def test_proof_rejects_wire_evidence_copied_from_another_target(self) -> None:
+        native_wires, compatibility_wires = self.wire_sets()
+        native_wires["linux-x64"]["target"] = "darwin-arm64"
+
+        with self.assertRaisesRegex(self.module.ProofError, "wrong target"):
             self.evaluate(
                 native_wires=native_wires,
                 compatibility_wires=compatibility_wires,

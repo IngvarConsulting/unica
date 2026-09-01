@@ -108,6 +108,7 @@ class WireProbeTests(unittest.TestCase):
         tasks_capability: str = "off",
         protocol_version: str = "2025-06-18",
         profile: str | None = None,
+        target: str | None = None,
         timeout_seconds: float = 2.0,
     ) -> subprocess.CompletedProcess[str]:
         command = [
@@ -128,6 +129,8 @@ class WireProbeTests(unittest.TestCase):
             ]
         if profile is not None:
             command.extend(["--profile", profile])
+        if target is not None:
+            command.extend(["--target", target])
         return subprocess.run(
             command,
             capture_output=True,
@@ -231,6 +234,7 @@ class WireProbeTests(unittest.TestCase):
                 server,
                 output,
                 profile="native",
+                target="linux-x64",
                 tasks_capability="on",
                 protocol_version="2026-07-28",
             )
@@ -240,6 +244,7 @@ class WireProbeTests(unittest.TestCase):
 
         self.assertEqual(evidence["schemaVersion"], 1)
         self.assertEqual(evidence["profile"], "native")
+        self.assertEqual(evidence["target"], "linux-x64")
 
     def test_exhausts_direct_first_pagination_and_writes_deterministic_json(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

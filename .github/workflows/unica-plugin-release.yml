@@ -378,6 +378,7 @@ jobs:
             --protocol-version 2026-07-28 \
             --tasks-capability on \
             --profile native \
+            --target "$TARGET" \
             --output ".build/p0-wire/native-$TARGET.json"
       - name: Probe compatibility package wire profile
         shell: bash
@@ -393,6 +394,7 @@ jobs:
             --protocol-version 2025-06-18 \
             --tasks-capability off \
             --profile compatibility \
+            --target "$TARGET" \
             --output ".build/p0-wire/compatibility-$TARGET.json"
       - name: Stage exact bootstrap payload
         shell: bash

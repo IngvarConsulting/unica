@@ -91,11 +91,15 @@ def _require_string(value: Any, name: str) -> str:
     return value
 
 
-def _validate_wire(profile: str, evidence: dict[str, Any]) -> dict[str, Any]:
+def _validate_wire(
+    profile: str, target: str, evidence: dict[str, Any]
+) -> dict[str, Any]:
     if evidence.get("schemaVersion") != SCHEMA_VERSION:
         raise ProofError(f"{profile} wire evidence schemaVersion must be {SCHEMA_VERSION}")
     if evidence.get("profile") != profile:
         raise ProofError(f"{profile} wire evidence has wrong profile")
+    if evidence.get("target") != target:
+        raise ProofError(f"{profile} wire evidence has wrong target")
     names = evidence.get("toolNames")
     if not isinstance(names, list) or not all(isinstance(name, str) and name for name in names):
         raise ProofError(f"{profile} wire evidence toolNames must be a string array")
@@ -148,7 +152,9 @@ def _validate_wire_profiles(
 ) -> dict[str, Any]:
     if set(wires) != set(TARGETS):
         raise ProofError(f"{profile} wire evidence must cover all targets: {', '.join(TARGETS)}")
-    validated = {target: _validate_wire(profile, wires[target]) for target in TARGETS}
+    validated = {
+        target: _validate_wire(profile, target, wires[target]) for target in TARGETS
+    }
     first = validated[TARGETS[0]]
     if any(value != first for value in validated.values()):
         raise ProofError(f"{profile} wire evidence differs across targets")

@@ -194,6 +194,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("git tag", proof.body)
         self.assertIn("      - p0-release-proof", job_block(text, "unica-ci"))
 
+    def test_wire_probes_embed_the_matrix_target_in_their_evidence(self) -> None:
+        build = job_block(self.release_text(), "build-tools")
+
+        self.assertEqual(2, build.count('--target "$TARGET"'))
+
     def test_classifier_exposes_typed_contours_and_ci_full_override(self) -> None:
         text = self.release_text()
         classifier = job_block(text, "classify-changes")
