@@ -350,18 +350,47 @@ enum OperationSkeleton {
 }
 
 impl OperationSkeleton {
+    /// The single root argument key the operation expects; the published
+    /// `can` dictionary and refusal texts both speak this name.
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::Items => "items",
+            Self::Values => "values",
+            Self::Text => "text",
+            Self::Target => "at",
+        }
+    }
+
     fn args(self) -> Map<String, Value> {
-        let (name, value) = match self {
-            Self::Items => ("items", Value::Array(Vec::new())),
-            Self::Values => ("values", Value::Object(Map::new())),
-            Self::Text => ("text", Value::String(String::new())),
-            Self::Target => ("at", Value::String(String::new())),
+        let value = match self {
+            Self::Items => Value::Array(Vec::new()),
+            Self::Values => Value::Object(Map::new()),
+            Self::Text => Value::String(String::new()),
+            Self::Target => Value::String(String::new()),
         };
-        Map::from_iter([(name.to_string(), value)])
+        Map::from_iter([(self.key().to_string(), value)])
     }
 }
 
+/// Apply operations with a proven end-to-end v0.13 planner and publication.
+/// The `can` dictionary prints this as `implemented`, mirroring the honesty
+/// rule of the Run dictionary: a name in the registry is not support.
+pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
+    "props.set",
+    "attribute.add",
+    "attribute.set",
+    "attribute.remove",
+];
+
 impl OperationDescriptor {
+    pub(crate) const fn name(self) -> &'static str {
+        self.name
+    }
+
+    pub(crate) const fn skeleton_key(self) -> &'static str {
+        self.skeleton.key()
+    }
+
     pub(crate) const fn family(self) -> OperationFamily {
         self.family
     }

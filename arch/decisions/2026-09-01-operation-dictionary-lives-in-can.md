@@ -1,11 +1,11 @@
 ---
 id: DEC.2026-09-01.OPERATION-DICTIONARY-LIVES-IN-CAN
-status: planned
+status: active
 governs: product
-realized: null
+realized: crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_refusals_answer_one_diagnostics_channel_from_the_closed_code_set
 supersedes: []
 superseded-by: null
-establishes: []
+establishes: [INV.WIRE.V13-CAN-DICTIONARY]
 design: docs/design/2026-09-01-operation-dictionary-in-can-design.md
 ---
 
@@ -28,10 +28,12 @@ design: docs/design/2026-09-01-operation-dictionary-in-can-design.md
 схемы хостозависим — что и было посылкой §4. Предметный тип на входе держит серверная валидация
 закрытым реестром с восстановимым отказом.
 
-Запись переходит в `active` только после прогона задач 1–2 каталога метрики
-«токены на решение» (`docs/design/2026-08-17-token-cost-task-catalog.md`) на
-реализованной первой фазе: токены на решение и first-call success против
-baseline без `can`; ухудшение first-call возвращает развилку владельцу.
+Первая фаза словаря — виды metadata-семейства и корень — реализована вместе
+с записью; остальные семейства заполняют `can` своими вертикалями. Прогон
+задач 1–2 каталога метрики «токены на решение»
+(`docs/design/2026-08-17-token-cost-task-catalog.md`) — токены и first-call
+против baseline без `can` — остаётся условием приёмки развилки; ухудшение
+first-call возвращает развилку владельцу.
 
 **Почему.** Объединение в схеме измерено в 4 715 токенов только на ветвях
 против ограждения ≤2000; закрытый перечень имён стоит +335 токенов в каждом

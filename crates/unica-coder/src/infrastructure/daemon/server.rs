@@ -3941,6 +3941,7 @@ struct ActorLogicalReadLease {"#,
             "unsupported_scope",
             "unsupported_cursor",
             "unsupported_source",
+            "unsupported_section",
             "invalid_state",
             "invalid_source",
             "source_selection_changed",
@@ -4029,6 +4030,23 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({"op": "syntax.check", "args": {}}),
                 "bad_value",
             ),
+            (
+                ToolIdentity::View,
+                serde_json::json!({
+                    "at": "main:Catalog.Bare",
+                    "filter": {"sections": ["limits"]}
+                }),
+                "unsupported_section",
+            ),
+            (
+                ToolIdentity::Apply,
+                serde_json::json!({
+                    "at": "main:Catalog.Bare",
+                    "ops": [{"op": "props.set", "args": {"props": {"Comment": "x"}}}],
+                    "dryRun": true
+                }),
+                "bad_value",
+            ),
         ];
         for (tool, arguments, expected_code) in refusals {
             let refusal = call(tool, arguments);
@@ -4114,6 +4132,67 @@ struct ActorLogicalReadLease {"#,
             "{bare_scope:?}"
         );
         assert!(bare_scope.diagnostics.is_empty(), "{bare_scope:?}");
+
+        // The apply operation dictionary is reachable from the wire: the
+        // requested `can` section is computed from the one closed registry
+        // that also validates calls, with the Run-dictionary honesty flag.
+        let viewed_can = call(
+            ToolIdentity::View,
+            serde_json::json!({
+                "at": "main:Catalog.Bare",
+                "filter": {"sections": ["can"]}
+            }),
+        );
+        assert!(viewed_can.ok, "{viewed_can:?}");
+        let can = viewed_can
+            .data
+            .as_ref()
+            .and_then(|data| data["can"].as_array())
+            .expect("requested can section is computed");
+        let entry = |op: &str| {
+            can.iter()
+                .find(|entry| entry["op"] == op)
+                .unwrap_or_else(|| panic!("missing `{op}` in {can:?}"))
+                .clone()
+        };
+        assert_eq!(
+            entry("props.set"),
+            serde_json::json!({"op": "props.set", "args": "values", "implemented": true})
+        );
+        assert_eq!(
+            entry("object.create"),
+            serde_json::json!({"op": "object.create", "args": "values", "implemented": false})
+        );
+        assert!(
+            can.iter().all(|entry| entry["op"] != "enumValue.add"),
+            "a Catalog node must not advertise Enum-only operations: {can:?}"
+        );
+        let plain_view = call(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Bare"}),
+        );
+        assert!(
+            plain_view
+                .data
+                .as_ref()
+                .is_some_and(|data| data.get("can").is_none()),
+            "the dictionary is opt-in and stays out of the default projection: {plain_view:?}"
+        );
+
+        let wrong_args = call(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Catalog.Bare",
+                "ops": [{"op": "props.set", "args": {"props": {"Comment": "x"}}}],
+                "dryRun": true
+            }),
+        );
+        assert!(
+            wrong_args.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("`props.set` expects `values`")),
+            "an argument refusal names the expected skeleton: {wrong_args:?}"
+        );
     }
 
     #[test]
