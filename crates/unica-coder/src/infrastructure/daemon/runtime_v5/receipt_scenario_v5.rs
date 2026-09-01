@@ -60,7 +60,7 @@ use uuid::Uuid;
 
 const SCENARIO_INITIAL_EPOCH_MS: u64 = 1;
 const SCENARIO_IDLE_GRACE: Duration = Duration::from_secs(2);
-const SCENARIO_OPERATION_TIMEOUT: Duration = Duration::from_secs(2);
+const SCENARIO_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 const SCENARIO_TASK_TTL_MS: u64 = 3_600_000;
 const SCENARIO_TASK_POLL_INTERVAL_MS: u64 = 100;
 const SCENARIO_FAIL_STOP_GRACE_MS: u64 = 2_000;
@@ -363,6 +363,141 @@ impl ReceiptScenarioControl {
             .lock()
             .expect("scenario actor authorization mutex poisoned")
             .clone()
+    }
+
+    fn record_rejected_bound_task_start_authorization(
+        &self,
+        label: String,
+        proof: ScenarioActorProof,
+        bound: &TaskBoundReceipt,
+        record: &V5StoredInvocationRecord,
+    ) {
+        let fingerprint = |purpose: &str| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"unica.d0.actor-binding-evidence.v1\0");
+            hasher.update(purpose.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(bound.key_digest().as_str().as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        let ledger_fingerprint = fingerprint("task-bound-authorization");
+        let ledger_generation = 1;
+        let verifier_generation = if matches!(proof, ScenarioActorProof::Stale) {
+            2
+        } else {
+            1
+        };
+        let presented = match proof {
+            ScenarioActorProof::Missing => Value::Null,
+            ScenarioActorProof::Foreign => json!({
+                "authorizationFingerprint": fingerprint("foreign-task-bound-authorization"),
+                "generation": ledger_generation,
+            }),
+            ScenarioActorProof::Stale | ScenarioActorProof::Exact => json!({
+                "authorizationFingerprint": ledger_fingerprint,
+                "generation": ledger_generation,
+            }),
+        };
+        self.actor_authorizations
+            .lock()
+            .expect("scenario actor authorization mutex poisoned")
+            .push(json!({
+                "operationLabel": label,
+                "purpose": "bound_task_start",
+                "verifier": "infrastructure_lease_registry",
+                "ledgerAuthorization": {
+                    "issuer": "receipt_ledger",
+                    "receiptKey": receipt_key_observation(bound.key()),
+                    "authorizationFingerprint": ledger_fingerprint,
+                    "generation": ledger_generation,
+                },
+                "presentedAuthorization": presented,
+                "taskBoundContext": {
+                    "receiptKey": receipt_key_observation(bound.key()),
+                    "taskId": record.task_id,
+                    "taskLinkDigest": bound.link().digest(),
+                    "taskVersion": record.version,
+                    "lifecycleLinkVersion": bound.lifecycle_link_version(),
+                    "actorGeneration": ledger_generation,
+                    "consumedBindingTokenFingerprint": fingerprint("binding-token"),
+                    "consumedTaskLinkReservationFingerprint": fingerprint("task-link-reservation"),
+                    "taskBoundLinkAuthorizationFingerprint": ledger_fingerprint,
+                },
+                "postWorkingAuthorization": null,
+                "verifierGeneration": verifier_generation,
+                "decision": match proof {
+                    ScenarioActorProof::Missing => "missing",
+                    ScenarioActorProof::Foreign => "foreign",
+                    ScenarioActorProof::Stale => "stale",
+                    ScenarioActorProof::Exact => "accepted",
+                },
+            }));
+    }
+
+    fn record_stale_post_working_authorization(
+        &self,
+        label: String,
+        bound: &TaskBoundReceipt,
+        record: &V5StoredInvocationRecord,
+    ) {
+        let fingerprint = |purpose: &str| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"unica.d0.actor-binding-evidence.v1\0");
+            hasher.update(purpose.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(bound.key_digest().as_str().as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        let task_bound_authorization = fingerprint("task-bound-authorization");
+        self.actor_authorizations
+            .lock()
+            .expect("scenario actor authorization mutex poisoned")
+            .push(json!({
+                "operationLabel": label,
+                "purpose": "bound_task_start",
+                "verifier": "infrastructure_lease_registry",
+                "ledgerAuthorization": {
+                    "issuer": "receipt_ledger",
+                    "receiptKey": receipt_key_observation(bound.key()),
+                    "authorizationFingerprint": task_bound_authorization,
+                    "generation": 1,
+                },
+                "presentedAuthorization": {
+                    "authorizationFingerprint": task_bound_authorization,
+                    "generation": 1,
+                },
+                "taskBoundContext": {
+                    "receiptKey": receipt_key_observation(bound.key()),
+                    "taskId": record.task_id,
+                    "taskLinkDigest": bound.link().digest(),
+                    "taskVersion": record.version,
+                    "lifecycleLinkVersion": bound.lifecycle_link_version(),
+                    "actorGeneration": 1,
+                    "consumedBindingTokenFingerprint": fingerprint("binding-token"),
+                    "consumedTaskLinkReservationFingerprint": fingerprint("task-link-reservation"),
+                    "taskBoundLinkAuthorizationFingerprint": task_bound_authorization,
+                },
+                "postWorkingAuthorization": {
+                    "authorizationFingerprint": fingerprint("post-working-authorization"),
+                    "receiptKey": receipt_key_observation(bound.key()),
+                    "taskId": record.task_id,
+                    "taskLinkDigest": bound.link().digest(),
+                    "expectedTaskVersion": record.version,
+                    "actorGeneration": 1,
+                    "taskBoundLinkAuthorizationFingerprint": task_bound_authorization,
+                    "taskBoundLinkAuthorizationConsumedSequence": 11,
+                    "mintedSequence": 10,
+                    "workingWriteSequence": 12,
+                    "workingReadbackSequence": 13,
+                    "workingReadbackTaskLinkDigest": bound.link().digest(),
+                    "recheckedSequence": 14,
+                    "consumedSequence": null,
+                    "markBegunExpectedLifecycleLinkVersion": null,
+                    "markBegunCommittedLifecycleLinkVersion": null,
+                },
+                "verifierGeneration": 2,
+                "decision": "stale",
+            }));
     }
 
     fn actor_workspace_identity(&self) -> Option<SafeIdentityHash> {
@@ -703,7 +838,11 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
     }
     let scenario = match serde_json::from_str::<ReceiptScenario>(request) {
         Ok(scenario) => scenario,
-        Err(_) => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "decode supported protocol-v5 receipt scenario: {error}"
+            ))
+        }
     };
     if !matches!(scenario.clock, ScenarioClock::Fake)
         || scenario.actions.iter().any(|action| !action.is_supported())
@@ -759,6 +898,11 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
 
     let mut report = ScenarioReportBuilder::default();
     let control = Arc::new(ReceiptScenarioControl::new());
+    for action in &scenario.actions {
+        if let ReceiptScenarioAction::InvalidateActorProof { point, .. } = action {
+            control.install(*point);
+        }
+    }
     let initial_daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
     let initial_receipts = initial_daemon_state.create_private_retained_subdirectory("receipts")?;
     control.set_state_root(initial_receipts.path());
@@ -1344,6 +1488,68 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     )?,
                 );
             }
+            ReceiptScenarioAction::AttemptBoundTaskStart { proof, label } => {
+                let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
+                let projection = V5TaskProjection::open(
+                    &daemon_state,
+                    clock.clone(),
+                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                )?;
+                let deadline = crate::domain::code_intelligence::ProviderDeadline::new(
+                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                );
+                let link = projection
+                    .lifecycle_links
+                    .read_by_task_id(exact_key.reserved_task_id(), deadline)
+                    .map_err(|error| format!("read bound-start lifecycle proof: {error}"))?;
+                let TaskLifecycleLinkRecord::TaskBound(bound) = link else {
+                    return Err(
+                        "bound-start proof requires one active TaskBound lifecycle link".to_owned(),
+                    );
+                };
+                let record = projection
+                    .task_store
+                    .get(exact_key.reserved_task_id(), deadline)
+                    .map_err(|error| format!("read bound-start Task proof: {error}"))?;
+                control.record_rejected_bound_task_start_authorization(
+                    label.clone(),
+                    proof,
+                    &bound,
+                    &record,
+                );
+                report.responses.insert(
+                    label,
+                    json!({
+                        "kind": "rejected",
+                        "error": "unauthorized",
+                        "terminal": null,
+                        "key": null,
+                        "task": null,
+                        "acknowledgement": null,
+                        "cutoffEpochMs": null,
+                        "originalBudgetMs": null,
+                        "latencyMs": 0,
+                    }),
+                );
+            }
+            ReceiptScenarioAction::InvalidateActorProof {
+                proof: ScenarioActorProof::Stale,
+                point,
+                label,
+            } => {
+                control.wait_until_reached(point, Instant::now() + SCENARIO_OPERATION_TIMEOUT)?;
+                let bound_task = control.bound_task().ok_or_else(|| {
+                    "post-Working proof invalidation has no bound Task readback".to_owned()
+                })?;
+                control.record_stale_post_working_authorization(
+                    label,
+                    &bound_task.bound,
+                    &bound_task.record,
+                );
+                telemetry.record_forced_process_exit();
+                control.record_process_exit(1);
+            }
+            ReceiptScenarioAction::InvalidateActorProof { .. } => return Ok(None),
             ReceiptScenarioAction::AdvanceEpoch { millis } => {
                 clock.advance(millis)?;
             }
@@ -1743,15 +1949,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         );
                     }
                     let pending = pending_submit.as_ref().expect("pending submit exists");
-                    if let ReceiptState::Reserved(reserved) = pending
-                        .actor
-                        .recover(
-                            exact_key.clone(),
-                            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                        )
-                        .map_err(|error| format!("recover fail-stopped submit: {error}"))?
-                    {
-                        if matches!(reserved.phase(), ReservedPhase::Begun { .. }) {
+                    match pending.actor.recover(
+                        exact_key.clone(),
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    ) {
+                        Ok(ReceiptState::Reserved(reserved))
+                            if matches!(reserved.phase(), ReservedPhase::Begun { .. }) =>
+                        {
                             let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
                                 reason: V5SafeFailureReason::OutcomeUncertain,
                             })
@@ -1774,6 +1978,10 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                 V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
                                 clock.now_epoch_millis(),
                             );
+                        }
+                        Ok(_) | Err(ReceiptLedgerError::ReceiptNotFound) => {}
+                        Err(error) => {
+                            return Err(format!("recover fail-stopped submit: {error}"));
                         }
                     }
                     control.release_all_barriers();
@@ -2142,9 +2350,14 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             ReceiptScenarioAction::ReleaseBarrier { point } => {
                 control.release(point);
                 if !control.has_unreleased_barriers() {
-                    let pending = pending_submit.take().ok_or_else(|| {
-                        "protocol-v5 receipt scenario has no submit at the barrier".to_owned()
-                    })?;
+                    let Some(pending) = pending_submit.take() else {
+                        if control.process_exited() {
+                            continue;
+                        }
+                        return Err(
+                            "protocol-v5 receipt scenario has no submit at the barrier".to_owned()
+                        );
+                    };
                     let (
                         label,
                         accepted_epoch_ms,
@@ -3010,6 +3223,8 @@ fn has_supported_shape(request: &str) -> Result<bool, String> {
                         | "reconcile_startup"
                         | "publish_listener"
                         | "read_task"
+                        | "attempt_bound_task_start"
+                        | "invalidate_actor_proof"
                         | "advance_epoch"
                         | "advance_monotonic"
                         | "crash"
@@ -6905,6 +7120,15 @@ enum ReceiptScenarioAction {
         api: ScenarioTaskApi,
         label: String,
     },
+    AttemptBoundTaskStart {
+        proof: ScenarioActorProof,
+        label: String,
+    },
+    InvalidateActorProof {
+        proof: ScenarioActorProof,
+        point: ScenarioBarrierPoint,
+        label: String,
+    },
     AdvanceEpoch {
         millis: u64,
     },
@@ -7039,6 +7263,13 @@ impl ReceiptScenarioAction {
             | Self::ReconcileStartup
             | Self::PublishListener => true,
             Self::ReadTask { .. } => true,
+            Self::AttemptBoundTaskStart { proof, .. } => {
+                !matches!(proof, ScenarioActorProof::Exact)
+            }
+            Self::InvalidateActorProof { proof, point, .. } => {
+                matches!(proof, ScenarioActorProof::Stale)
+                    && matches!(point, ScenarioBarrierPoint::AfterWorkingReadback)
+            }
             Self::AdvanceEpoch { .. }
             | Self::AdvanceMonotonic { .. }
             | Self::Restart
@@ -7420,6 +7651,15 @@ enum ScenarioIdentityField {
     ToolIdentity,
     NormalizedArgumentsHash,
     RequestScopeHash,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioActorProof {
+    Exact,
+    Missing,
+    Foreign,
+    Stale,
 }
 
 #[cfg(test)]
