@@ -79,6 +79,7 @@ impl CancelledDirectTerminalIntent {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CancelReservedSubmitDecision {
+    ExecuteReserved(ReservedReceipt),
     PublishCancelledDirect(CancelledDirectTerminalIntent),
     ExistingDirectTerminal(DirectTerminalUnackedReceipt),
     Rejected(ReceiptDecisionRejection),
@@ -87,8 +88,8 @@ pub(crate) enum CancelReservedSubmitDecision {
 pub(crate) fn decide_cancel_reserved_submit(
     outcome: ReserveOutcome,
 ) -> Result<CancelReservedSubmitDecision, CanonicalTerminalError> {
-    match outcome.into_state() {
-        ReceiptState::Reserved(reservation) if reservation.cancel_requested() => {
+    match outcome {
+        ReserveOutcome::Created(reservation) if reservation.cancel_requested() => {
             let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)?;
             Ok(CancelReservedSubmitDecision::PublishCancelledDirect(
                 CancelledDirectTerminalIntent {
@@ -97,10 +98,13 @@ pub(crate) fn decide_cancel_reserved_submit(
                 },
             ))
         }
-        ReceiptState::DirectTerminalUnacked(receipt) => Ok(
+        ReserveOutcome::Created(reservation) => {
+            Ok(CancelReservedSubmitDecision::ExecuteReserved(reservation))
+        }
+        ReserveOutcome::ExistingExact(ReceiptState::DirectTerminalUnacked(receipt)) => Ok(
             CancelReservedSubmitDecision::ExistingDirectTerminal(receipt),
         ),
-        state => Ok(CancelReservedSubmitDecision::Rejected(
+        ReserveOutcome::ExistingExact(state) => Ok(CancelReservedSubmitDecision::Rejected(
             ReceiptDecisionRejection::new(state),
         )),
     }
@@ -335,7 +339,7 @@ mod tests {
             decide_cancel_reserved_submit(ReserveOutcome::ExistingExact(non_cancelled.clone()))
                 .expect("rejection needs no canonicalization");
         let CancelReservedSubmitDecision::Rejected(rejection) = decision else {
-            panic!("CR0 must not expose a callback path for an ordinary reservation");
+            panic!("a duplicate ordinary reservation must not expose a callback path");
         };
         assert_eq!(rejection.state_kind(), ReceiptStateKind::ReservedUnbound);
         assert_eq!(rejection.into_state(), non_cancelled);

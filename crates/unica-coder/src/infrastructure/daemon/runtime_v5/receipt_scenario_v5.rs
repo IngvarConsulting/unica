@@ -12,11 +12,12 @@ use crate::application::receipt_ledger::{
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::invocation::{InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId};
-use crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner;
+use crate::infrastructure::daemon::client_v5::{V5DaemonProcessOwner, V5RawHandshake};
 use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
 use crate::infrastructure::daemon::protocol_v5::{
-    decode_v5_request_frame, V5ClientRequest, V5DaemonErrorCode, V5InvocationPhase,
-    V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
+    decode_v5_request_frame, decode_v5_server_response, strict_envelope_case_frame,
+    StrictV5EnvelopeCase, V5ClientRequest, V5DaemonErrorCode, V5InvocationPhase,
+    V5InvocationRequest, V5InvocationResponse, V5ServerResponse, DAEMON_PROTOCOL_VERSION,
 };
 use crate::infrastructure::daemon::server::DaemonServerConfig;
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,7 @@ pub(super) struct ReceiptScenarioControl {
     barrier: Mutex<CancelConversionBarrier>,
     changed: Condvar,
     drop_ack_response_after_commit: AtomicBool,
+    fixture_terminal: Mutex<Option<crate::application::receipt_ledger::V5CanonicalTerminal>>,
 }
 
 #[derive(Default)]
@@ -53,7 +55,27 @@ impl ReceiptScenarioControl {
             barrier: Mutex::new(CancelConversionBarrier::default()),
             changed: Condvar::new(),
             drop_ack_response_after_commit: AtomicBool::new(false),
+            fixture_terminal: Mutex::new(None),
         }
+    }
+
+    pub(super) fn set_fixture_terminal(
+        &self,
+        terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
+    ) {
+        *self
+            .fixture_terminal
+            .lock()
+            .expect("scenario fixture terminal mutex poisoned") = Some(terminal);
+    }
+
+    pub(super) fn fixture_terminal(
+        &self,
+    ) -> Option<crate::application::receipt_ledger::V5CanonicalTerminal> {
+        self.fixture_terminal
+            .lock()
+            .expect("scenario fixture terminal mutex poisoned")
+            .clone()
     }
 
     fn arm_ack_response_disconnect(&self) {
@@ -152,15 +174,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
     if !has_supported_shape(request)? {
         return Ok(None);
     }
-    let Ok(scenario) = serde_json::from_str::<ReceiptScenario>(request) else {
-        return Ok(None);
+    let scenario = match serde_json::from_str::<ReceiptScenario>(request) {
+        Ok(scenario) => scenario,
+        Err(_) => return Ok(None),
     };
     if !matches!(scenario.clock, ScenarioClock::Fake)
         || scenario.actions.iter().any(|action| !action.is_supported())
     {
         return Ok(None);
     }
-
     let mut state = ScenarioStateRoot::new()?;
     let identity = CoreIdentity::production_v5();
     let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS));
@@ -199,9 +221,28 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
     let control = Arc::new(ReceiptScenarioControl::new());
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
     let mut known_keys = Vec::new();
+    let mut original_submit_cutoff: Option<(u64, u64)> = None;
     let mut pending_submit: Option<PendingSubmit> = None;
     for action in scenario.actions {
         match action {
+            ReceiptScenarioAction::ConfigureProvider {
+                execution_class,
+                terminal,
+                ..
+            } => {
+                if !matches!(execution_class, ScenarioExecutionClass::Direct) {
+                    return Ok(None);
+                }
+                let ScenarioTerminalFixture::Success { payload } = terminal else {
+                    return Ok(None);
+                };
+                let outcome = ReceiptTerminalOutcome::Completed {
+                    result: Box::new(crate::domain::invocation::DomainResult::success(payload)),
+                };
+                let terminal = canonical_v5_terminal(&outcome)
+                    .map_err(|error| format!("construct scenario fixture terminal: {error}"))?;
+                control.set_fixture_terminal(terminal);
+            }
             ReceiptScenarioAction::Cancel { key, label, .. } => {
                 let is_exact = matches!(&key, ScenarioKey::Exact);
                 let wire_key = match key {
@@ -217,6 +258,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     &identity,
                     Arc::clone(&clock),
                     Arc::clone(&telemetry),
+                    Some(Arc::clone(&control)),
                     |owner| owner.cancel_invocation(wire_key),
                 )?;
                 if !matches!(response, V5ServerResponse::Error { .. }) && is_exact {
@@ -228,6 +270,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             }
             ReceiptScenarioAction::Submit {
                 response_budget_ms,
+                disconnect,
                 label,
                 ..
             } => {
@@ -259,22 +302,60 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         response_budget_ms,
                     )?);
                 } else {
+                    let observed_cutoff = *original_submit_cutoff
+                        .get_or_insert((clock.now_epoch_millis(), response_budget_ms));
                     let response = exchange_once(
                         state.path(),
                         &identity,
                         Arc::clone(&clock),
                         Arc::clone(&telemetry),
+                        Some(Arc::clone(&control)),
                         |owner| owner.submit_invocation(invocation),
                     )?;
-                    report.responses.insert(
-                        label,
-                        response_observation(
-                            &response,
-                            Some((clock.now_epoch_millis(), response_budget_ms)),
-                        )?,
-                    );
+                    if matches!(disconnect, ScenarioDisconnect::Never) {
+                        report.responses.insert(
+                            label,
+                            response_observation(&response, Some(observed_cutoff))?,
+                        );
+                    }
                 }
             }
+            ReceiptScenarioAction::SendOuterEnvelope { envelope, label } => {
+                let response = exchange_raw_v5_request(
+                    state.path(),
+                    &identity,
+                    Arc::clone(&clock),
+                    Arc::clone(&telemetry),
+                    Some(Arc::clone(&control)),
+                    strict_envelope_case_frame(strict_envelope_case(envelope))?,
+                )?;
+                let V5ServerResponse::Error { code } = response else {
+                    return Err(
+                        "strict outer-envelope scenario expected protocol-v5 invalid_request"
+                            .to_owned(),
+                    );
+                };
+                if code != V5DaemonErrorCode::InvalidRequest {
+                    return Err(format!(
+                        "strict outer-envelope scenario returned unexpected error code {code}"
+                    ));
+                }
+                report.responses.insert(
+                    label,
+                    json!({
+                        "kind": "rejected",
+                        "error": "invalid_request",
+                        "terminal": null,
+                        "key": null,
+                        "task": null,
+                        "acknowledgement": null,
+                        "cutoffEpochMs": null,
+                        "originalBudgetMs": null,
+                        "latencyMs": 0
+                    }),
+                );
+            }
+            ReceiptScenarioAction::ProbeProtocol { .. } => return Ok(None),
             ReceiptScenarioAction::Recover { key, label } => {
                 let ScenarioKey::Exact = key else {
                     return Ok(None);
@@ -284,6 +365,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     &identity,
                     Arc::clone(&clock),
                     Arc::clone(&telemetry),
+                    Some(Arc::clone(&control)),
                     |owner| owner.recover_invocation_receipt(exact_key.clone()),
                 )?;
                 if matches!(
@@ -294,9 +376,11 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 ) {
                     known_keys.retain(|known| known != &exact_key);
                 }
-                report
-                    .responses
-                    .insert(label, response_observation(&response, None)?);
+                let mut observation = response_observation(&response, original_submit_cutoff)?;
+                if observation.get("kind").and_then(Value::as_str) == Some("direct") {
+                    observation["kind"] = Value::String("recovered_direct".to_owned());
+                }
+                report.responses.insert(label, observation);
             }
             ReceiptScenarioAction::Acknowledge {
                 key,
@@ -330,6 +414,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                             &identity,
                             Arc::clone(&clock),
                             Arc::clone(&telemetry),
+                            Some(Arc::clone(&control)),
                             |owner| {
                                 owner.acknowledge_invocation_receipt(
                                     exact_key.clone(),
@@ -358,6 +443,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             ReceiptScenarioAction::AdvanceEpoch { millis } => {
                 clock.advance(millis)?;
             }
+            ReceiptScenarioAction::AdvanceMonotonic { .. } => {}
             ReceiptScenarioAction::Restart => {
                 // Every production action in this feature-only driver is a fresh authenticated
                 // daemon lifetime. The explicit marker therefore requires no synthetic state.
@@ -375,6 +461,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         &known_keys,
                     )?,
                 };
+                report.terminal_publications = telemetry.snapshot().terminal_publications;
                 report.checkpoints.insert(label, snapshot);
             }
             ReceiptScenarioAction::Reset => {
@@ -414,6 +501,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     &identity,
                     Arc::clone(&clock),
                     Arc::clone(&telemetry),
+                    Some(Arc::clone(&control)),
                     requests,
                 )?;
                 if let Some(error) = responses
@@ -564,11 +652,15 @@ fn has_supported_shape(request: &str) -> Result<bool, String> {
             matches!(
                 action.get("action").and_then(Value::as_str),
                 Some(
-                    "cancel"
+                    "configure_provider"
+                        | "cancel"
                         | "submit"
+                        | "send_outer_envelope"
+                        | "probe_protocol"
                         | "recover"
                         | "acknowledge"
                         | "advance_epoch"
+                        | "advance_monotonic"
                         | "restart"
                         | "checkpoint"
                         | "reset"
@@ -587,6 +679,7 @@ fn exchange_once(
     identity: &CoreIdentity,
     clock: Arc<ScenarioEpochClock>,
     telemetry: Arc<V5ReceiptRuntimeTelemetry>,
+    scenario_control: Option<Arc<ReceiptScenarioControl>>,
     exchange: impl FnOnce(&mut V5DaemonProcessOwner) -> Result<V5ServerResponse, String>,
 ) -> Result<V5ServerResponse, String> {
     let config = DaemonServerConfig::new(
@@ -597,6 +690,7 @@ fn exchange_once(
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime = runtime.with_shared_telemetry(telemetry);
         runtime.epoch_clock = clock;
+        runtime.scenario_control = scenario_control;
         runtime
     });
     let response = (|| {
@@ -613,6 +707,81 @@ fn exchange_once(
     })();
     let cleanup = daemon.stop_and_join("protocol-v5 receipt scenario daemon panicked");
     finish_with_daemon_cleanup(response, cleanup)
+}
+
+fn exchange_raw_v5_request(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: Arc<ScenarioEpochClock>,
+    telemetry: Arc<V5ReceiptRuntimeTelemetry>,
+    scenario_control: Option<Arc<ReceiptScenarioControl>>,
+    request_frame: Vec<u8>,
+) -> Result<V5ServerResponse, String> {
+    let config = DaemonServerConfig::new(
+        state_root.to_path_buf(),
+        identity.clone(),
+        SCENARIO_IDLE_GRACE,
+    );
+    let daemon = ScenarioDaemon::spawn(config, move |runtime| {
+        let mut runtime = runtime.with_shared_telemetry(telemetry);
+        runtime.epoch_clock = clock;
+        runtime.scenario_control = scenario_control;
+        runtime
+    });
+    let response = (|| {
+        wait_for_endpoint(state_root, identity)?;
+        let state = DaemonStateDirectory::open(state_root, identity)?;
+        let record = state
+            .read_v5_endpoint_record()?
+            .ok_or_else(|| "protocol-v5 receipt scenario endpoint disappeared".to_owned())?;
+        let handshake = V5DaemonProcessOwner::connect_existing_raw_for_test(
+            record,
+            DAEMON_PROTOCOL_VERSION,
+            identity.clone(),
+            uuid::Uuid::new_v4().to_string(),
+            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+        )?;
+        let V5RawHandshake::Ready { mut owner, .. } = handshake else {
+            return Err(
+                "protocol-v5 strict-envelope handshake was unexpectedly rejected".to_owned(),
+            );
+        };
+        let response_frame = owner.exchange_raw_frame(&request_frame, "strict envelope request")?;
+        drop(owner);
+        decode_v5_server_response(&response_frame)
+    })();
+    let cleanup = daemon.stop_and_join("protocol-v5 strict-envelope daemon panicked");
+    finish_with_daemon_cleanup(response, cleanup)
+}
+
+fn strict_envelope_case(case: ScenarioEnvelopeCase) -> StrictV5EnvelopeCase {
+    match case {
+        ScenarioEnvelopeCase::MissingInvocationId => StrictV5EnvelopeCase::MissingInvocationId,
+        ScenarioEnvelopeCase::NoncanonicalInvocationId => {
+            StrictV5EnvelopeCase::NoncanonicalInvocationId
+        }
+        ScenarioEnvelopeCase::MissingReservedTaskId => StrictV5EnvelopeCase::MissingReservedTaskId,
+        ScenarioEnvelopeCase::NoncanonicalReservedTaskId => {
+            StrictV5EnvelopeCase::NoncanonicalReservedTaskId
+        }
+        ScenarioEnvelopeCase::UnknownTool => StrictV5EnvelopeCase::UnknownTool,
+        ScenarioEnvelopeCase::UnknownField => StrictV5EnvelopeCase::UnknownField,
+        ScenarioEnvelopeCase::MalformedArguments => StrictV5EnvelopeCase::MalformedArguments,
+        ScenarioEnvelopeCase::OversizedArguments => StrictV5EnvelopeCase::OversizedArguments,
+        ScenarioEnvelopeCase::ResponseBudgetAboveMaximum => {
+            StrictV5EnvelopeCase::ResponseBudgetAboveMaximum
+        }
+        ScenarioEnvelopeCase::EmptyWorkspaceHint => StrictV5EnvelopeCase::EmptyWorkspaceHint,
+        ScenarioEnvelopeCase::WorkspaceHintWithControl => {
+            StrictV5EnvelopeCase::WorkspaceHintWithControl
+        }
+        ScenarioEnvelopeCase::MalformedWorkspaceHint => {
+            StrictV5EnvelopeCase::MalformedWorkspaceHint
+        }
+        ScenarioEnvelopeCase::OversizedWorkspaceHint => {
+            StrictV5EnvelopeCase::OversizedWorkspaceHint
+        }
+    }
 }
 
 fn exchange_ack_and_expect_disconnect(
@@ -668,6 +837,7 @@ fn exchange_batch(
     identity: &CoreIdentity,
     clock: Arc<ScenarioEpochClock>,
     telemetry: Arc<V5ReceiptRuntimeTelemetry>,
+    scenario_control: Option<Arc<ReceiptScenarioControl>>,
     requests: Vec<ScenarioWireRequest>,
 ) -> Result<Vec<V5ServerResponse>, String> {
     let config = DaemonServerConfig::new(
@@ -678,6 +848,7 @@ fn exchange_batch(
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime = runtime.with_shared_telemetry(telemetry);
         runtime.epoch_clock = clock;
+        runtime.scenario_control = scenario_control;
         runtime
     });
     let responses = (|| {
@@ -1213,7 +1384,7 @@ fn exact_terminal_digest(
     telemetry: Arc<V5ReceiptRuntimeTelemetry>,
     key: &ReceiptKey,
 ) -> Result<TerminalDigest, String> {
-    let response = exchange_once(state_root, identity, clock, telemetry, |owner| {
+    let response = exchange_once(state_root, identity, clock, telemetry, None, |owner| {
         owner.recover_invocation_receipt(key.clone())
     })?;
     match response {
@@ -1370,8 +1541,9 @@ struct ScenarioReportBuilder {
     checkpoints: BTreeMap<String, Value>,
     responses: BTreeMap<String, Value>,
     identity: Option<Value>,
+    terminal_publications: Vec<Value>,
+    protocol: Vec<Value>,
 }
-
 impl ScenarioReportBuilder {
     fn encode(self, events: Vec<V5ReceiptRuntimeEvent>) -> Result<String, String> {
         serde_json::to_string(&json!({
@@ -1388,8 +1560,8 @@ impl ScenarioReportBuilder {
                 "taskPublicationCapacity": [],
                 "taskStoreCapacityInvariantViolations": [],
                 "stagedTerminalPreparations": [],
-                "terminalPublications": [],
-                "protocol": [],
+                "terminalPublications": self.terminal_publications,
+                "protocol": self.protocol,
                 "identity": self.identity,
                 "crashCases": [],
                 "taskRetirementCases": [],
@@ -1444,6 +1616,12 @@ enum ScenarioClock {
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 enum ReceiptScenarioAction {
+    ConfigureProvider {
+        execution_class: ScenarioExecutionClass,
+        terminal: ScenarioTerminalFixture,
+        cooperative_cancel: bool,
+        side_effect_marker: bool,
+    },
     Cancel {
         key: ScenarioKey,
         lazy_session: bool,
@@ -1453,6 +1631,16 @@ enum ReceiptScenarioAction {
         request: ScenarioRequest,
         response_budget_ms: u64,
         disconnect: ScenarioDisconnect,
+        label: String,
+    },
+    SendOuterEnvelope {
+        envelope: ScenarioEnvelopeCase,
+        label: String,
+    },
+    ProbeProtocol {
+        client: ScenarioProtocolVersion,
+        server: ScenarioProtocolVersion,
+        message: ScenarioProtocolMessage,
         label: String,
     },
     Recover {
@@ -1466,6 +1654,9 @@ enum ReceiptScenarioAction {
         label: String,
     },
     AdvanceEpoch {
+        millis: u64,
+    },
+    AdvanceMonotonic {
         millis: u64,
     },
     Restart,
@@ -1492,6 +1683,14 @@ enum ReceiptScenarioAction {
 impl ReceiptScenarioAction {
     fn is_supported(&self) -> bool {
         match self {
+            Self::ConfigureProvider {
+                execution_class,
+                terminal,
+                ..
+            } => {
+                matches!(execution_class, ScenarioExecutionClass::Direct)
+                    && matches!(terminal, ScenarioTerminalFixture::Success { .. })
+            }
             Self::Cancel {
                 key, lazy_session, ..
             } => {
@@ -1508,9 +1707,18 @@ impl ReceiptScenarioAction {
                 disconnect,
                 ..
             } => {
-                matches!(request, ScenarioRequest::Canonical)
-                    && matches!(disconnect, ScenarioDisconnect::Never)
+                matches!(
+                    request,
+                    ScenarioRequest::Canonical | ScenarioRequest::SameIdentity
+                ) && matches!(
+                    disconnect,
+                    ScenarioDisconnect::Never
+                        | ScenarioDisconnect::AfterSubmitWrite
+                        | ScenarioDisconnect::AfterTerminalCommit
+                )
             }
+            Self::SendOuterEnvelope { .. } => true,
+            Self::ProbeProtocol { .. } => true,
             Self::Recover { key, .. } => matches!(key, ScenarioKey::Exact),
             Self::Acknowledge {
                 key, disconnect, ..
@@ -1522,6 +1730,7 @@ impl ReceiptScenarioAction {
                     )
             }
             Self::AdvanceEpoch { .. }
+            | Self::AdvanceMonotonic { .. }
             | Self::Restart
             | Self::Checkpoint { .. }
             | Self::Reset
@@ -1536,14 +1745,180 @@ impl ReceiptScenarioAction {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
+enum ScenarioExecutionClass {
+    Direct,
+    KnownLong,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "terminal", rename_all = "snake_case", deny_unknown_fields)]
+enum ScenarioTerminalFixture {
+    Success { payload: String },
+    Bytes { count: u64 },
+    NearLimitWithMaximumMetadata { canonical_result_bytes: u64 },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum ScenarioRequest {
     Canonical,
+    SameIdentity,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioEnvelopeCase {
+    MissingInvocationId,
+    NoncanonicalInvocationId,
+    MissingReservedTaskId,
+    NoncanonicalReservedTaskId,
+    UnknownTool,
+    UnknownField,
+    MalformedArguments,
+    OversizedArguments,
+    ResponseBudgetAboveMaximum,
+    EmptyWorkspaceHint,
+    WorkspaceHintWithControl,
+    MalformedWorkspaceHint,
+    OversizedWorkspaceHint,
+}
+
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioProtocolVersion {
+    V3,
+    V4,
+    V5,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioCoreIdentitySelection {
+    ExactProductionV5,
+    ArbitraryCanonical,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioFailureProbeReason {
+    InvocationFailed,
+    ResultTooLarge,
+    Interrupted,
+    ResumeUnsupported,
+    PersistenceFailed,
+    OutcomeUncertain,
+    TaskCapacity,
+    WorkspaceCapacity,
+    WorkspaceRegistryFailed,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioTaskTerminalOwnerFixture {
+    ReceiptBacked,
+    Bound,
+    Staged,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioV5DaemonErrorCodeFixture {
+    InvalidRequest,
+    HandshakeRequired,
+    ProtocolMismatch,
+    CoreMismatch,
+    Unauthorized,
+    DuplicateLease,
+    Overloaded,
+    OwnerCapacity,
+    ReceiptNotFound,
+    ReceiptExpired,
+    ReceiptCapacity,
+    TombstoneCapacity,
+    InvocationIdentityMismatch,
+    TaskNotFound,
+    TaskExpired,
+    StoreFailed,
+    DurabilityUncertain,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioStrictSchemaTarget {
+    RequestUnknownField,
+    RequestMissingRequiredField,
+    RequestCrossVariantField,
+    ResponseUnknownField,
+    ResponseMissingRequiredField,
+    ResponseCrossVariantField,
+    TerminalUnknownField,
+    TerminalMissingRequiredField,
+    TerminalCrossVariantField,
+    TaskSnapshotUnknownField,
+    TaskSnapshotMissingRequiredField,
+    TaskSnapshotCrossVariantField,
+    StoredRecordUnknownTopLevel,
+    StoredRecordUnknownTaskField,
+    StoredRecordMissingRequiredField,
+    StoredRecordCrossVariantField,
+    TransferCertificateUnknownField,
+    TransferCertificateMissingRequiredField,
+    TransferCertificateCrossVariantField,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioProtocolMessage {
+    Ping,
+    Release,
+    SubmitWithCoreIdentity {
+        selection: ScenarioCoreIdentitySelection,
+    },
+    GetTask,
+    WaitTask,
+    CancelTask,
+    RecoverReceipt,
+    AcknowledgeReceipt,
+    CancelReceipt,
+    MaximumResponseFrame,
+    OversizedResponseFrame,
+    ErrorCodeFrame {
+        code: ScenarioV5DaemonErrorCodeFixture,
+    },
+    MalformedV5Schema {
+        target: ScenarioStrictSchemaTarget,
+    },
+    ReceiptPendingOutcome,
+    TaskOutcome,
+    AcknowledgedOutcome,
+    DirectCompletedTerminal,
+    DirectSemanticCompletedTerminal,
+    DirectCancelledTerminal,
+    DirectFailureTerminal {
+        reason: ScenarioFailureProbeReason,
+    },
+    TaskQueuedProjection,
+    TaskWorkingProjection,
+    TaskCompletedProjection,
+    TaskSemanticCompletedProjection {
+        owner: ScenarioTaskTerminalOwnerFixture,
+    },
+    TaskCancelledProjection,
+    TaskFailureProjection {
+        reason: ScenarioFailureProbeReason,
+    },
+    StoredInvocationRecord {
+        schema_version: u8,
+        reason: ScenarioFailureProbeReason,
+    },
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ScenarioDisconnect {
     Never,
+    AfterSubmitWrite,
+    AfterTerminalCommit,
 }
 
 #[derive(Deserialize)]
@@ -1793,6 +2168,7 @@ mod tests {
             &identity,
             Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS)),
             Arc::new(V5ReceiptRuntimeTelemetry::new()),
+            None,
             vec![ScenarioWireRequest::InjectedClientFailure],
         )
         .expect_err("injected batch failure must reach the facade cleanup path");

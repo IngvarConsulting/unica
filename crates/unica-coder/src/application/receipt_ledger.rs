@@ -1778,6 +1778,7 @@ impl ReceiptTerminalBinding {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct PreparedReceiptRecord {
     binding: ReceiptTerminalBinding,
     bytes: Box<[u8]>,
@@ -1959,6 +1960,7 @@ impl PreparedReceiptTerminalPublication {
 pub(crate) struct CommittedDirectPublication {
     receipt: DirectTerminalUnackedReceipt,
     wire_frame: PreparedWireFrame,
+    prepared_record: Option<PreparedReceiptRecord>,
 }
 
 impl CommittedDirectPublication {
@@ -1969,6 +1971,19 @@ impl CommittedDirectPublication {
         Self {
             receipt,
             wire_frame,
+            prepared_record: None,
+        }
+    }
+
+    pub(crate) fn with_prepared_record(
+        receipt: DirectTerminalUnackedReceipt,
+        wire_frame: PreparedWireFrame,
+        prepared_record: PreparedReceiptRecord,
+    ) -> Self {
+        Self {
+            receipt,
+            wire_frame,
+            prepared_record: Some(prepared_record),
         }
     }
 
@@ -1978,6 +1993,10 @@ impl CommittedDirectPublication {
 
     pub(crate) fn wire_frame(&self) -> &PreparedWireFrame {
         &self.wire_frame
+    }
+
+    pub(crate) fn prepared_record(&self) -> Option<&PreparedReceiptRecord> {
+        self.prepared_record.as_ref()
     }
 
     pub(crate) fn into_parts(self) -> (DirectTerminalUnackedReceipt, PreparedWireFrame) {

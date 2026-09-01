@@ -777,6 +777,10 @@ impl StrictV5Submit {
         self.invocation.response_budget_ms()
     }
 
+    pub(crate) fn invocation(&self) -> &V5InvocationRequest {
+        &self.invocation
+    }
+
     pub(crate) fn into_parts(self) -> (ReceiptKey, u64) {
         (self.receipt_key, self.invocation.response_budget_ms())
     }
@@ -1127,7 +1131,7 @@ pub(crate) fn run_strict_envelope_reachability_probe_for_test(
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
-fn strict_envelope_case_frame(case: StrictV5EnvelopeCase) -> Result<Vec<u8>, String> {
+pub(crate) fn strict_envelope_case_frame(case: StrictV5EnvelopeCase) -> Result<Vec<u8>, String> {
     use serde_json::{json, Value};
 
     let mut envelope = json!({

@@ -22,11 +22,13 @@ use crate::application::invocation::{
     TASK_RECONCILIATION_BUDGET,
 };
 use crate::application::invocation_store::{InvocationStore, InvocationStoreError};
+#[cfg(test)]
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::ports::{Clock, TokioClock};
 use crate::application::shared_work::ProviderHostOwner;
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::composition::open_daemon_invocation_store_from_directory;
+#[cfg(test)]
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, InvocationFailure, InvocationOutcome};
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
@@ -45,29 +47,6 @@ const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const MAX_HANDSHAKES: usize = 8;
 pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
-
-/// v5 keeps this explicit unavailable service while its distinct runtime is
-/// migrated. Production v3 uses `CanonicalV13ReadService` directly.
-struct UnavailableV5InvocationService;
-
-impl CanonicalInvocationService for UnavailableV5InvocationService {
-    fn prepare(
-        &self,
-        _invocation: &ActorBoundInvocation,
-    ) -> Result<ExecutionClass, Box<DomainResult>> {
-        Ok(ExecutionClass::InlineCandidate)
-    }
-
-    fn execute(
-        &self,
-        _invocation: &ActorBoundExecution,
-        _cancellation: CancellationToken,
-    ) -> Result<DomainResult, InvocationFailure> {
-        Ok(failed_domain_result(
-            "canonical v0.13 invocation is unavailable in the v5 daemon runtime",
-        ))
-    }
-}
 
 #[derive(Debug)]
 enum DaemonInvocationError {
@@ -276,7 +255,7 @@ pub(crate) struct DaemonInvocationRuntime {
 }
 
 impl DaemonInvocationRuntime {
-    fn new(
+    pub(super) fn new(
         store: Arc<dyn InvocationStore>,
         service: Arc<dyn CanonicalInvocationService>,
         clock: Arc<dyn Clock>,
@@ -292,7 +271,7 @@ impl DaemonInvocationRuntime {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     fn new_with_reconciliation_budget_for_test(
         store: Arc<dyn InvocationStore>,
         service: Arc<dyn CanonicalInvocationService>,
@@ -320,6 +299,17 @@ impl DaemonInvocationRuntime {
 
     fn capture_response_deadline(&self) -> InvocationResponseDeadline {
         self.executor.capture_response_deadline()
+    }
+
+    pub(super) fn submit_v5(
+        &self,
+        request: InvocationRequest,
+    ) -> Result<InvocationResponse, String> {
+        let response_deadline = self
+            .capture_response_deadline()
+            .restrict_to_frontend_budget(Duration::from_millis(request.response_budget_ms()));
+        self.submit(request, response_deadline)
+            .map_err(|error| format!("v5 invocation failed: {error:?}"))
     }
 
     fn submit(
@@ -476,11 +466,11 @@ pub(crate) struct DaemonServerConfig {
     pub(crate) core_identity: CoreIdentity,
     pub(crate) idle_grace: Duration,
     invocation_service: Arc<dyn CanonicalInvocationService>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     invocation_store: Option<Arc<dyn InvocationStore>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     reconciliation_budget: Option<Duration>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     invocation_clock: Option<Arc<dyn Clock>>,
     #[cfg(test)]
     startup_pause: Option<Arc<HandshakePause>>,
@@ -499,18 +489,20 @@ impl DaemonServerConfig {
                 DaemonProtocolIdentity::V3 => Arc::new(
                     crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
                 ),
-                DaemonProtocolIdentity::V5 => Arc::new(UnavailableV5InvocationService),
+                DaemonProtocolIdentity::V5 => Arc::new(
+                    crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+                ),
             };
         Self {
             state_root,
             core_identity,
             idle_grace,
             invocation_service,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
             invocation_store: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
             reconciliation_budget: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
             invocation_clock: None,
             #[cfg(test)]
             startup_pause: None,
@@ -523,7 +515,7 @@ impl DaemonServerConfig {
         Arc::clone(&self.invocation_service)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn with_invocation_service(
         mut self,
         service: Arc<dyn CanonicalInvocationService>,
@@ -532,7 +524,7 @@ impl DaemonServerConfig {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn with_invocation_store_for_test(
         mut self,
         store: Arc<dyn InvocationStore>,
@@ -541,13 +533,13 @@ impl DaemonServerConfig {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn with_reconciliation_budget_for_test(mut self, budget: Duration) -> Self {
         self.reconciliation_budget = Some(budget);
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn with_invocation_clock_for_test(mut self, clock: Arc<dyn Clock>) -> Self {
         self.invocation_clock = Some(clock);
         self
@@ -587,7 +579,7 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
         .map_err(|error| daemon_io_error("inspect daemon listener", error))?
         .port();
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     let invocation_store = if let Some(store) = config.invocation_store.clone() {
         store
     } else {
@@ -598,19 +590,19 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
         let _recovery_classifications = opened_store.recovery.classifications.len();
         opened_store.store
     };
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "receipt-ledger-test-support")))]
     let invocation_store = {
         let task_store_directory = state.create_private_subdirectory("tasks")?;
         let opened_store = open_daemon_invocation_store_from_directory(task_store_directory)?;
         let _recovery_classifications = opened_store.recovery.classifications.len();
         opened_store.store
     };
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     let invocation_clock = config
         .invocation_clock
         .clone()
         .unwrap_or_else(|| Arc::new(TokioClock));
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     let invocation_runtime = Arc::new(match config.reconciliation_budget {
         Some(budget) => DaemonInvocationRuntime::new_with_reconciliation_budget_for_test(
             invocation_store,
@@ -624,7 +616,7 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
             invocation_clock,
         ),
     });
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "receipt-ledger-test-support")))]
     let invocation_runtime = Arc::new(DaemonInvocationRuntime::new(
         invocation_store,
         Arc::clone(&config.invocation_service),

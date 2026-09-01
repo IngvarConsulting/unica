@@ -1,4 +1,6 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory};
+#[cfg(feature = "receipt-ledger-test-support")]
+use super::protocol_v5::V5DaemonErrorCode;
 use super::protocol_v5::{
     decode_v5_server_response, read_bounded_v5_probe_response_frame_before, V5ClientRequest,
     V5EndpointRecord, V5HandshakeServerResponse, V5InvocationRequest, V5ProbeResponseKind,
@@ -31,6 +33,20 @@ pub(crate) struct V5DaemonProcessOwner {
     reader: BufReader<TcpStream>,
     record: V5EndpointRecord,
     poisoned: bool,
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+pub(crate) enum V5RawHandshake {
+    Ready {
+        owner: V5DaemonProcessOwner,
+        client_hello_frame: Vec<u8>,
+        server_ready_frame: Vec<u8>,
+    },
+    Rejected {
+        client_hello_frame: Vec<u8>,
+        server_response_frame: Vec<u8>,
+        code: V5DaemonErrorCode,
+    },
 }
 
 struct StartupEndpointObservation {
@@ -239,6 +255,72 @@ impl V5DaemonProcessOwner {
         Ok(owner)
     }
 
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn connect_existing_raw_for_test(
+        record: V5EndpointRecord,
+        protocol_version: u32,
+        core_identity: CoreIdentity,
+        owner_lease: String,
+        deadline: Instant,
+    ) -> Result<V5RawHandshake, String> {
+        let address = record.loopback_addr()?;
+        let stream = TcpStream::connect_timeout(&address.into(), remaining(deadline, "connect")?)
+            .map_err(|error| format!("connect protocol-v5 daemon: {error}"))?;
+        stream
+            .set_nonblocking(false)
+            .map_err(|error| format!("configure protocol-v5 client stream: {error}"))?;
+        let reader_stream = stream
+            .try_clone()
+            .map_err(|error| format!("clone protocol-v5 client stream: {error}"))?;
+        let mut owner = Self {
+            writer: stream,
+            reader: BufReader::new(reader_stream),
+            record,
+            poisoned: false,
+        };
+        let hello = V5ClientRequest::Hello {
+            protocol_version,
+            token: owner.record.token().to_string(),
+            core_identity,
+            owner_lease,
+        };
+        let client_hello_frame =
+            serde_json::to_vec(&hello).map_err(|_| "serialize protocol-v5 handshake request")?;
+        owner.write_raw_before(&client_hello_frame, true, deadline, "handshake request")?;
+        let server_response_frame = owner.read_before(deadline, "handshake response")?;
+        match serde_json::from_slice::<V5HandshakeServerResponse>(&server_response_frame) {
+            Ok(ready) => {
+                if !ready.matches_record(&owner.record) {
+                    return Err(
+                        "protocol-v5 handshake response does not match endpoint".to_string()
+                    );
+                }
+                Ok(V5RawHandshake::Ready {
+                    owner,
+                    client_hello_frame,
+                    server_ready_frame: server_response_frame,
+                })
+            }
+            Err(_) => {
+                let response: V5ProbeServerResponse =
+                    serde_json::from_slice(&server_response_frame).map_err(|_| {
+                        "protocol-v5 handshake response is not strict JSON".to_string()
+                    })?;
+                let Some(code) = response.error_code() else {
+                    return Err(
+                        "protocol-v5 handshake rejection returned a non-error response".to_string(),
+                    );
+                };
+                drop(owner);
+                Ok(V5RawHandshake::Rejected {
+                    client_hello_frame,
+                    server_response_frame,
+                    code,
+                })
+            }
+        }
+    }
+
     pub(crate) fn daemon_pid(&self) -> u32 {
         self.record.pid()
     }
@@ -363,6 +445,31 @@ impl V5DaemonProcessOwner {
         }
     }
 
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn exchange_raw_frame(
+        &mut self,
+        frame: &[u8],
+        stage: &'static str,
+    ) -> Result<Vec<u8>, String> {
+        if self.poisoned {
+            return Err("protocol-v5 owner session is poisoned".to_string());
+        }
+        let deadline = Instant::now()
+            .checked_add(OWNER_RESPONSE_SAFETY_TIMEOUT.min(CONNECT_TIMEOUT))
+            .ok_or_else(|| format!("protocol-v5 {stage} deadline overflow"))?;
+        if let Err(error) = self.write_raw_before(frame, true, deadline, stage) {
+            self.poison();
+            return Err(error);
+        }
+        match self.read_before(deadline, stage) {
+            Ok(frame) => Ok(frame),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
+        }
+    }
+
     fn write_before<T: serde::Serialize>(
         &mut self,
         value: &T,
@@ -377,6 +484,28 @@ impl V5DaemonProcessOwner {
         bytes.push(b'\n');
         self.writer
             .write_all(&bytes)
+            .map_err(|error| format!("write protocol-v5 {stage}: {error}"))?;
+        remaining(deadline, stage).map(|_| ())
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    fn write_raw_before(
+        &mut self,
+        bytes: &[u8],
+        ensure_newline: bool,
+        deadline: Instant,
+        stage: &'static str,
+    ) -> Result<(), String> {
+        self.writer
+            .set_write_timeout(Some(remaining(deadline, stage)?))
+            .map_err(|error| format!("configure protocol-v5 {stage} timeout: {error}"))?;
+        let mut frame = Vec::with_capacity(bytes.len().saturating_add(1));
+        frame.extend_from_slice(bytes);
+        if ensure_newline && frame.last() != Some(&b'\n') {
+            frame.push(b'\n');
+        }
+        self.writer
+            .write_all(&frame)
             .map_err(|error| format!("write protocol-v5 {stage}: {error}"))?;
         remaining(deadline, stage).map(|_| ())
     }

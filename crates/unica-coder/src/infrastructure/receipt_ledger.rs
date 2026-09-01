@@ -1960,6 +1960,7 @@ impl ReceiptLedgerStore {
                 ),
             );
         }
+        let prepared_record_evidence = prepared.record().clone();
         let (prepared_record, wire_frame) = prepared.into_parts();
         let (
             binding,
@@ -2036,7 +2037,11 @@ impl ReceiptLedgerStore {
             committed_terminal,
             reserved_result_bytes,
         );
-        Ok(CommittedDirectPublication::new(receipt, wire_frame))
+        Ok(CommittedDirectPublication::with_prepared_record(
+            receipt,
+            wire_frame,
+            prepared_record_evidence,
+        ))
     }
 
     #[cfg(test)]
