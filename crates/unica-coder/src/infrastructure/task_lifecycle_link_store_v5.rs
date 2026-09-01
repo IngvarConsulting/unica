@@ -215,6 +215,57 @@ impl TaskLifecycleLinkRecord {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TaskLifecycleLinkCatalogEntry {
+    Reservation(TaskLinkReservation),
+    Record(TaskLifecycleLinkRecord),
+}
+
+impl TaskLifecycleLinkCatalogEntry {
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        match self {
+            Self::Reservation(reservation) => reservation.key_digest(),
+            Self::Record(record) => record.key_digest(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskLifecycleLinkCatalogSnapshot {
+    generation: u64,
+    entries: Vec<TaskLifecycleLinkCatalogEntry>,
+    count: usize,
+    actual_bytes: u64,
+    reserved_count: usize,
+    reserved_bytes: u64,
+}
+
+impl TaskLifecycleLinkCatalogSnapshot {
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn entries(&self) -> &[TaskLifecycleLinkCatalogEntry] {
+        &self.entries
+    }
+
+    pub(crate) const fn count(&self) -> usize {
+        self.count
+    }
+
+    pub(crate) const fn actual_bytes(&self) -> u64 {
+        self.actual_bytes
+    }
+
+    pub(crate) const fn reserved_count(&self) -> usize {
+        self.reserved_count
+    }
+
+    pub(crate) const fn reserved_bytes(&self) -> u64 {
+        self.reserved_bytes
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TaskLifecycleLinkCapacitySnapshot {
     live_reservations: usize,
@@ -884,6 +935,74 @@ impl TaskLifecycleLinkStoreV5 {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .capacity_snapshot(self.limits.max_record_bytes)
+    }
+
+    pub(crate) fn catalog_snapshot(
+        &self,
+        deadline: ProviderDeadline,
+    ) -> Result<TaskLifecycleLinkCatalogSnapshot, TaskLifecycleLinkStoreError> {
+        check_deadline(deadline)?;
+        let writer = self.lock_writer(deadline)?;
+        self.verify_root_authority()?;
+        check_deadline(deadline)?;
+
+        let maximum_record_bytes = u64::try_from(self.limits.max_record_bytes).map_err(|_| {
+            TaskLifecycleLinkStoreError::Corrupt(
+                "Task lifecycle-link record limit does not fit u64",
+            )
+        })?;
+        let mut entries = Vec::with_capacity(writer.entries.len());
+        let mut actual_bytes = 0u64;
+        let mut reserved_count = 0usize;
+        let mut reserved_bytes = 0u64;
+        for entry in writer.entries.values() {
+            match entry {
+                CatalogEntry::Reservation(reservation) => {
+                    actual_bytes = actual_bytes
+                        .checked_add(reservation.encoded_bytes())
+                        .ok_or(TaskLifecycleLinkStoreError::Corrupt(
+                            "Task lifecycle-link actual byte count overflowed",
+                        ))?;
+                    reserved_count = reserved_count.checked_add(1).ok_or(
+                        TaskLifecycleLinkStoreError::Corrupt(
+                            "Task lifecycle-link reservation count overflowed",
+                        ),
+                    )?;
+                    reserved_bytes = reserved_bytes
+                        .checked_add(
+                            maximum_record_bytes
+                                .checked_sub(reservation.encoded_bytes())
+                                .ok_or(TaskLifecycleLinkStoreError::Corrupt(
+                                    "Task lifecycle-link reservation exceeds its entitlement",
+                                ))?,
+                        )
+                        .ok_or(TaskLifecycleLinkStoreError::Corrupt(
+                            "Task lifecycle-link reserved byte count overflowed",
+                        ))?;
+                    entries.push(TaskLifecycleLinkCatalogEntry::Reservation(
+                        reservation.clone(),
+                    ));
+                }
+                CatalogEntry::Link(record) => {
+                    actual_bytes = actual_bytes.checked_add(record.encoded_bytes()).ok_or(
+                        TaskLifecycleLinkStoreError::Corrupt(
+                            "Task lifecycle-link actual byte count overflowed",
+                        ),
+                    )?;
+                    entries.push(TaskLifecycleLinkCatalogEntry::Record(record.clone()));
+                }
+            }
+        }
+        entries.sort_by(|left, right| left.key_digest().as_str().cmp(right.key_digest().as_str()));
+        let count = entries.len();
+        Ok(TaskLifecycleLinkCatalogSnapshot {
+            generation: writer.mutation_sequence,
+            entries,
+            count,
+            actual_bytes,
+            reserved_count,
+            reserved_bytes,
+        })
     }
 
     pub(crate) fn reserve_task_link(
@@ -1953,6 +2072,80 @@ mod tests {
                 .read_by_task_id(key.reserved_task_id(), deadline())
                 .expect("exact reopened link"),
             TaskLifecycleLinkRecord::TaskBound(bound)
+        );
+    }
+
+    #[test]
+    fn catalog_snapshot_lists_exact_live_entries_and_separates_actual_from_reserved_bytes() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let (reserved_key, reserved_link, _) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+        let (bound_key, bound_link, bound_task) = fixture(INVOCATION_B, TASK_B, "workspace-b");
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("open store");
+        let reservation = store
+            .reserve_task_link(reserved_key, reserved_link, deadline())
+            .expect("retain exact reservation");
+        let bound_reservation = store
+            .reserve_task_link(bound_key, bound_link, deadline())
+            .expect("reserve exact bound link");
+        let bound = store
+            .materialize_task_bound(
+                &bound_reservation,
+                bound_task,
+                1,
+                1_000,
+                AttemptPhase::NotBegun,
+                deadline(),
+            )
+            .expect("materialize exact TaskBound");
+        drop(store);
+        let store =
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("reopen durable store");
+        let persisted_before =
+            fs::read(root_path.join(STORE_SNAPSHOT_FILE)).expect("read snapshot before inspection");
+
+        let snapshot = store
+            .catalog_snapshot(deadline())
+            .expect("inspect exact live catalog");
+
+        assert_eq!(snapshot.generation(), 3);
+        assert_eq!(snapshot.count(), 2);
+        assert_eq!(snapshot.reserved_count(), 1);
+        assert_eq!(
+            snapshot.actual_bytes(),
+            reservation.encoded_bytes() + bound.encoded_bytes()
+        );
+        assert_eq!(
+            snapshot.reserved_bytes(),
+            u64::try_from(MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES).expect("record limit fits u64")
+                - reservation.encoded_bytes()
+        );
+        assert_eq!(
+            snapshot.actual_bytes() + snapshot.reserved_bytes(),
+            u64::try_from(store.capacity_snapshot().accounted_bytes())
+                .expect("capacity accounting fits u64")
+        );
+        assert_eq!(snapshot.entries().len(), snapshot.count());
+        assert!(snapshot.entries().windows(2).all(|entries| {
+            entries[0].key_digest().to_string() <= entries[1].key_digest().to_string()
+        }));
+        assert!(snapshot
+            .entries()
+            .contains(&TaskLifecycleLinkCatalogEntry::Reservation(reservation)));
+        assert!(snapshot
+            .entries()
+            .contains(&TaskLifecycleLinkCatalogEntry::Record(
+                TaskLifecycleLinkRecord::TaskBound(bound)
+            )));
+        assert_eq!(
+            fs::read(root_path.join(STORE_SNAPSHOT_FILE)).expect("read snapshot after inspection"),
+            persisted_before
+        );
+        assert_eq!(
+            store
+                .catalog_snapshot(deadline())
+                .expect("repeat read-only inspection"),
+            snapshot
         );
     }
 
