@@ -9095,10 +9095,10 @@ fn known_long_requires_begun_bound_handoff_intent() {
             EventKind::BoundHandoffCommitted,
         ],
     );
-    let receipt = only_receipt(checkpoint(&report, "handoff"));
-    assert_eq!(receipt.state, SeedReceiptState::TaskHandoffActorBoundBegun);
-    assert!(receipt.begun);
-    assert!(receipt.bound_workspace_identity.is_some());
+    assert!(
+        checkpoint(&report, "handoff").receipts.is_empty(),
+        "a confirmed TaskBound must retire the transient receipt-owned handoff"
+    );
     assert_eq!(count_event(&report, EventKind::UnboundPromiseCommitted), 0);
 }
 
