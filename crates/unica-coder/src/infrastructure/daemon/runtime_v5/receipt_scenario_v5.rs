@@ -582,9 +582,23 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             ReceiptScenarioAction::AdvanceMonotonic { millis } => {
                 clock.advance_monotonic(millis)?;
             }
+            ReceiptScenarioAction::Crash { .. } => {
+                if pending_submit.is_some() {
+                    return Ok(None);
+                }
+            }
             ReceiptScenarioAction::Restart => {
-                // Every production action in this feature-only driver is a fresh authenticated
-                // daemon lifetime. The explicit marker therefore requires no synthetic state.
+                if pending_submit.is_some() {
+                    return Err(
+                        "protocol-v5 receipt scenario cannot restart a live submit".to_owned()
+                    );
+                }
+                let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
+                let config =
+                    scenario_server_config_with_clock(state.path(), &identity, None, &clock);
+                let runtime =
+                    V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?;
+                drop(runtime);
             }
             ReceiptScenarioAction::Checkpoint { label } => {
                 let (mut snapshot, live_task_projection) = match &pending_submit {
@@ -1255,6 +1269,7 @@ fn has_supported_shape(request: &str) -> Result<bool, String> {
                         | "read_task"
                         | "advance_epoch"
                         | "advance_monotonic"
+                        | "crash"
                         | "restart"
                         | "checkpoint"
                         | "reset"
@@ -4658,6 +4673,9 @@ enum ReceiptScenarioAction {
     AdvanceMonotonic {
         millis: u64,
     },
+    Crash {
+        point: ScenarioCrashPoint,
+    },
     Restart,
     Checkpoint {
         label: String,
@@ -4779,6 +4797,10 @@ impl ReceiptScenarioAction {
             | Self::WaitForEvent { .. }
             | Self::ReleaseBarrier { .. }
             | Self::CompareClientServerIdentity => true,
+            Self::Crash { point } => matches!(
+                point,
+                ScenarioCrashPoint::ReservedUnbound | ScenarioCrashPoint::ReservedBegun
+            ),
             Self::FillReceiptPool { state, .. } => matches!(
                 state,
                 ScenarioSeedReceiptState::CancelReserved
@@ -5060,6 +5082,29 @@ enum ScenarioSeedReceiptState {
 #[serde(rename_all = "snake_case")]
 enum ScenarioBarrierPoint {
     AfterCancelReservationConvertedBeforeTerminal,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioCrashPoint {
+    ReservedUnbound,
+    ReservedBegun,
+    TaskPromisedUnbound,
+    AfterSideEffectBeforeTerminal,
+    BeforePromisedActorIntent,
+    AfterPromisedActorIntent,
+    BeforeBoundHandoffIntent,
+    AfterBoundHandoffIntent,
+    AfterBegunHandoffIntent,
+    AfterStagedTerminal,
+    AfterStagedTaskStoreTerminalReadbackBeforeLedgerCommit,
+    BeforeTaskStoreCreate,
+    AfterTaskStoreCreateBeforeTaskBound,
+    AfterCancelFlagBeforeTaskCreate,
+    AfterTaskStoreCancelReadbackBeforeTaskBound,
+    AfterWorkingReadbackBeforeReceiptBegun,
+    AfterReceiptBegunBeforePrepare,
+    AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
 }
 
 #[derive(Deserialize)]
