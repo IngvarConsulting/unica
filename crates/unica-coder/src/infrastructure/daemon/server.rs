@@ -1400,7 +1400,7 @@ pub(crate) mod actor_capacity_tests {
 
         assert!(!result.ok, "{result:?}");
         assert_eq!(result.data.as_ref().unwrap()["config"]["state"], "invalid");
-        assert_eq!(result.diagnostics[0]["code"], "invalid_project_config");
+        assert_eq!(result.diagnostics[0]["code"], "invalid_state");
         assert!(result.next.is_empty(), "{result:?}");
     }
 
@@ -1415,7 +1415,7 @@ pub(crate) mod actor_capacity_tests {
 
         assert!(!result.ok, "{result:?}");
         assert_eq!(result.data.as_ref().unwrap()["config"]["state"], "invalid");
-        assert_eq!(result.diagnostics[0]["code"], "invalid_project_config");
+        assert_eq!(result.diagnostics[0]["code"], "invalid_state");
     }
 
     #[test]
@@ -1440,7 +1440,7 @@ pub(crate) mod actor_capacity_tests {
 
         assert!(!result.ok, "{result:?}");
         assert_eq!(result.data.as_ref().unwrap()["config"]["state"], "invalid");
-        assert_eq!(result.diagnostics[0]["code"], "invalid_project_config");
+        assert_eq!(result.diagnostics[0]["code"], "invalid_state");
     }
 
     #[test]

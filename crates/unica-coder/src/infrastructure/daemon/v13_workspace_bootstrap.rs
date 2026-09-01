@@ -57,7 +57,7 @@ pub(super) fn execute_view_bootstrap(
             Err(error) if config_present => {
                 let mut result = DomainResult::canonical_rejection(
                     None,
-                    "invalid_project_config",
+                    "invalid_state",
                     format!("v8project.yaml is present but invalid: {error}"),
                 );
                 result.data = Some(object([
