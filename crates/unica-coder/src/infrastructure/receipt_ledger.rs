@@ -2509,16 +2509,43 @@ impl ReceiptLedgerStore {
                 actual: persisted.record.record_version,
             });
         }
-        let reservation = persisted.reservation()?;
-        let (workspace_identity_hash, phase) = match reservation.phase() {
-            ReservedPhase::ActorBound {
-                bound_workspace_identity,
-            } => (bound_workspace_identity.clone(), AttemptPhase::NotBegun),
-            ReservedPhase::Begun {
-                bound_workspace_identity,
-            } => (bound_workspace_identity.clone(), AttemptPhase::Begun),
-            ReservedPhase::Unbound => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
-        };
+        let (original_cutoff, workspace_identity_hash, phase, cancel_requested) =
+            match &persisted.record.lifecycle {
+                StoredActiveLifecycleV1::ReservedActorBound {
+                    original_cutoff,
+                    bound_workspace_identity,
+                    cancel_requested,
+                    ..
+                } => (
+                    *original_cutoff,
+                    bound_workspace_identity.clone(),
+                    AttemptPhase::NotBegun,
+                    *cancel_requested,
+                ),
+                StoredActiveLifecycleV1::ReservedBegun {
+                    original_cutoff,
+                    bound_workspace_identity,
+                    cancel_requested,
+                    ..
+                } => (
+                    *original_cutoff,
+                    bound_workspace_identity.clone(),
+                    AttemptPhase::Begun,
+                    *cancel_requested,
+                ),
+                StoredActiveLifecycleV1::TaskPromisedActorBound {
+                    original_cutoff,
+                    workspace_identity_hash,
+                    cancel_requested,
+                    ..
+                } => (
+                    *original_cutoff,
+                    workspace_identity_hash.clone(),
+                    AttemptPhase::NotBegun,
+                    *cancel_requested,
+                ),
+                _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+            };
         let link = TaskLinkReference::new(
             key_digest.clone(),
             task.task_id(),
@@ -2544,7 +2571,7 @@ impl ReceiptLedgerStore {
             key: key.clone(),
             key_digest: key_digest.clone(),
             lifecycle: StoredActiveLifecycleV1::TaskHandoffActorBound {
-                original_cutoff: *reservation.original_cutoff(),
+                original_cutoff,
                 task_id: task.task_id(),
                 invocation_id: task.invocation_id(),
                 created_at_epoch_ms: task.created_at_epoch_ms(),
@@ -2555,7 +2582,7 @@ impl ReceiptLedgerStore {
                 workspace_identity_hash,
                 task_link_digest: link.digest().clone(),
                 phase,
-                cancel_requested: reservation.cancel_requested(),
+                cancel_requested,
             },
         };
         let (record, encoded) =

@@ -577,6 +577,8 @@ pub(crate) struct DaemonServerConfig {
     invocation_clock: Option<Arc<dyn Clock>>,
     #[cfg(feature = "receipt-ledger-test-support")]
     v5_epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
+    #[cfg(feature = "receipt-ledger-test-support")]
+    skip_v5_startup_reconciliation: bool,
     #[cfg(test)]
     startup_pause: Option<Arc<HandshakePause>>,
     #[cfg(test)]
@@ -611,6 +613,8 @@ impl DaemonServerConfig {
             invocation_clock: None,
             #[cfg(feature = "receipt-ledger-test-support")]
             v5_epoch_clock: None,
+            #[cfg(feature = "receipt-ledger-test-support")]
+            skip_v5_startup_reconciliation: false,
             #[cfg(test)]
             startup_pause: None,
             #[cfg(test)]
@@ -635,6 +639,17 @@ impl DaemonServerConfig {
         &self,
     ) -> Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>> {
         self.v5_epoch_clock.clone()
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(super) const fn skip_v5_startup_reconciliation_for_test(&self) -> bool {
+        self.skip_v5_startup_reconciliation
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn without_v5_startup_reconciliation_for_test(mut self) -> Self {
+        self.skip_v5_startup_reconciliation = true;
+        self
     }
 
     #[cfg(any(test, feature = "receipt-ledger-test-support"))]
