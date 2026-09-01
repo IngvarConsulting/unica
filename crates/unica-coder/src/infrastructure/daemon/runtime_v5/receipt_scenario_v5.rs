@@ -853,7 +853,12 @@ fn seed_receipt_state(
         )?;
         return Ok(true);
     }
-    if staged_terminal.is_some() {
+    let seeds_direct_terminal = matches!(
+        seed_state,
+        ScenarioSeedReceiptState::DirectTerminalUnacked
+            | ScenarioSeedReceiptState::AcknowledgedTombstone
+    );
+    if staged_terminal.is_some() && !seeds_direct_terminal {
         return Ok(false);
     }
 
@@ -866,11 +871,129 @@ fn seed_receipt_state(
         .map_err(|error| format!("construct seeded receipt cutoff: {error}"))?;
 
     let supported = match seed_state {
+        ScenarioSeedReceiptState::DirectTerminalUnacked
+        | ScenarioSeedReceiptState::AcknowledgedTombstone => {
+            let Some(ScenarioTerminalFixture::Success { payload }) = staged_terminal else {
+                return Ok(false);
+            };
+            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+                result: Box::new(crate::domain::invocation::DomainResult::success(payload)),
+            })
+            .map_err(|error| format!("construct seeded Direct terminal: {error}"))?;
+            let reserved = runtime
+                .receipt_ledger
+                .reserve(key.clone(), cutoff, deadline)
+                .map_err(|error| format!("reserve seeded Direct receipt: {error}"))?
+                .into_reservation()
+                .map_err(|state| {
+                    format!(
+                        "seeded Direct receipt unexpectedly exists as {}",
+                        state.kind().diagnostic_name()
+                    )
+                })?;
+            let publication = runtime
+                .receipt_ledger
+                .publish_direct_terminal(
+                    key.clone(),
+                    reserved.record_version(),
+                    epoch_ms,
+                    terminal,
+                    deadline,
+                )
+                .map_err(|error| format!("publish seeded Direct terminal: {error}"))?;
+            if matches!(seed_state, ScenarioSeedReceiptState::AcknowledgedTombstone) {
+                runtime
+                    .receipt_ledger
+                    .acknowledge_direct(
+                        key,
+                        publication.receipt().terminal().digest().clone(),
+                        epoch_ms,
+                        deadline,
+                    )
+                    .map_err(|error| format!("acknowledge seeded Direct terminal: {error}"))?;
+            }
+            true
+        }
         ScenarioSeedReceiptState::CancelReserved => {
             runtime
                 .receipt_ledger
                 .request_cancel_or_reserve(key, epoch_ms, deadline)
                 .map_err(|error| format!("seed CancelReserved receipt: {error}"))?;
+            true
+        }
+        ScenarioSeedReceiptState::TaskBoundNotBegun | ScenarioSeedReceiptState::TaskBoundBegun => {
+            let reserved = runtime
+                .receipt_ledger
+                .reserve(key.clone(), cutoff, deadline)
+                .map_err(|error| format!("reserve seeded TaskBound receipt: {error}"))?
+                .into_reservation()
+                .map_err(|state| {
+                    format!(
+                        "seeded TaskBound receipt unexpectedly exists as {}",
+                        state.kind().diagnostic_name()
+                    )
+                })?;
+            let workspace_identity = SafeIdentityHash::from_sha256(
+                Sha256::digest(b"unica.d0.scenario-workspace.v1").into(),
+            );
+            let bound_actor = runtime
+                .receipt_ledger
+                .bind_reserved_actor(
+                    key.clone(),
+                    reserved.record_version(),
+                    workspace_identity,
+                    deadline,
+                )
+                .map_err(|error| format!("bind seeded TaskBound actor: {error}"))?;
+            let (expected_version, phase) =
+                if matches!(seed_state, ScenarioSeedReceiptState::TaskBoundBegun) {
+                    let begun = runtime
+                        .receipt_ledger
+                        .mark_reserved_begun(key.clone(), bound_actor.record_version(), deadline)
+                        .map_err(|error| format!("begin seeded TaskBound receipt: {error}"))?;
+                    (
+                        begun.record_version(),
+                        crate::application::receipt_ledger::AttemptPhase::Begun,
+                    )
+                } else {
+                    (
+                        bound_actor.record_version(),
+                        crate::application::receipt_ledger::AttemptPhase::NotBegun,
+                    )
+                };
+            let handoff = runtime
+                .receipt_ledger
+                .begin_bound_task_handoff(
+                    key.clone(),
+                    expected_version,
+                    epoch_ms,
+                    SCENARIO_TASK_TTL_MS,
+                    SCENARIO_TASK_POLL_INTERVAL_MS,
+                    deadline,
+                )
+                .map_err(|error| format!("prepare seeded TaskBound handoff: {error}"))?;
+            if handoff.phase() != phase {
+                return Err("seeded TaskBound handoff changed its attempt phase".to_owned());
+            }
+            let (task_record, task_bound) = runtime
+                .task_projection
+                .materialize_bound_handoff(&handoff, epoch_ms, deadline, &runtime.telemetry)
+                .map_err(|failure| format!("materialize seeded TaskBound: {}", failure.error))?;
+            runtime
+                .receipt_ledger
+                .complete_bound_task_handoff(
+                    key,
+                    handoff.record_version(),
+                    task_bound.clone(),
+                    deadline,
+                )
+                .map_err(|error| format!("retire seeded TaskBound handoff: {error}"))?;
+            if phase == crate::application::receipt_ledger::AttemptPhase::Begun {
+                runtime
+                    .task_projection
+                    .start_bound_task(&task_bound, task_record, deadline)
+                    .map_err(|failure| format!("start seeded TaskBound: {}", failure.error))?;
+            }
             true
         }
         ScenarioSeedReceiptState::ReservedUnbound
@@ -1002,11 +1125,7 @@ fn seed_receipt_state(
             }
             true
         }
-        ScenarioSeedReceiptState::DirectTerminalUnacked
-        | ScenarioSeedReceiptState::AcknowledgedTombstone
-        | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
-        | ScenarioSeedReceiptState::TaskBoundNotBegun
-        | ScenarioSeedReceiptState::TaskBoundBegun
+        ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
         | ScenarioSeedReceiptState::TaskTerminalBound
         | ScenarioSeedReceiptState::TaskTerminalReceiptBacked => false,
     };
@@ -4456,10 +4575,14 @@ impl ReceiptScenarioAction {
                             ))
                 }
                 ScenarioSeedReceiptState::DirectTerminalUnacked
-                | ScenarioSeedReceiptState::AcknowledgedTombstone
-                | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
-                | ScenarioSeedReceiptState::TaskBoundNotBegun
-                | ScenarioSeedReceiptState::TaskBoundBegun
+                | ScenarioSeedReceiptState::AcknowledgedTombstone => {
+                    staged_terminal.as_ref().is_some_and(|terminal| {
+                        matches!(terminal, ScenarioTerminalFixture::Success { .. })
+                    })
+                }
+                ScenarioSeedReceiptState::TaskBoundNotBegun
+                | ScenarioSeedReceiptState::TaskBoundBegun => staged_terminal.is_none(),
+                ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
                 | ScenarioSeedReceiptState::TaskTerminalBound => false,
             },
             Self::ReadTask { .. } => true,
@@ -4825,6 +4948,92 @@ mod tests {
                 .recover(key, Instant::now() + SCENARIO_OPERATION_TIMEOUT)
                 .expect("recover exact seeded receipt");
             assert_eq!(recovered.kind().diagnostic_name(), expected);
+        }
+    }
+
+    #[test]
+    fn seeded_direct_and_bound_owners_cross_the_real_durable_stores() {
+        let identity = CoreIdentity::production_v5();
+        for (seed_state, expected_kind) in [
+            (
+                ScenarioSeedReceiptState::DirectTerminalUnacked,
+                "direct_terminal_unacked",
+            ),
+            (
+                ScenarioSeedReceiptState::AcknowledgedTombstone,
+                "acknowledged_tombstone",
+            ),
+        ] {
+            let state_root = ScenarioStateRoot::new().expect("scenario state root");
+            let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS));
+            let key = fresh_key(&identity, &Map::new()).expect("exact receipt key");
+            assert!(seed_receipt_state(
+                state_root.path(),
+                &identity,
+                &clock,
+                key.clone(),
+                seed_state,
+                false,
+                Some(ScenarioTerminalFixture::Success {
+                    payload: "seeded-direct".to_owned(),
+                }),
+            )
+            .expect("seed direct owner"));
+            let state = DaemonStateDirectory::open(state_root.path(), &identity)
+                .expect("open daemon state");
+            let config =
+                scenario_server_config_with_clock(state_root.path(), &identity, None, &clock);
+            let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())
+                .expect("reopen runtime");
+            let recovered = runtime
+                .receipt_ledger
+                .recover(key, Instant::now() + SCENARIO_OPERATION_TIMEOUT)
+                .expect("recover seeded direct owner");
+            assert_eq!(recovered.kind().diagnostic_name(), expected_kind);
+        }
+
+        for (seed_state, expected_working) in [
+            (ScenarioSeedReceiptState::TaskBoundNotBegun, false),
+            (ScenarioSeedReceiptState::TaskBoundBegun, true),
+        ] {
+            let state_root = ScenarioStateRoot::new().expect("scenario state root");
+            let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS));
+            let key = fresh_key(&identity, &Map::new()).expect("exact receipt key");
+            assert!(seed_receipt_state(
+                state_root.path(),
+                &identity,
+                &clock,
+                key.clone(),
+                seed_state,
+                false,
+                None,
+            )
+            .expect("seed TaskBound owner"));
+            let state = DaemonStateDirectory::open(state_root.path(), &identity)
+                .expect("open daemon state");
+            let config =
+                scenario_server_config_with_clock(state_root.path(), &identity, None, &clock);
+            let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())
+                .expect("reopen runtime");
+            let snapshot = runtime
+                .resolve_task(
+                    key.reserved_task_id(),
+                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                )
+                .expect("resolve seeded TaskBound owner");
+            assert_eq!(
+                matches!(
+                    snapshot,
+                    crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Working { .. }
+                ),
+                expected_working
+            );
+            assert_eq!(
+                runtime
+                    .receipt_ledger
+                    .recover(key, Instant::now() + SCENARIO_OPERATION_TIMEOUT),
+                Err(ReceiptLedgerError::ReceiptNotFound)
+            );
         }
     }
 
