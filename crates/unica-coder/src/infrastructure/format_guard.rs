@@ -1202,8 +1202,9 @@ mod tests {
     #[test]
     fn cfe_validate_warns_for_newer_registered_form_wrapper() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-cfe-validate-form-wrapper-{}",
-            std::process::id()
+            "unica-format-guard-cfe-validate-form-wrapper-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let graph = cfe_read_graph(&root, "2.20", "2.20", "2.21", "2.20", "2.21");
         let args = Map::from_iter([(
@@ -1228,8 +1229,9 @@ mod tests {
     #[test]
     fn cfe_diff_mode_a_warns_for_newer_registered_form_content() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-cfe-diff-mode-a-form-{}",
-            std::process::id()
+            "unica-format-guard-cfe-diff-mode-a-form-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let base = config(&root, Some("2.20"));
         let graph = cfe_read_graph(&root, "2.20", "2.20", "2.20", "2.21", "2.21");
@@ -1261,8 +1263,9 @@ mod tests {
     #[test]
     fn cfe_diff_ignores_only_newer_unregistered_neighbor() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-cfe-diff-unregistered-{}",
-            std::process::id()
+            "unica-format-guard-cfe-diff-unregistered-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let base = config(&root, Some("2.20"));
         let graph = cfe_read_graph(&root, "2.20", "2.20", "2.20", "2.20", "2.21");
@@ -1301,8 +1304,9 @@ mod tests {
     #[test]
     fn cfe_diff_mode_b_warns_for_newer_registered_form_content() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-cfe-diff-mode-b-form-{}",
-            std::process::id()
+            "unica-format-guard-cfe-diff-mode-b-form-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let base = config(&root, Some("2.20"));
         let graph = cfe_read_graph(&root, "2.20", "2.20", "2.20", "2.21", "2.21");
@@ -2347,8 +2351,11 @@ mod tests {
 
     #[test]
     fn older_extension_dump_recommends_platform_reexport() {
-        let root =
-            std::env::temp_dir().join(format!("unica-format-guard-old-cfe-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "unica-format-guard-old-cfe-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
         let src = root.join("src");
         std::fs::create_dir_all(&src).unwrap();
         let path = src.join("Configuration.xml");
@@ -2376,8 +2383,9 @@ mod tests {
     #[test]
     fn cfe_init_preflights_its_optional_cf_base_with_platform_reexport() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-cfe-init-{}",
-            std::process::id()
+            "unica-format-guard-cfe-init-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let path = config(&root, Some("2.19"));
         let mut args = Map::new();
@@ -2484,8 +2492,9 @@ mod tests {
     #[test]
     fn effective_format_paths_match_mutating_handler_directory_and_alias_resolution() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-handler-paths-{}",
-            std::process::id()
+            "unica-format-guard-handler-paths-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let config_path = config(&root, Some("2.19"));
         let src = config_path.parent().unwrap();
@@ -2580,8 +2589,9 @@ mod tests {
     #[test]
     fn specialized_format_path_policies_resolve_representative_defaults() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-specialized-paths-{}",
-            std::process::id()
+            "unica-format-guard-specialized-paths-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let context = context(&root);
@@ -2636,8 +2646,9 @@ mod tests {
     #[test]
     fn read_only_path_aliases_still_reach_the_format_warning() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-read-aliases-{}",
-            std::process::id()
+            "unica-format-guard-read-aliases-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let config_path = config(&root, Some("2.19"));
         let src = config_path.parent().unwrap().canonicalize().unwrap();
@@ -2720,8 +2731,9 @@ mod tests {
     #[test]
     fn read_only_handler_resolved_paths_match_directory_inputs() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-read-handler-paths-{}",
-            std::process::id()
+            "unica-format-guard-read-handler-paths-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let configuration = config(&root, Some("2.19"));
         let src = configuration.parent().unwrap().to_path_buf();
@@ -3109,8 +3121,9 @@ mod tests {
     #[test]
     fn standalone_owner_warning_recommends_platform_reexport_without_tool_name() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-old-standalone-{}",
-            std::process::id()
+            "unica-format-guard-old-standalone-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let form = root.join("Form.xml");
@@ -3133,8 +3146,9 @@ mod tests {
     #[test]
     fn form_remove_default_src_blocks_older_dump() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-default-form-remove-{}",
-            std::process::id()
+            "unica-format-guard-default-form-remove-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         config(&root, Some("2.19"));
         let mut args = Map::new();
@@ -3150,8 +3164,9 @@ mod tests {
     #[test]
     fn format_guard_normalizes_parent_segments_before_owner_lookup() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-normalized-parent-{}",
-            std::process::id()
+            "unica-format-guard-normalized-parent-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(
@@ -3178,8 +3193,9 @@ mod tests {
     #[test]
     fn standalone_compile_does_not_inherit_unrelated_workspace_configuration() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-standalone-output-{}",
-            std::process::id()
+            "unica-format-guard-standalone-output-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         config(&root, Some("2.19"));
         let standalone = root.join("generated/report.xml");
@@ -3199,8 +3215,9 @@ mod tests {
     #[test]
     fn mxl_compile_blocks_write_inside_older_dump() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-mxl-compile-old-{}",
-            std::process::id()
+            "unica-format-guard-mxl-compile-old-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         config(&root, Some("2.19"));
         let output = root.join("src/Reports/Sales/Templates/Print/Ext/Template.xml");
@@ -3224,8 +3241,9 @@ mod tests {
     #[test]
     fn form_compile_blocks_old_external_source_set_before_create() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-form-compile-old-external-{}",
-            std::process::id()
+            "unica-format-guard-form-compile-old-external-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(
@@ -3253,8 +3271,9 @@ mod tests {
     #[test]
     fn form_compile_from_object_checks_input_and_output_formats() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-form-compile-input-output-{}",
-            std::process::id()
+            "unica-format-guard-form-compile-input-output-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(root.join("old")).unwrap();
         std::fs::create_dir_all(root.join("active")).unwrap();
@@ -3301,8 +3320,9 @@ mod tests {
     #[test]
     fn malformed_existing_standalone_xml_is_invalid_not_new_output() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-malformed-standalone-{}",
-            std::process::id()
+            "unica-format-guard-malformed-standalone-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let output = root.join("standalone.xml");
@@ -3348,8 +3368,9 @@ mod tests {
     #[test]
     fn external_source_root_with_one_descriptor_resolves_that_owner() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-external-root-owner-{}",
-            std::process::id()
+            "unica-format-guard-external-root-owner-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(&root, "EXTERNAL_REPORTS", "erf", "Sales", "2.19");
@@ -3558,8 +3579,9 @@ mod tests {
     #[test]
     fn known_standalone_form_root_remains_supported() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-known-standalone-form-{}",
-            std::process::id()
+            "unica-format-guard-known-standalone-form-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let target = root.join("Form.xml");
@@ -3584,8 +3606,9 @@ mod tests {
     #[test]
     fn subsystem_validate_warns_for_newer_direct_command_interface() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-subsystem-validate-ci-{}",
-            std::process::id()
+            "unica-format-guard-subsystem-validate-ci-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let subsystem = root.join("Subsystems/Sales.xml");
         std::fs::create_dir_all(subsystem.parent().unwrap()).unwrap();
@@ -3626,8 +3649,9 @@ mod tests {
     #[test]
     fn subsystem_tree_warns_for_newer_registered_child_descriptor() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-subsystem-tree-child-{}",
-            std::process::id()
+            "unica-format-guard-subsystem-tree-child-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let physical_root = root.canonicalize().unwrap();

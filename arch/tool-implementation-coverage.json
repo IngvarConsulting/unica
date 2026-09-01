@@ -4,7 +4,7 @@
   "subjectTools": {
     "unica.view": {
       "status": "partial",
-      "reason": "Base logical-node projection and closed props/branches/can/limits/items section selection are implemented; richer domain projections remain incomplete.",
+      "reason": "Base logical-node projection with closed props/branches/items sections is implemented; the requested can section is computed for metadata kinds and the Configuration root from the closed operation registry, while uncomputed can kinds and the limits section answer typed unsupported_section; richer domain projections remain incomplete.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"

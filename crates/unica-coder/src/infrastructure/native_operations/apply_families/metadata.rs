@@ -65,14 +65,21 @@ pub(crate) fn parse_metadata_plan_operation(
 }
 
 fn reject_unknown_args(
+    operation: &str,
     args: &Map<String, Value>,
     allowed: &[&str],
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
     if let Some(field) = args.keys().find(|field| !allowed.contains(&field.as_str())) {
+        // The refusal names the expected skeleton so the caller's first retry
+        // does not have to discover the argument shape by another refusal.
+        let expected = crate::domain::apply::OperationRegistry::closed()
+            .lookup(operation)
+            .map(|descriptor| format!("; `{operation}` expects `{}`", descriptor.skeleton_key()))
+            .unwrap_or_default();
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
-            format!("operation does not accept argument `{field}`"),
+            format!("operation does not accept argument `{field}`{expected}"),
         )
         .at_path(format!("ops[{op_index}].args.{field}")));
     }
@@ -252,7 +259,7 @@ fn parse_props_set(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args(args, &["at", "values"], op_index)?;
+    reject_unknown_args("props.set", args, &["at", "values"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind) = metadata_owner(&target, op_index)?;
     let values = required_object(args, "values", op_index)?.clone();
@@ -271,7 +278,7 @@ fn parse_attribute_add(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args(args, &["at", "items"], op_index)?;
+    reject_unknown_args("attribute.add", args, &["at", "items"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind) = metadata_owner(&target, op_index)?;
     let items = required_array(args, "items", op_index)?.to_vec();
@@ -295,7 +302,7 @@ fn parse_attribute_set(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args(args, &["at", "values"], op_index)?;
+    reject_unknown_args("attribute.set", args, &["at", "values"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name) = attribute_owner_and_name(&target, op_index)?;
     let mut values = required_object(args, "values", op_index)?.clone();
@@ -330,7 +337,7 @@ fn parse_attribute_remove(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args(args, &["at"], op_index)?;
+    reject_unknown_args("attribute.remove", args, &["at"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name) = attribute_owner_and_name(&target, op_index)?;
     parse_legacy_edit(

@@ -1,6 +1,8 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
+use crate::domain::apply::{OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
+use crate::domain::metadata::MetadataKind;
 use crate::infrastructure::metadata_kinds::metadata_kind;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +22,13 @@ impl ReadModeError {
     fn unsupported_filter(message: impl Into<String>) -> Self {
         Self {
             code: "unsupported_filter",
+            message: message.into(),
+        }
+    }
+
+    fn unsupported_section(message: impl Into<String>) -> Self {
+        Self {
+            code: "unsupported_section",
             message: message.into(),
         }
     }
@@ -46,6 +55,32 @@ impl std::error::Error for ReadModeError {}
 
 const VIEW_IDENTITY_SLOTS: &[&str] = &["at", "kind", "title"];
 const VIEW_SECTION_SLOTS: &[&str] = &["props", "branches", "can", "limits", "items"];
+
+/// The operation dictionary of a node, computed from the one closed registry
+/// that also validates `apply` calls: registry × applicability to the node
+/// kind. `None` means the dictionary is not computed for this kind yet — the
+/// caller answers `unsupported_section`, never a valid-looking empty node.
+/// The first phase covers the Configuration root and the metadata kinds.
+fn computed_can_entries(kind: &str) -> Option<Vec<Value>> {
+    let node_kind = NodeKind::parse(kind).ok()?;
+    if node_kind != NodeKind::Configuration && MetadataKind::parse(kind).is_err() {
+        return None;
+    }
+    Some(
+        OperationRegistry::closed()
+            .descriptors()
+            .iter()
+            .filter(|descriptor| descriptor.applies_to(node_kind))
+            .map(|descriptor| {
+                json!({
+                    "op": descriptor.name(),
+                    "args": descriptor.skeleton_key(),
+                    "implemented": IMPLEMENTED_APPLY_OPERATIONS.contains(&descriptor.name()),
+                })
+            })
+            .collect(),
+    )
+}
 
 pub(super) fn project_view_sections(
     data: &Value,
@@ -76,6 +111,7 @@ pub(super) fn project_view_sections(
             selected.push(section);
         }
     }
+    let kind = data.get("kind").and_then(Value::as_str).unwrap_or_default();
     let mut projected = Map::new();
     for slot in VIEW_IDENTITY_SLOTS {
         if let Some(value) = data.get(*slot) {
@@ -83,8 +119,27 @@ pub(super) fn project_view_sections(
         }
     }
     for slot in selected {
-        if let Some(value) = data.get(slot) {
-            projected.insert(slot.to_string(), value.clone());
+        match slot {
+            "can" => match computed_can_entries(kind) {
+                Some(entries) => {
+                    projected.insert(slot.to_string(), Value::Array(entries));
+                }
+                None => {
+                    return Err(ReadModeError::unsupported_section(format!(
+                        "view section `can` is not computed for kind `{kind}` yet"
+                    )))
+                }
+            },
+            "limits" => {
+                return Err(ReadModeError::unsupported_section(
+                    "view section `limits` is not computed yet",
+                ))
+            }
+            slot => {
+                if let Some(value) = data.get(slot) {
+                    projected.insert(slot.to_string(), value.clone());
+                }
+            }
         }
     }
     Ok(Value::Object(projected))
@@ -185,6 +240,20 @@ pub(super) fn filter_diff_data(data: &Value, filter: &Value) -> Result<Value, Re
         ));
     }
     if let Some(sections) = filter.get("sections") {
+        // Diff compares source-backed node data. Computed sections belong to
+        // the View result: the operation dictionary derives from the registry
+        // and the node kind, so comparing it never observes a source change.
+        if let Some(computed) = sections
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|section| matches!(section.as_str(), Some("can") | Some("limits")))
+        {
+            return Err(ReadModeError::unsupported_filter(format!(
+                "diff sections compare node data; computed section `{}` belongs to view",
+                computed.as_str().unwrap_or_default()
+            )));
+        }
         return project_view_sections(data, sections);
     }
     let paths = filter
@@ -257,25 +326,74 @@ mod tests {
                 "kind": "Catalog",
                 "title": "Items",
                 "props": {"hierarchical": false},
-                "branches": [{"at": "main:Catalog.Items.Attribute", "count": 2}],
-                "can": [{"op": "props.set"}],
-                "limits": ["read-only"]
+                "branches": [{"at": "main:Catalog.Items.Attribute", "count": 2}]
             }),
             &json!(["props", "can"]),
         )
         .unwrap();
 
+        assert_eq!(projected["at"], "main:Catalog.Items");
+        assert_eq!(projected["props"], json!({"hierarchical": false}));
+        assert!(
+            projected.get("branches").is_none(),
+            "unselected sections stay out: {projected}"
+        );
+        let can = projected["can"].as_array().expect("computed can entries");
+        let entry = |op: &str| {
+            can.iter()
+                .find(|entry| entry["op"] == op)
+                .unwrap_or_else(|| panic!("missing `{op}` in {can:?}"))
+                .clone()
+        };
+        // The dictionary comes from the one closed registry × applicability,
+        // with the honesty flag mirroring the Run dictionary.
         assert_eq!(
-            projected,
-            json!({
-                "at": "main:Catalog.Items",
-                "kind": "Catalog",
-                "title": "Items",
-                "props": {"hierarchical": false},
-                "can": [{"op": "props.set"}]
-            })
+            entry("props.set"),
+            json!({"op": "props.set", "args": "values", "implemented": true})
+        );
+        assert_eq!(
+            entry("attribute.add"),
+            json!({"op": "attribute.add", "args": "items", "implemented": true})
+        );
+        assert_eq!(
+            entry("object.create"),
+            json!({"op": "object.create", "args": "values", "implemented": false})
+        );
+        assert_eq!(
+            entry("object.remove"),
+            json!({"op": "object.remove", "args": "at", "implemented": false})
+        );
+        assert_eq!(
+            entry("help.create"),
+            json!({"op": "help.create", "args": "text", "implemented": false})
+        );
+        assert!(
+            can.iter().all(|entry| entry["op"] != "enumValue.add"),
+            "a Catalog node must not advertise Enum-only operations: {can:?}"
         );
         assert!(project_view_sections(&projected, &json!(["physicalPath"])).is_err());
+    }
+
+    #[test]
+    fn uncomputed_sections_answer_typed_unsupported_section() {
+        let module = json!({
+            "at": "main:CommonModule.Общий.Module.Manager",
+            "kind": "Module",
+            "title": "Manager"
+        });
+        let refusal = project_view_sections(&module, &json!(["can"])).unwrap_err();
+        assert_eq!(refusal.code(), "unsupported_section");
+        assert!(refusal.to_string().contains("`can`"), "{refusal}");
+
+        let limits =
+            project_view_sections(&json!({"kind": "Catalog"}), &json!(["limits"])).unwrap_err();
+        assert_eq!(limits.code(), "unsupported_section");
+
+        let configuration =
+            project_view_sections(&json!({"kind": "Configuration"}), &json!(["can"])).unwrap();
+        let can = configuration["can"].as_array().expect("root can entries");
+        assert!(can.iter().any(|entry| entry["op"] == "subsystem.create"));
+        assert!(can.iter().any(|entry| entry["op"] == "object.create"));
     }
 
     #[test]
@@ -314,6 +432,16 @@ mod tests {
             &json!({"paths": ["/props/synonym"]}),
         )
         .unwrap();
+        let computed = filter_diff_data(
+            &json!({"kind": "Catalog", "props": {}}),
+            &json!({"sections": ["can"]}),
+        )
+        .unwrap_err();
+        assert_eq!(computed.code(), "unsupported_filter");
+        assert!(
+            computed.to_string().contains("belongs to view"),
+            "{computed}"
+        );
         assert_eq!(
             filtered,
             json!({
