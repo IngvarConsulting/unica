@@ -706,7 +706,6 @@ impl ReceiptCatalog {
     }
 }
 
-#[cfg(feature = "receipt-ledger-test-support")]
 fn sort_receipt_keys_by_digest(keys: &mut [ReceiptKey]) {
     keys.sort_unstable_by(|left, right| {
         receipt_key_digest(left)
@@ -1147,6 +1146,55 @@ impl ReceiptLedgerStore {
             generation_before,
             generation_after,
         })
+    }
+
+    /// Returns the bounded set of active receipt keys under the same stable
+    /// writer/generation fence used by startup inspection. Tombstones are not
+    /// recovery work and are intentionally excluded.
+    pub(crate) fn recovery_keys(
+        &self,
+        deadline: Instant,
+    ) -> Result<Vec<ReceiptKey>, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+        let generation_before =
+            latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
+        let mut keys = catalog
+            .records
+            .values()
+            .filter(|entry| !entry.is_tombstone())
+            .map(|entry| entry.record.key.clone())
+            .collect::<Vec<_>>();
+        if keys.len() != catalog.live_count() || keys.len() > MAX_LIVE_RECEIPTS {
+            return latch_catalog_error(
+                &mut catalog,
+                ReceiptLedgerError::Corrupt(
+                    "receipt startup catalog count contradicts its active keys",
+                ),
+            );
+        }
+        sort_receipt_keys_by_digest(&mut keys);
+        check_deadline(deadline)?;
+        let generation_after =
+            latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
+        if generation_after != generation_before {
+            return latch_catalog_error(
+                &mut catalog,
+                ReceiptLedgerError::ConcurrentGenerationChange {
+                    generation_before,
+                    generation_after,
+                },
+            );
+        }
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+        Ok(keys)
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]

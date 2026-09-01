@@ -28,8 +28,9 @@ use crate::application::ports::Clock;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::CommittedDirectPublication;
 use crate::application::receipt_ledger::{
-    OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError,
-    ReceiptState, ReceiptTaskProjection, ReserveOutcome, ReservedPhase, TaskBoundReceipt,
+    canonical_v5_terminal, OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey,
+    ReceiptKeyDigest, ReceiptLedgerError, ReceiptState, ReceiptTaskProjection,
+    ReceiptTerminalOutcome, ReserveOutcome, ReservedPhase, TaskBoundReceipt,
     TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TerminalDigest,
     DIRECT_TERMINAL_RETENTION_MS,
 };
@@ -1002,6 +1003,10 @@ impl V5ReceiptRuntime {
         receipt_ledger
             .generation()
             .map_err(|error| format!("read protocol-v5 receipt generation: {error}"))?;
+        let startup_deadline = Instant::now() + AUTHORITY_ACQUIRE_TIMEOUT;
+        let recovery_keys = receipt_ledger
+            .recovery_keys(startup_deadline)
+            .map_err(|error| format!("inspect protocol-v5 receipt recovery catalog: {error}"))?;
         #[cfg(feature = "receipt-ledger-test-support")]
         let initial_receipt_observation = receipt_ledger
             .observe_stable_generation()
@@ -1013,7 +1018,7 @@ impl V5ReceiptRuntime {
             Instant::now() + AUTHORITY_ACQUIRE_TIMEOUT,
         )?;
         let _task_recovery_entries = task_projection.recovery.entries().len();
-        Ok(Self {
+        let runtime = Self {
             core_identity: config.core_identity.clone(),
             _stable_authority: stable_authority,
             receipt_ledger,
@@ -1032,7 +1037,65 @@ impl V5ReceiptRuntime {
             scenario_control: None,
             #[cfg(feature = "receipt-ledger-test-support")]
             telemetry: Arc::new(V5ReceiptRuntimeTelemetry::new()),
-        })
+        };
+        runtime.reconcile_pre_task_startup(recovery_keys, startup_deadline)?;
+        Ok(runtime)
+    }
+
+    fn reconcile_pre_task_startup(
+        &self,
+        recovery_keys: Vec<ReceiptKey>,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let terminal_epoch_ms = self.epoch_ms();
+        for key in recovery_keys {
+            let state =
+                match self
+                    .receipt_ledger
+                    .recover_at(key.clone(), terminal_epoch_ms, deadline)
+                {
+                    Ok(state) => state,
+                    Err(ReceiptLedgerError::ReceiptNotFound) => continue,
+                    Err(error) => {
+                        return Err(format!(
+                            "classify protocol-v5 startup receipt recovery: {error}"
+                        ))
+                    }
+                };
+            let ReceiptState::Reserved(reserved) = state else {
+                continue;
+            };
+            let outcome = match reserved.phase() {
+                ReservedPhase::Begun { .. } => ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::OutcomeUncertain,
+                },
+                ReservedPhase::Unbound | ReservedPhase::ActorBound { .. }
+                    if reserved.cancel_requested() =>
+                {
+                    ReceiptTerminalOutcome::Cancelled
+                }
+                ReservedPhase::Unbound | ReservedPhase::ActorBound { .. } => {
+                    ReceiptTerminalOutcome::Failed {
+                        reason: V5SafeFailureReason::Interrupted,
+                    }
+                }
+            };
+            let terminal = canonical_v5_terminal(&outcome).map_err(|error| {
+                format!("prepare protocol-v5 startup recovery terminal: {error}")
+            })?;
+            self.receipt_ledger
+                .publish_direct_terminal(
+                    key,
+                    reserved.record_version(),
+                    terminal_epoch_ms,
+                    terminal,
+                    deadline,
+                )
+                .map_err(|error| {
+                    format!("publish protocol-v5 startup recovery terminal: {error}")
+                })?;
+        }
+        Ok(())
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]
@@ -2781,7 +2844,7 @@ mod tests {
         V5CanonicalTerminal, V5ToolIdentity, CANCEL_RESERVATION_TTL_MS,
         MAX_RECEIPT_ENTITLEMENT_BYTES,
     };
-    use crate::domain::invocation::{InvocationId, TaskId};
+    use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
     use crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner;
     use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
     use crate::infrastructure::daemon::protocol_v5::V5InvocationRequest;
@@ -2793,6 +2856,7 @@ mod tests {
         attempt_retained_directory_replacement_for_test, RetainedDirectoryReplacementOutcome,
     };
     use serde_json::json;
+    use sha2::{Digest, Sha256};
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3042,15 +3106,16 @@ mod tests {
         drop(owner);
         let server_result = server.join().expect("join long-submit runtime");
 
-        assert!(matches!(
-            response,
-            Ok(V5ServerResponse::Invocation {
-                outcome: V5InvocationResponse::ReceiptPending {
-                    phase: V5InvocationPhase::ReservedUnbound,
-                    ..
-                }
-            })
-        ));
+        assert!(
+            matches!(
+                response,
+                Ok(V5ServerResponse::Invocation { .. })
+                    | Ok(V5ServerResponse::Error {
+                        code: V5DaemonErrorCode::StoreFailed
+                    })
+            ),
+            "seven-second reserve must reach the next runtime transition: {response:?}"
+        );
         assert_eq!(server_result, Ok(()));
     }
 
@@ -3514,10 +3579,128 @@ mod tests {
                     phase: V5InvocationPhase::ReservedUnbound,
                     accepted_epoch_ms: 1_000,
                     original_budget_ms: 7_000,
-                    cancel_requested: false,
+                    cancel_requested: true,
                 },
             }) if receipt_key == key
         ));
+    }
+
+    #[test]
+    fn startup_terminalizes_pre_task_receipts_without_replaying_domain_work() {
+        for (phase, cancel_requested, expected) in [
+            (
+                ReservedPhase::Unbound,
+                false,
+                ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::Interrupted,
+                },
+            ),
+            (
+                ReservedPhase::ActorBound {
+                    bound_workspace_identity: SafeIdentityHash::from_sha256(
+                        Sha256::digest(b"startup-actor").into(),
+                    ),
+                },
+                true,
+                ReceiptTerminalOutcome::Cancelled,
+            ),
+            (
+                ReservedPhase::Begun {
+                    bound_workspace_identity: SafeIdentityHash::from_sha256(
+                        Sha256::digest(b"startup-begun").into(),
+                    ),
+                },
+                true,
+                ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::OutcomeUncertain,
+                },
+            ),
+        ] {
+            let root = tempfile::tempdir().expect("temporary startup recovery root");
+            let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+            let identity = CoreIdentity::production_v5();
+            let state = DaemonStateDirectory::open(&state_root, &identity)
+                .expect("open startup recovery daemon state");
+            let config = DaemonServerConfig::new(
+                state_root.clone(),
+                identity.clone(),
+                Duration::from_millis(50),
+            );
+            let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+            let key = ReceiptKey::new(
+                InvocationId::new(),
+                TaskId::new(),
+                RequestIdentity::new(
+                    identity.digest().clone(),
+                    V5ToolIdentity::View,
+                    normalized_arguments_hash(&serde_json::Map::new()),
+                    request_scope_hash("workspace-a").expect("request scope"),
+                ),
+            );
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let reserved = runtime
+                .receipt_ledger
+                .reserve(
+                    key.clone(),
+                    OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                    deadline,
+                )
+                .expect("reserve startup receipt")
+                .into_reservation()
+                .expect("new startup receipt");
+            let mut current_version = reserved.record_version();
+            match phase {
+                ReservedPhase::Unbound => {}
+                ReservedPhase::ActorBound {
+                    bound_workspace_identity,
+                } => {
+                    current_version = runtime
+                        .receipt_ledger
+                        .bind_reserved_actor(
+                            key.clone(),
+                            current_version,
+                            bound_workspace_identity,
+                            deadline,
+                        )
+                        .expect("bind startup actor")
+                        .record_version();
+                }
+                ReservedPhase::Begun {
+                    bound_workspace_identity,
+                } => {
+                    let bound = runtime
+                        .receipt_ledger
+                        .bind_reserved_actor(
+                            key.clone(),
+                            current_version,
+                            bound_workspace_identity,
+                            deadline,
+                        )
+                        .expect("bind begun startup actor");
+                    runtime
+                        .receipt_ledger
+                        .mark_reserved_begun(key.clone(), bound.record_version(), deadline)
+                        .expect("mark startup receipt begun");
+                }
+            }
+            if cancel_requested {
+                runtime
+                    .receipt_ledger
+                    .request_cancel_or_reserve(key.clone(), 2_000, deadline)
+                    .expect("persist startup cancellation");
+            }
+            drop(runtime);
+
+            let reopened = V5ReceiptRuntime::open(&state, &config).expect("reconcile startup");
+            let recovered = reopened
+                .receipt_ledger
+                .recover(key, Instant::now() + Duration::from_secs(2))
+                .expect("read reconciled startup receipt");
+            let ReceiptState::DirectTerminalUnacked(receipt) = recovered else {
+                panic!("startup must publish one direct terminal")
+            };
+            assert_eq!(receipt.terminal().outcome(), &expected);
+        }
     }
 
     #[test]
