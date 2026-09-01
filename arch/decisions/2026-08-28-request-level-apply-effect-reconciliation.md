@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-08-28.REQUEST-LEVEL-APPLY-EFFECT-RECONCILIATION
-status: planned
+status: superseded
 governs: product
 realized: null
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-09-01.REQUEST-LEVEL-APPLY-EFFECT-RECONCILIATION
 establishes: []
 design: docs/design/2026-08-28-request-level-apply-effect-reconciliation-design.md
 ---

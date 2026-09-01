@@ -7,7 +7,10 @@ use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2
 use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
 use crate::infrastructure::native_operations::apply::{
     empty_apply_family_batch, hidden_apply_family_unimplemented, ApplyPlanError,
-    ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects,
+    ApplyPlanErrorKind, ApplyStagedState,
+};
+use crate::infrastructure::native_operations::apply_families::request::{
+    IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use crate::infrastructure::native_operations::meta::{
     apply_typed_operations_to_image_with_seed, meta_edit_object_identity,
@@ -16,7 +19,7 @@ use crate::infrastructure::workspace_actor::{MetadataApplyAuthority, ProviderRoo
 use serde_json::{json, Map, Value};
 use sha2::Digest;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum MetadataPlanKind {
     Edit {
         target: MetadataAddress,
@@ -25,16 +28,9 @@ enum MetadataPlanKind {
     Unsupported,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct MetadataPlanOperation {
-    op_index: usize,
     kind: MetadataPlanKind,
-}
-
-impl MetadataPlanOperation {
-    pub(crate) const fn op_index(&self) -> usize {
-        self.op_index
-    }
 }
 
 pub(crate) fn parse_metadata_plan_operation(
@@ -65,7 +61,7 @@ pub(crate) fn parse_metadata_plan_operation(
         | "relation.replace" => MetadataPlanKind::Unsupported,
         _ => return Err(hidden_apply_family_unimplemented(op_index)),
     };
-    Ok(MetadataPlanOperation { op_index, kind })
+    Ok(MetadataPlanOperation { kind })
 }
 
 fn reject_unknown_args(
@@ -350,8 +346,8 @@ fn parse_attribute_remove(
 pub(crate) fn plan_metadata_batch(
     staged: ApplyStagedState,
     authority: MetadataApplyAuthority<'_>,
-    operations: &[MetadataPlanOperation],
-) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    operations: &[IndexedPlanOperation<MetadataPlanOperation>],
+) -> Result<(ApplyStagedState, Vec<ProvisionalApplyEffect>), ApplyPlanError> {
     if operations.is_empty() {
         return Err(empty_apply_family_batch());
     }
@@ -363,43 +359,42 @@ pub(crate) fn plan_metadata_batch(
         .at_path("ops"));
     }
     let mut staged = staged;
-    let mut effects = PlannedApplyEffects::default();
+    let mut provisional = Vec::new();
     for operation in operations {
+        let op_index = operation.index();
         let MetadataPlanKind::Edit {
             target,
             operation: edit,
-        } = &operation.kind
+        } = &operation.operation().kind
         else {
-            return Err(hidden_apply_family_unimplemented(operation.op_index()));
+            return Err(hidden_apply_family_unimplemented(op_index));
         };
         let relative =
             metadata_descriptor_relative(target, authority.source_kind()).map_err(|message| {
                 ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
-                    .at_path(format!("ops[{}].args.at", operation.op_index()))
+                    .at_path(format!("ops[{op_index}].args.at"))
             })?;
         let preimage = staged
             .read(&relative)
-            .map_err(|error| {
-                ApplyPlanError::staging(error, format!("ops[{}].args.at", operation.op_index()))
-            })?
+            .map_err(|error| ApplyPlanError::staging(error, format!("ops[{op_index}].args.at")))?
             .ok_or_else(|| {
                 ApplyPlanError::new(
                     ApplyPlanErrorKind::NotFound,
                     "metadata descriptor was not found",
                 )
-                .at_path(format!("ops[{}].args.at", operation.op_index()))
+                .at_path(format!("ops[{op_index}].args.at"))
             })?;
         let mut postimage = String::from_utf8(preimage.clone()).map_err(|_| {
             ApplyPlanError::new(
                 ApplyPlanErrorKind::InvalidSource,
                 "metadata descriptor is not UTF-8",
             )
-            .at_path(format!("ops[{}].args.at", operation.op_index()))
+            .at_path(format!("ops[{op_index}].args.at"))
         })?;
         let (actual_kind, actual_name) =
             meta_edit_object_identity(&postimage).map_err(|message| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
-                    .at_path(format!("ops[{}].args.at", operation.op_index()))
+                    .at_path(format!("ops[{op_index}].args.at"))
             })?;
         let expected = target.as_str().split('.').collect::<Vec<_>>();
         if expected.as_slice() != [actual_kind.as_str(), actual_name.as_str()] {
@@ -407,13 +402,13 @@ pub(crate) fn plan_metadata_batch(
                 ApplyPlanErrorKind::InvalidSource,
                 "metadata descriptor identity does not match its logical target",
             )
-            .at_path(format!("ops[{}].args.at", operation.op_index())));
+            .at_path(format!("ops[{op_index}].args.at")));
         }
         let uuid_seed = format!(
             "{}\0{}\0{}\0{:?}\0{:x}",
             authority.source_set_name(),
             target.as_str(),
-            operation.op_index(),
+            op_index,
             edit,
             sha2::Sha256::digest(&preimage)
         );
@@ -445,8 +440,8 @@ pub(crate) fn plan_metadata_batch(
                 | MetaDiagnosticCode::RollbackFailed => ApplyPlanErrorKind::ProviderUnavailable,
             };
             let path = diagnostic.field.map_or_else(
-                || format!("ops[{}].args", operation.op_index()),
-                |field| format!("ops[{}].args.{field}", operation.op_index()),
+                || format!("ops[{op_index}].args"),
+                |field| format!("ops[{op_index}].args.{field}"),
             );
             ApplyPlanError::new(kind, diagnostic.message).at_path(path)
         })?;
@@ -455,15 +450,19 @@ pub(crate) fn plan_metadata_batch(
             staged
                 .replace(&relative, &preimage, postimage)
                 .map_err(|error| {
-                    ApplyPlanError::staging(error, format!("ops[{}].args.at", operation.op_index()))
+                    ApplyPlanError::staging(error, format!("ops[{op_index}].args.at"))
                 })?;
-            effects.append(DomainEvent::new(
-                DomainEventKind::MetadataChanged,
-                target.as_str().to_string(),
+            provisional.push(ProvisionalApplyEffect::single(
+                relative,
+                DomainEvent::new(
+                    DomainEventKind::MetadataChanged,
+                    target.as_str().to_string(),
+                ),
+                op_index,
             ));
         }
     }
-    Ok((staged, effects))
+    Ok((staged, provisional))
 }
 
 #[cfg(test)]
@@ -476,6 +475,7 @@ mod tests {
     use crate::infrastructure::native_operations::apply::{
         ApplyPlanErrorKind, StagedChangeKind, StagedFileState,
     };
+    use crate::infrastructure::native_operations::apply_families::request::IndexedPlanOperation;
     use crate::infrastructure::workspace_actor::{
         ApplyAdmission, ProviderRootBinding, WorkspaceActor, WorkspaceIdentity,
         WorkspaceSourceSetInput,
@@ -565,8 +565,11 @@ mod tests {
             operation: &str,
             args: serde_json::Value,
             index: usize,
-        ) -> super::MetadataPlanOperation {
-            parse_metadata_plan_operation(operation, &args, index, &self.binding).unwrap()
+        ) -> IndexedPlanOperation<super::MetadataPlanOperation> {
+            IndexedPlanOperation::new(
+                index,
+                parse_metadata_plan_operation(operation, &args, index, &self.binding).unwrap(),
+            )
         }
 
         fn disk_bytes(&self) -> Vec<u8> {
@@ -685,11 +688,7 @@ mod tests {
         assert!(postimage.contains("<Name>Total</Name>"));
         assert!(postimage.contains("<Comment>ordered</Comment>"));
         assert_eq!(fixture.disk_bytes(), disk_preimage);
-        assert_eq!(
-            effects.events().len(),
-            1,
-            "same artifact event is deduplicated"
-        );
-        assert_eq!(effects.events()[0].artifact, "Document.Order");
+        assert_eq!(effects.len(), 3);
+        assert_eq!(effects[0].event().artifact, "Document.Order");
     }
 }

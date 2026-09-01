@@ -1,24 +1,22 @@
 use super::validate_platform_xml_binding;
 use crate::infrastructure::native_operations::apply::{
     empty_apply_family_batch, hidden_apply_family_unimplemented, ApplyPlanError,
-    ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects,
+    ApplyPlanErrorKind, ApplyStagedState,
+};
+use crate::infrastructure::native_operations::apply_families::request::{
+    IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use crate::infrastructure::workspace_actor::{FormResourceApplyAuthority, ProviderRootBinding};
 use serde_json::Value;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct FormResourcePlanOperation {
     operation: String,
-    op_index: usize,
 }
 
 impl FormResourcePlanOperation {
     pub(crate) fn operation(&self) -> &str {
         &self.operation
-    }
-
-    pub(crate) const fn op_index(&self) -> usize {
-        self.op_index
     }
 }
 
@@ -31,15 +29,14 @@ pub(crate) fn parse_form_resource_plan_operation(
     validate_platform_xml_binding(binding, op_index)?;
     Ok(FormResourcePlanOperation {
         operation: operation.to_string(),
-        op_index,
     })
 }
 
 pub(crate) fn plan_form_resource_batch(
     staged: ApplyStagedState,
     authority: FormResourceApplyAuthority<'_>,
-    operations: &[FormResourcePlanOperation],
-) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    operations: &[IndexedPlanOperation<FormResourcePlanOperation>],
+) -> Result<(ApplyStagedState, Vec<ProvisionalApplyEffect>), ApplyPlanError> {
     let Some(first) = operations.first() else {
         return Err(empty_apply_family_batch());
     };
@@ -51,13 +48,14 @@ pub(crate) fn plan_form_resource_batch(
         .at_path("ops"));
     }
     let _ = first.operation();
-    Err(hidden_apply_family_unimplemented(first.op_index()))
+    Err(hidden_apply_family_unimplemented(first.index()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{parse_form_resource_plan_operation, plan_form_resource_batch};
     use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
+    use crate::infrastructure::native_operations::apply_families::request::IndexedPlanOperation;
     use crate::infrastructure::native_operations::apply_families::tests::ApplySeamFixture;
     use serde_json::json;
 
@@ -77,6 +75,7 @@ mod tests {
         )
         .unwrap();
 
+        let operation = IndexedPlanOperation::new(0, operation);
         let error = plan_form_resource_batch(staged, authority, &[operation]).unwrap_err();
 
         assert_eq!(error.kind(), ApplyPlanErrorKind::ProviderUnavailable);
