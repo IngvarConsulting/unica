@@ -1512,7 +1512,9 @@ mod tests {
     enum CancelPortFailure {
         ImmediateCommitUncertain,
         ImmediateStoreUnavailable,
-        WaitPastOperationDeadline,
+        WaitPastOperationDeadline {
+            observed_deadline: mpsc::Sender<Instant>,
+        },
     }
 
     struct FailingCancelPort {
@@ -1548,7 +1550,12 @@ mod tests {
                 CancelPortFailure::ImmediateStoreUnavailable => {
                     Err(ReceiptLedgerError::StoreUnavailable)
                 }
-                CancelPortFailure::WaitPastOperationDeadline => {
+                CancelPortFailure::WaitPastOperationDeadline {
+                    ref observed_deadline,
+                } => {
+                    observed_deadline
+                        .send(deadline)
+                        .expect("publish live cancel operation deadline");
                     thread::sleep(
                         deadline.saturating_duration_since(Instant::now())
                             + Duration::from_millis(10),
@@ -1774,7 +1781,7 @@ mod tests {
     }
 
     #[test]
-    fn running_mutation_timeout_uses_a_separate_response_serialization_margin() {
+    fn running_mutation_timeout_preserves_response_margin_or_closes_after_it() {
         let root = tempfile::tempdir().expect("temporary timeout fail-stop state root");
         let state_root =
             std::fs::canonicalize(root.path()).expect("physical timeout fail-stop state root");
@@ -1784,10 +1791,13 @@ mod tests {
             identity.clone(),
             Duration::from_secs(30),
         );
+        let (operation_deadline_tx, operation_deadline_rx) = mpsc::channel();
         let server = thread::spawn(move || {
             run_daemon_configured(config, |mut runtime| {
                 runtime.receipt_ledger = ReceiptLedgerActor::spawn(FailingCancelPort {
-                    failure: CancelPortFailure::WaitPastOperationDeadline,
+                    failure: CancelPortFailure::WaitPastOperationDeadline {
+                        observed_deadline: operation_deadline_tx,
+                    },
                 });
                 runtime
             })
@@ -1803,6 +1813,26 @@ mod tests {
                 request_scope_hash("workspace-a").expect("request scope"),
             ),
         );
+        let decoded = decode_v5_request_frame(
+            serde_json::to_vec(&V5ClientRequest::CancelInvocation {
+                receipt_key: key.clone(),
+            })
+            .expect("serialize timeout deadline fixture"),
+        )
+        .expect("decode timeout deadline fixture");
+        let request_received_at = Instant::now();
+        let deadlines = v5_request_deadlines(&decoded, request_received_at)
+            .expect("derive timeout response deadlines");
+        assert_eq!(
+            deadlines.operation.duration_since(request_received_at),
+            SESSION_READ_TIMEOUT,
+            "cancel operation keeps its original bounded session budget"
+        );
+        assert_eq!(
+            deadlines.response.duration_since(deadlines.operation),
+            RESPONSE_SERIALIZATION_MARGIN,
+            "response serialization gets exactly one non-renewable margin"
+        );
         let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
             &state_root,
             identity.clone(),
@@ -1811,6 +1841,10 @@ mod tests {
         )
         .expect("connect timeout fail-stop owner");
         let response = owner.cancel_invocation(key);
+        let response_completed_at = Instant::now();
+        let operation_deadline = operation_deadline_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("observe the live cancel operation deadline");
         drop(owner);
         let server_result = server.join().expect("join timeout fail-stop runtime");
         let state = DaemonStateDirectory::open(&state_root, &identity)
@@ -1820,12 +1854,25 @@ mod tests {
             .expect("read retained timeout fail-stop endpoint");
         let competing_authority = state.acquire_receipt_authority(Duration::from_millis(30));
 
-        assert_eq!(
-            response,
+        match response {
             Ok(V5ServerResponse::Error {
                 code: V5DaemonErrorCode::DurabilityUncertain,
-            })
-        );
+            }) => {}
+            Err(error) => {
+                assert_eq!(
+                    error, "read protocol-v5 cancel invocation: v5 JSON line ended before data",
+                    "only expiry of the bounded response margin may replace the closed error"
+                );
+                let final_response_deadline = operation_deadline
+                    .checked_add(RESPONSE_SERIALIZATION_MARGIN)
+                    .expect("bounded response deadline");
+                assert!(
+                    response_completed_at >= final_response_deadline,
+                    "transport closed before the live operation deadline and response margin expired"
+                );
+            }
+            unexpected => panic!("unexpected timed-out mutation response: {unexpected:?}"),
+        }
         assert_eq!(server_result, Ok(()));
         assert_eq!(retained, Some(record));
         assert!(
@@ -2495,7 +2542,7 @@ mod tests {
         let config = DaemonServerConfig::new(
             state_root.clone(),
             identity.clone(),
-            Duration::from_millis(20),
+            HANDSHAKE_READ_TIMEOUT + Duration::from_secs(1),
         );
         let server = thread::spawn(move || run_daemon(config));
         let record = wait_for_v5_record(&state_root, &identity);
