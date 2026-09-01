@@ -243,7 +243,7 @@ pub(crate) fn project_task_snapshot(
         InvocationStatus::Failed => "failed",
         InvocationStatus::Cancelled => "cancelled",
     };
-    let mut data = json!({
+    let data = json!({
         "task": {
             "taskId": snapshot.task_id.to_string(),
             "status": status,
@@ -253,12 +253,14 @@ pub(crate) fn project_task_snapshot(
             "pollIntervalMs": snapshot.poll_interval_ms
         }
     });
-    if let Some(code) = code {
-        data["code"] = json!(code);
-    }
     let mut result = DomainResult::success(summary);
     result.ok = ok;
     result.data = Some(data);
+    // The error code travels in `diagnostics[]` like everywhere else on the
+    // canonical surface; `data` stays a pure task snapshot.
+    if let Some(code) = code {
+        result.diagnostics = vec![json!({"code": code, "message": summary})];
+    }
     if matches!(
         snapshot.status,
         InvocationStatus::Queued | InvocationStatus::Working
@@ -275,21 +277,24 @@ pub(crate) fn project_task_snapshot(
 }
 
 pub(crate) fn task_tool_error_result(error: TaskToolError) -> DomainResult {
-    let mut result = DomainResult::success(match error {
-        TaskToolError::InvalidTaskId => "Task identifier is not canonical",
-        TaskToolError::BadWaitMs => "Task wait must be within 0..=7000 milliseconds",
-        TaskToolError::BadArguments => "Task tool arguments are invalid",
-        TaskToolError::TaskNotFound => "Task was not found",
-        TaskToolError::TaskExpired => "Task has expired",
-        TaskToolError::TaskBackendFailed => "Task state is unavailable",
-        TaskToolError::TaskTransportFailed => "Task transport is unavailable",
-        TaskToolError::TaskSessionClosed => "Task session is closed",
-        TaskToolError::TaskProtocolFailed => "Task response failed validation",
-        TaskToolError::ProjectionFailed => "Task state cannot be projected safely",
-    });
-    result.ok = false;
-    result.data = Some(json!({"code": error.code()}));
-    result
+    // The closed code answers through `diagnostics[]` exactly like every other
+    // canonical refusal; task errors get no private `data.code` channel.
+    DomainResult::canonical_rejection(
+        None,
+        error.code(),
+        match error {
+            TaskToolError::InvalidTaskId => "Task identifier is not canonical",
+            TaskToolError::BadWaitMs => "Task wait must be within 0..=7000 milliseconds",
+            TaskToolError::BadArguments => "Task tool arguments are invalid",
+            TaskToolError::TaskNotFound => "Task was not found",
+            TaskToolError::TaskExpired => "Task has expired",
+            TaskToolError::TaskBackendFailed => "Task state is unavailable",
+            TaskToolError::TaskTransportFailed => "Task transport is unavailable",
+            TaskToolError::TaskSessionClosed => "Task session is closed",
+            TaskToolError::TaskProtocolFailed => "Task response failed validation",
+            TaskToolError::ProjectionFailed => "Task state cannot be projected safely",
+        },
+    )
 }
 
 #[cfg(test)]
@@ -493,7 +498,11 @@ mod tests {
                 project_task_snapshot(&snapshot(status), CompatibilityProjection::TerminalResult)
                     .unwrap();
             assert!(!projected.ok);
-            assert_eq!(projected.data.as_ref().unwrap()["code"], code);
+            assert_eq!(projected.diagnostics[0]["code"], code);
+            assert!(
+                projected.data.as_ref().unwrap().get("code").is_none(),
+                "the closed code answers through diagnostics, not data"
+            );
         }
         for error in [
             TaskToolError::InvalidTaskId,
@@ -503,7 +512,11 @@ mod tests {
         ] {
             let projected = task_tool_error_result(error);
             assert!(!projected.ok);
-            assert_eq!(projected.data.as_ref().unwrap()["code"], error.code());
+            assert_eq!(projected.diagnostics[0]["code"], error.code());
+            assert!(
+                projected.data.is_none(),
+                "a task tool refusal carries no data payload"
+            );
         }
 
         let mut reversed = snapshot(InvocationStatus::Working);

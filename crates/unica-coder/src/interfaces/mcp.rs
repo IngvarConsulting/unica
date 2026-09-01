@@ -2428,7 +2428,8 @@ mod tests {
                 .await;
             let cancelled = client.receive().await;
             assert_eq!(
-                cancelled["result"]["structuredContent"]["data"]["code"], "task_cancelled",
+                cancelled["result"]["structuredContent"]["diagnostics"][0]["code"],
+                "task_cancelled",
                 "{cancelled}"
             );
         }
@@ -2684,7 +2685,7 @@ mod tests {
                 .await;
             let response = compat.receive().await;
             assert_eq!(
-                response["result"]["structuredContent"]["data"]["code"], expected,
+                response["result"]["structuredContent"]["diagnostics"][0]["code"], expected,
                 "{response}"
             );
             assert_eq!(response["result"]["isError"], true, "{response}");
@@ -3083,7 +3084,7 @@ mod tests {
             .await;
             let response = mcp.receive().await;
             assert_eq!(
-            response["result"]["structuredContent"]["data"]["code"],
+            response["result"]["structuredContent"]["diagnostics"][0]["code"],
             "task_transport_failed",
             "connect plus wait response exceeded the single {requested_wait_ms}ms + 125ms operation budget: {response}"
         );
@@ -3191,7 +3192,8 @@ mod tests {
         fake_peer.join().unwrap();
 
         assert_eq!(
-            response["result"]["structuredContent"]["data"]["code"], "task_transport_failed",
+            response["result"]["structuredContent"]["diagnostics"][0]["code"],
+            "task_transport_failed",
             "the operation must not rebase its cutoff after the injected pause: {response}"
         );
         assert_eq!(
@@ -3322,7 +3324,10 @@ mod tests {
                 Duration::from_millis(110),
             );
             assert_eq!(
-                result.data.as_ref().and_then(|data| data["code"].as_str()),
+                result
+                    .diagnostics
+                    .first()
+                    .and_then(|entry| entry["code"].as_str()),
                 Some("task_transport_failed"),
                 "{tool_name} reopened its transport budget after connect: {result:?}"
             );
@@ -3620,7 +3625,7 @@ mod tests {
                             .await;
                         let response = client.receive().await;
                         assert_eq!(
-                            response["result"]["structuredContent"]["data"]["code"],
+                            response["result"]["structuredContent"]["diagnostics"][0]["code"],
                             "task_projection_failed",
                             "status={status:?} result={has_result} failure={has_failure}: {response}"
                         );
@@ -3668,7 +3673,7 @@ mod tests {
             .await;
         let response = client.receive().await;
         assert_eq!(
-            response["result"]["structuredContent"]["data"]["code"], "task_failed",
+            response["result"]["structuredContent"]["diagnostics"][0]["code"], "task_failed",
             "{response}"
         );
         let serialized = serde_json::to_string(&response).unwrap();
