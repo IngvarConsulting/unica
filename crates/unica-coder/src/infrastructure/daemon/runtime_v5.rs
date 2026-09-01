@@ -28,11 +28,12 @@ use crate::application::ports::Clock;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::CommittedDirectPublication;
 use crate::application::receipt_ledger::{
-    canonical_v5_terminal, AttemptPhase, ClosedTerminalStatus, OriginalCutoffDescriptor,
-    PreparedWireFrame, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptState,
-    ReceiptTaskProjection, ReceiptTerminalOutcome, ReserveOutcome, ReservedPhase, TaskBoundReceipt,
-    TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
-    TaskTerminalBoundReceipt, TerminalDigest, DIRECT_TERMINAL_RETENTION_MS,
+    canonical_v5_terminal, AttemptPhase, ClosedTerminalStatus, HandoffTerminalStage,
+    OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError,
+    ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome, ReserveOutcome, ReservedPhase,
+    TaskBoundReceipt, TaskCancellationReceipt, TaskHandoffActorBoundReceipt,
+    TaskPromisedActorBoundReceipt, TaskTerminalBoundReceipt, TerminalDigest,
+    DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
@@ -588,6 +589,29 @@ impl V5TaskProjection {
             handoff.workspace_identity_hash(),
             handoff.cancel_requested(),
             handoff.phase(),
+            false,
+            bind_epoch_ms,
+            deadline,
+            #[cfg(feature = "receipt-ledger-test-support")]
+            telemetry,
+        )
+    }
+
+    fn materialize_recovered_handoff(
+        &self,
+        handoff: &TaskHandoffActorBoundReceipt,
+        bind_epoch_ms: u64,
+        deadline: Instant,
+        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+    ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
+        self.materialize_actor_bound_task(
+            handoff.key(),
+            handoff.link(),
+            handoff.task(),
+            handoff.workspace_identity_hash(),
+            handoff.cancel_requested(),
+            handoff.phase(),
+            handoff.phase() == AttemptPhase::Begun,
             bind_epoch_ms,
             deadline,
             #[cfg(feature = "receipt-ledger-test-support")]
@@ -609,6 +633,7 @@ impl V5TaskProjection {
             promised.workspace_identity_hash(),
             promised.cancel_requested(),
             AttemptPhase::NotBegun,
+            false,
             bind_epoch_ms,
             deadline,
             #[cfg(feature = "receipt-ledger-test-support")]
@@ -625,6 +650,7 @@ impl V5TaskProjection {
         workspace_identity_hash: &crate::domain::invocation::SafeIdentityHash,
         cancel_requested: bool,
         phase: AttemptPhase,
+        recovered_begun: bool,
         bind_epoch_ms: u64,
         deadline: Instant,
         #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
@@ -648,6 +674,11 @@ impl V5TaskProjection {
             promised_task.ttl_ms(),
         )
         .with_initial_epoch_ms(promised_task.created_at_epoch_ms());
+        let new_record = if recovered_begun {
+            new_record.for_recovered_begun(cancel_requested)
+        } else {
+            new_record
+        };
         #[cfg(feature = "receipt-ledger-test-support")]
         telemetry.record_task_store_create_attempt();
         let created = self
@@ -867,6 +898,29 @@ impl V5TaskProjection {
                 V5TaskProjectionFailure::from_task_store(error, receipt_key_digest, true)
             })?;
         Ok(Some(cancelled))
+    }
+
+    fn cancel_exact_bound_task(
+        &self,
+        key: &ReceiptKey,
+        deadline: Instant,
+    ) -> Result<Option<V5StoredInvocationRecord>, V5TaskProjectionFailure> {
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        let link = match self
+            .lifecycle_links
+            .read_by_task_id(key.reserved_task_id(), provider_deadline)
+        {
+            Ok(link) => link,
+            Err(TaskLifecycleLinkStoreError::NotFound { .. }) => return Ok(None),
+            Err(error) => return Err(V5TaskProjectionFailure::from_link_store(error)),
+        };
+        if link.key() != key {
+            return Err(V5TaskProjectionFailure {
+                error: ReceiptLedgerError::TaskBoundMismatch,
+                fail_stop: false,
+            });
+        }
+        self.cancel_bound_task(key.reserved_task_id(), deadline)
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]
@@ -1264,6 +1318,50 @@ impl V5ReceiptRuntime {
                             format!("terminalize protocol-v5 startup bound Task: {error}")
                         })?;
                 }
+                ReceiptState::TaskHandoffActorBound(handoff) => {
+                    if !matches!(handoff.terminal_stage(), HandoffTerminalStage::NoTerminal) {
+                        return Err(
+                            "reconcile protocol-v5 staged handoff terminal before listener"
+                                .to_owned(),
+                        );
+                    }
+                    let receipt_version = handoff.record_version();
+                    let phase = handoff.phase();
+                    let (record, task_bound) = self
+                        .task_projection
+                        .materialize_recovered_handoff(
+                            &handoff,
+                            terminal_epoch_ms,
+                            deadline,
+                            #[cfg(feature = "receipt-ledger-test-support")]
+                            &self.telemetry,
+                        )
+                        .map_err(|failure| {
+                            let error = self.project_task_failure(failure);
+                            format!("materialize protocol-v5 startup Task handoff: {error}")
+                        })?;
+                    let task_bound = self
+                        .receipt_ledger
+                        .complete_bound_task_handoff(key, receipt_version, task_bound, deadline)
+                        .map_err(|error| {
+                            format!("publish protocol-v5 startup Task handoff ownership: {error}")
+                        })?;
+                    let reason = match phase {
+                        AttemptPhase::Begun => RecoveryTerminalReason::OutcomeUncertain,
+                        AttemptPhase::NotBegun if record.cancel_requested => {
+                            RecoveryTerminalReason::Cancelled
+                        }
+                        AttemptPhase::NotBegun => {
+                            RecoveryTerminalReason::InterruptedBeforeExecution
+                        }
+                    };
+                    self.task_projection
+                        .terminalize_recovered_bound(&task_bound, record, reason, deadline)
+                        .map_err(|failure| {
+                            let error = self.project_task_failure(failure);
+                            format!("terminalize protocol-v5 startup handoff Task: {error}")
+                        })?;
+                }
                 _ => {}
             }
         }
@@ -1313,6 +1411,17 @@ impl V5ReceiptRuntime {
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
         self.validate_receipt_key(&key)?;
+        if let Some(record) = self
+            .task_projection
+            .cancel_exact_bound_task(&key, deadline)
+            .map_err(|failure| self.project_task_failure(failure))?
+        {
+            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task {
+                    snapshot: task_store_snapshot(&record),
+                },
+            }));
+        }
         let resolution = self
             .receipt_ledger
             .request_cancel_or_reserve(key, epoch_ms, deadline)?;
@@ -4051,6 +4160,140 @@ mod tests {
                     },
                 ) => {}
                 (_, other) => panic!("unexpected recovered actor-bound Task: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn startup_materializes_handoff_without_replaying_begun_work() {
+        for (phase, cancel_requested) in [
+            (AttemptPhase::NotBegun, false),
+            (AttemptPhase::NotBegun, true),
+            (AttemptPhase::Begun, false),
+            (AttemptPhase::Begun, true),
+        ] {
+            let root = tempfile::tempdir().expect("temporary handoff recovery root");
+            let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+            let identity = CoreIdentity::production_v5();
+            let state = DaemonStateDirectory::open(&state_root, &identity)
+                .expect("open handoff recovery daemon state");
+            let config = DaemonServerConfig::new(
+                state_root.clone(),
+                identity.clone(),
+                Duration::from_millis(50),
+            );
+            let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+            let key = ReceiptKey::new(
+                InvocationId::new(),
+                TaskId::new(),
+                RequestIdentity::new(
+                    identity.digest().clone(),
+                    V5ToolIdentity::View,
+                    normalized_arguments_hash(&serde_json::Map::new()),
+                    request_scope_hash("workspace-a").expect("request scope"),
+                ),
+            );
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let reserved = runtime
+                .receipt_ledger
+                .reserve(
+                    key.clone(),
+                    OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                    deadline,
+                )
+                .expect("reserve handoff startup receipt")
+                .into_reservation()
+                .expect("new handoff startup receipt");
+            let bound = runtime
+                .receipt_ledger
+                .bind_reserved_actor(
+                    key.clone(),
+                    reserved.record_version(),
+                    SafeIdentityHash::from_sha256(Sha256::digest(b"startup-handoff").into()),
+                    deadline,
+                )
+                .expect("bind handoff startup actor");
+            let version = match phase {
+                AttemptPhase::NotBegun => bound.record_version(),
+                AttemptPhase::Begun => runtime
+                    .receipt_ledger
+                    .mark_reserved_begun(key.clone(), bound.record_version(), deadline)
+                    .expect("mark startup handoff begun")
+                    .record_version(),
+            };
+            let handoff = runtime
+                .receipt_ledger
+                .begin_bound_task_handoff(
+                    key.clone(),
+                    version,
+                    1_009,
+                    3_600_000,
+                    V5_TASK_POLL_INTERVAL_MS,
+                    deadline,
+                )
+                .expect("persist startup Task handoff");
+            if cancel_requested {
+                runtime
+                    .receipt_ledger
+                    .request_task_cancel(
+                        key.clone(),
+                        TaskCancellationReceipt::HandoffActorBound(handoff),
+                        deadline,
+                    )
+                    .expect("persist startup handoff cancellation");
+            }
+            drop(runtime);
+
+            let reopened = V5ReceiptRuntime::open(&state, &config).expect("reconcile startup");
+            assert_eq!(
+                reopened
+                    .receipt_ledger
+                    .recover(key.clone(), Instant::now() + Duration::from_secs(2)),
+                Err(ReceiptLedgerError::ReceiptNotFound)
+            );
+            let snapshot = reopened
+                .resolve_task(
+                    key.reserved_task_id(),
+                    Instant::now() + Duration::from_secs(2),
+                )
+                .expect("resolve recovered handoff Task");
+            match (phase, cancel_requested, snapshot) {
+                (
+                    AttemptPhase::NotBegun,
+                    false,
+                    crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                        reason: V5SafeFailureReason::Interrupted,
+                        cancel_requested: false,
+                        ..
+                    },
+                )
+                | (
+                    AttemptPhase::NotBegun,
+                    true,
+                    crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Cancelled {
+                        cancel_requested: true,
+                        ..
+                    },
+                )
+                | (
+                    AttemptPhase::Begun,
+                    false,
+                    crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                        reason: V5SafeFailureReason::OutcomeUncertain,
+                        cancel_requested: false,
+                        ..
+                    },
+                )
+                | (
+                    AttemptPhase::Begun,
+                    true,
+                    crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                        reason: V5SafeFailureReason::OutcomeUncertain,
+                        cancel_requested: true,
+                        ..
+                    },
+                ) => {}
+                (_, _, other) => panic!("unexpected recovered handoff Task: {other:?}"),
             }
         }
     }

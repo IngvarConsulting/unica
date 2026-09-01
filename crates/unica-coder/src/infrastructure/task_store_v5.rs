@@ -1613,6 +1613,45 @@ mod tests {
     }
 
     #[test]
+    fn recovered_begun_task_is_created_working_and_keeps_cancel_intent() {
+        let root = tempfile::tempdir().expect("temporary v5 root");
+        let root_path = physical_root(&root);
+        let clock = Arc::new(ManualEpochClock::at(7_600));
+        let (store, _) =
+            FileInvocationStoreV5::open_inspect_only(&root_path, clock, deadline()).unwrap();
+        let created = store
+            .create_exact(
+                new_record(
+                    task_id("29292929-2929-4929-8929-292929292929"),
+                    invocation_id("30303030-3030-4030-8030-303030303030"),
+                    0x1c,
+                )
+                .for_recovered_begun(true),
+                deadline(),
+            )
+            .expect("create exact recovered begun Task");
+
+        assert_eq!(created.task, V5StoredTask::Working);
+        assert!(created.cancel_requested);
+        let terminal = store
+            .terminalize_recovered_exact(
+                &created.identity(),
+                created.version,
+                RecoveryTerminalReason::OutcomeUncertain,
+                deadline(),
+            )
+            .expect("terminalize recovered begun Task as outcome uncertain");
+        assert!(matches!(
+            terminal.task,
+            V5StoredTask::Failed {
+                reason: V5SafeFailureReason::OutcomeUncertain,
+                ..
+            }
+        ));
+        assert!(terminal.cancel_requested);
+    }
+
+    #[test]
     fn failed_terminal_publication_requires_working_and_persists_exact_reason() {
         let root = tempfile::tempdir().expect("temporary v5 root");
         let root_path = physical_root(&root);

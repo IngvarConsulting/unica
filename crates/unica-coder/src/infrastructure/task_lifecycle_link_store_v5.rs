@@ -166,7 +166,7 @@ pub(crate) enum TaskLifecycleLinkRecord {
 }
 
 impl TaskLifecycleLinkRecord {
-    fn key(&self) -> &ReceiptKey {
+    pub(crate) fn key(&self) -> &ReceiptKey {
         match self {
             Self::TaskBound(record) => record.key(),
             Self::TaskTerminalBound(record) => record.key(),

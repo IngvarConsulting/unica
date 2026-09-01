@@ -2687,11 +2687,13 @@ impl ReceiptLedgerStore {
             && confirmed_task.ttl_ms() == expected_task.ttl_ms()
             && confirmed_task.poll_interval_ms() == expected_task.poll_interval_ms()
             && if expected_cancel_requested {
-                expected_task
-                    .version()
-                    .checked_add(1)
-                    .is_some_and(|version| confirmed_task.version() == version)
-                    && confirmed_task.updated_at_epoch_ms() >= expected_task.updated_at_epoch_ms()
+                (expected_phase == AttemptPhase::Begun && confirmed_task == &expected_task)
+                    || (expected_task
+                        .version()
+                        .checked_add(1)
+                        .is_some_and(|version| confirmed_task.version() == version)
+                        && confirmed_task.updated_at_epoch_ms()
+                            >= expected_task.updated_at_epoch_ms())
             } else {
                 confirmed_task == &expected_task
             };

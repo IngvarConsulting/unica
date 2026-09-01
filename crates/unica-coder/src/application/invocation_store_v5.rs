@@ -373,6 +373,7 @@ pub(crate) struct NewV5InvocationRecord {
     poll_interval_ms: u64,
     ttl_ms: u64,
     initial_epoch_ms: Option<u64>,
+    recovered_begun_cancel_requested: Option<bool>,
 }
 
 impl NewV5InvocationRecord {
@@ -392,11 +393,17 @@ impl NewV5InvocationRecord {
             poll_interval_ms,
             ttl_ms,
             initial_epoch_ms: None,
+            recovered_begun_cancel_requested: None,
         }
     }
 
     pub(crate) fn with_initial_epoch_ms(mut self, initial_epoch_ms: u64) -> Self {
         self.initial_epoch_ms = Some(initial_epoch_ms);
+        self
+    }
+
+    pub(crate) fn for_recovered_begun(mut self, cancel_requested: bool) -> Self {
+        self.recovered_begun_cancel_requested = Some(cancel_requested);
         self
     }
 
@@ -414,10 +421,19 @@ impl NewV5InvocationRecord {
             && self.initial_epoch_ms.is_none_or(|initial| {
                 record.created_at_epoch_ms == initial && record.updated_at_epoch_ms >= initial
             })
+            && self.recovered_begun_cancel_requested.is_none_or(|cancel| {
+                record.task == V5StoredTask::Working && record.cancel_requested == cancel
+            })
     }
 
     pub(crate) fn into_stored(self, now_epoch_ms: u64) -> V5StoredInvocationRecord {
         let initial_epoch_ms = self.initial_epoch_ms.unwrap_or(now_epoch_ms);
+        let cancel_requested = self.recovered_begun_cancel_requested.unwrap_or(false);
+        let task = if self.recovered_begun_cancel_requested.is_some() {
+            V5StoredTask::Working
+        } else {
+            V5StoredTask::Queued
+        };
         V5StoredInvocationRecord {
             schema_version: V5StoredInvocationSchemaVersion,
             task_id: self.identity.task_id,
@@ -431,8 +447,8 @@ impl NewV5InvocationRecord {
             ttl_ms: self.ttl_ms,
             poll_interval_ms: self.poll_interval_ms,
             version: 1,
-            cancel_requested: false,
-            task: V5StoredTask::Queued,
+            cancel_requested,
+            task,
         }
     }
 }
