@@ -7,7 +7,7 @@ description: "Код-ревью BSL и изменений 1С. Использу�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.diagnostics`, `unica.meta.info`, `unica.standards.explain`, `unica.standards.search`, `unica.project.map`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.diagnostics`, `unica.meta.info`, `unica.standards.explain`, `unica.standards.search`, `unica.view {}`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в

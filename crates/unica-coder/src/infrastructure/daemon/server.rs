@@ -329,6 +329,12 @@ impl DaemonInvocationRuntime {
     ) -> Result<InvocationResponse, DaemonInvocationError> {
         let actor_bound = match validate_hidden_v13_request(&request) {
             Ok(()) => {
+                if let Some(result) = super::v13_workspace_bootstrap::execute_view_bootstrap(
+                    &request,
+                    &response_deadline,
+                ) {
+                    return Ok(InvocationResponse::Direct(result));
+                }
                 match bind_workspace_invocation(
                     &request,
                     &self.workspace_actors,
@@ -1153,6 +1159,381 @@ pub(crate) mod actor_capacity_tests {
 
     fn set_logical_read_now(now: Instant) {
         LOGICAL_READ_NOW.with(|current| *current.borrow_mut() = Some(now));
+    }
+
+    fn bootstrap_runtime(task_root: &std::path::Path) -> DaemonInvocationRuntime {
+        let (store, _) =
+            FileInvocationStore::open(task_root, Arc::new(SystemEpochMillisClock)).unwrap();
+        DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        )
+    }
+
+    fn submit_bootstrap(
+        runtime: &DaemonInvocationRuntime,
+        workspace: &std::path::Path,
+        arguments: serde_json::Value,
+    ) -> DomainResult {
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            arguments,
+            std::fs::canonicalize(workspace).unwrap().to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        match runtime
+            .submit(request, runtime.capture_response_deadline())
+            .unwrap()
+        {
+            InvocationResponse::Direct(result) => result,
+            InvocationResponse::Task(_) => panic!("workspace bootstrap must finish directly"),
+        }
+    }
+
+    #[test]
+    pub(crate) fn canonical_view_without_at_bootstraps_an_empty_workspace() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+        let before = crate::test_support::tree_snapshot(workspace.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert_eq!(data["config"]["state"], "missing");
+        assert_eq!(data["config"]["path"], "v8project.yaml");
+        assert_eq!(data["ready"], false);
+        assert_eq!(data["sourceSets"], serde_json::json!([]));
+        assert_eq!(data["setup"]["path"], "v8project.yaml");
+        assert!(
+            data["setup"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("source-set:"),
+            "{data}"
+        );
+        let wire = serde_json::to_string(data).unwrap();
+        assert!(
+            !wire.contains("unica.project."),
+            "bootstrap must not recommend retired project tools: {wire}"
+        );
+        assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
+    }
+
+    #[test]
+    pub(crate) fn canonical_view_bootstrap_separates_source_and_repository_readiness() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert_eq!(data["config"]["state"], "configured");
+        assert_eq!(data["ready"], true);
+        assert_eq!(data["repositoryReady"], false);
+        assert_eq!(data["effectiveSourceSet"], "main");
+        assert_eq!(result.next[0]["tool"], "unica.view");
+        assert_eq!(result.next[0]["args"]["at"], "main:Configuration");
+    }
+
+    #[test]
+    fn canonical_view_bootstrap_reports_autodetected_sources_and_config_recipe() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert_eq!(data["config"]["state"], "autodetected");
+        assert_eq!(data["sourceSets"][0]["name"], "main");
+        assert_eq!(data["sourceSets"][0]["path"], "src");
+        assert!(data["setup"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("path: src"));
+        assert!(!workspace.path().join("v8project.yaml").exists());
+    }
+
+    #[test]
+    fn canonical_view_bootstrap_does_not_offer_actor_calls_for_edt_sources() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("src/Configuration")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.path().join("src/.project"),
+            "<projectDescription/>",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.path().join("src/Configuration/Configuration.mdo"),
+            "<mdclass:Configuration/>",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.data.as_ref().unwrap()["sourceSets"][0]["sourceFormat"],
+            "edt"
+        );
+        assert!(
+            result.next.is_empty(),
+            "EDT cannot enter canonical actor admission: {result:?}"
+        );
+    }
+
+    #[test]
+    fn canonical_view_bootstrap_does_not_offer_an_unparseable_logical_address() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: bad name\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["ready"], false, "{data}");
+        assert!(result.next.is_empty(), "{result:?}");
+        assert!(
+            data["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| { item["code"] == "source_set.logical_name_invalid" }),
+            "{data}"
+        );
+    }
+
+    #[test]
+    fn canonical_view_bootstrap_does_not_fabricate_one_format_for_mixed_autodiscovery() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("src/Configuration")).unwrap();
+        std::fs::write(
+            workspace.path().join("src/.project"),
+            "<projectDescription/>",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.path().join("src/Configuration/Configuration.mdo"),
+            "<mdclass:Configuration/>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(workspace.path().join("src/cfe/addon")).unwrap();
+        std::fs::write(
+            workspace.path().join("src/cfe/addon/Configuration.xml"),
+            "<MetaDataObject/>",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["config"]["state"], "autodetected");
+        let recipe: serde_yaml::Value =
+            serde_yaml::from_str(data["setup"]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(recipe["format"], "EDT", "{data}");
+        assert_eq!(
+            recipe["source-set"].as_sequence().unwrap().len(),
+            2,
+            "{data}"
+        );
+    }
+
+    #[test]
+    fn canonical_view_bootstrap_does_not_hide_an_invalid_project_config() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("v8project.yaml"), "source-set: [").unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.data.as_ref().unwrap()["config"]["state"], "invalid");
+        assert_eq!(result.diagnostics[0]["code"], "invalid_project_config");
+        assert!(result.next.is_empty(), "{result:?}");
+    }
+
+    #[test]
+    fn canonical_view_bootstrap_classifies_wrong_kind_project_config_as_invalid() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir(workspace.path().join("v8project.yaml")).unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.data.as_ref().unwrap()["config"]["state"], "invalid");
+        assert_eq!(result.diagnostics[0]["code"], "invalid_project_config");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_view_bootstrap_classifies_broken_project_config_link_as_invalid() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            "missing-v8project.yaml",
+            workspace.path().join("v8project.yaml"),
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.data.as_ref().unwrap()["config"]["state"], "invalid");
+        assert_eq!(result.diagnostics[0]["code"], "invalid_project_config");
+    }
+
+    #[test]
+    fn canonical_view_bootstrap_repairs_a_valid_config_without_source_sets() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "workPath: .work\nformat: DESIGNER\n",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert_eq!(data["config"]["state"], "configured");
+        assert_eq!(data["ready"], false);
+        assert_eq!(data["setup"]["path"], "v8project.yaml");
+        assert_eq!(data["setup"]["content"], serde_json::Value::Null, "{data}");
+        assert_eq!(data["setup"]["sourceSetExample"]["name"], "main");
+        assert_eq!(data["setup"]["sourceSetExample"]["type"], "CONFIGURATION");
+        assert_eq!(data["setup"]["sourceSetExample"]["path"], "src");
+        assert!(workspace.path().join("v8project.yaml").is_file());
+        assert!(
+            std::fs::read_to_string(workspace.path().join("v8project.yaml"))
+                .unwrap()
+                .contains("workPath: .work")
+        );
+    }
+
+    #[test]
+    fn canonical_view_bootstrap_does_not_equate_git_presence_with_repository_readiness() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let git = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(workspace.path())
+            .status()
+            .unwrap();
+        assert!(git.success());
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert_eq!(data["repositoryReady"], false, "{data}");
+        assert!(data["checks"].is_array(), "{data}");
+        assert!(data["diagnostics"].is_array(), "{data}");
+    }
+
+    #[test]
+    fn canonical_invalid_view_address_points_back_to_bootstrap() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"at": "Catalog.Items"}),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result.diagnostics[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("<sourceSet>:<Kind>"),
+            "{result:?}"
+        );
+        assert_eq!(result.next[0]["tool"], "unica.view");
+        assert_eq!(result.next[0]["args"], serde_json::json!({}));
     }
 
     fn audit_actor_read_source_capability_api(source: &str) -> Result<(), String> {

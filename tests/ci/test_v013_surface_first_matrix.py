@@ -71,6 +71,20 @@ class SurfaceFirstTransitionMatrixTests(unittest.TestCase):
         self.assertEqual(review, names)
         self.assertIn("- Инструментов: **11**", ledger)
 
+    def test_shipped_agent_guidance_does_not_route_to_retired_project_tools(self) -> None:
+        roots = [
+            REPO_ROOT / "plugins/unica/skills",
+            REPO_ROOT / "plugins/unica/references",
+        ]
+        offenders = []
+        for root in roots:
+            for path in root.rglob("*.md"):
+                text = path.read_text(encoding="utf-8")
+                for retired in ("unica.project.map", "unica.project.status"):
+                    if retired in text:
+                        offenders.append((str(path.relative_to(REPO_ROOT)), retired))
+        self.assertEqual(offenders, [])
+
 
 if __name__ == "__main__":
     unittest.main()

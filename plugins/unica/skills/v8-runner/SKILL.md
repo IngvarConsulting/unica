@@ -30,7 +30,7 @@ allowed-tools:
 
 Если сборка длинная, а терять её результат нельзя, запусти её отдельным
 долговременным заданием: оно живёт в отсоединённом процессе и переживает обрыв
-вызова. После успешного `unica.project.status` предупреди пользователя, что
+вызова. После успешного `unica.view {}` предупреди пользователя, что
 работа пойдёт фоном, и вызови:
 
 ```json
@@ -58,7 +58,7 @@ allowed-tools:
 ## Project health preflight
 
 After clone or workspace initialization, and before `build` or `dump`, call
-`unica.project.status` for the workspace. Read its two flags independently:
+`unica.view {}` for the workspace. Read its two flags independently:
 
 - `ready: false` blocks source operations until the source-set diagnostics are
   fixed; `sourceSet.path: .` is an error and should be replaced with a strict
@@ -71,7 +71,7 @@ Explain `diagnostics[].remediation.steps` to the user. Entries under
 `diagnostics[].remediation.commands` are structured suggestions, not permission
 to edit `.gitignore`, `.gitattributes`, the Git index, or files. Never execute
 them automatically; obtain the authority required for the particular change,
-then call `unica.project.status` again after the approved fix.
+then call `unica.view {}` again after the approved fix.
 
 ## Быстрый выбор операции
 
