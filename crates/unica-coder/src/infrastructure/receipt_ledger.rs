@@ -2663,16 +2663,43 @@ impl ReceiptLedgerStore {
                 actual: persisted.record.record_version,
             });
         }
-        let handoff = match persisted.state() {
-            Ok(ReceiptState::TaskHandoffActorBound(handoff)) => handoff,
-            Ok(_) => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
-            Err(error) => return latch_catalog_error(&mut catalog, error),
-        };
+        let (expected_link, expected_task, expected_phase, expected_cancel_requested) =
+            match persisted.state() {
+                Ok(ReceiptState::TaskPromisedActorBound(promised)) => (
+                    promised.link().clone(),
+                    promised.task().clone(),
+                    AttemptPhase::NotBegun,
+                    promised.cancel_requested(),
+                ),
+                Ok(ReceiptState::TaskHandoffActorBound(handoff)) => (
+                    handoff.link().clone(),
+                    handoff.task().clone(),
+                    handoff.phase(),
+                    handoff.cancel_requested(),
+                ),
+                Ok(_) => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+                Err(error) => return latch_catalog_error(&mut catalog, error),
+            };
+        let confirmed_task = confirmed_task_bound.task();
+        let task_matches = confirmed_task.task_id() == expected_task.task_id()
+            && confirmed_task.invocation_id() == expected_task.invocation_id()
+            && confirmed_task.created_at_epoch_ms() == expected_task.created_at_epoch_ms()
+            && confirmed_task.ttl_ms() == expected_task.ttl_ms()
+            && confirmed_task.poll_interval_ms() == expected_task.poll_interval_ms()
+            && if expected_cancel_requested {
+                expected_task
+                    .version()
+                    .checked_add(1)
+                    .is_some_and(|version| confirmed_task.version() == version)
+                    && confirmed_task.updated_at_epoch_ms() >= expected_task.updated_at_epoch_ms()
+            } else {
+                confirmed_task == &expected_task
+            };
         if confirmed_task_bound.key() != key
             || confirmed_task_bound.key_digest() != &key_digest
-            || confirmed_task_bound.link() != handoff.link()
-            || confirmed_task_bound.task() != handoff.task()
-            || confirmed_task_bound.phase() != handoff.phase()
+            || confirmed_task_bound.link() != &expected_link
+            || !task_matches
+            || confirmed_task_bound.phase() != expected_phase
         {
             return self.reject_before_mutation(
                 &mut catalog,
@@ -5983,26 +6010,40 @@ fn build_completed_task_handoff_deletion_record(
         workspace_identity_hash,
         task_link_digest,
         phase,
-    ) =
-        match &expected.record.lifecycle {
-            StoredActiveLifecycleV1::TaskHandoffActorBound {
-                created_at_epoch_ms,
-                task_version,
-                workspace_identity_hash,
-                task_link_digest,
-                phase,
-                ..
-            } => (
-                *created_at_epoch_ms,
-                *task_version,
-                workspace_identity_hash.clone(),
-                task_link_digest.clone(),
-                *phase,
-            ),
-            _ => return Err(ReceiptLedgerError::Corrupt(
-                "completed handoff deletion witness requires a TaskHandoffActorBound predecessor",
-            )),
-        };
+    ) = match &expected.record.lifecycle {
+        StoredActiveLifecycleV1::TaskPromisedActorBound {
+            created_at_epoch_ms,
+            task_version,
+            workspace_identity_hash,
+            task_link_digest,
+            ..
+        } => (
+            *created_at_epoch_ms,
+            *task_version,
+            workspace_identity_hash.clone(),
+            task_link_digest.clone(),
+            AttemptPhase::NotBegun,
+        ),
+        StoredActiveLifecycleV1::TaskHandoffActorBound {
+            created_at_epoch_ms,
+            task_version,
+            workspace_identity_hash,
+            task_link_digest,
+            phase,
+            ..
+        } => (
+            *created_at_epoch_ms,
+            *task_version,
+            workspace_identity_hash.clone(),
+            task_link_digest.clone(),
+            *phase,
+        ),
+        _ => {
+            return Err(ReceiptLedgerError::Corrupt(
+                "completed handoff deletion witness requires an actor-bound Task predecessor",
+            ))
+        }
+    };
     let record_version =
         expected
             .record
@@ -7201,6 +7242,25 @@ mod tests {
             handoff.phase(),
         )
         .expect("valid confirmed TaskBound proof")
+    }
+
+    fn confirmed_promised_task_bound(promised: &TaskPromisedActorBoundReceipt) -> TaskBoundReceipt {
+        let header = LifecycleLinkRecordHeader::new(
+            promised.key().clone(),
+            promised.link().clone(),
+            2,
+            1,
+            512,
+        )
+        .expect("valid promised lifecycle-link header");
+        TaskBoundReceipt::new(
+            header,
+            promised.task().clone(),
+            promised.task().version(),
+            promised.task().created_at_epoch_ms() + 1,
+            AttemptPhase::NotBegun,
+        )
+        .expect("valid promised TaskBound proof")
     }
 
     fn directory_names(path: &Path) -> Vec<String> {
@@ -9203,6 +9263,60 @@ mod tests {
             reopened.recover_exact(&key, reserve_deadline()),
             Err(ReceiptLedgerError::ReceiptNotFound),
             "reopen cannot resurrect the completed handoff receipt"
+        );
+    }
+
+    #[test]
+    fn confirmed_task_bound_completes_actor_bound_promise() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let reserved = store
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                reserve_deadline(),
+            )
+            .expect("reserve exact receipt")
+            .into_reservation()
+            .expect("receipt remains reserved");
+        let promised = store
+            .promise_task_unbound(
+                &key,
+                reserved.record_version(),
+                1_009,
+                3_600_000,
+                250,
+                reserve_deadline(),
+            )
+            .expect("promise exact Task");
+        let actor_bound = store
+            .bind_promised_task_actor(
+                &key,
+                promised.record_version(),
+                SafeIdentityHash::from_sha256([0x77; 32]),
+                reserve_deadline(),
+            )
+            .expect("bind promised Task actor");
+        let task_bound = confirmed_promised_task_bound(&actor_bound);
+
+        assert_eq!(
+            store
+                .complete_bound_task_handoff(
+                    &key,
+                    actor_bound.record_version(),
+                    task_bound.clone(),
+                    reserve_deadline(),
+                )
+                .expect("retire actor-bound promise after confirmed TaskBound"),
+            task_bound
+        );
+        assert_eq!(
+            store.recover_exact(&key, reserve_deadline()),
+            Err(ReceiptLedgerError::ReceiptNotFound)
         );
     }
 

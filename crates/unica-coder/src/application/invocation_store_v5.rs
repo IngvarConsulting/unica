@@ -372,6 +372,7 @@ pub(crate) struct NewV5InvocationRecord {
     workspace_identity_hash: SafeIdentityHash,
     poll_interval_ms: u64,
     ttl_ms: u64,
+    initial_epoch_ms: Option<u64>,
 }
 
 impl NewV5InvocationRecord {
@@ -390,7 +391,13 @@ impl NewV5InvocationRecord {
             workspace_identity_hash,
             poll_interval_ms,
             ttl_ms,
+            initial_epoch_ms: None,
         }
+    }
+
+    pub(crate) fn with_initial_epoch_ms(mut self, initial_epoch_ms: u64) -> Self {
+        self.initial_epoch_ms = Some(initial_epoch_ms);
+        self
     }
 
     pub(crate) const fn task_id(&self) -> TaskId {
@@ -404,9 +411,13 @@ impl NewV5InvocationRecord {
             && self.workspace_identity_hash == record.workspace_identity_hash
             && self.poll_interval_ms == record.poll_interval_ms
             && self.ttl_ms == record.ttl_ms
+            && self.initial_epoch_ms.is_none_or(|initial| {
+                record.created_at_epoch_ms == initial && record.updated_at_epoch_ms >= initial
+            })
     }
 
     pub(crate) fn into_stored(self, now_epoch_ms: u64) -> V5StoredInvocationRecord {
+        let initial_epoch_ms = self.initial_epoch_ms.unwrap_or(now_epoch_ms);
         V5StoredInvocationRecord {
             schema_version: V5StoredInvocationSchemaVersion,
             task_id: self.identity.task_id,
@@ -415,8 +426,8 @@ impl NewV5InvocationRecord {
             tool: self.tool,
             normalized_arguments_hash: self.normalized_arguments_hash,
             workspace_identity_hash: self.workspace_identity_hash,
-            created_at_epoch_ms: now_epoch_ms,
-            updated_at_epoch_ms: now_epoch_ms,
+            created_at_epoch_ms: initial_epoch_ms,
+            updated_at_epoch_ms: initial_epoch_ms,
             ttl_ms: self.ttl_ms,
             poll_interval_ms: self.poll_interval_ms,
             version: 1,
@@ -667,6 +678,13 @@ pub(crate) struct TaskStoreRecoveryCatalog {
     entries: Vec<V5TaskRecoveryEntry>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecoveryTerminalReason {
+    Cancelled,
+    InterruptedBeforeExecution,
+    OutcomeUncertain,
+}
+
 impl TaskStoreRecoveryCatalog {
     pub(crate) fn new(mut entries: Vec<V5TaskRecoveryEntry>) -> Self {
         entries.sort_by_key(|entry| entry.identity.task_id.to_string());
@@ -716,6 +734,14 @@ pub(crate) trait InvocationStoreV5: Send + Sync {
         identity: &V5TaskIdentity,
         expected_version: u64,
         publication: V5TerminalPublication,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError>;
+
+    fn terminalize_recovered_exact(
+        &self,
+        identity: &V5TaskIdentity,
+        expected_version: u64,
+        reason: RecoveryTerminalReason,
         deadline: ProviderDeadline,
     ) -> Result<V5StoredInvocationRecord, V5TaskStoreError>;
 

@@ -15,9 +15,9 @@ use super::server::{
 use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
 use crate::application::invocation_store::{EpochMillisClock, ToolIdentity};
 use crate::application::invocation_store_v5::{
-    InvocationStoreV5, NewV5InvocationRecord, TaskStoreRecoveryCatalog, V5SafeFailureReason,
-    V5StartWorkingOutcome, V5StoredInvocationRecord, V5StoredTask, V5TaskIdentity,
-    V5TaskStoreError,
+    InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
+    V5SafeFailureReason, V5StartWorkingOutcome, V5StoredInvocationRecord, V5StoredTask,
+    V5TaskIdentity, V5TaskStoreError,
 };
 use crate::application::invocation_v5::{
     classify_cancel_reserved_expiry_outcome, classify_recovered_receipt,
@@ -28,11 +28,11 @@ use crate::application::ports::Clock;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::CommittedDirectPublication;
 use crate::application::receipt_ledger::{
-    canonical_v5_terminal, OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey,
-    ReceiptKeyDigest, ReceiptLedgerError, ReceiptState, ReceiptTaskProjection,
-    ReceiptTerminalOutcome, ReserveOutcome, ReservedPhase, TaskBoundReceipt,
-    TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TerminalDigest,
-    DIRECT_TERMINAL_RETENTION_MS,
+    canonical_v5_terminal, AttemptPhase, ClosedTerminalStatus, OriginalCutoffDescriptor,
+    PreparedWireFrame, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptState,
+    ReceiptTaskProjection, ReceiptTerminalOutcome, ReserveOutcome, ReservedPhase, TaskBoundReceipt,
+    TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
+    TaskTerminalBoundReceipt, TerminalDigest, DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
@@ -581,57 +581,110 @@ impl V5TaskProjection {
         deadline: Instant,
         #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
     ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
+        self.materialize_actor_bound_task(
+            handoff.key(),
+            handoff.link(),
+            handoff.task(),
+            handoff.workspace_identity_hash(),
+            handoff.cancel_requested(),
+            handoff.phase(),
+            bind_epoch_ms,
+            deadline,
+            #[cfg(feature = "receipt-ledger-test-support")]
+            telemetry,
+        )
+    }
+
+    fn materialize_promised_actor_bound(
+        &self,
+        promised: &TaskPromisedActorBoundReceipt,
+        bind_epoch_ms: u64,
+        deadline: Instant,
+        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+    ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
+        self.materialize_actor_bound_task(
+            promised.key(),
+            promised.link(),
+            promised.task(),
+            promised.workspace_identity_hash(),
+            promised.cancel_requested(),
+            AttemptPhase::NotBegun,
+            bind_epoch_ms,
+            deadline,
+            #[cfg(feature = "receipt-ledger-test-support")]
+            telemetry,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn materialize_actor_bound_task(
+        &self,
+        key: &ReceiptKey,
+        link: &crate::application::receipt_ledger::TaskLinkReference,
+        promised_task: &ReceiptTaskProjection,
+        workspace_identity_hash: &crate::domain::invocation::SafeIdentityHash,
+        cancel_requested: bool,
+        phase: AttemptPhase,
+        bind_epoch_ms: u64,
+        deadline: Instant,
+        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+    ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
         let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
         let reservation = self
             .lifecycle_links
-            .reserve_task_link(
-                handoff.key().clone(),
-                handoff.link().clone(),
-                provider_deadline,
-            )
+            .reserve_task_link(key.clone(), link.clone(), provider_deadline)
             .map_err(V5TaskProjectionFailure::from_link_store)?;
         let identity = V5TaskIdentity::new(
-            handoff.task().task_id(),
-            handoff.task().invocation_id(),
-            handoff.key_digest().clone(),
+            promised_task.task_id(),
+            promised_task.invocation_id(),
+            crate::application::receipt_ledger::receipt_key_digest(key),
         );
         let new_record = NewV5InvocationRecord::new(
             identity.clone(),
-            handoff.key().tool(),
-            handoff.key().normalized_arguments_hash().clone(),
-            handoff.workspace_identity_hash().clone(),
-            handoff.task().poll_interval_ms(),
-            handoff.task().ttl_ms(),
-        );
+            key.tool(),
+            key.normalized_arguments_hash().clone(),
+            workspace_identity_hash.clone(),
+            promised_task.poll_interval_ms(),
+            promised_task.ttl_ms(),
+        )
+        .with_initial_epoch_ms(promised_task.created_at_epoch_ms());
         #[cfg(feature = "receipt-ledger-test-support")]
         telemetry.record_task_store_create_attempt();
         let created = self
             .task_store
             .create_exact(new_record, provider_deadline)
             .map_err(|error| {
-                V5TaskProjectionFailure::from_task_store(error, handoff.key_digest().clone(), true)
+                V5TaskProjectionFailure::from_task_store(
+                    error,
+                    identity.receipt_key_digest().clone(),
+                    true,
+                )
             })?;
         let mut readback = self
             .task_store
             .get(created.task_id, provider_deadline)
             .map_err(|error| {
-                V5TaskProjectionFailure::from_task_store(error, handoff.key_digest().clone(), true)
+                V5TaskProjectionFailure::from_task_store(
+                    error,
+                    identity.receipt_key_digest().clone(),
+                    true,
+                )
             })?;
         if readback != created || !identity.matches_record(&readback) {
             return Err(V5TaskProjectionFailure::fail_stop(
                 ReceiptLedgerError::CommitUncertain {
-                    receipt_key_digest: handoff.key_digest().clone(),
+                    receipt_key_digest: identity.receipt_key_digest().clone(),
                 },
             ));
         }
-        if handoff.cancel_requested() && !readback.cancel_requested {
+        if cancel_requested && !readback.cancel_requested {
             readback = self
                 .task_store
                 .request_cancel_exact(&identity, readback.version, provider_deadline)
                 .map_err(|error| {
                     V5TaskProjectionFailure::from_task_store(
                         error,
-                        handoff.key_digest().clone(),
+                        identity.receipt_key_digest().clone(),
                         true,
                     )
                 })?;
@@ -644,11 +697,67 @@ impl V5TaskProjection {
                 task,
                 readback.version,
                 bind_epoch_ms,
-                handoff.phase(),
+                phase,
                 provider_deadline,
             )
             .map_err(V5TaskProjectionFailure::from_link_store)?;
         Ok((readback, bound))
+    }
+
+    fn terminalize_recovered_bound(
+        &self,
+        expected: &TaskBoundReceipt,
+        record: V5StoredInvocationRecord,
+        reason: RecoveryTerminalReason,
+        deadline: Instant,
+    ) -> Result<TaskTerminalBoundReceipt, V5TaskProjectionFailure> {
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        let identity = record.identity();
+        let receipt_key_digest = record.receipt_key_digest.clone();
+        let terminal = self
+            .task_store
+            .terminalize_recovered_exact(&identity, record.version, reason, provider_deadline)
+            .map_err(|error| {
+                V5TaskProjectionFailure::from_task_store(error, receipt_key_digest, true)
+            })?;
+        let (terminal_status, terminal_digest, terminal_epoch_ms) = match &terminal.task {
+            V5StoredTask::Failed {
+                terminal_epoch_ms,
+                terminal_digest,
+                ..
+            } => (
+                ClosedTerminalStatus::Failed,
+                terminal_digest.clone(),
+                *terminal_epoch_ms,
+            ),
+            V5StoredTask::Cancelled {
+                terminal_epoch_ms,
+                terminal_digest,
+            } => (
+                ClosedTerminalStatus::Cancelled,
+                terminal_digest.clone(),
+                *terminal_epoch_ms,
+            ),
+            _ => {
+                return Err(V5TaskProjectionFailure::fail_stop(
+                    ReceiptLedgerError::Corrupt(
+                        "recovery terminalization returned a non-recovery Task state",
+                    ),
+                ))
+            }
+        };
+        let terminal_task = receipt_task_projection_from_store(&terminal)?;
+        self.lifecycle_links
+            .publish_task_terminal_bound(
+                expected,
+                terminal_task,
+                terminal.version,
+                terminal_status,
+                terminal_digest,
+                terminal_epoch_ms,
+                provider_deadline,
+            )
+            .map_err(V5TaskProjectionFailure::from_link_store)
     }
 
     fn start_bound_task(
@@ -1118,6 +1227,41 @@ impl V5ReceiptRuntime {
                             format!(
                                 "publish protocol-v5 startup receipt-backed Task terminal: {error}"
                             )
+                        })?;
+                }
+                ReceiptState::TaskPromisedActorBound(promised) => {
+                    let receipt_version = promised.record_version();
+                    let (record, task_bound) = self
+                        .task_projection
+                        .materialize_promised_actor_bound(
+                            &promised,
+                            terminal_epoch_ms,
+                            deadline,
+                            #[cfg(feature = "receipt-ledger-test-support")]
+                            &self.telemetry,
+                        )
+                        .map_err(|failure| {
+                            let error = self.project_task_failure(failure);
+                            format!("materialize protocol-v5 startup actor-bound Task: {error}")
+                        })?;
+                    let task_bound = self
+                        .receipt_ledger
+                        .complete_bound_task_handoff(key, receipt_version, task_bound, deadline)
+                        .map_err(|error| {
+                            format!(
+                                "publish protocol-v5 startup actor-bound Task ownership: {error}"
+                            )
+                        })?;
+                    let reason = if record.cancel_requested {
+                        RecoveryTerminalReason::Cancelled
+                    } else {
+                        RecoveryTerminalReason::InterruptedBeforeExecution
+                    };
+                    self.task_projection
+                        .terminalize_recovered_bound(&task_bound, record, reason, deadline)
+                        .map_err(|failure| {
+                            let error = self.project_task_failure(failure);
+                            format!("terminalize protocol-v5 startup bound Task: {error}")
                         })?;
                 }
                 _ => {}
@@ -3807,6 +3951,107 @@ mod tests {
             };
             assert_eq!(receipt.terminal().outcome(), &expected);
             assert_eq!(reopened.task_projection.recovery.entries().len(), 0);
+        }
+    }
+
+    #[test]
+    fn startup_materializes_and_terminalizes_actor_bound_promised_task() {
+        for cancel_requested in [false, true] {
+            let root = tempfile::tempdir().expect("temporary actor-bound recovery root");
+            let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+            let identity = CoreIdentity::production_v5();
+            let state = DaemonStateDirectory::open(&state_root, &identity)
+                .expect("open actor-bound recovery daemon state");
+            let config = DaemonServerConfig::new(
+                state_root.clone(),
+                identity.clone(),
+                Duration::from_millis(50),
+            );
+            let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+            let key = ReceiptKey::new(
+                InvocationId::new(),
+                TaskId::new(),
+                RequestIdentity::new(
+                    identity.digest().clone(),
+                    V5ToolIdentity::View,
+                    normalized_arguments_hash(&serde_json::Map::new()),
+                    request_scope_hash("workspace-a").expect("request scope"),
+                ),
+            );
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let reserved = runtime
+                .receipt_ledger
+                .reserve(
+                    key.clone(),
+                    OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                    deadline,
+                )
+                .expect("reserve actor-bound startup receipt")
+                .into_reservation()
+                .expect("new actor-bound startup receipt");
+            let promised = runtime
+                .receipt_ledger
+                .promise_task_unbound(
+                    key.clone(),
+                    reserved.record_version(),
+                    1_007,
+                    3_600_000,
+                    V5_TASK_POLL_INTERVAL_MS,
+                    deadline,
+                )
+                .expect("promise startup Task");
+            let actor_bound = runtime
+                .receipt_ledger
+                .bind_promised_task_actor(
+                    key.clone(),
+                    promised.record_version(),
+                    SafeIdentityHash::from_sha256(Sha256::digest(b"startup-actor").into()),
+                    deadline,
+                )
+                .expect("bind promised startup Task actor");
+            if cancel_requested {
+                runtime
+                    .receipt_ledger
+                    .request_task_cancel(
+                        key.clone(),
+                        TaskCancellationReceipt::PromisedActorBound(actor_bound),
+                        deadline,
+                    )
+                    .expect("persist actor-bound startup cancellation");
+            }
+            drop(runtime);
+
+            let reopened = V5ReceiptRuntime::open(&state, &config).expect("reconcile startup");
+            assert_eq!(
+                reopened
+                    .receipt_ledger
+                    .recover(key.clone(), Instant::now() + Duration::from_secs(2)),
+                Err(ReceiptLedgerError::ReceiptNotFound)
+            );
+            let snapshot = reopened
+                .resolve_task(
+                    key.reserved_task_id(),
+                    Instant::now() + Duration::from_secs(2),
+                )
+                .expect("resolve recovered actor-bound Task");
+            match (cancel_requested, snapshot) {
+                (
+                    false,
+                    crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                        reason: V5SafeFailureReason::Interrupted,
+                        cancel_requested: false,
+                        ..
+                    },
+                )
+                | (
+                    true,
+                    crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Cancelled {
+                        cancel_requested: true,
+                        ..
+                    },
+                ) => {}
+                (_, other) => panic!("unexpected recovered actor-bound Task: {other:?}"),
+            }
         }
     }
 

@@ -4,11 +4,12 @@ use crate::application::invocation_store::{
     canonical_result_size, CanonicalResultSizeError, EpochMillisClock, MAX_TASK_RECORD_BYTES,
 };
 use crate::application::invocation_store_v5::{
-    InvocationStoreV5, NewV5InvocationRecord, TaskStoreRecoveryCatalog, V5CommitOperation,
-    V5DeleteTerminalOutcome, V5StartWorkingOutcome, V5StoredInvocationRecord, V5StoredTask,
-    V5TaskIdentity, V5TaskMismatch, V5TaskRecoveryEntry, V5TaskRetirement, V5TaskStatus,
-    V5TaskStoreError, V5TerminalPublication, MAX_V5_TASK_RECORDS,
+    InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
+    V5CommitOperation, V5DeleteTerminalOutcome, V5StartWorkingOutcome, V5StoredInvocationRecord,
+    V5StoredTask, V5TaskIdentity, V5TaskMismatch, V5TaskRecoveryEntry, V5TaskRetirement,
+    V5TaskStatus, V5TaskStoreError, V5TerminalPublication, MAX_V5_TASK_RECORDS,
 };
+use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::TaskId;
 use crate::infrastructure::platform::filesystem::{
@@ -693,6 +694,105 @@ impl InvocationStoreV5 for FileInvocationStoreV5 {
         Ok(record)
     }
 
+    fn terminalize_recovered_exact(
+        &self,
+        identity: &V5TaskIdentity,
+        expected_version: u64,
+        reason: RecoveryTerminalReason,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        let mut record = self.read_record(identity.task_id(), deadline)?;
+        if !identity.matches_record(&record) {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: identity.task_id(),
+                reason: V5TaskMismatch::Identity,
+            });
+        }
+        if record.task.is_terminal() {
+            let exact_successor = expected_version
+                .checked_add(1)
+                .is_some_and(|committed_version| committed_version == record.version);
+            let exact_reason = matches!(
+                (&reason, &record.task),
+                (RecoveryTerminalReason::Cancelled, V5StoredTask::Cancelled { .. })
+                    | (
+                        RecoveryTerminalReason::InterruptedBeforeExecution,
+                        V5StoredTask::Failed {
+                            reason: crate::application::invocation_store_v5::V5SafeFailureReason::Interrupted,
+                            ..
+                        }
+                    )
+                    | (
+                        RecoveryTerminalReason::OutcomeUncertain,
+                        V5StoredTask::Failed {
+                            reason: crate::application::invocation_store_v5::V5SafeFailureReason::OutcomeUncertain,
+                            ..
+                        }
+                    )
+            );
+            if exact_successor && exact_reason {
+                return Ok(record);
+            }
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: identity.task_id(),
+                reason: V5TaskMismatch::State,
+            });
+        }
+        Self::validate_exact(&record, identity, expected_version)?;
+        let valid_state = match reason {
+            RecoveryTerminalReason::Cancelled => {
+                record.cancel_requested
+                    && matches!(record.task, V5StoredTask::Queued | V5StoredTask::Working)
+            }
+            RecoveryTerminalReason::InterruptedBeforeExecution => {
+                matches!(record.task, V5StoredTask::Queued | V5StoredTask::Working)
+            }
+            RecoveryTerminalReason::OutcomeUncertain => record.task == V5StoredTask::Working,
+        };
+        if !valid_state {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: identity.task_id(),
+                reason: V5TaskMismatch::State,
+            });
+        }
+        let terminal_epoch_ms = self.clock.now_epoch_millis();
+        let outcome = match reason {
+            RecoveryTerminalReason::Cancelled => ReceiptTerminalOutcome::Cancelled,
+            RecoveryTerminalReason::InterruptedBeforeExecution => ReceiptTerminalOutcome::Failed {
+                reason: crate::application::invocation_store_v5::V5SafeFailureReason::Interrupted,
+            },
+            RecoveryTerminalReason::OutcomeUncertain => ReceiptTerminalOutcome::Failed {
+                reason:
+                    crate::application::invocation_store_v5::V5SafeFailureReason::OutcomeUncertain,
+            },
+        };
+        let terminal = canonical_v5_terminal(&outcome).map_err(|_| {
+            V5TaskStoreError::Corrupt("canonical recovery terminal could not be encoded")
+        })?;
+        record.task = match outcome {
+            ReceiptTerminalOutcome::Cancelled => V5StoredTask::Cancelled {
+                terminal_epoch_ms,
+                terminal_digest: terminal.digest().clone(),
+            },
+            ReceiptTerminalOutcome::Failed { reason } => V5StoredTask::Failed {
+                terminal_epoch_ms,
+                terminal_digest: terminal.digest().clone(),
+                reason,
+            },
+            ReceiptTerminalOutcome::Completed { .. } => unreachable!("recovery is never success"),
+        };
+        record.version = Self::next_version(&record)?;
+        record.updated_at_epoch_ms = record.updated_at_epoch_ms.max(terminal_epoch_ms);
+        self.publish_record(
+            &mut writer,
+            &record,
+            V5CommitOperation::PublishTerminal,
+            deadline,
+        )?;
+        Ok(record)
+    }
+
     fn delete_terminal_if_expired(
         &self,
         retirement: &V5TaskRetirement,
@@ -901,10 +1001,11 @@ mod tests {
     use crate::application::invocation_store::EpochMillisClock;
     use crate::application::invocation_store_v5::V5SafeFailureReason;
     use crate::application::invocation_store_v5::{
-        InvocationStoreV5, NewV5InvocationRecord, V5CommitOperation, V5DeleteTerminalOutcome,
-        V5StartWorkingOutcome, V5StoredInvocationRecord, V5StoredInvocationSchemaVersion,
-        V5StoredTask, V5TaskIdentity, V5TaskMismatch, V5TaskRetirement, V5TaskStatus,
-        V5TaskStoreError, V5TerminalPublication, MAX_V5_TASK_RECORDS,
+        InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, V5CommitOperation,
+        V5DeleteTerminalOutcome, V5StartWorkingOutcome, V5StoredInvocationRecord,
+        V5StoredInvocationSchemaVersion, V5StoredTask, V5TaskIdentity, V5TaskMismatch,
+        V5TaskRetirement, V5TaskStatus, V5TaskStoreError, V5TerminalPublication,
+        MAX_V5_TASK_RECORDS,
     };
     use crate::application::receipt_ledger::{ReceiptKeyDigest, TerminalDigest, V5ToolIdentity};
     use crate::domain::code_intelligence::ProviderDeadline;
@@ -1459,6 +1560,56 @@ mod tests {
             })
         ));
         assert_eq!(store.get(created.task_id, deadline()).unwrap(), terminal);
+    }
+
+    #[test]
+    fn recovery_terminalizes_queued_without_starting_domain_work() {
+        let root = tempfile::tempdir().expect("temporary v5 root");
+        let root_path = physical_root(&root);
+        let clock = Arc::new(ManualEpochClock::at(7_500));
+        let (store, _) =
+            FileInvocationStoreV5::open_inspect_only(&root_path, clock, deadline()).unwrap();
+        let created = store
+            .create_exact(
+                new_record(
+                    task_id("27272727-2727-4727-8727-272727272727"),
+                    invocation_id("28282828-2828-4828-8828-282828282828"),
+                    0x1b,
+                ),
+                deadline(),
+            )
+            .unwrap();
+
+        let terminal = store
+            .terminalize_recovered_exact(
+                &created.identity(),
+                created.version,
+                RecoveryTerminalReason::InterruptedBeforeExecution,
+                deadline(),
+            )
+            .expect("terminalize queued recovery without Working transition");
+
+        assert_eq!(terminal.version, created.version + 1);
+        assert_eq!(terminal.updated_at_epoch_ms, 7_500);
+        assert!(matches!(
+            terminal.task,
+            V5StoredTask::Failed {
+                terminal_epoch_ms: 7_500,
+                reason: V5SafeFailureReason::Interrupted,
+                ..
+            }
+        ));
+        assert_eq!(
+            store
+                .terminalize_recovered_exact(
+                    &created.identity(),
+                    created.version,
+                    RecoveryTerminalReason::InterruptedBeforeExecution,
+                    deadline(),
+                )
+                .expect("repeat exact recovery is idempotent"),
+            terminal
+        );
     }
 
     #[test]
