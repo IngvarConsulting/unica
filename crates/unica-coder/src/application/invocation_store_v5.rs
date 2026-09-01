@@ -142,6 +142,21 @@ impl V5StoredTask {
             Self::Completed { .. } | Self::Failed { .. } | Self::Cancelled { .. }
         )
     }
+
+    pub(crate) fn terminal_digest(&self) -> Option<&TerminalDigest> {
+        match self {
+            Self::Completed {
+                terminal_digest, ..
+            }
+            | Self::Failed {
+                terminal_digest, ..
+            }
+            | Self::Cancelled {
+                terminal_digest, ..
+            } => Some(terminal_digest),
+            Self::Queued | Self::Working => None,
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for V5StoredTask {
@@ -416,6 +431,8 @@ pub(crate) enum V5CommitOperation {
     Create,
     RequestCancel,
     StartWorking,
+    PublishTerminal,
+    DeleteTerminal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -491,6 +508,123 @@ impl std::error::Error for V5TaskStoreError {}
 pub(crate) enum V5StartWorkingOutcome {
     Started(V5StoredInvocationRecord),
     CancelOrTerminalWinner(V5StoredInvocationRecord),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum V5TerminalPublication {
+    Completed {
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+        result: Box<DomainResult>,
+    },
+    Failed {
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+        reason: V5SafeFailureReason,
+    },
+    Cancelled {
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+    },
+}
+
+impl V5TerminalPublication {
+    pub(crate) fn into_stored_task(self) -> V5StoredTask {
+        match self {
+            Self::Completed {
+                terminal_epoch_ms,
+                terminal_digest,
+                result,
+            } => V5StoredTask::Completed {
+                terminal_epoch_ms,
+                terminal_digest,
+                result,
+            },
+            Self::Failed {
+                terminal_epoch_ms,
+                terminal_digest,
+                reason,
+            } => V5StoredTask::Failed {
+                terminal_epoch_ms,
+                terminal_digest,
+                reason,
+            },
+            Self::Cancelled {
+                terminal_epoch_ms,
+                terminal_digest,
+            } => V5StoredTask::Cancelled {
+                terminal_epoch_ms,
+                terminal_digest,
+            },
+        }
+    }
+
+    pub(crate) fn matches_task(&self, task: &V5StoredTask) -> bool {
+        self.clone().into_stored_task() == *task
+    }
+
+    pub(crate) const fn status(&self) -> V5TaskStatus {
+        match self {
+            Self::Completed { .. } => V5TaskStatus::Completed,
+            Self::Failed { .. } => V5TaskStatus::Failed,
+            Self::Cancelled { .. } => V5TaskStatus::Cancelled,
+        }
+    }
+
+    pub(crate) const fn terminal_epoch_ms(&self) -> u64 {
+        match self {
+            Self::Completed {
+                terminal_epoch_ms, ..
+            }
+            | Self::Failed {
+                terminal_epoch_ms, ..
+            }
+            | Self::Cancelled {
+                terminal_epoch_ms, ..
+            } => *terminal_epoch_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V5TaskRetirement {
+    identity: V5TaskIdentity,
+    expected_terminal_version: u64,
+    terminal_status: V5TaskStatus,
+    terminal_digest: TerminalDigest,
+}
+
+impl V5TaskRetirement {
+    pub(crate) fn from_terminal_record(record: &V5StoredInvocationRecord) -> Option<Self> {
+        let terminal_digest = record.task.terminal_digest()?.clone();
+        Some(Self {
+            identity: record.identity(),
+            expected_terminal_version: record.version,
+            terminal_status: record.task.status(),
+            terminal_digest,
+        })
+    }
+
+    pub(crate) fn identity(&self) -> &V5TaskIdentity {
+        &self.identity
+    }
+
+    pub(crate) const fn expected_terminal_version(&self) -> u64 {
+        self.expected_terminal_version
+    }
+
+    pub(crate) fn matches_terminal_record(&self, record: &V5StoredInvocationRecord) -> bool {
+        self.identity.matches_record(record)
+            && self.expected_terminal_version == record.version
+            && self.terminal_status == record.task.status()
+            && record.task.terminal_digest() == Some(&self.terminal_digest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum V5DeleteTerminalOutcome {
+    Deleted(V5TaskRetirement),
+    AlreadyAbsent(V5TaskRetirement),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -576,6 +710,21 @@ pub(crate) trait InvocationStoreV5: Send + Sync {
         expected_version: u64,
         deadline: ProviderDeadline,
     ) -> Result<V5StartWorkingOutcome, V5TaskStoreError>;
+
+    fn publish_terminal_exact(
+        &self,
+        identity: &V5TaskIdentity,
+        expected_version: u64,
+        publication: V5TerminalPublication,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError>;
+
+    fn delete_terminal_if_expired(
+        &self,
+        retirement: &V5TaskRetirement,
+        observed_at_epoch_ms: u64,
+        deadline: ProviderDeadline,
+    ) -> Result<V5DeleteTerminalOutcome, V5TaskStoreError>;
 }
 
 #[cfg(test)]

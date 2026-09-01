@@ -5,8 +5,9 @@ use crate::application::invocation_store::{
 };
 use crate::application::invocation_store_v5::{
     InvocationStoreV5, NewV5InvocationRecord, TaskStoreRecoveryCatalog, V5CommitOperation,
-    V5StartWorkingOutcome, V5StoredInvocationRecord, V5StoredTask, V5TaskIdentity, V5TaskMismatch,
-    V5TaskRecoveryEntry, V5TaskStoreError, MAX_V5_TASK_RECORDS,
+    V5DeleteTerminalOutcome, V5StartWorkingOutcome, V5StoredInvocationRecord, V5StoredTask,
+    V5TaskIdentity, V5TaskMismatch, V5TaskRecoveryEntry, V5TaskRetirement, V5TaskStatus,
+    V5TaskStoreError, V5TerminalPublication, MAX_V5_TASK_RECORDS,
 };
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::TaskId;
@@ -54,6 +55,7 @@ struct StoreCatalog {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicationFailure {
     AfterRenameBeforeSync,
+    AfterDeleteBeforeSync,
 }
 
 /// The retained root is dedicated to protocol v5. It never reads or rewrites
@@ -423,6 +425,57 @@ impl FileInvocationStoreV5 {
             })
     }
 
+    fn delete_terminal_record(
+        &self,
+        catalog: &mut StoreCatalog,
+        retirement: &V5TaskRetirement,
+        deadline: ProviderDeadline,
+    ) -> Result<(), V5TaskStoreError> {
+        check_deadline(deadline)?;
+        self.verify_root_authority()?;
+        let task_id = retirement.identity().task_id();
+        let file_name = format!("{task_id}.json");
+        let file_name = OsStr::new(&file_name);
+        let retained = open_regular_child_nofollow(&self.root_file, file_name)
+            .map_err(|error| storage_error("retain protocol-v5 terminal task record", error))?;
+        verify_owner_only_acl(&retained).map_err(|error| {
+            storage_error("verify protocol-v5 terminal task record ownership", error)
+        })?;
+        let retained_identity = file_identity(&retained)
+            .map_err(|error| storage_error("identify protocol-v5 terminal task record", error))?;
+        check_deadline(deadline)?;
+        self.verify_root_authority()?;
+        remove_identity_bound_regular_child(
+            &self.root_file,
+            file_name,
+            retained_identity,
+            &retained,
+        )
+        .map_err(|error| storage_error("delete protocol-v5 terminal task record", error))?;
+        catalog.records.remove(&task_id);
+
+        #[cfg(test)]
+        if self.take_publication_failure()? == Some(PublicationFailure::AfterDeleteBeforeSync) {
+            return Err(V5TaskStoreError::CommitUncertain {
+                task_id,
+                operation: V5CommitOperation::DeleteTerminal,
+            });
+        }
+        check_deadline(deadline).map_err(|_| V5TaskStoreError::CommitUncertain {
+            task_id,
+            operation: V5CommitOperation::DeleteTerminal,
+        })?;
+        sync_directory(&self.root_file).map_err(|_| V5TaskStoreError::CommitUncertain {
+            task_id,
+            operation: V5CommitOperation::DeleteTerminal,
+        })?;
+        self.verify_root_authority()
+            .map_err(|_| V5TaskStoreError::CommitUncertain {
+                task_id,
+                operation: V5CommitOperation::DeleteTerminal,
+            })
+    }
+
     fn validate_exact(
         record: &V5StoredInvocationRecord,
         identity: &V5TaskIdentity,
@@ -566,6 +619,108 @@ impl InvocationStoreV5 for FileInvocationStoreV5 {
         )?;
         Ok(V5StartWorkingOutcome::Started(record))
     }
+
+    fn publish_terminal_exact(
+        &self,
+        identity: &V5TaskIdentity,
+        expected_version: u64,
+        publication: V5TerminalPublication,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        let mut record = self.read_record(identity.task_id(), deadline)?;
+        if !identity.matches_record(&record) {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: identity.task_id(),
+                reason: V5TaskMismatch::Identity,
+            });
+        }
+        if record.task.is_terminal() {
+            if expected_version
+                .checked_add(1)
+                .is_some_and(|committed_version| committed_version == record.version)
+                && publication.matches_task(&record.task)
+            {
+                return Ok(record);
+            }
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: identity.task_id(),
+                reason: V5TaskMismatch::State,
+            });
+        }
+        Self::validate_exact(&record, identity, expected_version)?;
+        let state_accepts_publication = match publication.status() {
+            V5TaskStatus::Completed | V5TaskStatus::Failed => record.task == V5StoredTask::Working,
+            V5TaskStatus::Cancelled => {
+                matches!(record.task, V5StoredTask::Queued | V5StoredTask::Working)
+                    && record.cancel_requested
+            }
+            V5TaskStatus::Queued | V5TaskStatus::Working => false,
+        };
+        if !state_accepts_publication {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: identity.task_id(),
+                reason: V5TaskMismatch::State,
+            });
+        }
+        let terminal_epoch_ms = publication.terminal_epoch_ms();
+        record.task = publication.into_stored_task();
+        record.version = Self::next_version(&record)?;
+        record.updated_at_epoch_ms = record
+            .updated_at_epoch_ms
+            .max(self.clock.now_epoch_millis())
+            .max(terminal_epoch_ms);
+        self.publish_record(
+            &mut writer,
+            &record,
+            V5CommitOperation::PublishTerminal,
+            deadline,
+        )?;
+        Ok(record)
+    }
+
+    fn delete_terminal_if_expired(
+        &self,
+        retirement: &V5TaskRetirement,
+        observed_at_epoch_ms: u64,
+        deadline: ProviderDeadline,
+    ) -> Result<V5DeleteTerminalOutcome, V5TaskStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        let task_id = retirement.identity().task_id();
+        let record = match self.read_record(task_id, deadline) {
+            Ok(record) => record,
+            Err(V5TaskStoreError::NotFound { .. }) => {
+                return Ok(V5DeleteTerminalOutcome::AlreadyAbsent(retirement.clone()))
+            }
+            Err(error) => return Err(error),
+        };
+        if !retirement.identity().matches_record(&record) {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id,
+                reason: V5TaskMismatch::Identity,
+            });
+        }
+        if record.version != retirement.expected_terminal_version() {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id,
+                reason: V5TaskMismatch::Version {
+                    expected: retirement.expected_terminal_version(),
+                    actual: record.version,
+                },
+            });
+        }
+        let expired = observed_at_epoch_ms
+            .checked_sub(record.updated_at_epoch_ms)
+            .is_some_and(|elapsed| elapsed >= record.ttl_ms);
+        if !record.task.is_terminal() || !retirement.matches_terminal_record(&record) || !expired {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id,
+                reason: V5TaskMismatch::State,
+            });
+        }
+        self.delete_terminal_record(&mut writer, retirement, deadline)?;
+        Ok(V5DeleteTerminalOutcome::Deleted(retirement.clone()))
+    }
 }
 
 fn validate_record(record: &V5StoredInvocationRecord) -> Result<(), V5TaskStoreError> {
@@ -577,6 +732,26 @@ fn validate_record(record: &V5StoredInvocationRecord) -> Result<(), V5TaskStoreE
     if record.updated_at_epoch_ms < record.created_at_epoch_ms {
         return Err(V5TaskStoreError::Corrupt(
             "task record timestamp moved backwards",
+        ));
+    }
+    let terminal_epoch_ms = match &record.task {
+        V5StoredTask::Completed {
+            terminal_epoch_ms, ..
+        }
+        | V5StoredTask::Failed {
+            terminal_epoch_ms, ..
+        }
+        | V5StoredTask::Cancelled {
+            terminal_epoch_ms, ..
+        } => Some(*terminal_epoch_ms),
+        V5StoredTask::Queued | V5StoredTask::Working => None,
+    };
+    if terminal_epoch_ms.is_some_and(|terminal_epoch_ms| {
+        terminal_epoch_ms < record.created_at_epoch_ms
+            || terminal_epoch_ms > record.updated_at_epoch_ms
+    }) {
+        return Err(V5TaskStoreError::Corrupt(
+            "task terminal timestamp is outside the record lifetime",
         ));
     }
     if let V5StoredTask::Completed { result, .. } = &record.task {
@@ -710,15 +885,17 @@ fn storage_error(operation: &'static str, error: io::Error) -> V5TaskStoreError 
 mod tests {
     use super::{FileInvocationStoreV5, PublicationFailure};
     use crate::application::invocation_store::EpochMillisClock;
+    use crate::application::invocation_store_v5::V5SafeFailureReason;
     use crate::application::invocation_store_v5::{
-        InvocationStoreV5, NewV5InvocationRecord, V5CommitOperation, V5StartWorkingOutcome,
-        V5StoredInvocationRecord, V5StoredInvocationSchemaVersion, V5StoredTask, V5TaskIdentity,
-        V5TaskMismatch, V5TaskStatus, V5TaskStoreError, MAX_V5_TASK_RECORDS,
+        InvocationStoreV5, NewV5InvocationRecord, V5CommitOperation, V5DeleteTerminalOutcome,
+        V5StartWorkingOutcome, V5StoredInvocationRecord, V5StoredInvocationSchemaVersion,
+        V5StoredTask, V5TaskIdentity, V5TaskMismatch, V5TaskRetirement, V5TaskStatus,
+        V5TaskStoreError, V5TerminalPublication, MAX_V5_TASK_RECORDS,
     };
-    use crate::application::receipt_ledger::{ReceiptKeyDigest, V5ToolIdentity};
+    use crate::application::receipt_ledger::{ReceiptKeyDigest, TerminalDigest, V5ToolIdentity};
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::invocation::{
-        InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId,
+        DomainResult, InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId,
     };
     use crate::infrastructure::platform::filesystem::{
         create_owner_only_directory_child, open_directory_nofollow, restrict_stage_to_owner,
@@ -769,6 +946,10 @@ mod tests {
 
     fn receipt_digest(byte: u8) -> ReceiptKeyDigest {
         ReceiptKeyDigest::from_str(&format!("{byte:02x}").repeat(32)).expect("receipt digest")
+    }
+
+    fn terminal_digest(byte: u8) -> TerminalDigest {
+        TerminalDigest::from_str(&format!("{byte:02x}").repeat(32)).expect("terminal digest")
     }
 
     fn new_record(
@@ -1080,5 +1261,304 @@ mod tests {
             }) if uncertain_id == task_id
         ));
         assert_eq!(store.get(task_id, deadline()).unwrap().task_id, task_id);
+    }
+
+    #[test]
+    fn completed_terminal_cas_reconciles_commit_uncertain_by_exact_readback() {
+        let root = tempfile::tempdir().expect("temporary v5 root");
+        let root_path = physical_root(&root);
+        let clock = Arc::new(ManualEpochClock::at(6_000));
+        let (store, _) =
+            FileInvocationStoreV5::open_inspect_only(&root_path, clock.clone(), deadline())
+                .unwrap();
+        let created = store
+            .create_exact(
+                new_record(
+                    task_id("15151515-1515-4515-8515-151515151515"),
+                    invocation_id("16161616-1616-4616-8616-161616161616"),
+                    0x0a,
+                ),
+                deadline(),
+            )
+            .unwrap();
+        let identity = created.identity();
+        let V5StartWorkingOutcome::Started(working) = store
+            .start_working_if_not_cancel_requested(&identity, 1, deadline())
+            .unwrap()
+        else {
+            panic!("task did not enter working");
+        };
+        clock.set(6_100);
+        let publication = V5TerminalPublication::Completed {
+            terminal_epoch_ms: 6_100,
+            terminal_digest: terminal_digest(0xaa),
+            result: Box::new(DomainResult::success("done")),
+        };
+        store.inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
+
+        assert!(matches!(
+            store.publish_terminal_exact(&identity, 2, publication.clone(), deadline()),
+            Err(V5TaskStoreError::CommitUncertain {
+                task_id: uncertain_id,
+                operation: V5CommitOperation::PublishTerminal,
+            }) if uncertain_id == created.task_id
+        ));
+        let visible = store.get(created.task_id, deadline()).unwrap();
+        assert_eq!(visible.version, 3);
+        assert_eq!(visible.updated_at_epoch_ms, 6_100);
+        assert_eq!(
+            visible.task,
+            V5StoredTask::Completed {
+                terminal_epoch_ms: 6_100,
+                terminal_digest: terminal_digest(0xaa),
+                result: Box::new(DomainResult::success("done")),
+            }
+        );
+        assert_eq!(
+            store
+                .publish_terminal_exact(&identity, working.version, publication, deadline())
+                .unwrap(),
+            visible,
+            "an exact retry after uncertain commit must read back the winner"
+        );
+    }
+
+    #[test]
+    fn terminal_cas_rejects_foreign_stale_invalid_state_and_different_winner() {
+        let root = tempfile::tempdir().expect("temporary v5 root");
+        let root_path = physical_root(&root);
+        let (store, _) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(7_000)),
+            deadline(),
+        )
+        .unwrap();
+        let created = store
+            .create_exact(
+                new_record(
+                    task_id("17171717-1717-4717-8717-171717171717"),
+                    invocation_id("18181818-1818-4818-8818-181818181818"),
+                    0x0b,
+                ),
+                deadline(),
+            )
+            .unwrap();
+        let identity = created.identity();
+        let foreign = V5TaskIdentity::new(
+            created.task_id,
+            invocation_id("19191919-1919-4919-8919-191919191919"),
+            created.receipt_key_digest.clone(),
+        );
+        let failed = V5TerminalPublication::Failed {
+            terminal_epoch_ms: 7_100,
+            terminal_digest: terminal_digest(0xbb),
+            reason: V5SafeFailureReason::InvocationFailed,
+        };
+
+        assert!(matches!(
+            store.publish_terminal_exact(&foreign, 1, failed.clone(), deadline()),
+            Err(V5TaskStoreError::Mismatch {
+                reason: V5TaskMismatch::Identity,
+                ..
+            })
+        ));
+        assert!(matches!(
+            store.publish_terminal_exact(&identity, 2, failed.clone(), deadline()),
+            Err(V5TaskStoreError::Mismatch {
+                reason: V5TaskMismatch::Version {
+                    expected: 2,
+                    actual: 1,
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            store.publish_terminal_exact(&identity, 1, failed, deadline()),
+            Err(V5TaskStoreError::Mismatch {
+                reason: V5TaskMismatch::State,
+                ..
+            })
+        ));
+        assert_eq!(store.get(created.task_id, deadline()).unwrap(), created);
+
+        let cancel_requested = store
+            .request_cancel_exact(&identity, 1, deadline())
+            .unwrap();
+        let cancelled = V5TerminalPublication::Cancelled {
+            terminal_epoch_ms: 7_200,
+            terminal_digest: terminal_digest(0xcc),
+        };
+        let terminal = store
+            .publish_terminal_exact(&identity, 2, cancelled.clone(), deadline())
+            .unwrap();
+        assert_eq!(terminal.version, 3);
+        assert!(terminal.cancel_requested);
+        assert_eq!(
+            terminal.task,
+            V5StoredTask::Cancelled {
+                terminal_epoch_ms: 7_200,
+                terminal_digest: terminal_digest(0xcc),
+            }
+        );
+        assert!(matches!(
+            store.publish_terminal_exact(
+                &identity,
+                cancel_requested.version,
+                V5TerminalPublication::Cancelled {
+                    terminal_epoch_ms: 7_200,
+                    terminal_digest: terminal_digest(0xdd),
+                },
+                deadline(),
+            ),
+            Err(V5TaskStoreError::Mismatch {
+                reason: V5TaskMismatch::State,
+                ..
+            })
+        ));
+        assert_eq!(store.get(created.task_id, deadline()).unwrap(), terminal);
+    }
+
+    #[test]
+    fn failed_terminal_publication_requires_working_and_persists_exact_reason() {
+        let root = tempfile::tempdir().expect("temporary v5 root");
+        let root_path = physical_root(&root);
+        let (store, _) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(8_000)),
+            deadline(),
+        )
+        .unwrap();
+        let created = store
+            .create_exact(
+                new_record(
+                    task_id("20202020-2020-4020-8020-202020202020"),
+                    invocation_id("21212121-2121-4121-8121-212121212121"),
+                    0x0c,
+                ),
+                deadline(),
+            )
+            .unwrap();
+        let identity = created.identity();
+        store
+            .start_working_if_not_cancel_requested(&identity, 1, deadline())
+            .unwrap();
+
+        let terminal = store
+            .publish_terminal_exact(
+                &identity,
+                2,
+                V5TerminalPublication::Failed {
+                    terminal_epoch_ms: 8_100,
+                    terminal_digest: terminal_digest(0xee),
+                    reason: V5SafeFailureReason::OutcomeUncertain,
+                },
+                deadline(),
+            )
+            .unwrap();
+        assert_eq!(terminal.version, 3);
+        assert_eq!(
+            terminal.task,
+            V5StoredTask::Failed {
+                terminal_epoch_ms: 8_100,
+                terminal_digest: terminal_digest(0xee),
+                reason: V5SafeFailureReason::OutcomeUncertain,
+            }
+        );
+    }
+
+    #[test]
+    fn terminal_retirement_is_exact_explicit_and_reconciles_absence_after_uncertain_delete() {
+        let root = tempfile::tempdir().expect("temporary v5 root");
+        let root_path = physical_root(&root);
+        let clock = Arc::new(ManualEpochClock::at(9_000));
+        let (store, _) =
+            FileInvocationStoreV5::open_inspect_only(&root_path, clock.clone(), deadline())
+                .unwrap();
+        let created = store
+            .create_exact(
+                new_record(
+                    task_id("22222222-2222-4222-8222-222222222222"),
+                    invocation_id("23232323-2323-4323-8323-232323232323"),
+                    0x0d,
+                ),
+                deadline(),
+            )
+            .unwrap();
+        let identity = created.identity();
+        store
+            .start_working_if_not_cancel_requested(&identity, 1, deadline())
+            .unwrap();
+        clock.set(9_100);
+        let terminal = store
+            .publish_terminal_exact(
+                &identity,
+                2,
+                V5TerminalPublication::Failed {
+                    terminal_epoch_ms: 9_100,
+                    terminal_digest: terminal_digest(0xf0),
+                    reason: V5SafeFailureReason::PersistenceFailed,
+                },
+                deadline(),
+            )
+            .unwrap();
+        let retirement = V5TaskRetirement::from_terminal_record(&terminal)
+            .expect("terminal record creates retirement proof");
+        assert!(V5TaskRetirement::from_terminal_record(&created).is_none());
+
+        assert!(matches!(
+            store.delete_terminal_if_expired(
+                &retirement,
+                terminal.updated_at_epoch_ms + terminal.ttl_ms - 1,
+                deadline(),
+            ),
+            Err(V5TaskStoreError::Mismatch {
+                reason: V5TaskMismatch::State,
+                ..
+            })
+        ));
+        let mut stale_terminal = terminal.clone();
+        stale_terminal.version = 2;
+        let stale = V5TaskRetirement::from_terminal_record(&stale_terminal).unwrap();
+        assert!(matches!(
+            store.delete_terminal_if_expired(
+                &stale,
+                terminal.updated_at_epoch_ms + terminal.ttl_ms,
+                deadline(),
+            ),
+            Err(V5TaskStoreError::Mismatch {
+                reason: V5TaskMismatch::Version {
+                    expected: 2,
+                    actual: 3,
+                },
+                ..
+            })
+        ));
+
+        store.inject_next_publication_failure(PublicationFailure::AfterDeleteBeforeSync);
+        assert!(matches!(
+            store.delete_terminal_if_expired(
+                &retirement,
+                terminal.updated_at_epoch_ms + terminal.ttl_ms,
+                deadline(),
+            ),
+            Err(V5TaskStoreError::CommitUncertain {
+                task_id: uncertain_id,
+                operation: V5CommitOperation::DeleteTerminal,
+            }) if uncertain_id == created.task_id
+        ));
+        assert!(matches!(
+            store.get(created.task_id, deadline()),
+            Err(V5TaskStoreError::NotFound { .. })
+        ));
+        assert_eq!(
+            store
+                .delete_terminal_if_expired(
+                    &retirement,
+                    terminal.updated_at_epoch_ms + terminal.ttl_ms,
+                    deadline(),
+                )
+                .unwrap(),
+            V5DeleteTerminalOutcome::AlreadyAbsent(retirement)
+        );
     }
 }
