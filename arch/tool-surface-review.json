@@ -2,10 +2,11 @@
   "unica.view": {
     "result": {
       "contract": "typed",
-      "now": "`data` содержит типизированную проекцию логического узла; поддержаны квалифицированный `at`, базовое чтение, revision, bounded cursor и закрытые секции `props`/`branches`/`can`/`limits`/`items`",
+      "now": "Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, readiness и setup; с квалифицированным `at` содержит типизированную проекцию логического узла, revision, bounded cursor и закрытые секции `props`/`branches`/`can`/`limits`/`items`",
       "target": "Расширять проекции через закрытые `filter`, не возвращая физические пути"
     },
     "scenarios": [
+      "Обнаружить workspace и получить точный рецепт v8project.yaml до source admission",
       "Прочитать конфигурацию или объект метаданных по квалифицированному адресу",
       "Получить наблюдаемую структуру узла и revision для последующей проверки"
     ],

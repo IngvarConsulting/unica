@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 #[derive(Debug)]
 pub(crate) struct V13ToolContract {
     pub(crate) name: &'static str,
+    pub(crate) description: &'static str,
     pub(crate) input_schema: Value,
 }
 
@@ -96,102 +97,111 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
             tools: vec![
                 V13ToolContract {
                     name: "view",
+                    description: "Inspect the workspace with no arguments, or read one logical 1C node by address.",
                     input_schema: schema(
                         json!({
                             "at": logical_address(),
-                            "filter": data_object(),
-                            "limit": limit(),
-                            "cursor": cursor(),
+                            "filter": data_object("Optional projection such as sections; valid only with at."),
+                            "limit": limit("Maximum child items to return; valid only with at."),
+                            "cursor": cursor("Continuation cursor from an earlier addressed view."),
                         }),
-                        json!(["at"]),
+                        json!([]),
                     ),
                 },
                 V13ToolContract {
                     name: "apply",
+                    description: "Preview or atomically apply typed edits to one logically addressed 1C node.",
                     input_schema: schema(
                         json!({
                             "at": logical_address(),
                             "ops": {
                                 "type": "array",
+                                "description": "Ordered operations advertised by the target node's can data.",
                                 "minItems": 1,
                                 "items": {
                                     "type": "object",
                                     "additionalProperties": false,
                                     "properties": {
-                                        "op": {"type": "string"},
-                                        "args": data_object(),
+                                        "op": {"type": "string", "description": "Operation name from the target node's can data."},
+                                        "args": data_object("Arguments for this typed operation."),
                                     },
                                     "required": ["op"],
                                 },
                             },
-                            "dryRun": {"type": "boolean", "default": false},
-                            "ifRev": {"type": "string"},
+                            "dryRun": {"type": "boolean", "description": "Validate and return the plan without publishing when true.", "default": false},
+                            "ifRev": {"type": "string", "description": "Optional revision fence from an earlier read."},
                         }),
                         json!(["at", "ops"]),
                     ),
                 },
                 V13ToolContract {
                     name: "find",
+                    description: "Resolve a human query to canonical logical address candidates.",
                     input_schema: schema(
                         json!({
-                            "query": {"type": "string"},
-                            "kind": {"type": "string"},
-                            "limit": limit(),
+                            "query": {"type": "string", "description": "Object name or address fragment to resolve."},
+                            "kind": {"type": "string", "description": "Optional logical kind such as Catalog or CommonModule."},
+                            "limit": limit("Maximum address candidates to return."),
                         }),
                         json!(["query"]),
                     ),
                 },
                 V13ToolContract {
                     name: "search",
+                    description: "Search BSL content or symbols, optionally under one logical subtree.",
                     input_schema: schema(
                         json!({
-                            "query": {"type": "string"},
+                            "query": {"type": "string", "description": "Literal BSL text or symbol to search for."},
                             "scope": logical_subtree_address(),
-                            "regex": {"type": "boolean", "default": false},
-                            "limit": limit(),
+                            "regex": {"type": "boolean", "description": "Request regex matching; currently only false is implemented.", "default": false},
+                            "limit": limit("Maximum matches to return."),
                         }),
                         json!(["query"]),
                     ),
                 },
                 V13ToolContract {
                     name: "check",
+                    description: "Confirm workspace source-set admission, or validate one logical node's readability.",
                     input_schema: schema(
                         json!({
                             "at": logical_address(),
-                            "filter": data_object(),
+                            "filter": data_object("Optional validation profile; requires at."),
                         }),
                         json!([]),
                     ),
                 },
                 V13ToolContract {
                     name: "diff",
+                    description: "Compare two readable logical nodes of the same kind without changing files.",
                     input_schema: schema(
                         json!({
-                            "left": logical_address(),
-                            "right": logical_address(),
-                            "filter": data_object(),
-                            "limit": limit(),
-                            "cursor": cursor(),
+                            "left": logical_address_with("Qualified logical address of the left node."),
+                            "right": logical_address_with("Qualified logical address of the right node."),
+                            "filter": data_object("Optional projection applied before comparison."),
+                            "limit": limit("Maximum differences to return."),
+                            "cursor": cursor("Continuation cursor from an earlier diff."),
                         }),
                         json!(["left", "right"]),
                     ),
                 },
                 V13ToolContract {
                     name: "run",
+                    description: "List canonical runtime operations, or execute one implemented operation.",
                     input_schema: schema(
                         json!({
-                            "op": {"type": "string"},
-                            "args": data_object(),
+                            "op": {"type": "string", "description": "Canonical operation name; omit to list operation status."},
+                            "args": data_object("Typed arguments for the selected operation."),
                         }),
                         json!([]),
                     ),
                 },
                 V13ToolContract {
                     name: "docs",
+                    description: "Search bundled Unica and safe 1C documentation by topic.",
                     input_schema: schema(
                         json!({
-                            "query": {"type": "string"},
-                            "source": {"type": "string"},
+                            "query": {"type": "string", "description": "Documentation question or search phrase."},
+                            "source": {"type": "string", "description": "Optional documented source kind, not a provider identity."},
                         }),
                         json!(["query"]),
                     ),
@@ -227,23 +237,27 @@ fn schema(properties: Value, required: Value) -> Value {
 }
 
 fn logical_address() -> Value {
-    json!({"type": "string", "description": "qualified logical address"})
+    logical_address_with("Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed.")
+}
+
+fn logical_address_with(description: &'static str) -> Value {
+    json!({"type": "string", "description": description})
 }
 
 fn logical_subtree_address() -> Value {
     json!({"type": "string", "description": "logical subtree address"})
 }
 
-fn data_object() -> Value {
-    json!({"type": "object"})
+fn data_object(description: &'static str) -> Value {
+    json!({"type": "object", "description": description})
 }
 
-fn limit() -> Value {
-    json!({"type": "integer", "minimum": 1})
+fn limit(description: &'static str) -> Value {
+    json!({"type": "integer", "description": description, "minimum": 1})
 }
 
-fn cursor() -> Value {
-    json!({"type": "string"})
+fn cursor(description: &'static str) -> Value {
+    json!({"type": "string", "description": description})
 }
 
 fn run_dictionary() -> Vec<RunOperation> {
@@ -286,7 +300,7 @@ fn result_envelope_schema() -> Value {
             "artifacts": {"type": "array", "minItems": 1, "items": {}},
             "next": {"type": "array", "minItems": 1, "items": {}},
             "rev": {"type": "string"},
-            "cursor": cursor(),
+            "cursor": cursor("Opaque continuation cursor issued by this result stream."),
         },
         "required": ["ok", "summary"],
     })
@@ -368,9 +382,12 @@ mod tests {
 
     fn assert_data_object(value: &Value, location: &str) {
         assert_eq!(
-            value,
-            &json!({"type": "object"}),
+            value["type"], "object",
             "{location} must remain an unconstrained shallow data object"
+        );
+        assert!(
+            value.get("properties").is_none(),
+            "{location} must remain shallow"
         );
     }
 
@@ -397,7 +414,7 @@ mod tests {
         assert_schema(
             &catalog.tools,
             "view",
-            json!(["at"]),
+            json!([]),
             &["at", "filter", "limit", "cursor"],
         );
         assert_schema(
@@ -657,6 +674,35 @@ mod tests {
                 output["properties"][slot]["minItems"], 1,
                 "empty `{slot}` must be omitted rather than serialized"
             );
+        }
+    }
+
+    #[test]
+    fn canonical_arguments_are_described_within_wire_budget() {
+        fn assert_described(location: &str, schema: &Value) {
+            let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+                return;
+            };
+            for (name, property) in properties {
+                let field = format!("{location}.{name}");
+                let description = property
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                assert!(
+                    !description.trim().is_empty(),
+                    "published argument `{field}` has no model-facing description"
+                );
+                assert_described(&field, property);
+                if let Some(items) = property.get("items") {
+                    assert_described(&format!("{field}[]"), items);
+                }
+            }
+        }
+
+        let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog");
+        for tool in &catalog.tools {
+            assert_described(&format!("unica.{}", tool.name), &tool.input_schema);
         }
     }
 

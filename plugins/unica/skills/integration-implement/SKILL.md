@@ -7,7 +7,7 @@ description: "Реализация интеграций 1С. Используй 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.code.search`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.code.search`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -24,7 +24,7 @@ description: "Реализация интеграций 1С. Используй 
 
 1. Define the contract first: endpoint, method, auth, payload schema, idempotency key, retries, timeout, and error response shape.
 2. Inspect existing integration modules and HTTP/web service metadata with `unica.code.search` and `unica.meta.info`.
-3. Create or edit metadata through `unica.meta.add` / `unica.meta.edit`; keep source-set and format selected by `unica.project.map`.
+3. Create or edit metadata through `unica.meta.add` / `unica.meta.edit`; keep source-set and format selected by `unica.view {}`.
 4. Put reusable logic in common modules; keep HTTP service handlers thin and explicit about request parsing, validation, and response codes.
 5. Handle secrets outside versioned modules and configs. Do not log tokens, passwords, full request bodies with personal data, or raw auth headers.
 6. Use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them and report runtime verification as unavailable; for live HTTP behavior require a user-provided debug URL and external evidence, because `autonomous-server` cannot currently launch through this contract.

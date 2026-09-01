@@ -24,7 +24,7 @@ runtime workflows whose typed arguments can currently only be previewed by
 ## Primary path
 
 Before selecting XML metadata tools, inspect the project with
-`unica.project.map` and choose the target source-set. Native metadata tools work
+`unica.view {}` and choose the target source-set. Native metadata tools work
 with platform XML source-sets (`sourceFormat=platform_xml`). If the selected
 source-set is EDT (`sourceFormat=edt`), do not apply platform XML edits directly;
 preview the intended runtime conversion/build arguments with `dryRun: true`, or

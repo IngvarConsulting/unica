@@ -7,7 +7,7 @@ description: "Проектирование тестов 1С и preview кома�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.project.map`, `unica.runtime.execute`, and the relevant `unica.*.info` tools.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.view {}`, `unica.runtime.execute`, and the relevant `unica.*.info` tools.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в

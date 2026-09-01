@@ -233,6 +233,8 @@ fn drain_mcp_shutdown_with(
 /// рассказать о ней может лишь тот, кого запустили следом.
 const STARTUP_NOTICE_ENV: &str = "UNICA_STARTUP_NOTICE";
 
+const CANONICAL_INSTRUCTIONS: &str = "Start with unica.view using an empty object when the workspace or logical address is unknown. Use returned addresses instead of guessing at. A qualified logical address has the form <sourceSet>:<Kind>[.<Name>...]. Use unica.check to confirm source-set admission or logical-node readability.";
+
 pub struct UnicaServer {
     router: SurfaceToolRouter,
     in_flight: Arc<InFlightRegistry>,
@@ -624,7 +626,13 @@ fn v13_tool_definitions(profile: V13TaskProfile) -> &'static [Tool] {
         let mut tools = catalog
             .tools
             .into_iter()
-            .map(|contract| v13_tool_definition(contract.name, None, contract.input_schema))
+            .map(|contract| {
+                v13_tool_definition(
+                    contract.name,
+                    Some(contract.description),
+                    contract.input_schema,
+                )
+            })
             .collect::<Vec<_>>();
         if profile == V13TaskProfile::Compatibility {
             tools.extend(
@@ -714,12 +722,13 @@ impl ServerHandler for UnicaServer {
         let info = InitializeResult::new(capabilities)
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(Implementation::new("unica", env!("CARGO_PKG_VERSION")));
-        // Что осталось от убитого запуска, уходит обычным ответом: своего
-        // провода у него не было, а этот — первый, который вообще есть.
-        match &self.startup_notice {
-            Some(notice) => info.with_instructions(notice.clone()),
-            None => info,
-        }
+        // Что осталось от убитого запуска, дополняет стабильный маршрут первого
+        // вызова: notice не должен стирать инструкцию дискавери и наоборот.
+        let instructions = match &self.startup_notice {
+            Some(notice) => format!("{CANONICAL_INSTRUCTIONS}\n\nStartup notice: {notice}"),
+            None => CANONICAL_INSTRUCTIONS.to_string(),
+        };
+        info.with_instructions(instructions)
     }
 
     async fn initialize(
@@ -1404,6 +1413,35 @@ mod tests {
     }
 
     #[test]
+    fn canonical_tools_are_described_within_wire_budget() {
+        let tools = v13_tool_definitions(V13TaskProfile::Compatibility);
+        for tool in tools {
+            let description = tool.description.as_deref().unwrap_or_default();
+            assert!(
+                !description.trim().is_empty(),
+                "{} has no model-facing description",
+                tool.name
+            );
+            assert!(
+                description.len() <= 2 * 1024,
+                "{} description exceeds the 2 KiB client limit",
+                tool.name
+            );
+        }
+        let wire = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"tools": tools},
+        }))
+        .expect("tools/list response serializes");
+        assert!(
+            wire.len() <= 16 * 1024,
+            "compatibility tools/list response is {} bytes",
+            wire.len()
+        );
+    }
+
+    #[test]
     fn surface_release_structurally_gates_v12_legacy_dispatch_from_v13_daemon_dispatch() {
         use std::sync::atomic::AtomicUsize;
 
@@ -1729,15 +1767,19 @@ mod tests {
             Some(notice.to_owned()),
         );
 
-        assert_eq!(server.get_info().instructions.as_deref(), Some(notice));
+        let instructions = server.get_info().instructions.expect("instructions");
+        assert!(instructions.contains("unica.view"), "{instructions}");
+        assert!(instructions.contains("sourceSet"), "{instructions}");
+        assert!(instructions.contains(notice), "{instructions}");
     }
 
     #[test]
-    fn a_session_with_nothing_to_report_carries_no_instructions() {
-        // Обычная сессия платит за это ноль байтов поверхности.
+    fn a_session_without_notice_still_carries_bootstrap_instructions() {
         let server = UnicaServer::legacy_with_startup_notice_for_test(application_handler(), None);
 
-        assert_eq!(server.get_info().instructions, None);
+        let instructions = server.get_info().instructions.expect("instructions");
+        assert!(instructions.contains("unica.view"), "{instructions}");
+        assert!(instructions.contains("sourceSet"), "{instructions}");
     }
 
     #[test]

@@ -7,7 +7,7 @@ description: "Поддержка поставки и обновлений 1С. �
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.cf.info`, `unica.cfe.diff`, `unica.meta.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.cf.info`, `unica.cfe.diff`, `unica.meta.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -33,7 +33,7 @@ Support-state checks come from `unica.cf.info` and object-level `unica.meta.info
 ## Workflow
 
 1. Identify release scope: vendor update, extension change, merge branch, support-state change, hotfix, migration, or integration contract change.
-2. Map source-sets with `unica.project.map`; inspect configuration and extensions with `unica.cf.info`, `unica.cfe.diff`, `unica.meta.info`, and `unica.code.search`.
+2. Map source-sets with `unica.view {}`; inspect configuration and extensions with `unica.cf.info`, `unica.cfe.diff`, `unica.meta.info`, and `unica.code.search`.
 3. List compatibility risks: metadata rename/delete, changed roles, changed integration contracts, data migrations, scheduled jobs, query behavior, BSP hooks, and extension interceptors.
 4. Run `unica.code.diagnostics`; then use `unica.runtime.execute` only to preview typed syntax/test/build/update arguments and record all runtime checks as unverified unless separate evidence is supplied.
 5. Produce a release readiness note: blocking findings, migration steps, rollback boundary, manual checks, and Unica MCP contract gaps.

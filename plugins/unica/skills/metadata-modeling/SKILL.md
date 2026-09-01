@@ -7,7 +7,7 @@ description: "Моделирование метаданных 1С. Исполь�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.cf.info`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.subsystem.info`, `unica.code.search`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.cf.info`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.subsystem.info`, `unica.code.search`, `unica.code.diagnostics`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в

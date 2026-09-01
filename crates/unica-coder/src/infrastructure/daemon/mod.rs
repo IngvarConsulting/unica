@@ -11,6 +11,7 @@ mod v13_read_modes;
 #[allow(dead_code)]
 mod v13_service;
 mod v13_syntax_run;
+mod v13_workspace_bootstrap;
 
 #[cfg(test)]
 mod tests {

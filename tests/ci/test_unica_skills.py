@@ -390,7 +390,7 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.code.definition",
         "unica.code.diagnostics",
-        "unica.project.map",
+        "unica.view",
         "unica.subsystem.info",
         "unica.meta.info",
         "unica.standards.search",
@@ -402,7 +402,7 @@ SCENARIO_SKILLS = {
         "unica.code.definition",
         "unica.code.outline",
         "unica.meta.info",
-        "unica.project.map",
+        "unica.view",
     ],
     "code-diagnostics": [
         "unica.code.diagnostics",
@@ -419,7 +419,7 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.standards.explain",
         "unica.standards.search",
-        "unica.project.map",
+        "unica.view",
         "unica.runtime.execute",
     ],
     "query-optimize": [
@@ -433,12 +433,12 @@ SCENARIO_SKILLS = {
     ],
     "test-authoring": [
         "unica.code.search",
-        "unica.project.map",
+        "unica.view",
         "unica.runtime.execute",
     ],
     "platform-help": [
         "unica.code.search",
-        "unica.project.map",
+        "unica.view",
         "unica.runtime.execute",
     ],
     "bsp-patterns": [
@@ -451,7 +451,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "integration-implement": [
-        "unica.project.map",
+        "unica.view",
         "unica.meta.info",
         "unica.meta.add",
         "unica.meta.edit",
@@ -461,7 +461,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "autonomous-server": [
-        "unica.project.map",
+        "unica.view",
         "unica.runtime.execute",
         "unica.meta.info",
         "unica.code.search",
@@ -470,13 +470,13 @@ SCENARIO_SKILLS = {
     "log-analysis": [
         "unica.code.search",
         "unica.meta.info",
-        "unica.project.map",
+        "unica.view",
         "unica.code.diagnostics",
         "unica.standards.search",
         "unica.standards.explain",
     ],
     "background-jobs": [
-        "unica.project.map",
+        "unica.view",
         "unica.code.search",
         "unica.meta.info",
         "unica.code.diagnostics",
@@ -485,7 +485,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "data-exchange": [
-        "unica.project.map",
+        "unica.view",
         "unica.code.search",
         "unica.meta.info",
         "unica.code.diagnostics",
@@ -494,7 +494,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "db-performance": [
-        "unica.project.map",
+        "unica.view",
         "unica.code.search",
         "unica.code.outline",
         "unica.meta.info",
@@ -505,7 +505,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "security-auth-crypto": [
-        "unica.project.map",
+        "unica.view",
         "unica.code.search",
         "unica.meta.info",
         "unica.role.info",
@@ -515,7 +515,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "data-separation": [
-        "unica.project.map",
+        "unica.view",
         "unica.code.search",
         "unica.meta.info",
         "unica.role.info",
@@ -525,7 +525,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "release-support": [
-        "unica.project.map",
+        "unica.view",
         "unica.code.search",
         "unica.cf.info",
         "unica.cfe.diff",
@@ -543,7 +543,7 @@ SCENARIO_SKILLS = {
         "unica.source.locate",
     ],
     "document-posting": [
-        "unica.project.map",
+        "unica.view",
         "unica.meta.info",
         "unica.meta.edit",
         "unica.code.definition",
@@ -553,7 +553,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "register-design": [
-        "unica.project.map",
+        "unica.view",
         "unica.meta.info",
         "unica.meta.add",
         "unica.meta.edit",
@@ -563,7 +563,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "object-events": [
-        "unica.project.map",
+        "unica.view",
         "unica.meta.info",
         "unica.code.search",
         "unica.code.definition",
@@ -574,7 +574,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "form-events": [
-        "unica.project.map",
+        "unica.view",
         "unica.form.info",
         "unica.form.edit",
         "unica.meta.info",
@@ -584,7 +584,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "module-placement": [
-        "unica.project.map",
+        "unica.view",
         "unica.meta.info",
         "unica.meta.add",
         "unica.subsystem.info",
@@ -594,7 +594,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "metadata-modeling": [
-        "unica.project.map",
+        "unica.view",
         "unica.cf.info",
         "unica.meta.info",
         "unica.meta.add",
@@ -604,7 +604,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "transactions-locks": [
-        "unica.project.map",
+        "unica.view",
         "unica.code.search",
         "unica.code.outline",
         "unica.code.graph",
@@ -614,7 +614,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "object-locks": [
-        "unica.project.map",
+        "unica.view",
         "unica.code.search",
         "unica.code.graph",
         "unica.code.patch",
@@ -3118,7 +3118,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         }
         joined = "\n".join(path.read_text(encoding="utf-8") for path in docs.values())
 
-        self.assertIn("unica.project.map", joined)
+        self.assertIn("unica.view", joined)
         self.assertIn("sourceSets[]", joined)
         self.assertIn("sourceFormat", joined)
         self.assertIn("platform_xml", joined)
@@ -3151,7 +3151,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         joined = reference + "\n" + skill
 
         for token in (
-            "unica.project.status",
+            "unica.view {}",
             "ready",
             "repositoryReady",
             "remediation",
@@ -3160,7 +3160,8 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             self.assertIn(token, joined)
         self.assertIn("does not mean Unica is unusable without Git", joined)
         self.assertIn("never execute them automatically", joined)
-        self.assertIn("call `unica.project.status` again", joined)
+        self.assertIn("call `unica.view {}` again", joined)
+        self.assertNotIn("it does not inspect repository health", joined)
 
     def test_references_do_not_contain_stale_upstream_instructions(self) -> None:
         forbidden_patterns = [

@@ -105,7 +105,7 @@ new argument of `unica.runtime.execute`.
 
 ## Source-set format discovery
 
-Use MCP `unica.project.map` to inspect configured source-sets before choosing a
+Use MCP `unica.view {}` to inspect configured source-sets before choosing a
 metadata operation. It returns `sourceSets[]` where each entry has `kind`,
 `path`, `sourceFormat`, and `formatEvidence`.
 

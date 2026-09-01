@@ -53,7 +53,7 @@ description: "Поиск и применение паттернов БСП. Ис
     "name": "unica.code.search",
     "arguments": {
       "cwd": "<workspace>",
-      "sourceSet": "<source-set-from-project-map>",
+      "sourceSet": "<source-set-from-unica-view>",
       "query": "СведенияОВнешнейОбработке",
       "limit": 20
     }
