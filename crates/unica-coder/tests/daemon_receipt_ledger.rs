@@ -2424,7 +2424,7 @@ fn execute(scenario: Scenario) -> ScenarioReport {
     let request = serde_json::to_string(&scenario)
         .unwrap_or_else(|_| panic!("HARNESS FAILURE: scenario_encode"));
     let response = execute_scenario_json(&request)
-        .unwrap_or_else(|_| panic!("HARNESS FAILURE: bridge_transport"));
+        .unwrap_or_else(|error| panic!("HARNESS FAILURE: bridge_transport: {error}"));
     assert!(
         response.len() <= MAX_SCENARIO_REPORT_BYTES,
         "HARNESS FAILURE: facade_envelope_too_large bytes={}",

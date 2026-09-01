@@ -527,6 +527,14 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
     ) -> Result<ReceiptState, ReceiptLedgerError> {
         self.recover(key, deadline)
     }
+
+    fn resolve_task(
+        &mut self,
+        _task_id: TaskId,
+        _deadline: Instant,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
 }
 
 impl CoreIdentityDigest {
@@ -911,6 +919,66 @@ pub(crate) struct ReceiptTaskProjection {
     ttl_ms: u64,
     poll_interval_ms: u64,
     version: u64,
+}
+
+impl ReceiptTaskProjection {
+    pub(crate) fn new(
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        version: u64,
+    ) -> Result<Self, ReceiptLedgerError> {
+        if updated_at_epoch_ms < created_at_epoch_ms {
+            return Err(ReceiptLedgerError::Corrupt(
+                "Task projection timestamp moved backwards",
+            ));
+        }
+        if ttl_ms == 0 || poll_interval_ms == 0 || version == 0 {
+            return Err(ReceiptLedgerError::Corrupt(
+                "Task projection requires nonzero TTL, poll interval, and version",
+            ));
+        }
+        Ok(Self {
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            version,
+        })
+    }
+
+    pub(crate) const fn task_id(&self) -> TaskId {
+        self.task_id
+    }
+
+    pub(crate) const fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
+    }
+
+    pub(crate) const fn created_at_epoch_ms(&self) -> u64 {
+        self.created_at_epoch_ms
+    }
+
+    pub(crate) const fn updated_at_epoch_ms(&self) -> u64 {
+        self.updated_at_epoch_ms
+    }
+
+    pub(crate) const fn ttl_ms(&self) -> u64 {
+        self.ttl_ms
+    }
+
+    pub(crate) const fn poll_interval_ms(&self) -> u64 {
+        self.poll_interval_ms
+    }
+
+    pub(crate) const fn version(&self) -> u64 {
+        self.version
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1435,6 +1503,81 @@ pub(crate) struct TaskTerminalReceiptBackedReceipt {
     reserved_result_bytes: u64,
 }
 
+impl TaskTerminalReceiptBackedReceipt {
+    pub(crate) fn new(
+        record: ReceiptRecordHeader,
+        task: ReceiptTaskProjection,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        cancel_requested: bool,
+        reserved_result_bytes: u64,
+    ) -> Result<Self, ReceiptLedgerError> {
+        if task.task_id() != record.key.reserved_task_id()
+            || task.invocation_id() != record.key.invocation_id()
+            || task.updated_at_epoch_ms() != terminal_epoch_ms
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "receipt-backed Task projection contradicts its receipt identity or terminal epoch",
+            ));
+        }
+        terminal_epoch_ms
+            .checked_add(task.ttl_ms())
+            .ok_or(ReceiptLedgerError::TimestampOverflow)?;
+        Ok(Self {
+            record,
+            task,
+            terminal_epoch_ms,
+            terminal,
+            cancel_requested,
+            reserved_result_bytes,
+        })
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        &self.record.key
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        &self.record.key_digest
+    }
+
+    pub(crate) fn task(&self) -> &ReceiptTaskProjection {
+        &self.task
+    }
+
+    pub(crate) const fn terminal_epoch_ms(&self) -> u64 {
+        self.terminal_epoch_ms
+    }
+
+    pub(crate) fn terminal(&self) -> &V5CanonicalTerminal {
+        &self.terminal
+    }
+
+    pub(crate) const fn cancel_requested(&self) -> bool {
+        self.cancel_requested
+    }
+
+    pub(crate) fn expires_at_epoch_ms(&self) -> u64 {
+        self.terminal_epoch_ms + self.task.ttl_ms()
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.record.encoded_bytes
+    }
+
+    pub(crate) const fn record_version(&self) -> ReceiptVersion {
+        self.record.record_version
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        self.record.mutation_sequence
+    }
+
+    pub(crate) const fn reserved_result_bytes(&self) -> u64 {
+        self.reserved_result_bytes
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TaskBoundReceipt {
     record: LifecycleLinkRecordHeader,
@@ -1778,7 +1921,6 @@ impl ReceiptTerminalBinding {
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct PreparedReceiptRecord {
     binding: ReceiptTerminalBinding,
     bytes: Box<[u8]>,
@@ -1843,26 +1985,6 @@ impl PreparedReceiptRecord {
 
     pub(crate) fn terminal(&self) -> &V5CanonicalTerminal {
         &self.terminal
-    }
-
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        ReceiptTerminalBinding,
-        Box<[u8]>,
-        u64,
-        u64,
-        ArtifactSha256,
-        V5CanonicalTerminal,
-    ) {
-        (
-            self.binding,
-            self.bytes,
-            self.encoded_bytes,
-            self.reserved_result_bytes,
-            self.sha256,
-            self.terminal,
-        )
     }
 }
 

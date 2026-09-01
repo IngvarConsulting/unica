@@ -8,6 +8,7 @@ use super::protocol_v5::{
 };
 use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
 use crate::application::receipt_ledger::{ReceiptKey, TerminalDigest};
+use crate::domain::invocation::TaskId;
 use crate::infrastructure::platform::ManagedStartupChild;
 use std::io::{self, BufReader, Write};
 use std::net::TcpStream;
@@ -404,6 +405,18 @@ impl V5DaemonProcessOwner {
             },
             "acknowledge invocation receipt",
         )
+    }
+
+    pub(crate) fn get_task(&mut self, task_id: TaskId) -> Result<V5ServerResponse, String> {
+        self.exchange(V5ClientRequest::GetTask { task_id }, "get task")
+    }
+
+    pub(crate) fn wait_task(
+        &mut self,
+        task_id: TaskId,
+        wait_ms: u64,
+    ) -> Result<V5ServerResponse, String> {
+        self.exchange(V5ClientRequest::WaitTask { task_id, wait_ms }, "wait task")
     }
 
     #[allow(dead_code)]

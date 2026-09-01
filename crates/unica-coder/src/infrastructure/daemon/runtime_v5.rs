@@ -962,6 +962,79 @@ impl V5ReceiptRuntime {
         ))
     }
 
+    fn resolve_task(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
+        let state = self.receipt_ledger.resolve_task(task_id, deadline)?;
+        let ReceiptState::TaskTerminalReceiptBacked(receipt) = state else {
+            return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
+        };
+        let task = receipt.task();
+        let common = (
+            task.task_id(),
+            task.invocation_id(),
+            receipt.key_digest().clone(),
+            task.created_at_epoch_ms(),
+            task.updated_at_epoch_ms(),
+            task.ttl_ms(),
+            task.poll_interval_ms(),
+            task.version(),
+            receipt.cancel_requested(),
+        );
+        let snapshot = match receipt.terminal().outcome() {
+            crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed { result } => {
+                super::protocol_v5::V5DaemonTaskSnapshot::Completed {
+                    task_id: common.0,
+                    invocation_id: common.1,
+                    receipt_key_digest: common.2,
+                    created_at_epoch_ms: common.3,
+                    updated_at_epoch_ms: common.4,
+                    ttl_ms: common.5,
+                    poll_interval_ms: common.6,
+                    version: common.7,
+                    cancel_requested: common.8,
+                    terminal_epoch_ms: receipt.terminal_epoch_ms(),
+                    terminal_digest: receipt.terminal().digest().clone(),
+                    result: result.clone(),
+                }
+            }
+            crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed { reason } => {
+                super::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                    task_id: common.0,
+                    invocation_id: common.1,
+                    receipt_key_digest: common.2,
+                    created_at_epoch_ms: common.3,
+                    updated_at_epoch_ms: common.4,
+                    ttl_ms: common.5,
+                    poll_interval_ms: common.6,
+                    version: common.7,
+                    cancel_requested: common.8,
+                    terminal_epoch_ms: receipt.terminal_epoch_ms(),
+                    terminal_digest: receipt.terminal().digest().clone(),
+                    reason: *reason,
+                }
+            }
+            crate::application::receipt_ledger::ReceiptTerminalOutcome::Cancelled => {
+                super::protocol_v5::V5DaemonTaskSnapshot::Cancelled {
+                    task_id: common.0,
+                    invocation_id: common.1,
+                    receipt_key_digest: common.2,
+                    created_at_epoch_ms: common.3,
+                    updated_at_epoch_ms: common.4,
+                    ttl_ms: common.5,
+                    poll_interval_ms: common.6,
+                    version: common.7,
+                    cancel_requested: common.8,
+                    terminal_epoch_ms: receipt.terminal_epoch_ms(),
+                    terminal_digest: receipt.terminal().digest().clone(),
+                }
+            }
+        };
+        Ok(snapshot)
+    }
+
     fn reply_for_existing_state(
         &self,
         state: ReceiptState,
@@ -1474,6 +1547,36 @@ fn handle_probe_connection(
                     &mut stream,
                     runtime,
                     V5DaemonErrorCode::InvalidRequest,
+                    deadlines.response,
+                ),
+                Err(error) => write_runtime_ledger_error_before(
+                    &mut stream,
+                    runtime,
+                    &error,
+                    deadlines.response,
+                ),
+            }
+        }
+        V5ClientRequestKind::GetTask
+        | V5ClientRequestKind::WaitTask
+        | V5ClientRequestKind::CancelTask => {
+            let task_id = match decoded.into_request() {
+                V5ClientRequest::GetTask { task_id }
+                | V5ClientRequest::WaitTask { task_id, .. }
+                | V5ClientRequest::CancelTask { task_id } => task_id,
+                _ => unreachable!("request kind and decoded Task variant diverged"),
+            };
+            match runtime.resolve_task(task_id, deadlines.operation) {
+                Ok(snapshot) => write_runtime_json_line_before(
+                    &mut stream,
+                    runtime,
+                    &V5ServerResponse::Task { snapshot },
+                    deadlines.response,
+                ),
+                Err(ReceiptLedgerError::ReceiptNotFound) => write_runtime_probe_error_before(
+                    &mut stream,
+                    runtime,
+                    V5DaemonErrorCode::TaskNotFound,
                     deadlines.response,
                 ),
                 Err(error) => write_runtime_ledger_error_before(

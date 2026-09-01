@@ -256,6 +256,11 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<ReceiptState>>,
     },
+    ResolveTask {
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+        ticket: Arc<Ticket<ReceiptState>>,
+    },
 }
 
 enum TicketState<R> {
@@ -420,6 +425,7 @@ enum TimeoutClass {
     AcknowledgeDirect(ReceiptKeyDigest),
     ReclaimExpiredTombstones,
     Recover,
+    ResolveTask,
 }
 
 impl TimeoutClass {
@@ -437,6 +443,7 @@ impl TimeoutClass {
             }
             Self::ReclaimExpiredTombstones => ReceiptLedgerError::StoreUnavailable,
             Self::Recover => ReceiptLedgerError::StoreUnavailable,
+            Self::ResolveTask => ReceiptLedgerError::StoreUnavailable,
         }
     }
 }
@@ -651,6 +658,34 @@ impl ReceiptLedgerActor {
             Command::Recover {
                 key,
                 observed_at_epoch_ms,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn resolve_task(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::ResolveTask,
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::ResolveTask {
+                task_id,
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -951,6 +986,19 @@ fn run_worker(
                     None => port.recover(&key, deadline),
                 }))
                 .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::ResolveTask {
+                task_id,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let result =
+                    catch_unwind(AssertUnwindSafe(|| port.resolve_task(task_id, deadline)))
+                        .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
                 ticket.finish(result, &health);
             }
         }

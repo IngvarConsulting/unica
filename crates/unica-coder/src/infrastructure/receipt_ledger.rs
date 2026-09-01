@@ -3,8 +3,9 @@ use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelReservedReceipt,
     CancelResolution, CommittedDirectPublication, DirectTerminalUnackedReceipt,
     OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort,
-    ReceiptRecordHeader, ReceiptState, ReceiptTerminalOutcome, ReceiptVersion, ReserveOutcome,
-    ReservedPhase, ReservedReceipt, TerminalDigest, V5CanonicalTerminal,
+    ReceiptRecordHeader, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
+    ReceiptVersion, ReserveOutcome, ReservedPhase, ReservedReceipt,
+    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal,
     ACKNOWLEDGED_TOMBSTONE_TTL_MS, CANCEL_RESERVATION_TTL_MS, DIRECT_TERMINAL_RETENTION_MS,
     MAX_ACKNOWLEDGED_TOMBSTONES, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
     MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES, MAX_LIVE_RECEIPTS, MAX_LIVE_RECEIPT_BYTES,
@@ -216,6 +217,19 @@ enum StoredActiveLifecycleV1 {
         terminal_digest: crate::application::receipt_ledger::TerminalDigest,
         terminal: Arc<ReceiptTerminalOutcome>,
     },
+    TaskTerminalReceiptBacked {
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        task_version: u64,
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+        terminal: Arc<ReceiptTerminalOutcome>,
+        cancel_requested: bool,
+    },
     AcknowledgementCommit {
         terminal_digest: TerminalDigest,
         acknowledged_at_epoch_ms: u64,
@@ -253,7 +267,8 @@ impl CatalogEntry {
             | StoredActiveLifecycleV1::AcknowledgementCommit { .. }
             | StoredActiveLifecycleV1::AcknowledgedTombstone { .. } => 0,
             StoredActiveLifecycleV1::ReservedUnbound { .. }
-            | StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
+            | StoredActiveLifecycleV1::DirectTerminalUnacked { .. }
+            | StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. } => {
                 MAX_RECEIPT_ENTITLEMENT_BYTES
                     .checked_sub(self.encoded_bytes)
                     .expect("validated receipt record fits its exact byte entitlement")
@@ -340,6 +355,40 @@ impl CatalogEntry {
                     ),
                 ))
             }
+            StoredActiveLifecycleV1::TaskTerminalReceiptBacked {
+                task_id,
+                invocation_id,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                task_version,
+                terminal_epoch_ms,
+                terminal_digest,
+                terminal,
+                cancel_requested,
+            } => {
+                let terminal = restore_canonical_terminal(Arc::clone(terminal), terminal_digest)?;
+                let task = ReceiptTaskProjection::new(
+                    *task_id,
+                    *invocation_id,
+                    *created_at_epoch_ms,
+                    *updated_at_epoch_ms,
+                    *ttl_ms,
+                    *poll_interval_ms,
+                    *task_version,
+                )?;
+                Ok(ReceiptState::TaskTerminalReceiptBacked(
+                    TaskTerminalReceiptBackedReceipt::new(
+                        self.record_header(),
+                        task,
+                        *terminal_epoch_ms,
+                        terminal,
+                        *cancel_requested,
+                        self.reserved_result_bytes(),
+                    )?,
+                ))
+            }
             StoredActiveLifecycleV1::AcknowledgementCommit { .. } => {
                 Err(ReceiptLedgerError::Corrupt(
                     "acknowledgement commit witness is not a live receipt state",
@@ -368,10 +417,11 @@ impl CatalogEntry {
             ReceiptState::Reserved(reservation) => Ok(reservation),
             ReceiptState::CancelReserved(_)
             | ReceiptState::DirectTerminalUnacked(_)
+            | ReceiptState::TaskTerminalReceiptBacked(_)
             | ReceiptState::AcknowledgedTombstone(_) => {
                 Err(ReceiptLedgerError::ReceiptRowPresentUnsupported)
             }
-            _ => unreachable!("active receipt codec currently has three variants"),
+            _ => unreachable!("active receipt codec does not expose this state as a reservation"),
         }
     }
 
@@ -499,6 +549,37 @@ impl StableReceiptLedgerObservation {
 
     pub(crate) const fn generation_after(&self) -> u64 {
         self.generation_after
+    }
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+pub(crate) struct ReceiptBackedTaskTerminalSeed {
+    key: ReceiptKey,
+    original_cutoff: OriginalCutoffDescriptor,
+    task: ReceiptTaskProjection,
+    terminal_epoch_ms: u64,
+    terminal: V5CanonicalTerminal,
+    cancel_requested: bool,
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+impl ReceiptBackedTaskTerminalSeed {
+    pub(crate) fn new(
+        key: ReceiptKey,
+        original_cutoff: OriginalCutoffDescriptor,
+        task: ReceiptTaskProjection,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        cancel_requested: bool,
+    ) -> Self {
+        Self {
+            key,
+            original_cutoff,
+            task,
+            terminal_epoch_ms,
+            terminal,
+            cancel_requested,
+        }
     }
 }
 
@@ -1801,6 +1882,142 @@ impl ReceiptLedgerStore {
         }
     }
 
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn seed_task_terminal_receipt_backed_for_test(
+        &self,
+        seed: ReceiptBackedTaskTerminalSeed,
+        deadline: Instant,
+    ) -> Result<TaskTerminalReceiptBackedReceipt, ReceiptLedgerError> {
+        let ReceiptBackedTaskTerminalSeed {
+            key,
+            original_cutoff,
+            task,
+            terminal_epoch_ms,
+            terminal,
+            cancel_requested,
+        } = seed;
+        let reservation = match self.reserve(key.clone(), original_cutoff, deadline)? {
+            ReserveOutcome::Created(reservation) => reservation,
+            ReserveOutcome::ExistingExact(_) => {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "test fixture receipt already exists",
+                ))
+            }
+        };
+        if task.task_id() != key.reserved_task_id()
+            || task.invocation_id() != key.invocation_id()
+            || task.updated_at_epoch_ms() != terminal_epoch_ms
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "test fixture Task projection contradicts its receipt identity",
+            ));
+        }
+
+        let key_digest = receipt_key_digest(&key);
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        check_deadline(deadline)?;
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+        let expected = self
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "test fixture reservation disappeared",
+            ))?;
+        if expected.record.record_version != reservation.record_version()
+            || !matches!(expected.state()?, ReceiptState::Reserved(_))
+        {
+            return latch_catalog_error(
+                &mut catalog,
+                ReceiptLedgerError::Corrupt("test fixture terminal requires its exact reservation"),
+            );
+        }
+        let record_version =
+            expected
+                .record
+                .record_version
+                .checked_next()
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "receipt record version exhausted u64",
+                ))?;
+        let generation = latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = generation
+            .checked_add(1)
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt generation exhausted u64",
+            ))?;
+        let record = StoredActiveReceiptV1 {
+            schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+            mutation_sequence,
+            record_version,
+            key,
+            key_digest: key_digest.clone(),
+            lifecycle: StoredActiveLifecycleV1::TaskTerminalReceiptBacked {
+                task_id: task.task_id(),
+                invocation_id: task.invocation_id(),
+                created_at_epoch_ms: task.created_at_epoch_ms(),
+                updated_at_epoch_ms: task.updated_at_epoch_ms(),
+                ttl_ms: task.ttl_ms(),
+                poll_interval_ms: task.poll_interval_ms(),
+                task_version: task.version(),
+                terminal_epoch_ms,
+                terminal_digest: terminal.digest().clone(),
+                terminal: terminal.outcome_shared(),
+                cancel_requested,
+            },
+        };
+        let (record, encoded) = serialize_reserved_record(record, MAX_RECEIPT_ENTITLEMENT_BYTES)?;
+        let replacement = CatalogEntry {
+            record: record.clone(),
+            encoded_bytes: u64::try_from(encoded.len())
+                .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
+        };
+        if let Err(error) = validate_catalog_replace(&catalog, &expected, &replacement) {
+            if error.requires_reopen() {
+                return latch_catalog_error(&mut catalog, error);
+            }
+            return Err(error);
+        }
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_replace(&mut catalog, replacement);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        match self.read_active_record_bytes(&key_digest) {
+            Ok(Some(committed)) if committed == encoded => {}
+            Ok(Some(_)) | Ok(None) | Err(_) => {
+                catalog.unavailable = true;
+                return Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                });
+            }
+        }
+        let committed = catalog.records.get(&key_digest).cloned().ok_or(
+            ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: key_digest,
+            },
+        )?;
+        match committed.state()? {
+            ReceiptState::TaskTerminalReceiptBacked(receipt) => Ok(receipt),
+            _ => Err(ReceiptLedgerError::Corrupt(
+                "test fixture terminal committed an unexpected state",
+            )),
+        }
+    }
+
     pub(crate) fn publish_direct_terminal_publication(
         &self,
         key: &ReceiptKey,
@@ -1960,16 +2177,12 @@ impl ReceiptLedgerStore {
                 ),
             );
         }
-        let prepared_record_evidence = prepared.record().clone();
         let (prepared_record, wire_frame) = prepared.into_parts();
-        let (
-            binding,
-            encoded,
-            encoded_bytes,
-            reserved_result_bytes,
-            _record_sha256,
-            committed_terminal,
-        ) = prepared_record.into_parts();
+        let binding = prepared_record.binding();
+        let encoded = prepared_record.bytes();
+        let encoded_bytes = prepared_record.encoded_bytes();
+        let reserved_result_bytes = prepared_record.reserved_result_bytes();
+        let committed_terminal = prepared_record.terminal().clone();
         let committed_key = binding.key().clone();
         let committed_key_digest = binding.key_digest().clone();
         let record = StoredActiveReceiptV1 {
@@ -1995,7 +2208,7 @@ impl ReceiptLedgerStore {
             }
             return Err(error);
         }
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+        if let Err(error) = self.publish_replacement_record(&record, encoded, deadline, || {
             commit_catalog_replace(&mut catalog, replacement);
         }) {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
@@ -2010,7 +2223,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         match self.read_active_record_bytes(&key_digest) {
-            Ok(Some(committed)) if committed.as_slice() == encoded.as_ref() => {}
+            Ok(Some(committed)) if committed.as_slice() == encoded => {}
             Ok(Some(_)) | Ok(None) | Err(_) => {
                 catalog.unavailable = true;
                 return Err(ReceiptLedgerError::CommitUncertain {
@@ -2040,7 +2253,7 @@ impl ReceiptLedgerStore {
         Ok(CommittedDirectPublication::with_prepared_record(
             receipt,
             wire_frame,
-            prepared_record_evidence,
+            prepared_record,
         ))
     }
 
@@ -2530,6 +2743,50 @@ impl ReceiptLedgerStore {
         };
         check_deadline(deadline)?;
         result
+    }
+
+    fn resolve_task_exact(
+        &self,
+        task_id: TaskId,
+        deadline: Instant,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        let key_digest =
+            self.inspect_catalog_under_stable_fence(&mut catalog, Some(deadline), |catalog| {
+                catalog.reserved_task_index.get(&task_id).cloned()
+            })?;
+        let key_digest = key_digest.ok_or(ReceiptLedgerError::ReceiptNotFound)?;
+        let entry = self
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
+        if entry.record.key.reserved_task_id() != task_id {
+            return latch_catalog_error(
+                &mut catalog,
+                ReceiptLedgerError::Corrupt(
+                    "reserved Task index points to a different Task identity",
+                ),
+            );
+        }
+        let state = entry.state()?;
+        if !matches!(
+            state,
+            ReceiptState::TaskPromisedUnbound(_)
+                | ReceiptState::TaskPromisedActorBound(_)
+                | ReceiptState::TaskHandoffActorBound(_)
+                | ReceiptState::TaskReceiptOwnedActorBound(_)
+                | ReceiptState::TaskTerminalReceiptBacked(_)
+                | ReceiptState::TaskBound(_)
+                | ReceiptState::TaskTerminalBound(_)
+                | ReceiptState::TaskRetirementPending(_)
+        ) {
+            return Err(ReceiptLedgerError::ReceiptNotFound);
+        }
+        check_deadline(deadline)?;
+        Ok(state)
     }
 
     fn inspect_catalog_under_stable_fence<T>(
@@ -3442,6 +3699,14 @@ impl ReceiptLedgerPort for ReceiptLedgerStore {
     ) -> Result<ReceiptState, ReceiptLedgerError> {
         self.recover_exact_at(key, observed_at_epoch_ms, deadline)
     }
+
+    fn resolve_task(
+        &mut self,
+        task_id: TaskId,
+        deadline: Instant,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        self.resolve_task_exact(task_id, deadline)
+    }
 }
 
 fn verify_receipts_authority(
@@ -3988,6 +4253,7 @@ fn validate_persisted_reserved_record_bytes(
         | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
         | StoredActiveLifecycleV1::AcknowledgementCommit { .. } => MAX_CANCEL_RESERVED_RECORD_BYTES,
         StoredActiveLifecycleV1::ReservedUnbound { .. } => MAX_TASK_RECORD_ENVELOPE_BYTES as u64,
+        StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. } => MAX_RECEIPT_ENTITLEMENT_BYTES,
         StoredActiveLifecycleV1::AcknowledgedTombstone { .. } => MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
         StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
             return Err(ReceiptLedgerError::Corrupt(
@@ -4229,6 +4495,40 @@ fn validate_active_record(
                 Arc::clone(terminal),
                 encoded,
             )?;
+            MAX_RECEIPT_ENTITLEMENT_BYTES
+        }
+        StoredActiveLifecycleV1::TaskTerminalReceiptBacked {
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            task_version,
+            terminal_epoch_ms,
+            terminal_digest,
+            terminal,
+            ..
+        } => {
+            if record.record_version == ReceiptVersion::initial()
+                || task_id != &record.key.reserved_task_id()
+                || invocation_id != &record.key.invocation_id()
+                || updated_at_epoch_ms < created_at_epoch_ms
+                || updated_at_epoch_ms != terminal_epoch_ms
+                || *ttl_ms == 0
+                || *poll_interval_ms == 0
+                || *task_version == 0
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "receipt-backed Task terminal has inconsistent identity or lifecycle metadata",
+                ));
+            }
+            terminal_epoch_ms
+                .checked_add(*ttl_ms)
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "receipt-backed Task expiry exceeds u64",
+                ))?;
+            restore_canonical_terminal(Arc::clone(terminal), terminal_digest)?;
             MAX_RECEIPT_ENTITLEMENT_BYTES
         }
         StoredActiveLifecycleV1::AcknowledgementCommit {
@@ -8616,6 +8916,9 @@ mod tests {
             } => *reserved_at_epoch_ms = 1_001,
             StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
                 panic!("reserved fixture decoded as a direct terminal")
+            }
+            StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. } => {
+                panic!("reserved fixture decoded as a receipt-backed Task terminal")
             }
             StoredActiveLifecycleV1::AcknowledgementCommit { .. } => {
                 panic!("reserved fixture decoded as an acknowledgement witness")

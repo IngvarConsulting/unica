@@ -7,9 +7,9 @@ use crate::application::invocation_store::EpochMillisClock;
 use crate::application::invocation_store::ToolIdentity;
 use crate::application::receipt_ledger::{
     canonical_v5_terminal, receipt_key_digest, request_scope_hash, task_link_digest,
-    CoreIdentityDigest, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptState,
-    ReceiptTerminalOutcome, RequestIdentity, ReservedPhase, TaskLinkIdentity, TerminalDigest,
-    V5ToolIdentity, DIRECT_TERMINAL_RETENTION_MS,
+    CoreIdentityDigest, OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError,
+    ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome, RequestIdentity, ReservedPhase,
+    TaskLinkIdentity, TerminalDigest, V5ToolIdentity, DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::invocation::{InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId};
@@ -22,6 +22,7 @@ use crate::infrastructure::daemon::protocol_v5::{
     V5InvocationRequest, V5InvocationResponse, V5ServerResponse, DAEMON_PROTOCOL_VERSION,
 };
 use crate::infrastructure::daemon::server::DaemonServerConfig;
+use crate::infrastructure::receipt_ledger::{ReceiptBackedTaskTerminalSeed, ReceiptLedgerStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -38,6 +39,8 @@ use uuid::Uuid;
 const SCENARIO_INITIAL_EPOCH_MS: u64 = 1;
 const SCENARIO_IDLE_GRACE: Duration = Duration::from_secs(2);
 const SCENARIO_OPERATION_TIMEOUT: Duration = Duration::from_secs(2);
+const SCENARIO_TASK_TTL_MS: u64 = 3_600_000;
+const SCENARIO_TASK_POLL_INTERVAL_MS: u64 = 100;
 
 pub(super) struct ReceiptScenarioControl {
     barrier: Mutex<CancelConversionBarrier>,
@@ -254,6 +257,22 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     .map_err(|error| format!("construct scenario fixture terminal: {error}"))?;
                 control.set_fixture_terminal(terminal);
             }
+            ReceiptScenarioAction::SeedReceipt {
+                state: ScenarioSeedReceiptState::TaskTerminalReceiptBacked,
+                cancel_requested,
+                staged_terminal: Some(terminal),
+            } => {
+                seed_receipt_backed_task_terminal(
+                    state.path(),
+                    &identity,
+                    &clock,
+                    exact_key.clone(),
+                    terminal,
+                    cancel_requested,
+                )?;
+                push_known_key(&mut known_keys, exact_key.clone());
+            }
+            ReceiptScenarioAction::SeedReceipt { .. } => return Ok(None),
             ReceiptScenarioAction::Cancel { key, label, .. } => {
                 let is_exact = matches!(&key, ScenarioKey::Exact);
                 let wire_key = match key {
@@ -416,7 +435,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         TerminalDigest::from_str(&"00".repeat(32))
                             .expect("fixed candidate digest is normalized")
                     }
-                    ScenarioDigest::TaskTerminal => return Ok(None),
+                    ScenarioDigest::TaskTerminal => {
+                        task_terminal_digest_from_store(state.path(), &identity, &exact_key)?
+                    }
                 };
                 match disconnect {
                     ScenarioAckDisconnect::Never => {
@@ -450,6 +471,27 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         )?;
                     }
                 }
+            }
+            ReceiptScenarioAction::ReadTask { api, label } => {
+                let task_id = exact_key.reserved_task_id();
+                let response = exchange_once(
+                    state.path(),
+                    &identity,
+                    Arc::clone(&clock),
+                    Arc::clone(&telemetry),
+                    Some(Arc::clone(&control)),
+                    |owner| match api {
+                        ScenarioTaskApi::NativeWait => {
+                            owner.wait_task(task_id, SCENARIO_TASK_POLL_INTERVAL_MS)
+                        }
+                        ScenarioTaskApi::NativeGet
+                        | ScenarioTaskApi::CompatibilityGet
+                        | ScenarioTaskApi::CompatibilityResult => owner.get_task(task_id),
+                    },
+                )?;
+                report
+                    .task_reads
+                    .insert(label, task_observation_from_response(response, &exact_key)?);
             }
             ReceiptScenarioAction::AdvanceEpoch { millis } => {
                 clock.advance(millis)?;
@@ -503,6 +545,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         ScenarioSeedReceiptState::ReservedUnbound => ScenarioWireRequest::Submit(
                             invocation_for_key(&key, arguments.clone(), 7_000)?,
                         ),
+                        _ => return Ok(None),
                     };
                     requests.push(request);
                     added.push(key);
@@ -610,6 +653,75 @@ impl ScenarioStateRoot {
     }
 }
 
+fn seed_receipt_backed_task_terminal(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: &ScenarioEpochClock,
+    key: ReceiptKey,
+    fixture: ScenarioTerminalFixture,
+    cancel_requested: bool,
+) -> Result<(), String> {
+    let ScenarioTerminalFixture::Success { payload } = fixture else {
+        return Err("receipt-backed Task seed currently requires a success fixture".to_owned());
+    };
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+        result: Box::new(crate::domain::invocation::DomainResult::success(payload)),
+    })
+    .map_err(|error| format!("construct receipt-backed Task terminal fixture: {error}"))?;
+    let epoch_ms = clock.now_epoch_millis();
+    let task = ReceiptTaskProjection::new(
+        key.reserved_task_id(),
+        key.invocation_id(),
+        epoch_ms,
+        epoch_ms,
+        SCENARIO_TASK_TTL_MS,
+        SCENARIO_TASK_POLL_INTERVAL_MS,
+        1,
+    )
+    .map_err(|error| format!("construct receipt-backed Task projection: {error}"))?;
+    let state = DaemonStateDirectory::open(state_root, identity)?;
+    let receipts = state.create_private_retained_subdirectory("receipts")?;
+    let store = ReceiptLedgerStore::open_retained_directory(receipts)
+        .map_err(|error| format!("open receipt-backed Task fixture ledger: {error}"))?;
+    store
+        .seed_task_terminal_receipt_backed_for_test(
+            ReceiptBackedTaskTerminalSeed::new(
+                key,
+                OriginalCutoffDescriptor::new(epoch_ms, 7_000)
+                    .map_err(|error| format!("construct Task fixture cutoff: {error}"))?,
+                task,
+                epoch_ms,
+                terminal,
+                cancel_requested,
+            ),
+            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+        )
+        .map_err(|error| format!("seed receipt-backed Task terminal: {error}"))?;
+    Ok(())
+}
+
+fn task_terminal_digest_from_store(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    key: &ReceiptKey,
+) -> Result<TerminalDigest, String> {
+    let state = DaemonStateDirectory::open(state_root, identity)?;
+    let receipts = state.create_private_retained_subdirectory("receipts")?;
+    let store = ReceiptLedgerStore::open_retained_directory(receipts)
+        .map_err(|error| format!("open receipt-backed Task digest ledger: {error}"))?;
+    let actor = ReceiptLedgerActor::spawn(store);
+    let state = actor
+        .recover(key.clone(), Instant::now() + SCENARIO_OPERATION_TIMEOUT)
+        .map_err(|error| format!("read receipt-backed Task terminal digest: {error}"))?;
+    match state {
+        ReceiptState::TaskTerminalReceiptBacked(receipt) => Ok(receipt.terminal().digest().clone()),
+        other => Err(format!(
+            "Task terminal digest requires receipt-backed terminal, found {}",
+            other.kind().diagnostic_name()
+        )),
+    }
+}
+
 fn fresh_key(
     identity: &CoreIdentity,
     arguments: &Map<String, Value>,
@@ -670,6 +782,8 @@ fn has_supported_shape(request: &str) -> Result<bool, String> {
                         | "probe_protocol"
                         | "recover"
                         | "acknowledge"
+                        | "seed_receipt"
+                        | "read_task"
                         | "advance_epoch"
                         | "advance_monotonic"
                         | "restart"
@@ -1779,6 +1893,25 @@ fn receipt_observation(state: ReceiptState) -> Result<Value, String> {
             mutation_sequence: receipt.mutation_sequence(),
             begun: false,
         },
+        ReceiptState::TaskTerminalReceiptBacked(receipt) => ScenarioReceiptObservation {
+            key: receipt_key_observation(receipt.key()),
+            state: "task_terminal_receipt_backed",
+            cancel_requested: receipt.cancel_requested(),
+            accepted_epoch_ms: receipt.task().created_at_epoch_ms(),
+            original_budget_ms: 7_000,
+            expires_epoch_ms: Some(receipt.expires_at_epoch_ms()),
+            bound_workspace_identity: None,
+            staged_terminal: None,
+            terminal: Some(terminal_observation(
+                receipt.terminal().outcome(),
+                receipt.terminal_epoch_ms(),
+            )?),
+            encoded_bytes: receipt.encoded_bytes(),
+            reserved_result_bytes: receipt.reserved_result_bytes(),
+            version: receipt.record_version().get(),
+            mutation_sequence: receipt.mutation_sequence(),
+            begun: false,
+        },
         other => {
             return Err(format!(
                 "receipt scenario cannot project unsupported state {}",
@@ -1908,6 +2041,190 @@ fn response_observation(
             "receipt scenario received unsupported protocol-v5 response: {other:?}"
         )),
     }
+}
+
+fn task_observation_from_response(
+    response: V5ServerResponse,
+    receipt_key: &ReceiptKey,
+) -> Result<Value, String> {
+    let V5ServerResponse::Task { snapshot } = response else {
+        return Err(format!(
+            "Task read expected a protocol-v5 Task response, received {response:?}"
+        ));
+    };
+    let encoded_bytes = u64::try_from(
+        serde_json::to_vec(&snapshot)
+            .map_err(|error| format!("encode Task snapshot evidence: {error}"))?
+            .len(),
+    )
+    .map_err(|_| "Task snapshot evidence length exceeds u64".to_owned())?;
+    let (
+        task_id,
+        invocation_id,
+        created_epoch_ms,
+        updated_epoch_ms,
+        ttl_ms,
+        poll_interval_ms,
+        version,
+        cancel_requested,
+        status,
+        terminal_epoch_ms,
+        terminal,
+    ) = match snapshot {
+        crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Queued {
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            version,
+            cancel_requested,
+            ..
+        } => (
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            version,
+            cancel_requested,
+            "queued",
+            None,
+            None,
+        ),
+        crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Working {
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            version,
+            cancel_requested,
+            ..
+        } => (
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            version,
+            cancel_requested,
+            "working",
+            None,
+            None,
+        ),
+        crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Completed {
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            version,
+            cancel_requested,
+            terminal_epoch_ms,
+            result,
+            ..
+        } => {
+            let outcome = ReceiptTerminalOutcome::Completed { result };
+            let terminal = terminal_observation(&outcome, terminal_epoch_ms)?;
+            (
+                task_id,
+                invocation_id,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+                "completed",
+                Some(terminal_epoch_ms),
+                Some(terminal),
+            )
+        }
+        crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Failed {
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            version,
+            cancel_requested,
+            terminal_epoch_ms,
+            reason,
+            ..
+        } => {
+            let outcome = ReceiptTerminalOutcome::Failed { reason };
+            let terminal = terminal_observation(&outcome, terminal_epoch_ms)?;
+            (
+                task_id,
+                invocation_id,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+                "failed",
+                Some(terminal_epoch_ms),
+                Some(terminal),
+            )
+        }
+        crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Cancelled {
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            version,
+            cancel_requested,
+            terminal_epoch_ms,
+            ..
+        } => {
+            let terminal =
+                terminal_observation(&ReceiptTerminalOutcome::Cancelled, terminal_epoch_ms)?;
+            (
+                task_id,
+                invocation_id,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+                "cancelled",
+                Some(terminal_epoch_ms),
+                Some(terminal),
+            )
+        }
+    };
+    let expires_epoch_ms = terminal_epoch_ms
+        .unwrap_or(created_epoch_ms)
+        .checked_add(ttl_ms)
+        .ok_or_else(|| "Task observation expiry overflow".to_owned())?;
+    Ok(json!({
+        "taskId": task_id,
+        "invocationId": invocation_id,
+        "receiptKey": receipt_key_observation(receipt_key),
+        "status": status,
+        "projectionSource": "receipt_ledger",
+        "workspaceIdentityHash": null,
+        "createdEpochMs": created_epoch_ms,
+        "updatedEpochMs": updated_epoch_ms,
+        "expiresEpochMs": expires_epoch_ms,
+        "ttlMs": ttl_ms,
+        "pollIntervalMs": poll_interval_ms,
+        "version": version,
+        "encodedBytes": encoded_bytes,
+        "cancelRequested": cancel_requested,
+        "terminal": terminal,
+    }))
 }
 
 fn acknowledgement_observation(
@@ -2083,6 +2400,7 @@ fn compare_client_server_identity() -> Result<Value, String> {
 struct ScenarioReportBuilder {
     checkpoints: BTreeMap<String, Value>,
     responses: BTreeMap<String, Value>,
+    task_reads: BTreeMap<String, Value>,
     identity: Option<Value>,
     terminal_publications: Vec<Value>,
     protocol: Vec<Value>,
@@ -2094,7 +2412,7 @@ impl ScenarioReportBuilder {
             "payload": {
                 "checkpoints": self.checkpoints,
                 "responses": self.responses,
-                "taskReads": {},
+                "taskReads": self.task_reads,
                 "events": events,
                 "gateEvents": [],
                 "operationEvents": [],
@@ -2196,6 +2514,15 @@ enum ReceiptScenarioAction {
         disconnect: ScenarioAckDisconnect,
         label: String,
     },
+    SeedReceipt {
+        state: ScenarioSeedReceiptState,
+        cancel_requested: bool,
+        staged_terminal: Option<ScenarioTerminalFixture>,
+    },
+    ReadTask {
+        api: ScenarioTaskApi,
+        label: String,
+    },
     AdvanceEpoch {
         millis: u64,
     },
@@ -2272,16 +2599,31 @@ impl ReceiptScenarioAction {
                         ScenarioAckDisconnect::Never | ScenarioAckDisconnect::AfterTombstoneCommit
                     )
             }
+            Self::SeedReceipt {
+                state,
+                staged_terminal,
+                ..
+            } => {
+                matches!(state, ScenarioSeedReceiptState::TaskTerminalReceiptBacked)
+                    && staged_terminal.as_ref().is_some_and(|terminal| {
+                        matches!(terminal, ScenarioTerminalFixture::Success { .. })
+                    })
+            }
+            Self::ReadTask { .. } => true,
             Self::AdvanceEpoch { .. }
             | Self::AdvanceMonotonic { .. }
             | Self::Restart
             | Self::Checkpoint { .. }
             | Self::Reset
-            | Self::FillReceiptPool { .. }
             | Self::InstallBarrier { .. }
             | Self::WaitForEvent { .. }
             | Self::ReleaseBarrier { .. }
             | Self::CompareClientServerIdentity => true,
+            Self::FillReceiptPool { state, .. } => matches!(
+                state,
+                ScenarioSeedReceiptState::CancelReserved
+                    | ScenarioSeedReceiptState::ReservedUnbound
+            ),
         }
     }
 }
@@ -2306,6 +2648,15 @@ enum ScenarioTerminalFixture {
 enum ScenarioRequest {
     Canonical,
     SameIdentity,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioTaskApi {
+    NativeGet,
+    NativeWait,
+    CompatibilityGet,
+    CompatibilityResult,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -2493,6 +2844,19 @@ enum ScenarioKey {
 enum ScenarioSeedReceiptState {
     CancelReserved,
     ReservedUnbound,
+    ReservedActorBound,
+    ReservedBegun,
+    DirectTerminalUnacked,
+    AcknowledgedTombstone,
+    TaskPromisedUnbound,
+    TaskPromisedActorBound,
+    TaskHandoffActorBoundNotBegun,
+    TaskHandoffActorBoundBegun,
+    TaskReceiptOwnedActorBound,
+    TaskTerminalReceiptBacked,
+    TaskBoundNotBegun,
+    TaskBoundBegun,
+    TaskTerminalBound,
 }
 
 #[derive(Deserialize)]
