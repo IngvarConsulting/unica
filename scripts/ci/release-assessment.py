@@ -51,6 +51,13 @@ P0_LIFECYCLE_SCENARIOS = (
     "restart",
     "rollback",
 )
+SAFE_V13_RECEIPT_REPLAY_TOOLS = frozenset(
+    {"unica.check", "unica.view", "unica.find", "unica.search", "unica.diff"}
+)
+LOST_DAEMON_SUBMIT_RESPONSE_CODE = -32000
+LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE = (
+    "daemon deadline expired during invocation submit response"
+)
 
 
 def utc_now() -> str:
@@ -771,6 +778,7 @@ def run_v13_tool_scenario(
     total_duration_ms = 0
     total_output_bytes = 0
     task_polls = 0
+    submit_retries = 0
     next_tool = tool
     next_arguments = dict(arguments)
 
@@ -787,6 +795,25 @@ def run_v13_tool_scenario(
             timeout_seconds=remaining,
         )
         total_duration_ms += duration_ms
+        if (
+            submit_retries == 0
+            and next_tool == tool
+            and tool in SAFE_V13_RECEIPT_REPLAY_TOOLS
+            and returncode == 0
+            and len(responses) == 1
+            and responses[0].get("error")
+            == {
+                "code": LOST_DAEMON_SUBMIT_RESPONSE_CODE,
+                "message": LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE,
+            }
+        ):
+            # The daemon may have durably accepted this exact read before its
+            # bounded submit response was lost. Replay once with identical
+            # arguments so receipt deduplication can return that authority;
+            # the original scenario deadline remains the only time budget.
+            total_output_bytes += response_output_size(stdout, stderr, None)
+            submit_retries += 1
+            continue
         if returncode != 0:
             errors.append(f"unica exited with {returncode}: {stderr.strip()}")
         if len(responses) != 1:
@@ -814,6 +841,7 @@ def run_v13_tool_scenario(
     metrics: dict[str, Any] = {
         "outputBytes": total_output_bytes,
         "taskPolls": task_polls,
+        "submitRetries": submit_retries,
         "warningsCount": len(payload.get("warnings", [])) if payload else 0,
         "errorsCount": len(errors),
     }

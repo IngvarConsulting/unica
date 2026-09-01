@@ -465,6 +465,68 @@ for raw in sys.stdin:
             self.assertEqual(len(responses), 1)
             self.assertNotIn("error", responses[0])
 
+    def test_v13_read_replays_one_lost_daemon_submit_response(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
+            fake_mcp.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+for raw in sys.stdin:
+    message = json.loads(raw)
+    if "id" not in message:
+        continue
+    response = {"jsonrpc": "2.0", "id": message["id"]}
+    if message["method"] == "initialize":
+        response["result"] = {"serverInfo": {"name": "unica"}}
+    elif message["method"] == "tools/call":
+        marker = Path(os.environ["UNICA_CACHE_DIR"]) / "view-submit-lost"
+        if not marker.exists():
+            marker.write_text("accepted", encoding="utf-8")
+            response["error"] = {
+                "code": -32000,
+                "message": "daemon deadline expired during invocation submit response",
+            }
+        else:
+            response["result"] = {
+                "content": [],
+                "structuredContent": {
+                    "ok": True,
+                    "summary": "view completed",
+                    "warnings": [],
+                    "errors": [],
+                    "artifacts": [],
+                    "data": {"kind": "Configuration", "branches": []},
+                },
+                "isError": False,
+            }
+    print(json.dumps(response), flush=True)
+""",
+                encoding="utf-8",
+            )
+            fake_mcp.chmod(fake_mcp.stat().st_mode | stat.S_IXUSR)
+
+            scenario, payload = module.run_v13_tool_scenario(
+                fake_mcp,
+                bsp_root=root,
+                cache_dir=root / "cache",
+                scenario_id="configuration-view",
+                title="view",
+                tool="unica.view",
+                arguments={"at": "main:Configuration"},
+                timeout_seconds=2,
+            )
+
+            self.assertEqual(scenario["status"], "passed", scenario)
+            self.assertEqual(scenario["metrics"]["submitRetries"], 1)
+            self.assertEqual(payload["data"]["kind"], "Configuration")
+
     def test_mcp_client_surfaces_injected_handshake_error(self) -> None:
         module = load_assessment_module()
 
