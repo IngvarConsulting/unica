@@ -2431,21 +2431,42 @@ fn write_runtime_ledger_error_before(
         // mutation may be classified only after the original response cutoff
         // when the caller is descheduled, so its one transport margin starts
         // when that fail-stop result is observed.
-        let deadline = fail_stop_response_deadline(deadline, Instant::now())?;
-        write_json_line_before(stream, &response, deadline)
+        write_fail_stop_json_line(stream, &response, deadline)
     } else {
         write_runtime_json_line_before(stream, runtime, &response, deadline)
     }
 }
 
-fn fail_stop_response_deadline(
+fn fail_stop_response_write_timeout(
     original_response_deadline: Instant,
     observed_at: Instant,
-) -> Result<Instant, String> {
-    let serialization_deadline = observed_at
-        .checked_add(RESPONSE_SERIALIZATION_MARGIN)
-        .ok_or_else(|| "protocol-v5 fail-stop response deadline overflow".to_owned())?;
-    Ok(original_response_deadline.max(serialization_deadline))
+) -> Duration {
+    original_response_deadline
+        .saturating_duration_since(observed_at)
+        .max(RESPONSE_SERIALIZATION_MARGIN)
+        .min(OWNER_RESPONSE_WRITE_TIMEOUT)
+}
+
+fn write_fail_stop_json_line<T: Serialize>(
+    stream: &mut TcpStream,
+    value: &T,
+    original_response_deadline: Instant,
+) -> Result<(), String> {
+    // Serialize before deriving the transport timeout. The operation timeout
+    // may be observed late under scheduler pressure, and an absolute deadline
+    // computed before serialization lets that work (or simple descheduling)
+    // consume the entire transport margin before `write(2)` starts.
+    let bytes = encode_json_line(value)?;
+    let write_timeout =
+        fail_stop_response_write_timeout(original_response_deadline, Instant::now());
+    stream
+        .set_write_timeout(Some(write_timeout))
+        .map_err(|error| {
+            daemon_io_error("configure fail-stop protocol-v5 response timeout", error)
+        })?;
+    stream
+        .write_all(&bytes)
+        .map_err(|error| daemon_io_error("write fail-stop protocol-v5 response", error))
 }
 
 fn write_runtime_reply_before(
@@ -2525,12 +2546,7 @@ fn write_json_line_before<T: Serialize>(
     value: &T,
     deadline: Instant,
 ) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec(value)
-        .map_err(|_| "protocol-v5 response could not be serialized".to_string())?;
-    bytes.push(b'\n');
-    if bytes.len() > MAX_V5_RESPONSE_LINE_BYTES {
-        return Err("protocol-v5 response exceeds the byte limit".to_string());
-    }
+    let bytes = encode_json_line(value)?;
     let remaining = deadline
         .checked_duration_since(Instant::now())
         .filter(|remaining| !remaining.is_zero())
@@ -2546,6 +2562,16 @@ fn write_json_line_before<T: Serialize>(
         .filter(|remaining| !remaining.is_zero())
         .map(|_| ())
         .ok_or_else(|| "protocol-v5 response deadline expired".to_string())
+}
+
+fn encode_json_line<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
+    let mut bytes = serde_json::to_vec(value)
+        .map_err(|_| "protocol-v5 response could not be serialized".to_string())?;
+    bytes.push(b'\n');
+    if bytes.len() > MAX_V5_RESPONSE_LINE_BYTES {
+        return Err("protocol-v5 response exceeds the byte limit".to_string());
+    }
+    Ok(bytes)
 }
 
 fn tokens_equal(left: &str, right: &str) -> bool {
@@ -2767,7 +2793,7 @@ mod tests {
         attempt_retained_directory_replacement_for_test, RetainedDirectoryReplacementOutcome,
     };
     use serde_json::json;
-    use std::io::{BufReader, Read, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
@@ -3190,16 +3216,47 @@ mod tests {
     }
 
     #[test]
-    fn fail_stop_response_margin_starts_when_running_timeout_is_observed() {
+    fn fail_stop_transport_margin_starts_after_response_serialization() {
+        struct DelayedResponse(V5ServerResponse);
+
+        impl Serialize for DelayedResponse {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                thread::sleep(RESPONSE_SERIALIZATION_MARGIN + Duration::from_millis(10));
+                self.0.serialize(serializer)
+            }
+        }
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind response listener");
+        let address = listener.local_addr().expect("response listener address");
+        let reader = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept response stream");
+            let mut line = String::new();
+            BufReader::new(stream)
+                .read_line(&mut line)
+                .expect("read fail-stop response");
+            line
+        });
+        let mut stream = TcpStream::connect(address).expect("connect response stream");
         let observed_at = Instant::now();
         let expired_response_deadline = observed_at
             .checked_sub(Duration::from_millis(1))
             .expect("response deadline can precede the observation");
+        let response = DelayedResponse(V5ServerResponse::Error {
+            code: V5DaemonErrorCode::DurabilityUncertain,
+        });
 
         assert_eq!(
-            fail_stop_response_deadline(expired_response_deadline, observed_at)
-                .expect("fail-stop response deadline"),
-            observed_at + RESPONSE_SERIALIZATION_MARGIN
+            fail_stop_response_write_timeout(expired_response_deadline, observed_at),
+            RESPONSE_SERIALIZATION_MARGIN
+        );
+        write_fail_stop_json_line(&mut stream, &response, expired_response_deadline)
+            .expect("serialized fail-stop response retains a fresh transport margin");
+        assert_eq!(
+            reader.join().expect("join response reader"),
+            "{\"kind\":\"error\",\"code\":\"durability_uncertain\"}\n"
         );
     }
 
