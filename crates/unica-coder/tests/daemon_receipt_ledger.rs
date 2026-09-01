@@ -3762,6 +3762,16 @@ fn assert_same_stable_task(left: &TaskObservation, right: &TaskObservation) {
     assert_eq!(left.poll_interval_ms, right.poll_interval_ms);
 }
 
+fn assert_same_prebinding_task_identity(left: &TaskObservation, right: &TaskObservation) {
+    assert_eq!(left.task_id, right.task_id);
+    assert_eq!(left.invocation_id, right.invocation_id);
+    assert_eq!(left.receipt_key, right.receipt_key);
+    assert_eq!(left.created_epoch_ms, right.created_epoch_ms);
+    assert_eq!(left.expires_epoch_ms, right.expires_epoch_ms);
+    assert_eq!(left.ttl_ms, right.ttl_ms);
+    assert_eq!(left.poll_interval_ms, right.poll_interval_ms);
+}
+
 fn assert_task_retirement_pending(pending: &TaskRetirementPendingObservation, snapshot: &Snapshot) {
     assert_receipt_key(&pending.receipt_key);
     assert_canonical_uuid_v4(&pending.task_id);
@@ -8848,7 +8858,9 @@ fn actor_bind_promotes_the_same_promised_task_once() {
 
     let promised = task_read(&report, "promised");
     let bound = task_read(&report, "bound");
-    assert_same_stable_task(promised, bound);
+    assert_same_prebinding_task_identity(promised, bound);
+    assert!(promised.workspace_identity_hash.is_none());
+    assert!(bound.workspace_identity_hash.is_some());
     assert_eq!(bound.projection_source, ProjectionSource::TaskStore);
     let snapshot = checkpoint(&report, "bound");
     assert_eq!(snapshot.tasks.len(), 1);

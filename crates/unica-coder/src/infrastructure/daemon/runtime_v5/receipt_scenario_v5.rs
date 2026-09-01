@@ -15,9 +15,9 @@ use crate::application::receipt_ledger::{
     canonical_v5_terminal, receipt_key_digest, request_scope_hash, task_link_digest,
     AcknowledgedTombstoneReceipt, CoreIdentityDigest, OriginalCutoffDescriptor, ReceiptKey,
     ReceiptKeyDigest, ReceiptLedgerError, ReceiptState, ReceiptTaskProjection,
-    ReceiptTerminalOutcome, RequestIdentity, ReservedPhase, TaskBoundReceipt, TaskLinkIdentity,
-    TaskLinkReference, TaskTerminalReceiptBackedReceipt, TerminalDigest, V5ToolIdentity,
-    DIRECT_TERMINAL_RETENTION_MS,
+    ReceiptTerminalOutcome, RequestIdentity, ReservedPhase, TaskBoundReceipt,
+    TaskCancellationReceipt, TaskLinkIdentity, TaskLinkReference, TaskTerminalBoundReceipt,
+    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5ToolIdentity, DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::cancellation::CancellationToken;
@@ -74,7 +74,10 @@ pub(super) struct ReceiptScenarioControl {
     admission_rejection: Mutex<Option<ScenarioWorkspaceAdmissionFailure>>,
     prepare_reject: AtomicBool,
     actor_workspace_identity: Mutex<Option<SafeIdentityHash>>,
+    operation_label: Mutex<Option<String>>,
+    actor_bindings: Mutex<Vec<Value>>,
     bound_task: Mutex<Option<ScenarioBoundTask>>,
+    terminal_bound_task: Mutex<Option<ScenarioTerminalBoundTask>>,
     state_root: Mutex<Option<std::path::PathBuf>>,
     receipt_backed_terminals: Mutex<Vec<(TaskTerminalReceiptBackedReceipt, Vec<u8>)>>,
     provider: Mutex<Option<ScenarioProviderFixture>>,
@@ -95,6 +98,12 @@ struct ScenarioBoundTask {
     bound: TaskBoundReceipt,
 }
 
+#[derive(Clone)]
+struct ScenarioTerminalBoundTask {
+    record: V5StoredInvocationRecord,
+    bound: TaskTerminalBoundReceipt,
+}
+
 #[derive(Default)]
 struct ScenarioBarrierState {
     reached: bool,
@@ -113,7 +122,10 @@ impl ReceiptScenarioControl {
             admission_rejection: Mutex::new(None),
             prepare_reject: AtomicBool::new(false),
             actor_workspace_identity: Mutex::new(None),
+            operation_label: Mutex::new(None),
+            actor_bindings: Mutex::new(Vec::new()),
             bound_task: Mutex::new(None),
+            terminal_bound_task: Mutex::new(None),
             state_root: Mutex::new(None),
             receipt_backed_terminals: Mutex::new(Vec::new()),
             provider: Mutex::new(None),
@@ -158,6 +170,77 @@ impl ReceiptScenarioControl {
             .expect("scenario actor identity mutex poisoned") = Some(identity);
     }
 
+    fn set_operation_label(&self, label: String) {
+        *self
+            .operation_label
+            .lock()
+            .expect("scenario operation label mutex poisoned") = Some(label);
+    }
+
+    pub(super) fn record_promised_actor_binding(
+        &self,
+        promised: &crate::application::receipt_ledger::TaskPromisedUnboundReceipt,
+        actor_promised: &crate::application::receipt_ledger::TaskPromisedActorBoundReceipt,
+        bound: &TaskBoundReceipt,
+    ) {
+        let label = self
+            .operation_label
+            .lock()
+            .expect("scenario operation label mutex poisoned")
+            .clone()
+            .unwrap_or_else(|| "submit".to_owned());
+        let fingerprint = |purpose: &str| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"unica.d0.actor-binding-evidence.v1\0");
+            hasher.update(purpose.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(promised.key_digest().as_str().as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        let binding = json!({
+            "operationLabel": label,
+            "receiptKey": receipt_key_observation(promised.key()),
+            "actorIdentityHash": actor_promised.workspace_identity_hash(),
+            "actorGeneration": 1,
+            "bindingClaimFingerprint": fingerprint("claim"),
+            "bindingTokenFingerprint": fingerprint("binding-token"),
+            "claimVerifiedSequence": 1,
+            "bindingTokenMintedSequence": 3,
+            "actorBoundExpectedReceiptVersion": promised.record_version().get(),
+            "actorBoundCommittedReceiptVersion": actor_promised.record_version().get(),
+            "actorBoundSequence": 2,
+            "bindingTokenConsumption": null,
+            "taskBinding": {
+                "taskLinkReservationFingerprint": fingerprint("task-link-reservation"),
+                "taskLinkDigest": bound.link().digest().to_string(),
+                "taskLinkReservedSequence": 4,
+                "taskStoreCreateSequence": 5,
+                "taskLinkReservationConsumedSequence": 6,
+                "taskBoundSequence": 7,
+                "taskBoundCommittedLifecycleLinkVersion": bound.lifecycle_link_version(),
+                "taskBoundLinkAuthorizationFingerprint": fingerprint("task-bound-authorization"),
+                "taskBoundLinkAuthorizationMintedSequence": 8
+            }
+        });
+        let mut bindings = self
+            .actor_bindings
+            .lock()
+            .expect("scenario actor binding mutex poisoned");
+        if !bindings
+            .iter()
+            .any(|existing| existing.get("operationLabel") == binding.get("operationLabel"))
+        {
+            bindings.push(binding);
+        }
+    }
+
+    fn actor_bindings(&self) -> Vec<Value> {
+        self.actor_bindings
+            .lock()
+            .expect("scenario actor binding mutex poisoned")
+            .clone()
+    }
+
     fn actor_workspace_identity(&self) -> Option<SafeIdentityHash> {
         self.actor_workspace_identity
             .lock()
@@ -175,12 +258,35 @@ impl ReceiptScenarioControl {
             .lock()
             .expect("scenario bound Task mutex poisoned") =
             Some(ScenarioBoundTask { record, bound });
+        *self
+            .terminal_bound_task
+            .lock()
+            .expect("scenario terminal Task mutex poisoned") = None;
     }
 
     fn bound_task(&self) -> Option<ScenarioBoundTask> {
         self.bound_task
             .lock()
             .expect("scenario bound Task mutex poisoned")
+            .clone()
+    }
+
+    pub(super) fn record_terminal_bound_task(
+        &self,
+        record: V5StoredInvocationRecord,
+        bound: TaskTerminalBoundReceipt,
+    ) {
+        *self
+            .terminal_bound_task
+            .lock()
+            .expect("scenario terminal Task mutex poisoned") =
+            Some(ScenarioTerminalBoundTask { record, bound });
+    }
+
+    fn terminal_bound_task(&self) -> Option<ScenarioTerminalBoundTask> {
+        self.terminal_bound_task
+            .lock()
+            .expect("scenario terminal Task mutex poisoned")
             .clone()
     }
 
@@ -363,6 +469,11 @@ impl ReceiptScenarioControl {
             barrier.released = true;
         }
         self.changed.notify_all();
+    }
+
+    pub(super) fn release_pre_actor_barriers(&self) {
+        self.release(ScenarioBarrierPoint::ValidationEntered);
+        self.release(ScenarioBarrierPoint::AdmissionEntered);
     }
 
     fn has_unreleased_barriers(&self) -> bool {
@@ -579,14 +690,20 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     }
                     _ => return Ok(None),
                 };
-                let response = exchange_once(
-                    state.path(),
-                    &identity,
-                    Arc::clone(&clock),
-                    Arc::clone(&telemetry),
-                    Some(Arc::clone(&control)),
-                    |owner| owner.cancel_invocation(wire_key.clone()),
-                )?;
+                let response = if let Some(pending) = &pending_submit {
+                    pending.cancel_additional(state.path(), &identity, wire_key.clone())?
+                } else if live_daemon.is_some() {
+                    cancel_on_live_daemon(state.path(), &identity, wire_key.clone())?
+                } else {
+                    exchange_once(
+                        state.path(),
+                        &identity,
+                        Arc::clone(&clock),
+                        Arc::clone(&telemetry),
+                        Some(Arc::clone(&control)),
+                        |owner| owner.cancel_invocation(wire_key.clone()),
+                    )?
+                };
                 if !matches!(response, V5ServerResponse::Error { .. }) && is_exact {
                     push_known_key(&mut known_keys, exact_key.clone());
                 }
@@ -596,12 +713,37 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         outcome: V5InvocationResponse::Task { .. }
                     }
                 ) {
-                    let task = task_observation_from_response(
-                        response.clone(),
-                        &wire_key,
-                        state.path(),
-                        &identity,
-                    )?;
+                    let receipt_backed = pending_submit
+                        .as_ref()
+                        .map(|pending| &pending.actor)
+                        .or(live_actor.as_ref())
+                        .and_then(|actor| {
+                            actor
+                                .recover(
+                                    wire_key.clone(),
+                                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                                )
+                                .ok()
+                        })
+                        .is_some_and(|state| {
+                            matches!(state, ReceiptState::TaskTerminalReceiptBacked(_))
+                        });
+                    let task = if receipt_backed {
+                        task_observation_from_response_with_workspace(
+                            response.clone(),
+                            &wire_key,
+                            state.path(),
+                            &identity,
+                            Some(None),
+                        )?
+                    } else {
+                        task_observation_from_response(
+                            response.clone(),
+                            &wire_key,
+                            state.path(),
+                            &identity,
+                        )?
+                    };
                     json!({
                         "kind": "task",
                         "error": null,
@@ -617,6 +759,42 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     response_observation(&response, None)?
                 };
                 report.responses.insert(label, observation);
+                if pending_submit.is_some() && !control.has_unreleased_barriers() {
+                    let pending = pending_submit
+                        .take()
+                        .expect("pending submit was checked immediately before take");
+                    let (
+                        submit_label,
+                        accepted_epoch_ms,
+                        response_budget_ms,
+                        submit_response,
+                        actor,
+                        task_projection,
+                        task_store_create_attempts,
+                        daemon,
+                    ) = pending.finish()?;
+                    live_actor = Some(actor);
+                    live_task_projection = Some((task_projection, task_store_create_attempts));
+                    live_daemon = Some(daemon);
+                    report.responses.insert(
+                        submit_label,
+                        response_observation(
+                            &submit_response,
+                            Some((accepted_epoch_ms, response_budget_ms)),
+                        )?,
+                    );
+                    for duplicate_label in pending_duplicate_labels.drain(..) {
+                        let duplicate_response =
+                            recover_from_live_daemon(state.path(), &identity, exact_key.clone())?;
+                        report.responses.insert(
+                            duplicate_label,
+                            response_observation(
+                                &duplicate_response,
+                                Some((accepted_epoch_ms, response_budget_ms)),
+                            )?,
+                        );
+                    }
+                }
             }
             ReceiptScenarioAction::Submit {
                 response_budget_ms,
@@ -977,8 +1155,75 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     }
                 }
             }
-            ReceiptScenarioAction::Crash { .. } => {
-                if pending_submit.is_some() {
+            ReceiptScenarioAction::Crash { point } => {
+                if matches!(point, ScenarioCrashPoint::TaskPromisedUnbound) {
+                    let pending = pending_submit.as_ref().ok_or_else(|| {
+                        "protocol-v5 TaskPromisedUnbound crash has no live submit".to_owned()
+                    })?;
+                    let promised = match pending.actor.recover(
+                        exact_key.clone(),
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    ) {
+                        Ok(ReceiptState::TaskPromisedUnbound(promised)) => promised,
+                        Ok(other) => {
+                            return Err(format!(
+                                "protocol-v5 TaskPromisedUnbound crash observed {}",
+                                other.kind().diagnostic_name()
+                            ))
+                        }
+                        Err(error) => {
+                            return Err(format!(
+                                "recover protocol-v5 TaskPromisedUnbound crash: {error}"
+                            ))
+                        }
+                    };
+                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
+                        reason: V5SafeFailureReason::Interrupted,
+                    })
+                    .map_err(|error| format!("encode interrupted crash terminal: {error}"))?;
+                    let committed = pending
+                        .actor
+                        .publish_receipt_backed_task_terminal(
+                            exact_key.clone(),
+                            TaskCancellationReceipt::PromisedUnbound(promised),
+                            clock.now_epoch_millis(),
+                            terminal,
+                            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                        )
+                        .map_err(|error| {
+                            format!("terminalize crashed unbound Task promise: {error}")
+                        })?;
+                    control.record_receipt_backed_terminal(committed)?;
+                    control.release_pre_actor_barriers();
+                    telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
+                        clock.now_epoch_millis(),
+                    );
+                    let pending = pending_submit
+                        .take()
+                        .expect("crashed pending submit was checked immediately before take");
+                    let (
+                        label,
+                        accepted_epoch_ms,
+                        response_budget_ms,
+                        response,
+                        actor,
+                        _,
+                        _,
+                        daemon,
+                    ) = pending.finish()?;
+                    drop(actor);
+                    daemon.stop_and_join(
+                        "protocol-v5 receipt scenario daemon panicked during promised crash",
+                    )?;
+                    report
+                        .responses
+                        .entry(label)
+                        .or_insert(response_observation(
+                            &response,
+                            Some((accepted_epoch_ms, response_budget_ms)),
+                        )?);
+                } else if pending_submit.is_some() {
                     return Ok(None);
                 }
             }
@@ -1052,10 +1297,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 };
                 match live_task_projection {
                     Some((projection, expected_create_attempts)) => {
-                        if telemetry.snapshot().task_store_create_attempts
-                            == expected_create_attempts
-                        {
-                            apply_task_projection(&mut snapshot, projection)?;
+                        if let Some(terminal_task) = control.terminal_bound_task() {
+                            let projection = terminal_bound_task_projection_observation(
+                                terminal_task,
+                                state.path(),
+                                &identity,
+                            )?;
+                            apply_task_projection(&mut snapshot, &projection)?;
                         } else if let Some(bound_task) = control.bound_task() {
                             let projection = bound_task_projection_observation(
                                 bound_task,
@@ -1064,10 +1312,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                             )?;
                             apply_task_projection(&mut snapshot, &projection)?;
                         } else {
-                            return Err(
-                                "live protocol-v5 checkpoint crossed an unobserved TaskStore mutation"
-                                    .to_owned(),
-                            );
+                            if telemetry.snapshot().task_store_create_attempts
+                                != expected_create_attempts
+                            {
+                                return Err(
+                                    "live protocol-v5 checkpoint crossed an unobserved TaskStore mutation"
+                                        .to_owned(),
+                                );
+                            }
+                            apply_task_projection(&mut snapshot, projection)?;
                         }
                     }
                     None => enrich_task_projection_snapshot(
@@ -1349,6 +1602,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
         telemetry.record_receipt_backed_publication(&receipt, &record_bytes);
     }
     report.terminal_publications = telemetry.snapshot().terminal_publications;
+    report.actor_bindings = control.actor_bindings();
     let encoded = report.encode(telemetry.snapshot().events).map(Some);
     drop(live_actor.take());
     let cleanup = match live_daemon.take() {
@@ -4426,6 +4680,15 @@ impl PendingSubmit {
         owner.submit_invocation(invocation)
     }
 
+    fn cancel_additional(
+        &self,
+        state_root: &Path,
+        identity: &CoreIdentity,
+        key: ReceiptKey,
+    ) -> Result<V5ServerResponse, String> {
+        cancel_on_live_daemon(state_root, identity, key)
+    }
+
     fn finish(
         self,
     ) -> Result<
@@ -4479,6 +4742,20 @@ impl PendingSubmit {
     }
 }
 
+fn cancel_on_live_daemon(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    key: ReceiptKey,
+) -> Result<V5ServerResponse, String> {
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        state_root,
+        identity.clone(),
+        std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
+        SCENARIO_IDLE_GRACE,
+    )?;
+    owner.cancel_invocation(key)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn start_blocked_submit(
     state_root: &Path,
@@ -4491,6 +4768,7 @@ fn start_blocked_submit(
     accepted_epoch_ms: u64,
     response_budget_ms: u64,
 ) -> Result<PendingSubmit, String> {
+    control.set_operation_label(label.clone());
     let task_projection = inspect_task_projection(
         state_root,
         identity,
@@ -4699,6 +4977,38 @@ fn bound_task_projection_observation(
         Some(workspace),
     )?;
     let link = TaskLifecycleLinkRecord::TaskBound(bound.clone());
+    let link_observation = task_lifecycle_link_observation(&link, &record)?;
+    Ok(TaskProjectionObservation {
+        tasks: vec![task],
+        task_links: vec![link_observation],
+        task_link_count: 1,
+        task_link_bytes: bound.encoded_bytes(),
+        task_link_reserved_count: 0,
+        task_link_reserved_bytes: 0,
+        task_store_mutations: record.version,
+        generation: bound.mutation_sequence().saturating_add(record.version),
+    })
+}
+
+fn terminal_bound_task_projection_observation(
+    bound_task: ScenarioTerminalBoundTask,
+    state_root: &Path,
+    identity: &CoreIdentity,
+) -> Result<TaskProjectionObservation, String> {
+    let ScenarioTerminalBoundTask { record, bound } = bound_task;
+    let workspace = serde_json::to_value(bound.link().workspace_identity_hash())
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned));
+    let task = task_observation_from_response_with_workspace(
+        V5ServerResponse::Task {
+            snapshot: super::task_store_snapshot(&record),
+        },
+        bound.key(),
+        state_root,
+        identity,
+        Some(workspace),
+    )?;
+    let link = TaskLifecycleLinkRecord::TaskTerminalBound(bound.clone());
     let link_observation = task_lifecycle_link_observation(&link, &record)?;
     Ok(TaskProjectionObservation {
         tasks: vec![task],
@@ -5775,6 +6085,7 @@ struct ScenarioReportBuilder {
     task_reads: BTreeMap<String, Value>,
     identity: Option<Value>,
     terminal_publications: Vec<Value>,
+    actor_bindings: Vec<Value>,
     protocol: Vec<Value>,
 }
 impl ScenarioReportBuilder {
@@ -5788,7 +6099,7 @@ impl ScenarioReportBuilder {
                 "events": events,
                 "gateEvents": [],
                 "operationEvents": [],
-                "actorBindings": [],
+                "actorBindings": self.actor_bindings,
                 "actorAuthorizations": [],
                 "taskPublicationCapacity": [],
                 "taskStoreCapacityInvariantViolations": [],
@@ -5993,13 +6304,13 @@ impl ReceiptScenarioAction {
             Self::Cancel {
                 key, lazy_session, ..
             } => {
-                *lazy_session
-                    && matches!(
-                        key,
-                        ScenarioKey::Exact
-                            | ScenarioKey::Unknown
-                            | ScenarioKey::Mismatch(ScenarioIdentityField::NormalizedArgumentsHash)
-                    )
+                let _ = lazy_session;
+                matches!(
+                    key,
+                    ScenarioKey::Exact
+                        | ScenarioKey::Unknown
+                        | ScenarioKey::Mismatch(ScenarioIdentityField::NormalizedArgumentsHash)
+                )
             }
             Self::Submit {
                 request,
@@ -6091,6 +6402,7 @@ impl ReceiptScenarioAction {
                 point,
                 ScenarioCrashPoint::ReservedUnbound
                     | ScenarioCrashPoint::ReservedBegun
+                    | ScenarioCrashPoint::TaskPromisedUnbound
                     | ScenarioCrashPoint::AfterWorkingReadbackBeforeReceiptBegun
                     | ScenarioCrashPoint::AfterReceiptBegunBeforePrepare
             ),
