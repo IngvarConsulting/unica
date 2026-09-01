@@ -3233,9 +3233,13 @@ mod tests {
         stream.write_all(b"{").expect("write partial handshake");
         let started = Instant::now();
         let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .expect("expired handshake must close the transport");
+        if let Err(error) = stream.read_to_end(&mut response) {
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::ConnectionReset,
+                "expired handshake must close the transport: {error}"
+            );
+        }
 
         assert!(
             response.is_empty(),
