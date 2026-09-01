@@ -77,6 +77,7 @@ pub(super) struct ReceiptScenarioControl {
     actor_workspace_identity: Mutex<Option<SafeIdentityHash>>,
     operation_label: Mutex<Option<String>>,
     actor_bindings: Mutex<Vec<Value>>,
+    actor_authorizations: Mutex<Vec<Value>>,
     bound_task: Mutex<Option<ScenarioBoundTask>>,
     terminal_bound_task: Mutex<Option<ScenarioTerminalBoundTask>>,
     state_root: Mutex<Option<std::path::PathBuf>>,
@@ -128,6 +129,7 @@ impl ReceiptScenarioControl {
             actor_workspace_identity: Mutex::new(None),
             operation_label: Mutex::new(None),
             actor_bindings: Mutex::new(Vec::new()),
+            actor_authorizations: Mutex::new(Vec::new()),
             bound_task: Mutex::new(None),
             terminal_bound_task: Mutex::new(None),
             state_root: Mutex::new(None),
@@ -245,6 +247,121 @@ impl ReceiptScenarioControl {
         self.actor_bindings
             .lock()
             .expect("scenario actor binding mutex poisoned")
+            .clone()
+    }
+
+    pub(super) fn record_bound_task_start_authorization(
+        &self,
+        authorized: &TaskBoundReceipt,
+        working: &V5StoredInvocationRecord,
+        begun: &TaskBoundReceipt,
+    ) {
+        let label = self
+            .operation_label
+            .lock()
+            .expect("scenario operation label mutex poisoned")
+            .clone()
+            .unwrap_or_else(|| "submit".to_owned());
+        let fingerprint = |purpose: &str| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"unica.d0.actor-binding-evidence.v1\0");
+            hasher.update(purpose.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(authorized.key_digest().as_str().as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        let initial_link_version = authorized.lifecycle_link_version().saturating_sub(1);
+        let initial_task_version = working.version.saturating_sub(1);
+        let binding_token = fingerprint("binding-token");
+        let reservation = fingerprint("task-link-reservation");
+        let task_bound_authorization = fingerprint("task-bound-authorization");
+        let post_working_authorization = fingerprint("post-working-authorization");
+        let consumed_sequence = 9;
+        let minted_sequence = 10;
+        let task_bound_authorization_consumed_sequence = 11;
+        let working_write_sequence = 12;
+        let working_readback_sequence = 13;
+        let rechecked_sequence = 14;
+        let mark_begun_consumed_sequence = 15;
+        let context = json!({
+            "receiptKey": receipt_key_observation(authorized.key()),
+            "taskId": working.task_id,
+            "taskLinkDigest": authorized.link().digest(),
+            "taskVersion": initial_task_version,
+            "lifecycleLinkVersion": initial_link_version,
+            "actorGeneration": 1,
+            "consumedBindingTokenFingerprint": binding_token,
+            "consumedTaskLinkReservationFingerprint": reservation,
+            "taskBoundLinkAuthorizationFingerprint": task_bound_authorization,
+        });
+        let authorization = json!({
+            "operationLabel": label,
+            "purpose": "bound_task_start",
+            "verifier": "infrastructure_lease_registry",
+            "ledgerAuthorization": {
+                "issuer": "receipt_ledger",
+                "receiptKey": receipt_key_observation(authorized.key()),
+                "authorizationFingerprint": task_bound_authorization,
+                "generation": 1,
+            },
+            "presentedAuthorization": {
+                "authorizationFingerprint": task_bound_authorization,
+                "generation": 1,
+            },
+            "taskBoundContext": context,
+            "postWorkingAuthorization": {
+                "authorizationFingerprint": post_working_authorization,
+                "receiptKey": receipt_key_observation(authorized.key()),
+                "taskId": working.task_id,
+                "taskLinkDigest": authorized.link().digest(),
+                "expectedTaskVersion": initial_task_version,
+                "actorGeneration": 1,
+                "taskBoundLinkAuthorizationFingerprint": task_bound_authorization,
+                "taskBoundLinkAuthorizationConsumedSequence": task_bound_authorization_consumed_sequence,
+                "mintedSequence": minted_sequence,
+                "workingWriteSequence": working_write_sequence,
+                "workingReadbackSequence": working_readback_sequence,
+                "workingReadbackTaskLinkDigest": authorized.link().digest(),
+                "recheckedSequence": rechecked_sequence,
+                "consumedSequence": mark_begun_consumed_sequence,
+                "markBegunExpectedLifecycleLinkVersion": authorized.lifecycle_link_version(),
+                "markBegunCommittedLifecycleLinkVersion": begun.lifecycle_link_version(),
+            },
+            "verifierGeneration": 1,
+            "decision": "accepted",
+        });
+        let mut bindings = self
+            .actor_bindings
+            .lock()
+            .expect("scenario actor binding mutex poisoned");
+        if let Some(binding) = bindings
+            .iter_mut()
+            .find(|binding| binding.get("operationLabel") == authorization.get("operationLabel"))
+        {
+            binding["bindingTokenConsumption"] = json!({
+                "consumer": "authorize_bound_task_start",
+                "consumed_sequence": consumed_sequence,
+                "lifecycle_link_expected_version": initial_link_version,
+                "lifecycle_link_committed_version": authorized.lifecycle_link_version(),
+            });
+        }
+        drop(bindings);
+        let mut authorizations = self
+            .actor_authorizations
+            .lock()
+            .expect("scenario actor authorization mutex poisoned");
+        if !authorizations
+            .iter()
+            .any(|existing| existing.get("operationLabel") == authorization.get("operationLabel"))
+        {
+            authorizations.push(authorization);
+        }
+    }
+
+    fn actor_authorizations(&self) -> Vec<Value> {
+        self.actor_authorizations
+            .lock()
+            .expect("scenario actor authorization mutex poisoned")
             .clone()
     }
 
@@ -447,6 +564,13 @@ impl ReceiptScenarioControl {
             .any(|barrier| !barrier.released)
     }
 
+    pub(super) fn is_barrier_installed(&self, point: ScenarioBarrierPoint) -> bool {
+        self.barriers
+            .lock()
+            .expect("scenario barrier mutex poisoned")
+            .contains_key(&point)
+    }
+
     pub(super) fn pause(
         &self,
         point: ScenarioBarrierPoint,
@@ -552,6 +676,10 @@ impl ReceiptScenarioControl {
         self.actor_bindings
             .lock()
             .expect("scenario actor binding mutex poisoned")
+            .clear();
+        self.actor_authorizations
+            .lock()
+            .expect("scenario actor authorization mutex poisoned")
             .clear();
         self.process_exit_elapsed_ms.store(0, Ordering::Release);
         self.fail_stop_deadline_plus_one.store(0, Ordering::Release);
@@ -1410,6 +1538,32 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 if control.fail_stop_deadline_reached(clock.now_monotonic_millis()) {
                     telemetry.record_forced_process_exit();
                     control.record_process_exit(SCENARIO_FAIL_STOP_GRACE_MS);
+                    if pending_submit.is_some() {
+                        control.release_all_barriers();
+                        let pending = pending_submit
+                            .take()
+                            .expect("fail-stopped pending submit exists");
+                        let (label, accepted, budget, response, actor, _, _, daemon) =
+                            pending.finish()?;
+                        drop(actor);
+                        daemon.stop_and_join(
+                            "protocol-v5 receipt scenario daemon panicked after fail-stop",
+                        )?;
+                        if !matches!(
+                            response,
+                            V5ServerResponse::Invocation {
+                                outcome: V5InvocationResponse::ReceiptPending { .. }
+                            }
+                        ) {
+                            report
+                                .responses
+                                .entry(label)
+                                .or_insert(response_observation(
+                                    &response,
+                                    Some((accepted, budget)),
+                                )?);
+                        }
+                    }
                 }
             }
             ReceiptScenarioAction::Crash { point } => {
@@ -1960,6 +2114,30 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                     )?;
                 }
+                ScenarioEvent::FalseCancelObservationReached => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::FalseCancelObservationReached,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::TaskTerminalBoundCommitted => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::LeaseReleased => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::LeaseReleased,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::ListenerClosed => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::ListenerClosed,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
             },
             ReceiptScenarioAction::ReleaseBarrier { point } => {
                 control.release(point);
@@ -2056,6 +2234,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
     }
     report.terminal_publications = telemetry.snapshot().terminal_publications;
     report.actor_bindings = control.actor_bindings();
+    report.actor_authorizations = control.actor_authorizations();
     let encoded = report.encode(telemetry.snapshot().events).map(Some);
     drop(live_actor.take());
     let cleanup = match live_daemon.take() {
@@ -6556,6 +6735,7 @@ struct ScenarioReportBuilder {
     identity: Option<Value>,
     terminal_publications: Vec<Value>,
     actor_bindings: Vec<Value>,
+    actor_authorizations: Vec<Value>,
     protocol: Vec<Value>,
 }
 impl ScenarioReportBuilder {
@@ -6570,7 +6750,7 @@ impl ScenarioReportBuilder {
                 "gateEvents": [],
                 "operationEvents": [],
                 "actorBindings": self.actor_bindings,
-                "actorAuthorizations": [],
+                "actorAuthorizations": self.actor_authorizations,
                 "taskPublicationCapacity": [],
                 "taskStoreCapacityInvariantViolations": [],
                 "stagedTerminalPreparations": [],
@@ -7225,6 +7405,10 @@ enum ScenarioEvent {
     BoundHandoffCommitted,
     TaskBoundCommitted,
     TaskStoreWorkingReadback,
+    FalseCancelObservationReached,
+    TaskTerminalBoundCommitted,
+    LeaseReleased,
+    ListenerClosed,
 }
 
 #[derive(Deserialize)]

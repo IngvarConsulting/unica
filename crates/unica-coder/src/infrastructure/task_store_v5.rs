@@ -641,10 +641,16 @@ impl InvocationStoreV5 for FileInvocationStoreV5 {
     ) -> Result<V5StartWorkingOutcome, V5TaskStoreError> {
         let mut writer = self.lock_writer(deadline)?;
         let mut record = self.read_record(identity.task_id(), deadline)?;
-        Self::validate_exact(&record, identity, expected_version)?;
+        if !identity.matches_record(&record) {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: identity.task_id(),
+                reason: V5TaskMismatch::Identity,
+            });
+        }
         if record.cancel_requested || record.task.is_terminal() {
             return Ok(V5StartWorkingOutcome::CancelOrTerminalWinner(record));
         }
+        Self::validate_exact(&record, identity, expected_version)?;
         if record.task != V5StoredTask::Queued {
             return Err(V5TaskStoreError::Mismatch {
                 task_id: identity.task_id(),
@@ -1298,6 +1304,12 @@ mod tests {
             .request_cancel_exact(&identity, 2, deadline())
             .unwrap();
         assert_eq!(repeated, cancelled, "repeat must not bump the version");
+        assert_eq!(
+            store
+                .start_working_if_not_cancel_requested(&identity, 1, deadline())
+                .unwrap(),
+            V5StartWorkingOutcome::CancelOrTerminalWinner(cancelled.clone())
+        );
         assert_eq!(
             store
                 .start_working_if_not_cancel_requested(&identity, 2, deadline())

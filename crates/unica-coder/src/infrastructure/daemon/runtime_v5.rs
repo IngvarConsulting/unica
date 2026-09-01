@@ -97,10 +97,13 @@ enum V5ReceiptRuntimeEventKind {
     TaskLinkCapacityReserved,
     TaskStoreCreated,
     TaskLinkReservationConverted,
+    FalseCancelObservationReached,
     TaskStoreWorkingReadback,
     TaskStoreTerminalCommitted,
     TaskStoreTerminalReadback,
     TaskTerminalBoundCommitted,
+    LeaseReleased,
+    ListenerClosed,
     CancelReservationConverted,
     ResultSerialized,
     ReceiptTerminalCommitted,
@@ -140,6 +143,7 @@ enum V5ReceiptRuntimeListenerState {
 #[cfg(feature = "receipt-ledger-test-support")]
 struct V5ReceiptRuntimeTelemetryState {
     next_sequence: u64,
+    wait_floor_sequence: u64,
     events: Vec<V5ReceiptRuntimeEvent>,
     callbacks: V5ReceiptRuntimeCallbackCounts,
     listener: V5ReceiptRuntimeListenerState,
@@ -179,6 +183,7 @@ impl V5ReceiptRuntimeTelemetry {
             started_at: Instant::now(),
             state: Mutex::new(V5ReceiptRuntimeTelemetryState {
                 next_sequence: 1,
+                wait_floor_sequence: 1,
                 events: Vec::new(),
                 callbacks: V5ReceiptRuntimeCallbackCounts::default(),
                 listener: V5ReceiptRuntimeListenerState::NotPublished,
@@ -255,15 +260,18 @@ impl V5ReceiptRuntimeTelemetry {
 
     fn record_forced_process_exit(&self) {
         let mut state = self.lock_state();
+        let epoch_ms = state.events.last().map_or(1, |event| event.epoch_ms.max(1));
         state.restart_requested = true;
         state.listener = V5ReceiptRuntimeListenerState::Closed;
         state.daemon_running = false;
         self.changed.notify_all();
+        drop(state);
+        self.record_event(V5ReceiptRuntimeEventKind::ListenerClosed, epoch_ms);
     }
 
     fn reset_for_scenario(&self) {
         let mut state = self.lock_state();
-        state.events.clear();
+        state.wait_floor_sequence = state.next_sequence;
         state.callbacks = V5ReceiptRuntimeCallbackCounts::default();
         state.listener = V5ReceiptRuntimeListenerState::NotPublished;
         state.active_listeners = 0;
@@ -439,7 +447,11 @@ impl V5ReceiptRuntimeTelemetry {
         deadline: Instant,
     ) -> Result<(), String> {
         let mut state = self.lock_state();
-        while !state.events.iter().any(|record| record.event == event) {
+        while !state
+            .events
+            .iter()
+            .any(|record| record.sequence >= state.wait_floor_sequence && record.event == event)
+        {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
                 .ok_or_else(|| format!("protocol-v5 runtime event {event:?} was not observed"))?;
@@ -448,10 +460,15 @@ impl V5ReceiptRuntimeTelemetry {
                 .wait_timeout(state, remaining)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state = next;
-            if timeout.timed_out() && !state.events.iter().any(|record| record.event == event) {
+            if timeout.timed_out()
+                && !state.events.iter().any(|record| {
+                    record.sequence >= state.wait_floor_sequence && record.event == event
+                })
+            {
                 let observed = state
                     .events
                     .iter()
+                    .filter(|record| record.sequence >= state.wait_floor_sequence)
                     .map(|record| format!("{:?}", record.event))
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -607,11 +624,15 @@ struct V5ReceiptRuntimeActorLease {
 impl Drop for V5ReceiptRuntimeActorLease {
     fn drop(&mut self) {
         let mut state = self.telemetry.lock_state();
+        let epoch_ms = state.events.last().map_or(1, |event| event.epoch_ms.max(1));
         state.actor_leases = state
             .actor_leases
             .checked_sub(1)
             .expect("protocol-v5 runtime actor telemetry lease released only once");
         self.telemetry.changed.notify_all();
+        drop(state);
+        self.telemetry
+            .record_event(V5ReceiptRuntimeEventKind::LeaseReleased, epoch_ms);
     }
 }
 
@@ -1137,6 +1158,30 @@ impl V5TaskProjection {
             return Ok((record, bound));
         }
         Ok((record, expected.clone()))
+    }
+
+    fn authorize_not_begun_bound_task_start(
+        &self,
+        expected: &TaskBoundReceipt,
+        record: &V5StoredInvocationRecord,
+        deadline: Instant,
+    ) -> Result<TaskBoundReceipt, V5TaskProjectionFailure> {
+        if expected.phase() != AttemptPhase::NotBegun
+            || record.cancel_requested
+            || record.task != V5StoredTask::Queued
+            || !task_bound_matches_record(expected, record)?
+        {
+            return Err(V5TaskProjectionFailure::fail_stop(
+                ReceiptLedgerError::TaskBoundMismatch,
+            ));
+        }
+        self.lifecycle_links
+            .refresh_task_bound_projection(
+                expected,
+                expected.task().clone(),
+                crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+            )
+            .map_err(V5TaskProjectionFailure::from_link_store)
     }
 
     fn mark_not_begun_bound_task_begun(
@@ -2421,9 +2466,34 @@ impl V5ReceiptRuntime {
             #[cfg(feature = "receipt-ledger-test-support")]
             self.telemetry
                 .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+            let authorized_bound =
+                if !task_record.cancel_requested && task_record.task == V5StoredTask::Queued {
+                    self.task_projection
+                        .authorize_not_begun_bound_task_start(&bound, &task_record, deadline)
+                        .map_err(|failure| self.project_task_failure(failure))?
+                } else {
+                    bound
+                };
+            #[cfg(feature = "receipt-ledger-test-support")]
+            if let Some(control) = &self.scenario_control {
+                control.record_bound_task(task_record.clone(), authorized_bound.clone());
+            }
+            #[cfg(feature = "receipt-ledger-test-support")]
+            if !task_record.cancel_requested && task_record.task == V5StoredTask::Queued {
+                self.telemetry.record_event(
+                    V5ReceiptRuntimeEventKind::FalseCancelObservationReached,
+                    epoch_ms,
+                );
+                if let Some(control) = &self.scenario_control {
+                    control.pause(
+                        receipt_scenario_v5::ScenarioBarrierPoint::AfterFalseCancelObservation,
+                        deadline,
+                    )?;
+                }
+            }
             let (task_record, bound) = self
                 .task_projection
-                .start_not_begun_bound_task(&bound, task_record, deadline)
+                .start_not_begun_bound_task(&authorized_bound, task_record, deadline)
                 .map_err(|failure| self.project_task_failure(failure))?;
             #[cfg(feature = "receipt-ledger-test-support")]
             if task_record.task == V5StoredTask::Working {
@@ -2464,6 +2534,11 @@ impl V5ReceiptRuntime {
                     self.telemetry
                         .record_event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
                     if let Some(control) = &self.scenario_control {
+                        control.record_bound_task_start_authorization(
+                            &authorized_bound,
+                            &task_record,
+                            &begun,
+                        );
                         control.record_bound_task(task_record.clone(), begun.clone());
                     }
                 }
@@ -2809,11 +2884,44 @@ impl V5ReceiptRuntime {
                 .map_err(|failure| self.project_task_failure(failure))?;
             #[cfg(feature = "receipt-ledger-test-support")]
             if let Some(control) = &self.scenario_control {
-                control.record_bound_task(task_record.clone(), bound);
+                control.record_bound_task(task_record.clone(), bound.clone());
             }
             #[cfg(feature = "receipt-ledger-test-support")]
             self.telemetry
                 .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+            #[cfg(feature = "receipt-ledger-test-support")]
+            if let Some(control) = &self.scenario_control {
+                if control.is_barrier_installed(
+                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskTerminalReceipt,
+                ) {
+                    control.pause(
+                        receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskTerminalReceipt,
+                        deadline,
+                    )?;
+                    self.telemetry.record_execute();
+                    self.telemetry
+                        .record_event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
+                    let outcome = match prepared.execute() {
+                        Ok(result) => ReceiptTerminalOutcome::Completed {
+                            result: Box::new(result),
+                        },
+                        Err(_) => ReceiptTerminalOutcome::Failed {
+                            reason: V5SafeFailureReason::InvocationFailed,
+                        },
+                    };
+                    let terminal = canonical_v5_terminal(&outcome)
+                        .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                    self.telemetry
+                        .record_event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
+                    return self.publish_bound_terminal_reply(
+                        &bound,
+                        task_record,
+                        &terminal,
+                        epoch_ms,
+                        deadline,
+                    );
+                }
+            }
             return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                 outcome: V5InvocationResponse::Task {
                     snapshot: task_store_snapshot(&task_record),
@@ -3859,8 +3967,6 @@ fn handle_probe_connection(
         &V5HandshakeServerResponse::ready(record),
         handshake_deadline,
     )?;
-    #[cfg(feature = "receipt-ledger-test-support")]
-    let _actor_telemetry_lease = runtime.telemetry.actor_lease();
     let session_read_deadline = Instant::now() + SESSION_READ_TIMEOUT;
     let (decoded, request_received_at) =
         match read_v5_request_before(&mut reader, session_read_deadline) {
@@ -3898,6 +4004,9 @@ fn handle_probe_connection(
     );
     runtime.ensure_named_authority_before(deadlines.operation)?;
     let kind = decoded.request().kind();
+    #[cfg(feature = "receipt-ledger-test-support")]
+    let _actor_telemetry_lease =
+        (kind == V5ClientRequestKind::SubmitInvocation).then(|| runtime.telemetry.actor_lease());
     match kind {
         V5ClientRequestKind::Ping => {
             #[cfg(feature = "receipt-ledger-test-support")]
