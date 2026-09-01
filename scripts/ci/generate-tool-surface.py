@@ -320,8 +320,9 @@ def render(tools: list[dict], review: dict) -> str:
         " собранного бинаря. Руками правится только"
         " [`tool-surface-review.json`](tool-surface-review.json): контракт"
         " результата и сценарии. Имена, описания и аргументы принадлежат"
-        " реестру в `crates/unica-coder/src/application/mod.rs` и"
-        " `tool_contracts.rs`; здесь они лишь показаны рядом"
+        " реестру v0.13 в"
+        " `crates/unica-coder/src/application/v13/tool_catalog.rs`; здесь они"
+        " лишь показаны рядом"
         " (`CTR.WIRE.TOOL-SURFACE`)."
     )
     out.append("")

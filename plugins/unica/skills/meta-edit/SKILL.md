@@ -26,7 +26,7 @@ allowed-tools:
 - Vendor support guard выполняется внутри `unica`. Для закрытого объекта
   используйте CFE/release-support flow, а не прямую правку служебных файлов.
 - `sourceSet` — это имя набора исходников из `v8project.yaml`, а не
-  константа. Получите его через `unica.project.map`; `"main"` в примерах
+  константа. Получите его через `unica.view {}`; `"main"` в примерах
   ниже — иллюстрация, а не значение по умолчанию.
 
 Поддерживаются шесть значений `op`: `setProperties`, `add`, `update`, `remove`,

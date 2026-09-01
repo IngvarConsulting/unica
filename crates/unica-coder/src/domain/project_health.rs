@@ -191,6 +191,8 @@ pub(crate) struct ProjectHealthReport {
     pub(crate) checks: Vec<ProjectCheck>,
     pub(crate) source_sets: Option<Vec<ProjectSourceSet>>,
     pub(crate) diagnostics: Vec<ProjectDiagnostic>,
+    #[serde(skip)]
+    pub(crate) inspection_complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,6 +333,10 @@ pub(crate) fn evaluate_project_health(
     snapshot: ProjectHealthSnapshot,
 ) -> Result<ProjectHealthReport, String> {
     validate_snapshot(&snapshot)?;
+    let inspection_complete = !snapshot
+        .facts
+        .iter()
+        .any(|fact| incomplete_fact_reason(fact).is_some());
     let mut groups = BTreeMap::<DiagnosticGroupKey, DiagnosticGroup>::new();
     let mut failed_checks = BTreeMap::<CheckKey, String>::new();
     for fact in &snapshot.facts {
@@ -472,6 +478,7 @@ pub(crate) fn evaluate_project_health(
         checks,
         source_sets: snapshot.source_sets,
         diagnostics,
+        inspection_complete,
     })
 }
 
@@ -1178,7 +1185,7 @@ fn remediation_for(
                     format!("Review all {count} proven runtime sidecar path(s)"),
                     "Remove only the proven paths from the index and add tracked ignore rules"
                         .into(),
-                    "Run unica.project.status again".into(),
+                    "Run unica.view with an empty object again".into(),
                 ],
                 commands,
             }
@@ -1187,7 +1194,7 @@ fn remediation_for(
             summary: "Review the staged path manually before changing the Git index".into(),
             steps: vec![
                 "Inspect the exact staged content and repository policy".into(),
-                "Run unica.project.status again after an approved correction".into(),
+                "Run unica.view with an empty object again after an approved correction".into(),
             ],
             commands: Vec::new(),
         },
@@ -1204,7 +1211,7 @@ fn remediation_for(
             steps: vec![
                 "Inspect the exact reported input path and reason in the diagnostic evidence; it may be v8project.yaml or a source-format marker".into(),
                 "Correct the read, regular-file, link/reparse, size, UTF-8, YAML, or source-set-count problem without changing unrelated source data".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1213,7 +1220,7 @@ fn remediation_for(
             steps: vec![
                 "Add a source-set entry to v8project.yaml with a unique name, correct 1C type, and a dedicated path".into(),
                 "Keep the path as a strict child subdirectory of the workspace rather than .".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1223,7 +1230,7 @@ fn remediation_for(
                 "Create a dedicated source subdirectory that is a strict child of the workspace, for example src".into(),
                 "Move or re-export the 1C source files into that subdirectory without moving workspace service files".into(),
                 "Set the source-set path in v8project.yaml to the new subdirectory instead of .".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1232,7 +1239,7 @@ fn remediation_for(
             steps: vec![
                 "Set the source-set path in v8project.yaml to an existing regular directory contained directly inside the workspace".into(),
                 "Do not route the source root through symbolic links, reparse points, .., or an external directory".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1241,7 +1248,7 @@ fn remediation_for(
             steps: vec![
                 "Rename duplicate source-set entries in v8project.yaml without changing their type or path unintentionally".into(),
                 "Update callers that select a source set by name".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1250,7 +1257,7 @@ fn remediation_for(
             steps: vec![
                 "Remove contradictory Platform XML and EDT markers from the same source root, or point the source set at the correct export directory".into(),
                 "Set the intended project format in v8project.yaml when file markers alone cannot prove it".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1259,7 +1266,7 @@ fn remediation_for(
             steps: vec![
                 "Choose a cache location under workspace service storage such as workspace/.build, not inside the 1C export directory".into(),
                 "Update the workspace/cache configuration without moving source files into the cache".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1268,7 +1275,7 @@ fn remediation_for(
             steps: vec![
                 "Verify that the listed .build directory contains generated artifacts rather than source files".into(),
                 "Move the producer output outside the source root, then delete the stale generated directory".into(),
-                "Add a tracked .gitignore rule if the producer can recreate it, and run unica.project.status again".into(),
+                "Add a tracked .gitignore rule if the producer can recreate it, and run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1277,7 +1284,7 @@ fn remediation_for(
             steps: vec![
                 "Confirm the correct repository boundary for this workspace".into(),
                 "Initialize or clone that repository, then add tracked .gitignore and .gitattributes policy files".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1286,7 +1293,7 @@ fn remediation_for(
             steps: vec![
                 "Install Git or correct the process PATH used to launch Unica".into(),
                 "Verify git --version from the same execution environment".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1295,7 +1302,7 @@ fn remediation_for(
             steps: vec![
                 "Resolve the reported timeout, truncated output, malformed protocol, or repository access error".into(),
                 "Do not infer a pass from the partial result".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1304,7 +1311,7 @@ fn remediation_for(
             steps: vec![
                 "Confirm that this repository is intentionally configured as a partial/promisor clone".into(),
                 "Use Git 2.46 or newer from the same environment that launches Unica, or inspect a complete local non-promisor clone according to the repository owner's policy".into(),
-                "Run unica.project.status again; do not infer a pass from the blocked inspection".into(),
+                "Run unica.view with an empty object again; do not infer a pass from the blocked inspection".into(),
             ],
             commands: Vec::new(),
         },
@@ -1313,7 +1320,7 @@ fn remediation_for(
             steps: vec![
                 "Review the reported collision and choose one canonical spelling for each logical directory component".into(),
                 "Rename or remove the conflicting tracked entries so distinct Git paths no longer resolve to the same host path identity".into(),
-                "Stage the corrected paths and portable policy files, then run unica.project.status again".into(),
+                "Stage the corrected paths and portable policy files, then run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1323,7 +1330,7 @@ fn remediation_for(
                 "Add a narrow matching rule to a repository .gitignore; do not rely on global excludes or .git/info/exclude".into(),
                 "Stage the policy file with git add -- .gitignore (or the exact nested .gitignore path)".into(),
                 "If the generated path is already tracked, review it and remove only the generated path from the index".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1332,7 +1339,7 @@ fn remediation_for(
             steps: vec![
                 "Confirm that every listed path is generated and contains no source data".into(),
                 "Add a narrow tracked .gitignore rule and remove only the approved generated paths from the index".into(),
-                "Review the staged deletion before committing, then run unica.project.status again".into(),
+                "Review the staged deletion before committing, then run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1341,7 +1348,7 @@ fn remediation_for(
             steps: vec![
                 "Copy the required narrow rules from local, global, or .git/info/attributes policy into a tracked .gitattributes file".into(),
                 "Preserve the intended valid text policy for proven text roles (eol=lf or eol=crlf) and -text for proven binary roles".into(),
-                "Stage .gitattributes, review the effective attributes, and run unica.project.status again".into(),
+                "Stage .gitattributes, review the effective attributes, and run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1351,7 +1358,7 @@ fn remediation_for(
                 "Add or refine a tracked .gitattributes rule that assigns text eol=lf to the exact text role".into(),
                 "Keep XDTOPackages/**/Ext/Package.bin classified as text even when other *.bin files are binary".into(),
                 "Stage .gitattributes and renormalize the affected paths, then review the staged diff".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1361,7 +1368,7 @@ fn remediation_for(
                 "Add a tracked .gitattributes rule with -text for the exact binary role or narrow path".into(),
                 "Do not use a broad *.bin rule without a later text override for XDTO Package.bin".into(),
                 "Stage .gitattributes and review the affected paths".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1371,7 +1378,7 @@ fn remediation_for(
                 "Find the tracked .gitattributes rule that applies -text or binary to the listed text path".into(),
                 "Replace or override it with a narrower text eol=lf rule for the proven text role".into(),
                 "Stage .gitattributes, renormalize the affected path, and review the staged diff".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1380,7 +1387,7 @@ fn remediation_for(
             steps: vec![
                 "First ensure a tracked .gitattributes rule classifies the listed paths as text and normalizes their index blobs; either a valid eol=lf or eol=crlf worktree policy may remain".into(),
                 "Run git add --renormalize -- <affected paths> and review the staged diff before committing".into(),
-                "Run unica.project.status again".into(),
+                "Run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1389,7 +1396,7 @@ fn remediation_for(
             steps: vec![
                 "Rewrite the complete file consistently as LF or CRLF; do not preserve mixed or bare-CR endings".into(),
                 "Ensure tracked .gitattributes still classifies the path as text and preserves the intended valid worktree policy; eol=lf and eol=crlf are both supported while the index remains normalized".into(),
-                "Stage and review the affected file, then run unica.project.status again".into(),
+                "Stage and review the affected file, then run unica.view with an empty object again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1481,6 +1488,10 @@ pub(crate) mod tests {
             Some("Git index output was truncated")
         );
         assert!(!report.repository_ready);
+        assert!(
+            !report.inspection_complete,
+            "an explicit incomplete fact must survive evaluation"
+        );
         assert_eq!(report.diagnostics[0].code, "git.inspection_incomplete");
     }
 

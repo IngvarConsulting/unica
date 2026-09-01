@@ -7,7 +7,7 @@ description: "Анализ журнала регистрации и технол
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.meta.info`, `unica.project.map`, `unica.code.diagnostics`, `unica.standards.search`, and `unica.standards.explain`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.meta.info`, `unica.view {}`, `unica.code.diagnostics`, `unica.standards.search`, and `unica.standards.explain`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -57,7 +57,7 @@ Accept explicit journal registration exports, technological log files, copied lo
     "name": "unica.code.search",
     "arguments": {
       "cwd": "<workspace>",
-      "sourceSet": "<source-set-from-project-map>",
+      "sourceSet": "<source-set-from-unica-view>",
       "query": "ВыполнитьОбменСКонтрагентом",
       "limit": 20
     }

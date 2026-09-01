@@ -240,6 +240,20 @@ pub(super) fn filter_diff_data(data: &Value, filter: &Value) -> Result<Value, Re
         ));
     }
     if let Some(sections) = filter.get("sections") {
+        // Diff compares source-backed node data. Computed sections belong to
+        // the View result: the operation dictionary derives from the registry
+        // and the node kind, so comparing it never observes a source change.
+        if let Some(computed) = sections
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|section| matches!(section.as_str(), Some("can") | Some("limits")))
+        {
+            return Err(ReadModeError::unsupported_filter(format!(
+                "diff sections compare node data; computed section `{}` belongs to view",
+                computed.as_str().unwrap_or_default()
+            )));
+        }
         return project_view_sections(data, sections);
     }
     let paths = filter
@@ -418,6 +432,16 @@ mod tests {
             &json!({"paths": ["/props/synonym"]}),
         )
         .unwrap();
+        let computed = filter_diff_data(
+            &json!({"kind": "Catalog", "props": {}}),
+            &json!({"sections": ["can"]}),
+        )
+        .unwrap_err();
+        assert_eq!(computed.code(), "unsupported_filter");
+        assert!(
+            computed.to_string().contains("belongs to view"),
+            "{computed}"
+        );
         assert_eq!(
             filtered,
             json!({

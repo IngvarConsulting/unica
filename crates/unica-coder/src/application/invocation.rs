@@ -96,14 +96,34 @@ impl InvocationResponseDeadline {
         self.clock.now()
     }
 
-    pub(crate) fn checkpoint_actor_admission(&self) -> Result<(), &'static str> {
-        let boundary = if self.handoff_at == self.receipt_at {
+    fn actor_admission_at(&self) -> Instant {
+        if self.handoff_at == self.receipt_at {
             self.response_at
         } else {
             self.handoff_at
-        };
-        if self.now() >= boundary {
+        }
+    }
+
+    pub(crate) fn remaining_actor_admission_budget(&self) -> Duration {
+        self.actor_admission_at()
+            .saturating_duration_since(self.now())
+    }
+
+    pub(crate) fn remaining_handoff_budget(&self) -> Duration {
+        self.handoff_at.saturating_duration_since(self.now())
+    }
+
+    pub(crate) fn checkpoint_actor_admission(&self) -> Result<(), &'static str> {
+        if self.now() >= self.actor_admission_at() {
             Err("daemon actor admission deadline exceeded")
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn checkpoint_handoff(&self) -> Result<(), &'static str> {
+        if self.now() >= self.handoff_at {
+            Err("daemon handoff deadline exceeded")
         } else {
             Ok(())
         }
@@ -2365,6 +2385,15 @@ pub(crate) mod tests {
         let started = Instant::now();
         let zero_clock = Arc::new(ManualClock::new(started));
         let zero = response_deadline_from_clock(&zero_clock, Duration::ZERO);
+        assert_eq!(
+            zero.remaining_handoff_budget(),
+            Duration::ZERO,
+            "direct bootstrap work must not borrow the serialization reserve"
+        );
+        assert_eq!(
+            zero.remaining_actor_admission_budget(),
+            super::RESPONSE_SERIALIZATION_MARGIN
+        );
         assert!(
             zero.checkpoint_actor_admission().is_ok(),
             "zero-budget actor admission must be allowed at receipt"
@@ -2377,6 +2406,11 @@ pub(crate) mod tests {
 
         let nonzero_clock = Arc::new(ManualClock::new(started));
         let nonzero = response_deadline_from_clock(&nonzero_clock, Duration::from_secs(7));
+        assert_eq!(
+            nonzero.remaining_actor_admission_budget(),
+            Duration::from_secs(7),
+            "nonzero work must reserve the response serialization margin"
+        );
         nonzero_clock.advance(Duration::from_secs(7));
         assert!(
             nonzero.checkpoint_actor_admission().is_err(),

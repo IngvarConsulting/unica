@@ -13,7 +13,7 @@ description: "Справка платформы 1С и объектной мод
 - Каждая секция несёт `sourceKind` и `authority`, каждое попадание в ней — `applicableVersion` и `documentId`. Ответ обязан называть источник, версию установки и `documentId` страницы: без него читатель не может вернуться к той же странице.
 - `language` секции — локаль, которой источник ответил на самом деле, а не запрошенная. Если они расходятся, назовите подстановку локали в ответе: справка поставляется не во всех локалях, и запрос `en` на русскоязычной установке молча отвечал бы русскими страницами.
 - Секция со смыслом источника `development-standard` не закрывает вопрос о сигнатуре или механике платформы, каким бы уместным ни выглядел её текст. Это правило чтения, а не правило вызова. Симметрично: секция `configuration-documentation` описывает прикладную конфигурацию и не доказывает поведение самой платформы.
-- For project context, use `unica.code.search`, `unica.project.map`, and `unica.runtime.execute`.
+- For project context, use `unica.code.search`, `unica.view {}`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -32,7 +32,7 @@ description: "Справка платформы 1С и объектной мод
 2. Call `unica.documentation.search` with the object or member name — или с естественной формулировкой вопроса: поиск пословный, морфологический и нечёткий (ADR-0037), точная подстрока и порядок слов не требуются, опечатка в имени не прячет страницу.
 3. Read `applicableVersion` in the hit. Если она расходится с версией проекта, назовите расхождение в ответе.
 4. Подтвердите ответ текстом открытой страницы: передайте `documentId` попадания в `unica.documentation.get` дословно и опирайтесь на поле `text`. Заголовок и фрагмент выдачи доказательством не является — доказательство только текст документа.
-5. Validate against local project context with `unica.project.map` and targeted `unica.code.search` if the answer depends on project conventions.
+5. Validate against local project context with `unica.view {}` and targeted `unica.code.search` if the answer depends on project conventions.
 6. For code examples, use `unica.runtime.execute` to preview `operation=syntax` and, with `dryRun: false`, to run it; report actual syntax and runtime behavior as unverified.
 
 ## Platform context

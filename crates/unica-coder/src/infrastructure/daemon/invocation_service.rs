@@ -432,11 +432,7 @@ impl ActorBoundInvocation {
                                 Err(error) => (
                                     Vec::new(),
                                     ActorLogicalReadRoute::Rejected(Box::new(
-                                        DomainResult::canonical_rejection(
-                                            Some(at.to_string()),
-                                            "bad_value",
-                                            error.to_string(),
-                                        ),
+                                        invalid_view_address_result(at, error.to_string()),
                                     )),
                                 ),
                             },
@@ -491,6 +487,35 @@ impl ActorBoundInvocation {
             revision,
         })
     }
+}
+
+fn invalid_view_address_result(at: &str, detail: impl std::fmt::Display) -> DomainResult {
+    let mut result = DomainResult::canonical_rejection(
+        Some(at.to_string()),
+        "bad_value",
+        format!("invalid logical address; expected <sourceSet>:<Kind>[.<Name>...]: {detail}"),
+    );
+    result.next.push(serde_json::Value::Object(
+        [
+            (
+                "tool".to_string(),
+                serde_json::Value::String("unica.view".to_string()),
+            ),
+            (
+                "args".to_string(),
+                serde_json::Value::Object(serde_json::Map::new()),
+            ),
+            (
+                "reason".to_string(),
+                serde_json::Value::String(
+                    "discover source sets and canonical logical addresses".to_string(),
+                ),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    ));
+    result
 }
 
 pub(crate) struct ActorBoundExecution {

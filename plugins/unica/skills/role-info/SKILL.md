@@ -113,6 +113,6 @@ allowed-tools:
 }
 ```
 
-Имя набора даёт `unica.project.map`, адрес — `unica.source.resolve`, а `unica.source.locate` переводит
+Имя набора даёт `unica.view {}`, адрес — `unica.source.resolve`, а `unica.source.locate` переводит
 в адрес путь, найденный иначе. Файловый селектор сохраняется до
 отдельного среза его снятия (ADR-0049).
