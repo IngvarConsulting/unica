@@ -343,21 +343,49 @@ mod tests {
         record: &EndpointRecord,
         identity: &CoreIdentity,
     ) -> (TcpStream, ServerResponse) {
+        try_connect_raw_owner(record, identity, Duration::from_secs(2)).unwrap()
+    }
+
+    fn try_connect_raw_owner(
+        record: &EndpointRecord,
+        identity: &CoreIdentity,
+        read_timeout: Duration,
+    ) -> io::Result<(TcpStream, ServerResponse)> {
         let mut stream = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
+        stream.set_read_timeout(Some(read_timeout))?;
         let hello = ClientRequest::hello_with_owner_for_test(
             record.token().to_string(),
             identity.clone(),
             uuid::Uuid::new_v4().to_string(),
         );
         write_json_line(&mut stream, &hello);
-        let response = serde_json::from_slice(
-            &read_bounded_json_line(&mut BufReader::new(stream.try_clone().unwrap())).unwrap(),
-        )
-        .unwrap();
-        (stream, response)
+        let bytes = read_bounded_json_line(&mut BufReader::new(stream.try_clone()?))?;
+        let response = serde_json::from_slice(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        Ok((stream, response))
+    }
+
+    fn connect_raw_owner_before(
+        record: &EndpointRecord,
+        identity: &CoreIdentity,
+        deadline: Instant,
+    ) -> (TcpStream, ServerResponse) {
+        loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .expect("raw owner handshake retry deadline expired");
+            match try_connect_raw_owner(record, identity, remaining.min(Duration::from_secs(2))) {
+                Ok(owner) => return owner,
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                    // A saturated test process can let the server-side handshake deadline
+                    // expire before its handler is scheduled. Retry only that silent close;
+                    // every protocol response is returned to the capacity assertions.
+                    thread::yield_now();
+                }
+                Err(error) => panic!("raw owner handshake failed before capacity result: {error}"),
+            }
+        }
     }
 
     struct BlockingCanonicalService {
@@ -3184,7 +3212,11 @@ mod tests {
         let mut owners = Vec::new();
 
         for owner_index in 0..EXPECTED_OWNER_SESSION_LIMIT {
-            let (stream, response) = connect_raw_owner(&record, &identity);
+            let (stream, response) = connect_raw_owner_before(
+                &record,
+                &identity,
+                Instant::now() + Duration::from_secs(10),
+            );
             assert!(
                 response.matches_record(&record),
                 "owner {owner_index} was rejected below the owner-session bound: {response:?}"
