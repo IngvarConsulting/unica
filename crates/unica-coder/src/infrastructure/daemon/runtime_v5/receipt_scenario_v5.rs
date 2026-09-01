@@ -286,21 +286,23 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 });
             }
             ReceiptScenarioAction::SeedReceipt {
-                state: ScenarioSeedReceiptState::TaskTerminalReceiptBacked,
+                state: seed_state,
                 cancel_requested,
-                staged_terminal: Some(terminal),
+                staged_terminal,
             } => {
-                seed_receipt_backed_task_terminal(
+                if !seed_receipt_state(
                     state.path(),
                     &identity,
                     &clock,
                     exact_key.clone(),
-                    terminal,
+                    seed_state,
                     cancel_requested,
-                )?;
+                    staged_terminal,
+                )? {
+                    return Ok(None);
+                }
                 push_known_key(&mut known_keys, exact_key.clone());
             }
-            ReceiptScenarioAction::SeedReceipt { .. } => return Ok(None),
             ReceiptScenarioAction::Cancel { key, label, .. } => {
                 let is_exact = matches!(&key, ScenarioKey::Exact);
                 let wire_key = match key {
@@ -373,10 +375,28 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         |owner| owner.submit_invocation(invocation),
                     )?;
                     if matches!(disconnect, ScenarioDisconnect::Never) {
-                        report.responses.insert(
-                            label,
-                            response_observation(&response, Some(observed_cutoff))?,
-                        );
+                        let observation = match &response {
+                            V5ServerResponse::Invocation {
+                                outcome: V5InvocationResponse::Task { snapshot },
+                            } => json!({
+                                "kind": "task",
+                                "error": null,
+                                "terminal": null,
+                                "key": receipt_key_observation(&exact_key),
+                                "task": task_observation_from_response(
+                                    V5ServerResponse::Task {
+                                        snapshot: snapshot.clone(),
+                                    },
+                                    &exact_key,
+                                )?,
+                                "acknowledgement": null,
+                                "cutoffEpochMs": observed_cutoff.0.checked_add(observed_cutoff.1),
+                                "originalBudgetMs": observed_cutoff.1,
+                                "latencyMs": 0,
+                            }),
+                            _ => response_observation(&response, Some(observed_cutoff))?,
+                        };
+                        report.responses.insert(label, observation);
                     }
                 }
             }
@@ -641,6 +661,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                     )?;
                 }
+                ScenarioEvent::BoundHandoffCommitted => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::BoundHandoffCommitted,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
             },
             ReceiptScenarioAction::ReleaseBarrier { point } => {
                 if !matches!(
@@ -777,6 +803,193 @@ fn seed_receipt_backed_task_terminal(
         )
         .map_err(|error| format!("seed receipt-backed Task terminal: {error}"))?;
     Ok(())
+}
+
+fn seed_receipt_state(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: &Arc<ScenarioEpochClock>,
+    key: ReceiptKey,
+    seed_state: ScenarioSeedReceiptState,
+    cancel_requested: bool,
+    staged_terminal: Option<ScenarioTerminalFixture>,
+) -> Result<bool, String> {
+    if matches!(
+        seed_state,
+        ScenarioSeedReceiptState::TaskTerminalReceiptBacked
+    ) {
+        let Some(terminal) = staged_terminal else {
+            return Ok(false);
+        };
+        seed_receipt_backed_task_terminal(
+            state_root,
+            identity,
+            clock,
+            key,
+            terminal,
+            cancel_requested,
+        )?;
+        return Ok(true);
+    }
+    if staged_terminal.is_some() {
+        return Ok(false);
+    }
+
+    let state = DaemonStateDirectory::open(state_root, identity)?;
+    let config = scenario_server_config_with_clock(state_root, identity, None, clock);
+    let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())?;
+    let deadline = Instant::now() + SCENARIO_OPERATION_TIMEOUT;
+    let epoch_ms = clock.now_epoch_millis();
+    let cutoff = OriginalCutoffDescriptor::new(epoch_ms, 7_000)
+        .map_err(|error| format!("construct seeded receipt cutoff: {error}"))?;
+
+    let supported = match seed_state {
+        ScenarioSeedReceiptState::CancelReserved => {
+            runtime
+                .receipt_ledger
+                .request_cancel_or_reserve(key, epoch_ms, deadline)
+                .map_err(|error| format!("seed CancelReserved receipt: {error}"))?;
+            true
+        }
+        ScenarioSeedReceiptState::ReservedUnbound
+        | ScenarioSeedReceiptState::ReservedActorBound
+        | ScenarioSeedReceiptState::ReservedBegun
+        | ScenarioSeedReceiptState::TaskPromisedUnbound
+        | ScenarioSeedReceiptState::TaskPromisedActorBound
+        | ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun
+        | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun => {
+            let reserved = runtime
+                .receipt_ledger
+                .reserve(key.clone(), cutoff, deadline)
+                .map_err(|error| format!("seed reserved receipt: {error}"))?
+                .into_reservation()
+                .map_err(|state| {
+                    format!(
+                        "seeded receipt unexpectedly exists as {}",
+                        state.kind().diagnostic_name()
+                    )
+                })?;
+            let workspace_identity = SafeIdentityHash::from_sha256(
+                Sha256::digest(b"unica.d0.scenario-workspace.v1").into(),
+            );
+            match seed_state {
+                ScenarioSeedReceiptState::ReservedUnbound => {}
+                ScenarioSeedReceiptState::ReservedActorBound => {
+                    runtime
+                        .receipt_ledger
+                        .bind_reserved_actor(
+                            key.clone(),
+                            reserved.record_version(),
+                            workspace_identity,
+                            deadline,
+                        )
+                        .map_err(|error| format!("seed actor-bound receipt: {error}"))?;
+                }
+                ScenarioSeedReceiptState::ReservedBegun => {
+                    let bound = runtime
+                        .receipt_ledger
+                        .bind_reserved_actor(
+                            key.clone(),
+                            reserved.record_version(),
+                            workspace_identity,
+                            deadline,
+                        )
+                        .map_err(|error| format!("seed actor-bound receipt: {error}"))?;
+                    runtime
+                        .receipt_ledger
+                        .mark_reserved_begun(key.clone(), bound.record_version(), deadline)
+                        .map_err(|error| format!("seed begun receipt: {error}"))?;
+                }
+                ScenarioSeedReceiptState::TaskPromisedUnbound => {
+                    runtime
+                        .receipt_ledger
+                        .promise_task_unbound(
+                            key.clone(),
+                            reserved.record_version(),
+                            epoch_ms,
+                            SCENARIO_TASK_TTL_MS,
+                            SCENARIO_TASK_POLL_INTERVAL_MS,
+                            deadline,
+                        )
+                        .map_err(|error| format!("seed unbound Task promise: {error}"))?;
+                }
+                ScenarioSeedReceiptState::TaskPromisedActorBound => {
+                    let promised = runtime
+                        .receipt_ledger
+                        .promise_task_unbound(
+                            key.clone(),
+                            reserved.record_version(),
+                            epoch_ms,
+                            SCENARIO_TASK_TTL_MS,
+                            SCENARIO_TASK_POLL_INTERVAL_MS,
+                            deadline,
+                        )
+                        .map_err(|error| format!("seed unbound Task promise: {error}"))?;
+                    runtime
+                        .receipt_ledger
+                        .bind_promised_task_actor(
+                            key.clone(),
+                            promised.record_version(),
+                            workspace_identity,
+                            deadline,
+                        )
+                        .map_err(|error| format!("seed actor-bound Task promise: {error}"))?;
+                }
+                ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun
+                | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun => {
+                    let bound = runtime
+                        .receipt_ledger
+                        .bind_reserved_actor(
+                            key.clone(),
+                            reserved.record_version(),
+                            workspace_identity,
+                            deadline,
+                        )
+                        .map_err(|error| format!("seed actor-bound receipt: {error}"))?;
+                    let expected_version = if matches!(
+                        seed_state,
+                        ScenarioSeedReceiptState::TaskHandoffActorBoundBegun
+                    ) {
+                        runtime
+                            .receipt_ledger
+                            .mark_reserved_begun(key.clone(), bound.record_version(), deadline)
+                            .map_err(|error| format!("seed begun receipt: {error}"))?
+                            .record_version()
+                    } else {
+                        bound.record_version()
+                    };
+                    runtime
+                        .receipt_ledger
+                        .begin_bound_task_handoff(
+                            key.clone(),
+                            expected_version,
+                            epoch_ms,
+                            SCENARIO_TASK_TTL_MS,
+                            SCENARIO_TASK_POLL_INTERVAL_MS,
+                            deadline,
+                        )
+                        .map_err(|error| format!("seed actor-bound Task handoff: {error}"))?;
+                }
+                _ => unreachable!("closed seeded reservation family"),
+            }
+            if cancel_requested {
+                runtime
+                    .receipt_ledger
+                    .request_cancel_or_reserve(key, epoch_ms, deadline)
+                    .map_err(|error| format!("seed receipt cancellation: {error}"))?;
+            }
+            true
+        }
+        ScenarioSeedReceiptState::DirectTerminalUnacked
+        | ScenarioSeedReceiptState::AcknowledgedTombstone
+        | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
+        | ScenarioSeedReceiptState::TaskBoundNotBegun
+        | ScenarioSeedReceiptState::TaskBoundBegun
+        | ScenarioSeedReceiptState::TaskTerminalBound
+        | ScenarioSeedReceiptState::TaskTerminalReceiptBacked => false,
+    };
+    drop(runtime);
+    Ok(supported)
 }
 
 fn task_terminal_digest_from_store(
@@ -2627,11 +2840,11 @@ fn daemon_process_events(
 }
 
 fn presented_core_identity(
-    server: ScenarioProtocolVersion,
+    client: ScenarioProtocolVersion,
     message: &ScenarioProtocolMessage,
     default_identity: &CoreIdentity,
 ) -> Result<CoreIdentity, String> {
-    match (server, message) {
+    match (client, message) {
         (
             ScenarioProtocolVersion::V3,
             ScenarioProtocolMessage::SubmitWithCoreIdentity {
@@ -3377,6 +3590,74 @@ fn receipt_observation(state: ReceiptState) -> Result<Value, String> {
             mutation_sequence: receipt.mutation_sequence(),
             begun: false,
         },
+        ReceiptState::TaskPromisedUnbound(receipt) => ScenarioReceiptObservation {
+            key: receipt_key_observation(receipt.key()),
+            state: "task_promised_unbound",
+            cancel_requested: receipt.cancel_requested(),
+            accepted_epoch_ms: receipt.task().created_at_epoch_ms(),
+            original_budget_ms: 7_000,
+            expires_epoch_ms: None,
+            bound_workspace_identity: None,
+            staged_terminal: None,
+            terminal: None,
+            encoded_bytes: receipt.encoded_bytes(),
+            reserved_result_bytes: receipt.reserved_result_bytes(),
+            version: receipt.record_version().get(),
+            mutation_sequence: receipt.mutation_sequence(),
+            begun: false,
+        },
+        ReceiptState::TaskPromisedActorBound(receipt) => ScenarioReceiptObservation {
+            key: receipt_key_observation(receipt.key()),
+            state: "task_promised_actor_bound",
+            cancel_requested: receipt.cancel_requested(),
+            accepted_epoch_ms: receipt.task().created_at_epoch_ms(),
+            original_budget_ms: 7_000,
+            expires_epoch_ms: None,
+            bound_workspace_identity: Some(
+                serde_json::to_value(receipt.workspace_identity_hash())
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .ok_or_else(|| "encode promised Task workspace identity".to_owned())?,
+            ),
+            staged_terminal: None,
+            terminal: None,
+            encoded_bytes: receipt.encoded_bytes(),
+            reserved_result_bytes: receipt.reserved_result_bytes(),
+            version: receipt.record_version().get(),
+            mutation_sequence: receipt.mutation_sequence(),
+            begun: false,
+        },
+        ReceiptState::TaskHandoffActorBound(receipt) => ScenarioReceiptObservation {
+            key: receipt_key_observation(receipt.key()),
+            state: match receipt.phase() {
+                crate::application::receipt_ledger::AttemptPhase::NotBegun => {
+                    "task_handoff_actor_bound_not_begun"
+                }
+                crate::application::receipt_ledger::AttemptPhase::Begun => {
+                    "task_handoff_actor_bound_begun"
+                }
+            },
+            cancel_requested: receipt.cancel_requested(),
+            accepted_epoch_ms: receipt.task().created_at_epoch_ms(),
+            original_budget_ms: 7_000,
+            expires_epoch_ms: None,
+            bound_workspace_identity: Some(
+                serde_json::to_value(receipt.workspace_identity_hash())
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .ok_or_else(|| "encode handoff Task workspace identity".to_owned())?,
+            ),
+            staged_terminal: None,
+            terminal: None,
+            encoded_bytes: receipt.encoded_bytes(),
+            reserved_result_bytes: receipt.reserved_result_bytes(),
+            version: receipt.record_version().get(),
+            mutation_sequence: receipt.mutation_sequence(),
+            begun: matches!(
+                receipt.phase(),
+                crate::application::receipt_ledger::AttemptPhase::Begun
+            ),
+        },
         other => {
             return Err(format!(
                 "receipt scenario cannot project unsupported state {}",
@@ -4046,8 +4327,10 @@ impl ReceiptScenarioAction {
                 terminal,
                 ..
             } => {
-                matches!(execution_class, ScenarioExecutionClass::Direct)
-                    && matches!(terminal, ScenarioTerminalFixture::Success { .. })
+                matches!(
+                    execution_class,
+                    ScenarioExecutionClass::Direct | ScenarioExecutionClass::KnownLong
+                ) && matches!(terminal, ScenarioTerminalFixture::Success { .. })
             }
             Self::Cancel {
                 key, lazy_session, ..
@@ -4095,13 +4378,38 @@ impl ReceiptScenarioAction {
             Self::SeedReceipt {
                 state,
                 staged_terminal,
-                ..
-            } => {
-                matches!(state, ScenarioSeedReceiptState::TaskTerminalReceiptBacked)
-                    && staged_terminal.as_ref().is_some_and(|terminal| {
+                cancel_requested,
+            } => match state {
+                ScenarioSeedReceiptState::TaskTerminalReceiptBacked => {
+                    staged_terminal.as_ref().is_some_and(|terminal| {
                         matches!(terminal, ScenarioTerminalFixture::Success { .. })
                     })
-            }
+                }
+                ScenarioSeedReceiptState::CancelReserved
+                | ScenarioSeedReceiptState::ReservedUnbound
+                | ScenarioSeedReceiptState::ReservedActorBound
+                | ScenarioSeedReceiptState::ReservedBegun
+                | ScenarioSeedReceiptState::TaskPromisedUnbound
+                | ScenarioSeedReceiptState::TaskPromisedActorBound
+                | ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun
+                | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun => {
+                    staged_terminal.is_none()
+                        && (!*cancel_requested
+                            || matches!(
+                                state,
+                                ScenarioSeedReceiptState::CancelReserved
+                                    | ScenarioSeedReceiptState::ReservedUnbound
+                                    | ScenarioSeedReceiptState::ReservedActorBound
+                                    | ScenarioSeedReceiptState::ReservedBegun
+                            ))
+                }
+                ScenarioSeedReceiptState::DirectTerminalUnacked
+                | ScenarioSeedReceiptState::AcknowledgedTombstone
+                | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
+                | ScenarioSeedReceiptState::TaskBoundNotBegun
+                | ScenarioSeedReceiptState::TaskBoundBegun
+                | ScenarioSeedReceiptState::TaskTerminalBound => false,
+            },
             Self::ReadTask { .. } => true,
             Self::AdvanceEpoch { .. }
             | Self::AdvanceMonotonic { .. }
@@ -4393,6 +4701,7 @@ enum ScenarioBarrierPoint {
 enum ScenarioEvent {
     CancelReservationConverted,
     ReceiptTerminalCommitted,
+    BoundHandoffCommitted,
 }
 
 #[derive(Deserialize)]
@@ -4414,6 +4723,57 @@ mod tests {
     };
     use crate::infrastructure::daemon::protocol_v5::V5InvocationPhase as TestV5InvocationPhase;
     use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
+
+    #[test]
+    fn seeded_promised_and_handoff_states_cross_the_real_actor_store_path() {
+        let identity = CoreIdentity::production_v5();
+        let cases = [
+            (
+                ScenarioSeedReceiptState::TaskPromisedUnbound,
+                "task_promised_unbound",
+            ),
+            (
+                ScenarioSeedReceiptState::TaskPromisedActorBound,
+                "task_promised_actor_bound",
+            ),
+            (
+                ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun,
+                "task_handoff_actor_bound_not_begun",
+            ),
+            (
+                ScenarioSeedReceiptState::TaskHandoffActorBoundBegun,
+                "task_handoff_actor_bound_begun",
+            ),
+        ];
+
+        for (seed_state, expected) in cases {
+            let state_root = ScenarioStateRoot::new().expect("scenario state root");
+            let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS));
+            let key = fresh_key(&identity, &Map::new()).expect("exact receipt key");
+            assert!(seed_receipt_state(
+                state_root.path(),
+                &identity,
+                &clock,
+                key.clone(),
+                seed_state,
+                false,
+                None,
+            )
+            .expect("seed exact receipt state"));
+
+            let state = DaemonStateDirectory::open(state_root.path(), &identity)
+                .expect("open daemon state");
+            let config =
+                scenario_server_config_with_clock(state_root.path(), &identity, None, &clock);
+            let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())
+                .expect("reopen runtime");
+            let recovered = runtime
+                .receipt_ledger
+                .recover(key, Instant::now() + SCENARIO_OPERATION_TIMEOUT)
+                .expect("recover exact seeded receipt");
+            assert_eq!(recovered.kind().diagnostic_name(), expected);
+        }
+    }
 
     #[test]
     fn support_filter_rejects_actions_without_an_interpreter_path() {

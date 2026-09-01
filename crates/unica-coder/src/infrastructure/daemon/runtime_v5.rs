@@ -28,6 +28,7 @@ use crate::application::receipt_ledger::CommittedDirectPublication;
 use crate::application::receipt_ledger::{
     OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey, ReceiptLedgerError, ReceiptState,
     ReceiptTaskProjection, ReserveOutcome, ReservedPhase, TerminalDigest,
+    DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
@@ -64,6 +65,7 @@ const AUTHORITY_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(2);
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const V5_TASK_POLL_INTERVAL_MS: u64 = 100;
 
 #[cfg(feature = "receipt-ledger-test-support")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -71,6 +73,12 @@ const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 enum V5ReceiptRuntimeEventKind {
     V5ReceiptRuntimeEntered,
     CanonicalV13ServiceEntered,
+    ReceiptReserved,
+    ActorBoundCommitted,
+    ReceiptBegunCommitted,
+    PrepareEntered,
+    ExecuteEntered,
+    BoundHandoffCommitted,
     CancelReservationConverted,
     ReceiptTerminalCommitted,
     AcknowledgementCommitted,
@@ -758,6 +766,11 @@ impl V5ReceiptRuntime {
         let cutoff = OriginalCutoffDescriptor::new(epoch_ms, response_budget_ms)
             .map_err(|_| ReceiptLedgerError::TimestampOverflow)?;
         let outcome = self.receipt_ledger.reserve(key, cutoff, deadline)?;
+        #[cfg(feature = "receipt-ledger-test-support")]
+        if matches!(&outcome, ReserveOutcome::Created(_)) {
+            self.telemetry
+                .record_event(V5ReceiptRuntimeEventKind::ReceiptReserved, epoch_ms);
+        }
         let decision = decide_cancel_reserved_submit(outcome).map_err(|_| {
             ReceiptLedgerError::Corrupt("canonical cancelled terminal could not be constructed")
         })?;
@@ -821,13 +834,23 @@ impl V5ReceiptRuntime {
             actor_bound.workspace_identity_hash().clone(),
             deadline,
         )?;
+        #[cfg(feature = "receipt-ledger-test-support")]
+        self.telemetry
+            .record_event(V5ReceiptRuntimeEventKind::ActorBoundCommitted, epoch_ms);
         let begun = self.receipt_ledger.mark_reserved_begun(
             bound.key().clone(),
             bound.record_version(),
             deadline,
         )?;
         #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry.record_prepare();
+        self.telemetry
+            .record_event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
+        #[cfg(feature = "receipt-ledger-test-support")]
+        {
+            self.telemetry.record_prepare();
+            self.telemetry
+                .record_event(V5ReceiptRuntimeEventKind::PrepareEntered, epoch_ms);
+        }
         let prepared = match actor_bound.prepare() {
             Ok(prepared) => prepared,
             Err(result) => {
@@ -844,16 +867,33 @@ impl V5ReceiptRuntime {
             prepared.execution_class(),
             crate::application::operation_descriptors::ExecutionClass::KnownLong(_)
         ) {
-            let terminal = crate::application::receipt_ledger::canonical_v5_terminal(
-                &crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed {
-                    reason: V5SafeFailureReason::InvocationFailed,
+            let handoff = self.receipt_ledger.begin_bound_task_handoff(
+                begun.key().clone(),
+                begun.record_version(),
+                epoch_ms,
+                DIRECT_TERMINAL_RETENTION_MS,
+                V5_TASK_POLL_INTERVAL_MS,
+                deadline,
+            )?;
+            #[cfg(feature = "receipt-ledger-test-support")]
+            self.telemetry
+                .record_event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
+            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task {
+                    snapshot: queued_receipt_task_snapshot(
+                        handoff.task(),
+                        handoff.key_digest().clone(),
+                        handoff.cancel_requested(),
+                    ),
                 },
-            )
-            .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-            return self.publish_direct_terminal(begun, epoch_ms, terminal, deadline);
+            }));
         }
         #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry.record_execute();
+        {
+            self.telemetry.record_execute();
+            self.telemetry
+                .record_event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
+        }
         let outcome = match prepared.execute() {
             Ok(result) => crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
                 result: Box::new(result),
