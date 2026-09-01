@@ -235,8 +235,31 @@ def prepare_runtime_overlay(overlay_input: Path, extract_dir: Path) -> Path:
 
 
 def unica_version(run_unica: Path) -> str:
-    plugin_json = read_json(plugin_root_for(run_unica) / ".codex-plugin" / "plugin.json")
-    return str(plugin_json.get("version", "unknown"))
+    plugin_root = plugin_root_for(run_unica)
+    tool_manifest_path = plugin_root / "third-party" / "manifest.json"
+    if tool_manifest_path.is_file():
+        tool_manifest = read_json(tool_manifest_path)
+        candidates = [
+            tool
+            for tool in tool_manifest.get("tools", [])
+            if isinstance(tool, dict) and tool.get("name") == "unica"
+        ]
+        if len(candidates) != 1:
+            raise SystemExit("candidate runtime manifest must contain exactly one unica tool")
+        version = candidates[0].get("version")
+        if not isinstance(version, str) or not version:
+            raise SystemExit("candidate runtime manifest unica version is missing")
+        plugin_json = read_json(plugin_root / ".codex-plugin" / "plugin.json")
+        host_version = plugin_json.get("version")
+        if host_version is not None and host_version != version:
+            raise SystemExit("candidate runtime and host manifest versions differ")
+        return version
+
+    plugin_json = read_json(plugin_root / ".codex-plugin" / "plugin.json")
+    version = plugin_json.get("version")
+    if not isinstance(version, str) or not version:
+        raise SystemExit("candidate package unica version is missing")
+    return version
 
 
 def call_mcp(

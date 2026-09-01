@@ -282,6 +282,20 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             assessment_required=True,
         )
 
+    def test_p0_evidence_producers_route_package_and_proof_contours(self) -> None:
+        for path in (
+            "scripts/ci/package-unica-plugin.py",
+            "scripts/ci/probe-unica-wire.py",
+            "scripts/ci/verify-release-assets.py",
+        ):
+            with self.subTest(path=path):
+                self.assert_classification(
+                    [path],
+                    package_changed=True,
+                    release_required=True,
+                    assessment_required=True,
+                )
+
     def test_every_assessment_path_also_claims_a_release_or_ci_contour(self) -> None:
         """`evaluate-ci-gate.py` reads a lone assessment contour as a contradiction.
 

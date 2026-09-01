@@ -644,6 +644,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: [classify-changes, build-tools]
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
     if: >-
       ${{
         always() &&
@@ -656,6 +658,12 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Resolve the release tag for non-tag builds
+        if: ${{ env.RELEASE_TAG == '' }}
+        run: |
+          set -euo pipefail
+          version="$(python -c 'import json; print(json.load(open("plugins/unica/.codex-plugin/plugin.json"))["version"])')"
+          echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v8
         with:
           name: unica-runtime-linux-x64
@@ -665,10 +673,6 @@ jobs:
           name: unica-assessment-engine-linux-x64
           path: .build/assessment-engine
       - name: Run release assessment
-        # A tag name is a ref, so it obeys the same rules a branch name does and
-        # is the same command-injection sink: it reaches the shell as data.
-        env:
-          RELEASE_REF: ${{ github.ref_name }}
         run: >
           python scripts/ci/release-assessment.py
           --package-archive dist/runtime/unica-runtime-linux-x64.tar.gz
@@ -676,7 +680,7 @@ jobs:
           --work-dir .build/release-assessment
           --out-dir dist/release-assessment
           --bsp-ref 3.2.1.446
-          --release-tag "$RELEASE_REF"
+          --release-tag "$RELEASE_TAG"
           --github-run-id "${{ github.run_id }}"
       - uses: actions/upload-artifact@v7
         if: always()

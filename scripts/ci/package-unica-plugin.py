@@ -110,8 +110,10 @@ def package_tree_sha256(root: Path) -> str:
     """Digest package paths and bytes so the proof binds the assembled tree."""
     digest = hashlib.sha256()
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
-        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
-        digest.update(b"\0")
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(path.stat().st_size.to_bytes(8, "big"))
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
@@ -690,6 +692,7 @@ def write_p0_package_evidence(
         raise SystemExit(f"packaged runtime manifest is missing: {runtime_manifest}")
     evidence = {
         "schemaVersion": 1,
+        "packageHashFormat": "sha256-u64be-path-content-v1",
         "pluginVersion": version,
         "sourceCommit": source_commit,
         "packageSha256": package_tree_sha256(marketplace_dir),

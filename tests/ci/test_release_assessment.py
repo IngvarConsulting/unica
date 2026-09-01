@@ -32,6 +32,30 @@ def load_bsp_harvest_module():
 
 
 class ReleaseAssessmentTests(unittest.TestCase):
+    def test_runtime_version_comes_from_the_candidate_tool_manifest(self) -> None:
+        module = load_assessment_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        runtime = root / "runtime"
+        manifest = runtime / "third-party" / "manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "tools": [
+                        {"name": "unica", "version": "0.12.0"},
+                        {"name": "bsl-analyzer", "version": "0.2.67"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        run_unica = runtime / "bin" / "linux-x64" / "unica"
+        run_unica.parent.mkdir(parents=True)
+        run_unica.write_bytes(b"unica")
+
+        self.assertEqual(module.unica_version(run_unica), "0.12.0")
+
     def test_dry_assessment_declares_separate_p0_lifecycle_outcomes(self) -> None:
         module = load_assessment_module()
 
@@ -342,6 +366,11 @@ for raw in sys.stdin:
             root = Path(tmp)
             fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
             self.write_fake_mcp(fake_mcp)
+            (root / ".codex-plugin").mkdir()
+            (root / ".codex-plugin" / "plugin.json").write_text(
+                json.dumps({"name": "unica", "version": "9.9.9"}),
+                encoding="utf-8",
+            )
             bsp_root = root / "bsp"
             (bsp_root / "src" / "cf").mkdir(parents=True)
             (bsp_root / "src" / "cf" / "Module.bsl").write_text("Процедура Smoke()\nКонецПроцедуры\n", encoding="utf-8")

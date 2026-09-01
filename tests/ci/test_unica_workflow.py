@@ -310,6 +310,19 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("assessment_required == 'true'", assessment)
         self.assertIn("needs.build-tools.result == 'success'", assessment)
 
+    def test_release_assessment_uses_the_candidate_release_identity(self) -> None:
+        assessment = job_block(self.release_text(), "release-assessment")
+
+        self.assertIn(
+            "RELEASE_TAG: ${{ github.event_name == 'push' && "
+            "startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}",
+            assessment,
+        )
+        self.assertIn("if: ${{ env.RELEASE_TAG == '' }}", assessment)
+        self.assertIn('echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"', assessment)
+        self.assertIn('--release-tag "$RELEASE_TAG"', assessment)
+        self.assertNotIn("RELEASE_REF: ${{ github.ref_name }}", assessment)
+
     def test_only_tag_pushes_enable_release_behavior(self) -> None:
         text = self.release_text()
         build = job_block(text, "build-tools")

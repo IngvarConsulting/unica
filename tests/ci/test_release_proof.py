@@ -91,6 +91,8 @@ class ReleaseProofTests(unittest.TestCase):
     def assessment(self, *, lifecycle: dict[str, dict] | None = None) -> dict:
         return {
             "schemaVersion": 1,
+            "unicaVersion": "0.12.0",
+            "releaseTag": "v0.12.0",
             "summary": {"status": "passed"},
             "scenarios": [{"id": "mcp-tools-list", "status": "passed"}],
             "lifecycle": lifecycle or {
@@ -112,6 +114,7 @@ class ReleaseProofTests(unittest.TestCase):
             )
         package = {
             "schemaVersion": 1,
+            "packageHashFormat": "sha256-u64be-path-content-v1",
             "pluginVersion": version,
             "sourceCommit": "a" * 40,
             "packageSha256": self.module.tree_sha256(self.package_dir),
@@ -205,21 +208,27 @@ class ReleaseProofTests(unittest.TestCase):
 
         self.assertEqual(report["status"], "passed")
 
-    def test_proof_rejects_any_v0123_tool_name_in_the_rc_surface(self) -> None:
-        baseline = json.loads(json.dumps(self.baseline))
-        baseline["wire"]["toolNames"] = [
-            "unica.view",
-            *baseline["wire"]["toolNames"][1:],
-        ]
+    def test_proof_rejects_any_v0123_tool_name_outside_the_exact_rc_surface(self) -> None:
+        legacy_name = self.baseline["wire"]["toolNames"][0]
+        self.native_names.add(legacy_name)
 
-        with self.assertRaisesRegex(self.module.ProofError, "legacy baseline overlap.*unica.view"):
-            self.evaluate(baseline=baseline)
+        with self.assertRaisesRegex(
+            self.module.ProofError, f"native wire surface differs.*{legacy_name}"
+        ):
+            self.evaluate()
 
     def test_proof_rejects_non_string_legacy_tool_names(self) -> None:
         baseline = json.loads(json.dumps(self.baseline))
         baseline["wire"]["toolNames"][0] = None
 
         with self.assertRaisesRegex(self.module.ProofError, "74 unique tool names"):
+            self.evaluate(baseline=baseline)
+
+    def test_proof_pins_the_canonical_v0123_baseline_content(self) -> None:
+        baseline = json.loads(json.dumps(self.baseline))
+        baseline["wire"]["toolNames"][0] = "attacker.replacement"
+
+        with self.assertRaisesRegex(self.module.ProofError, "canonical"):
             self.evaluate(baseline=baseline)
 
     def test_proof_rejects_wrong_negotiated_protocol(self) -> None:
@@ -235,6 +244,56 @@ class ReleaseProofTests(unittest.TestCase):
     def test_proof_rejects_hashes_not_matching_downloaded_package(self) -> None:
         with self.assertRaisesRegex(self.module.ProofError, "packageSha256 does not match"):
             self.evaluate(package=self.package(packageSha256="b" * 64))
+
+    def test_tree_hash_frames_path_and_content_boundaries(self) -> None:
+        root = Path(self.tempdir.name)
+        first = root / "first-tree"
+        second = root / "second-tree"
+        first.mkdir()
+        second.mkdir()
+        (first / "a").write_bytes(b"x\0y")
+        (first / "z").write_bytes(b"w")
+        (second / "a").write_bytes(b"x\0yz\0w")
+
+        first_digest = self.module.tree_sha256(first)
+        self.assertEqual(
+            first_digest,
+            "5188569041dcc3e6e365f6a5b95d375ba69964b3cd93a8f28c198a521c30bda2",
+        )
+        self.assertNotEqual(first_digest, self.module.tree_sha256(second))
+
+    def test_proof_requires_the_framed_package_hash_format(self) -> None:
+        for value in (None, "sha256-path-nul-content-v0"):
+            package = self.package()
+            if value is None:
+                del package["packageHashFormat"]
+            else:
+                package["packageHashFormat"] = value
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(self.module.ProofError, "packageHashFormat"):
+                    self.evaluate(package=package)
+
+    def test_proof_requires_assessment_release_tag_to_match_candidate(self) -> None:
+        for value in (None, "646/merge"):
+            assessment = self.assessment()
+            if value is None:
+                del assessment["releaseTag"]
+            else:
+                assessment["releaseTag"] = value
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(self.module.ProofError, "assessment releaseTag"):
+                    self.evaluate(assessment=assessment)
+
+    def test_proof_requires_assessment_unica_version_to_match_candidate(self) -> None:
+        for value in (None, "unknown"):
+            assessment = self.assessment()
+            if value is None:
+                del assessment["unicaVersion"]
+            else:
+                assessment["unicaVersion"] = value
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(self.module.ProofError, "assessment unicaVersion"):
+                    self.evaluate(assessment=assessment)
 
     def test_proof_requires_all_target_wire_profiles(self) -> None:
         native_wires, compatibility_wires = self.wire_sets()
@@ -288,6 +347,11 @@ class ReleaseProofTests(unittest.TestCase):
         report = self.evaluate(
             release_tag="v0.13.0-rc.1",
             package=self.package(pluginVersion="0.13.0-rc.1"),
+            assessment={
+                **self.assessment(),
+                "unicaVersion": "0.13.0-rc.1",
+                "releaseTag": "v0.13.0-rc.1",
+            },
         )
 
         self.assertEqual(

@@ -13,6 +13,10 @@ from typing import Any
 
 
 SCHEMA_VERSION = 1
+PACKAGE_HASH_FORMAT = "sha256-u64be-path-content-v1"
+BASELINE_CANONICAL_SHA256 = (
+    "c0c1658a3740a4bcda5098dfd31aa7c64476f709653ea3fc3b207ce41c00a9df"
+)
 BASELINE_TAG = "v0.12.3"
 TARGETS = ("darwin-arm64", "linux-x64", "win-x64")
 LIFECYCLE_SCENARIOS = (
@@ -61,8 +65,10 @@ def tree_sha256(root: Path) -> str:
         raise ProofError(f"downloaded package directory is missing: {root}")
     digest = hashlib.sha256()
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
-        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
-        digest.update(b"\0")
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(path.stat().st_size.to_bytes(8, "big"))
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
@@ -166,6 +172,14 @@ def _validate_baseline(baseline: dict[str, Any]) -> tuple[str, set[str]]:
         or len(set(names)) != 74
     ):
         raise ProofError("legacy baseline must contain 74 unique tool names")
+    canonical = json.dumps(
+        baseline,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if hashlib.sha256(canonical).hexdigest() != BASELINE_CANONICAL_SHA256:
+        raise ProofError(f"legacy baseline must match the canonical {BASELINE_TAG} content")
     return str(source["tag"]), set(names)
 
 
@@ -174,6 +188,8 @@ def _validate_package(
 ) -> dict[str, Any]:
     if package.get("schemaVersion") != SCHEMA_VERSION:
         raise ProofError(f"package evidence schemaVersion must be {SCHEMA_VERSION}")
+    if package.get("packageHashFormat") != PACKAGE_HASH_FORMAT:
+        raise ProofError(f"packageHashFormat must be {PACKAGE_HASH_FORMAT}")
     version = _require_string(package.get("pluginVersion"), "package pluginVersion")
     source_commit = _require_string(package.get("sourceCommit"), "package sourceCommit")
     if not HEX_40.fullmatch(source_commit):
@@ -250,9 +266,25 @@ def _validate_asset_reports(asset_dir: Path, expected_plugin_version: str) -> di
     return {"status": "passed", "source": "local-build", "targets": reports}
 
 
-def _validate_lifecycle(assessment: dict[str, Any], mode: str) -> dict[str, dict[str, Any]]:
+def _validate_lifecycle(
+    assessment: dict[str, Any],
+    mode: str,
+    *,
+    expected_release_tag: str,
+    expected_unica_version: str,
+) -> dict[str, dict[str, Any]]:
     if assessment.get("schemaVersion") != SCHEMA_VERSION:
         raise ProofError(f"assessment schemaVersion must be {SCHEMA_VERSION}")
+    assessment_release_tag = _require_string(
+        assessment.get("releaseTag"), "assessment releaseTag"
+    )
+    if assessment_release_tag != expected_release_tag:
+        raise ProofError("assessment releaseTag does not match candidate releaseTag")
+    assessment_unica_version = _require_string(
+        assessment.get("unicaVersion"), "assessment unicaVersion"
+    )
+    if assessment_unica_version != expected_unica_version:
+        raise ProofError("assessment unicaVersion does not match candidate pluginVersion")
     summary = assessment.get("summary")
     if not isinstance(summary, dict) or summary.get("status") != "passed":
         raise ProofError("release assessment summary must be passed")
@@ -321,7 +353,12 @@ def evaluate_proof(
     overlap = sorted(all_rc_names & legacy_names)
     if overlap:
         raise ProofError("legacy baseline overlap: " + ", ".join(overlap))
-    lifecycle = _validate_lifecycle(assessment, mode)
+    lifecycle = _validate_lifecycle(
+        assessment,
+        mode,
+        expected_release_tag=release_tag,
+        expected_unica_version=package_summary["pluginVersion"],
+    )
 
     return {
         "schemaVersion": SCHEMA_VERSION,
