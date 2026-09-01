@@ -27,7 +27,7 @@ use crate::application::ports::Clock;
 use crate::application::receipt_ledger::CommittedDirectPublication;
 use crate::application::receipt_ledger::{
     OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey, ReceiptLedgerError, ReceiptState,
-    ReserveOutcome, ReservedPhase, TerminalDigest,
+    ReceiptTaskProjection, ReserveOutcome, ReservedPhase, TerminalDigest,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
@@ -1033,8 +1033,30 @@ impl V5ReceiptRuntime {
         deadline: Instant,
     ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
         let state = self.receipt_ledger.resolve_task(task_id, deadline)?;
-        let ReceiptState::TaskTerminalReceiptBacked(receipt) = state else {
-            return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
+        let receipt = match state {
+            ReceiptState::TaskPromisedUnbound(receipt) => {
+                return Ok(queued_receipt_task_snapshot(
+                    receipt.task(),
+                    receipt.key_digest().clone(),
+                    receipt.cancel_requested(),
+                ));
+            }
+            ReceiptState::TaskPromisedActorBound(receipt) => {
+                return Ok(queued_receipt_task_snapshot(
+                    receipt.task(),
+                    receipt.key_digest().clone(),
+                    receipt.cancel_requested(),
+                ));
+            }
+            ReceiptState::TaskHandoffActorBound(receipt) => {
+                return Ok(queued_receipt_task_snapshot(
+                    receipt.task(),
+                    receipt.key_digest().clone(),
+                    receipt.cancel_requested(),
+                ));
+            }
+            ReceiptState::TaskTerminalReceiptBacked(receipt) => receipt,
+            _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
         };
         let task = receipt.task();
         let common = (
@@ -1243,6 +1265,24 @@ impl V5ReceiptRuntime {
 enum V5RuntimeReply {
     Json(V5ServerResponse),
     Prepared(PreparedWireFrame),
+}
+
+fn queued_receipt_task_snapshot(
+    task: &ReceiptTaskProjection,
+    receipt_key_digest: crate::application::receipt_ledger::ReceiptKeyDigest,
+    cancel_requested: bool,
+) -> super::protocol_v5::V5DaemonTaskSnapshot {
+    super::protocol_v5::V5DaemonTaskSnapshot::Queued {
+        task_id: task.task_id(),
+        invocation_id: task.invocation_id(),
+        receipt_key_digest,
+        created_at_epoch_ms: task.created_at_epoch_ms(),
+        updated_at_epoch_ms: task.updated_at_epoch_ms(),
+        ttl_ms: task.ttl_ms(),
+        poll_interval_ms: task.poll_interval_ms(),
+        version: task.version(),
+        cancel_requested,
+    }
 }
 
 fn pending_cancel_response(
@@ -1745,12 +1785,25 @@ fn write_runtime_ledger_error_before(
         // The actor has already latched fail-stop, so asking it for another
         // generation check would turn the required closed response into EOF.
         // The runtime still owns the authenticated stream, PID endpoint,
-        // listener and process-scoped authority at this point. The response
-        // deadline is the operation cutoff plus its one transport margin.
+        // listener and process-scoped authority at this point. A running
+        // mutation may be classified only after the original response cutoff
+        // when the caller is descheduled, so its one transport margin starts
+        // when that fail-stop result is observed.
+        let deadline = fail_stop_response_deadline(deadline, Instant::now())?;
         write_json_line_before(stream, &response, deadline)
     } else {
         write_runtime_json_line_before(stream, runtime, &response, deadline)
     }
+}
+
+fn fail_stop_response_deadline(
+    original_response_deadline: Instant,
+    observed_at: Instant,
+) -> Result<Instant, String> {
+    let serialization_deadline = observed_at
+        .checked_add(RESPONSE_SERIALIZATION_MARGIN)
+        .ok_or_else(|| "protocol-v5 fail-stop response deadline overflow".to_owned())?;
+    Ok(original_response_deadline.max(serialization_deadline))
 }
 
 fn write_runtime_reply_before(
@@ -2053,9 +2106,10 @@ mod tests {
     use crate::application::receipt_ledger::{
         receipt_key_digest, request_scope_hash, CancelExpiryOutcome, CancelResolution,
         CommittedDirectPublication, OriginalCutoffDescriptor, ReceiptKey, ReceiptLedgerPort,
-        ReceiptRecordHeader, ReceiptState, ReceiptTerminalOutcome, ReceiptVersion, RequestIdentity,
-        ReserveOutcome, ReservedPhase, ReservedReceipt, V5CanonicalTerminal, V5ToolIdentity,
-        CANCEL_RESERVATION_TTL_MS, MAX_RECEIPT_ENTITLEMENT_BYTES,
+        ReceiptRecordHeader, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
+        ReceiptVersion, RequestIdentity, ReserveOutcome, ReservedPhase, ReservedReceipt,
+        V5CanonicalTerminal, V5ToolIdentity, CANCEL_RESERVATION_TTL_MS,
+        MAX_RECEIPT_ENTITLEMENT_BYTES,
     };
     use crate::domain::invocation::{InvocationId, TaskId};
     use crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner;
@@ -2075,6 +2129,43 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn promised_receipt_projects_the_exact_stable_queued_task() {
+        let task = ReceiptTaskProjection::new(
+            "11111111-1111-4111-8111-111111111111"
+                .parse()
+                .expect("valid TaskId"),
+            "22222222-2222-4222-8222-222222222222"
+                .parse()
+                .expect("valid InvocationId"),
+            1_000,
+            1_000,
+            3_600_000,
+            250,
+            1,
+        )
+        .expect("valid Task projection");
+        let digest: crate::application::receipt_ledger::ReceiptKeyDigest =
+            "33".repeat(32).parse().expect("valid receipt digest");
+
+        let snapshot = queued_receipt_task_snapshot(&task, digest.clone(), true);
+
+        assert_eq!(
+            snapshot,
+            super::super::protocol_v5::V5DaemonTaskSnapshot::Queued {
+                task_id: task.task_id(),
+                invocation_id: task.invocation_id(),
+                receipt_key_digest: digest,
+                created_at_epoch_ms: 1_000,
+                updated_at_epoch_ms: 1_000,
+                ttl_ms: 3_600_000,
+                poll_interval_ms: 250,
+                version: 1,
+                cancel_requested: true,
+            }
+        );
+    }
 
     fn write_json_line(stream: &mut TcpStream, value: &serde_json::Value) {
         let mut bytes = serde_json::to_vec(value).expect("serialize v5 frame");
@@ -2451,6 +2542,20 @@ mod tests {
         assert!(
             competing_authority.is_err(),
             "timed-out mutation released receipt authority before process death"
+        );
+    }
+
+    #[test]
+    fn fail_stop_response_margin_starts_when_running_timeout_is_observed() {
+        let observed_at = Instant::now();
+        let expired_response_deadline = observed_at
+            .checked_sub(Duration::from_millis(1))
+            .expect("response deadline can precede the observation");
+
+        assert_eq!(
+            fail_stop_response_deadline(expired_response_deadline, observed_at)
+                .expect("fail-stop response deadline"),
+            observed_at + RESPONSE_SERIALIZATION_MARGIN
         );
     }
 
