@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 
 SCHEMA_VERSION = 1
 BASELINE_TAG = "v0.12.3"
+TARGETS = ("darwin-arm64", "linux-x64", "win-x64")
 LIFECYCLE_SCENARIOS = (
     "fresh_install",
     "upgrade",
@@ -40,6 +43,30 @@ HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 
 class ProofError(ValueError):
     """A release proof input is malformed or violates a release gate."""
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise ProofError(f"cannot hash package file {path}: {error}") from error
+    return digest.hexdigest()
+
+
+def tree_sha256(root: Path) -> str:
+    if not root.is_dir():
+        raise ProofError(f"downloaded package directory is missing: {root}")
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -85,6 +112,13 @@ def _validate_wire(profile: str, evidence: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(server_info, dict) or server_info.get("name") != "unica":
         raise ProofError(f"{profile} wire evidence must identify server unica")
     protocol = _require_string(evidence.get("protocolVersion"), f"{profile} protocolVersion")
+    negotiated = _require_string(
+        evidence.get("serverProtocolVersion"), f"{profile} serverProtocolVersion"
+    )
+    if negotiated != protocol:
+        raise ProofError(
+            f"{profile} negotiated protocol {negotiated} differs from requested {protocol}"
+        )
     tasks = evidence.get("tasksCapability")
     if profile == "native" and (protocol != "2026-07-28" or tasks != "on"):
         raise ProofError("native profile must use protocol 2026-07-28 with Tasks on")
@@ -94,8 +128,21 @@ def _validate_wire(profile: str, evidence: dict[str, Any]) -> dict[str, Any]:
         "toolCount": len(names),
         "toolNames": sorted(names),
         "protocolVersion": protocol,
+        "serverProtocolVersion": negotiated,
         "tasksCapability": tasks,
     }
+
+
+def _validate_wire_profiles(
+    profile: str, wires: Mapping[str, dict[str, Any]]
+) -> dict[str, Any]:
+    if set(wires) != set(TARGETS):
+        raise ProofError(f"{profile} wire evidence must cover all targets: {', '.join(TARGETS)}")
+    validated = {target: _validate_wire(profile, wires[target]) for target in TARGETS}
+    first = validated[TARGETS[0]]
+    if any(value != first for value in validated.values()):
+        raise ProofError(f"{profile} wire evidence differs across targets")
+    return {**first, "targets": validated}
 
 
 def _validate_baseline(baseline: dict[str, Any]) -> tuple[str, set[str]]:
@@ -118,7 +165,9 @@ def _validate_baseline(baseline: dict[str, Any]) -> tuple[str, set[str]]:
     return str(source["tag"]), set(names)
 
 
-def _validate_package(package: dict[str, Any]) -> dict[str, Any]:
+def _validate_package(
+    package: dict[str, Any], package_dir: Path, expected_source_commit: str
+) -> dict[str, Any]:
     if package.get("schemaVersion") != SCHEMA_VERSION:
         raise ProofError(f"package evidence schemaVersion must be {SCHEMA_VERSION}")
     version = _require_string(package.get("pluginVersion"), "package pluginVersion")
@@ -135,12 +184,64 @@ def _validate_package(package: dict[str, Any]) -> dict[str, Any]:
         raise ProofError("P0 package proof must not publish")
     if package.get("tag") is not None:
         raise ProofError("P0 package proof must not create a tag")
+    if source_commit != expected_source_commit:
+        raise ProofError("package sourceCommit does not match checked-out source")
+    plugin_dir = package_dir / "plugins" / "unica"
+    manifest_paths = [
+        plugin_dir / ".codex-plugin" / "plugin.json",
+        plugin_dir / ".claude-plugin" / "plugin.json",
+    ]
+    versions: list[str] = []
+    for manifest_path in manifest_paths:
+        manifest = read_json(manifest_path)
+        versions.append(_require_string(manifest.get("version"), "packaged plugin version"))
+    if versions != [version, version]:
+        raise ProofError("packaged host manifest versions do not match package evidence")
+    runtime_manifest = plugin_dir / "runtime-manifest.json"
+    if not runtime_manifest.is_file():
+        raise ProofError("packaged runtime manifest is missing")
+    if package["packageSha256"] != tree_sha256(package_dir):
+        raise ProofError("packageSha256 does not match downloaded package")
+    if package["runtimeManifestSha256"] != file_sha256(runtime_manifest):
+        raise ProofError("runtimeManifestSha256 does not match downloaded package")
     return {
         "pluginVersion": version,
         "sourceCommit": source_commit,
         "packageSha256": package["packageSha256"],
         "runtimeManifestSha256": package["runtimeManifestSha256"],
     }
+
+
+def _validate_asset_reports(asset_dir: Path) -> dict[str, Any]:
+    if not asset_dir.is_dir():
+        raise ProofError(f"asset verification evidence directory is missing: {asset_dir}")
+    paths = sorted(asset_dir.glob("asset-verification-*.json"))
+    if len(paths) != len(TARGETS):
+        raise ProofError("asset verification evidence must contain all targets")
+    reports: list[dict[str, Any]] = []
+    seen_targets: set[str] = set()
+    for path in paths:
+        report = read_json(path)
+        if report.get("schemaVersion") != SCHEMA_VERSION or report.get("status") != "passed":
+            raise ProofError(f"asset verification report is not passed: {path.name}")
+        if report.get("source") != "local-build":
+            raise ProofError(f"asset verification report has wrong source: {path.name}")
+        targets = report.get("targets")
+        if not isinstance(targets, list) or len(targets) != 1 or targets[0] not in TARGETS:
+            raise ProofError(f"asset verification report has invalid targets: {path.name}")
+        target = targets[0]
+        if target in seen_targets:
+            raise ProofError(f"duplicate asset verification target: {target}")
+        checks = report.get("checks")
+        if not isinstance(checks, dict) or set(checks) != {
+            "artifactSet", "archiveChecksum", "memberChecksums", "memberMetadata"
+        } or not all(checks.values()):
+            raise ProofError(f"asset verification checks are incomplete: {path.name}")
+        seen_targets.add(target)
+        reports.append({"target": target, "evidence": path.name})
+    if seen_targets != set(TARGETS):
+        raise ProofError("asset verification evidence must cover all targets")
+    return {"status": "passed", "source": "local-build", "targets": reports}
 
 
 def _validate_lifecycle(assessment: dict[str, Any], mode: str) -> dict[str, dict[str, Any]]:
@@ -182,22 +283,33 @@ def _validate_lifecycle(assessment: dict[str, Any], mode: str) -> dict[str, dict
 
 def evaluate_proof(
     *,
-    native_wire: dict[str, Any],
-    compatibility_wire: dict[str, Any],
+    native_wires: Mapping[str, dict[str, Any]],
+    compatibility_wires: Mapping[str, dict[str, Any]],
     baseline: dict[str, Any],
     assessment: dict[str, Any],
     package: dict[str, Any],
+    package_dir: Path,
+    asset_verification_dir: Path,
+    source_commit: str,
     release_tag: str,
     mode: str = "dry",
 ) -> dict[str, Any]:
     if mode not in {"dry", "rc"}:
         raise ProofError(f"unsupported proof mode: {mode}")
     release_tag = _require_string(release_tag, "releaseTag")
-    native = _validate_wire("native", native_wire)
-    compatibility = _validate_wire("compatibility", compatibility_wire)
+    native = _validate_wire_profiles("native", native_wires)
+    compatibility = _validate_wire_profiles("compatibility", compatibility_wires)
     baseline_tag, legacy_names = _validate_baseline(baseline)
-    package_summary = _validate_package(package)
-    all_rc_names = set(native["toolNames"]) | set(compatibility["toolNames"])
+    package_summary = _validate_package(package, package_dir, source_commit)
+    if release_tag != "v" + package_summary["pluginVersion"]:
+        raise ProofError("releaseTag does not match package pluginVersion")
+    assets = _validate_asset_reports(asset_verification_dir)
+    all_rc_names = {
+        name
+        for surface in (native, compatibility)
+        for target in surface["targets"].values()
+        for name in target["toolNames"]
+    }
     overlap = sorted(all_rc_names & legacy_names)
     if overlap:
         raise ProofError("legacy baseline overlap: " + ", ".join(overlap))
@@ -216,6 +328,7 @@ def evaluate_proof(
             "overlap": overlap,
         },
         "lifecycle": lifecycle,
+        "assets": assets,
         "promotion": {
             "releaseTag": release_tag,
             "promote": False,
@@ -265,22 +378,34 @@ def write_report(report: dict[str, Any], out_dir: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--native-wire", type=Path, required=True)
-    parser.add_argument("--compatibility-wire", type=Path, required=True)
+    parser.add_argument("--wire-dir", type=Path, required=True)
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--assessment", type=Path, required=True)
     parser.add_argument("--package", type=Path, required=True)
+    parser.add_argument("--package-dir", type=Path, required=True)
+    parser.add_argument("--asset-verification-dir", type=Path, required=True)
+    parser.add_argument("--source-commit", required=True)
     parser.add_argument("--release-tag", required=True)
     parser.add_argument("--mode", choices=("dry", "rc"), default="dry")
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
+        native_wires = {
+            target: read_json(args.wire_dir / f"native-{target}.json") for target in TARGETS
+        }
+        compatibility_wires = {
+            target: read_json(args.wire_dir / f"compatibility-{target}.json")
+            for target in TARGETS
+        }
         report = evaluate_proof(
-            native_wire=read_json(args.native_wire),
-            compatibility_wire=read_json(args.compatibility_wire),
+            native_wires=native_wires,
+            compatibility_wires=compatibility_wires,
             baseline=read_json(args.baseline),
             assessment=read_json(args.assessment),
             package=read_json(args.package),
+            package_dir=args.package_dir,
+            asset_verification_dir=args.asset_verification_dir,
+            source_commit=args.source_commit,
             release_tag=args.release_tag,
             mode=args.mode,
         )

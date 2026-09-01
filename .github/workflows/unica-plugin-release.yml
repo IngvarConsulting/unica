@@ -562,6 +562,15 @@ jobs:
           merge-multiple: true
       - uses: actions/download-artifact@v8
         with:
+          pattern: unica-runtime-verification-*
+          path: .build/p0-assets
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: unica-thin-marketplace
+          path: .build/p0-marketplace
+      - uses: actions/download-artifact@v8
+        with:
           name: unica-p0-package-evidence
           path: .build/p0-package
       - uses: actions/download-artifact@v8
@@ -574,12 +583,15 @@ jobs:
           set -euo pipefail
           version="$(python -c 'import json; print(json.load(open("plugins/unica/.codex-plugin/plugin.json"))["version"])')"
           baseline="$(python -c 'from pathlib import Path; paths=sorted(Path("tests/fixtures/migration").glob("*-baseline.json")); assert len(paths) == 1; print(paths[0])')"
+          source_commit="$(git rev-parse HEAD)"
           python scripts/ci/release-proof.py \
-            --native-wire .build/p0-wire/native-linux-x64.json \
-            --compatibility-wire .build/p0-wire/compatibility-linux-x64.json \
+            --wire-dir .build/p0-wire \
             --baseline "$baseline" \
             --assessment .build/release-assessment/assessment.json \
             --package .build/p0-package/p0-package-evidence.json \
+            --package-dir .build/p0-marketplace \
+            --asset-verification-dir .build/p0-assets \
+            --source-commit "$source_commit" \
             --release-tag "v$version" \
             --mode dry \
             --out-dir dist/p0-proof

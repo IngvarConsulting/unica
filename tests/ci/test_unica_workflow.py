@@ -181,8 +181,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         for argument in (
             "scripts/ci/release-proof.py",
             "--mode dry",
-            "--native-wire",
-            "--compatibility-wire",
+            "--wire-dir",
+            "--package-dir",
+            "--asset-verification-dir",
+            "--source-commit",
             "--baseline",
             "--out-dir dist/p0-proof",
         ):

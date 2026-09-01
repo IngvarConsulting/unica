@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,6 +25,22 @@ class ReleaseProofTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_module()
         self.baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.package_dir = Path(self.tempdir.name) / "marketplace"
+        plugin_dir = self.package_dir / "plugins" / "unica"
+        for host in (".codex-plugin", ".claude-plugin"):
+            manifest_dir = plugin_dir / host
+            manifest_dir.mkdir(parents=True, exist_ok=True)
+            (manifest_dir / "plugin.json").write_text(
+                json.dumps({"name": "unica", "version": "0.12.0"}),
+                encoding="utf-8",
+            )
+        (plugin_dir / "runtime-manifest.json").write_text(
+            json.dumps({"schemaVersion": 1, "tools": []}),
+            encoding="utf-8",
+        )
+        self.asset_dir = Path(self.tempdir.name) / "asset-verification"
+        self.asset_dir.mkdir()
         self.native_names = {
             "unica.view",
             "unica.apply",
@@ -52,6 +69,21 @@ class ReleaseProofTests(unittest.TestCase):
             "toolNames": sorted(names),
         }
 
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def wire_sets(self) -> tuple[dict[str, dict], dict[str, dict]]:
+        return (
+            {
+                target: self.wire("native", self.native_names)
+                for target in self.module.TARGETS
+            },
+            {
+                target: self.wire("compatibility", self.compatibility_names)
+                for target in self.module.TARGETS
+            },
+        )
+
     def assessment(self, *, lifecycle: dict[str, dict] | None = None) -> dict:
         return {
             "schemaVersion": 1,
@@ -68,12 +100,20 @@ class ReleaseProofTests(unittest.TestCase):
         }
 
     def package(self, **overrides: object) -> dict:
+        version = str(overrides.get("pluginVersion", "0.12.0"))
+        for host in (".codex-plugin", ".claude-plugin"):
+            (self.package_dir / "plugins" / "unica" / host / "plugin.json").write_text(
+                json.dumps({"name": "unica", "version": version}),
+                encoding="utf-8",
+            )
         package = {
             "schemaVersion": 1,
-            "pluginVersion": "0.12.0",
+            "pluginVersion": version,
             "sourceCommit": "a" * 40,
-            "packageSha256": "b" * 64,
-            "runtimeManifestSha256": "c" * 64,
+            "packageSha256": self.module.tree_sha256(self.package_dir),
+            "runtimeManifestSha256": self.module.file_sha256(
+                self.package_dir / "plugins" / "unica" / "runtime-manifest.json"
+            ),
             "versionBumped": False,
             "published": False,
             "tag": None,
@@ -81,13 +121,42 @@ class ReleaseProofTests(unittest.TestCase):
         package.update(overrides)
         return package
 
+    def asset_reports(self, *, source: str = "local-build") -> None:
+        for target in self.module.TARGETS:
+            (self.asset_dir / f"asset-verification-{target}.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "status": "passed",
+                        "source": source,
+                        "pluginVersion": "0.12.0",
+                        "targets": [target],
+                        "checks": {
+                            "artifactSet": True,
+                            "archiveChecksum": True,
+                            "memberChecksums": True,
+                            "memberMetadata": True,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
     def evaluate(self, **overrides: object) -> dict:
+        native_wires, compatibility_wires = self.wire_sets()
+        self.asset_reports()
+        package = overrides.get("package")
+        if package is None:
+            package = self.package()
         values = {
-            "native_wire": self.wire("native", self.native_names),
-            "compatibility_wire": self.wire("compatibility", self.compatibility_names),
+            "native_wires": native_wires,
+            "compatibility_wires": compatibility_wires,
             "baseline": self.baseline,
             "assessment": self.assessment(),
-            "package": self.package(),
+            "package": package,
+            "package_dir": self.package_dir,
+            "asset_verification_dir": self.asset_dir,
+            "source_commit": "a" * 40,
             "release_tag": "v0.12.0",
             "mode": "dry",
         }
@@ -134,6 +203,30 @@ class ReleaseProofTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.ProofError, "74 unique tool names"):
             self.evaluate(baseline=baseline)
 
+    def test_proof_rejects_wrong_negotiated_protocol(self) -> None:
+        native_wires, compatibility_wires = self.wire_sets()
+        compatibility_wires["linux-x64"]["serverProtocolVersion"] = "1999-01-01"
+
+        with self.assertRaisesRegex(self.module.ProofError, "negotiated protocol"):
+            self.evaluate(
+                native_wires=native_wires,
+                compatibility_wires=compatibility_wires,
+            )
+
+    def test_proof_rejects_hashes_not_matching_downloaded_package(self) -> None:
+        with self.assertRaisesRegex(self.module.ProofError, "packageSha256 does not match"):
+            self.evaluate(package=self.package(packageSha256="b" * 64))
+
+    def test_proof_requires_all_target_wire_profiles(self) -> None:
+        native_wires, compatibility_wires = self.wire_sets()
+        del native_wires["win-x64"]
+
+        with self.assertRaisesRegex(self.module.ProofError, "all targets"):
+            self.evaluate(
+                native_wires=native_wires,
+                compatibility_wires=compatibility_wires,
+            )
+
     def test_rc_proof_rejects_deferred_lifecycle_outcomes(self) -> None:
         lifecycle = self.assessment()["lifecycle"]
         for name in ("fresh_install", "upgrade"):
@@ -153,7 +246,10 @@ class ReleaseProofTests(unittest.TestCase):
             self.evaluate(package=self.package(tag="v0.12.0"))
 
     def test_prerelease_is_explicitly_non_promotable(self) -> None:
-        report = self.evaluate(release_tag="v0.13.0-rc.1")
+        report = self.evaluate(
+            release_tag="v0.13.0-rc.1",
+            package=self.package(pluginVersion="0.13.0-rc.1"),
+        )
 
         self.assertEqual(
             report["promotion"],
