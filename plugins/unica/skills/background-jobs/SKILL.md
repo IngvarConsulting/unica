@@ -7,7 +7,7 @@ description: "Фоновые и регламентные задания 1С. И�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.meta.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.meta.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -29,7 +29,7 @@ description: "Фоновые и регламентные задания 1С. И�
 ## Workflow
 
 1. Identify job type: scheduled job, background job launched from code, queue worker, exchange worker, or deferred integration retry.
-2. Find entry points with `unica.code.search`; inspect related metadata with `unica.meta.info` and project layout with `unica.project.map`.
+2. Find entry points with `unica.code.search`; inspect related metadata with `unica.meta.info` and project layout with `unica.view {}`.
 3. Define execution contract: parameters, user context, transaction scope, idempotency key, lock strategy, timeout, retry count, and logging fields.
 4. Check failure behavior before implementation: duplicate launch, partial write, stale lock, external service failure, session termination, and restart after crash.
 5. Run `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test/launch arguments and, with `dryRun: false`, to run it, and record runtime verification as unavailable unless separate evidence is supplied.

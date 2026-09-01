@@ -17,7 +17,7 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Use `unica.project.map` if the source-set or format is unclear.
+- Use `unica.view {}` if the source-set or format is unclear.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow

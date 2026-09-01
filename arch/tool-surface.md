@@ -1,6 +1,6 @@
 # Ведомость публичной поверхности инструментов
 
-Порождается `scripts/ci/generate-tool-surface.py` из `tools/list` собранного бинаря. Руками правится только [`tool-surface-review.json`](tool-surface-review.json): контракт результата и сценарии. Имена, описания и аргументы принадлежат реестру в `crates/unica-coder/src/application/mod.rs` и `tool_contracts.rs`; здесь они лишь показаны рядом (`CTR.WIRE.TOOL-SURFACE`).
+Порождается `scripts/ci/generate-tool-surface.py` из `tools/list` собранного бинаря. Руками правится только [`tool-surface-review.json`](tool-surface-review.json): контракт результата и сценарии. Имена, описания и аргументы принадлежат реестру v0.13 в `crates/unica-coder/src/application/v13/tool_catalog.rs`; здесь они лишь показаны рядом (`CTR.WIRE.TOOL-SURFACE`).
 
 Колонка «Результат сейчас» — наблюдение ревью, а не машинный факт: страж проверяет полноту охвата и совпадение аргументов с реестром, но не читает поведение обработчика.
 
@@ -22,14 +22,14 @@
 
 ### `unica.apply`
 
-—
+Preview or atomically apply typed edits to one logically addressed 1C node.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `at` | string | да | qualified logical address |
-| `dryRun` | boolean | нет | — |
-| `ifRev` | string | нет | — |
-| `ops` | array | да | — |
+| `at` | string | да | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
+| `dryRun` | boolean | нет | Validate and return the plan without publishing when true. |
+| `ifRev` | string | нет | Optional revision fence from an earlier read. |
+| `ops` | array | да | Ordered operations advertised by the target node's can data. |
 
 **Результат сейчас:** Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner, одинаковый postimage/effect plan hash в dry-run/real и атомарная retained-публикация (отвечают типизированным `data`)
 
@@ -44,12 +44,12 @@
 
 ### `unica.check`
 
-—
+Confirm workspace source-set admission, or validate one logical node's readability.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `at` | string | нет | qualified logical address |
-| `filter` | object | нет | — |
+| `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
+| `filter` | object | нет | Optional validation profile; requires at. |
 
 **Результат сейчас:** Без фильтра доказывает admission source set или читаемость указанного `at`; filter validation и маршрутизация meta/cf существуют только provisional, реальное исполнение валидатора не доказано (отвечают типизированным `data`)
 
@@ -64,15 +64,15 @@
 
 ### `unica.diff`
 
-—
+Compare two readable logical nodes of the same kind without changing files.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `cursor` | string | нет | — |
-| `filter` | object | нет | — |
-| `left` | string | да | qualified logical address |
-| `limit` | integer | нет | — |
-| `right` | string | да | qualified logical address |
+| `cursor` | string | нет | Continuation cursor from an earlier diff. |
+| `filter` | object | нет | Optional projection applied before comparison. |
+| `left` | string | да | Qualified logical address of the left node. |
+| `limit` | integer | нет | Maximum differences to return. |
+| `right` | string | да | Qualified logical address of the right node. |
 
 **Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes с общей revision; закрытые `paths`/`sections` фильтры поддержаны, cursor пока неподдержан (отвечают типизированным `data`)
 
@@ -87,12 +87,12 @@
 
 ### `unica.docs`
 
-—
+Search bundled Unica and safe 1C documentation by topic.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `query` | string | да | — |
-| `source` | string | нет | — |
+| `query` | string | да | Documentation question or search phrase. |
+| `source` | string | нет | Optional documented source kind, not a provider identity. |
 
 **Результат сейчас:** Поиск по platform-help и development-standard возвращает `data.sections`; configuration-documentation отвечает `unsupported_source` до actor-safe reader (отвечают типизированным `data`)
 
@@ -107,13 +107,13 @@
 
 ### `unica.find`
 
-—
+Resolve a human query to canonical logical address candidates.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `kind` | string | нет | — |
-| `limit` | integer | нет | — |
-| `query` | string | да | — |
+| `kind` | string | нет | Optional logical kind such as Catalog or CommonModule. |
+| `limit` | integer | нет | Maximum address candidates to return. |
+| `query` | string | да | Object name or address fragment to resolve. |
 
 **Результат сейчас:** `data.candidates` содержит детерминированные кандидаты квалифицированных логических адресов (отвечают типизированным `data`)
 
@@ -128,12 +128,12 @@
 
 ### `unica.run`
 
-—
+List canonical runtime operations, or execute one implemented operation.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `args` | object | нет | — |
-| `op` | string | нет | — |
+| `args` | object | нет | Typed arguments for the selected operation. |
+| `op` | string | нет | Canonical operation name; omit to list operation status. |
 
 **Результат сейчас:** Вызов без `op` возвращает закрытый словарь; `syntax.check` выполняется как durable cancellable Task с пятиминутным process timeout, bounded capture и закрытым terminal/provider результатом; остальные операции неподдержаны (отвечают типизированным `data`)
 
@@ -148,13 +148,13 @@
 
 ### `unica.search`
 
-—
+Search BSL content or symbols, optionally under one logical subtree.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `limit` | integer | нет | — |
-| `query` | string | да | — |
-| `regex` | boolean | нет | — |
+| `limit` | integer | нет | Maximum matches to return. |
+| `query` | string | да | Literal BSL text or symbol to search for. |
+| `regex` | boolean | нет | Request regex matching; currently only false is implemented. |
 | `scope` | string | нет | logical subtree address |
 
 **Результат сейчас:** Литеральный bounded-поиск по BSL возвращает `data.matches` для `Configuration` и разрешённого поддерева объекта метаданных; regex и symbol остаются неподдержанными (отвечают типизированным `data`)
@@ -221,20 +221,21 @@ Wait for a Task result for a bounded interval; returns the canonical result or a
 
 ### `unica.view`
 
-—
+Inspect the workspace with no arguments, or read one logical 1C node by address.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `at` | string | да | qualified logical address |
-| `cursor` | string | нет | — |
-| `filter` | object | нет | — |
-| `limit` | integer | нет | — |
+| `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
+| `cursor` | string | нет | Continuation cursor from an earlier addressed view. |
+| `filter` | object | нет | Optional projection such as sections; valid only with at. |
+| `limit` | integer | нет | Maximum child items to return; valid only with at. |
 
-**Результат сейчас:** `data` содержит типизированную проекцию логического узла; поддержаны квалифицированный `at`, базовое чтение, revision, bounded cursor и закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)
+**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, readiness и setup; с квалифицированным `at` содержит типизированную проекцию логического узла, revision, bounded cursor и закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)
 
 **Целевой контракт:** Расширять проекции через закрытые `filter`, не возвращая физические пути
 
 **Сценарии:**
 
+- Обнаружить workspace и получить точный рецепт v8project.yaml до source admission
 - Прочитать конфигурацию или объект метаданных по квалифицированному адресу
 - Получить наблюдаемую структуру узла и revision для последующей проверки

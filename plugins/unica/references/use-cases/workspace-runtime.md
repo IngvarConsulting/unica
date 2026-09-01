@@ -28,9 +28,9 @@ returns its terminal result in the same call.
 runner-ом или через `unica.build.*`.
 
 After clone or workspace initialization, and before `build` or `dump`, first
-call `unica.project.status`. It returns `ready`, `repositoryReady`, `checks[]`,
-`sourceSets` (an array after completed source discovery, otherwise `null`), and
-`diagnostics[]`. A false `ready` blocks the source operation
+call `unica.view {}`. It returns `ready`, `repositoryReady`, `checks[]`,
+`sourceSets` (possibly an empty array), and `diagnostics[]`. A false `ready`
+blocks the source operation
 until its source-set problem is fixed. In particular, `sourceSet.path: .` is an
 error: explain how to move the export into a strict child such as `src/` and
 update `v8project.yaml` safely.
@@ -56,11 +56,12 @@ for team work or another clone. Follow `diagnostics[].remediation.steps` when
 explaining a fix. `diagnostics[].remediation.commands` are advisory evidence,
 not authorization to change `.gitignore`, `.gitattributes`, files, or the Git
 index: never execute them automatically. After an approved fix, call
-`unica.project.status` again.
+`unica.view {}` again.
 
-Use `unica.project.map` when only the source layout or metadata format matters.
-It returns configured `sourceSets[]` with `kind`, `path`, `sourceFormat`, and
-`formatEvidence`; it does not inspect repository health.
+Use `unica.view {}` when only the source layout or metadata format matters.
+It returns discovered `sourceSets[]` with `kind`, `path`, `sourceFormat`, and
+`formatEvidence`; the same bootstrap also reports repository health, which can
+be ignored only when the task does not make portability or team-readiness claims.
 
 `v8project.yaml` can contain several source-sets. Format is resolved per
 source-set, not for the workspace as a whole. One source-set cannot be mixed:
