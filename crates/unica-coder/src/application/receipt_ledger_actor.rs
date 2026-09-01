@@ -2,7 +2,7 @@ use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelResolution,
     CommittedDirectPublication, OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest,
     ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion, ReserveOutcome,
-    ReservedReceipt, TerminalDigest, V5CanonicalTerminal,
+    ReservedReceipt, TaskPromisedUnboundReceipt, TerminalDigest, V5CanonicalTerminal,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -230,6 +230,15 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<ReservedReceipt>>,
     },
+    PromiseTaskUnbound {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        created_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        deadline: Instant,
+        ticket: Arc<Ticket<TaskPromisedUnboundReceipt>>,
+    },
     RequestCancelOrReserve {
         key: ReceiptKey,
         cancel_reserved_at_epoch_ms: u64,
@@ -435,6 +444,7 @@ enum TimeoutClass {
     Reserve(ReceiptKeyDigest),
     BindReservedActor(ReceiptKeyDigest),
     MarkReservedBegun(ReceiptKeyDigest),
+    PromiseTaskUnbound(ReceiptKeyDigest),
     RequestCancelOrReserve(ReceiptKeyDigest),
     ExpireCancelReserved(ReceiptKeyDigest),
     PublishDirectTerminal(ReceiptKeyDigest),
@@ -453,6 +463,7 @@ impl TimeoutClass {
             Self::Reserve(receipt_key_digest)
             | Self::BindReservedActor(receipt_key_digest)
             | Self::MarkReservedBegun(receipt_key_digest)
+            | Self::PromiseTaskUnbound(receipt_key_digest)
             | Self::RequestCancelOrReserve(receipt_key_digest)
             | Self::ExpireCancelReserved(receipt_key_digest)
             | Self::PublishDirectTerminal(receipt_key_digest)
@@ -624,6 +635,43 @@ impl ReceiptLedgerActor {
             Command::MarkReservedBegun {
                 key,
                 expected_version,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn promise_task_unbound(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        created_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        deadline: Instant,
+    ) -> Result<TaskPromisedUnboundReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::PromiseTaskUnbound(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::PromiseTaskUnbound {
+                key,
+                expected_version,
+                created_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -980,6 +1028,34 @@ fn run_worker(
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.mark_reserved_begun(&key, expected_version, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::PromiseTaskUnbound {
+                key,
+                expected_version,
+                created_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.promise_task_unbound(
+                        &key,
+                        expected_version,
+                        created_at_epoch_ms,
+                        ttl_ms,
+                        poll_interval_ms,
+                        deadline,
+                    )
                 }))
                 .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
                     receipt_key_digest: digest,

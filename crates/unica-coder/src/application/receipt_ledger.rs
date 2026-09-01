@@ -489,6 +489,18 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 
+    fn promise_task_unbound(
+        &mut self,
+        _key: &ReceiptKey,
+        _expected_version: ReceiptVersion,
+        _created_at_epoch_ms: u64,
+        _ttl_ms: u64,
+        _poll_interval_ms: u64,
+        _deadline: Instant,
+    ) -> Result<TaskPromisedUnboundReceipt, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
     fn request_cancel_or_reserve(
         &mut self,
         key: ReceiptKey,
@@ -1480,6 +1492,61 @@ pub(crate) struct TaskPromisedUnboundReceipt {
     task: ReceiptTaskProjection,
     cancel_requested: bool,
     reserved_result_bytes: u64,
+}
+
+impl TaskPromisedUnboundReceipt {
+    pub(crate) fn new(
+        record: ReceiptRecordHeader,
+        task: ReceiptTaskProjection,
+        cancel_requested: bool,
+        reserved_result_bytes: u64,
+    ) -> Result<Self, ReceiptLedgerError> {
+        if task.task_id() != record.key.reserved_task_id()
+            || task.invocation_id() != record.key.invocation_id()
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "promised Task projection contradicts its receipt identity",
+            ));
+        }
+        Ok(Self {
+            record,
+            task,
+            cancel_requested,
+            reserved_result_bytes,
+        })
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        &self.record.key
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        &self.record.key_digest
+    }
+
+    pub(crate) fn task(&self) -> &ReceiptTaskProjection {
+        &self.task
+    }
+
+    pub(crate) const fn cancel_requested(&self) -> bool {
+        self.cancel_requested
+    }
+
+    pub(crate) const fn reserved_result_bytes(&self) -> u64 {
+        self.reserved_result_bytes
+    }
+
+    pub(crate) const fn record_version(&self) -> ReceiptVersion {
+        self.record.record_version
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        self.record.mutation_sequence
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.record.encoded_bytes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
