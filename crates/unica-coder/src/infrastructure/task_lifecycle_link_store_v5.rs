@@ -958,27 +958,16 @@ impl TaskLifecycleLinkStoreV5 {
         for entry in writer.entries.values() {
             match entry {
                 CatalogEntry::Reservation(reservation) => {
-                    actual_bytes = actual_bytes
-                        .checked_add(reservation.encoded_bytes())
-                        .ok_or(TaskLifecycleLinkStoreError::Corrupt(
-                            "Task lifecycle-link actual byte count overflowed",
-                        ))?;
                     reserved_count = reserved_count.checked_add(1).ok_or(
                         TaskLifecycleLinkStoreError::Corrupt(
                             "Task lifecycle-link reservation count overflowed",
                         ),
                     )?;
-                    reserved_bytes = reserved_bytes
-                        .checked_add(
-                            maximum_record_bytes
-                                .checked_sub(reservation.encoded_bytes())
-                                .ok_or(TaskLifecycleLinkStoreError::Corrupt(
-                                    "Task lifecycle-link reservation exceeds its entitlement",
-                                ))?,
-                        )
-                        .ok_or(TaskLifecycleLinkStoreError::Corrupt(
+                    reserved_bytes = reserved_bytes.checked_add(maximum_record_bytes).ok_or(
+                        TaskLifecycleLinkStoreError::Corrupt(
                             "Task lifecycle-link reserved byte count overflowed",
-                        ))?;
+                        ),
+                    )?;
                     entries.push(TaskLifecycleLinkCatalogEntry::Reservation(
                         reservation.clone(),
                     ));
@@ -2111,14 +2100,10 @@ mod tests {
         assert_eq!(snapshot.generation(), 3);
         assert_eq!(snapshot.count(), 2);
         assert_eq!(snapshot.reserved_count(), 1);
-        assert_eq!(
-            snapshot.actual_bytes(),
-            reservation.encoded_bytes() + bound.encoded_bytes()
-        );
+        assert_eq!(snapshot.actual_bytes(), bound.encoded_bytes());
         assert_eq!(
             snapshot.reserved_bytes(),
             u64::try_from(MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES).expect("record limit fits u64")
-                - reservation.encoded_bytes()
         );
         assert_eq!(
             snapshot.actual_bytes() + snapshot.reserved_bytes(),
