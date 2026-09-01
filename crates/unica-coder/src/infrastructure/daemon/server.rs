@@ -3925,6 +3925,197 @@ struct ActorLogicalReadLease {"#,
         assert!(!serialized.contains(&workspace_hint), "{serialized}");
     }
 
+    /// INV.WIRE.V13-REFUSAL-CHANNEL: every canonical refusal answers through
+    /// `diagnostics[0]` with a code from the closed set and a message; a stale
+    /// `ifRev` has its own conflict code instead of `provider_unavailable`;
+    /// and an admitted logical scope without a source subtree is an empty
+    /// result rather than a refusal or a raw OS error.
+    #[test]
+    fn canonical_refusals_answer_one_diagnostics_channel_from_the_closed_code_set() {
+        const CLOSED_REFUSAL_CODES: &[&str] = &[
+            "bad_value",
+            "not_found",
+            "stale_revision",
+            "unsupported_operation",
+            "unsupported_filter",
+            "unsupported_scope",
+            "unsupported_cursor",
+            "unsupported_source",
+            "invalid_state",
+            "invalid_source",
+            "source_selection_changed",
+            "rollback_incomplete",
+            "provider_unavailable",
+        ];
+
+        let state_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Bare</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        // `Bare` exists as a logical object but ships no `Catalogs/Bare/`
+        // source subtree, so a scoped search has nothing to walk.
+        std::fs::write(
+            source.join("Catalogs/Bare.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>Bare</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        let (store, _) =
+            FileInvocationStore::open(state_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let config = DaemonServerConfig::new(
+            std::fs::canonicalize(state_root.path()).unwrap(),
+            CoreIdentity::production(),
+            Duration::from_millis(50),
+        );
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            config.invocation_service,
+            Arc::new(TokioClock),
+        );
+        let workspace_hint = std::fs::canonicalize(workspace.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let call = |tool, arguments| {
+            let request =
+                InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap();
+            let InvocationResponse::Direct(result) = runtime
+                .submit(request, runtime.capture_response_deadline())
+                .unwrap()
+            else {
+                panic!("refusal probes must complete directly")
+            };
+            result
+        };
+
+        let refusals = [
+            (
+                ToolIdentity::View,
+                serde_json::json!({
+                    "at": "main:Catalog.Bare",
+                    "filter": {"sections": ["unknown"]}
+                }),
+                "unsupported_filter",
+            ),
+            (
+                ToolIdentity::Apply,
+                serde_json::json!({
+                    "at": "main:Catalog.Bare",
+                    "ops": [{"op": "frobnicate"}]
+                }),
+                "unsupported_operation",
+            ),
+            (
+                ToolIdentity::Apply,
+                serde_json::json!({
+                    "at": "main:Catalog.Bare",
+                    "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}],
+                    "dryRun": true,
+                    "ifRev": "unica-source-sha256-v1:0:stale"
+                }),
+                "stale_revision",
+            ),
+            (
+                ToolIdentity::Run,
+                serde_json::json!({"op": "syntax.check", "args": {}}),
+                "bad_value",
+            ),
+        ];
+        for (tool, arguments, expected_code) in refusals {
+            let refusal = call(tool, arguments);
+            assert!(!refusal.ok, "{} must refuse", tool.catalog_name());
+            let diagnostic = refusal.diagnostics.first().unwrap_or_else(|| {
+                panic!(
+                    "{} refused outside the diagnostics channel: {refusal:?}",
+                    tool.catalog_name()
+                )
+            });
+            assert_eq!(
+                diagnostic["code"],
+                expected_code,
+                "{}: {refusal:?}",
+                tool.catalog_name()
+            );
+            assert!(
+                CLOSED_REFUSAL_CODES
+                    .iter()
+                    .any(|code| diagnostic["code"] == *code),
+                "{} answered outside the closed code set: {refusal:?}",
+                tool.catalog_name()
+            );
+            assert!(
+                diagnostic["message"]
+                    .as_str()
+                    .is_some_and(|m| !m.is_empty()),
+                "{} refused without a message: {refusal:?}",
+                tool.catalog_name()
+            );
+            assert!(
+                refusal
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("code"))
+                    .is_none(),
+                "{} leaked a second code channel through data: {refusal:?}",
+                tool.catalog_name()
+            );
+        }
+
+        let stale = call(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Catalog.Bare",
+                "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}],
+                "dryRun": true,
+                "ifRev": "unica-source-sha256-v1:0:stale"
+            }),
+        );
+        let stale_message = stale.diagnostics[0]["message"].as_str().unwrap();
+        assert!(
+            stale_message.contains("expected") && stale_message.contains("admitted"),
+            "the conflict names both revisions for recovery: {stale_message}"
+        );
+
+        let missing_mode = call(
+            ToolIdentity::Run,
+            serde_json::json!({"op": "syntax.check", "args": {}}),
+        );
+        assert!(
+            missing_mode.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("one of: designer-config")),
+            "a missing required argument names its value domain: {missing_mode:?}"
+        );
+
+        let bare_scope = call(
+            ToolIdentity::Search,
+            serde_json::json!({"query": "needle", "scope": "main:Catalog.Bare"}),
+        );
+        assert!(
+            bare_scope.ok,
+            "an admitted scope without a source subtree is not a failure: {bare_scope:?}"
+        );
+        assert_eq!(
+            bare_scope
+                .data
+                .as_ref()
+                .and_then(|data| data["matches"].as_array())
+                .map(Vec::len),
+            Some(0),
+            "{bare_scope:?}"
+        );
+        assert!(bare_scope.diagnostics.is_empty(), "{bare_scope:?}");
+    }
+
     #[test]
     pub(crate) fn subsequent_daemon_invocation_after_same_root_kind_change_gets_new_actor_identity()
     {

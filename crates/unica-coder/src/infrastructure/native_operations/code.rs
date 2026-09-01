@@ -3825,7 +3825,7 @@ pub(super) mod tests {
             crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(5)),
             &crate::domain::cancellation::CancellationToken::new(),
         );
-        assert!(stale.unwrap_err().contains("ifRev is stale"));
+        assert!(stale.unwrap_err().to_string().contains("ifRev is stale"));
 
         fs::write(
             fixture.source.join("CommonModules/Sample/Ext/Module.bsl"),
@@ -3849,6 +3849,7 @@ pub(super) mod tests {
                 &cancelled,
             )
             .unwrap_err()
+            .to_string()
             .contains("cancelled"));
         assert!(fixture
             .actor
@@ -3860,6 +3861,7 @@ pub(super) mod tests {
                 &crate::domain::cancellation::CancellationToken::new(),
             )
             .unwrap_err()
+            .to_string()
             .contains("deadline"));
         assert!(!fixture.root.join(".build/unica/state.json").exists());
         fixture.cleanup();

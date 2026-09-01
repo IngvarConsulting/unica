@@ -2,10 +2,10 @@
 id: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
 status: active
 governs: product
-decision: DEC.2026-08-24.COMPATIBILITY-TASK-TOOLS-SLICE
+decision: DEC.2026-09-01.V0-13-REFUSAL-DISCIPLINE
 check: crates/unica-coder/src/interfaces/mcp.rs::v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free
 scope: [wire]
-version: 1
+version: 2
 producer: crates/unica-coder/src/interfaces/mcp.rs
 consumers: [host]
 ---
@@ -30,7 +30,9 @@ Working receipt — обычный structured-only `CallToolResult`: `ok`, `summ
 optionals опускаются; ключей `job` и `work` нет. Completed возвращает тот же
 canonical result, что direct предметный вызов. Invalid identity, bad wait,
 unknown, expired, failed, cancelled и transport/projection failure имеют
-различимые закрытые коды без daemon prose.
+различимые закрытые коды без daemon prose; код лежит в `diagnostics[]`, как у
+всякого канонического отказа, — второго канала `data.code` нет, `data` остаётся
+чистым снимком Task.
 
 Допустимая форма Task исчерпывается матрицей: queued/working не имеют result и
 failure; completed имеет только result; failed имеет только закрытый признак
