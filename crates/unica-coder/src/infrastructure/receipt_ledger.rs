@@ -2720,17 +2720,18 @@ impl ReceiptLedgerStore {
                 ReceiptLedgerError::Corrupt("catalogued receipt row changed on disk"),
             );
         }
-        let actual_state = match persisted.state()? {
-            ReceiptState::TaskPromisedUnbound(receipt) => {
+        let actual_state = match persisted.state() {
+            Ok(ReceiptState::TaskPromisedUnbound(receipt)) => {
                 TaskCancellationReceipt::PromisedUnbound(receipt)
             }
-            ReceiptState::TaskPromisedActorBound(receipt) => {
+            Ok(ReceiptState::TaskPromisedActorBound(receipt)) => {
                 TaskCancellationReceipt::PromisedActorBound(receipt)
             }
-            ReceiptState::TaskHandoffActorBound(receipt) => {
+            Ok(ReceiptState::TaskHandoffActorBound(receipt)) => {
                 TaskCancellationReceipt::HandoffActorBound(receipt)
             }
-            _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+            Ok(_) => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+            Err(error) => return latch_catalog_error(&mut catalog, error),
         };
         if actual_state == expected_state && actual_state.cancel_requested() {
             return Ok(actual_state);
@@ -2807,29 +2808,28 @@ impl ReceiptLedgerStore {
                 });
             }
         }
-        let committed =
-            catalog
-                .records
-                .get(&key_digest)
-                .ok_or(ReceiptLedgerError::CommitUncertain {
-                    receipt_key_digest: key_digest.clone(),
-                })?;
-        let committed_state = match committed.state()? {
-            ReceiptState::TaskPromisedUnbound(receipt) => {
+        let committed = catalog.records.get(&key_digest).cloned().ok_or(
+            ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: key_digest.clone(),
+            },
+        )?;
+        let committed_state = match committed.state() {
+            Ok(ReceiptState::TaskPromisedUnbound(receipt)) => {
                 TaskCancellationReceipt::PromisedUnbound(receipt)
             }
-            ReceiptState::TaskPromisedActorBound(receipt) => {
+            Ok(ReceiptState::TaskPromisedActorBound(receipt)) => {
                 TaskCancellationReceipt::PromisedActorBound(receipt)
             }
-            ReceiptState::TaskHandoffActorBound(receipt) => {
+            Ok(ReceiptState::TaskHandoffActorBound(receipt)) => {
                 TaskCancellationReceipt::HandoffActorBound(receipt)
             }
-            _ => {
+            Ok(_) => {
                 catalog.unavailable = true;
                 return Err(ReceiptLedgerError::CommitUncertain {
                     receipt_key_digest: key_digest,
                 });
             }
+            Err(error) => return latch_catalog_error(&mut catalog, error),
         };
         if !committed_state.is_exact_cancel_successor_of(&expected_state) {
             catalog.unavailable = true;
@@ -8617,6 +8617,90 @@ mod tests {
                 .recover_exact(&key, reserve_deadline())
                 .expect("recover durable cancellation intent"),
             cancelled.into_receipt_state()
+        );
+    }
+
+    #[test]
+    fn task_cancel_state_corruption_latches_catalog_before_second_read() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let key_digest = receipt_key_digest(&key);
+        let cutoff =
+            OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid original response cutoff");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let reserved = store
+            .reserve(key.clone(), cutoff, reserve_deadline())
+            .expect("reserve exact receipt")
+            .into_reservation()
+            .expect("receipt remains reserved");
+        let promised = store
+            .promise_task_unbound(
+                &key,
+                reserved.record_version(),
+                1_007,
+                3_600_000,
+                250,
+                reserve_deadline(),
+            )
+            .expect("durably promise exact reserved Task");
+        let expected = TaskCancellationReceipt::PromisedUnbound(promised.clone());
+
+        let encoded = {
+            let mut catalog = store.writer.lock().expect("retain receipt writer");
+            let current = catalog
+                .records
+                .get(&key_digest)
+                .cloned()
+                .expect("promised receipt is catalogued");
+            let record = StoredActiveReceiptV1 {
+                schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+                mutation_sequence: promised.mutation_sequence() + 1,
+                record_version: promised
+                    .record_version()
+                    .checked_next()
+                    .expect("next witness version"),
+                key: key.clone(),
+                key_digest: key_digest.clone(),
+                lifecycle: StoredActiveLifecycleV1::AcknowledgementCommit {
+                    terminal_digest: TerminalDigest::from_str(&"88".repeat(32))
+                        .expect("terminal digest"),
+                    acknowledged_at_epoch_ms: 2_000,
+                    prior_record_version: promised.record_version(),
+                    prior_mutation_sequence: promised.mutation_sequence(),
+                },
+            };
+            let (record, encoded) =
+                serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES)
+                    .expect("serialize a valid transient witness");
+            let replacement = CatalogEntry {
+                record,
+                encoded_bytes: u64::try_from(encoded.len()).expect("witness length fits u64"),
+            };
+            validate_catalog_replace(&catalog, &current, &replacement)
+                .expect("transient witness preserves exact accounting");
+            commit_catalog_replace(&mut catalog, replacement);
+            encoded
+        };
+        fs::write(
+            receipts
+                .join(ACTIVE_DIRECTORY_NAME)
+                .join(format!("{}.json", key_digest.as_str())),
+            encoded,
+        )
+        .expect("persist runtime-visible transient witness");
+
+        assert_eq!(
+            store.request_task_cancel(&key, expected.clone(), reserve_deadline()),
+            Err(ReceiptLedgerError::Corrupt(
+                "acknowledgement commit witness is not a live receipt state"
+            ))
+        );
+        assert_eq!(
+            store.request_task_cancel(&key, expected, reserve_deadline()),
+            Err(ReceiptLedgerError::StoreUnavailable)
         );
     }
 
