@@ -575,6 +575,8 @@ pub(crate) struct DaemonServerConfig {
     reconciliation_budget: Option<Duration>,
     #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     invocation_clock: Option<Arc<dyn Clock>>,
+    #[cfg(feature = "receipt-ledger-test-support")]
+    v5_epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
     #[cfg(test)]
     startup_pause: Option<Arc<HandshakePause>>,
     #[cfg(test)]
@@ -607,6 +609,8 @@ impl DaemonServerConfig {
             reconciliation_budget: None,
             #[cfg(any(test, feature = "receipt-ledger-test-support"))]
             invocation_clock: None,
+            #[cfg(feature = "receipt-ledger-test-support")]
+            v5_epoch_clock: None,
             #[cfg(test)]
             startup_pause: None,
             #[cfg(test)]
@@ -624,6 +628,13 @@ impl DaemonServerConfig {
             return Arc::clone(clock);
         }
         Arc::new(TokioClock)
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(super) fn epoch_clock_for_v5_test(
+        &self,
+    ) -> Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>> {
+        self.v5_epoch_clock.clone()
     }
 
     #[cfg(any(test, feature = "receipt-ledger-test-support"))]
@@ -653,6 +664,15 @@ impl DaemonServerConfig {
     #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn with_invocation_clock_for_test(mut self, clock: Arc<dyn Clock>) -> Self {
         self.invocation_clock = Some(clock);
+        self
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn with_v5_epoch_clock_for_test(
+        mut self,
+        clock: Arc<dyn crate::application::invocation_store::EpochMillisClock>,
+    ) -> Self {
+        self.v5_epoch_clock = Some(clock);
         self
     }
 

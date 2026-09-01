@@ -1050,6 +1050,53 @@ impl TaskLifecycleLinkStoreV5 {
         Ok(result)
     }
 
+    pub(crate) fn refresh_task_bound_projection(
+        &self,
+        expected: &TaskBoundReceipt,
+        task: ReceiptTaskProjection,
+        deadline: ProviderDeadline,
+    ) -> Result<TaskBoundReceipt, TaskLifecycleLinkStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        let current = exact_task_bound(
+            &writer,
+            expected.key_digest(),
+            expected.lifecycle_link_version(),
+        )?;
+        if current != expected {
+            return Err(TaskLifecycleLinkStoreError::StateMismatch);
+        }
+        let mutation_sequence = next_sequence(writer.mutation_sequence)?;
+        let record = build_task_bound(
+            expected.key().clone(),
+            expected.link().clone(),
+            task.clone(),
+            next_sequence(expected.lifecycle_link_version())?,
+            mutation_sequence,
+            task.version(),
+            expected.bind_epoch_ms(),
+            expected.phase(),
+            self.limits,
+        )?;
+        let result = record.clone();
+        let mut next = writer.clone();
+        next.mutation_sequence = mutation_sequence;
+        next.insert_exact(CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(
+            record,
+        )))?;
+        let committed = self.publish_and_readback(&next, expected.key_digest(), deadline)?;
+        *writer = committed;
+        match writer.entries.get(expected.key_digest()) {
+            Some(CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(readback)))
+                if readback == &result =>
+            {
+                Ok(readback.clone())
+            }
+            _ => Err(TaskLifecycleLinkStoreError::Corrupt(
+                "durable refreshed TaskBound readback changed",
+            )),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn publish_task_terminal_bound(
         &self,

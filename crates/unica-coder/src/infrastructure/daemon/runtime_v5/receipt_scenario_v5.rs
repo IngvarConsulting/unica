@@ -37,6 +37,9 @@ use crate::infrastructure::daemon::server::{
 };
 use crate::infrastructure::daemon::terminal_codec_v5::encode_strict_v5_response_jsonl;
 use crate::infrastructure::receipt_ledger::{ReceiptBackedTaskTerminalSeed, ReceiptLedgerStore};
+use crate::infrastructure::task_lifecycle_link_store_v5::{
+    TaskLifecycleLinkRecord, TaskLifecycleLinkStoreError, TaskLifecycleLinkStoreV5,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -388,6 +391,8 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                         snapshot: snapshot.clone(),
                                     },
                                     &exact_key,
+                                    state.path(),
+                                    &identity,
                                 )?,
                                 "acknowledgement": null,
                                 "cutoffEpochMs": observed_cutoff.0.checked_add(observed_cutoff.1),
@@ -539,9 +544,10 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         | ScenarioTaskApi::CompatibilityResult => owner.get_task(task_id),
                     },
                 )?;
-                report
-                    .task_reads
-                    .insert(label, task_observation_from_response(response, &exact_key)?);
+                report.task_reads.insert(
+                    label,
+                    task_observation_from_response(response, &exact_key, state.path(), &identity)?,
+                );
             }
             ReceiptScenarioAction::AdvanceEpoch { millis } => {
                 clock.advance(millis)?;
@@ -664,6 +670,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 ScenarioEvent::BoundHandoffCommitted => {
                     telemetry.wait_for_event(
                         V5ReceiptRuntimeEventKind::BoundHandoffCommitted,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::TaskBoundCommitted => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::TaskBoundCommitted,
                         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                     )?;
                 }
@@ -1181,8 +1193,10 @@ fn scenario_server_config_with_clock(
     clock: &Arc<ScenarioEpochClock>,
 ) -> DaemonServerConfig {
     let invocation_clock: Arc<dyn Clock> = clock.clone();
+    let epoch_clock: Arc<dyn EpochMillisClock> = clock.clone();
     scenario_server_config(state_root, identity, control)
         .with_invocation_clock_for_test(invocation_clock)
+        .with_v5_epoch_clock_for_test(epoch_clock)
 }
 
 fn exchange_once(
@@ -3462,7 +3476,7 @@ fn snapshot_with_actor(
         "daemonRunning": runtime.daemon_running,
         "actorLeases": runtime.actor_leases,
         "sideEffectMarkers": side_effect_markers,
-        "taskStoreCreateAttempts": 0,
+        "taskStoreCreateAttempts": runtime.task_store_create_attempts,
         "tokenSignals": 0,
         "storeGeneration": generation,
         "epochMs": clock.now_epoch_millis(),
@@ -3792,6 +3806,8 @@ fn response_observation(
 fn task_observation_from_response(
     response: V5ServerResponse,
     receipt_key: &ReceiptKey,
+    state_root: &Path,
+    identity: &CoreIdentity,
 ) -> Result<Value, String> {
     let V5ServerResponse::Task { snapshot } = response else {
         return Err(format!(
@@ -3954,13 +3970,19 @@ fn task_observation_from_response(
         .unwrap_or(created_epoch_ms)
         .checked_add(ttl_ms)
         .ok_or_else(|| "Task observation expiry overflow".to_owned())?;
+    let workspace_identity_hash = task_link_workspace_identity(state_root, identity, task_id)?;
+    let projection_source = if workspace_identity_hash.is_some() {
+        "task_store"
+    } else {
+        "receipt_ledger"
+    };
     Ok(json!({
         "taskId": task_id,
         "invocationId": invocation_id,
         "receiptKey": receipt_key_observation(receipt_key),
         "status": status,
-        "projectionSource": "receipt_ledger",
-        "workspaceIdentityHash": null,
+        "projectionSource": projection_source,
+        "workspaceIdentityHash": workspace_identity_hash,
         "createdEpochMs": created_epoch_ms,
         "updatedEpochMs": updated_epoch_ms,
         "expiresEpochMs": expires_epoch_ms,
@@ -3971,6 +3993,48 @@ fn task_observation_from_response(
         "cancelRequested": cancel_requested,
         "terminal": terminal,
     }))
+}
+
+fn task_link_workspace_identity(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    task_id: TaskId,
+) -> Result<Option<String>, String> {
+    let state = DaemonStateDirectory::open(state_root, identity)?;
+    let root = state.create_private_retained_subdirectory("task-lifecycle-links")?;
+    let store = TaskLifecycleLinkStoreV5::open(
+        root.path(),
+        crate::domain::code_intelligence::ProviderDeadline::new(
+            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+        ),
+    )
+    .map_err(|error| format!("open scenario Task lifecycle-link store: {error}"))?;
+    let record = match store.read_by_task_id(
+        task_id,
+        crate::domain::code_intelligence::ProviderDeadline::new(
+            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+        ),
+    ) {
+        Ok(record) => record,
+        Err(TaskLifecycleLinkStoreError::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(format!("read scenario Task lifecycle link: {error}")),
+    };
+    let workspace = match record {
+        TaskLifecycleLinkRecord::TaskBound(record) => {
+            record.link().workspace_identity_hash().clone()
+        }
+        TaskLifecycleLinkRecord::TaskTerminalBound(record) => {
+            record.link().workspace_identity_hash().clone()
+        }
+        TaskLifecycleLinkRecord::TaskRetirementPending(record) => {
+            record.link().workspace_identity_hash().clone()
+        }
+    };
+    serde_json::to_value(&workspace)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .map(Some)
+        .ok_or_else(|| "encode scenario Task lifecycle workspace identity".to_owned())
 }
 
 fn acknowledgement_observation(
@@ -4702,6 +4766,7 @@ enum ScenarioEvent {
     CancelReservationConverted,
     ReceiptTerminalCommitted,
     BoundHandoffCommitted,
+    TaskBoundCommitted,
 }
 
 #[derive(Deserialize)]

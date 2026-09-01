@@ -15,7 +15,9 @@ use super::server::{
 use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
 use crate::application::invocation_store::{EpochMillisClock, ToolIdentity};
 use crate::application::invocation_store_v5::{
-    InvocationStoreV5, TaskStoreRecoveryCatalog, V5SafeFailureReason,
+    InvocationStoreV5, NewV5InvocationRecord, TaskStoreRecoveryCatalog, V5SafeFailureReason,
+    V5StartWorkingOutcome, V5StoredInvocationRecord, V5StoredTask, V5TaskIdentity,
+    V5TaskStoreError,
 };
 use crate::application::invocation_v5::{
     classify_cancel_reserved_expiry_outcome, classify_recovered_receipt,
@@ -26,9 +28,9 @@ use crate::application::ports::Clock;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::CommittedDirectPublication;
 use crate::application::receipt_ledger::{
-    OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey, ReceiptLedgerError, ReceiptState,
-    ReceiptTaskProjection, ReserveOutcome, ReservedPhase, TerminalDigest,
-    DIRECT_TERMINAL_RETENTION_MS,
+    OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError,
+    ReceiptState, ReceiptTaskProjection, ReserveOutcome, ReservedPhase, TaskBoundReceipt,
+    TaskHandoffActorBoundReceipt, TerminalDigest, DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
@@ -37,6 +39,9 @@ use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
 use crate::infrastructure::receipt_ledger::StableReceiptLedgerObservation;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
+use crate::infrastructure::task_lifecycle_link_store_v5::{
+    TaskLifecycleLinkRecord, TaskLifecycleLinkStoreError, TaskLifecycleLinkStoreV5,
+};
 use crate::infrastructure::task_store::SystemEpochMillisClock;
 use crate::infrastructure::task_store_v5::FileInvocationStoreV5;
 use serde::Serialize;
@@ -47,6 +52,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io::{self, BufReader, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "receipt-ledger-test-support")]
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::Arc;
@@ -79,6 +85,7 @@ enum V5ReceiptRuntimeEventKind {
     PrepareEntered,
     ExecuteEntered,
     BoundHandoffCommitted,
+    TaskBoundCommitted,
     CancelReservationConverted,
     ReceiptTerminalCommitted,
     AcknowledgementCommitted,
@@ -124,6 +131,7 @@ struct V5ReceiptRuntimeTelemetryState {
     actor_leases: u64,
     terminal_publications: Vec<Value>,
     next_preflight_sequence: u64,
+    task_store_create_attempts: u64,
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -135,6 +143,7 @@ struct V5ReceiptRuntimeTelemetrySnapshot {
     daemon_running: bool,
     actor_leases: u64,
     terminal_publications: Vec<Value>,
+    task_store_create_attempts: u64,
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -159,6 +168,7 @@ impl V5ReceiptRuntimeTelemetry {
                 actor_leases: 0,
                 terminal_publications: Vec::new(),
                 next_preflight_sequence: 1,
+                task_store_create_attempts: 0,
             }),
             changed: Condvar::new(),
         }
@@ -199,6 +209,12 @@ impl V5ReceiptRuntimeTelemetry {
         self.changed.notify_all();
     }
 
+    fn record_task_store_create_attempt(&self) {
+        let mut state = self.lock_state();
+        state.task_store_create_attempts = state.task_store_create_attempts.saturating_add(1);
+        self.changed.notify_all();
+    }
+
     fn snapshot(&self) -> V5ReceiptRuntimeTelemetrySnapshot {
         let state = self.lock_state();
         V5ReceiptRuntimeTelemetrySnapshot {
@@ -208,6 +224,7 @@ impl V5ReceiptRuntimeTelemetry {
             daemon_running: state.daemon_running,
             actor_leases: state.actor_leases,
             terminal_publications: state.terminal_publications.clone(),
+            task_store_create_attempts: state.task_store_create_attempts,
         }
     }
 
@@ -496,6 +513,7 @@ struct V5ReceiptRuntime {
     invocation_executor: V5InvocationExecutor,
     #[cfg_attr(not(feature = "receipt-ledger-test-support"), allow(dead_code))]
     task_projection: V5TaskProjection,
+    external_store_fail_stop: AtomicBool,
     #[cfg(feature = "receipt-ledger-test-support")]
     evidence_capture: Option<SyncSender<ProductionMissingTransitionEvidence>>,
     #[cfg(feature = "receipt-ledger-test-support")]
@@ -509,6 +527,9 @@ struct V5TaskProjection {
     task_store_root: RetainedDirectoryCapability,
     #[allow(dead_code)]
     task_store: Arc<dyn InvocationStoreV5>,
+    #[allow(dead_code)]
+    lifecycle_link_root: RetainedDirectoryCapability,
+    lifecycle_links: TaskLifecycleLinkStoreV5,
     recovery: TaskStoreRecoveryCatalog,
 }
 
@@ -525,9 +546,18 @@ impl V5TaskProjection {
             crate::domain::code_intelligence::ProviderDeadline::new(deadline),
         )
         .map_err(|error| format!("open inspect-only protocol-v5 task store: {error}"))?;
+        let lifecycle_link_root =
+            state.create_private_retained_subdirectory("task-lifecycle-links")?;
+        let lifecycle_links = TaskLifecycleLinkStoreV5::open(
+            lifecycle_link_root.path(),
+            crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+        )
+        .map_err(|error| format!("open protocol-v5 Task lifecycle-link store: {error}"))?;
         Ok(Self {
             task_store_root,
             task_store: Arc::new(store),
+            lifecycle_link_root,
+            lifecycle_links,
             recovery,
         })
     }
@@ -536,7 +566,196 @@ impl V5TaskProjection {
     fn validate_named_identity(&self) -> Result<(), String> {
         self.task_store_root
             .validate_named_identity()
-            .map_err(|error| format!("validate protocol-v5 task projection root: {error}"))
+            .map_err(|error| format!("validate protocol-v5 task projection root: {error}"))?;
+        self.lifecycle_link_root
+            .validate_named_identity()
+            .map_err(|error| format!("validate protocol-v5 lifecycle-link root: {error}"))
+    }
+
+    fn materialize_bound_handoff(
+        &self,
+        handoff: &TaskHandoffActorBoundReceipt,
+        bind_epoch_ms: u64,
+        deadline: Instant,
+        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+    ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        let reservation = self
+            .lifecycle_links
+            .reserve_task_link(
+                handoff.key().clone(),
+                handoff.link().clone(),
+                provider_deadline,
+            )
+            .map_err(V5TaskProjectionFailure::from_link_store)?;
+        let identity = V5TaskIdentity::new(
+            handoff.task().task_id(),
+            handoff.task().invocation_id(),
+            handoff.key_digest().clone(),
+        );
+        let new_record = NewV5InvocationRecord::new(
+            identity.clone(),
+            handoff.key().tool(),
+            handoff.key().normalized_arguments_hash().clone(),
+            handoff.workspace_identity_hash().clone(),
+            handoff.task().poll_interval_ms(),
+            handoff.task().ttl_ms(),
+        );
+        #[cfg(feature = "receipt-ledger-test-support")]
+        telemetry.record_task_store_create_attempt();
+        let created = self
+            .task_store
+            .create_exact(new_record, provider_deadline)
+            .map_err(|error| {
+                V5TaskProjectionFailure::from_task_store(error, handoff.key_digest().clone(), true)
+            })?;
+        let mut readback = self
+            .task_store
+            .get(created.task_id, provider_deadline)
+            .map_err(|error| {
+                V5TaskProjectionFailure::from_task_store(error, handoff.key_digest().clone(), true)
+            })?;
+        if readback != created || !identity.matches_record(&readback) {
+            return Err(V5TaskProjectionFailure::fail_stop(
+                ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: handoff.key_digest().clone(),
+                },
+            ));
+        }
+        if handoff.cancel_requested() && !readback.cancel_requested {
+            readback = self
+                .task_store
+                .request_cancel_exact(&identity, readback.version, provider_deadline)
+                .map_err(|error| {
+                    V5TaskProjectionFailure::from_task_store(
+                        error,
+                        handoff.key_digest().clone(),
+                        true,
+                    )
+                })?;
+        }
+        let task = receipt_task_projection_from_store(&readback)?;
+        let bound = self
+            .lifecycle_links
+            .materialize_task_bound(
+                &reservation,
+                task,
+                readback.version,
+                bind_epoch_ms,
+                handoff.phase(),
+                provider_deadline,
+            )
+            .map_err(V5TaskProjectionFailure::from_link_store)?;
+        Ok((readback, bound))
+    }
+
+    fn start_bound_task(
+        &self,
+        expected: &TaskBoundReceipt,
+        record: V5StoredInvocationRecord,
+        deadline: Instant,
+    ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
+        if expected.phase() != crate::application::receipt_ledger::AttemptPhase::Begun
+            || record.cancel_requested
+            || !matches!(&record.task, V5StoredTask::Queued)
+        {
+            return Ok((record, expected.clone()));
+        }
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        let identity = record.identity();
+        let receipt_key_digest = record.receipt_key_digest.clone();
+        let record = match self
+            .task_store
+            .start_working_if_not_cancel_requested(&identity, record.version, provider_deadline)
+            .map_err(|error| {
+                V5TaskProjectionFailure::from_task_store(error, receipt_key_digest.clone(), true)
+            })? {
+            V5StartWorkingOutcome::Started(record)
+            | V5StartWorkingOutcome::CancelOrTerminalWinner(record) => record,
+        };
+        let task = receipt_task_projection_from_store(&record)?;
+        let bound = self
+            .lifecycle_links
+            .refresh_task_bound_projection(expected, task, provider_deadline)
+            .map_err(V5TaskProjectionFailure::from_link_store)?;
+        Ok((record, bound))
+    }
+
+    fn read_bound_task(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<Option<V5StoredInvocationRecord>, V5TaskProjectionFailure> {
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        let link = match self
+            .lifecycle_links
+            .read_by_task_id(task_id, provider_deadline)
+        {
+            Ok(link) => link,
+            Err(TaskLifecycleLinkStoreError::NotFound { .. }) => return Ok(None),
+            Err(error) => return Err(V5TaskProjectionFailure::from_link_store(error)),
+        };
+        let expected = match link {
+            TaskLifecycleLinkRecord::TaskBound(record) => record.link().clone(),
+            TaskLifecycleLinkRecord::TaskTerminalBound(record) => record.link().clone(),
+            TaskLifecycleLinkRecord::TaskRetirementPending(record) => record.link().clone(),
+        };
+        let record = match self.task_store.get(task_id, provider_deadline) {
+            Ok(record) => record,
+            Err(V5TaskStoreError::NotFound { .. }) => {
+                return Err(V5TaskProjectionFailure::fail_stop(
+                    ReceiptLedgerError::Corrupt(
+                        "active lifecycle link has no exact TaskStore record",
+                    ),
+                ))
+            }
+            Err(error) => {
+                return Err(V5TaskProjectionFailure::from_task_store(
+                    error,
+                    expected.receipt_key_digest().clone(),
+                    true,
+                ))
+            }
+        };
+        let identity = V5TaskIdentity::new(
+            expected.task_id(),
+            expected.invocation_id(),
+            expected.receipt_key_digest().clone(),
+        );
+        if !identity.matches_record(&record) {
+            return Err(V5TaskProjectionFailure::fail_stop(
+                ReceiptLedgerError::Corrupt(
+                    "TaskStore record contradicts its sole lifecycle-link identity",
+                ),
+            ));
+        }
+        Ok(Some(record))
+    }
+
+    fn cancel_bound_task(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<Option<V5StoredInvocationRecord>, V5TaskProjectionFailure> {
+        let Some(record) = self.read_bound_task(task_id, deadline)? else {
+            return Ok(None);
+        };
+        if record.task.is_terminal() || record.cancel_requested {
+            return Ok(Some(record));
+        }
+        let identity = record.identity();
+        let receipt_key_digest = record.receipt_key_digest.clone();
+        let cancelled = self
+            .task_store
+            .request_cancel_exact(
+                &identity,
+                record.version,
+                crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+            )
+            .map_err(|error| {
+                V5TaskProjectionFailure::from_task_store(error, receipt_key_digest, true)
+            })?;
+        Ok(Some(cancelled))
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]
@@ -549,6 +768,111 @@ impl V5TaskProjection {
             observation,
         }
     }
+}
+
+struct V5TaskProjectionFailure {
+    error: ReceiptLedgerError,
+    fail_stop: bool,
+}
+
+impl V5TaskProjectionFailure {
+    const fn fail_stop(error: ReceiptLedgerError) -> Self {
+        Self {
+            error,
+            fail_stop: true,
+        }
+    }
+
+    fn from_link_store(error: TaskLifecycleLinkStoreError) -> Self {
+        match error {
+            TaskLifecycleLinkStoreError::DeadlineExceeded => Self {
+                error: ReceiptLedgerError::DeadlineExceeded,
+                fail_stop: false,
+            },
+            TaskLifecycleLinkStoreError::Capacity { .. } => Self {
+                error: ReceiptLedgerError::CapacityExceeded,
+                fail_stop: false,
+            },
+            TaskLifecycleLinkStoreError::RecordTooLarge { .. } => Self {
+                error: ReceiptLedgerError::RecordTooLarge,
+                fail_stop: false,
+            },
+            TaskLifecycleLinkStoreError::NotFound { .. } => Self {
+                error: ReceiptLedgerError::ReceiptNotFound,
+                fail_stop: false,
+            },
+            TaskLifecycleLinkStoreError::AlreadyOwned
+            | TaskLifecycleLinkStoreError::AlreadyMaterialized { .. }
+            | TaskLifecycleLinkStoreError::IdentityMismatch
+            | TaskLifecycleLinkStoreError::ReservationMismatch
+            | TaskLifecycleLinkStoreError::StateMismatch
+            | TaskLifecycleLinkStoreError::VersionMismatch { .. }
+            | TaskLifecycleLinkStoreError::CommitUncertain { .. }
+            | TaskLifecycleLinkStoreError::Corrupt(_)
+            | TaskLifecycleLinkStoreError::Storage { .. } => {
+                Self::fail_stop(ReceiptLedgerError::StoreUnavailable)
+            }
+        }
+    }
+
+    fn from_task_store(
+        error: V5TaskStoreError,
+        receipt_key_digest: ReceiptKeyDigest,
+        capacity_is_invariant: bool,
+    ) -> Self {
+        match error {
+            V5TaskStoreError::DeadlineExceeded => Self {
+                error: ReceiptLedgerError::DeadlineExceeded,
+                fail_stop: false,
+            },
+            V5TaskStoreError::Capacity { .. } if !capacity_is_invariant => Self {
+                error: ReceiptLedgerError::CapacityExceeded,
+                fail_stop: false,
+            },
+            V5TaskStoreError::RecordTooLarge { .. } => Self {
+                error: ReceiptLedgerError::RecordTooLarge,
+                fail_stop: false,
+            },
+            V5TaskStoreError::NotFound { .. } => Self {
+                error: ReceiptLedgerError::ReceiptNotFound,
+                fail_stop: false,
+            },
+            V5TaskStoreError::CommitUncertain { .. } => {
+                Self::fail_stop(ReceiptLedgerError::CommitUncertain { receipt_key_digest })
+            }
+            V5TaskStoreError::Capacity { .. }
+            | V5TaskStoreError::Mismatch { .. }
+            | V5TaskStoreError::AlreadyOwned
+            | V5TaskStoreError::Corrupt(_)
+            | V5TaskStoreError::Storage { .. } => {
+                Self::fail_stop(ReceiptLedgerError::StoreUnavailable)
+            }
+        }
+    }
+}
+
+impl From<ReceiptLedgerError> for V5TaskProjectionFailure {
+    fn from(error: ReceiptLedgerError) -> Self {
+        Self {
+            fail_stop: error.requires_reopen(),
+            error,
+        }
+    }
+}
+
+fn receipt_task_projection_from_store(
+    record: &V5StoredInvocationRecord,
+) -> Result<ReceiptTaskProjection, V5TaskProjectionFailure> {
+    ReceiptTaskProjection::new(
+        record.task_id,
+        record.invocation_id,
+        record.created_at_epoch_ms,
+        record.updated_at_epoch_ms,
+        record.ttl_ms,
+        record.poll_interval_ms,
+        record.version,
+    )
+    .map_err(Into::into)
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -658,6 +982,10 @@ impl V5ExecutorReachability {
 
 impl V5ReceiptRuntime {
     fn open(state: &DaemonStateDirectory, config: &DaemonServerConfig) -> Result<Self, String> {
+        #[cfg(feature = "receipt-ledger-test-support")]
+        if let Some(epoch_clock) = config.epoch_clock_for_v5_test() {
+            return Self::open_with_epoch_clock(state, config, epoch_clock);
+        }
         Self::open_with_epoch_clock(state, config, Arc::new(SystemEpochMillisClock))
     }
 
@@ -696,6 +1024,7 @@ impl V5ReceiptRuntime {
                 config.invocation_clock_for_v5(),
             ),
             task_projection,
+            external_store_fail_stop: AtomicBool::new(false),
             #[cfg(feature = "receipt-ledger-test-support")]
             evidence_capture: None,
             #[cfg(feature = "receipt-ledger-test-support")]
@@ -716,6 +1045,9 @@ impl V5ReceiptRuntime {
     }
 
     fn ensure_named_authority_before(&self, deadline: Instant) -> Result<(), String> {
+        if self.external_store_fail_stop.load(Ordering::Acquire) {
+            return Err("protocol-v5 external durable store requires reopen".to_owned());
+        }
         self.receipt_ledger
             .generation(deadline)
             .map(|_| ())
@@ -724,6 +1056,14 @@ impl V5ReceiptRuntime {
 
     fn restart_required(&self) -> bool {
         self.receipt_ledger.restart_required()
+            || self.external_store_fail_stop.load(Ordering::Acquire)
+    }
+
+    fn project_task_failure(&self, failure: V5TaskProjectionFailure) -> ReceiptLedgerError {
+        if failure.fail_stop {
+            self.external_store_fail_stop.store(true, Ordering::Release);
+        }
+        failure.error
     }
 
     fn epoch_ms(&self) -> u64 {
@@ -878,13 +1218,32 @@ impl V5ReceiptRuntime {
             #[cfg(feature = "receipt-ledger-test-support")]
             self.telemetry
                 .record_event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
+            let (task_record, bound) = self
+                .task_projection
+                .materialize_bound_handoff(
+                    &handoff,
+                    epoch_ms,
+                    deadline,
+                    #[cfg(feature = "receipt-ledger-test-support")]
+                    &self.telemetry,
+                )
+                .map_err(|failure| self.project_task_failure(failure))?;
+            self.receipt_ledger.complete_bound_task_handoff(
+                handoff.key().clone(),
+                handoff.record_version(),
+                bound.clone(),
+                deadline,
+            )?;
+            let (task_record, _bound) = self
+                .task_projection
+                .start_bound_task(&bound, task_record, deadline)
+                .map_err(|failure| self.project_task_failure(failure))?;
+            #[cfg(feature = "receipt-ledger-test-support")]
+            self.telemetry
+                .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
             return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                 outcome: V5InvocationResponse::Task {
-                    snapshot: queued_receipt_task_snapshot(
-                        handoff.task(),
-                        handoff.key_digest().clone(),
-                        handoff.cancel_requested(),
-                    ),
+                    snapshot: task_store_snapshot(&task_record),
                 },
             }));
         }
@@ -1072,6 +1431,13 @@ impl V5ReceiptRuntime {
         task_id: crate::domain::invocation::TaskId,
         deadline: Instant,
     ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
+        if let Some(record) = self
+            .task_projection
+            .read_bound_task(task_id, deadline)
+            .map_err(|failure| self.project_task_failure(failure))?
+        {
+            return Ok(task_store_snapshot(&record));
+        }
         let state = self.receipt_ledger.resolve_task(task_id, deadline)?;
         let receipt = match state {
             ReceiptState::TaskPromisedUnbound(receipt) => {
@@ -1160,6 +1526,80 @@ impl V5ReceiptRuntime {
             }
         };
         Ok(snapshot)
+    }
+
+    fn wait_task(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        wait_ms: u64,
+        deadline: Instant,
+    ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
+        let wait_deadline = Instant::now()
+            .checked_add(Duration::from_millis(wait_ms))
+            .unwrap_or(deadline)
+            .min(deadline);
+        loop {
+            let snapshot = self.resolve_task(task_id, deadline)?;
+            if task_snapshot_is_terminal(&snapshot) || Instant::now() >= wait_deadline {
+                return Ok(snapshot);
+            }
+            let remaining = wait_deadline.saturating_duration_since(Instant::now());
+            thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
+    }
+
+    fn cancel_task(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
+        if let Some(record) = self
+            .task_projection
+            .cancel_bound_task(task_id, deadline)
+            .map_err(|failure| self.project_task_failure(failure))?
+        {
+            return Ok(task_store_snapshot(&record));
+        }
+        let state = self.receipt_ledger.resolve_task(task_id, deadline)?;
+        let key = match state {
+            ReceiptState::TaskPromisedUnbound(receipt) => receipt.key().clone(),
+            ReceiptState::TaskPromisedActorBound(receipt) => receipt.key().clone(),
+            ReceiptState::TaskHandoffActorBound(receipt) => receipt.key().clone(),
+            ReceiptState::TaskTerminalReceiptBacked(receipt) => {
+                return self.resolve_task(receipt.task().task_id(), deadline)
+            }
+            _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+        };
+        let resolution =
+            self.receipt_ledger
+                .request_cancel_or_reserve(key, self.epoch_ms(), deadline)?;
+        match resolution {
+            crate::application::receipt_ledger::CancelResolution::ExistingWinner(state) => {
+                match *state {
+                    ReceiptState::TaskPromisedUnbound(receipt) => Ok(queued_receipt_task_snapshot(
+                        receipt.task(),
+                        receipt.key_digest().clone(),
+                        receipt.cancel_requested(),
+                    )),
+                    ReceiptState::TaskPromisedActorBound(receipt) => {
+                        Ok(queued_receipt_task_snapshot(
+                            receipt.task(),
+                            receipt.key_digest().clone(),
+                            receipt.cancel_requested(),
+                        ))
+                    }
+                    ReceiptState::TaskHandoffActorBound(receipt) => {
+                        Ok(queued_receipt_task_snapshot(
+                            receipt.task(),
+                            receipt.key_digest().clone(),
+                            receipt.cancel_requested(),
+                        ))
+                    }
+                    _ => Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+                }
+            }
+            _ => Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+        }
     }
 
     fn reply_for_existing_state(
@@ -1323,6 +1763,107 @@ fn queued_receipt_task_snapshot(
         version: task.version(),
         cancel_requested,
     }
+}
+
+fn task_store_snapshot(
+    record: &V5StoredInvocationRecord,
+) -> super::protocol_v5::V5DaemonTaskSnapshot {
+    let common = (
+        record.task_id,
+        record.invocation_id,
+        record.receipt_key_digest.clone(),
+        record.created_at_epoch_ms,
+        record.updated_at_epoch_ms,
+        record.ttl_ms,
+        record.poll_interval_ms,
+        record.version,
+        record.cancel_requested,
+    );
+    match &record.task {
+        V5StoredTask::Queued => super::protocol_v5::V5DaemonTaskSnapshot::Queued {
+            task_id: common.0,
+            invocation_id: common.1,
+            receipt_key_digest: common.2,
+            created_at_epoch_ms: common.3,
+            updated_at_epoch_ms: common.4,
+            ttl_ms: common.5,
+            poll_interval_ms: common.6,
+            version: common.7,
+            cancel_requested: common.8,
+        },
+        V5StoredTask::Working => super::protocol_v5::V5DaemonTaskSnapshot::Working {
+            task_id: common.0,
+            invocation_id: common.1,
+            receipt_key_digest: common.2,
+            created_at_epoch_ms: common.3,
+            updated_at_epoch_ms: common.4,
+            ttl_ms: common.5,
+            poll_interval_ms: common.6,
+            version: common.7,
+            cancel_requested: common.8,
+        },
+        V5StoredTask::Completed {
+            terminal_epoch_ms,
+            terminal_digest,
+            result,
+        } => super::protocol_v5::V5DaemonTaskSnapshot::Completed {
+            task_id: common.0,
+            invocation_id: common.1,
+            receipt_key_digest: common.2,
+            created_at_epoch_ms: common.3,
+            updated_at_epoch_ms: common.4,
+            ttl_ms: common.5,
+            poll_interval_ms: common.6,
+            version: common.7,
+            cancel_requested: common.8,
+            terminal_epoch_ms: *terminal_epoch_ms,
+            terminal_digest: terminal_digest.clone(),
+            result: result.clone(),
+        },
+        V5StoredTask::Failed {
+            terminal_epoch_ms,
+            terminal_digest,
+            reason,
+        } => super::protocol_v5::V5DaemonTaskSnapshot::Failed {
+            task_id: common.0,
+            invocation_id: common.1,
+            receipt_key_digest: common.2,
+            created_at_epoch_ms: common.3,
+            updated_at_epoch_ms: common.4,
+            ttl_ms: common.5,
+            poll_interval_ms: common.6,
+            version: common.7,
+            cancel_requested: common.8,
+            terminal_epoch_ms: *terminal_epoch_ms,
+            terminal_digest: terminal_digest.clone(),
+            reason: *reason,
+        },
+        V5StoredTask::Cancelled {
+            terminal_epoch_ms,
+            terminal_digest,
+        } => super::protocol_v5::V5DaemonTaskSnapshot::Cancelled {
+            task_id: common.0,
+            invocation_id: common.1,
+            receipt_key_digest: common.2,
+            created_at_epoch_ms: common.3,
+            updated_at_epoch_ms: common.4,
+            ttl_ms: common.5,
+            poll_interval_ms: common.6,
+            version: common.7,
+            cancel_requested: common.8,
+            terminal_epoch_ms: *terminal_epoch_ms,
+            terminal_digest: terminal_digest.clone(),
+        },
+    }
+}
+
+fn task_snapshot_is_terminal(snapshot: &super::protocol_v5::V5DaemonTaskSnapshot) -> bool {
+    matches!(
+        snapshot,
+        super::protocol_v5::V5DaemonTaskSnapshot::Completed { .. }
+            | super::protocol_v5::V5DaemonTaskSnapshot::Failed { .. }
+            | super::protocol_v5::V5DaemonTaskSnapshot::Cancelled { .. }
+    )
 }
 
 fn pending_cancel_response(
@@ -1704,16 +2245,61 @@ fn handle_probe_connection(
                 ),
             }
         }
-        V5ClientRequestKind::GetTask
-        | V5ClientRequestKind::WaitTask
-        | V5ClientRequestKind::CancelTask => {
-            let task_id = match decoded.into_request() {
-                V5ClientRequest::GetTask { task_id }
-                | V5ClientRequest::WaitTask { task_id, .. }
-                | V5ClientRequest::CancelTask { task_id } => task_id,
-                _ => unreachable!("request kind and decoded Task variant diverged"),
+        V5ClientRequestKind::GetTask => {
+            let V5ClientRequest::GetTask { task_id } = decoded.into_request() else {
+                unreachable!("request kind and decoded get Task variant diverged");
             };
             match runtime.resolve_task(task_id, deadlines.operation) {
+                Ok(snapshot) => write_runtime_json_line_before(
+                    &mut stream,
+                    runtime,
+                    &V5ServerResponse::Task { snapshot },
+                    deadlines.response,
+                ),
+                Err(ReceiptLedgerError::ReceiptNotFound) => write_runtime_probe_error_before(
+                    &mut stream,
+                    runtime,
+                    V5DaemonErrorCode::TaskNotFound,
+                    deadlines.response,
+                ),
+                Err(error) => write_runtime_ledger_error_before(
+                    &mut stream,
+                    runtime,
+                    &error,
+                    deadlines.response,
+                ),
+            }
+        }
+        V5ClientRequestKind::WaitTask => {
+            let V5ClientRequest::WaitTask { task_id, wait_ms } = decoded.into_request() else {
+                unreachable!("request kind and decoded wait Task variant diverged");
+            };
+            match runtime.wait_task(task_id, wait_ms, deadlines.operation) {
+                Ok(snapshot) => write_runtime_json_line_before(
+                    &mut stream,
+                    runtime,
+                    &V5ServerResponse::Task { snapshot },
+                    deadlines.response,
+                ),
+                Err(ReceiptLedgerError::ReceiptNotFound) => write_runtime_probe_error_before(
+                    &mut stream,
+                    runtime,
+                    V5DaemonErrorCode::TaskNotFound,
+                    deadlines.response,
+                ),
+                Err(error) => write_runtime_ledger_error_before(
+                    &mut stream,
+                    runtime,
+                    &error,
+                    deadlines.response,
+                ),
+            }
+        }
+        V5ClientRequestKind::CancelTask => {
+            let V5ClientRequest::CancelTask { task_id } = decoded.into_request() else {
+                unreachable!("request kind and decoded cancel Task variant diverged");
+            };
+            match runtime.cancel_task(task_id, deadlines.operation) {
                 Ok(snapshot) => write_runtime_json_line_before(
                     &mut stream,
                     runtime,
@@ -1898,6 +2484,7 @@ fn daemon_error_code(error: &ReceiptLedgerError) -> V5DaemonErrorCode {
         | ReceiptLedgerError::ReceiptMutationSequenceMismatch { .. }
         | ReceiptLedgerError::TerminalMismatch
         | ReceiptLedgerError::ReceiptDigestCollision
+        | ReceiptLedgerError::TaskBoundMismatch
         | ReceiptLedgerError::StoreUnavailable
         | ReceiptLedgerError::ConcurrentGenerationChange { .. }
         | ReceiptLedgerError::Corrupt(_)
