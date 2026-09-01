@@ -587,29 +587,46 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 // daemon lifetime. The explicit marker therefore requires no synthetic state.
             }
             ReceiptScenarioAction::Checkpoint { label } => {
-                let mut snapshot = match &pending_submit {
-                    Some(pending) => snapshot_with_actor(
-                        &pending.actor,
-                        &clock,
-                        &telemetry,
-                        control.side_effect_markers(),
-                        &known_keys,
-                    )?,
-                    None => snapshot_from_state(
+                let (mut snapshot, live_task_projection) = match &pending_submit {
+                    Some(pending) => (
+                        snapshot_with_actor(
+                            &pending.actor,
+                            &clock,
+                            &telemetry,
+                            control.side_effect_markers(),
+                            &known_keys,
+                        )?,
+                        Some((&pending.task_projection, pending.task_store_create_attempts)),
+                    ),
+                    None => (
+                        snapshot_from_state(
+                            state.path(),
+                            &identity,
+                            Arc::clone(&clock),
+                            &telemetry,
+                            &control,
+                            &known_keys,
+                        )?,
+                        None,
+                    ),
+                };
+                match live_task_projection {
+                    Some((projection, expected_create_attempts)) => {
+                        if telemetry.snapshot().task_store_create_attempts
+                            != expected_create_attempts
+                        {
+                            return Err("live protocol-v5 checkpoint crossed a TaskStore mutation"
+                                .to_owned());
+                        }
+                        apply_task_projection(&mut snapshot, projection)?;
+                    }
+                    None => enrich_task_projection_snapshot(
+                        &mut snapshot,
                         state.path(),
                         &identity,
                         Arc::clone(&clock),
-                        &telemetry,
-                        &control,
-                        &known_keys,
                     )?,
-                };
-                enrich_task_projection_snapshot(
-                    &mut snapshot,
-                    state.path(),
-                    &identity,
-                    Arc::clone(&clock),
-                )?;
+                }
                 report.terminal_publications = telemetry.snapshot().terminal_publications;
                 report.checkpoints.insert(label, snapshot);
             }
@@ -630,6 +647,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 ) {
                     return Ok(None);
                 }
+                let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
+                let config =
+                    scenario_server_config_with_clock(state.path(), &identity, None, &clock);
+                let runtime =
+                    V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?;
+                let epoch_ms = clock.now_epoch_millis();
                 for index in 0..count {
                     let key = if matches!(fill, ScenarioSeedReceiptState::CancelReserved)
                         && known_keys.is_empty()
@@ -639,20 +662,32 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     } else {
                         fresh_key_for_workspace(&identity, &arguments, &workspace_hint)?
                     };
-                    telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
-                        clock.now_epoch_millis(),
-                    );
-                    if !seed_receipt_state(
-                        state.path(),
-                        &identity,
-                        &clock,
-                        key.clone(),
-                        fill,
-                        false,
-                        None,
-                    )? {
-                        return Ok(None);
+                    telemetry
+                        .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
+                    match fill {
+                        ScenarioSeedReceiptState::CancelReserved => {
+                            runtime
+                                .receipt_ledger
+                                .request_cancel_or_reserve(
+                                    key.clone(),
+                                    epoch_ms,
+                                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                                )
+                                .map_err(|error| format!("fill CancelReserved pool: {error}"))?;
+                        }
+                        ScenarioSeedReceiptState::ReservedUnbound => {
+                            runtime
+                                .receipt_ledger
+                                .reserve(
+                                    key.clone(),
+                                    OriginalCutoffDescriptor::new(epoch_ms, 7_000).map_err(
+                                        |error| format!("construct filled receipt cutoff: {error}"),
+                                    )?,
+                                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                                )
+                                .map_err(|error| format!("fill ReservedUnbound pool: {error}"))?;
+                        }
+                        _ => unreachable!("receipt pool support guard narrowed the seed state"),
                     }
                     push_known_key(&mut known_keys, key);
                 }
@@ -2692,7 +2727,7 @@ fn build_v5_probe_request_frame(
             receipt_key: fresh_key(identity, &Map::new())?,
         }),
         ScenarioProtocolMessage::MalformedV5Schema { target } => {
-            jsonl_bytes_from_value(&strict_schema_mutation_value(*target))
+            jsonl_bytes_from_value(&strict_schema_mutation_value(*target)?)
         }
         ScenarioProtocolMessage::MaximumResponseFrame
         | ScenarioProtocolMessage::OversizedResponseFrame
@@ -2709,11 +2744,9 @@ fn build_v5_probe_request_frame(
         | ScenarioProtocolMessage::TaskCompletedProjection
         | ScenarioProtocolMessage::TaskSemanticCompletedProjection { .. }
         | ScenarioProtocolMessage::TaskCancelledProjection
-        | ScenarioProtocolMessage::TaskFailureProjection { .. } => {
-            jsonl_frame(&V5ClientRequest::Ping {})
-        }
-        ScenarioProtocolMessage::StoredInvocationRecord { .. } => {
-            Err("protocol-v5 request builder does not support stored-record probes".to_owned())
+        | ScenarioProtocolMessage::TaskFailureProjection { .. }
+        | ScenarioProtocolMessage::StoredInvocationRecord { .. } => {
+            Err("protocol-v5 request builder does not support response-fixture probes".to_owned())
         }
     }
 }
@@ -2761,7 +2794,7 @@ fn seed_direct_probe_terminal(
 }
 
 fn build_v3_probe_request_frame(
-    client: ScenarioProtocolVersion,
+    _client: ScenarioProtocolVersion,
     message: &ScenarioProtocolMessage,
 ) -> Result<Vec<u8>, String> {
     match message {
@@ -2788,19 +2821,6 @@ fn build_v3_probe_request_frame(
             jsonl_frame(&protocol_v3::ClientRequest::CancelTask {
                 task_id: TaskId::new(),
             })
-        }
-        ScenarioProtocolMessage::DirectFailureTerminal { .. }
-        | ScenarioProtocolMessage::StoredInvocationRecord { .. }
-            if client == ScenarioProtocolVersion::V3 =>
-        {
-            jsonl_frame(&protocol_v3::ClientRequest::Ping {})
-        }
-        ScenarioProtocolMessage::RecoverReceipt
-        | ScenarioProtocolMessage::AcknowledgeReceipt
-        | ScenarioProtocolMessage::CancelReceipt
-            if client != ScenarioProtocolVersion::V3 =>
-        {
-            jsonl_frame(&protocol_v3::ClientRequest::Ping {})
         }
         ScenarioProtocolMessage::RecoverReceipt
         | ScenarioProtocolMessage::AcknowledgeReceipt
@@ -3055,8 +3075,8 @@ fn spawned_daemon_argv_hex(state_root: &Path, identity: &CoreIdentity) -> String
     lower_hex(&bytes)
 }
 
-fn strict_schema_mutation_value(target: ScenarioStrictSchemaTarget) -> Value {
-    match target {
+fn strict_schema_mutation_value(target: ScenarioStrictSchemaTarget) -> Result<Value, String> {
+    let value = match target {
         ScenarioStrictSchemaTarget::RequestUnknownField => {
             json!({"kind": "ping", "unexpected": true})
         }
@@ -3066,169 +3086,29 @@ fn strict_schema_mutation_value(target: ScenarioStrictSchemaTarget) -> Value {
             "taskId": "11111111-1111-4111-8111-111111111111",
             "waitMs": 1,
         }),
-        ScenarioStrictSchemaTarget::ResponseUnknownField => {
-            json!({"kind": "pong", "unexpected": true})
+        ScenarioStrictSchemaTarget::ResponseUnknownField
+        | ScenarioStrictSchemaTarget::ResponseMissingRequiredField
+        | ScenarioStrictSchemaTarget::ResponseCrossVariantField
+        | ScenarioStrictSchemaTarget::TerminalUnknownField
+        | ScenarioStrictSchemaTarget::TerminalMissingRequiredField
+        | ScenarioStrictSchemaTarget::TerminalCrossVariantField
+        | ScenarioStrictSchemaTarget::TaskSnapshotUnknownField
+        | ScenarioStrictSchemaTarget::TaskSnapshotMissingRequiredField
+        | ScenarioStrictSchemaTarget::TaskSnapshotCrossVariantField
+        | ScenarioStrictSchemaTarget::StoredRecordUnknownTopLevel
+        | ScenarioStrictSchemaTarget::StoredRecordUnknownTaskField
+        | ScenarioStrictSchemaTarget::StoredRecordMissingRequiredField
+        | ScenarioStrictSchemaTarget::StoredRecordCrossVariantField
+        | ScenarioStrictSchemaTarget::TransferCertificateUnknownField
+        | ScenarioStrictSchemaTarget::TransferCertificateMissingRequiredField
+        | ScenarioStrictSchemaTarget::TransferCertificateCrossVariantField => {
+            return Err(
+                "protocol-v5 request builder cannot encode a non-request schema mutation"
+                    .to_owned(),
+            )
         }
-        ScenarioStrictSchemaTarget::ResponseMissingRequiredField => json!({"kind": "task"}),
-        ScenarioStrictSchemaTarget::ResponseCrossVariantField => json!({
-            "kind": "pong",
-            "snapshot": strict_task_snapshot_value(),
-        }),
-        ScenarioStrictSchemaTarget::TerminalUnknownField => json!({
-            "status": "failed",
-            "reason": "invocation_failed",
-            "unexpected": true,
-        }),
-        ScenarioStrictSchemaTarget::TerminalMissingRequiredField => json!({
-            "status": "failed",
-        }),
-        ScenarioStrictSchemaTarget::TerminalCrossVariantField => json!({
-            "status": "failed",
-            "reason": "invocation_failed",
-            "result": {"ok": false, "summary": "semantic-invalid"},
-        }),
-        ScenarioStrictSchemaTarget::TaskSnapshotUnknownField => {
-            let mut value = strict_task_snapshot_value();
-            value["unexpected"] = true.into();
-            value
-        }
-        ScenarioStrictSchemaTarget::TaskSnapshotMissingRequiredField => {
-            let mut value = strict_task_snapshot_value();
-            value
-                .as_object_mut()
-                .expect("strict Task snapshot fixture is an object")
-                .remove("taskId");
-            value
-        }
-        ScenarioStrictSchemaTarget::TaskSnapshotCrossVariantField => {
-            let mut value = strict_task_snapshot_value();
-            value["reason"] = "invocation_failed".into();
-            value
-        }
-        ScenarioStrictSchemaTarget::StoredRecordUnknownTopLevel => {
-            let mut value = strict_stored_record_value();
-            value["unexpected"] = true.into();
-            value
-        }
-        ScenarioStrictSchemaTarget::StoredRecordUnknownTaskField => {
-            let mut value = strict_stored_record_value();
-            value["task"]["unexpected"] = true.into();
-            value
-        }
-        ScenarioStrictSchemaTarget::StoredRecordMissingRequiredField => {
-            let mut value = strict_stored_record_value();
-            value
-                .as_object_mut()
-                .expect("strict stored record fixture is an object")
-                .remove("schemaVersion");
-            value
-        }
-        ScenarioStrictSchemaTarget::StoredRecordCrossVariantField => {
-            let mut value = strict_stored_record_value();
-            value["task"]["reason"] = "invocation_failed".into();
-            value
-        }
-        ScenarioStrictSchemaTarget::TransferCertificateUnknownField => {
-            let mut value = strict_transfer_certificate_value();
-            value["unexpected"] = true.into();
-            value
-        }
-        ScenarioStrictSchemaTarget::TransferCertificateMissingRequiredField => {
-            let mut value = strict_transfer_certificate_value();
-            value
-                .as_object_mut()
-                .expect("strict transfer certificate fixture is an object")
-                .remove("terminalCodecVersion");
-            value
-        }
-        ScenarioStrictSchemaTarget::TransferCertificateCrossVariantField => {
-            let mut value = strict_transfer_certificate_value();
-            value["taskPublicationCases"][0]["cancelRequested"] = false.into();
-            value
-        }
-    }
-}
-
-fn strict_task_snapshot_value() -> Value {
-    json!({
-        "status": "queued",
-        "taskId": "11111111-1111-4111-8111-111111111111",
-        "invocationId": "22222222-2222-4222-8222-222222222222",
-        "receiptKeyDigest": "0".repeat(64),
-        "createdAtEpochMs": 1,
-        "updatedAtEpochMs": 1,
-        "ttlMs": 3_600_000,
-        "pollIntervalMs": 100,
-        "version": 1,
-        "cancelRequested": false,
-    })
-}
-
-fn strict_stored_record_value() -> Value {
-    json!({
-        "schemaVersion": 1,
-        "taskId": "11111111-1111-4111-8111-111111111111",
-        "invocationId": "22222222-2222-4222-8222-222222222222",
-        "receiptKeyDigest": "0".repeat(64),
-        "tool": "unica.view",
-        "normalizedArgumentsHash": "0".repeat(64),
-        "workspaceIdentityHash": "a".repeat(64),
-        "createdAtEpochMs": 1,
-        "updatedAtEpochMs": 1,
-        "ttlMs": 3_600_000,
-        "pollIntervalMs": 100,
-        "version": 1,
-        "cancelRequested": false,
-        "task": {"status": "queued"},
-    })
-}
-
-fn strict_transfer_certificate_value() -> Value {
-    let exact_provisional = |status: &str, cancel_requested: bool| {
-        json!({
-            "kind": "exact_provisional",
-            "status": status,
-            "version": u64::MAX,
-            "cancelRequested": cancel_requested,
-            "finalTaskRecordMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
-            "taskResponseFrameMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
-        })
     };
-    json!({
-        "certificateVersion": 1,
-        "protocolIdentity": "v5",
-        "coreIdentityDigest": "a".repeat(64),
-        "receiptKeyDigest": "0".repeat(64),
-        "taskId": "11111111-1111-4111-8111-111111111111",
-        "invocationId": "22222222-2222-4222-8222-222222222222",
-        "taskLinkDigest": "4c73d08219973c72e759a9f85e156fa42c9d8e61a56e704b70d1c7c042b73da0",
-        "terminalDigest": "f2d0423d2613a0d09397b750542e4542f7653d78ebd5e0448f1326d09145d9ae",
-        "terminalEpochMs": 1,
-        "receiptRecordSchemaVersion": 1,
-        "taskRecordSchemaVersion": 1,
-        "lifecycleLinkRecordSchemaVersion": 1,
-        "terminalCodecVersion": 1,
-        "maxDaemonResponseLineBytes": MAX_V5_RESPONSE_LINE_BYTES,
-        "maxTaskLifecycleLinkRecordBytes": 1_024,
-        "stagedReceiptRecordMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
-        "taskTerminalBoundLinkRecordMaxBytes": 1_024,
-        "taskPublicationCases": [
-            {
-                "kind": "absent",
-                "finalTaskRecordMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
-                "taskResponseFrameMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
-            },
-            exact_provisional("queued", false),
-            exact_provisional("queued", true),
-            exact_provisional("working", false),
-            exact_provisional("working", true),
-        ],
-        "capacityFallbackCases": [{
-            "source": "link_capacity",
-            "receiptBackedRecordMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
-            "taskResponseFrameMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
-        }],
-    })
+    Ok(value)
 }
 
 fn strict_envelope_case(case: ScenarioEnvelopeCase) -> StrictV5EnvelopeCase {
@@ -3406,6 +3286,8 @@ struct PendingSubmit {
     accepted_epoch_ms: u64,
     response_budget_ms: u64,
     actor: ReceiptLedgerActor,
+    task_projection: TaskProjectionObservation,
+    task_store_create_attempts: u64,
     client: thread::JoinHandle<Result<V5ServerResponse, String>>,
     daemon: ScenarioDaemon,
 }
@@ -3417,6 +3299,8 @@ impl PendingSubmit {
             accepted_epoch_ms,
             response_budget_ms,
             actor,
+            task_projection: _,
+            task_store_create_attempts: _,
             client,
             daemon,
         } = self;
@@ -3443,6 +3327,8 @@ fn start_blocked_submit(
     accepted_epoch_ms: u64,
     response_budget_ms: u64,
 ) -> Result<PendingSubmit, String> {
+    let task_projection = inspect_task_projection(state_root, identity, Arc::clone(&clock))?;
+    let task_store_create_attempts = telemetry.snapshot().task_store_create_attempts;
     let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
     let (actor_tx, actor_rx) = mpsc::sync_channel(1);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
@@ -3476,6 +3362,8 @@ fn start_blocked_submit(
         accepted_epoch_ms,
         response_budget_ms,
         actor,
+        task_projection,
+        task_store_create_attempts,
         client,
         daemon,
     })
@@ -3504,16 +3392,18 @@ fn snapshot_from_state(
     keys: &[ReceiptKey],
 ) -> Result<Value, String> {
     let state = DaemonStateDirectory::open(state_root, identity)?;
-    let config = scenario_server_config_with_clock(state_root, identity, None, &clock);
-    let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())?;
+    let receipts = state.create_private_retained_subdirectory("receipts")?;
+    let store = ReceiptLedgerStore::open_retained_directory(receipts)
+        .map_err(|error| format!("open protocol-v5 receipt checkpoint store: {error}"))?;
+    let actor = ReceiptLedgerActor::spawn(store);
     let snapshot = snapshot_with_actor(
-        &runtime.receipt_ledger,
+        &actor,
         &clock,
         telemetry,
         control.side_effect_markers(),
         keys,
     );
-    drop(runtime);
+    drop(actor);
     snapshot
 }
 
@@ -3600,12 +3490,22 @@ fn snapshot_with_actor(
     }))
 }
 
-fn enrich_task_projection_snapshot(
-    snapshot: &mut Value,
+struct TaskProjectionObservation {
+    tasks: Vec<Value>,
+    task_links: Vec<Value>,
+    task_link_count: u64,
+    task_link_bytes: u64,
+    task_link_reserved_count: u64,
+    task_link_reserved_bytes: u64,
+    task_store_mutations: u64,
+    generation: u64,
+}
+
+fn inspect_task_projection(
     state_root: &Path,
     identity: &CoreIdentity,
     clock: Arc<ScenarioEpochClock>,
-) -> Result<(), String> {
+) -> Result<TaskProjectionObservation, String> {
     let state = DaemonStateDirectory::open(state_root, identity)?;
     let deadline = crate::domain::code_intelligence::ProviderDeadline::new(
         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
@@ -3676,23 +3576,69 @@ fn enrich_task_projection_snapshot(
         )?);
     }
 
-    let object = snapshot
-        .as_object_mut()
-        .ok_or_else(|| "protocol-v5 checkpoint snapshot is not an object".to_owned())?;
     let task_link_count = u64::try_from(task_links.len())
         .map_err(|_| "Task lifecycle-link count exceeds u64".to_owned())?;
     let reserved_count = u64::try_from(catalog.reserved_count())
         .map_err(|_| "Task lifecycle-link reservation count exceeds u64".to_owned())?;
-    object.insert("tasks".to_owned(), Value::Array(tasks));
-    object.insert("taskLinks".to_owned(), Value::Array(task_links));
-    object.insert("taskLinkCount".to_owned(), task_link_count.into());
-    object.insert("taskLinkBytes".to_owned(), catalog.actual_bytes().into());
-    object.insert("taskLinkReservedCount".to_owned(), reserved_count.into());
+    Ok(TaskProjectionObservation {
+        tasks,
+        task_links,
+        task_link_count,
+        task_link_bytes: catalog.actual_bytes(),
+        task_link_reserved_count: reserved_count,
+        task_link_reserved_bytes: catalog.reserved_bytes(),
+        task_store_mutations,
+        generation: catalog.generation().saturating_add(task_store_mutations),
+    })
+}
+
+fn apply_task_projection(
+    snapshot: &mut Value,
+    projection: &TaskProjectionObservation,
+) -> Result<(), String> {
+    let object = snapshot
+        .as_object_mut()
+        .ok_or_else(|| "protocol-v5 checkpoint snapshot is not an object".to_owned())?;
+    object.insert("tasks".to_owned(), Value::Array(projection.tasks.clone()));
+    object.insert(
+        "taskLinks".to_owned(),
+        Value::Array(projection.task_links.clone()),
+    );
+    object.insert(
+        "taskLinkCount".to_owned(),
+        projection.task_link_count.into(),
+    );
+    object.insert(
+        "taskLinkBytes".to_owned(),
+        projection.task_link_bytes.into(),
+    );
+    object.insert(
+        "taskLinkReservedCount".to_owned(),
+        projection.task_link_reserved_count.into(),
+    );
     object.insert(
         "taskLinkReservedBytes".to_owned(),
-        catalog.reserved_bytes().into(),
+        projection.task_link_reserved_bytes.into(),
     );
-    object.insert("taskStoreMutations".to_owned(), task_store_mutations.into());
+    object.insert(
+        "taskStoreMutations".to_owned(),
+        projection.task_store_mutations.into(),
+    );
+    for index_name in ["invocationIndex", "reservedTaskIndex"] {
+        let index = object
+            .get_mut(index_name)
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| format!("protocol-v5 checkpoint {index_name} is not an array"))?;
+        for key in projection
+            .task_links
+            .iter()
+            .filter_map(|link| link.get("key"))
+        {
+            if !index.iter().any(|existing| existing == key) {
+                index.push(key.clone());
+            }
+        }
+    }
     let receipt_generation = object
         .get("storeGeneration")
         .and_then(Value::as_u64)
@@ -3700,8 +3646,7 @@ fn enrich_task_projection_snapshot(
     object.insert(
         "storeGeneration".to_owned(),
         receipt_generation
-            .saturating_add(catalog.generation())
-            .saturating_add(task_store_mutations)
+            .saturating_add(projection.generation)
             .into(),
     );
     let receipt_owned = object
@@ -3721,13 +3666,23 @@ fn enrich_task_projection_snapshot(
         "cancelAuthority".to_owned(),
         if receipt_owned {
             Value::String("receipt_ledger".to_owned())
-        } else if task_link_count > 0 || reserved_count > 0 {
+        } else if projection.task_link_count > 0 || projection.task_link_reserved_count > 0 {
             Value::String("task_store".to_owned())
         } else {
             Value::Null
         },
     );
     Ok(())
+}
+
+fn enrich_task_projection_snapshot(
+    snapshot: &mut Value,
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: Arc<ScenarioEpochClock>,
+) -> Result<(), String> {
+    let projection = inspect_task_projection(state_root, identity, clock)?;
+    apply_task_projection(snapshot, &projection)
 }
 
 fn task_lifecycle_link_observation(
@@ -3749,8 +3704,8 @@ fn task_lifecycle_link_observation(
                 record.lifecycle_link_version(),
                 json!({
                     "state": state,
-                    "cancelRequested": task_record.cancel_requested,
-                    "taskVersion": record.task_record_version(),
+                    "cancel_requested": task_record.cancel_requested,
+                    "task_version": record.task_record_version(),
                 }),
             )
         }
@@ -3761,11 +3716,11 @@ fn task_lifecycle_link_observation(
             record.lifecycle_link_version(),
             json!({
                 "state": "task_terminal_bound",
-                "terminalDigest": record.terminal_digest(),
-                "terminalEpochMs": record.terminal_epoch_ms(),
-                "ttlMs": record.task().ttl_ms(),
-                "expiresAtEpochMs": record.expires_at_epoch_ms(),
-                "taskVersion": record.task_record_version(),
+                "terminal_digest": record.terminal_digest(),
+                "terminal_epoch_ms": record.terminal_epoch_ms(),
+                "ttl_ms": record.task().ttl_ms(),
+                "expires_at_epoch_ms": record.expires_at_epoch_ms(),
+                "task_version": record.task_record_version(),
             }),
         ),
         TaskLifecycleLinkRecord::TaskRetirementPending(record) => {
@@ -4756,12 +4711,7 @@ impl ReceiptScenarioAction {
                 matches!(
                     request,
                     ScenarioRequest::Canonical | ScenarioRequest::SameIdentity
-                ) && matches!(
-                    disconnect,
-                    ScenarioDisconnect::Never
-                        | ScenarioDisconnect::AfterSubmitWrite
-                        | ScenarioDisconnect::AfterTerminalCommit
-                )
+                ) && matches!(disconnect, ScenarioDisconnect::Never)
             }
             Self::SendOuterEnvelope { .. } => true,
             Self::ProbeProtocol {
@@ -4839,32 +4789,39 @@ impl ReceiptScenarioAction {
 }
 
 fn protocol_probe_is_supported(
-    client: ScenarioProtocolVersion,
+    _client: ScenarioProtocolVersion,
     server: ScenarioProtocolVersion,
     message: &ScenarioProtocolMessage,
 ) -> bool {
     match server {
         ScenarioProtocolVersion::V4 => false,
-        ScenarioProtocolVersion::V5 => !matches!(
-            message,
-            ScenarioProtocolMessage::StoredInvocationRecord { .. }
-        ),
-        ScenarioProtocolVersion::V3 => match message {
+        ScenarioProtocolVersion::V5 => match message {
             ScenarioProtocolMessage::Ping
             | ScenarioProtocolMessage::Release
             | ScenarioProtocolMessage::SubmitWithCoreIdentity { .. }
             | ScenarioProtocolMessage::GetTask
             | ScenarioProtocolMessage::WaitTask
-            | ScenarioProtocolMessage::CancelTask => true,
-            ScenarioProtocolMessage::DirectFailureTerminal { .. }
-            | ScenarioProtocolMessage::StoredInvocationRecord { .. } => {
-                client == ScenarioProtocolVersion::V3
-            }
-            ScenarioProtocolMessage::RecoverReceipt
+            | ScenarioProtocolMessage::CancelTask
+            | ScenarioProtocolMessage::RecoverReceipt
             | ScenarioProtocolMessage::AcknowledgeReceipt
-            | ScenarioProtocolMessage::CancelReceipt => client != ScenarioProtocolVersion::V3,
+            | ScenarioProtocolMessage::CancelReceipt => true,
+            ScenarioProtocolMessage::MalformedV5Schema { target } => matches!(
+                target,
+                ScenarioStrictSchemaTarget::RequestUnknownField
+                    | ScenarioStrictSchemaTarget::RequestMissingRequiredField
+                    | ScenarioStrictSchemaTarget::RequestCrossVariantField
+            ),
             _ => false,
         },
+        ScenarioProtocolVersion::V3 => matches!(
+            message,
+            ScenarioProtocolMessage::Ping
+                | ScenarioProtocolMessage::Release
+                | ScenarioProtocolMessage::SubmitWithCoreIdentity { .. }
+                | ScenarioProtocolMessage::GetTask
+                | ScenarioProtocolMessage::WaitTask
+                | ScenarioProtocolMessage::CancelTask
+        ),
     }
 }
 
@@ -5140,23 +5097,27 @@ mod tests {
         let cases = [
             (
                 ScenarioSeedReceiptState::TaskPromisedUnbound,
-                "task_promised_unbound",
+                None,
+                "task_terminal_receipt_backed",
             ),
             (
                 ScenarioSeedReceiptState::TaskPromisedActorBound,
-                "task_promised_actor_bound",
+                Some(V5SafeFailureReason::Interrupted),
+                "task_store_terminal",
             ),
             (
                 ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun,
-                "task_handoff_actor_bound_not_begun",
+                Some(V5SafeFailureReason::Interrupted),
+                "task_store_terminal",
             ),
             (
                 ScenarioSeedReceiptState::TaskHandoffActorBoundBegun,
-                "task_handoff_actor_bound_begun",
+                Some(V5SafeFailureReason::OutcomeUncertain),
+                "task_store_terminal",
             ),
         ];
 
-        for (seed_state, expected) in cases {
+        for (seed_state, expected_task_failure, expected) in cases {
             let state_root = ScenarioStateRoot::new().expect("scenario state root");
             let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS));
             let key = fresh_key(&identity, &Map::new()).expect("exact receipt key");
@@ -5177,11 +5138,49 @@ mod tests {
                 scenario_server_config_with_clock(state_root.path(), &identity, None, &clock);
             let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())
                 .expect("reopen runtime");
+            if let Some(expected_reason) = expected_task_failure {
+                assert_eq!(
+                    runtime
+                        .receipt_ledger
+                        .recover(key.clone(), Instant::now() + SCENARIO_OPERATION_TIMEOUT,),
+                    Err(ReceiptLedgerError::ReceiptNotFound),
+                    "startup must retire the transferred actor-bound receipt"
+                );
+                let snapshot = runtime
+                    .resolve_task(
+                        key.reserved_task_id(),
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )
+                    .expect("resolve startup-terminalized actor-bound Task");
+                let V5DaemonTaskSnapshot::Failed {
+                    reason,
+                    cancel_requested,
+                    ..
+                } = snapshot
+                else {
+                    panic!("abandoned actor-owned Task must fail in TaskStore");
+                };
+                assert_eq!(reason, expected_reason);
+                assert!(!cancel_requested);
+                assert_eq!(expected, "task_store_terminal");
+                continue;
+            }
             let recovered = runtime
                 .receipt_ledger
                 .recover(key, Instant::now() + SCENARIO_OPERATION_TIMEOUT)
                 .expect("recover exact seeded receipt");
             assert_eq!(recovered.kind().diagnostic_name(), expected);
+            if matches!(seed_state, ScenarioSeedReceiptState::TaskPromisedUnbound) {
+                let ReceiptState::TaskTerminalReceiptBacked(receipt) = recovered else {
+                    panic!("startup must terminalize the abandoned unbound Task promise");
+                };
+                assert_eq!(
+                    receipt.terminal().outcome(),
+                    &ReceiptTerminalOutcome::Failed {
+                        reason: V5SafeFailureReason::Interrupted,
+                    }
+                );
+            }
         }
     }
 
@@ -5298,9 +5297,24 @@ mod tests {
             snapshot["taskLinks"][0]["lifecycle"]["state"],
             "task_bound_begun"
         );
+        assert_eq!(
+            snapshot["taskLinks"][0]["lifecycle"]["cancel_requested"],
+            false
+        );
+        assert!(snapshot["taskLinks"][0]["lifecycle"]
+            .get("cancelRequested")
+            .is_none());
         assert_eq!(snapshot["taskLinkCount"], 1);
         assert_eq!(snapshot["taskLinkReservedCount"], 0);
         assert_eq!(snapshot["cancelAuthority"], "task_store");
+        assert_eq!(
+            snapshot["invocationIndex"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            snapshot["reservedTaskIndex"].as_array().map(Vec::len),
+            Some(1)
+        );
     }
 
     #[test]
@@ -5315,7 +5329,7 @@ mod tests {
                 disconnect,
                 label: "unsupported-disconnect".to_owned(),
             };
-            assert!(action.is_supported());
+            assert!(!action.is_supported());
         }
 
         for action in [
@@ -5340,6 +5354,28 @@ mod tests {
                 },
                 label: "unsupported-v5-request".to_owned(),
             },
+            ReceiptScenarioAction::ProbeProtocol {
+                client: ScenarioProtocolVersion::V5,
+                server: ScenarioProtocolVersion::V5,
+                message: ScenarioProtocolMessage::TaskOutcome,
+                label: "unsupported-v5-response-fixture".to_owned(),
+            },
+            ReceiptScenarioAction::ProbeProtocol {
+                client: ScenarioProtocolVersion::V3,
+                server: ScenarioProtocolVersion::V3,
+                message: ScenarioProtocolMessage::DirectFailureTerminal {
+                    reason: ScenarioFailureProbeReason::InvocationFailed,
+                },
+                label: "unsupported-v3-response-fixture".to_owned(),
+            },
+            ReceiptScenarioAction::ProbeProtocol {
+                client: ScenarioProtocolVersion::V5,
+                server: ScenarioProtocolVersion::V5,
+                message: ScenarioProtocolMessage::MalformedV5Schema {
+                    target: ScenarioStrictSchemaTarget::ResponseUnknownField,
+                },
+                label: "unsupported-response-schema-mutation".to_owned(),
+            },
         ] {
             assert!(!action.is_supported());
         }
@@ -5356,6 +5392,27 @@ mod tests {
             &ScenarioProtocolMessage::StoredInvocationRecord {
                 schema_version: 1,
                 reason: ScenarioFailureProbeReason::InvocationFailed,
+            },
+        )
+        .is_err());
+        assert!(build_v5_probe_request_frame(
+            Path::new("unused-for-rejected-message"),
+            &CoreIdentity::production_v5(),
+            &ScenarioProtocolMessage::TaskOutcome,
+        )
+        .is_err());
+        assert!(build_v3_probe_request_frame(
+            ScenarioProtocolVersion::V3,
+            &ScenarioProtocolMessage::DirectFailureTerminal {
+                reason: ScenarioFailureProbeReason::InvocationFailed,
+            },
+        )
+        .is_err());
+        assert!(build_v5_probe_request_frame(
+            Path::new("unused-for-rejected-message"),
+            &CoreIdentity::production_v5(),
+            &ScenarioProtocolMessage::MalformedV5Schema {
+                target: ScenarioStrictSchemaTarget::ResponseUnknownField,
             },
         )
         .is_err());
@@ -5402,7 +5459,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_owned_task_cancel_is_durable_through_the_production_runtime() {
+    fn late_cancel_preserves_the_committed_actor_bound_task_terminal() {
         let request = json!({
             "clock": "fake",
             "actions": [
@@ -5429,17 +5486,36 @@ mod tests {
         let report: Value = serde_json::from_str(&encoded).expect("decode scenario report");
         let payload = &report["payload"];
         assert_eq!(payload["responses"]["cancel"]["kind"], "task");
+        assert_eq!(payload["responses"]["cancel"]["task"]["status"], "failed");
+        assert_eq!(
+            payload["responses"]["cancel"]["task"]["terminal"]["reason"],
+            "interrupted"
+        );
         assert_eq!(
             payload["responses"]["cancel"]["task"]["cancelRequested"],
-            true
+            false
         );
         assert_eq!(
-            payload["checkpoints"]["reopened"]["receipts"][0]["state"],
-            "task_promised_actor_bound"
+            payload["checkpoints"]["reopened"]["receipts"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
         );
         assert_eq!(
-            payload["checkpoints"]["reopened"]["receipts"][0]["cancelRequested"],
-            true
+            payload["checkpoints"]["reopened"]["tasks"][0]["status"],
+            "failed"
+        );
+        assert_eq!(
+            payload["checkpoints"]["reopened"]["tasks"][0]["terminal"]["reason"],
+            "interrupted"
+        );
+        assert_eq!(
+            payload["checkpoints"]["reopened"]["tasks"][0]["cancelRequested"],
+            false
+        );
+        assert_eq!(
+            payload["checkpoints"]["reopened"]["cancelAuthority"],
+            "task_store"
         );
     }
 
@@ -5719,6 +5795,17 @@ mod tests {
             accepted_epoch_ms: 1,
             response_budget_ms: 7_000,
             actor,
+            task_projection: TaskProjectionObservation {
+                tasks: Vec::new(),
+                task_links: Vec::new(),
+                task_link_count: 0,
+                task_link_bytes: 0,
+                task_link_reserved_count: 0,
+                task_link_reserved_bytes: 0,
+                task_store_mutations: 0,
+                generation: 0,
+            },
+            task_store_create_attempts: 0,
             client,
             daemon: ScenarioDaemon {
                 stop_requested: Arc::new(AtomicBool::new(false)),
