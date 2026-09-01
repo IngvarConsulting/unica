@@ -1136,6 +1136,21 @@ impl V5TaskProjection {
                 .map_err(V5TaskProjectionFailure::from_link_store)?;
             return Ok((record, bound));
         }
+        Ok((record, expected.clone()))
+    }
+
+    fn mark_not_begun_bound_task_begun(
+        &self,
+        expected: &TaskBoundReceipt,
+        record: &V5StoredInvocationRecord,
+        deadline: Instant,
+    ) -> Result<TaskBoundReceipt, V5TaskProjectionFailure> {
+        if expected.phase() != AttemptPhase::NotBegun || record.task != V5StoredTask::Working {
+            return Err(V5TaskProjectionFailure::fail_stop(
+                ReceiptLedgerError::TaskBoundMismatch,
+            ));
+        }
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
         let bound = self
             .lifecycle_links
             .mark_task_bound_begun(
@@ -1145,7 +1160,7 @@ impl V5TaskProjection {
                 provider_deadline,
             )
             .map_err(V5TaskProjectionFailure::from_link_store)?;
-        Ok((record, bound))
+        Ok(bound)
     }
 
     fn publish_bound_task_terminal(
@@ -1221,6 +1236,11 @@ impl V5TaskProjection {
             Err(TaskLifecycleLinkStoreError::NotFound { .. }) => return Ok(None),
             Err(error) => return Err(V5TaskProjectionFailure::from_link_store(error)),
         };
+        let mask_working_as_queued = matches!(
+            &link,
+            TaskLifecycleLinkRecord::TaskBound(record)
+                if record.phase() == AttemptPhase::NotBegun
+        );
         let expected = match link {
             TaskLifecycleLinkRecord::TaskBound(record) => record.link().clone(),
             TaskLifecycleLinkRecord::TaskTerminalBound(record) => record.link().clone(),
@@ -1255,7 +1275,10 @@ impl V5TaskProjection {
                 ),
             ));
         }
-        Ok(Some(record))
+        Ok(Some(project_bound_task_for_read(
+            record,
+            mask_working_as_queued,
+        )))
     }
 
     fn cancel_bound_task(
@@ -1317,6 +1340,16 @@ impl V5TaskProjection {
             observation,
         }
     }
+}
+
+fn project_bound_task_for_read(
+    mut record: V5StoredInvocationRecord,
+    mask_working_as_queued: bool,
+) -> V5StoredInvocationRecord {
+    if mask_working_as_queued && record.task == V5StoredTask::Working {
+        record.task = V5StoredTask::Queued;
+    }
+    record
 }
 
 fn lifecycle_entry_task_id(
@@ -2398,13 +2431,46 @@ impl V5ReceiptRuntime {
                     V5ReceiptRuntimeEventKind::TaskStoreWorkingReadback,
                     epoch_ms,
                 );
-                self.telemetry
-                    .record_event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
             }
             #[cfg(feature = "receipt-ledger-test-support")]
             if let Some(control) = &self.scenario_control {
                 control.record_bound_task(task_record.clone(), bound.clone());
+                if task_record.task == V5StoredTask::Working
+                    && bound.phase() == AttemptPhase::NotBegun
+                {
+                    control.pause(
+                        receipt_scenario_v5::ScenarioBarrierPoint::AfterWorkingReadback,
+                        deadline,
+                    )?;
+                    control.pause(
+                        receipt_scenario_v5::ScenarioBarrierPoint::BeforeReceiptBegun,
+                        deadline,
+                    )?;
+                    if control.process_exited() {
+                        let current = self.receipt_ledger.recover(bound.key().clone(), deadline)?;
+                        return self.reply_for_existing_state(current, deadline);
+                    }
+                }
             }
+            let bound = if task_record.task == V5StoredTask::Working
+                && bound.phase() == AttemptPhase::NotBegun
+            {
+                let begun = self
+                    .task_projection
+                    .mark_not_begun_bound_task_begun(&bound, &task_record, deadline)
+                    .map_err(|failure| self.project_task_failure(failure))?;
+                #[cfg(feature = "receipt-ledger-test-support")]
+                {
+                    self.telemetry
+                        .record_event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
+                    if let Some(control) = &self.scenario_control {
+                        control.record_bound_task(task_record.clone(), begun.clone());
+                    }
+                }
+                begun
+            } else {
+                bound
+            };
             if task_record.cancel_requested {
                 let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
                     .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
@@ -2559,6 +2625,9 @@ impl V5ReceiptRuntime {
                 deadline,
             )?;
             let current = self.receipt_ledger.recover(bound.key().clone(), deadline)?;
+            if control.process_exited() {
+                return self.reply_for_existing_state(current, deadline);
+            }
             if let ReceiptState::TaskHandoffActorBound(handoff) = current {
                 let (task_record, task_bound) = self
                     .task_projection
@@ -2596,6 +2665,9 @@ impl V5ReceiptRuntime {
                     deadline,
                 )?;
                 let current = self.receipt_ledger.recover(begun.key().clone(), deadline)?;
+                if control.process_exited() {
+                    return self.reply_for_existing_state(current, deadline);
+                }
                 if let ReceiptState::TaskHandoffActorBound(handoff) = current {
                     let (task_record, task_bound) = self
                         .task_projection
@@ -2637,6 +2709,9 @@ impl V5ReceiptRuntime {
                     deadline,
                 )?;
                 let current = self.receipt_ledger.recover(begun.key().clone(), deadline)?;
+                if control.process_exited() {
+                    return self.reply_for_existing_state(current, deadline);
+                }
                 if let ReceiptState::TaskHandoffActorBound(handoff) = current {
                     let (task_record, task_bound) = self
                         .task_projection

@@ -647,6 +647,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
     let mut listener_published = false;
     let mut startup_listener_override = false;
     let mut seeded_task_versions = HashMap::new();
+    let mut recovering_handoff_crash = false;
     for action in scenario.actions {
         match action {
             ReceiptScenarioAction::ConfigureValidation { reject } => {
@@ -821,22 +822,31 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         .is_some_and(|state| {
                             matches!(state, ReceiptState::TaskTerminalReceiptBacked(_))
                         });
-                    let task = if receipt_backed {
-                        task_observation_from_response_with_workspace(
-                            response.clone(),
-                            &wire_key,
-                            state.path(),
-                            &identity,
-                            Some(None),
-                        )?
-                    } else {
-                        task_observation_from_response(
-                            response.clone(),
-                            &wire_key,
-                            state.path(),
-                            &identity,
-                        )?
-                    };
+                    let task =
+                        if receipt_backed || pending_submit.is_some() || live_daemon.is_some() {
+                            task_observation_from_response_with_workspace(
+                                response.clone(),
+                                &wire_key,
+                                state.path(),
+                                &identity,
+                                Some(if receipt_backed {
+                                    None
+                                } else {
+                                    control.actor_workspace_identity().and_then(|identity| {
+                                        serde_json::to_value(identity)
+                                            .ok()
+                                            .and_then(|value| value.as_str().map(str::to_owned))
+                                    })
+                                }),
+                            )?
+                        } else {
+                            task_observation_from_response(
+                                response.clone(),
+                                &wire_key,
+                                state.path(),
+                                &identity,
+                            )?
+                        };
                     json!({
                         "kind": "task",
                         "error": null,
@@ -1143,17 +1153,31 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     .and_then(|actor| read_promised_task_from_actor(actor, task_id).ok())
                     .flatten();
                 let receipt_projected = promised_response.is_some();
+                let controlled_bound_response = control.bound_task().map(|bound_task| {
+                    let mask_working_as_queued = bound_task.bound.phase()
+                        == crate::application::receipt_ledger::AttemptPhase::NotBegun;
+                    V5ServerResponse::Task {
+                        snapshot: super::task_store_snapshot(&super::project_bound_task_for_read(
+                            bound_task.record,
+                            mask_working_as_queued,
+                        )),
+                    }
+                });
                 let available_response = match promised_response {
                     Some(response) => Some(response),
-                    None if pending_submit.is_some() || live_daemon.is_some() => Some(
-                        read_task_from_live_daemon(state.path(), &identity, task_id, api)?,
-                    ),
-                    None => read_bound_task_without_startup(
+                    None if controlled_bound_response.is_some() => controlled_bound_response,
+                    None => match read_bound_task_without_startup(
                         state.path(),
                         &identity,
                         Arc::clone(&clock),
                         task_id,
-                    )?,
+                    )? {
+                        Some(response) => Some(response),
+                        None if pending_submit.is_some() || live_daemon.is_some() => Some(
+                            read_task_from_live_daemon(state.path(), &identity, task_id, api)?,
+                        ),
+                        None => None,
+                    },
                 };
                 let response = match available_response {
                     Some(response) => response,
@@ -1395,6 +1419,41 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     control.arm_crash_after_side_effect();
                     continue;
                 }
+                if matches!(
+                    point,
+                    ScenarioCrashPoint::BeforeTaskStoreCreate
+                        | ScenarioCrashPoint::AfterCancelFlagBeforeTaskCreate
+                ) {
+                    let pending = pending_submit.as_ref().ok_or_else(|| {
+                        "protocol-v5 pre-create crash has no live submit".to_owned()
+                    })?;
+                    let state = pending
+                        .actor
+                        .recover(
+                            exact_key.clone(),
+                            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                        )
+                        .map_err(|error| format!("recover pre-create crash handoff: {error}"))?;
+                    if !matches!(state, ReceiptState::TaskHandoffActorBound(_)) {
+                        return Err(format!(
+                            "protocol-v5 pre-create crash observed {}",
+                            state.kind().diagnostic_name()
+                        ));
+                    }
+                    telemetry.record_forced_process_exit();
+                    control.record_process_exit(1);
+                    control.release_all_barriers();
+                    let pending = pending_submit
+                        .take()
+                        .expect("pre-create crashed submit exists");
+                    let (_, _, _, _, actor, _, _, daemon) = pending.finish()?;
+                    drop(actor);
+                    daemon.stop_and_join(
+                        "protocol-v5 receipt scenario daemon panicked during pre-create crash",
+                    )?;
+                    recovering_handoff_crash = true;
+                    continue;
+                }
                 if matches!(point, ScenarioCrashPoint::ReservedBegun) {
                     let pending = pending_submit.as_ref().ok_or_else(|| {
                         "protocol-v5 ReservedBegun crash has no live submit".to_owned()
@@ -1592,6 +1651,10 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 {
                     Ok(runtime) => {
                         drop(runtime);
+                        if recovering_handoff_crash {
+                            telemetry.record_task_store_create_attempt();
+                            recovering_handoff_crash = false;
+                        }
                         startup_failed = false;
                         listener_published = true;
                     }
@@ -1888,6 +1951,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 ScenarioEvent::TaskBoundCommitted => {
                     telemetry.wait_for_event(
                         V5ReceiptRuntimeEventKind::TaskBoundCommitted,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::TaskStoreWorkingReadback => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::TaskStoreWorkingReadback,
                         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                     )?;
                 }
@@ -6805,6 +6874,8 @@ impl ReceiptScenarioAction {
                     | ScenarioCrashPoint::ReservedBegun
                     | ScenarioCrashPoint::TaskPromisedUnbound
                     | ScenarioCrashPoint::AfterSideEffectBeforeTerminal
+                    | ScenarioCrashPoint::BeforeTaskStoreCreate
+                    | ScenarioCrashPoint::AfterCancelFlagBeforeTaskCreate
                     | ScenarioCrashPoint::AfterWorkingReadbackBeforeReceiptBegun
                     | ScenarioCrashPoint::AfterReceiptBegunBeforePrepare
             ),
@@ -7153,6 +7224,7 @@ enum ScenarioEvent {
     AcknowledgementCommitted,
     BoundHandoffCommitted,
     TaskBoundCommitted,
+    TaskStoreWorkingReadback,
 }
 
 #[derive(Deserialize)]
