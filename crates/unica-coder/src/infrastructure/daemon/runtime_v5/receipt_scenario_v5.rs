@@ -1,5 +1,5 @@
 use super::{
-    run_daemon_configured_until, V5ReceiptRuntime, V5ReceiptRuntimeEvent,
+    daemon_error_code, run_daemon_configured_until, V5ReceiptRuntime, V5ReceiptRuntimeEvent,
     V5ReceiptRuntimeEventKind, V5ReceiptRuntimeTelemetry,
 };
 use crate::application::invocation::normalized_arguments_hash;
@@ -66,6 +66,7 @@ pub(super) struct ReceiptScenarioControl {
     barrier: Mutex<CancelConversionBarrier>,
     changed: Condvar,
     drop_ack_response_after_commit: AtomicBool,
+    drop_submit_response_after_commit: AtomicBool,
     provider: Mutex<Option<ScenarioProviderFixture>>,
     side_effect_markers: AtomicU64,
 }
@@ -91,6 +92,7 @@ impl ReceiptScenarioControl {
             barrier: Mutex::new(CancelConversionBarrier::default()),
             changed: Condvar::new(),
             drop_ack_response_after_commit: AtomicBool::new(false),
+            drop_submit_response_after_commit: AtomicBool::new(false),
             provider: Mutex::new(None),
             side_effect_markers: AtomicU64::new(0),
         }
@@ -125,6 +127,16 @@ impl ReceiptScenarioControl {
 
     pub(super) fn take_ack_response_disconnect(&self) -> bool {
         self.drop_ack_response_after_commit
+            .swap(false, Ordering::AcqRel)
+    }
+
+    fn arm_submit_response_disconnect(&self) {
+        self.drop_submit_response_after_commit
+            .store(true, Ordering::Release);
+    }
+
+    pub(super) fn take_submit_response_disconnect(&self) -> bool {
+        self.drop_submit_response_after_commit
             .swap(false, Ordering::AcqRel)
     }
 
@@ -396,15 +408,40 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 } else {
                     let observed_cutoff = *original_submit_cutoff
                         .get_or_insert((clock.now_epoch_millis(), response_budget_ms));
-                    let response = exchange_once(
-                        state.path(),
-                        &identity,
-                        Arc::clone(&clock),
-                        Arc::clone(&telemetry),
-                        Some(Arc::clone(&control)),
-                        |owner| owner.submit_invocation(invocation),
-                    )?;
-                    if matches!(disconnect, ScenarioDisconnect::Never) {
+                    let response = match disconnect {
+                        ScenarioDisconnect::Never => Some(exchange_once(
+                            state.path(),
+                            &identity,
+                            Arc::clone(&clock),
+                            Arc::clone(&telemetry),
+                            Some(Arc::clone(&control)),
+                            |owner| owner.submit_invocation(invocation),
+                        )?),
+                        ScenarioDisconnect::AfterTerminalCommit => {
+                            control.arm_submit_response_disconnect();
+                            exchange_submit_and_expect_disconnect(
+                                state.path(),
+                                &identity,
+                                Arc::clone(&clock),
+                                Arc::clone(&control),
+                                Arc::clone(&telemetry),
+                                invocation,
+                            )?;
+                            None
+                        }
+                        ScenarioDisconnect::AfterSubmitWrite => {
+                            submit_and_disconnect_after_write(
+                                state.path(),
+                                &identity,
+                                Arc::clone(&clock),
+                                Arc::clone(&control),
+                                Arc::clone(&telemetry),
+                                invocation,
+                            )?;
+                            None
+                        }
+                    };
+                    if let Some(response) = response {
                         let observation = match &response {
                             V5ServerResponse::Invocation {
                                 outcome: V5InvocationResponse::Task { snapshot },
@@ -523,18 +560,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 };
                 match disconnect {
                     ScenarioAckDisconnect::Never => {
-                        let response = exchange_once(
+                        let response = acknowledge_without_startup(
                             state.path(),
                             &identity,
                             Arc::clone(&clock),
                             Arc::clone(&telemetry),
-                            Some(Arc::clone(&control)),
-                            |owner| {
-                                owner.acknowledge_invocation_receipt(
-                                    exact_key.clone(),
-                                    terminal_digest,
-                                )
-                            },
+                            exact_key.clone(),
+                            terminal_digest,
                         )?;
                         report
                             .responses
@@ -716,6 +748,48 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 control.install();
             }
             ReceiptScenarioAction::WaitForEvent { event } => match event {
+                ScenarioEvent::V5ReceiptRuntimeEntered => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::CanonicalV13ServiceEntered => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::CanonicalV13ServiceEntered,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::ReceiptReserved => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::ReceiptReserved,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::ActorBoundCommitted => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::ActorBoundCommitted,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::ReceiptBegunCommitted => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::ReceiptBegunCommitted,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::PrepareEntered => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::PrepareEntered,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::ExecuteEntered => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::ExecuteEntered,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
                 ScenarioEvent::CancelReservationConverted => {
                     control.wait_until_reached(Instant::now() + SCENARIO_OPERATION_TIMEOUT)?;
                     telemetry.wait_for_event(
@@ -732,6 +806,24 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     }
                     telemetry.wait_for_event(
                         V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::ResultSerialized => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::ResultSerialized,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::FinalResultProjected => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::FinalResultProjected,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::AcknowledgementCommitted => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::AcknowledgementCommitted,
                         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                     )?;
                 }
@@ -1368,6 +1460,44 @@ fn scenario_server_config_with_clock(
     scenario_server_config(state_root, identity, control)
         .with_invocation_clock_for_test(invocation_clock)
         .with_v5_epoch_clock_for_test(epoch_clock)
+}
+
+fn acknowledge_without_startup(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: Arc<ScenarioEpochClock>,
+    telemetry: Arc<V5ReceiptRuntimeTelemetry>,
+    key: ReceiptKey,
+    terminal_digest: TerminalDigest,
+) -> Result<V5ServerResponse, String> {
+    let state = DaemonStateDirectory::open(state_root, identity)?;
+    let receipts = state.create_private_retained_subdirectory("receipts")?;
+    let store = ReceiptLedgerStore::open_retained_directory(receipts)
+        .map_err(|error| format!("open protocol-v5 receipt ACK owner: {error}"))?;
+    let actor = ReceiptLedgerActor::spawn(store);
+    let epoch_ms = clock.now_epoch_millis();
+    let result = actor.acknowledge_direct(
+        key,
+        terminal_digest,
+        epoch_ms,
+        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+    );
+    let response = match result {
+        Ok(receipt) => {
+            telemetry.record_event(
+                V5ReceiptRuntimeEventKind::AcknowledgementCommitted,
+                epoch_ms,
+            );
+            V5ServerResponse::InvocationAcknowledged {
+                acknowledgement: V5AcknowledgedReceipt::from_receipt(&receipt),
+            }
+        }
+        Err(error) => V5ServerResponse::Error {
+            code: daemon_error_code(&error),
+        },
+    };
+    drop(actor);
+    Ok(response)
 }
 
 fn exchange_once(
@@ -3193,6 +3323,89 @@ fn exchange_ack_and_expect_disconnect(
     finish_with_daemon_cleanup(result, cleanup)
 }
 
+fn exchange_submit_and_expect_disconnect(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: Arc<ScenarioEpochClock>,
+    control: Arc<ReceiptScenarioControl>,
+    telemetry: Arc<V5ReceiptRuntimeTelemetry>,
+    invocation: V5InvocationRequest,
+) -> Result<(), String> {
+    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
+    let daemon = ScenarioDaemon::spawn(config, move |runtime| {
+        let mut runtime = runtime.with_shared_telemetry(telemetry);
+        runtime.epoch_clock = clock;
+        runtime.scenario_control = Some(control);
+        runtime
+    });
+    let result = (|| {
+        wait_for_endpoint(state_root, identity)?;
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+            state_root,
+            identity.clone(),
+            std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
+            SCENARIO_IDLE_GRACE,
+        )?;
+        let result = owner.submit_invocation(invocation);
+        drop(owner);
+        match result {
+            Ok(_) => Err(
+                "submit response was delivered instead of disconnecting after terminal commit"
+                    .to_owned(),
+            ),
+            Err(_) => Ok(()),
+        }
+    })();
+    let cleanup = daemon.stop_and_join("protocol-v5 receipt scenario submit daemon panicked");
+    finish_with_daemon_cleanup(result, cleanup)
+}
+
+fn submit_and_disconnect_after_write(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: Arc<ScenarioEpochClock>,
+    control: Arc<ReceiptScenarioControl>,
+    telemetry: Arc<V5ReceiptRuntimeTelemetry>,
+    invocation: V5InvocationRequest,
+) -> Result<(), String> {
+    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
+    let daemon_telemetry = Arc::clone(&telemetry);
+    let daemon = ScenarioDaemon::spawn(config, move |runtime| {
+        let mut runtime = runtime.with_shared_telemetry(daemon_telemetry);
+        runtime.epoch_clock = clock;
+        runtime.scenario_control = Some(control);
+        runtime
+    });
+    let result = (|| {
+        wait_for_endpoint(state_root, identity)?;
+        let state = DaemonStateDirectory::open(state_root, identity)?;
+        let record = state
+            .read_v5_endpoint_record()?
+            .ok_or_else(|| "protocol-v5 submit endpoint disappeared".to_owned())?;
+        let handshake = V5DaemonProcessOwner::connect_existing_raw_for_test(
+            record,
+            DAEMON_PROTOCOL_VERSION,
+            identity.clone(),
+            uuid::Uuid::new_v4().to_string(),
+            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+        )?;
+        let V5RawHandshake::Ready { owner, .. } = handshake else {
+            return Err("protocol-v5 submit handshake was unexpectedly rejected".to_owned());
+        };
+        let mut request_frame =
+            serde_json::to_vec(&V5ClientRequest::SubmitInvocation { invocation })
+                .map_err(|error| format!("encode disconnecting protocol-v5 submit: {error}"))?;
+        request_frame.push(b'\n');
+        owner.write_raw_frame_and_disconnect(&request_frame, "disconnecting submit request")?;
+        telemetry.wait_for_event(
+            V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
+            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+        )
+    })();
+    let cleanup = daemon.stop_and_join("protocol-v5 disconnecting submit daemon panicked");
+    finish_with_daemon_cleanup(result, cleanup)
+}
+
 #[cfg(test)]
 enum ScenarioWireRequest {
     InjectedClientFailure,
@@ -4729,7 +4942,12 @@ impl ReceiptScenarioAction {
                 matches!(
                     request,
                     ScenarioRequest::Canonical | ScenarioRequest::SameIdentity
-                ) && matches!(disconnect, ScenarioDisconnect::Never)
+                ) && matches!(
+                    disconnect,
+                    ScenarioDisconnect::Never
+                        | ScenarioDisconnect::AfterSubmitWrite
+                        | ScenarioDisconnect::AfterTerminalCommit
+                )
             }
             Self::SendOuterEnvelope { .. } => true,
             Self::ProbeProtocol {
@@ -5110,8 +5328,18 @@ enum ScenarioCrashPoint {
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ScenarioEvent {
+    V5ReceiptRuntimeEntered,
+    CanonicalV13ServiceEntered,
+    ReceiptReserved,
+    ActorBoundCommitted,
+    ReceiptBegunCommitted,
+    PrepareEntered,
+    ExecuteEntered,
     CancelReservationConverted,
+    ResultSerialized,
     ReceiptTerminalCommitted,
+    FinalResultProjected,
+    AcknowledgementCommitted,
     BoundHandoffCommitted,
     TaskBoundCommitted,
 }
@@ -5364,18 +5592,13 @@ mod tests {
 
     #[test]
     fn support_filter_rejects_actions_without_an_interpreter_path() {
-        for disconnect in [
-            ScenarioDisconnect::AfterSubmitWrite,
-            ScenarioDisconnect::AfterTerminalCommit,
-        ] {
-            let action = ReceiptScenarioAction::Submit {
-                request: ScenarioRequest::Canonical,
-                response_budget_ms: 7_000,
-                disconnect,
-                label: "unsupported-disconnect".to_owned(),
-            };
-            assert!(!action.is_supported());
-        }
+        let action = ReceiptScenarioAction::Submit {
+            request: ScenarioRequest::Canonical,
+            response_budget_ms: 7_000,
+            disconnect: ScenarioDisconnect::AfterSubmitWrite,
+            label: "supported-disconnect".to_owned(),
+        };
+        assert!(action.is_supported());
 
         for action in [
             ReceiptScenarioAction::ProbeProtocol {

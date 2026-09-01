@@ -489,6 +489,20 @@ impl V5DaemonProcessOwner {
         }
     }
 
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn write_raw_frame_and_disconnect(
+        mut self,
+        frame: &[u8],
+        stage: &'static str,
+    ) -> Result<(), String> {
+        let deadline = Instant::now()
+            .checked_add(CONNECT_TIMEOUT)
+            .ok_or_else(|| "protocol-v5 raw write deadline overflow".to_string())?;
+        self.write_raw_before(frame, true, deadline, stage)?;
+        self.poison();
+        Ok(())
+    }
+
     fn write_before<T: serde::Serialize>(
         &mut self,
         value: &T,

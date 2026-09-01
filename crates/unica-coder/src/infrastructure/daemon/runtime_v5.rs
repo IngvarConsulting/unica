@@ -90,7 +90,9 @@ enum V5ReceiptRuntimeEventKind {
     BoundHandoffCommitted,
     TaskBoundCommitted,
     CancelReservationConverted,
+    ResultSerialized,
     ReceiptTerminalCommitted,
+    FinalResultProjected,
     AcknowledgementCommitted,
 }
 
@@ -1639,6 +1641,9 @@ impl V5ReceiptRuntime {
         };
         let terminal = crate::application::receipt_ledger::canonical_v5_terminal(&outcome)
             .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+        #[cfg(feature = "receipt-ledger-test-support")]
+        self.telemetry
+            .record_event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
         self.publish_direct_terminal(begun, epoch_ms, terminal, deadline)
     }
 
@@ -1661,6 +1666,9 @@ impl V5ReceiptRuntime {
             V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
             epoch_ms,
         );
+        #[cfg(feature = "receipt-ledger-test-support")]
+        self.telemetry
+            .record_event(V5ReceiptRuntimeEventKind::FinalResultProjected, epoch_ms);
         #[cfg(feature = "receipt-ledger-test-support")]
         self.telemetry
             .record_direct_publication(&publication, "direct", "immediate_publication");
@@ -2517,6 +2525,14 @@ fn handle_probe_connection(
                     #[cfg(feature = "receipt-ledger-test-support")]
                     runtime
                         .capture_missing_submit_writer_after_reserve(&reply, deadlines.operation)?;
+                    #[cfg(feature = "receipt-ledger-test-support")]
+                    if runtime
+                        .scenario_control
+                        .as_ref()
+                        .is_some_and(|control| control.take_submit_response_disconnect())
+                    {
+                        return Ok(());
+                    }
                     write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
                 }
                 Err(error) => write_runtime_ledger_error_before(
@@ -2859,18 +2875,19 @@ fn daemon_error_code(error: &ReceiptLedgerError) -> V5DaemonErrorCode {
         ReceiptLedgerError::CommitUncertain { .. } => V5DaemonErrorCode::DurabilityUncertain,
         ReceiptLedgerError::DeadlineExceeded => V5DaemonErrorCode::Overloaded,
         ReceiptLedgerError::AlreadyOwned => V5DaemonErrorCode::DuplicateLease,
+        ReceiptLedgerError::TerminalMismatch | ReceiptLedgerError::ReceiptRowPresentUnsupported => {
+            V5DaemonErrorCode::InvalidRequest
+        }
         ReceiptLedgerError::RecordTooLarge
         | ReceiptLedgerError::TimestampOverflow
         | ReceiptLedgerError::ReceiptVersionMismatch { .. }
         | ReceiptLedgerError::ReceiptMutationSequenceMismatch { .. }
-        | ReceiptLedgerError::TerminalMismatch
         | ReceiptLedgerError::ReceiptDigestCollision
         | ReceiptLedgerError::TaskBoundMismatch
         | ReceiptLedgerError::TaskCancellationMismatch
         | ReceiptLedgerError::StoreUnavailable
         | ReceiptLedgerError::ConcurrentGenerationChange { .. }
         | ReceiptLedgerError::Corrupt(_)
-        | ReceiptLedgerError::ReceiptRowPresentUnsupported
         | ReceiptLedgerError::Storage { .. } => V5DaemonErrorCode::StoreFailed,
     }
 }
