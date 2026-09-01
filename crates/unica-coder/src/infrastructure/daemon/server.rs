@@ -6567,46 +6567,53 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
-    fn run_long_work_contract_obligation(name: &str, obligation: fn()) {
-        std::thread::Builder::new()
-            .name(name.to_owned())
-            // Each debug-only ownership oracle is independently valid on the
-            // test harness stack. Keep their stack frames isolated instead of
-            // compiling the whole named contract into one aggregate frame.
-            .stack_size(32 * 1024 * 1024)
-            .spawn(obligation)
-            .expect("long-work contract obligation thread should start")
-            .join()
-            .expect("long-work contract obligation thread should finish");
-    }
-
-    fn runtime_resource_tree_contract_obligation() {
-        crate::infrastructure::runtime_jobs::reset_runtime_resource_contract_executions_for_test();
-        crate::infrastructure::runtime_jobs::run_runtime_resource_tree_contract_for_test();
-        assert_eq!(
-            crate::infrastructure::runtime_jobs::runtime_resource_contract_executions_for_test(),
-            1,
-            "daemon CTR named check did not execute its runtime-tree obligations"
+    fn run_long_work_contract_obligation(test_name: &str) {
+        // These ownership oracles exercise independent global runtime fixtures.
+        // A larger child thread stack still shares the parent test process and
+        // can terminate that process on Windows before the aggregate reports a
+        // failure. Give each obligation an independent process boundary.
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("current test executable should resolve"),
+        )
+        .args([
+            "--exact",
+            test_name,
+            "--nocapture",
+            "--test-threads=1",
+            "--color",
+            "never",
+        ])
+        // The parent harness has tests that temporarily change its process-wide
+        // current directory. Never inherit a fixture cwd that can disappear
+        // while this independent test process is starting.
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("long-work contract obligation process should start");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "long-work contract obligation {test_name} failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains("running 1 test"),
+            "long-work contract obligation {test_name} matched no unique test\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
     }
 
     #[test]
     fn daemon_exact_long_work_ownership_contract() {
         run_long_work_contract_obligation(
-            "daemon-long-work-capabilities-contract",
-            daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership,
+            "infrastructure::daemon::server::actor_capacity_tests::daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership",
         );
         run_long_work_contract_obligation(
-            "daemon-index-revision-contract",
-            daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication,
+            "infrastructure::daemon::server::actor_capacity_tests::daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication",
         );
         run_long_work_contract_obligation(
-            "daemon-replaced-root-contract",
-            daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication,
+            "infrastructure::daemon::server::actor_capacity_tests::daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication",
         );
         run_long_work_contract_obligation(
-            "daemon-runtime-resource-contract",
-            runtime_resource_tree_contract_obligation,
+            "infrastructure::runtime_jobs::tests::runtime_resource_tree_lease_contract",
         );
     }
 

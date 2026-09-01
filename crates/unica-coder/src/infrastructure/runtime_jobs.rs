@@ -53,22 +53,6 @@ const RUNTIME_STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 #[cfg(test)]
 thread_local! {
     static STREAM_FINISH_ATTEMPTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-    static RUNTIME_RESOURCE_CONTRACT_EXECUTIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(crate) fn reset_runtime_resource_contract_executions_for_test() {
-    RUNTIME_RESOURCE_CONTRACT_EXECUTIONS.with(|slot| slot.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn runtime_resource_contract_executions_for_test() -> u32 {
-    RUNTIME_RESOURCE_CONTRACT_EXECUTIONS.with(std::cell::Cell::get)
-}
-
-#[cfg(test)]
-pub(crate) fn run_runtime_resource_tree_contract_for_test() {
-    tests::runtime_resource_tree_lease_contract();
 }
 #[cfg(test)]
 static INJECT_RUNTIME_RECORD_WRITE_FAILURE: std::sync::atomic::AtomicBool =
@@ -6983,9 +6967,6 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn runtime_resource_tree_lease_contract() {
         let supervisor_scope = TestSupervisorScope::new();
-        RUNTIME_RESOURCE_CONTRACT_EXECUTIONS.with(|slot| {
-            slot.set(slot.get().saturating_add(1));
-        });
         runtime_shared_work_joins_only_the_exact_active_resource_and_lease();
         runtime_shared_work_separates_physical_resources_and_distinct_v4_leases();
         stale_runtime_shared_work_authority_starts_no_producer_after_lock_replacement();
