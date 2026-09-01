@@ -1,5 +1,4 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory, ReceiptAuthorityLock};
-use super::protocol::InvocationResponse;
 use super::protocol_v5::{
     decode_v5_request_frame, read_bounded_v5_request_frame_before, DecodedV5Request,
     V5AcknowledgedReceipt, V5ClientRequest, V5ClientRequestKind, V5DaemonErrorCode,
@@ -9,16 +8,21 @@ use super::protocol_v5::{
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use super::protocol_v5::{decode_v5_server_response, read_bounded_v5_probe_response_frame};
-use super::server::{CanonicalInvocationService, DaemonInvocationRuntime, DaemonServerConfig};
+use super::server::{
+    CanonicalInvocationService, DaemonServerConfig, V5CanonicalInvocationRuntime,
+    V5CanonicalPrepareError, V5PreparedCanonicalInvocation,
+};
 use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
-use crate::application::invocation_store::{EpochMillisClock, InvocationStore, ToolIdentity};
-use crate::application::invocation_store_v5::V5SafeFailureReason;
+use crate::application::invocation_store::{EpochMillisClock, ToolIdentity};
+use crate::application::invocation_store_v5::{
+    InvocationStoreV5, TaskStoreRecoveryCatalog, V5SafeFailureReason,
+};
 use crate::application::invocation_v5::{
     classify_cancel_reserved_expiry_outcome, classify_recovered_receipt,
     decide_cancel_reserved_submit, decide_cancel_resolution, CancelInvocationDecision,
     CancelReservedExpiryDecision, CancelReservedRecoveryDecision, CancelReservedSubmitDecision,
 };
-use crate::application::ports::TokioClock;
+use crate::application::ports::Clock;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::CommittedDirectPublication;
 use crate::application::receipt_ledger::{
@@ -33,6 +37,7 @@ use crate::infrastructure::receipt_ledger::StableReceiptLedgerObservation;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
 use crate::infrastructure::task_store::SystemEpochMillisClock;
+use crate::infrastructure::task_store_v5::FileInvocationStoreV5;
 use serde::Serialize;
 #[cfg(feature = "receipt-ledger-test-support")]
 use serde_json::json;
@@ -174,9 +179,14 @@ impl V5ReceiptRuntimeTelemetry {
         self.changed.notify_all();
     }
 
-    fn record_prepare_and_execute(&self) {
+    fn record_prepare(&self) {
         let mut state = self.lock_state();
         state.callbacks.prepare = state.callbacks.prepare.saturating_add(1);
+        self.changed.notify_all();
+    }
+
+    fn record_execute(&self) {
+        let mut state = self.lock_state();
         state.callbacks.execute = state.callbacks.execute.saturating_add(1);
         self.changed.notify_all();
     }
@@ -489,23 +499,28 @@ struct V5ReceiptRuntime {
 struct V5TaskProjection {
     #[cfg_attr(not(feature = "receipt-ledger-test-support"), allow(dead_code))]
     task_store_root: RetainedDirectoryCapability,
-    task_store: Arc<dyn InvocationStore>,
+    #[allow(dead_code)]
+    task_store: Arc<dyn InvocationStoreV5>,
+    recovery: TaskStoreRecoveryCatalog,
 }
 
 impl V5TaskProjection {
-    fn open(state: &DaemonStateDirectory) -> Result<Self, String> {
+    fn open(
+        state: &DaemonStateDirectory,
+        epoch_clock: Arc<dyn EpochMillisClock>,
+        deadline: Instant,
+    ) -> Result<Self, String> {
         let task_store_root = state.create_private_retained_subdirectory("tasks")?;
-        let (store, _recovery) =
-            crate::infrastructure::task_store::FileInvocationStore::open_retained_directory(
-                task_store_root
-                    .try_clone_directory()
-                    .map_err(|error| format!("clone protocol-v5 task store root: {error}"))?,
-                Arc::new(SystemEpochMillisClock),
-            )
-            .map_err(|error| format!("open protocol-v5 task store: {error}"))?;
+        let (store, recovery) = FileInvocationStoreV5::open_retained_directory_inspect_only(
+            task_store_root.clone(),
+            epoch_clock,
+            crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+        )
+        .map_err(|error| format!("open inspect-only protocol-v5 task store: {error}"))?;
         Ok(Self {
             task_store_root,
             task_store: Arc::new(store),
+            recovery,
         })
     }
 
@@ -542,27 +557,20 @@ impl V5TaskProjectionReachability {
 }
 
 struct V5InvocationExecutor {
-    invocation_runtime: Arc<DaemonInvocationRuntime>,
+    invocation_runtime: V5CanonicalInvocationRuntime,
 }
 
 impl V5InvocationExecutor {
-    fn new(
-        invocation_service: Arc<dyn CanonicalInvocationService>,
-        task_store: Arc<dyn InvocationStore>,
-    ) -> Self {
+    fn new(invocation_service: Arc<dyn CanonicalInvocationService>, clock: Arc<dyn Clock>) -> Self {
         Self {
-            invocation_runtime: Arc::new(DaemonInvocationRuntime::new(
-                task_store,
-                invocation_service,
-                Arc::new(TokioClock),
-            )),
+            invocation_runtime: V5CanonicalInvocationRuntime::new(invocation_service, clock),
         }
     }
 
-    fn execute_direct(
+    fn prepare(
         &self,
         invocation: V5InvocationRequest,
-    ) -> Result<crate::domain::invocation::DomainResult, String> {
+    ) -> Result<V5PreparedCanonicalInvocation, V5CanonicalPrepareError> {
         let tool = match invocation.tool() {
             crate::application::receipt_ledger::V5ToolIdentity::View => ToolIdentity::View,
             crate::application::receipt_ledger::V5ToolIdentity::Apply => ToolIdentity::Apply,
@@ -578,14 +586,17 @@ impl V5InvocationExecutor {
             Value::Object(invocation.arguments().clone()),
             invocation.workspace_hint().to_owned(),
             invocation.response_budget_ms(),
-        )?;
-        match self.invocation_runtime.submit_v5(request)? {
-            InvocationResponse::Direct(result) => Ok(result),
-            InvocationResponse::Task(_) => Err(
-                "known-long protocol-v5 invocation requires task handoff, not direct receipt"
-                    .to_owned(),
-            ),
-        }
+        )
+        .map_err(|error| {
+            V5CanonicalPrepareError::Rejected(Box::new(
+                crate::domain::invocation::DomainResult::canonical_rejection(
+                    None,
+                    "bad_value",
+                    error,
+                ),
+            ))
+        })?;
+        self.invocation_runtime.prepare(request)
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]
@@ -659,8 +670,12 @@ impl V5ReceiptRuntime {
             .observe_stable_generation()
             .map_err(|error| format!("observe initial protocol-v5 receipt generation: {error}"))?;
         let receipt_ledger = ReceiptLedgerActor::spawn(receipt_ledger);
-        let task_projection = V5TaskProjection::open(state)?;
-        let task_store = Arc::clone(&task_projection.task_store);
+        let task_projection = V5TaskProjection::open(
+            state,
+            Arc::clone(&epoch_clock),
+            Instant::now() + AUTHORITY_ACQUIRE_TIMEOUT,
+        )?;
+        let _task_recovery_entries = task_projection.recovery.entries().len();
         Ok(Self {
             core_identity: config.core_identity.clone(),
             _stable_authority: stable_authority,
@@ -670,7 +685,7 @@ impl V5ReceiptRuntime {
             initial_receipt_observation,
             invocation_executor: V5InvocationExecutor::new(
                 config.invocation_service_for_v5(),
-                task_store,
+                config.invocation_clock_for_v5(),
             ),
             task_projection,
             #[cfg(feature = "receipt-ledger-test-support")]
@@ -771,23 +786,82 @@ impl V5ReceiptRuntime {
         self.telemetry
             .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
         #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry.record_prepare_and_execute();
-        let terminal = {
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                if let Some(terminal) = control.fixture_terminal() {
-                    terminal
-                } else {
-                    self.execute_direct_terminal(invocation)?
-                }
-            } else {
-                self.execute_direct_terminal(invocation)?
-            }
-            #[cfg(not(feature = "receipt-ledger-test-support"))]
-            {
-                self.execute_direct_terminal(invocation)?
+        self.telemetry.record_prepare();
+        #[cfg(feature = "receipt-ledger-test-support")]
+        self.telemetry.record_event(
+            V5ReceiptRuntimeEventKind::CanonicalV13ServiceEntered,
+            epoch_ms,
+        );
+        let prepared = match self.invocation_executor.prepare(invocation) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let outcome = match error {
+                    V5CanonicalPrepareError::Rejected(result) => {
+                        crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
+                            result,
+                        }
+                    }
+                    V5CanonicalPrepareError::WorkspaceCapacity => {
+                        crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed {
+                            reason: V5SafeFailureReason::WorkspaceCapacity,
+                        }
+                    }
+                    V5CanonicalPrepareError::WorkspaceRegistryFailed => {
+                        crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed {
+                            reason: V5SafeFailureReason::WorkspaceRegistryFailed,
+                        }
+                    }
+                };
+                let terminal = crate::application::receipt_ledger::canonical_v5_terminal(&outcome)
+                    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                return self.publish_direct_terminal(reservation, epoch_ms, terminal, deadline);
             }
         };
+        let bound = self.receipt_ledger.bind_reserved_actor(
+            reservation.key().clone(),
+            reservation.record_version(),
+            prepared.workspace_identity_hash().clone(),
+            deadline,
+        )?;
+        if matches!(
+            prepared.execution_class(),
+            crate::application::operation_descriptors::ExecutionClass::KnownLong(_)
+        ) {
+            let terminal = crate::application::receipt_ledger::canonical_v5_terminal(
+                &crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::InvocationFailed,
+                },
+            )
+            .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+            return self.publish_direct_terminal(bound, epoch_ms, terminal, deadline);
+        }
+        let begun = self.receipt_ledger.mark_reserved_begun(
+            bound.key().clone(),
+            bound.record_version(),
+            deadline,
+        )?;
+        #[cfg(feature = "receipt-ledger-test-support")]
+        self.telemetry.record_execute();
+        let outcome = match prepared.execute() {
+            Ok(result) => crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
+                result: Box::new(result),
+            },
+            Err(_) => crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed {
+                reason: V5SafeFailureReason::InvocationFailed,
+            },
+        };
+        let terminal = crate::application::receipt_ledger::canonical_v5_terminal(&outcome)
+            .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+        self.publish_direct_terminal(begun, epoch_ms, terminal, deadline)
+    }
+
+    fn publish_direct_terminal(
+        &self,
+        reservation: crate::application::receipt_ledger::ReservedReceipt,
+        epoch_ms: u64,
+        terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
         let publication = self.receipt_ledger.publish_direct_terminal(
             reservation.key().clone(),
             reservation.record_version(),
@@ -804,27 +878,6 @@ impl V5ReceiptRuntime {
         self.telemetry
             .record_direct_publication(&publication, "direct", "immediate_publication");
         Ok(V5RuntimeReply::Prepared(publication.into_parts().1))
-    }
-
-    fn execute_direct_terminal(
-        &self,
-        invocation: V5InvocationRequest,
-    ) -> Result<crate::application::receipt_ledger::V5CanonicalTerminal, ReceiptLedgerError> {
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::CanonicalV13ServiceEntered,
-            self.epoch_ms(),
-        );
-        let outcome = match self.invocation_executor.execute_direct(invocation) {
-            Ok(result) => crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
-                result: Box::new(result),
-            },
-            Err(_) => crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed {
-                reason: V5SafeFailureReason::InvocationFailed,
-            },
-        };
-        crate::application::receipt_ledger::canonical_v5_terminal(&outcome)
-            .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))
     }
 
     fn reply_for_cancel_submit_decision(
@@ -1050,6 +1103,8 @@ impl V5ReceiptRuntime {
         origin: &'static str,
         response_kind: &'static str,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        #[cfg(not(feature = "receipt-ledger-test-support"))]
+        let _ = (origin, response_kind);
         match state {
             ReceiptState::CancelReserved(receipt) => {
                 Ok(V5RuntimeReply::Json(pending_cancel_response(&receipt)))

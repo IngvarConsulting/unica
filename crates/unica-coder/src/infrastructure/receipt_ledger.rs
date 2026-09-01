@@ -16,7 +16,7 @@ use crate::application::receipt_ledger::{
     ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
     ReceiptLedgerCatalogSnapshotParts,
 };
-use crate::domain::invocation::{InvocationId, TaskId};
+use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
 use crate::infrastructure::daemon::terminal_codec_v5::{
     prepare_committed_direct_wire, prepare_direct_terminal, restore_canonical_terminal,
     validate_persisted_direct_record_bytes, DirectReceiptWriteSlot,
@@ -211,6 +211,18 @@ enum StoredActiveLifecycleV1 {
         original_cutoff: OriginalCutoffDescriptor,
         cancel_requested: bool,
     },
+    ReservedActorBound {
+        reserved_at_epoch_ms: u64,
+        original_cutoff: OriginalCutoffDescriptor,
+        bound_workspace_identity: SafeIdentityHash,
+        cancel_requested: bool,
+    },
+    ReservedBegun {
+        reserved_at_epoch_ms: u64,
+        original_cutoff: OriginalCutoffDescriptor,
+        bound_workspace_identity: SafeIdentityHash,
+        cancel_requested: bool,
+    },
     DirectTerminalUnacked {
         original_cutoff: OriginalCutoffDescriptor,
         terminal_epoch_ms: u64,
@@ -267,6 +279,8 @@ impl CatalogEntry {
             | StoredActiveLifecycleV1::AcknowledgementCommit { .. }
             | StoredActiveLifecycleV1::AcknowledgedTombstone { .. } => 0,
             StoredActiveLifecycleV1::ReservedUnbound { .. }
+            | StoredActiveLifecycleV1::ReservedActorBound { .. }
+            | StoredActiveLifecycleV1::ReservedBegun { .. }
             | StoredActiveLifecycleV1::DirectTerminalUnacked { .. }
             | StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. } => {
                 MAX_RECEIPT_ENTITLEMENT_BYTES
@@ -334,6 +348,36 @@ impl CatalogEntry {
                 *reserved_at_epoch_ms,
                 *original_cutoff,
                 ReservedPhase::Unbound,
+                *cancel_requested,
+                self.reserved_result_bytes(),
+            ))),
+            StoredActiveLifecycleV1::ReservedActorBound {
+                reserved_at_epoch_ms,
+                original_cutoff,
+                bound_workspace_identity,
+                cancel_requested,
+            } => Ok(ReceiptState::Reserved(ReservedReceipt::new(
+                self.record_header(),
+                *reserved_at_epoch_ms,
+                *original_cutoff,
+                ReservedPhase::ActorBound {
+                    bound_workspace_identity: bound_workspace_identity.clone(),
+                },
+                *cancel_requested,
+                self.reserved_result_bytes(),
+            ))),
+            StoredActiveLifecycleV1::ReservedBegun {
+                reserved_at_epoch_ms,
+                original_cutoff,
+                bound_workspace_identity,
+                cancel_requested,
+            } => Ok(ReceiptState::Reserved(ReservedReceipt::new(
+                self.record_header(),
+                *reserved_at_epoch_ms,
+                *original_cutoff,
+                ReservedPhase::Begun {
+                    bound_workspace_identity: bound_workspace_identity.clone(),
+                },
                 *cancel_requested,
                 self.reserved_result_bytes(),
             ))),
@@ -1756,6 +1800,153 @@ impl ReceiptLedgerStore {
             }
         };
         Ok(ReserveOutcome::Created(committed.reservation()?))
+    }
+
+    pub(crate) fn bind_reserved_actor(
+        &self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        bound_workspace_identity: SafeIdentityHash,
+        deadline: Instant,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        self.transition_reserved_phase(
+            key,
+            expected_version,
+            ReservedPhaseTransition::BindActor(bound_workspace_identity),
+            deadline,
+        )
+    }
+
+    pub(crate) fn mark_reserved_begun(
+        &self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        deadline: Instant,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        self.transition_reserved_phase(
+            key,
+            expected_version,
+            ReservedPhaseTransition::MarkBegun,
+            deadline,
+        )
+    }
+
+    fn transition_reserved_phase(
+        &self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        transition: ReservedPhaseTransition,
+        deadline: Instant,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let key_digest = receipt_key_digest(key);
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+        let expected = catalog
+            .records
+            .get(&key_digest)
+            .cloned()
+            .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
+        if &expected.record.key != key {
+            return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
+        }
+        let persisted = self
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "catalogued receipt row is missing",
+            ))?;
+        if persisted != expected {
+            return latch_catalog_error(
+                &mut catalog,
+                ReceiptLedgerError::Corrupt("catalogued receipt row changed on disk"),
+            );
+        }
+        if persisted.record.record_version != expected_version {
+            return Err(ReceiptLedgerError::ReceiptVersionMismatch {
+                expected: expected_version,
+                actual: persisted.record.record_version,
+            });
+        }
+        let reserved = persisted.reservation()?;
+        let next_phase = match (transition, reserved.phase()) {
+            (ReservedPhaseTransition::BindActor(identity), ReservedPhase::Unbound) => {
+                ReservedPhase::ActorBound {
+                    bound_workspace_identity: identity,
+                }
+            }
+            (
+                ReservedPhaseTransition::MarkBegun,
+                ReservedPhase::ActorBound {
+                    bound_workspace_identity,
+                },
+            ) => ReservedPhase::Begun {
+                bound_workspace_identity: bound_workspace_identity.clone(),
+            },
+            _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+        };
+        let next_record_version =
+            expected_version
+                .checked_next()
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "receipt record version exhausted u64",
+                ))?;
+        let generation = latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = generation
+            .checked_add(1)
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt generation exhausted u64",
+            ))?;
+        let record = build_reserved_phase_record(
+            &persisted,
+            next_phase,
+            mutation_sequence,
+            next_record_version,
+        )?;
+        let (record, encoded) =
+            serialize_reserved_record(record, MAX_TASK_RECORD_ENVELOPE_BYTES as u64)?;
+        let replacement = CatalogEntry {
+            record: record.clone(),
+            encoded_bytes: u64::try_from(encoded.len())
+                .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
+        };
+        validate_catalog_replace(&catalog, &expected, &replacement)?;
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_replace(&mut catalog, replacement);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        match self.read_active_record_bytes(&key_digest) {
+            Ok(Some(committed)) if committed == encoded => {}
+            Ok(Some(_)) | Ok(None) | Err(_) => {
+                catalog.unavailable = true;
+                return Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                });
+            }
+        }
+        let committed =
+            catalog
+                .records
+                .get(&key_digest)
+                .ok_or(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                })?;
+        committed.reservation()
     }
 
     fn convert_cancel_reserved_to_submit(
@@ -3609,6 +3800,31 @@ impl ReceiptLedgerPort for ReceiptLedgerStore {
         ReceiptLedgerStore::reserve(self, key, original_cutoff, deadline)
     }
 
+    fn bind_reserved_actor(
+        &mut self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        bound_workspace_identity: SafeIdentityHash,
+        deadline: Instant,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        ReceiptLedgerStore::bind_reserved_actor(
+            self,
+            key,
+            expected_version,
+            bound_workspace_identity,
+            deadline,
+        )
+    }
+
+    fn mark_reserved_begun(
+        &mut self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        deadline: Instant,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        ReceiptLedgerStore::mark_reserved_begun(self, key, expected_version, deadline)
+    }
+
     fn request_cancel_or_reserve(
         &mut self,
         key: ReceiptKey,
@@ -3782,6 +3998,8 @@ fn read_active_record_from_retained(
             | StoredActiveLifecycleV1::ExpiredDeletion { .. }
             | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
             | StoredActiveLifecycleV1::ReservedUnbound { .. }
+            | StoredActiveLifecycleV1::ReservedActorBound { .. }
+            | StoredActiveLifecycleV1::ReservedBegun { .. }
             | StoredActiveLifecycleV1::AcknowledgementCommit { .. }
             | StoredActiveLifecycleV1::AcknowledgedTombstone { .. }
     ) {
@@ -4055,6 +4273,51 @@ fn build_reserved_record(
     }
 }
 
+enum ReservedPhaseTransition {
+    BindActor(SafeIdentityHash),
+    MarkBegun,
+}
+
+fn build_reserved_phase_record(
+    expected: &CatalogEntry,
+    phase: ReservedPhase,
+    mutation_sequence: u64,
+    record_version: ReceiptVersion,
+) -> Result<StoredActiveReceiptV1, ReceiptLedgerError> {
+    let reserved = expected.reservation()?;
+    let lifecycle = match phase {
+        ReservedPhase::Unbound => {
+            return Err(ReceiptLedgerError::Corrupt(
+                "reserved phase transition cannot return to unbound",
+            ))
+        }
+        ReservedPhase::ActorBound {
+            bound_workspace_identity,
+        } => StoredActiveLifecycleV1::ReservedActorBound {
+            reserved_at_epoch_ms: reserved.reserved_at_epoch_ms(),
+            original_cutoff: *reserved.original_cutoff(),
+            bound_workspace_identity,
+            cancel_requested: reserved.cancel_requested(),
+        },
+        ReservedPhase::Begun {
+            bound_workspace_identity,
+        } => StoredActiveLifecycleV1::ReservedBegun {
+            reserved_at_epoch_ms: reserved.reserved_at_epoch_ms(),
+            original_cutoff: *reserved.original_cutoff(),
+            bound_workspace_identity,
+            cancel_requested: reserved.cancel_requested(),
+        },
+    };
+    Ok(StoredActiveReceiptV1 {
+        schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+        mutation_sequence,
+        record_version,
+        key: expected.record.key.clone(),
+        key_digest: expected.record.key_digest.clone(),
+        lifecycle,
+    })
+}
+
 fn build_cancel_reserved_record(
     key: ReceiptKey,
     key_digest: ReceiptKeyDigest,
@@ -4252,7 +4515,9 @@ fn validate_persisted_reserved_record_bytes(
         | StoredActiveLifecycleV1::ExpiredDeletion { .. }
         | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
         | StoredActiveLifecycleV1::AcknowledgementCommit { .. } => MAX_CANCEL_RESERVED_RECORD_BYTES,
-        StoredActiveLifecycleV1::ReservedUnbound { .. } => MAX_TASK_RECORD_ENVELOPE_BYTES as u64,
+        StoredActiveLifecycleV1::ReservedUnbound { .. }
+        | StoredActiveLifecycleV1::ReservedActorBound { .. }
+        | StoredActiveLifecycleV1::ReservedBegun { .. } => MAX_TASK_RECORD_ENVELOPE_BYTES as u64,
         StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. } => MAX_RECEIPT_ENTITLEMENT_BYTES,
         StoredActiveLifecycleV1::AcknowledgedTombstone { .. } => MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
         StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
@@ -4456,6 +4721,16 @@ fn validate_active_record(
             MAX_CANCEL_RESERVED_RECORD_BYTES
         }
         StoredActiveLifecycleV1::ReservedUnbound {
+            reserved_at_epoch_ms,
+            original_cutoff,
+            ..
+        }
+        | StoredActiveLifecycleV1::ReservedActorBound {
+            reserved_at_epoch_ms,
+            original_cutoff,
+            ..
+        }
+        | StoredActiveLifecycleV1::ReservedBegun {
             reserved_at_epoch_ms,
             original_cutoff,
             ..
@@ -4991,7 +5266,7 @@ mod tests {
         ReceiptKey, ReceiptLedgerPort, ReceiptState, ReceiptTerminalOutcome, ReceiptVersion,
         RequestIdentity, ReserveOutcome, V5ToolIdentity,
     };
-    use crate::domain::invocation::{DomainResult, InvocationId, TaskId};
+    use crate::domain::invocation::{DomainResult, InvocationId, SafeIdentityHash, TaskId};
     use crate::infrastructure::platform::filesystem::{
         open_directory_nofollow, open_regular_child_nofollow,
         set_before_identity_bound_cleanup_mutation_hook,
@@ -6443,6 +6718,60 @@ mod tests {
         assert_eq!(recovered.key(), &key);
         assert_eq!(recovered.original_cutoff(), &cutoff);
         assert_eq!(reopened.generation().expect("reopened generation"), 1);
+    }
+
+    #[test]
+    fn reserved_actor_binding_and_begun_are_durable_exact_cas() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let cutoff =
+            OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid original response cutoff");
+        let actor_identity = SafeIdentityHash::from_sha256([0x77; 32]);
+
+        let begun = {
+            let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+            let reserved = store
+                .reserve(key.clone(), cutoff, reserve_deadline())
+                .expect("reserve exact receipt")
+                .into_reservation()
+                .expect("receipt remains reserved");
+            let bound = store
+                .bind_reserved_actor(
+                    &key,
+                    reserved.record_version(),
+                    actor_identity.clone(),
+                    reserve_deadline(),
+                )
+                .expect("durably bind exact actor identity");
+            assert_eq!(
+                bound.phase(),
+                &ReservedPhase::ActorBound {
+                    bound_workspace_identity: actor_identity.clone(),
+                }
+            );
+            store
+                .mark_reserved_begun(&key, bound.record_version(), reserve_deadline())
+                .expect("durably mark exact attempt begun")
+        };
+
+        assert_eq!(
+            begun.phase(),
+            &ReservedPhase::Begun {
+                bound_workspace_identity: actor_identity.clone(),
+            }
+        );
+        assert_eq!(begun.record_version().get(), 3);
+        assert_eq!(begun.mutation_sequence(), 3);
+
+        let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen receipt ledger");
+        let recovered = reopened
+            .recover_exact(&key, reserve_deadline())
+            .expect("recover begun receipt");
+        assert_eq!(recovered, ReceiptState::Reserved(begun));
+        assert_eq!(reopened.generation().expect("reopened generation"), 3);
     }
 
     #[test]
@@ -8914,6 +9243,10 @@ mod tests {
                 reserved_at_epoch_ms,
                 ..
             } => *reserved_at_epoch_ms = 1_001,
+            StoredActiveLifecycleV1::ReservedActorBound { .. }
+            | StoredActiveLifecycleV1::ReservedBegun { .. } => {
+                panic!("unbound fixture decoded as an advanced reservation")
+            }
             StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
                 panic!("reserved fixture decoded as a direct terminal")
             }

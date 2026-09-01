@@ -2,12 +2,13 @@ use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelResolution,
     CommittedDirectPublication, OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest,
     ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion, ReserveOutcome,
-    TerminalDigest, V5CanonicalTerminal,
+    ReservedReceipt, TerminalDigest, V5CanonicalTerminal,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
     ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
 };
+use crate::domain::invocation::SafeIdentityHash;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
@@ -216,6 +217,19 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<ReserveOutcome>>,
     },
+    BindReservedActor {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        bound_workspace_identity: SafeIdentityHash,
+        deadline: Instant,
+        ticket: Arc<Ticket<ReservedReceipt>>,
+    },
+    MarkReservedBegun {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        deadline: Instant,
+        ticket: Arc<Ticket<ReservedReceipt>>,
+    },
     RequestCancelOrReserve {
         key: ReceiptKey,
         cancel_reserved_at_epoch_ms: u64,
@@ -419,6 +433,8 @@ enum TimeoutClass {
     SnapshotCatalog,
     Generation,
     Reserve(ReceiptKeyDigest),
+    BindReservedActor(ReceiptKeyDigest),
+    MarkReservedBegun(ReceiptKeyDigest),
     RequestCancelOrReserve(ReceiptKeyDigest),
     ExpireCancelReserved(ReceiptKeyDigest),
     PublishDirectTerminal(ReceiptKeyDigest),
@@ -435,6 +451,8 @@ impl TimeoutClass {
             Self::SnapshotCatalog => ReceiptLedgerError::StoreUnavailable,
             Self::Generation => ReceiptLedgerError::StoreUnavailable,
             Self::Reserve(receipt_key_digest)
+            | Self::BindReservedActor(receipt_key_digest)
+            | Self::MarkReservedBegun(receipt_key_digest)
             | Self::RequestCancelOrReserve(receipt_key_digest)
             | Self::ExpireCancelReserved(receipt_key_digest)
             | Self::PublishDirectTerminal(receipt_key_digest)
@@ -542,6 +560,70 @@ impl ReceiptLedgerActor {
             Command::Reserve {
                 key,
                 original_cutoff,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn bind_reserved_actor(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        bound_workspace_identity: SafeIdentityHash,
+        deadline: Instant,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::BindReservedActor(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::BindReservedActor {
+                key,
+                expected_version,
+                bound_workspace_identity,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn mark_reserved_begun(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        deadline: Instant,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::MarkReservedBegun(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::MarkReservedBegun {
+                key,
+                expected_version,
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -856,6 +938,48 @@ fn run_worker(
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.reserve(key, original_cutoff, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::BindReservedActor {
+                key,
+                expected_version,
+                bound_workspace_identity,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.bind_reserved_actor(
+                        &key,
+                        expected_version,
+                        bound_workspace_identity,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::MarkReservedBegun {
+                key,
+                expected_version,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.mark_reserved_begun(&key, expected_version, deadline)
                 }))
                 .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
                     receipt_key_digest: digest,

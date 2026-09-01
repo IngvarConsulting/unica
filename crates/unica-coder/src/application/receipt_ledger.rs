@@ -470,6 +470,25 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         deadline: Instant,
     ) -> Result<ReserveOutcome, ReceiptLedgerError>;
 
+    fn bind_reserved_actor(
+        &mut self,
+        _key: &ReceiptKey,
+        _expected_version: ReceiptVersion,
+        _bound_workspace_identity: SafeIdentityHash,
+        _deadline: Instant,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    fn mark_reserved_begun(
+        &mut self,
+        _key: &ReceiptKey,
+        _expected_version: ReceiptVersion,
+        _deadline: Instant,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
     fn request_cancel_or_reserve(
         &mut self,
         key: ReceiptKey,

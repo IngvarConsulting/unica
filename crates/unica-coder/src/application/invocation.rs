@@ -60,7 +60,7 @@ impl std::fmt::Debug for InvocationResponseDeadline {
 }
 
 impl InvocationResponseDeadline {
-    fn capture(clock: Arc<dyn Clock>) -> Self {
+    pub(crate) fn capture(clock: Arc<dyn Clock>) -> Self {
         let receipt_at = clock.now();
         let handoff_at = receipt_at + INVOCATION_HANDOFF_WINDOW;
         Self {
