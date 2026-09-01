@@ -4248,6 +4248,7 @@ pub(crate) mod tests {
                     &crate::domain::cancellation::CancellationToken::new(),
                 )
                 .unwrap_err()
+                .to_string()
                 .contains("stale"));
         }
         let cancelled = crate::domain::cancellation::CancellationToken::new();
@@ -4264,6 +4265,7 @@ pub(crate) mod tests {
                 &cancelled,
             )
             .unwrap_err()
+            .to_string()
             .contains("cancel"));
         assert!(fixture
             .actor
@@ -4275,6 +4277,7 @@ pub(crate) mod tests {
                 &crate::domain::cancellation::CancellationToken::new(),
             )
             .unwrap_err()
+            .to_string()
             .contains("deadline"));
 
         let foreign_actor = staged_xdto_actor(&fixture.context, &fixture.source);

@@ -87,7 +87,12 @@ pub(super) fn canonical_syntax_invocation_args(
         }
     }
     if !mapped.contains_key("mode") {
-        return Err("syntax.check requires string argument `mode`".to_string());
+        // The refusal names the value domain: the caller's first retry should
+        // not have to discover the accepted modes by a second refusal.
+        return Err(format!(
+            "syntax.check requires string argument `mode`, one of: {}",
+            SYNTAX_MODES.join(", ")
+        ));
     }
     let mode = mapped
         .get("mode")

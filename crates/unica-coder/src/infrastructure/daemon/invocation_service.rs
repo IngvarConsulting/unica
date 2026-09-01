@@ -15,9 +15,9 @@ use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwne
 use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
-    ApplyAdmission, IndexWorkIdentity, ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry,
-    WorkspaceActorRegistryError, WorkspaceLogicalReadFence, WorkspaceRevisionFence,
-    WorkspaceSourceSetInput,
+    ApplyAdmission, ApplyAdmissionError, IndexWorkIdentity, ProviderRootBinding, WorkspaceActor,
+    WorkspaceActorRegistry, WorkspaceActorRegistryError, WorkspaceLogicalReadFence,
+    WorkspaceRevisionFence, WorkspaceSourceSetInput,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -120,6 +120,14 @@ impl ActorReadSourceCapability {
     ) -> Result<Vec<serde_json::Value>, String> {
         use crate::infrastructure::platform::filesystem::RetainedChildCapability;
 
+        // A raw OS error carries no recovery signal for the caller; every
+        // surviving I/O failure names the search phase it interrupted. An
+        // entry that is absent or vanishes mid-walk is not a failure at all:
+        // the admitted logical scope simply has no BSL there.
+        let vanished = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
+        let context =
+            |phase: &str, error: std::io::Error| format!("canonical search {phase}: {error}");
+
         let root = self.binding.retained_root();
         let (start_relative, start_directory) = match scope_prefix {
             None => (std::path::PathBuf::new(), root.as_ref().clone()),
@@ -131,9 +139,15 @@ impl ActorReadSourceCapability {
                         return Err("canonical search scope prefix is invalid".to_string());
                     }
                     relative.push(component);
-                    let child = directory
+                    let child = match directory
                         .retain_immediate_child_nofollow(std::ffi::OsStr::new(component))
-                        .map_err(|error| error.to_string())?;
+                    {
+                        Ok(child) => child,
+                        Err(error) if vanished(&error) => return Ok(Vec::new()),
+                        Err(error) => {
+                            return Err(context("could not open the scope subtree", error))
+                        }
+                    };
                     match child {
                         RetainedChildCapability::Directory(next) => directory = next,
                         RetainedChildCapability::ReparsePoint => {
@@ -159,25 +173,32 @@ impl ActorReadSourceCapability {
             if self.deadline.remaining().is_zero() {
                 return Err("canonical search operation deadline elapsed".to_string());
             }
-            directory
-                .validate_named_identity()
-                .map_err(|error| error.to_string())?;
+            match directory.validate_named_identity() {
+                Ok(()) => {}
+                Err(error) if vanished(&error) => continue,
+                Err(error) => return Err(context("lost a retained directory", error)),
+            }
             let remaining_entries = CANONICAL_SEARCH_MAX_ENTRIES.saturating_sub(visited_entries);
             if remaining_entries == 0 {
                 return Err("canonical search exceeded its retained entry limit".to_string());
             }
-            let mut names = directory
-                .read_immediate_names_bounded(remaining_entries, || {
-                    if cancellation.is_cancelled() {
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::Interrupted,
-                            "canonical search was cancelled",
-                        ))
-                    } else {
-                        Ok(())
-                    }
-                })
-                .map_err(|error| error.to_string())?;
+            let mut names = match directory.read_immediate_names_bounded(remaining_entries, || {
+                if cancellation.is_cancelled() {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "canonical search was cancelled",
+                    ))
+                } else {
+                    Ok(())
+                }
+            }) {
+                Ok(names) => names,
+                Err(error) if vanished(&error) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                    return Err(error.to_string())
+                }
+                Err(error) => return Err(context("could not list a source directory", error)),
+            };
             names.sort();
             for name in names {
                 visited_entries = visited_entries.saturating_add(1);
@@ -188,9 +209,13 @@ impl ActorReadSourceCapability {
                     continue;
                 };
                 let relative = relative_directory.join(name_text);
-                let child = directory
-                    .retain_immediate_child_nofollow(&name)
-                    .map_err(|error| error.to_string())?;
+                let child = match directory.retain_immediate_child_nofollow(&name) {
+                    Ok(child) => child,
+                    Err(error) if vanished(&error) => continue,
+                    Err(error) => {
+                        return Err(context("could not open a source directory entry", error))
+                    }
+                };
                 match child {
                     RetainedChildCapability::Directory(child_directory)
                         if depth < CANONICAL_SEARCH_MAX_DEPTH =>
@@ -203,11 +228,20 @@ impl ActorReadSourceCapability {
                             .and_then(std::ffi::OsStr::to_str)
                             .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl")) =>
                     {
-                        file.validate_named_identity()
-                            .map_err(|error| error.to_string())?;
-                        let bytes = file
-                            .read_bounded(CANONICAL_SEARCH_MAX_FILE_BYTES)
-                            .map_err(|error| error.to_string())?;
+                        match file.validate_named_identity() {
+                            Ok(()) => {}
+                            Err(error) if vanished(&error) => continue,
+                            Err(error) => {
+                                return Err(context("lost a retained source file", error))
+                            }
+                        }
+                        let bytes = match file.read_bounded(CANONICAL_SEARCH_MAX_FILE_BYTES) {
+                            Ok(bytes) => bytes,
+                            Err(error) if vanished(&error) => continue,
+                            Err(error) => {
+                                return Err(context("could not read a source file", error))
+                            }
+                        };
                         read_bytes = read_bytes.saturating_add(bytes.len());
                         if read_bytes > CANONICAL_SEARCH_MAX_TOTAL_BYTES {
                             return Err(
@@ -507,9 +541,11 @@ impl ActorBoundExecution {
         &self,
         request: &ApplyRequest,
         cancellation: &CancellationToken,
-    ) -> Result<(ProviderRootBinding, ApplyAdmission), String> {
+    ) -> Result<(ProviderRootBinding, ApplyAdmission), ApplyAdmissionError> {
         if !matches!(self.revision, ActorExecutionRevision::UnpublishedApply(_)) {
-            return Err("apply admission belongs to a non-apply invocation".to_string());
+            return Err(ApplyAdmissionError::Other(
+                "apply admission belongs to a non-apply invocation".to_string(),
+            ));
         }
         let binding = self
             .invocation
@@ -518,7 +554,9 @@ impl ActorBoundExecution {
             .find(|source| source.binding.source_set_name() == request.at().source_set())
             .map(|source| source.binding.clone())
             .ok_or_else(|| {
-                "apply source set was not admitted by the workspace actor".to_string()
+                ApplyAdmissionError::Other(
+                    "apply source set was not admitted by the workspace actor".to_string(),
+                )
             })?;
         self.invocation.actor.validate_binding(&binding)?;
         let admission = self.invocation.actor.admit_apply(

@@ -480,6 +480,42 @@ impl WorkspaceLogicalReadFence {
     }
 }
 
+/// Why an apply admission was refused. A stale `ifRev` is a caller-visible
+/// conflict with its own recovery strategy (re-read the revision and retry),
+/// so it is distinguished from every infrastructure failure instead of
+/// travelling as one more opaque string.
+#[derive(Debug)]
+pub(crate) enum ApplyAdmissionError {
+    StaleRevision { expected: String, admitted: String },
+    Other(String),
+}
+
+impl From<String> for ApplyAdmissionError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<ApplyAdmissionError> for String {
+    fn from(error: ApplyAdmissionError) -> Self {
+        error.to_string()
+    }
+}
+
+impl std::fmt::Display for ApplyAdmissionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StaleRevision { expected, admitted } => write!(
+                formatter,
+                "apply ifRev is stale: expected {expected}, admitted {admitted}"
+            ),
+            Self::Other(message) => message.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ApplyAdmissionError {}
+
 /// Actor-issued authority for planning exactly one hidden-v0.13 apply batch.
 /// All identity, root, revision, deadline and cancellation fields are closed;
 /// callers can stage bytes but cannot substitute publication authority.
@@ -1552,7 +1588,7 @@ impl<R> WorkspaceActor<R> {
         dry_run: bool,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<ApplyAdmission, String> {
+    ) -> Result<ApplyAdmission, ApplyAdmissionError> {
         apply_checkpoint(deadline, cancellation, "apply admission")?;
         self.validate_binding(binding)?;
         let revision_service = self.source_revision_service(binding)?;
@@ -1564,10 +1600,10 @@ impl<R> WorkspaceActor<R> {
         self.validate_binding(binding)?;
         let revision_identity = revision.revision_identity();
         if if_rev.is_some_and(|expected| expected != revision_identity) {
-            return Err(format!(
-                "apply ifRev is stale: expected {}, admitted {revision_identity}",
-                if_rev.unwrap_or_default()
-            ));
+            return Err(ApplyAdmissionError::StaleRevision {
+                expected: if_rev.unwrap_or_default().to_string(),
+                admitted: revision_identity,
+            });
         }
         let source_selection = {
             let mut checkpoint =
@@ -4402,7 +4438,7 @@ pub(crate) mod tests {
                 &CancellationToken::new(),
             )
             .unwrap_err();
-        assert!(error.contains("overlap"), "{error}");
+        assert!(error.to_string().contains("overlap"), "{error}");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -8063,6 +8099,7 @@ pub(crate) mod tests {
                 &cancellation,
             )
             .unwrap_err()
+            .to_string()
             .contains("ifRev"));
 
         let admitted = fixture
@@ -8122,6 +8159,7 @@ pub(crate) mod tests {
                 &CancellationToken::new(),
             )
             .unwrap_err()
+            .to_string()
             .contains("deadline"));
         fixture.cleanup();
     }
@@ -9201,7 +9239,7 @@ pub(crate) mod tests {
                 &CancellationToken::new(),
             )
             .unwrap_err();
-        assert!(stale_error.contains("ifRev"));
+        assert!(stale_error.to_string().contains("ifRev"));
         assert!(!stale.root.join(".build/unica").exists());
         stale.cleanup();
 
@@ -10596,7 +10634,10 @@ pub(crate) mod tests {
             let result = fixture
                 .actor
                 .admit_apply(&binding, None, false, deadline, &cancellation);
-            observed.push((result.err(), chunks.load(Ordering::SeqCst)));
+            observed.push((
+                result.err().map(|error| error.to_string()),
+                chunks.load(Ordering::SeqCst),
+            ));
 
             assert_eq!(std::fs::read(&target).unwrap(), b"original", "{gate}");
             assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{gate}");
@@ -10674,7 +10715,7 @@ pub(crate) mod tests {
 
             let result = actor.admit_apply(&binding, None, false, deadline, &cancellation);
 
-            observed.push(result.err());
+            observed.push(result.err().map(|error| error.to_string()));
             assert_eq!(snapshot_tree(&root), before, "{gate}");
             assert!(!root.join(".build/unica").exists(), "{gate}");
             std::fs::remove_dir_all(container).unwrap();
