@@ -191,6 +191,7 @@ impl FileInvocationStoreV5 {
         })?;
 
         let mut recovery_entries = Vec::new();
+        let mut abandoned_staging = Vec::new();
         for entry_name in entries {
             check_deadline(deadline)?;
             let file_name = entry_name.to_str().ok_or(V5TaskStoreError::Corrupt(
@@ -207,6 +208,10 @@ impl FileInvocationStoreV5 {
                 verify_owner_only_acl(&staged).map_err(|error| {
                     storage_error("verify protocol-v5 task staging ownership", error)
                 })?;
+                let identity = file_identity(&staged).map_err(|error| {
+                    storage_error("identify protocol-v5 task staging entry", error)
+                })?;
+                abandoned_staging.push((entry_name, identity, staged));
                 continue;
             }
             let encoded_task_id =
@@ -228,6 +233,15 @@ impl FileInvocationStoreV5 {
             recovery_entries.push(V5TaskRecoveryEntry::from_record(&record));
             writer.records.insert(task_id, record);
         }
+        for (name, identity, staged) in abandoned_staging {
+            check_deadline(deadline)?;
+            remove_identity_bound_regular_child(&self.root_file, &name, identity, &staged)
+                .map_err(|error| {
+                    storage_error("remove abandoned protocol-v5 task staging entry", error)
+                })?;
+        }
+        sync_directory(&self.root_file)
+            .map_err(|error| storage_error("sync protocol-v5 task staging cleanup", error))?;
         self.verify_root_authority()?;
         Ok(TaskStoreRecoveryCatalog::new(recovery_entries))
     }
@@ -1005,6 +1019,35 @@ mod tests {
         std::io::Write::write_all(&mut file, &bytes).expect("write fixture record");
         file.sync_all().expect("sync fixture record");
         bytes
+    }
+
+    #[test]
+    fn inspect_only_removes_verified_abandoned_staging_entries() {
+        let root = tempfile::tempdir().expect("temporary v5 root");
+        let root_path = physical_root(&root);
+        let staging_path = root_path.join(".abandoned.tmp");
+        let mut staging = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging_path)
+            .expect("create abandoned staging entry");
+        restrict_stage_to_owner(&staging).expect("restrict abandoned staging entry");
+        std::io::Write::write_all(&mut staging, b"partial").expect("write staging entry");
+        staging.sync_all().expect("sync staging entry");
+        drop(staging);
+
+        let (_store, catalog) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(9_000)),
+            deadline(),
+        )
+        .expect("inspect v5 store");
+
+        assert!(catalog.entries().is_empty());
+        assert!(
+            !staging_path.exists(),
+            "verified abandoned staging entry must be durably removed"
+        );
     }
 
     #[test]

@@ -387,7 +387,7 @@ pub(crate) struct InvocationExecutor {
     health: Arc<Mutex<InvocationExecutorHealth>>,
     reconciliation: ReconciliationPolicy,
     reconciliation_timer: Arc<dyn ReconciliationTimer>,
-    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+    #[cfg(test)]
     terminal_worker_gate: Mutex<Option<TerminalWorkerGate>>,
 }
 
@@ -401,7 +401,7 @@ impl InvocationExecutor {
             health: Arc::new(Mutex::new(InvocationExecutorHealth::Healthy)),
             reconciliation: ReconciliationPolicy::production(),
             reconciliation_timer: Arc::new(SystemReconciliationTimer),
-            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+            #[cfg(test)]
             terminal_worker_gate: Mutex::new(None),
         }
     }
@@ -424,7 +424,7 @@ impl InvocationExecutor {
             health: Arc::new(Mutex::new(InvocationExecutorHealth::Healthy)),
             reconciliation: ReconciliationPolicy::with_budget_for_test(budget),
             reconciliation_timer: Arc::new(SystemReconciliationTimer),
-            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+            #[cfg(test)]
             terminal_worker_gate: Mutex::new(None),
         }
     }

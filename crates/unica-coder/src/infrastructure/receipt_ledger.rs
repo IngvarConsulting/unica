@@ -2462,7 +2462,17 @@ impl ReceiptLedgerStore {
                 return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported)
             }
             ReceiptState::Reserved(reserved) => *reserved.original_cutoff(),
-            _ => unreachable!("active receipt codec currently has three variants"),
+            ReceiptState::TaskTerminalReceiptBacked(_)
+            | ReceiptState::AcknowledgedTombstone(_)
+            | ReceiptState::TaskPromisedUnbound(_)
+            | ReceiptState::TaskPromisedActorBound(_)
+            | ReceiptState::TaskHandoffActorBound(_)
+            | ReceiptState::TaskReceiptOwnedActorBound(_)
+            | ReceiptState::TaskBound(_)
+            | ReceiptState::TaskTerminalBound(_)
+            | ReceiptState::TaskRetirementPending(_) => {
+                return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported)
+            }
         };
         if persisted.record.record_version != expected_version {
             return Err(ReceiptLedgerError::ReceiptVersionMismatch {
@@ -3133,7 +3143,10 @@ impl ReceiptLedgerStore {
                 ),
             );
         }
-        let state = entry.state()?;
+        let state = match entry.state() {
+            Ok(state) => state,
+            Err(error) => return latch_catalog_error(&mut catalog, error),
+        };
         if !matches!(
             state,
             ReceiptState::TaskPromisedUnbound(_)
@@ -4192,6 +4205,7 @@ fn read_active_record_from_retained(
             | StoredActiveLifecycleV1::ReservedActorBound { .. }
             | StoredActiveLifecycleV1::ReservedBegun { .. }
             | StoredActiveLifecycleV1::TaskPromisedUnbound { .. }
+            | StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. }
             | StoredActiveLifecycleV1::AcknowledgementCommit { .. }
             | StoredActiveLifecycleV1::AcknowledgedTombstone { .. }
     ) {

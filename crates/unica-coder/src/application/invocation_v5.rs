@@ -101,6 +101,17 @@ pub(crate) fn decide_cancel_reserved_submit(
         ReserveOutcome::Created(reservation) => {
             Ok(CancelReservedSubmitDecision::ExecuteReserved(reservation))
         }
+        ReserveOutcome::ExistingExact(ReceiptState::Reserved(reservation))
+            if reservation.cancel_requested() =>
+        {
+            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)?;
+            Ok(CancelReservedSubmitDecision::PublishCancelledDirect(
+                CancelledDirectTerminalIntent {
+                    reservation,
+                    terminal,
+                },
+            ))
+        }
         ReserveOutcome::ExistingExact(ReceiptState::DirectTerminalUnacked(receipt)) => Ok(
             CancelReservedSubmitDecision::ExistingDirectTerminal(receipt),
         ),
