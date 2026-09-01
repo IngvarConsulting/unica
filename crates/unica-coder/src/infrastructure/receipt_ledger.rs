@@ -827,14 +827,6 @@ impl ReceiptCatalog {
     }
 }
 
-fn sort_receipt_keys_by_digest(keys: &mut [ReceiptKey]) {
-    keys.sort_unstable_by(|left, right| {
-        receipt_key_digest(left)
-            .as_str()
-            .cmp(receipt_key_digest(right).as_str())
-    });
-}
-
 struct GenerationState {
     capability: RetainedRegularFileCapability,
     file: File,
@@ -1289,9 +1281,9 @@ impl ReceiptLedgerStore {
             latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
         let mut keys = catalog
             .records
-            .values()
-            .filter(|entry| !entry.is_tombstone())
-            .map(|entry| entry.record.key.clone())
+            .iter()
+            .filter(|(_, entry)| !entry.is_tombstone())
+            .map(|(digest, entry)| (digest.clone(), entry.record.key.clone()))
             .collect::<Vec<_>>();
         if keys.len() != catalog.live_count() || keys.len() > MAX_LIVE_RECEIPTS {
             return latch_catalog_error(
@@ -1301,7 +1293,8 @@ impl ReceiptLedgerStore {
                 ),
             );
         }
-        sort_receipt_keys_by_digest(&mut keys);
+        keys.sort_unstable_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
+        let keys = keys.into_iter().map(|(_, key)| key).collect::<Vec<_>>();
         check_deadline(deadline)?;
         let generation_after =
             latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
@@ -1365,9 +1358,14 @@ impl ReceiptLedgerStore {
                             "receipt invocation index contradicts its catalog key",
                         ));
                     }
-                    invocation_index.push(entry.record.key.clone());
+                    invocation_index.push((key_digest.clone(), entry.record.key.clone()));
                 }
-                sort_receipt_keys_by_digest(&mut invocation_index);
+                invocation_index
+                    .sort_unstable_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
+                let invocation_index = invocation_index
+                    .into_iter()
+                    .map(|(_, key)| key)
+                    .collect::<Vec<_>>();
 
                 let mut reserved_task_index = Vec::with_capacity(catalog.reserved_task_index.len());
                 for (reserved_task_id, key_digest) in &catalog.reserved_task_index {
@@ -1383,9 +1381,14 @@ impl ReceiptLedgerStore {
                             "receipt reserved-task index contradicts its catalog key",
                         ));
                     }
-                    reserved_task_index.push(entry.record.key.clone());
+                    reserved_task_index.push((key_digest.clone(), entry.record.key.clone()));
                 }
-                sort_receipt_keys_by_digest(&mut reserved_task_index);
+                reserved_task_index
+                    .sort_unstable_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
+                let reserved_task_index = reserved_task_index
+                    .into_iter()
+                    .map(|(_, key)| key)
+                    .collect::<Vec<_>>();
 
                 Ok((
                     generation,
@@ -3801,6 +3804,114 @@ impl ReceiptLedgerStore {
         record.key = colliding_key;
         let (record, encoded) = serialize_reserved_record(record, MAX_RECEIPT_ENTITLEMENT_BYTES)?;
         self.publish_new_record(&record, &encoded, deadline, || {})
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn seed_tombstones_for_test(
+        &self,
+        keys: Vec<ReceiptKey>,
+        acknowledged_at_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+        deadline: Instant,
+    ) -> Result<Vec<AcknowledgedTombstoneReceipt>, ReceiptLedgerError> {
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+        if catalog
+            .tombstone_count()
+            .checked_add(keys.len())
+            .filter(|count| *count <= MAX_ACKNOWLEDGED_TOMBSTONES)
+            .is_none()
+        {
+            return Err(ReceiptLedgerError::TombstoneCapacityExceeded);
+        }
+        let mut next_catalog = catalog.clone();
+        let mut rows = Vec::with_capacity(keys.len());
+        let mut receipts = Vec::with_capacity(keys.len());
+        for key in keys {
+            check_deadline(deadline)?;
+            let key_digest = receipt_key_digest(&key);
+            let record = StoredActiveReceiptV1 {
+                schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+                mutation_sequence: 0,
+                record_version: ReceiptVersion::new(3).ok_or(ReceiptLedgerError::Corrupt(
+                    "tombstone fixture version must be nonzero",
+                ))?,
+                key,
+                key_digest,
+                lifecycle: StoredActiveLifecycleV1::AcknowledgedTombstone {
+                    terminal_digest: terminal_digest.clone(),
+                    acknowledged_at_epoch_ms,
+                },
+            };
+            let (record, encoded) =
+                serialize_reserved_record(record, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES)?;
+            let entry = CatalogEntry {
+                record: record.clone(),
+                encoded_bytes: u64::try_from(encoded.len())
+                    .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
+            };
+            if next_catalog.records.contains_key(&entry.record.key_digest) {
+                return Err(ReceiptLedgerError::ReceiptDigestCollision);
+            }
+            if next_catalog
+                .invocation_index
+                .contains_key(&entry.record.key.invocation_id())
+            {
+                return Err(ReceiptLedgerError::InvocationIdentityMismatch);
+            }
+            if next_catalog
+                .reserved_task_index
+                .contains_key(&entry.record.key.reserved_task_id())
+            {
+                return Err(ReceiptLedgerError::ReservedTaskIdentityMismatch);
+            }
+            if next_catalog
+                .tombstone_bytes
+                .checked_add(entry.tombstone_bytes())
+                .filter(|bytes| *bytes <= MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES)
+                .is_none()
+            {
+                return Err(ReceiptLedgerError::TombstoneCapacityExceeded);
+            }
+            commit_catalog_insert(&mut next_catalog, entry);
+            receipts.push(AcknowledgedTombstoneReceipt::new(
+                record.key.clone(),
+                record.key_digest.clone(),
+                terminal_digest.clone(),
+                acknowledged_at_epoch_ms,
+                u64::try_from(encoded.len()).map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
+            )?);
+            rows.push((record, encoded));
+        }
+
+        // This test-only fixture publishes an already validated bounded pool
+        // in one durable batch. Exercising the production one-row commit path
+        // 28,864 times would fsync the same directory 28,864 times and measure
+        // fixture construction rather than recovery of the contractual pool.
+        for (record, encoded) in &rows {
+            check_deadline(deadline)?;
+            let target_name = format!("{}.json", record.key_digest.as_str());
+            let mut file =
+                create_owner_only_file_child(&self.active_file, OsStr::new(&target_name))
+                    .map_err(|error| storage_error("create seeded tombstone row", error))?;
+            file.write_all(encoded)
+                .map_err(|error| storage_error("write seeded tombstone row", error))?;
+        }
+        if sync_receipt_row_directory(&self.active_file).is_err()
+            || check_deadline(deadline).is_err()
+            || self.verify_named_authority().is_err()
+        {
+            catalog.unavailable = true;
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        *catalog = next_catalog;
+        Ok(receipts)
     }
 
     pub(crate) fn publish_direct_terminal_publication(

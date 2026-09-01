@@ -6,10 +6,13 @@
 //! protocol sessions, daemon processes, barriers and clocks and performs every assertion here. The
 //! bridge is not a second ReceiptLedger and must not synthesize observations from a scenario name.
 
+use base64::Engine as _;
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::io::Read as _;
 use unica_coder::receipt_ledger_test_support::{
     canonical_v5_terminal_for_test, execute_scenario_json, receipt_key_digest_for_test,
     request_scope_hash_for_test, task_link_digest_for_test,
@@ -2351,6 +2354,7 @@ struct ConcurrencySample {
 )]
 enum FacadeEnvelope {
     Observed(ScenarioReport),
+    ObservedGzipBase64(String),
     ProductionMissingTransition(ProductionMissingTransition),
     HarnessFailure(HarnessFailure),
 }
@@ -2437,6 +2441,57 @@ fn execute(scenario: Scenario) -> ScenarioReport {
     );
     let envelope: FacadeEnvelope = serde_json::from_str(&response)
         .unwrap_or_else(|error| panic!("HARNESS FAILURE: malformed_facade_envelope: {error}"));
+    let envelope = match envelope {
+        FacadeEnvelope::ObservedGzipBase64(encoded) => {
+            let compressed = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap_or_else(|error| {
+                    panic!("HARNESS FAILURE: malformed_compressed_facade_base64: {error}")
+                });
+            let mut decoder = GzDecoder::new(compressed.as_slice());
+            let mut payload = String::new();
+            decoder
+                .read_to_string(&mut payload)
+                .unwrap_or_else(|error| {
+                    panic!("HARNESS FAILURE: malformed_compressed_facade_gzip: {error}")
+                });
+            let mut payload: serde_json::Value =
+                serde_json::from_str(&payload).unwrap_or_else(|error| {
+                    panic!("HARNESS FAILURE: malformed_compressed_facade_payload: {error}")
+                });
+            let artifacts = payload
+                .as_object_mut()
+                .and_then(|payload| payload.remove("checkpointArtifacts"))
+                .and_then(|artifacts| artifacts.as_object().cloned())
+                .unwrap_or_default();
+            if let Some(checkpoints) = payload
+                .get_mut("checkpoints")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for checkpoint in checkpoints.values_mut() {
+                    let Some(checkpoint) = checkpoint.as_object_mut() else {
+                        continue;
+                    };
+                    for value in checkpoint.values_mut() {
+                        let Some(artifact_id) = value
+                            .as_object()
+                            .and_then(|reference| reference.get("$artifact"))
+                            .and_then(serde_json::Value::as_str)
+                        else {
+                            continue;
+                        };
+                        *value = artifacts.get(artifact_id).cloned().unwrap_or_else(|| {
+                            panic!("HARNESS FAILURE: missing_checkpoint_artifact {artifact_id}")
+                        });
+                    }
+                }
+            }
+            FacadeEnvelope::Observed(serde_json::from_value(payload).unwrap_or_else(|error| {
+                panic!("HARNESS FAILURE: malformed_expanded_facade_payload: {error}")
+            }))
+        }
+        envelope => envelope,
+    };
     match envelope {
         FacadeEnvelope::Observed(report) => {
             assert_report_raw_bounds(&report);
@@ -2517,6 +2572,9 @@ fn execute(scenario: Scenario) -> ScenarioReport {
                 failure.numeric_detail,
                 failure.evidence_fingerprint,
             );
+        }
+        FacadeEnvelope::ObservedGzipBase64(_) => {
+            unreachable!("compressed envelope is normalized before assertion")
         }
     }
 }

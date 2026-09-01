@@ -74,6 +74,63 @@ pub(crate) struct FileInvocationStoreV5 {
 
 impl FileInvocationStoreV5 {
     #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn seed_exact_records_bulk_for_test(
+        &self,
+        records: Vec<V5StoredInvocationRecord>,
+        deadline: ProviderDeadline,
+    ) -> Result<(), V5TaskStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        if !writer.records.is_empty() || records.len() > self.limits.max_records {
+            return Err(V5TaskStoreError::Capacity {
+                max_records: self.limits.max_records,
+            });
+        }
+        self.verify_root_authority()?;
+        let mut prepared = Vec::with_capacity(records.len());
+        for record in records {
+            validate_record(&record)?;
+            let encoded = serde_json::to_vec(&record)
+                .map_err(|_| V5TaskStoreError::Corrupt("Task fixture serialization failed"))?;
+            if encoded.len() > self.limits.max_record_bytes {
+                return Err(V5TaskStoreError::RecordTooLarge {
+                    max_bytes: self.limits.max_record_bytes,
+                });
+            }
+            if writer.records.contains_key(&record.task_id)
+                || prepared.iter().any(
+                    |(prepared_record, _): &(V5StoredInvocationRecord, Vec<u8>)| {
+                        prepared_record.task_id == record.task_id
+                    },
+                )
+            {
+                return Err(V5TaskStoreError::Mismatch {
+                    task_id: record.task_id,
+                    reason: V5TaskMismatch::ExistingRecord,
+                });
+            }
+            prepared.push((record, encoded));
+        }
+        for (index, (record, encoded)) in prepared.iter().enumerate() {
+            if index % 128 == 0 {
+                check_deadline(deadline)?;
+            }
+            let target_name = format!("{}.json", record.task_id);
+            let mut file = create_new_regular_child(&self.root_file, OsStr::new(&target_name))
+                .map_err(|error| storage_error("create bulk Task fixture record", error))?;
+            restrict_stage_to_owner(&file)
+                .map_err(|error| storage_error("restrict bulk Task fixture record", error))?;
+            file.write_all(encoded)
+                .map_err(|error| storage_error("write bulk Task fixture record", error))?;
+        }
+        sync_directory(&self.root_file)
+            .map_err(|error| storage_error("sync bulk Task fixture directory", error))?;
+        for (record, _) in prepared {
+            writer.records.insert(record.task_id, record);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn seed_exact_record_for_test(
         &self,
         record: V5StoredInvocationRecord,

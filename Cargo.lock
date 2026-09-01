@@ -1838,6 +1838,7 @@ dependencies = [
 name = "unica-coder"
 version = "0.12.0"
 dependencies = [
+ "base64",
  "cap-fs-ext",
  "cap-primitives",
  "chrono",

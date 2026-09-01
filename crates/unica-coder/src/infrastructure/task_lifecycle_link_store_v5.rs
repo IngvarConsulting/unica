@@ -862,6 +862,62 @@ pub(crate) struct TaskLifecycleLinkStoreV5 {
 }
 
 impl TaskLifecycleLinkStoreV5 {
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn seed_task_terminal_bounds_bulk_for_test(
+        &self,
+        records: Vec<(
+            ReceiptKey,
+            TaskLinkReference,
+            ReceiptTaskProjection,
+            u64,
+            u64,
+            TerminalDigest,
+        )>,
+        deadline: ProviderDeadline,
+    ) -> Result<Vec<TaskTerminalBoundReceipt>, TaskLifecycleLinkStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        if !writer.entries.is_empty() || records.len() > self.limits.max_records {
+            return Err(self.capacity_error());
+        }
+        self.verify_root_authority()?;
+        let mut next = writer.clone();
+        let mut first_digest = None;
+        let mut seeded = Vec::with_capacity(records.len());
+        for (key, link, task, task_record_version, terminal_epoch_ms, terminal_digest) in records {
+            let mutation_sequence = next_sequence(next.mutation_sequence)?;
+            let key_digest = receipt_key_digest(&key);
+            first_digest.get_or_insert_with(|| key_digest.clone());
+            let expires_at_epoch_ms = terminal_epoch_ms.checked_add(task.ttl_ms()).ok_or(
+                TaskLifecycleLinkStoreError::Corrupt("bulk terminal fixture expiry exceeds u64"),
+            )?;
+            let record = build_task_terminal_bound(
+                key,
+                link,
+                task,
+                3,
+                mutation_sequence,
+                task_record_version,
+                ClosedTerminalStatus::Completed,
+                terminal_digest,
+                terminal_epoch_ms,
+                expires_at_epoch_ms,
+                self.limits,
+            )?;
+            seeded.push(record.clone());
+            next.mutation_sequence = mutation_sequence;
+            next.insert_exact(CatalogEntry::Link(
+                TaskLifecycleLinkRecord::TaskTerminalBound(record),
+            ))?;
+        }
+        validate_capacity(&next, self.limits)?;
+        let Some(first_digest) = first_digest else {
+            return Ok(Vec::new());
+        };
+        let committed = self.publish_and_readback(&next, &first_digest, deadline)?;
+        *writer = committed;
+        Ok(seeded)
+    }
+
     pub(crate) fn open(
         root: impl AsRef<Path>,
         deadline: ProviderDeadline,
