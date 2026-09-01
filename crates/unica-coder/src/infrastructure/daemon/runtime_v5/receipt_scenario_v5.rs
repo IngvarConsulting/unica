@@ -4068,7 +4068,12 @@ impl ReceiptScenarioAction {
                 matches!(
                     request,
                     ScenarioRequest::Canonical | ScenarioRequest::SameIdentity
-                ) && matches!(disconnect, ScenarioDisconnect::Never)
+                ) && matches!(
+                    disconnect,
+                    ScenarioDisconnect::Never
+                        | ScenarioDisconnect::AfterSubmitWrite
+                        | ScenarioDisconnect::AfterTerminalCommit
+                )
             }
             Self::SendOuterEnvelope { .. } => true,
             Self::ProbeProtocol {
@@ -4422,7 +4427,7 @@ mod tests {
                 disconnect,
                 label: "unsupported-disconnect".to_owned(),
             };
-            assert!(!action.is_supported());
+            assert!(action.is_supported());
         }
 
         for action in [
