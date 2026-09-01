@@ -121,7 +121,9 @@ class ReleaseProofTests(unittest.TestCase):
         package.update(overrides)
         return package
 
-    def asset_reports(self, *, source: str = "local-build") -> None:
+    def asset_reports(
+        self, *, source: str = "local-build", version: str = "0.12.0"
+    ) -> None:
         for target in self.module.TARGETS:
             (self.asset_dir / f"asset-verification-{target}.json").write_text(
                 json.dumps(
@@ -129,7 +131,7 @@ class ReleaseProofTests(unittest.TestCase):
                         "schemaVersion": 1,
                         "status": "passed",
                         "source": source,
-                        "pluginVersion": "0.12.0",
+                        "pluginVersion": version,
                         "targets": [target],
                         "checks": {
                             "artifactSet": True,
@@ -144,10 +146,11 @@ class ReleaseProofTests(unittest.TestCase):
 
     def evaluate(self, **overrides: object) -> dict:
         native_wires, compatibility_wires = self.wire_sets()
-        self.asset_reports()
         package = overrides.get("package")
         if package is None:
             package = self.package()
+        if not any(self.asset_dir.glob("asset-verification-*.json")):
+            self.asset_reports(version=package["pluginVersion"])
         values = {
             "native_wires": native_wires,
             "compatibility_wires": compatibility_wires,
@@ -226,6 +229,26 @@ class ReleaseProofTests(unittest.TestCase):
                 native_wires=native_wires,
                 compatibility_wires=compatibility_wires,
             )
+
+    def test_proof_rejects_non_boolean_asset_check(self) -> None:
+        self.asset_reports()
+        path = self.asset_dir / "asset-verification-linux-x64.json"
+        report = json.loads(path.read_text(encoding="utf-8"))
+        report["checks"]["artifactSet"] = "false"
+        path.write_text(json.dumps(report), encoding="utf-8")
+
+        with self.assertRaisesRegex(self.module.ProofError, "checks are incomplete"):
+            self.evaluate()
+
+    def test_proof_rejects_asset_version_mismatch(self) -> None:
+        self.asset_reports()
+        path = self.asset_dir / "asset-verification-linux-x64.json"
+        report = json.loads(path.read_text(encoding="utf-8"))
+        report["pluginVersion"] = "0.99.0"
+        path.write_text(json.dumps(report), encoding="utf-8")
+
+        with self.assertRaisesRegex(self.module.ProofError, "pluginVersion does not match"):
+            self.evaluate()
 
     def test_rc_proof_rejects_deferred_lifecycle_outcomes(self) -> None:
         lifecycle = self.assessment()["lifecycle"]

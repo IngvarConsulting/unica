@@ -212,7 +212,7 @@ def _validate_package(
     }
 
 
-def _validate_asset_reports(asset_dir: Path) -> dict[str, Any]:
+def _validate_asset_reports(asset_dir: Path, expected_plugin_version: str) -> dict[str, Any]:
     if not asset_dir.is_dir():
         raise ProofError(f"asset verification evidence directory is missing: {asset_dir}")
     paths = sorted(asset_dir.glob("asset-verification-*.json"))
@@ -226,6 +226,8 @@ def _validate_asset_reports(asset_dir: Path) -> dict[str, Any]:
             raise ProofError(f"asset verification report is not passed: {path.name}")
         if report.get("source") != "local-build":
             raise ProofError(f"asset verification report has wrong source: {path.name}")
+        if report.get("pluginVersion") != expected_plugin_version:
+            raise ProofError(f"asset verification pluginVersion does not match: {path.name}")
         targets = report.get("targets")
         if not isinstance(targets, list) or len(targets) != 1 or targets[0] not in TARGETS:
             raise ProofError(f"asset verification report has invalid targets: {path.name}")
@@ -235,7 +237,7 @@ def _validate_asset_reports(asset_dir: Path) -> dict[str, Any]:
         checks = report.get("checks")
         if not isinstance(checks, dict) or set(checks) != {
             "artifactSet", "archiveChecksum", "memberChecksums", "memberMetadata"
-        } or not all(checks.values()):
+        } or not all(isinstance(value, bool) and value for value in checks.values()):
             raise ProofError(f"asset verification checks are incomplete: {path.name}")
         seen_targets.add(target)
         reports.append({"target": target, "evidence": path.name})
@@ -303,7 +305,9 @@ def evaluate_proof(
     package_summary = _validate_package(package, package_dir, source_commit)
     if release_tag != "v" + package_summary["pluginVersion"]:
         raise ProofError("releaseTag does not match package pluginVersion")
-    assets = _validate_asset_reports(asset_verification_dir)
+    assets = _validate_asset_reports(
+        asset_verification_dir, package_summary["pluginVersion"]
+    )
     all_rc_names = {
         name
         for surface in (native, compatibility)
