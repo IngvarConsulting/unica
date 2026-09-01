@@ -1651,7 +1651,12 @@ struct V5StoredInvocationRecordObservation {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[allow(clippy::large_enum_variant)]
-#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 enum V5StoredTaskObservation {
     Queued,
     Working,

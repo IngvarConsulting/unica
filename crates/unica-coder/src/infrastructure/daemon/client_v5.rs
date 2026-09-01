@@ -8,6 +8,7 @@ use super::protocol_v5::{
 };
 use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
 use crate::application::receipt_ledger::{ReceiptKey, TerminalDigest};
+#[cfg(any(test, feature = "receipt-ledger-test-support"))]
 use crate::domain::invocation::TaskId;
 use crate::infrastructure::platform::ManagedStartupChild;
 use std::io::{self, BufReader, Write};
@@ -407,10 +408,14 @@ impl V5DaemonProcessOwner {
         )
     }
 
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn get_task(&mut self, task_id: TaskId) -> Result<V5ServerResponse, String> {
         self.exchange(V5ClientRequest::GetTask { task_id }, "get task")
     }
 
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn wait_task(
         &mut self,
         task_id: TaskId,

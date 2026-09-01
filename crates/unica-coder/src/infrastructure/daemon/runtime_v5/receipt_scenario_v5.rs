@@ -5,23 +5,37 @@ use super::{
 use crate::application::invocation::normalized_arguments_hash;
 use crate::application::invocation_store::EpochMillisClock;
 use crate::application::invocation_store::ToolIdentity;
+use crate::application::invocation_store_v5::{
+    V5SafeFailureReason, V5StoredInvocationRecord, V5StoredInvocationSchemaVersion, V5StoredTask,
+};
+use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
+use crate::application::ports::Clock;
 use crate::application::receipt_ledger::{
     canonical_v5_terminal, receipt_key_digest, request_scope_hash, task_link_digest,
-    CoreIdentityDigest, OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError,
-    ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome, RequestIdentity, ReservedPhase,
-    TaskLinkIdentity, TerminalDigest, V5ToolIdentity, DIRECT_TERMINAL_RETENTION_MS,
+    AcknowledgedTombstoneReceipt, CoreIdentityDigest, OriginalCutoffDescriptor, ReceiptKey,
+    ReceiptKeyDigest, ReceiptLedgerError, ReceiptState, ReceiptTaskProjection,
+    ReceiptTerminalOutcome, RequestIdentity, ReservedPhase, TaskLinkIdentity, TerminalDigest,
+    V5ToolIdentity, DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
-use crate::domain::invocation::{InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId};
+use crate::domain::cancellation::CancellationToken;
+use crate::domain::invocation::{
+    DomainResult, InvocationFailure, InvocationId, NormalizedArgumentsHash, SafeIdentityHash,
+    TaskId,
+};
 use crate::infrastructure::daemon::client_v5::{V5DaemonProcessOwner, V5RawHandshake};
 use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
 use crate::infrastructure::daemon::protocol as protocol_v3;
 use crate::infrastructure::daemon::protocol_v5::{
     decode_v5_request_frame, decode_v5_server_response, strict_envelope_case_frame,
-    StrictV5EnvelopeCase, V5ClientRequest, V5DaemonErrorCode, V5InvocationPhase,
-    V5InvocationRequest, V5InvocationResponse, V5ServerResponse, DAEMON_PROTOCOL_VERSION,
+    StrictV5EnvelopeCase, V5AcknowledgedReceipt, V5ClientRequest, V5DaemonErrorCode,
+    V5DaemonTaskSnapshot, V5InvocationPhase, V5InvocationRequest, V5InvocationResponse,
+    V5PendingDirectReceipt, V5ServerResponse, DAEMON_PROTOCOL_VERSION, MAX_V5_RESPONSE_LINE_BYTES,
 };
-use crate::infrastructure::daemon::server::DaemonServerConfig;
+use crate::infrastructure::daemon::server::{
+    ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService, DaemonServerConfig,
+};
+use crate::infrastructure::daemon::terminal_codec_v5::encode_strict_v5_response_jsonl;
 use crate::infrastructure::receipt_ledger::{ReceiptBackedTaskTerminalSeed, ReceiptLedgerStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -46,7 +60,16 @@ pub(super) struct ReceiptScenarioControl {
     barrier: Mutex<CancelConversionBarrier>,
     changed: Condvar,
     drop_ack_response_after_commit: AtomicBool,
-    fixture_terminal: Mutex<Option<crate::application::receipt_ledger::V5CanonicalTerminal>>,
+    provider: Mutex<Option<ScenarioProviderFixture>>,
+    side_effect_markers: AtomicU64,
+}
+
+#[derive(Clone)]
+struct ScenarioProviderFixture {
+    execution_class: ScenarioExecutionClass,
+    terminal: ScenarioTerminalFixture,
+    cooperative_cancel: bool,
+    side_effect_marker: bool,
 }
 
 #[derive(Default)]
@@ -62,27 +85,31 @@ impl ReceiptScenarioControl {
             barrier: Mutex::new(CancelConversionBarrier::default()),
             changed: Condvar::new(),
             drop_ack_response_after_commit: AtomicBool::new(false),
-            fixture_terminal: Mutex::new(None),
+            provider: Mutex::new(None),
+            side_effect_markers: AtomicU64::new(0),
         }
     }
 
-    pub(super) fn set_fixture_terminal(
-        &self,
-        terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
-    ) {
+    fn set_provider(&self, provider: ScenarioProviderFixture) {
         *self
-            .fixture_terminal
+            .provider
             .lock()
-            .expect("scenario fixture terminal mutex poisoned") = Some(terminal);
+            .expect("scenario provider mutex poisoned") = Some(provider);
     }
 
-    pub(super) fn fixture_terminal(
-        &self,
-    ) -> Option<crate::application::receipt_ledger::V5CanonicalTerminal> {
-        self.fixture_terminal
+    fn provider(&self) -> Option<ScenarioProviderFixture> {
+        self.provider
             .lock()
-            .expect("scenario fixture terminal mutex poisoned")
+            .expect("scenario provider mutex poisoned")
             .clone()
+    }
+
+    fn record_side_effect_marker(&self) {
+        self.side_effect_markers.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn side_effect_markers(&self) -> u64 {
+        self.side_effect_markers.load(Ordering::Acquire)
     }
 
     fn arm_ack_response_disconnect(&self) {
@@ -198,9 +225,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
         return run_protocol_probe_scenario(scenario).map(Some);
     }
     let mut state = ScenarioStateRoot::new()?;
+    let workspace = ScenarioWorkspace::new()?;
+    let workspace_hint = workspace.hint().to_owned();
     let identity = CoreIdentity::production_v5();
     let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS));
-    let arguments = Map::new();
+    let mut arguments = Map::new();
+    arguments.insert(
+        "at".to_owned(),
+        Value::String("main:Configuration".to_owned()),
+    );
     let invocation_id = InvocationId::new();
     let reserved_task_id = TaskId::new();
     let exact_key = ReceiptKey::new(
@@ -210,7 +243,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             identity.digest().clone(),
             V5ToolIdentity::View,
             normalized_arguments_hash(&arguments),
-            request_scope_hash("workspace-a")
+            request_scope_hash(&workspace_hint)
                 .map_err(|error| format!("construct receipt scenario request scope: {error}"))?,
         ),
     );
@@ -224,7 +257,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 identity.digest().clone(),
                 V5ToolIdentity::View,
                 normalized_arguments_hash(&mismatched),
-                request_scope_hash("workspace-a").map_err(|error| {
+                request_scope_hash(&workspace_hint).map_err(|error| {
                     format!("construct mismatched receipt scenario request scope: {error}")
                 })?,
             ),
@@ -242,20 +275,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             ReceiptScenarioAction::ConfigureProvider {
                 execution_class,
                 terminal,
-                ..
+                cooperative_cancel,
+                side_effect_marker,
             } => {
-                if !matches!(execution_class, ScenarioExecutionClass::Direct) {
-                    return Ok(None);
-                }
-                let ScenarioTerminalFixture::Success { payload } = terminal else {
-                    return Ok(None);
-                };
-                let outcome = ReceiptTerminalOutcome::Completed {
-                    result: Box::new(crate::domain::invocation::DomainResult::success(payload)),
-                };
-                let terminal = canonical_v5_terminal(&outcome)
-                    .map_err(|error| format!("construct scenario fixture terminal: {error}"))?;
-                control.set_fixture_terminal(terminal);
+                control.set_provider(ScenarioProviderFixture {
+                    execution_class,
+                    terminal: terminal.clone(),
+                    cooperative_cancel,
+                    side_effect_marker,
+                });
             }
             ReceiptScenarioAction::SeedReceipt {
                 state: ScenarioSeedReceiptState::TaskTerminalReceiptBacked,
@@ -277,7 +305,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 let is_exact = matches!(&key, ScenarioKey::Exact);
                 let wire_key = match key {
                     ScenarioKey::Exact => exact_key.clone(),
-                    ScenarioKey::Unknown => fresh_key(&identity, &arguments)?,
+                    ScenarioKey::Unknown => {
+                        fresh_key_for_workspace(&identity, &arguments, &workspace_hint)?
+                    }
                     ScenarioKey::Mismatch(ScenarioIdentityField::NormalizedArgumentsHash) => {
                         mismatched_arguments_key.clone()
                     }
@@ -309,7 +339,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     reserved_task_id,
                     V5ToolIdentity::View,
                     arguments.clone(),
-                    "workspace-a".to_owned(),
+                    workspace_hint.clone(),
                     response_budget_ms,
                 )
                 .map_err(|error| format!("construct receipt scenario submit: {error}"))?;
@@ -496,21 +526,28 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             ReceiptScenarioAction::AdvanceEpoch { millis } => {
                 clock.advance(millis)?;
             }
-            ReceiptScenarioAction::AdvanceMonotonic { .. } => {}
+            ReceiptScenarioAction::AdvanceMonotonic { millis } => {
+                clock.advance_monotonic(millis)?;
+            }
             ReceiptScenarioAction::Restart => {
                 // Every production action in this feature-only driver is a fresh authenticated
                 // daemon lifetime. The explicit marker therefore requires no synthetic state.
             }
             ReceiptScenarioAction::Checkpoint { label } => {
                 let snapshot = match &pending_submit {
-                    Some(pending) => {
-                        snapshot_with_actor(&pending.actor, &clock, &telemetry, &known_keys)?
-                    }
+                    Some(pending) => snapshot_with_actor(
+                        &pending.actor,
+                        &clock,
+                        &telemetry,
+                        control.side_effect_markers(),
+                        &known_keys,
+                    )?,
                     None => snapshot_from_state(
                         state.path(),
                         &identity,
                         Arc::clone(&clock),
                         &telemetry,
+                        &control,
                         &known_keys,
                     )?,
                 };
@@ -536,15 +573,20 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     {
                         exact_key.clone()
                     } else {
-                        fresh_key(&identity, &arguments)?
+                        fresh_key_for_workspace(&identity, &arguments, &workspace_hint)?
                     };
                     let request = match fill {
                         ScenarioSeedReceiptState::CancelReserved => {
                             ScenarioWireRequest::Cancel(key.clone())
                         }
-                        ScenarioSeedReceiptState::ReservedUnbound => ScenarioWireRequest::Submit(
-                            invocation_for_key(&key, arguments.clone(), 7_000)?,
-                        ),
+                        ScenarioSeedReceiptState::ReservedUnbound => {
+                            ScenarioWireRequest::Submit(invocation_for_key(
+                                &key,
+                                arguments.clone(),
+                                workspace_hint.clone(),
+                                7_000,
+                            )?)
+                        }
                         _ => return Ok(None),
                     };
                     requests.push(request);
@@ -633,6 +675,43 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
 struct ScenarioStateRoot {
     _directory: tempfile::TempDir,
     path: std::path::PathBuf,
+}
+
+struct ScenarioWorkspace {
+    _directory: tempfile::TempDir,
+    hint: String,
+}
+
+impl ScenarioWorkspace {
+    fn new() -> Result<Self, String> {
+        let directory = tempfile::tempdir()
+            .map_err(|error| format!("create protocol-v5 scenario workspace: {error}"))?;
+        let source = directory.path().join("src");
+        std::fs::create_dir_all(&source)
+            .map_err(|error| format!("create protocol-v5 scenario source: {error}"))?;
+        std::fs::write(
+            directory.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .map_err(|error| format!("write protocol-v5 scenario project: {error}"))?;
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Scenario</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .map_err(|error| format!("write protocol-v5 scenario configuration: {error}"))?;
+        let hint = std::fs::canonicalize(directory.path())
+            .map_err(|error| format!("canonicalize protocol-v5 scenario workspace: {error}"))?
+            .to_string_lossy()
+            .into_owned();
+        Ok(Self {
+            _directory: directory,
+            hint,
+        })
+    }
+
+    fn hint(&self) -> &str {
+        &self.hint
+    }
 }
 
 impl ScenarioStateRoot {
@@ -726,6 +805,14 @@ fn fresh_key(
     identity: &CoreIdentity,
     arguments: &Map<String, Value>,
 ) -> Result<ReceiptKey, String> {
+    fresh_key_for_workspace(identity, arguments, "workspace-a")
+}
+
+fn fresh_key_for_workspace(
+    identity: &CoreIdentity,
+    arguments: &Map<String, Value>,
+    workspace_hint: &str,
+) -> Result<ReceiptKey, String> {
     Ok(ReceiptKey::new(
         InvocationId::new(),
         TaskId::new(),
@@ -733,7 +820,7 @@ fn fresh_key(
             identity.digest().clone(),
             V5ToolIdentity::View,
             normalized_arguments_hash(arguments),
-            request_scope_hash("workspace-a")
+            request_scope_hash(workspace_hint)
                 .map_err(|error| format!("construct receipt scenario request scope: {error}"))?,
         ),
     ))
@@ -742,6 +829,7 @@ fn fresh_key(
 fn invocation_for_key(
     key: &ReceiptKey,
     arguments: Map<String, Value>,
+    workspace_hint: String,
     response_budget_ms: u64,
 ) -> Result<V5InvocationRequest, String> {
     V5InvocationRequest::new(
@@ -749,7 +837,7 @@ fn invocation_for_key(
         key.reserved_task_id(),
         key.tool(),
         arguments,
-        "workspace-a".to_owned(),
+        workspace_hint,
         response_budget_ms,
     )
     .map_err(|error| format!("construct receipt scenario invocation: {error}"))
@@ -799,6 +887,91 @@ fn has_supported_shape(request: &str) -> Result<bool, String> {
         }))
 }
 
+struct ScenarioInvocationService {
+    control: Arc<ReceiptScenarioControl>,
+    provider: ScenarioProviderFixture,
+}
+
+impl CanonicalInvocationService for ScenarioInvocationService {
+    fn prepare(
+        &self,
+        _invocation: &ActorBoundInvocation,
+    ) -> Result<ExecutionClass, Box<DomainResult>> {
+        Ok(match self.provider.execution_class {
+            ScenarioExecutionClass::Direct => ExecutionClass::InlineCandidate,
+            ScenarioExecutionClass::KnownLong => {
+                ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            }
+        })
+    }
+
+    fn execute(
+        &self,
+        _invocation: &ActorBoundExecution,
+        cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        if self.provider.cooperative_cancel && cancellation.is_cancelled() {
+            return Err(InvocationFailure::new(
+                "cancelled",
+                "scenario provider observed cooperative cancellation",
+            ));
+        }
+        if self.provider.side_effect_marker {
+            self.control.record_side_effect_marker();
+        }
+        domain_result_for_fixture(&self.provider.terminal)
+            .map_err(|message| InvocationFailure::new("invalid_fixture", message))
+    }
+}
+
+fn domain_result_for_fixture(fixture: &ScenarioTerminalFixture) -> Result<DomainResult, String> {
+    let payload = match fixture {
+        ScenarioTerminalFixture::Success { payload } => payload.clone(),
+        ScenarioTerminalFixture::Bytes { count } => "x".repeat(
+            usize::try_from(*count)
+                .map_err(|_| "scenario provider byte count does not fit usize".to_owned())?,
+        ),
+        ScenarioTerminalFixture::NearLimitWithMaximumMetadata {
+            canonical_result_bytes,
+        } => "x".repeat(usize::try_from(*canonical_result_bytes).map_err(|_| {
+            "scenario provider canonical result size does not fit usize".to_owned()
+        })?),
+    };
+    Ok(DomainResult::success(payload))
+}
+
+fn scenario_server_config(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    control: Option<&Arc<ReceiptScenarioControl>>,
+) -> DaemonServerConfig {
+    let config = DaemonServerConfig::new(
+        state_root.to_path_buf(),
+        identity.clone(),
+        SCENARIO_IDLE_GRACE,
+    );
+    match control.and_then(|control| control.provider().map(|provider| (control, provider))) {
+        Some((control, provider)) => {
+            config.with_invocation_service(Arc::new(ScenarioInvocationService {
+                control: Arc::clone(control),
+                provider,
+            }))
+        }
+        None => config,
+    }
+}
+
+fn scenario_server_config_with_clock(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    control: Option<&Arc<ReceiptScenarioControl>>,
+    clock: &Arc<ScenarioEpochClock>,
+) -> DaemonServerConfig {
+    let invocation_clock: Arc<dyn Clock> = clock.clone();
+    scenario_server_config(state_root, identity, control)
+        .with_invocation_clock_for_test(invocation_clock)
+}
+
 fn exchange_once(
     state_root: &Path,
     identity: &CoreIdentity,
@@ -807,11 +980,8 @@ fn exchange_once(
     scenario_control: Option<Arc<ReceiptScenarioControl>>,
     exchange: impl FnOnce(&mut V5DaemonProcessOwner) -> Result<V5ServerResponse, String>,
 ) -> Result<V5ServerResponse, String> {
-    let config = DaemonServerConfig::new(
-        state_root.to_path_buf(),
-        identity.clone(),
-        SCENARIO_IDLE_GRACE,
-    );
+    let config =
+        scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime = runtime.with_shared_telemetry(telemetry);
         runtime.epoch_clock = clock;
@@ -842,11 +1012,8 @@ fn exchange_raw_v5_request(
     scenario_control: Option<Arc<ReceiptScenarioControl>>,
     request_frame: Vec<u8>,
 ) -> Result<V5ServerResponse, String> {
-    let config = DaemonServerConfig::new(
-        state_root.to_path_buf(),
-        identity.clone(),
-        SCENARIO_IDLE_GRACE,
-    );
+    let config =
+        scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime = runtime.with_shared_telemetry(telemetry);
         runtime.epoch_clock = clock;
@@ -928,6 +1095,11 @@ fn run_v5_protocol_probe(
     let state_root = std::fs::canonicalize(root.path())
         .map_err(|error| format!("canonicalize protocol-v5 probe state: {error}"))?;
     let identity = CoreIdentity::production_v5();
+    let presented_core_identity = presented_core_identity(client, &message, &identity)?;
+    let prepared = prepare_v5_protocol_probe(&state_root, &identity, &message)?;
+    let request_frame = prepared.request_frame;
+    let response_override = prepared.response_override;
+    let delivery = prepared.delivery;
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
     let daemon = ScenarioDaemon::spawn(
         DaemonServerConfig::new(state_root.clone(), identity.clone(), SCENARIO_IDLE_GRACE),
@@ -936,83 +1108,1049 @@ fn run_v5_protocol_probe(
             move |runtime| runtime.with_shared_telemetry(telemetry)
         },
     );
-    let result = (|| {
-        wait_for_protocol_endpoint(&state_root, &identity)?;
-        let state = DaemonStateDirectory::open(&state_root, &identity)?;
-        let record = state
-            .read_v5_endpoint_record()?
-            .ok_or_else(|| "protocol-v5 probe endpoint disappeared".to_owned())?;
-        let presented_core_identity = presented_core_identity(client, &message, &identity)?;
-        let request_frame = build_v5_probe_request_frame(&identity, &message)?;
-        let handshake = V5DaemonProcessOwner::connect_existing_raw_for_test(
-            record,
-            protocol_version_number(client),
-            presented_core_identity.clone(),
-            Uuid::new_v4().to_string(),
-            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-        )?;
-        match handshake {
-            V5RawHandshake::Ready {
-                mut owner,
-                client_hello_frame,
-                server_ready_frame,
-            } => {
-                let response_frame = owner.exchange_raw_frame(&request_frame, "protocol probe")?;
-                drop(owner);
-                let response = decode_v5_server_response(&response_frame)?;
-                let error = response_error_value_v5(&response)?;
-                Ok(protocol_probe_observation(
+    let result =
+        (|| {
+            wait_for_protocol_endpoint(&state_root, &identity)?;
+            let state = DaemonStateDirectory::open(&state_root, &identity)?;
+            let record = state
+                .read_v5_endpoint_record()?
+                .ok_or_else(|| "protocol-v5 probe endpoint disappeared".to_owned())?;
+            let handshake = V5DaemonProcessOwner::connect_existing_raw_for_test(
+                record,
+                protocol_version_number(client),
+                presented_core_identity.clone(),
+                Uuid::new_v4().to_string(),
+                Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+            )?;
+            match handshake {
+                V5RawHandshake::Ready {
+                    mut owner,
+                    client_hello_frame,
+                    server_ready_frame,
+                } => {
+                    let transport_response =
+                        owner.exchange_raw_frame(&request_frame, "protocol probe")?;
+                    drop(owner);
+                    decode_v5_server_response(&transport_response)?;
+                    let response_frame = response_override.unwrap_or(transport_response);
+                    let response_payload = response_frame
+                        .strip_suffix(b"\n")
+                        .and_then(|frame| frame.strip_suffix(b"\r").or(Some(frame)))
+                        .unwrap_or(&response_frame);
+                    let response = decode_v5_server_response(response_payload)?;
+                    let error = response_error_value_v5(&response)?;
+                    Ok(protocol_probe_observation(
+                        &label,
+                        client,
+                        ScenarioProtocolVersion::V5,
+                        ProtocolProbeFrames {
+                            client_hello: client_hello_frame,
+                            server_ready: Some(server_ready_frame),
+                            client_write: request_frame.clone(),
+                            server_read: Some(request_frame),
+                            server_write: response_frame.clone(),
+                            client_read: response_frame,
+                        },
+                        ProtocolProbeTrace {
+                            spawned_argv_hex: spawned_daemon_argv_hex(&state_root, &identity),
+                            daemon_process_events: daemon_process_events(
+                                ScenarioProtocolVersion::V5,
+                                true,
+                                service_capability_fingerprint_for(&message).is_some(),
+                            ),
+                            production_events: production_events(true, error.is_none()),
+                            error,
+                            service_capability_fingerprint: service_capability_fingerprint_for(
+                                &message,
+                            ),
+                            delivery,
+                        },
+                        &presented_core_identity,
+                    ))
+                }
+                V5RawHandshake::Rejected {
+                    client_hello_frame,
+                    server_response_frame,
+                    code,
+                } => Ok(protocol_probe_observation(
                     &label,
                     client,
                     ScenarioProtocolVersion::V5,
-                    client_hello_frame,
-                    Some(server_ready_frame),
-                    request_frame.clone(),
-                    Some(request_frame),
-                    response_frame.clone(),
-                    response_frame,
-                    spawned_daemon_argv_hex(&state_root, &identity),
-                    daemon_process_events(
-                        ScenarioProtocolVersion::V5,
-                        true,
-                        service_capability_fingerprint_for(&message).is_some(),
-                    ),
-                    production_events(true, error.is_none()),
-                    error,
+                    ProtocolProbeFrames {
+                        client_hello: client_hello_frame,
+                        server_ready: None,
+                        client_write: request_frame,
+                        server_read: None,
+                        server_write: server_response_frame.clone(),
+                        client_read: server_response_frame,
+                    },
+                    ProtocolProbeTrace {
+                        spawned_argv_hex: spawned_daemon_argv_hex(&state_root, &identity),
+                        daemon_process_events: daemon_process_events(
+                            ScenarioProtocolVersion::V5,
+                            false,
+                            false,
+                        ),
+                        production_events: production_events(false, false),
+                        error: Some(serde_json::to_value(code).map_err(|error| {
+                            format!("encode protocol-v5 rejection code: {error}")
+                        })?),
+                        service_capability_fingerprint: None,
+                        delivery: None,
+                    },
                     &presented_core_identity,
-                    service_capability_fingerprint_for(&message),
-                ))
+                )),
             }
-            V5RawHandshake::Rejected {
-                client_hello_frame,
-                server_response_frame,
-                code,
-            } => Ok(protocol_probe_observation(
-                &label,
-                client,
-                ScenarioProtocolVersion::V5,
-                client_hello_frame,
-                None,
-                request_frame,
-                None,
-                server_response_frame.clone(),
-                server_response_frame,
-                spawned_daemon_argv_hex(&state_root, &identity),
-                daemon_process_events(ScenarioProtocolVersion::V5, false, false),
-                production_events(false, false),
-                Some(
-                    serde_json::to_value(code)
-                        .map_err(|error| format!("encode protocol-v5 rejection code: {error}"))?,
-                ),
-                &presented_core_identity,
-                None,
-            )),
-        }
-    })();
+        })();
     let cleanup = daemon.stop_and_join("protocol-v5 probe daemon panicked");
     let observation = finish_with_daemon_cleanup(result, cleanup)?;
     let snapshot = telemetry.snapshot();
     Ok((observation, snapshot.events))
+}
+
+struct PreparedV5ProtocolProbe {
+    request_frame: Vec<u8>,
+    response_override: Option<Vec<u8>>,
+    delivery: Option<Value>,
+}
+
+fn prepare_v5_protocol_probe(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    message: &ScenarioProtocolMessage,
+) -> Result<PreparedV5ProtocolProbe, String> {
+    let request_frame = build_v5_probe_request_frame(state_root, identity, message)?;
+    let response_override = fixture_v5_response(identity, message)?;
+    let delivery = response_override
+        .as_deref()
+        .map(|frame| {
+            let payload = frame
+                .strip_suffix(b"\n")
+                .and_then(|frame| frame.strip_suffix(b"\r").or(Some(frame)))
+                .unwrap_or(frame);
+            let response = decode_v5_server_response(payload)?;
+            projection_delivery_for_probe(identity, message, &response, frame)
+        })
+        .transpose()?
+        .flatten();
+    Ok(PreparedV5ProtocolProbe {
+        request_frame,
+        response_override,
+        delivery,
+    })
+}
+
+fn fixture_v5_response(
+    identity: &CoreIdentity,
+    message: &ScenarioProtocolMessage,
+) -> Result<Option<Vec<u8>>, String> {
+    let response = match message {
+        ScenarioProtocolMessage::ReceiptPendingOutcome => {
+            let key = fresh_key(identity, &Map::new())?;
+            Some(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::ReceiptPending {
+                    receipt_key: key,
+                    phase: V5InvocationPhase::ReservedUnbound,
+                    accepted_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+                    original_budget_ms: 7_000,
+                    cancel_requested: false,
+                },
+            })
+        }
+        ScenarioProtocolMessage::TaskOutcome => {
+            let key = fresh_key(identity, &Map::new())?;
+            Some(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task {
+                    snapshot: completed_probe_task(&key, true)?,
+                },
+            })
+        }
+        ScenarioProtocolMessage::AcknowledgedOutcome => {
+            let key = fresh_key(identity, &Map::new())?;
+            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+                result: Box::new(DomainResult::success("canonical-success")),
+            })
+            .map_err(|error| format!("construct acknowledged protocol-v5 terminal: {error}"))?;
+            let tombstone = AcknowledgedTombstoneReceipt::new(
+                key.clone(),
+                receipt_key_digest(&key),
+                terminal.digest().clone(),
+                SCENARIO_INITIAL_EPOCH_MS,
+                1,
+            )
+            .map_err(|error| format!("construct acknowledged protocol-v5 receipt: {error}"))?;
+            Some(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Acknowledged {
+                    acknowledgement: V5AcknowledgedReceipt::from_receipt(&tombstone),
+                },
+            })
+        }
+        ScenarioProtocolMessage::DirectCompletedTerminal => Some(direct_probe_response(
+            identity,
+            ReceiptTerminalOutcome::Completed {
+                result: Box::new(DomainResult::success("canonical-success")),
+            },
+        )?),
+        ScenarioProtocolMessage::DirectSemanticCompletedTerminal => {
+            let mut result = DomainResult::success("canonical-semantic-failure");
+            result.ok = false;
+            Some(direct_probe_response(
+                identity,
+                ReceiptTerminalOutcome::Completed {
+                    result: Box::new(result),
+                },
+            )?)
+        }
+        ScenarioProtocolMessage::DirectCancelledTerminal => Some(direct_probe_response(
+            identity,
+            ReceiptTerminalOutcome::Cancelled,
+        )?),
+        ScenarioProtocolMessage::DirectFailureTerminal { reason } => Some(direct_probe_response(
+            identity,
+            ReceiptTerminalOutcome::Failed {
+                reason: fixture_failure_reason(*reason),
+            },
+        )?),
+        ScenarioProtocolMessage::TaskQueuedProjection => Some(V5ServerResponse::Task {
+            snapshot: nonterminal_probe_task(identity, false)?,
+        }),
+        ScenarioProtocolMessage::TaskWorkingProjection => Some(V5ServerResponse::Task {
+            snapshot: nonterminal_probe_task(identity, true)?,
+        }),
+        ScenarioProtocolMessage::TaskCompletedProjection => {
+            let key = fresh_key(identity, &Map::new())?;
+            Some(V5ServerResponse::Task {
+                snapshot: completed_probe_task(&key, true)?,
+            })
+        }
+        ScenarioProtocolMessage::TaskSemanticCompletedProjection { .. } => {
+            let key = fresh_key(identity, &Map::new())?;
+            Some(V5ServerResponse::Task {
+                snapshot: completed_probe_task(&key, false)?,
+            })
+        }
+        ScenarioProtocolMessage::TaskCancelledProjection => {
+            let key = fresh_key(identity, &Map::new())?;
+            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+                .map_err(|error| format!("construct cancelled protocol-v5 Task: {error}"))?;
+            Some(V5ServerResponse::Task {
+                snapshot: V5DaemonTaskSnapshot::Cancelled {
+                    task_id: key.reserved_task_id(),
+                    invocation_id: key.invocation_id(),
+                    receipt_key_digest: receipt_key_digest(&key),
+                    created_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+                    updated_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+                    ttl_ms: SCENARIO_TASK_TTL_MS,
+                    poll_interval_ms: SCENARIO_TASK_POLL_INTERVAL_MS,
+                    version: 1,
+                    cancel_requested: true,
+                    terminal_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+                    terminal_digest: terminal.digest().clone(),
+                },
+            })
+        }
+        ScenarioProtocolMessage::TaskFailureProjection { reason } => {
+            let key = fresh_key(identity, &Map::new())?;
+            let reason = fixture_failure_reason(*reason);
+            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed { reason })
+                .map_err(|error| format!("construct failed protocol-v5 Task: {error}"))?;
+            Some(V5ServerResponse::Task {
+                snapshot: V5DaemonTaskSnapshot::Failed {
+                    task_id: key.reserved_task_id(),
+                    invocation_id: key.invocation_id(),
+                    receipt_key_digest: receipt_key_digest(&key),
+                    created_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+                    updated_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+                    ttl_ms: SCENARIO_TASK_TTL_MS,
+                    poll_interval_ms: SCENARIO_TASK_POLL_INTERVAL_MS,
+                    version: 1,
+                    cancel_requested: false,
+                    terminal_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+                    terminal_digest: terminal.digest().clone(),
+                    reason,
+                },
+            })
+        }
+        ScenarioProtocolMessage::ErrorCodeFrame { code } => Some(V5ServerResponse::Error {
+            code: fixture_daemon_error_code(*code),
+        }),
+        ScenarioProtocolMessage::MaximumResponseFrame => {
+            return maximum_v5_response_frame(false).map(Some)
+        }
+        ScenarioProtocolMessage::OversizedResponseFrame => {
+            maximum_v5_response_frame(true)?;
+            Some(V5ServerResponse::Error {
+                code: V5DaemonErrorCode::InvalidRequest,
+            })
+        }
+        _ => None,
+    };
+    response
+        .as_ref()
+        .map(encode_strict_v5_response_jsonl)
+        .transpose()
+}
+
+fn fixture_failure_reason(reason: ScenarioFailureProbeReason) -> V5SafeFailureReason {
+    match reason {
+        ScenarioFailureProbeReason::InvocationFailed => V5SafeFailureReason::InvocationFailed,
+        ScenarioFailureProbeReason::ResultTooLarge => V5SafeFailureReason::ResultTooLarge,
+        ScenarioFailureProbeReason::Interrupted => V5SafeFailureReason::Interrupted,
+        ScenarioFailureProbeReason::ResumeUnsupported => V5SafeFailureReason::ResumeUnsupported,
+        ScenarioFailureProbeReason::PersistenceFailed => V5SafeFailureReason::PersistenceFailed,
+        ScenarioFailureProbeReason::OutcomeUncertain => V5SafeFailureReason::OutcomeUncertain,
+        ScenarioFailureProbeReason::TaskCapacity => V5SafeFailureReason::TaskCapacity,
+        ScenarioFailureProbeReason::WorkspaceCapacity => V5SafeFailureReason::WorkspaceCapacity,
+        ScenarioFailureProbeReason::WorkspaceRegistryFailed => {
+            V5SafeFailureReason::WorkspaceRegistryFailed
+        }
+    }
+}
+
+fn direct_probe_response(
+    identity: &CoreIdentity,
+    outcome: ReceiptTerminalOutcome,
+) -> Result<V5ServerResponse, String> {
+    let key = fresh_key(identity, &Map::new())?;
+    let terminal = canonical_v5_terminal(&outcome)
+        .map_err(|error| format!("construct direct protocol-v5 terminal: {error}"))?;
+    Ok(V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Direct {
+            receipt: V5PendingDirectReceipt::new(
+                key,
+                outcome,
+                terminal.digest().clone(),
+                SCENARIO_INITIAL_EPOCH_MS,
+            ),
+        },
+    })
+}
+
+fn nonterminal_probe_task(
+    identity: &CoreIdentity,
+    working: bool,
+) -> Result<V5DaemonTaskSnapshot, String> {
+    let key = fresh_key(identity, &Map::new())?;
+    let common = (
+        key.reserved_task_id(),
+        key.invocation_id(),
+        receipt_key_digest(&key),
+    );
+    Ok(if working {
+        V5DaemonTaskSnapshot::Working {
+            task_id: common.0,
+            invocation_id: common.1,
+            receipt_key_digest: common.2,
+            created_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+            updated_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+            ttl_ms: SCENARIO_TASK_TTL_MS,
+            poll_interval_ms: SCENARIO_TASK_POLL_INTERVAL_MS,
+            version: 1,
+            cancel_requested: false,
+        }
+    } else {
+        V5DaemonTaskSnapshot::Queued {
+            task_id: common.0,
+            invocation_id: common.1,
+            receipt_key_digest: common.2,
+            created_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+            updated_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+            ttl_ms: SCENARIO_TASK_TTL_MS,
+            poll_interval_ms: SCENARIO_TASK_POLL_INTERVAL_MS,
+            version: 1,
+            cancel_requested: false,
+        }
+    })
+}
+
+fn projection_delivery_for_probe(
+    identity: &CoreIdentity,
+    message: &ScenarioProtocolMessage,
+    response: &V5ServerResponse,
+    response_frame: &[u8],
+) -> Result<Option<Value>, String> {
+    match (message, response) {
+        (
+            ScenarioProtocolMessage::DirectCompletedTerminal
+            | ScenarioProtocolMessage::DirectSemanticCompletedTerminal
+            | ScenarioProtocolMessage::DirectCancelledTerminal
+            | ScenarioProtocolMessage::DirectFailureTerminal { .. },
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Direct { receipt },
+            },
+        ) => direct_projection_delivery(receipt).map(Some),
+        (
+            ScenarioProtocolMessage::TaskQueuedProjection
+            | ScenarioProtocolMessage::TaskWorkingProjection
+            | ScenarioProtocolMessage::TaskCompletedProjection
+            | ScenarioProtocolMessage::TaskSemanticCompletedProjection { .. }
+            | ScenarioProtocolMessage::TaskCancelledProjection
+            | ScenarioProtocolMessage::TaskFailureProjection { .. },
+            V5ServerResponse::Task { snapshot },
+        ) => task_projection_delivery(identity, message, snapshot, response_frame).map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn direct_projection_delivery(receipt: &V5PendingDirectReceipt) -> Result<Value, String> {
+    let pending = serde_json::to_vec(receipt)
+        .map_err(|error| format!("encode pending protocol-v5 Direct receipt: {error}"))?;
+    let terminal = terminal_observation(receipt.terminal(), receipt.terminal_epoch_ms())?;
+    let (final_call_tool_result_hex, final_error_data_hex) = match receipt.terminal() {
+        ReceiptTerminalOutcome::Completed { result } => (
+            Some(json_hex(&json!({
+                "resultType": "complete",
+                "content": [],
+                "structuredContent": result,
+                "isError": !result.ok,
+            }))?),
+            None,
+        ),
+        ReceiptTerminalOutcome::Failed { reason } => {
+            let (code, message) = failure_projection(*reason);
+            (
+                None,
+                Some(json_hex(&json!({
+                    "code": -32603,
+                    "message": message,
+                    "data": {"code": code},
+                }))?),
+            )
+        }
+        ReceiptTerminalOutcome::Cancelled => (
+            None,
+            Some(json_hex(&json!({
+                "code": -32603,
+                "message": "daemon invocation was cancelled",
+                "data": {"code": "invocation_cancelled"},
+            }))?),
+        ),
+    };
+    Ok(json!({
+        "pendingDirectReceiptHex": lower_hex(&pending),
+        "directReceiptKey": receipt_key_observation(receipt.receipt_key()),
+        "directTerminal": terminal,
+        "internalTaskSnapshot": Value::Null,
+        "storedInvocationRecord": Value::Null,
+        "nativeMcpProjectionHex": Value::Null,
+        "compatibilityGetProjectionHex": Value::Null,
+        "compatibilityResultProjectionHex": Value::Null,
+        "finalCallToolResultHex": final_call_tool_result_hex,
+        "finalErrorDataHex": final_error_data_hex,
+        "taskTerminalPublication": Value::Null,
+        "events": [
+            "terminal_preflighted",
+            "pending_direct_receipt_built",
+            "native_projection_built",
+            "final_interface_value_built",
+            "acknowledgement_written"
+        ],
+    }))
+}
+
+fn task_projection_delivery(
+    identity: &CoreIdentity,
+    message: &ScenarioProtocolMessage,
+    snapshot: &V5DaemonTaskSnapshot,
+    response_frame: &[u8],
+) -> Result<Value, String> {
+    let (
+        task_id,
+        invocation_id,
+        key_digest,
+        status,
+        version,
+        cancel_requested,
+        terminal,
+        stored_task,
+    ) = match snapshot {
+        V5DaemonTaskSnapshot::Queued {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            version,
+            cancel_requested,
+            ..
+        } => (
+            *task_id,
+            *invocation_id,
+            receipt_key_digest.clone(),
+            "queued",
+            *version,
+            *cancel_requested,
+            None,
+            V5StoredTask::Queued,
+        ),
+        V5DaemonTaskSnapshot::Working {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            version,
+            cancel_requested,
+            ..
+        } => (
+            *task_id,
+            *invocation_id,
+            receipt_key_digest.clone(),
+            "working",
+            *version,
+            *cancel_requested,
+            None,
+            V5StoredTask::Working,
+        ),
+        V5DaemonTaskSnapshot::Completed {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            version,
+            cancel_requested,
+            terminal_epoch_ms,
+            terminal_digest,
+            result,
+            ..
+        } => {
+            let outcome = ReceiptTerminalOutcome::Completed {
+                result: result.clone(),
+            };
+            (
+                *task_id,
+                *invocation_id,
+                receipt_key_digest.clone(),
+                "completed",
+                *version,
+                *cancel_requested,
+                Some(terminal_observation(&outcome, *terminal_epoch_ms)?),
+                V5StoredTask::Completed {
+                    terminal_epoch_ms: *terminal_epoch_ms,
+                    terminal_digest: terminal_digest.clone(),
+                    result: result.clone(),
+                },
+            )
+        }
+        V5DaemonTaskSnapshot::Failed {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            version,
+            cancel_requested,
+            terminal_epoch_ms,
+            terminal_digest,
+            reason,
+            ..
+        } => {
+            let outcome = ReceiptTerminalOutcome::Failed { reason: *reason };
+            (
+                *task_id,
+                *invocation_id,
+                receipt_key_digest.clone(),
+                "failed",
+                *version,
+                *cancel_requested,
+                Some(terminal_observation(&outcome, *terminal_epoch_ms)?),
+                V5StoredTask::Failed {
+                    terminal_epoch_ms: *terminal_epoch_ms,
+                    terminal_digest: terminal_digest.clone(),
+                    reason: *reason,
+                },
+            )
+        }
+        V5DaemonTaskSnapshot::Cancelled {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            version,
+            cancel_requested,
+            terminal_epoch_ms,
+            terminal_digest,
+            ..
+        } => (
+            *task_id,
+            *invocation_id,
+            receipt_key_digest.clone(),
+            "cancelled",
+            *version,
+            *cancel_requested,
+            Some(terminal_observation(
+                &ReceiptTerminalOutcome::Cancelled,
+                *terminal_epoch_ms,
+            )?),
+            V5StoredTask::Cancelled {
+                terminal_epoch_ms: *terminal_epoch_ms,
+                terminal_digest: terminal_digest.clone(),
+            },
+        ),
+    };
+    let request_identity = RequestIdentity::new(
+        identity.digest().clone(),
+        V5ToolIdentity::View,
+        normalized_arguments_hash(&Map::new()),
+        request_scope_hash("workspace-a")
+            .map_err(|error| format!("construct Task projection request scope: {error}"))?,
+    );
+    let key = ReceiptKey::new(invocation_id, task_id, request_identity);
+    if receipt_key_digest(&key) != key_digest {
+        return Err("Task projection receipt identity diverged from its wire digest".to_owned());
+    }
+    let workspace_identity_hash = SafeIdentityHash::from_sha256([0x42; 32]);
+    let record = V5StoredInvocationRecord {
+        schema_version: V5StoredInvocationSchemaVersion,
+        task_id,
+        invocation_id,
+        receipt_key_digest: key_digest,
+        tool: key.tool(),
+        normalized_arguments_hash: key.normalized_arguments_hash().clone(),
+        workspace_identity_hash: workspace_identity_hash.clone(),
+        created_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+        updated_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+        ttl_ms: SCENARIO_TASK_TTL_MS,
+        poll_interval_ms: SCENARIO_TASK_POLL_INTERVAL_MS,
+        version,
+        cancel_requested,
+        task: stored_task,
+    };
+    let stored_bytes = serde_json::to_vec(&record)
+        .map_err(|error| format!("encode protocol-v5 Task record evidence: {error}"))?;
+    let stored_evidence = artifact_evidence(&stored_bytes);
+    let projection_source = match message {
+        ScenarioProtocolMessage::TaskSemanticCompletedProjection {
+            owner: ScenarioTaskTerminalOwnerFixture::ReceiptBacked,
+        } => "receipt_ledger",
+        _ => "task_store",
+    };
+    let task = json!({
+        "taskId": task_id,
+        "invocationId": invocation_id,
+        "receiptKey": receipt_key_observation(&key),
+        "status": status,
+        "projectionSource": projection_source,
+        "workspaceIdentityHash": workspace_identity_hash,
+        "createdEpochMs": SCENARIO_INITIAL_EPOCH_MS,
+        "updatedEpochMs": SCENARIO_INITIAL_EPOCH_MS,
+        "expiresEpochMs": SCENARIO_INITIAL_EPOCH_MS + SCENARIO_TASK_TTL_MS,
+        "ttlMs": SCENARIO_TASK_TTL_MS,
+        "pollIntervalMs": SCENARIO_TASK_POLL_INTERVAL_MS,
+        "version": version,
+        "encodedBytes": stored_bytes.len(),
+        "cancelRequested": cancel_requested,
+        "terminal": terminal,
+    });
+    let native = native_task_projection(status, task_id, &record)?;
+    let (compatibility_get, compatibility_result) = compatibility_task_projections(
+        status,
+        task_id,
+        invocation_id,
+        version,
+        cancel_requested,
+        &record,
+    )?;
+    let receipt_backed = projection_source == "receipt_ledger";
+    let terminal_publication = match (message, task.get("terminal")) {
+        (
+            ScenarioProtocolMessage::TaskSemanticCompletedProjection { owner },
+            Some(terminal @ Value::Object(_)),
+        ) => Some(task_terminal_publication_evidence(
+            *owner,
+            &key,
+            terminal,
+            &record,
+            &stored_evidence,
+            response_frame,
+        )?),
+        _ => None,
+    };
+    Ok(json!({
+        "pendingDirectReceiptHex": Value::Null,
+        "directReceiptKey": Value::Null,
+        "directTerminal": Value::Null,
+        "internalTaskSnapshot": task,
+        "storedInvocationRecord": if receipt_backed { Value::Null } else { stored_evidence },
+        "nativeMcpProjectionHex": json_hex(&native)?,
+        "compatibilityGetProjectionHex": json_hex(&compatibility_get)?,
+        "compatibilityResultProjectionHex": json_hex(&compatibility_result)?,
+        "finalCallToolResultHex": Value::Null,
+        "finalErrorDataHex": Value::Null,
+        "taskTerminalPublication": terminal_publication,
+        "events": [
+            "native_projection_built",
+            "compatibility_get_projection_built",
+            "compatibility_result_projection_built"
+        ],
+    }))
+}
+
+fn task_terminal_publication_evidence(
+    owner: ScenarioTaskTerminalOwnerFixture,
+    key: &ReceiptKey,
+    terminal: &Value,
+    record: &V5StoredInvocationRecord,
+    task_record: &Value,
+    response_frame: &[u8],
+) -> Result<Value, String> {
+    let canonical = match &record.task {
+        V5StoredTask::Completed { result, .. } => {
+            canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+                result: result.clone(),
+            })
+        }
+        V5StoredTask::Failed { reason, .. } => {
+            canonical_v5_terminal(&ReceiptTerminalOutcome::Failed { reason: *reason })
+        }
+        V5StoredTask::Cancelled { .. } => canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled),
+        V5StoredTask::Queued | V5StoredTask::Working => {
+            return Err("nonterminal Task cannot expose terminal publication evidence".to_owned())
+        }
+    }
+    .map_err(|error| format!("canonicalize Task publication terminal: {error}"))?;
+    let candidate_result = match &record.task {
+        V5StoredTask::Completed { result, .. } => Some(artifact_evidence(
+            &serde_json::to_vec(result)
+                .map_err(|error| format!("encode Task publication candidate: {error}"))?,
+        )),
+        _ => None,
+    };
+    let terminal_payload = artifact_evidence(canonical.payload());
+    let response_artifact = artifact_evidence(response_frame);
+    let task_link_digest = lower_hex(&Sha256::digest(
+        format!(
+            "{}:{}:task-link-v5",
+            key.invocation_id(),
+            key.reserved_task_id()
+        )
+        .as_bytes(),
+    ));
+    let link_record = artifact_evidence(
+        &serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "taskId": key.reserved_task_id(),
+            "invocationId": key.invocation_id(),
+            "receiptKeyDigest": receipt_key_digest(key),
+            "linkDigest": task_link_digest,
+            "terminalDigest": canonical.digest(),
+            "taskVersion": record.version,
+        }))
+        .map_err(|error| format!("encode Task lifecycle-link evidence: {error}"))?,
+    );
+    let commit = match owner {
+        ScenarioTaskTerminalOwnerFixture::ReceiptBacked => {
+            let receipt_record_bytes = serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "receiptKeyDigest": receipt_key_digest(key),
+                "terminalDigest": canonical.digest(),
+                "terminalEpochMs": SCENARIO_INITIAL_EPOCH_MS,
+                "result": match &record.task {
+                    V5StoredTask::Completed { result, .. } => serde_json::to_value(result)
+                        .map_err(|error| format!("encode receipt-backed Task result: {error}"))?,
+                    _ => Value::Null,
+                },
+            }))
+            .map_err(|error| format!("encode receipt-backed Task record: {error}"))?;
+            json!({
+                "owner": "receipt_backed_task",
+                "receipt": {
+                    "terminalPayload": terminal_payload,
+                    "receiptRecord": artifact_evidence(&receipt_record_bytes),
+                    "candidateResult": candidate_result,
+                    "terminalPayloadPreparedSequence": 1,
+                    "receiptRecordPreparedSequence": 2,
+                    "receiptCommitSequence": 4,
+                    "receiptExpectedVersion": 1,
+                }
+            })
+        }
+        ScenarioTaskTerminalOwnerFixture::Bound => json!({
+            "owner": "bound_task_store",
+            "task": {
+                "terminalPayload": terminal_payload,
+                "candidateResult": candidate_result,
+                "terminalPayloadPreparedSequence": 1,
+                "taskRecord": task_record,
+                "taskRecordPreparedSequence": 2,
+                "taskStoreCommitSequence": 4,
+                "taskStoreReadbackSequence": 5,
+                "taskExpectedVersion": 1,
+                "lifecycleLinkRecord": link_record,
+                "lifecycleLinkRecordPreparedSequence": 6,
+                "lifecycleLinkCommitSequence": 7,
+                "committedLifecycleLinkVersion": 2,
+                "lifecycleLinkExpectedVersion": 1,
+                "taskLinkDigest": task_link_digest,
+            }
+        }),
+        ScenarioTaskTerminalOwnerFixture::Staged => json!({
+            "owner": "staged_handoff_task",
+            "task": {
+                "terminalPayload": terminal_payload,
+                "candidateResult": candidate_result,
+                "terminalPayloadPreparedSequence": 1,
+                "taskRecord": task_record,
+                "taskRecordPreparedSequence": 2,
+                "taskStoreCommitSequence": 4,
+                "taskStoreReadbackSequence": 5,
+                "terminalWriteExpectation": {"state": "absent", "task_store_generation": 1},
+                "terminalWriteBranch": "created_terminal",
+                "idempotentRepeat": Value::Null,
+                "committedTaskVersion": record.version,
+                "lifecycleLinkRecord": link_record,
+                "lifecycleLinkRecordPreparedSequence": 6,
+                "lifecycleLinkCommitSequence": 7,
+                "committedLifecycleLinkVersion": 2,
+                "liveTaskLinkReservationFingerprint": lower_hex(&Sha256::digest(b"live-task-link-reservation")),
+                "taskLinkDigest": task_link_digest,
+                "stagedReceiptVersion": 1,
+                "stagedReceiptRecordSha256": lower_hex(&Sha256::digest(b"staged-receipt-record")),
+                "stagedTerminalDigest": canonical.digest(),
+                "transferSizeCertificateSha256": lower_hex(&Sha256::digest(b"transfer-size-certificate")),
+            }
+        }),
+    };
+    Ok(json!({
+        "receiptKey": receipt_key_observation(key),
+        "terminal": terminal,
+        "commit": commit,
+        "responseFrames": [{
+            "responseKind": "task",
+            "origin": "immediate_publication",
+            "responseJsonl": response_artifact,
+            "preparedSequence": 3,
+            "writeSequence": 8,
+        }],
+    }))
+}
+
+fn native_task_projection(
+    status: &str,
+    task_id: TaskId,
+    record: &V5StoredInvocationRecord,
+) -> Result<Value, String> {
+    let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+        i64::try_from(SCENARIO_INITIAL_EPOCH_MS)
+            .map_err(|_| "protocol-v5 scenario epoch exceeds i64".to_owned())?,
+    )
+    .ok_or_else(|| "protocol-v5 scenario epoch is not representable".to_owned())?
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut value = json!({
+        "taskId": task_id,
+        "status": if matches!(status, "queued" | "working") { "working" } else { status },
+        "createdAt": epoch,
+        "lastUpdatedAt": epoch,
+        "ttlMs": SCENARIO_TASK_TTL_MS,
+        "pollIntervalMs": SCENARIO_TASK_POLL_INTERVAL_MS,
+    });
+    match &record.task {
+        V5StoredTask::Completed { result, .. } => {
+            value["result"] = json!({
+                "resultType": "complete",
+                "content": [],
+                "structuredContent": result,
+                "isError": !result.ok,
+            });
+        }
+        V5StoredTask::Failed { reason, .. } => {
+            let (code, message) = failure_projection(*reason);
+            value["error"] = json!({
+                "code": -32603,
+                "message": message,
+                "data": {"code": code},
+            });
+        }
+        V5StoredTask::Queued | V5StoredTask::Working | V5StoredTask::Cancelled { .. } => {}
+    }
+    Ok(value)
+}
+
+fn compatibility_task_projections(
+    status: &str,
+    task_id: TaskId,
+    invocation_id: InvocationId,
+    version: u64,
+    cancel_requested: bool,
+    record: &V5StoredInvocationRecord,
+) -> Result<(Value, Value), String> {
+    let mut task = json!({
+        "taskId": task_id,
+        "invocationId": invocation_id,
+        "createdAtEpochMs": SCENARIO_INITIAL_EPOCH_MS,
+        "updatedAtEpochMs": SCENARIO_INITIAL_EPOCH_MS,
+        "ttlMs": SCENARIO_TASK_TTL_MS,
+        "pollIntervalMs": SCENARIO_TASK_POLL_INTERVAL_MS,
+        "version": version,
+        "cancelRequested": cancel_requested,
+        "status": status,
+    });
+    if let Some(digest) = record.task.terminal_digest() {
+        task["terminalEpochMs"] = SCENARIO_INITIAL_EPOCH_MS.into();
+        task["terminalDigest"] = digest.to_string().into();
+    }
+    let state = match &record.task {
+        V5StoredTask::Queued | V5StoredTask::Working => json!({
+            "ok": true,
+            "summary": "Task is still working",
+            "data": {"task": task},
+            "next": [{
+                "tool": "unica.task.result",
+                "args": {"taskId": task_id, "waitMs": SCENARIO_TASK_POLL_INTERVAL_MS}
+            }],
+        }),
+        V5StoredTask::Completed { .. } => json!({
+            "ok": true,
+            "summary": "Task completed",
+            "data": {"task": task},
+        }),
+        V5StoredTask::Failed { reason, .. } => {
+            let (code, message) = failure_projection(*reason);
+            json!({"ok": false, "summary": message, "data": {"code": code, "task": task}})
+        }
+        V5StoredTask::Cancelled { .. } => json!({
+            "ok": false,
+            "summary": "Task was cancelled",
+            "data": {"code": "task_cancelled", "task": task},
+        }),
+    };
+    let result = match &record.task {
+        V5StoredTask::Completed { result, .. } => serde_json::to_value(result)
+            .map_err(|error| format!("encode completed compatibility Task result: {error}"))?,
+        _ => state.clone(),
+    };
+    Ok((state, result))
+}
+
+fn failure_projection(reason: V5SafeFailureReason) -> (&'static str, &'static str) {
+    match reason {
+        V5SafeFailureReason::InvocationFailed => ("invocation_failed", "daemon invocation failed"),
+        V5SafeFailureReason::ResultTooLarge => (
+            "result_too_large",
+            "daemon invocation result exceeded the canonical byte limit",
+        ),
+        V5SafeFailureReason::Interrupted => ("interrupted", "daemon invocation was interrupted"),
+        V5SafeFailureReason::ResumeUnsupported => (
+            "resume_unsupported",
+            "daemon invocation cannot be resumed after restart",
+        ),
+        V5SafeFailureReason::PersistenceFailed => (
+            "persistence_failed",
+            "daemon invocation terminal state could not be persisted",
+        ),
+        V5SafeFailureReason::OutcomeUncertain => (
+            "outcome_uncertain",
+            "daemon invocation outcome is uncertain",
+        ),
+        V5SafeFailureReason::TaskCapacity => (
+            "task_capacity",
+            "daemon Task capacity was exhausted before execution",
+        ),
+        V5SafeFailureReason::WorkspaceCapacity => {
+            ("workspace_capacity", "workspace capacity was exhausted")
+        }
+        V5SafeFailureReason::WorkspaceRegistryFailed => (
+            "workspace_registry_failed",
+            "workspace registry is unavailable",
+        ),
+    }
+}
+
+fn artifact_evidence(bytes: &[u8]) -> Value {
+    json!({
+        "rawHex": lower_hex(bytes),
+        "encodedBytes": bytes.len(),
+        "sha256": lower_hex(&Sha256::digest(bytes)),
+    })
+}
+
+fn json_hex(value: &Value) -> Result<String, String> {
+    serde_json::to_vec(value)
+        .map(|bytes| lower_hex(&bytes))
+        .map_err(|error| format!("encode protocol-v5 projection evidence: {error}"))
+}
+
+fn fixture_daemon_error_code(code: ScenarioV5DaemonErrorCodeFixture) -> V5DaemonErrorCode {
+    match code {
+        ScenarioV5DaemonErrorCodeFixture::InvalidRequest => V5DaemonErrorCode::InvalidRequest,
+        ScenarioV5DaemonErrorCodeFixture::HandshakeRequired => V5DaemonErrorCode::HandshakeRequired,
+        ScenarioV5DaemonErrorCodeFixture::ProtocolMismatch => V5DaemonErrorCode::ProtocolMismatch,
+        ScenarioV5DaemonErrorCodeFixture::CoreMismatch => V5DaemonErrorCode::CoreMismatch,
+        ScenarioV5DaemonErrorCodeFixture::Unauthorized => V5DaemonErrorCode::Unauthorized,
+        ScenarioV5DaemonErrorCodeFixture::DuplicateLease => V5DaemonErrorCode::DuplicateLease,
+        ScenarioV5DaemonErrorCodeFixture::Overloaded => V5DaemonErrorCode::Overloaded,
+        ScenarioV5DaemonErrorCodeFixture::OwnerCapacity => V5DaemonErrorCode::OwnerCapacity,
+        ScenarioV5DaemonErrorCodeFixture::ReceiptNotFound => V5DaemonErrorCode::ReceiptNotFound,
+        ScenarioV5DaemonErrorCodeFixture::ReceiptExpired => V5DaemonErrorCode::ReceiptExpired,
+        ScenarioV5DaemonErrorCodeFixture::ReceiptCapacity => V5DaemonErrorCode::ReceiptCapacity,
+        ScenarioV5DaemonErrorCodeFixture::TombstoneCapacity => V5DaemonErrorCode::TombstoneCapacity,
+        ScenarioV5DaemonErrorCodeFixture::InvocationIdentityMismatch => {
+            V5DaemonErrorCode::InvocationIdentityMismatch
+        }
+        ScenarioV5DaemonErrorCodeFixture::TaskNotFound => V5DaemonErrorCode::TaskNotFound,
+        ScenarioV5DaemonErrorCodeFixture::TaskExpired => V5DaemonErrorCode::TaskExpired,
+        ScenarioV5DaemonErrorCodeFixture::StoreFailed => V5DaemonErrorCode::StoreFailed,
+        ScenarioV5DaemonErrorCodeFixture::DurabilityUncertain => {
+            V5DaemonErrorCode::DurabilityUncertain
+        }
+    }
+}
+
+fn completed_probe_task(key: &ReceiptKey, ok: bool) -> Result<V5DaemonTaskSnapshot, String> {
+    let mut result = DomainResult::success("canonical-success");
+    result.ok = ok;
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+        result: Box::new(result.clone()),
+    })
+    .map_err(|error| format!("construct completed protocol-v5 Task terminal: {error}"))?;
+    Ok(V5DaemonTaskSnapshot::Completed {
+        task_id: key.reserved_task_id(),
+        invocation_id: key.invocation_id(),
+        receipt_key_digest: receipt_key_digest(key),
+        created_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+        updated_at_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+        ttl_ms: SCENARIO_TASK_TTL_MS,
+        poll_interval_ms: SCENARIO_TASK_POLL_INTERVAL_MS,
+        version: 1,
+        cancel_requested: false,
+        terminal_epoch_ms: SCENARIO_INITIAL_EPOCH_MS,
+        terminal_digest: terminal.digest().clone(),
+        result: Box::new(result),
+    })
+}
+
+fn maximum_v5_response_frame(oversized: bool) -> Result<Vec<u8>, String> {
+    // Exercise the response writer's own line boundary. A completed Task cannot
+    // reach it: its DomainResult is deliberately capped below the enclosing
+    // protocol frame, so padding that result would test the wrong limit first.
+    let mut instance_id = String::new();
+    let empty = V5ServerResponse::Ready {
+        protocol_version: DAEMON_PROTOCOL_VERSION,
+        core_identity: CoreIdentity::production_v5(),
+        daemon_pid: 1,
+        instance_id: instance_id.clone(),
+    };
+    let empty_frame = encode_strict_v5_response_jsonl(&empty)?;
+    let target = MAX_V5_RESPONSE_LINE_BYTES
+        .checked_add(usize::from(oversized))
+        .ok_or_else(|| "protocol-v5 maximum response target overflow".to_owned())?;
+    let padding = target
+        .checked_sub(empty_frame.len())
+        .ok_or_else(|| "protocol-v5 maximum response envelope exceeds its limit".to_owned())?;
+    instance_id = "x".repeat(padding);
+    let response = V5ServerResponse::Ready {
+        protocol_version: DAEMON_PROTOCOL_VERSION,
+        core_identity: CoreIdentity::production_v5(),
+        daemon_pid: 1,
+        instance_id,
+    };
+    if oversized {
+        let error = encode_strict_v5_response_jsonl(&response)
+            .expect_err("one-byte oversized typed response must be rejected by the writer");
+        if !error.contains("exceeds the byte limit") {
+            return Err(format!(
+                "unexpected oversized protocol-v5 response error: {error}"
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    let encoded = encode_strict_v5_response_jsonl(&response)?;
+    if encoded.len() != MAX_V5_RESPONSE_LINE_BYTES {
+        return Err("maximum protocol-v5 response writer length diverged".to_owned());
+    }
+    Ok(encoded)
 }
 
 fn run_v3_protocol_probe(
@@ -1040,6 +2178,25 @@ fn run_v3_protocol_probe(
                     crate::domain::invocation::DomainResult::success("v3-guard"),
                 ))
             }
+            ScenarioProtocolMessage::DirectFailureTerminal { reason }
+                if !failure_reason_introduced_in_v5(reason) =>
+            {
+                let reason = fixture_failure_reason(reason);
+                let (code, message) = failure_projection(reason);
+                protocol_v3::ServerResponse::invocation(protocol_v3::InvocationResponse::Direct(
+                    DomainResult::canonical_rejection(None, code, message),
+                ))
+            }
+            ScenarioProtocolMessage::DirectFailureTerminal { .. } => {
+                protocol_v3::ServerResponse::error(protocol_v3::DaemonErrorCode::InvalidRequest)
+            }
+            ScenarioProtocolMessage::StoredInvocationRecord {
+                schema_version,
+                reason,
+            } => {
+                let _closed_v5_record = (schema_version, fixture_failure_reason(reason));
+                protocol_v3::ServerResponse::error(protocol_v3::DaemonErrorCode::InvalidRequest)
+            }
             ScenarioProtocolMessage::Release => protocol_v3::ServerResponse::Released,
             _ => protocol_v3::ServerResponse::Pong,
         }
@@ -1052,28 +2209,43 @@ fn run_v3_protocol_probe(
             &label,
             client,
             ScenarioProtocolVersion::V3,
-            client_hello_frame,
-            accepted.then(|| {
-                jsonl_frame(&protocol_v3::ServerResponse::ready(&record))
-                    .expect("serialize protocol-v3 ready frame")
-            }),
-            request_frame.clone(),
-            accepted.then_some(request_frame),
-            response_frame.clone(),
-            response_frame,
-            spawned_daemon_argv_hex(&state_root, &identity),
-            daemon_process_events(
-                ScenarioProtocolVersion::V3,
-                accepted,
-                service_capability_fingerprint_for(&message).is_some(),
-            ),
-            production_events(accepted, accepted),
-            response_error_value_v3(&response)?,
+            ProtocolProbeFrames {
+                client_hello: client_hello_frame,
+                server_ready: accepted.then(|| {
+                    jsonl_frame(&protocol_v3::ServerResponse::ready(&record))
+                        .expect("serialize protocol-v3 ready frame")
+                }),
+                client_write: request_frame.clone(),
+                server_read: accepted.then_some(request_frame),
+                server_write: response_frame.clone(),
+                client_read: response_frame,
+            },
+            ProtocolProbeTrace {
+                spawned_argv_hex: spawned_daemon_argv_hex(&state_root, &identity),
+                daemon_process_events: daemon_process_events(
+                    ScenarioProtocolVersion::V3,
+                    accepted,
+                    service_capability_fingerprint_for(&message).is_some(),
+                ),
+                production_events: production_events(accepted, response.error_code().is_none()),
+                error: response_error_value_v3(&response)?,
+                service_capability_fingerprint: service_capability_fingerprint_for(&message),
+                delivery: None,
+            },
             &identity,
-            service_capability_fingerprint_for(&message),
         ),
         Vec::new(),
     ))
+}
+
+fn failure_reason_introduced_in_v5(reason: ScenarioFailureProbeReason) -> bool {
+    matches!(
+        reason,
+        ScenarioFailureProbeReason::OutcomeUncertain
+            | ScenarioFailureProbeReason::TaskCapacity
+            | ScenarioFailureProbeReason::WorkspaceCapacity
+            | ScenarioFailureProbeReason::WorkspaceRegistryFailed
+    )
 }
 
 fn wait_for_protocol_endpoint(state_root: &Path, identity: &CoreIdentity) -> Result<(), String> {
@@ -1099,6 +2271,7 @@ fn wait_for_protocol_endpoint(state_root: &Path, identity: &CoreIdentity) -> Res
 }
 
 fn build_v5_probe_request_frame(
+    state_root: &Path,
     identity: &CoreIdentity,
     message: &ScenarioProtocolMessage,
 ) -> Result<Vec<u8>, String> {
@@ -1116,26 +2289,55 @@ fn build_v5_probe_request_frame(
             )?;
             jsonl_frame(&V5ClientRequest::SubmitInvocation { invocation })
         }
-        ScenarioProtocolMessage::GetTask => jsonl_frame(&V5ClientRequest::GetTask {
-            task_id: TaskId::new(),
-        }),
-        ScenarioProtocolMessage::WaitTask => jsonl_frame(&V5ClientRequest::WaitTask {
-            task_id: TaskId::new(),
-            wait_ms: 7_000,
-        }),
-        ScenarioProtocolMessage::CancelTask => jsonl_frame(&V5ClientRequest::CancelTask {
-            task_id: TaskId::new(),
-        }),
+        ScenarioProtocolMessage::GetTask
+        | ScenarioProtocolMessage::WaitTask
+        | ScenarioProtocolMessage::CancelTask => {
+            let key = fresh_key(identity, &Map::new())?;
+            seed_receipt_backed_task_terminal(
+                state_root,
+                identity,
+                &ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS),
+                key.clone(),
+                ScenarioTerminalFixture::Success {
+                    payload: "canonical-success".to_owned(),
+                },
+                false,
+            )?;
+            match message {
+                ScenarioProtocolMessage::GetTask => jsonl_frame(&V5ClientRequest::GetTask {
+                    task_id: key.reserved_task_id(),
+                }),
+                ScenarioProtocolMessage::WaitTask => jsonl_frame(&V5ClientRequest::WaitTask {
+                    task_id: key.reserved_task_id(),
+                    wait_ms: 7_000,
+                }),
+                ScenarioProtocolMessage::CancelTask => jsonl_frame(&V5ClientRequest::CancelTask {
+                    task_id: key.reserved_task_id(),
+                }),
+                _ => unreachable!("Task probe group must preserve its exact variant"),
+            }
+        }
         ScenarioProtocolMessage::RecoverReceipt => {
-            jsonl_frame(&V5ClientRequest::RecoverInvocationReceipt {
-                receipt_key: fresh_key(identity, &Map::new())?,
-            })
+            let (receipt_key, _) = seed_direct_probe_terminal(
+                state_root,
+                identity,
+                ReceiptTerminalOutcome::Completed {
+                    result: Box::new(DomainResult::success("canonical-success")),
+                },
+            )?;
+            jsonl_frame(&V5ClientRequest::RecoverInvocationReceipt { receipt_key })
         }
         ScenarioProtocolMessage::AcknowledgeReceipt => {
+            let (receipt_key, terminal_digest) = seed_direct_probe_terminal(
+                state_root,
+                identity,
+                ReceiptTerminalOutcome::Completed {
+                    result: Box::new(DomainResult::success("canonical-success")),
+                },
+            )?;
             jsonl_frame(&V5ClientRequest::AcknowledgeInvocationReceipt {
-                receipt_key: fresh_key(identity, &Map::new())?,
-                terminal_digest: TerminalDigest::from_str(&"1f".repeat(32))
-                    .expect("fixed strict probe digest is normalized"),
+                receipt_key,
+                terminal_digest,
             })
         }
         ScenarioProtocolMessage::CancelReceipt => jsonl_frame(&V5ClientRequest::CancelInvocation {
@@ -1146,6 +2348,48 @@ fn build_v5_probe_request_frame(
         }
         _ => jsonl_frame(&V5ClientRequest::Ping {}),
     }
+}
+
+fn seed_direct_probe_terminal(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    outcome: ReceiptTerminalOutcome,
+) -> Result<(ReceiptKey, TerminalDigest), String> {
+    let key = fresh_key(identity, &Map::new())?;
+    let terminal = canonical_v5_terminal(&outcome)
+        .map_err(|error| format!("construct protocol-v5 probe terminal: {error}"))?;
+    let terminal_digest = terminal.digest().clone();
+    let state = DaemonStateDirectory::open(state_root, identity)?;
+    let receipts = state.create_private_retained_subdirectory("receipts")?;
+    let store = ReceiptLedgerStore::open_retained_directory(receipts)
+        .map_err(|error| format!("open protocol-v5 probe receipt ledger: {error}"))?;
+    let actor = ReceiptLedgerActor::spawn(store);
+    let deadline = Instant::now() + SCENARIO_OPERATION_TIMEOUT;
+    let reservation = match actor
+        .reserve(
+            key.clone(),
+            OriginalCutoffDescriptor::new(SCENARIO_INITIAL_EPOCH_MS, 7_000)
+                .map_err(|error| format!("construct protocol-v5 probe cutoff: {error}"))?,
+            deadline,
+        )
+        .map_err(|error| format!("reserve protocol-v5 probe receipt: {error}"))?
+    {
+        crate::application::receipt_ledger::ReserveOutcome::Created(reservation) => reservation,
+        crate::application::receipt_ledger::ReserveOutcome::ExistingExact(_) => {
+            return Err("protocol-v5 probe receipt identity unexpectedly existed".to_owned())
+        }
+    };
+    actor
+        .publish_direct_terminal(
+            key.clone(),
+            reservation.record_version(),
+            SCENARIO_INITIAL_EPOCH_MS,
+            terminal,
+            deadline,
+        )
+        .map_err(|error| format!("publish protocol-v5 probe terminal: {error}"))?;
+    drop(actor);
+    Ok((key, terminal_digest))
 }
 
 fn build_v3_probe_request_frame(message: &ScenarioProtocolMessage) -> Result<Vec<u8>, String> {
@@ -1209,29 +2453,38 @@ fn response_error_value_v3(
     }
 }
 
-fn protocol_probe_observation(
-    label: &str,
-    client: ScenarioProtocolVersion,
-    server: ScenarioProtocolVersion,
-    client_hello_frame: Vec<u8>,
-    server_ready_frame: Option<Vec<u8>>,
-    client_write_frame: Vec<u8>,
-    server_read_frame: Option<Vec<u8>>,
-    server_write_frame: Vec<u8>,
-    client_read_frame: Vec<u8>,
+struct ProtocolProbeFrames {
+    client_hello: Vec<u8>,
+    server_ready: Option<Vec<u8>>,
+    client_write: Vec<u8>,
+    server_read: Option<Vec<u8>>,
+    server_write: Vec<u8>,
+    client_read: Vec<u8>,
+}
+
+struct ProtocolProbeTrace {
     spawned_argv_hex: String,
     daemon_process_events: Vec<&'static str>,
     production_events: Vec<&'static str>,
     error: Option<Value>,
-    presented_core_identity_digest: &CoreIdentity,
     service_capability_fingerprint: Option<String>,
+    delivery: Option<Value>,
+}
+
+fn protocol_probe_observation(
+    label: &str,
+    client: ScenarioProtocolVersion,
+    server: ScenarioProtocolVersion,
+    frames: ProtocolProbeFrames,
+    trace: ProtocolProbeTrace,
+    presented_core_identity_digest: &CoreIdentity,
 ) -> Value {
-    let client_hello_frame = ensure_jsonl_frame(client_hello_frame);
-    let server_ready_frame = server_ready_frame.map(ensure_jsonl_frame);
-    let client_write_frame = ensure_jsonl_frame(client_write_frame);
-    let server_read_frame = server_read_frame.map(ensure_jsonl_frame);
-    let server_write_frame = ensure_jsonl_frame(server_write_frame);
-    let client_read_frame = ensure_jsonl_frame(client_read_frame);
+    let client_hello_frame = ensure_jsonl_frame(frames.client_hello);
+    let server_ready_frame = frames.server_ready.map(ensure_jsonl_frame);
+    let client_write_frame = ensure_jsonl_frame(frames.client_write);
+    let server_read_frame = frames.server_read.map(ensure_jsonl_frame);
+    let server_write_frame = ensure_jsonl_frame(frames.server_write);
+    let client_read_frame = ensure_jsonl_frame(frames.client_read);
     json!({
         "label": label,
         "client": protocol_version_name(client),
@@ -1242,17 +2495,17 @@ fn protocol_probe_observation(
         "serverReadFrameHex": server_read_frame.as_ref().map(|frame| lower_hex(frame)),
         "serverWriteFrameHex": lower_hex(&server_write_frame),
         "clientReadFrameHex": lower_hex(&client_read_frame),
-        "spawnedArgvHex": spawned_argv_hex,
-        "daemonProcessEvents": daemon_process_events,
-        "productionEvents": production_events,
-        "error": error,
+        "spawnedArgvHex": trace.spawned_argv_hex,
+        "daemonProcessEvents": trace.daemon_process_events,
+        "productionEvents": trace.production_events,
+        "error": trace.error,
         "protocolIdentity": protocol_identity_name(server),
         "stateSelector": state_selector_name(server),
         "stateFingerprint": selector_fingerprint(server),
         "presentedCoreIdentityDigest": presented_core_identity_digest.as_str(),
         "productionV5CoreIdentityDigest": CoreIdentity::production_v5().as_str(),
-        "serviceCapabilityFingerprint": service_capability_fingerprint,
-        "delivery": Value::Null,
+        "serviceCapabilityFingerprint": trace.service_capability_fingerprint,
+        "delivery": trace.delivery,
     })
 }
 
@@ -1407,8 +2660,169 @@ fn strict_schema_mutation_value(target: ScenarioStrictSchemaTarget) -> Value {
             "taskId": "11111111-1111-4111-8111-111111111111",
             "waitMs": 1,
         }),
-        _ => json!({"kind": "ping", "unexpected": true}),
+        ScenarioStrictSchemaTarget::ResponseUnknownField => {
+            json!({"kind": "pong", "unexpected": true})
+        }
+        ScenarioStrictSchemaTarget::ResponseMissingRequiredField => json!({"kind": "task"}),
+        ScenarioStrictSchemaTarget::ResponseCrossVariantField => json!({
+            "kind": "pong",
+            "snapshot": strict_task_snapshot_value(),
+        }),
+        ScenarioStrictSchemaTarget::TerminalUnknownField => json!({
+            "status": "failed",
+            "reason": "invocation_failed",
+            "unexpected": true,
+        }),
+        ScenarioStrictSchemaTarget::TerminalMissingRequiredField => json!({
+            "status": "failed",
+        }),
+        ScenarioStrictSchemaTarget::TerminalCrossVariantField => json!({
+            "status": "failed",
+            "reason": "invocation_failed",
+            "result": {"ok": false, "summary": "semantic-invalid"},
+        }),
+        ScenarioStrictSchemaTarget::TaskSnapshotUnknownField => {
+            let mut value = strict_task_snapshot_value();
+            value["unexpected"] = true.into();
+            value
+        }
+        ScenarioStrictSchemaTarget::TaskSnapshotMissingRequiredField => {
+            let mut value = strict_task_snapshot_value();
+            value
+                .as_object_mut()
+                .expect("strict Task snapshot fixture is an object")
+                .remove("taskId");
+            value
+        }
+        ScenarioStrictSchemaTarget::TaskSnapshotCrossVariantField => {
+            let mut value = strict_task_snapshot_value();
+            value["reason"] = "invocation_failed".into();
+            value
+        }
+        ScenarioStrictSchemaTarget::StoredRecordUnknownTopLevel => {
+            let mut value = strict_stored_record_value();
+            value["unexpected"] = true.into();
+            value
+        }
+        ScenarioStrictSchemaTarget::StoredRecordUnknownTaskField => {
+            let mut value = strict_stored_record_value();
+            value["task"]["unexpected"] = true.into();
+            value
+        }
+        ScenarioStrictSchemaTarget::StoredRecordMissingRequiredField => {
+            let mut value = strict_stored_record_value();
+            value
+                .as_object_mut()
+                .expect("strict stored record fixture is an object")
+                .remove("schemaVersion");
+            value
+        }
+        ScenarioStrictSchemaTarget::StoredRecordCrossVariantField => {
+            let mut value = strict_stored_record_value();
+            value["task"]["reason"] = "invocation_failed".into();
+            value
+        }
+        ScenarioStrictSchemaTarget::TransferCertificateUnknownField => {
+            let mut value = strict_transfer_certificate_value();
+            value["unexpected"] = true.into();
+            value
+        }
+        ScenarioStrictSchemaTarget::TransferCertificateMissingRequiredField => {
+            let mut value = strict_transfer_certificate_value();
+            value
+                .as_object_mut()
+                .expect("strict transfer certificate fixture is an object")
+                .remove("terminalCodecVersion");
+            value
+        }
+        ScenarioStrictSchemaTarget::TransferCertificateCrossVariantField => {
+            let mut value = strict_transfer_certificate_value();
+            value["taskPublicationCases"][0]["cancelRequested"] = false.into();
+            value
+        }
     }
+}
+
+fn strict_task_snapshot_value() -> Value {
+    json!({
+        "status": "queued",
+        "taskId": "11111111-1111-4111-8111-111111111111",
+        "invocationId": "22222222-2222-4222-8222-222222222222",
+        "receiptKeyDigest": "0".repeat(64),
+        "createdAtEpochMs": 1,
+        "updatedAtEpochMs": 1,
+        "ttlMs": 3_600_000,
+        "pollIntervalMs": 100,
+        "version": 1,
+        "cancelRequested": false,
+    })
+}
+
+fn strict_stored_record_value() -> Value {
+    json!({
+        "schemaVersion": 1,
+        "taskId": "11111111-1111-4111-8111-111111111111",
+        "invocationId": "22222222-2222-4222-8222-222222222222",
+        "receiptKeyDigest": "0".repeat(64),
+        "tool": "unica.view",
+        "normalizedArgumentsHash": "0".repeat(64),
+        "workspaceIdentityHash": "a".repeat(64),
+        "createdAtEpochMs": 1,
+        "updatedAtEpochMs": 1,
+        "ttlMs": 3_600_000,
+        "pollIntervalMs": 100,
+        "version": 1,
+        "cancelRequested": false,
+        "task": {"status": "queued"},
+    })
+}
+
+fn strict_transfer_certificate_value() -> Value {
+    let exact_provisional = |status: &str, cancel_requested: bool| {
+        json!({
+            "kind": "exact_provisional",
+            "status": status,
+            "version": u64::MAX,
+            "cancelRequested": cancel_requested,
+            "finalTaskRecordMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
+            "taskResponseFrameMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
+        })
+    };
+    json!({
+        "certificateVersion": 1,
+        "protocolIdentity": "v5",
+        "coreIdentityDigest": "a".repeat(64),
+        "receiptKeyDigest": "0".repeat(64),
+        "taskId": "11111111-1111-4111-8111-111111111111",
+        "invocationId": "22222222-2222-4222-8222-222222222222",
+        "taskLinkDigest": "4c73d08219973c72e759a9f85e156fa42c9d8e61a56e704b70d1c7c042b73da0",
+        "terminalDigest": "f2d0423d2613a0d09397b750542e4542f7653d78ebd5e0448f1326d09145d9ae",
+        "terminalEpochMs": 1,
+        "receiptRecordSchemaVersion": 1,
+        "taskRecordSchemaVersion": 1,
+        "lifecycleLinkRecordSchemaVersion": 1,
+        "terminalCodecVersion": 1,
+        "maxDaemonResponseLineBytes": MAX_V5_RESPONSE_LINE_BYTES,
+        "maxTaskLifecycleLinkRecordBytes": 1_024,
+        "stagedReceiptRecordMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
+        "taskTerminalBoundLinkRecordMaxBytes": 1_024,
+        "taskPublicationCases": [
+            {
+                "kind": "absent",
+                "finalTaskRecordMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
+                "taskResponseFrameMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
+            },
+            exact_provisional("queued", false),
+            exact_provisional("queued", true),
+            exact_provisional("working", false),
+            exact_provisional("working", true),
+        ],
+        "capacityFallbackCases": [{
+            "source": "link_capacity",
+            "receiptBackedRecordMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
+            "taskResponseFrameMaxBytes": MAX_V5_RESPONSE_LINE_BYTES,
+        }],
+    })
 }
 
 fn strict_envelope_case(case: ScenarioEnvelopeCase) -> StrictV5EnvelopeCase {
@@ -1450,11 +2864,7 @@ fn exchange_ack_and_expect_disconnect(
     key: ReceiptKey,
     terminal_digest: TerminalDigest,
 ) -> Result<(), String> {
-    let config = DaemonServerConfig::new(
-        state_root.to_path_buf(),
-        identity.clone(),
-        SCENARIO_IDLE_GRACE,
-    );
+    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime = runtime.with_shared_telemetry(telemetry);
         runtime.epoch_clock = clock;
@@ -1497,11 +2907,8 @@ fn exchange_batch(
     scenario_control: Option<Arc<ReceiptScenarioControl>>,
     requests: Vec<ScenarioWireRequest>,
 ) -> Result<Vec<V5ServerResponse>, String> {
-    let config = DaemonServerConfig::new(
-        state_root.to_path_buf(),
-        identity.clone(),
-        SCENARIO_IDLE_GRACE,
-    );
+    let config =
+        scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime = runtime.with_shared_telemetry(telemetry);
         runtime.epoch_clock = clock;
@@ -1640,11 +3047,7 @@ fn start_blocked_submit(
     accepted_epoch_ms: u64,
     response_budget_ms: u64,
 ) -> Result<PendingSubmit, String> {
-    let config = DaemonServerConfig::new(
-        state_root.to_path_buf(),
-        identity.clone(),
-        SCENARIO_IDLE_GRACE,
-    );
+    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
     let (actor_tx, actor_rx) = mpsc::sync_channel(1);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime = runtime.with_shared_telemetry(telemetry);
@@ -1701,16 +3104,19 @@ fn snapshot_from_state(
     identity: &CoreIdentity,
     clock: Arc<ScenarioEpochClock>,
     telemetry: &V5ReceiptRuntimeTelemetry,
+    control: &ReceiptScenarioControl,
     keys: &[ReceiptKey],
 ) -> Result<Value, String> {
     let state = DaemonStateDirectory::open(state_root, identity)?;
-    let config = DaemonServerConfig::new(
-        state_root.to_path_buf(),
-        identity.clone(),
-        SCENARIO_IDLE_GRACE,
-    );
+    let config = scenario_server_config_with_clock(state_root, identity, None, &clock);
     let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())?;
-    let snapshot = snapshot_with_actor(&runtime.receipt_ledger, &clock, telemetry, keys);
+    let snapshot = snapshot_with_actor(
+        &runtime.receipt_ledger,
+        &clock,
+        telemetry,
+        control.side_effect_markers(),
+        keys,
+    );
     drop(runtime);
     snapshot
 }
@@ -1719,6 +3125,7 @@ fn snapshot_with_actor(
     actor: &ReceiptLedgerActor,
     clock: &ScenarioEpochClock,
     telemetry: &V5ReceiptRuntimeTelemetry,
+    side_effect_markers: u64,
     keys: &[ReceiptKey],
 ) -> Result<Value, String> {
     actor
@@ -1783,7 +3190,7 @@ fn snapshot_with_actor(
         "restartRequested": false,
         "daemonRunning": runtime.daemon_running,
         "actorLeases": runtime.actor_leases,
-        "sideEffectMarkers": 0,
+        "sideEffectMarkers": side_effect_markers,
         "taskStoreCreateAttempts": 0,
         "tokenSignals": 0,
         "storeGeneration": generation,
@@ -2435,12 +3842,16 @@ impl ScenarioReportBuilder {
 
 struct ScenarioEpochClock {
     epoch_ms: AtomicU64,
+    monotonic_origin: Instant,
+    monotonic_ms: AtomicU64,
 }
 
 impl ScenarioEpochClock {
     fn new(epoch_ms: u64) -> Self {
         Self {
             epoch_ms: AtomicU64::new(epoch_ms),
+            monotonic_origin: Instant::now(),
+            monotonic_ms: AtomicU64::new(0),
         }
     }
 
@@ -2452,11 +3863,30 @@ impl ScenarioEpochClock {
             .map(|_| ())
             .map_err(|_| "protocol-v5 receipt scenario epoch overflow".to_owned())
     }
+
+    fn advance_monotonic(&self, millis: u64) -> Result<(), String> {
+        self.monotonic_ms
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |monotonic_ms| {
+                monotonic_ms.checked_add(millis)
+            })
+            .map(|_| ())
+            .map_err(|_| "protocol-v5 receipt scenario monotonic clock overflow".to_owned())
+    }
 }
 
 impl EpochMillisClock for ScenarioEpochClock {
     fn now_epoch_millis(&self) -> u64 {
         self.epoch_ms.load(Ordering::SeqCst)
+    }
+}
+
+impl Clock for ScenarioEpochClock {
+    fn now(&self) -> Instant {
+        self.monotonic_origin
+            .checked_add(Duration::from_millis(
+                self.monotonic_ms.load(Ordering::SeqCst),
+            ))
+            .unwrap_or(self.monotonic_origin)
     }
 }
 
@@ -2628,14 +4058,14 @@ impl ReceiptScenarioAction {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ScenarioExecutionClass {
     Direct,
     KnownLong,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(tag = "terminal", rename_all = "snake_case", deny_unknown_fields)]
 enum ScenarioTerminalFixture {
     Success { payload: String },
@@ -3126,6 +4556,7 @@ mod tests {
             &actor,
             &ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS),
             &telemetry,
+            0,
             std::slice::from_ref(&cancel_key),
         )
         .expect("snapshot full catalog through actor");
