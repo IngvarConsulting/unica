@@ -2,8 +2,8 @@ use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelResolution,
     CommittedDirectPublication, OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest,
     ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion, ReserveOutcome,
-    ReservedReceipt, TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt, TerminalDigest,
-    V5CanonicalTerminal,
+    ReservedReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
+    TaskPromisedUnboundReceipt, TerminalDigest, V5CanonicalTerminal,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -247,6 +247,15 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<TaskPromisedActorBoundReceipt>>,
     },
+    BeginBoundTaskHandoff {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        created_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        deadline: Instant,
+        ticket: Arc<Ticket<TaskHandoffActorBoundReceipt>>,
+    },
     RequestCancelOrReserve {
         key: ReceiptKey,
         cancel_reserved_at_epoch_ms: u64,
@@ -454,6 +463,7 @@ enum TimeoutClass {
     MarkReservedBegun(ReceiptKeyDigest),
     PromiseTaskUnbound(ReceiptKeyDigest),
     BindPromisedTaskActor(ReceiptKeyDigest),
+    BeginBoundTaskHandoff(ReceiptKeyDigest),
     RequestCancelOrReserve(ReceiptKeyDigest),
     ExpireCancelReserved(ReceiptKeyDigest),
     PublishDirectTerminal(ReceiptKeyDigest),
@@ -474,6 +484,7 @@ impl TimeoutClass {
             | Self::MarkReservedBegun(receipt_key_digest)
             | Self::PromiseTaskUnbound(receipt_key_digest)
             | Self::BindPromisedTaskActor(receipt_key_digest)
+            | Self::BeginBoundTaskHandoff(receipt_key_digest)
             | Self::RequestCancelOrReserve(receipt_key_digest)
             | Self::ExpireCancelReserved(receipt_key_digest)
             | Self::PublishDirectTerminal(receipt_key_digest)
@@ -715,6 +726,43 @@ impl ReceiptLedgerActor {
                 key,
                 expected_version,
                 workspace_identity_hash,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn begin_bound_task_handoff(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        created_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        deadline: Instant,
+    ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::BeginBoundTaskHandoff(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::BeginBoundTaskHandoff {
+                key,
+                expected_version,
+                created_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -1121,6 +1169,34 @@ fn run_worker(
                         &key,
                         expected_version,
                         workspace_identity_hash,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::BeginBoundTaskHandoff {
+                key,
+                expected_version,
+                created_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.begin_bound_task_handoff(
+                        &key,
+                        expected_version,
+                        created_at_epoch_ms,
+                        ttl_ms,
+                        poll_interval_ms,
                         deadline,
                     )
                 }))
