@@ -18,12 +18,14 @@ the risk it carries:
 | Risk code in the applied result | Operations |
 |---|---|
 | `runtime_risk_critical_non_abortable` | `init`, `build`, `load`, `test`, `extensions` |
-| `runtime_risk_publication_without_bounded_recovery` | `config-init`, `dump`, `convert`, `make`, `tools-download` |
+| `runtime_risk_publication_without_bounded_recovery` | `config-init`, `convert`, `make`, `tools-download`, and synchronous `dump` with `mode=full` for `CONFIGURATION` or `EXTENSION` |
 | `runtime_risk_unproven_process_ownership` | `syntax` with `mode=designer-config`, `designer-modules` or `edt`; `launch` with `waitForExit=true` |
 | `runtime_risk_detached_child` | `launch` without `waitForExit` |
 
 `syntax` in any other mode stays unclassified and still refuses
-`runtime_operation_unbounded`. Every JSON example below keeps `dryRun: true`:
+`runtime_operation_unbounded`. Asynchronous full dump, dump for an external
+source-set, and the incomplete dump modes stay preview-only under their own
+guarantees, not under this classification. Every JSON example below keeps `dryRun: true`:
 the examples are previews, the applied mode is the same call with
 `dryRun: false`.
 
@@ -49,7 +51,8 @@ state, preview `operation=build` with `fullRebuild=true`; the applied run carrie
 `runtime_risk_critical_non_abortable`, so cancellation is deferred until the
 uninterruptible phase ends.
 
-For dumps, inspect the worktree before preview. Every applied mode carries
+For dumps, inspect the worktree before preview. The applied synchronous
+`mode=full` dump of a `CONFIGURATION` or `EXTENSION` source-set carries
 `runtime_risk_publication_without_bounded_recovery`: even the Unica-owned
 private-stage full dump has post-run
 validation/publication without a proved upper bound for the terminal receipt.

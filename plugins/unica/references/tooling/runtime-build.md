@@ -381,8 +381,9 @@ EPF/ERF runtime-аргументы в packaged Unica plugin предпросма
 ### Примечания
 
 - `operation=load` моделирует `.cf` и `.cfe`; `.epf` и `.erf` моделируются
-  через preview `build` и `make` external source-set. Все эти текущие операции,
-  включая `dump`, вызываются только с `dryRun=true`.
+  через `build` и `make` external source-set. Все эти операции доступны и
+  применённо, с `dryRun=false`, неся названный код риска; preview-only остаются
+  асинхронный full dump и dump для external source-set.
 - Внешние source-set должны быть объявлены в `v8project.yaml` с типами `EXTERNAL_DATA_PROCESSORS` или `EXTERNAL_REPORTS`.
 - Dump требует базу с конфигурацией, содержащей используемые типы. Dump в пустой базе может потерять ссылочные типы (`CatalogRef.XXX` превращается в `xs:string`).
 - Категории колонок регистров (Dimension/Resource/Attribute) зависят от Form.xml и конфигурации базы; при round-trip через неподходящую базу привязки полей формы могут не сохраниться.
