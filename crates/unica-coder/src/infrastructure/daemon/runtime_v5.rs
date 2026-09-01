@@ -30,7 +30,8 @@ use crate::application::receipt_ledger::CommittedDirectPublication;
 use crate::application::receipt_ledger::{
     OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError,
     ReceiptState, ReceiptTaskProjection, ReserveOutcome, ReservedPhase, TaskBoundReceipt,
-    TaskHandoffActorBoundReceipt, TerminalDigest, DIRECT_TERMINAL_RETENTION_MS,
+    TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TerminalDigest,
+    DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
@@ -1087,7 +1088,38 @@ impl V5ReceiptRuntime {
             CancelInvocationDecision::ExistingDirectTerminal(receipt) => self
                 .reply_for_existing_state(ReceiptState::DirectTerminalUnacked(receipt), deadline),
             CancelInvocationDecision::Rejected(rejection) => {
-                self.reply_for_existing_state(rejection.into_state(), deadline)
+                let state = rejection.into_state();
+                let expected = match state {
+                    ReceiptState::TaskPromisedUnbound(receipt) => {
+                        TaskCancellationReceipt::PromisedUnbound(receipt)
+                    }
+                    ReceiptState::TaskPromisedActorBound(receipt) => {
+                        TaskCancellationReceipt::PromisedActorBound(receipt)
+                    }
+                    ReceiptState::TaskHandoffActorBound(receipt) => {
+                        TaskCancellationReceipt::HandoffActorBound(receipt)
+                    }
+                    ReceiptState::TaskTerminalReceiptBacked(receipt) => {
+                        let snapshot = self.resolve_task(receipt.task().task_id(), deadline)?;
+                        return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                            outcome: V5InvocationResponse::Task { snapshot },
+                        }));
+                    }
+                    other => return self.reply_for_existing_state(other, deadline),
+                };
+                let cancelled = self.receipt_ledger.request_task_cancel(
+                    expected.key().clone(),
+                    expected,
+                    deadline,
+                )?;
+                let snapshot = queued_receipt_task_snapshot(
+                    cancelled.task(),
+                    crate::application::receipt_ledger::receipt_key_digest(cancelled.key()),
+                    cancelled.cancel_requested(),
+                );
+                Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task { snapshot },
+                }))
             }
         }
     }
@@ -1561,45 +1593,29 @@ impl V5ReceiptRuntime {
             return Ok(task_store_snapshot(&record));
         }
         let state = self.receipt_ledger.resolve_task(task_id, deadline)?;
-        let key = match state {
-            ReceiptState::TaskPromisedUnbound(receipt) => receipt.key().clone(),
-            ReceiptState::TaskPromisedActorBound(receipt) => receipt.key().clone(),
-            ReceiptState::TaskHandoffActorBound(receipt) => receipt.key().clone(),
+        let expected = match state {
+            ReceiptState::TaskPromisedUnbound(receipt) => {
+                TaskCancellationReceipt::PromisedUnbound(receipt)
+            }
+            ReceiptState::TaskPromisedActorBound(receipt) => {
+                TaskCancellationReceipt::PromisedActorBound(receipt)
+            }
+            ReceiptState::TaskHandoffActorBound(receipt) => {
+                TaskCancellationReceipt::HandoffActorBound(receipt)
+            }
             ReceiptState::TaskTerminalReceiptBacked(receipt) => {
                 return self.resolve_task(receipt.task().task_id(), deadline)
             }
             _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
         };
-        let resolution =
+        let cancelled =
             self.receipt_ledger
-                .request_cancel_or_reserve(key, self.epoch_ms(), deadline)?;
-        match resolution {
-            crate::application::receipt_ledger::CancelResolution::ExistingWinner(state) => {
-                match *state {
-                    ReceiptState::TaskPromisedUnbound(receipt) => Ok(queued_receipt_task_snapshot(
-                        receipt.task(),
-                        receipt.key_digest().clone(),
-                        receipt.cancel_requested(),
-                    )),
-                    ReceiptState::TaskPromisedActorBound(receipt) => {
-                        Ok(queued_receipt_task_snapshot(
-                            receipt.task(),
-                            receipt.key_digest().clone(),
-                            receipt.cancel_requested(),
-                        ))
-                    }
-                    ReceiptState::TaskHandoffActorBound(receipt) => {
-                        Ok(queued_receipt_task_snapshot(
-                            receipt.task(),
-                            receipt.key_digest().clone(),
-                            receipt.cancel_requested(),
-                        ))
-                    }
-                    _ => Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
-                }
-            }
-            _ => Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
-        }
+                .request_task_cancel(expected.key().clone(), expected, deadline)?;
+        Ok(queued_receipt_task_snapshot(
+            cancelled.task(),
+            crate::application::receipt_ledger::receipt_key_digest(cancelled.key()),
+            cancelled.cancel_requested(),
+        ))
     }
 
     fn reply_for_existing_state(
@@ -2485,6 +2501,7 @@ fn daemon_error_code(error: &ReceiptLedgerError) -> V5DaemonErrorCode {
         | ReceiptLedgerError::TerminalMismatch
         | ReceiptLedgerError::ReceiptDigestCollision
         | ReceiptLedgerError::TaskBoundMismatch
+        | ReceiptLedgerError::TaskCancellationMismatch
         | ReceiptLedgerError::StoreUnavailable
         | ReceiptLedgerError::ConcurrentGenerationChange { .. }
         | ReceiptLedgerError::Corrupt(_)

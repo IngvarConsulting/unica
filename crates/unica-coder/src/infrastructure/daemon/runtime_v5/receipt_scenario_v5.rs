@@ -324,14 +324,38 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     Arc::clone(&clock),
                     Arc::clone(&telemetry),
                     Some(Arc::clone(&control)),
-                    |owner| owner.cancel_invocation(wire_key),
+                    |owner| owner.cancel_invocation(wire_key.clone()),
                 )?;
                 if !matches!(response, V5ServerResponse::Error { .. }) && is_exact {
                     push_known_key(&mut known_keys, exact_key.clone());
                 }
-                report
-                    .responses
-                    .insert(label, response_observation(&response, None)?);
+                let observation = if matches!(
+                    &response,
+                    V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Task { .. }
+                    }
+                ) {
+                    let task = task_observation_from_response(
+                        response.clone(),
+                        &wire_key,
+                        state.path(),
+                        &identity,
+                    )?;
+                    json!({
+                        "kind": "task",
+                        "error": null,
+                        "terminal": task.get("terminal").cloned().unwrap_or(Value::Null),
+                        "key": receipt_key_observation(&wire_key),
+                        "task": task,
+                        "acknowledgement": null,
+                        "cutoffEpochMs": null,
+                        "originalBudgetMs": null,
+                        "latencyMs": 0
+                    })
+                } else {
+                    response_observation(&response, None)?
+                };
+                report.responses.insert(label, observation);
             }
             ReceiptScenarioAction::Submit {
                 response_budget_ms,
@@ -3148,9 +3172,6 @@ fn exchange_ack_and_expect_disconnect(
 
 #[cfg(test)]
 enum ScenarioWireRequest {
-    Cancel(ReceiptKey),
-    Submit(V5InvocationRequest),
-    #[cfg(test)]
     InjectedClientFailure,
 }
 
@@ -3175,16 +3196,7 @@ fn exchange_batch(
         wait_for_endpoint(state_root, identity)?;
         let mut responses = Vec::with_capacity(requests.len());
         for request in requests {
-            let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
-                state_root,
-                identity.clone(),
-                std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
-                SCENARIO_IDLE_GRACE,
-            )?;
             let response = match request {
-                ScenarioWireRequest::Cancel(key) => owner.cancel_invocation(key),
-                ScenarioWireRequest::Submit(invocation) => owner.submit_invocation(invocation),
-                #[cfg(test)]
                 ScenarioWireRequest::InjectedClientFailure => {
                     Err("injected protocol-v5 scenario client failure".to_owned())
                 }
@@ -3779,10 +3791,16 @@ fn task_observation_from_response(
     state_root: &Path,
     identity: &CoreIdentity,
 ) -> Result<Value, String> {
-    let V5ServerResponse::Task { snapshot } = response else {
-        return Err(format!(
-            "Task read expected a protocol-v5 Task response, received {response:?}"
-        ));
+    let snapshot = match response {
+        V5ServerResponse::Task { snapshot }
+        | V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Task { snapshot },
+        } => snapshot,
+        other => {
+            return Err(format!(
+                "Task read expected a protocol-v5 Task response, received {other:?}"
+            ));
+        }
     };
     let encoded_bytes = u64::try_from(
         serde_json::to_vec(&snapshot)
@@ -4905,6 +4923,48 @@ mod tests {
                 json!("pending"),
                 json!("pending"),
             ]
+        );
+    }
+
+    #[test]
+    fn receipt_owned_task_cancel_is_durable_through_the_production_runtime() {
+        let request = json!({
+            "clock": "fake",
+            "actions": [
+                {
+                    "action": "seed_receipt",
+                    "state": "task_promised_actor_bound",
+                    "cancel_requested": false,
+                    "staged_terminal": null
+                },
+                {
+                    "action": "cancel",
+                    "key": "exact",
+                    "lazy_session": true,
+                    "label": "cancel"
+                },
+                { "action": "restart" },
+                { "action": "checkpoint", "label": "reopened" }
+            ]
+        });
+
+        let encoded = run_supported_receipt_scenario_for_test(&request.to_string())
+            .expect("run production receipt-owned Task cancellation")
+            .expect("receipt-owned Task cancellation scenario is supported");
+        let report: Value = serde_json::from_str(&encoded).expect("decode scenario report");
+        let payload = &report["payload"];
+        assert_eq!(payload["responses"]["cancel"]["kind"], "task");
+        assert_eq!(
+            payload["responses"]["cancel"]["task"]["cancelRequested"],
+            true
+        );
+        assert_eq!(
+            payload["checkpoints"]["reopened"]["receipts"][0]["state"],
+            "task_promised_actor_bound"
+        );
+        assert_eq!(
+            payload["checkpoints"]["reopened"]["receipts"][0]["cancelRequested"],
+            true
         );
     }
 
