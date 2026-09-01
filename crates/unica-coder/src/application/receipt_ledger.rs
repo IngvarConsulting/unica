@@ -532,6 +532,19 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 
+    /// Persists sole receipt ownership when a begun attempt cannot reserve a
+    /// lifecycle-link/TaskStore slot. The attempt may finish only into the
+    /// receipt-backed terminal family and must never retry TaskStore create.
+    fn retain_begun_task_after_link_capacity(
+        &mut self,
+        _key: &ReceiptKey,
+        _expected_version: ReceiptVersion,
+        _proven_link_capacity: ProvenTaskLinkCapacity,
+        _deadline: Instant,
+    ) -> Result<TaskReceiptOwnedActorBoundReceipt, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
     /// Removes the receipt-owned handoff only after the sole lifecycle-link
     /// store returned an exact durable/readback-confirmed `TaskBound` proof.
     fn complete_bound_task_handoff(
@@ -1913,6 +1926,7 @@ pub(crate) enum TaskCancellationReceipt {
     PromisedUnbound(TaskPromisedUnboundReceipt),
     PromisedActorBound(TaskPromisedActorBoundReceipt),
     HandoffActorBound(TaskHandoffActorBoundReceipt),
+    ReceiptOwnedActorBound(TaskReceiptOwnedActorBoundReceipt),
 }
 
 impl TaskCancellationReceipt {
@@ -1933,11 +1947,17 @@ impl TaskCancellationReceipt {
         Self::HandoffActorBound(receipt)
     }
 
+    #[allow(non_snake_case)]
+    pub(crate) fn TaskReceiptOwnedActorBound(receipt: TaskReceiptOwnedActorBoundReceipt) -> Self {
+        Self::ReceiptOwnedActorBound(receipt)
+    }
+
     pub(crate) fn key(&self) -> &ReceiptKey {
         match self {
             Self::PromisedUnbound(receipt) => receipt.key(),
             Self::PromisedActorBound(receipt) => receipt.key(),
             Self::HandoffActorBound(receipt) => receipt.key(),
+            Self::ReceiptOwnedActorBound(receipt) => receipt.key(),
         }
     }
 
@@ -1946,6 +1966,7 @@ impl TaskCancellationReceipt {
             Self::PromisedUnbound(receipt) => receipt.task(),
             Self::PromisedActorBound(receipt) => receipt.task(),
             Self::HandoffActorBound(receipt) => receipt.task(),
+            Self::ReceiptOwnedActorBound(receipt) => receipt.task(),
         }
     }
 
@@ -1954,6 +1975,7 @@ impl TaskCancellationReceipt {
             Self::PromisedUnbound(receipt) => receipt.cancel_requested(),
             Self::PromisedActorBound(receipt) => receipt.cancel_requested(),
             Self::HandoffActorBound(receipt) => receipt.cancel_requested(),
+            Self::ReceiptOwnedActorBound(receipt) => receipt.cancel_requested(),
         }
     }
 
@@ -1962,6 +1984,7 @@ impl TaskCancellationReceipt {
             Self::PromisedUnbound(receipt) => receipt.reserved_result_bytes(),
             Self::PromisedActorBound(receipt) => receipt.reserved_result_bytes(),
             Self::HandoffActorBound(receipt) => receipt.reserved_result_bytes(),
+            Self::ReceiptOwnedActorBound(receipt) => receipt.reserved_result_bytes(),
         }
     }
 
@@ -1970,6 +1993,7 @@ impl TaskCancellationReceipt {
             Self::PromisedUnbound(receipt) => receipt.record_version(),
             Self::PromisedActorBound(receipt) => receipt.record_version(),
             Self::HandoffActorBound(receipt) => receipt.record_version(),
+            Self::ReceiptOwnedActorBound(receipt) => receipt.record_version(),
         }
     }
 
@@ -1978,6 +2002,7 @@ impl TaskCancellationReceipt {
             Self::PromisedUnbound(receipt) => receipt.mutation_sequence(),
             Self::PromisedActorBound(receipt) => receipt.mutation_sequence(),
             Self::HandoffActorBound(receipt) => receipt.mutation_sequence(),
+            Self::ReceiptOwnedActorBound(receipt) => receipt.mutation_sequence(),
         }
     }
 
@@ -1986,6 +2011,7 @@ impl TaskCancellationReceipt {
             Self::PromisedUnbound(receipt) => receipt.encoded_bytes(),
             Self::PromisedActorBound(receipt) => receipt.encoded_bytes(),
             Self::HandoffActorBound(receipt) => receipt.encoded_bytes(),
+            Self::ReceiptOwnedActorBound(receipt) => receipt.encoded_bytes(),
         }
     }
 
@@ -1994,6 +2020,9 @@ impl TaskCancellationReceipt {
             Self::PromisedUnbound(receipt) => ReceiptState::TaskPromisedUnbound(receipt),
             Self::PromisedActorBound(receipt) => ReceiptState::TaskPromisedActorBound(receipt),
             Self::HandoffActorBound(receipt) => ReceiptState::TaskHandoffActorBound(receipt),
+            Self::ReceiptOwnedActorBound(receipt) => {
+                ReceiptState::TaskReceiptOwnedActorBound(receipt)
+            }
         }
     }
 
@@ -2030,6 +2059,15 @@ impl TaskCancellationReceipt {
                     && actual.encoded_bytes() + actual.reserved_result_bytes()
                         == expected.encoded_bytes() + expected.reserved_result_bytes()
             }
+            (Self::ReceiptOwnedActorBound(actual), Self::ReceiptOwnedActorBound(expected)) => {
+                actual.key() == expected.key()
+                    && actual.key_digest() == expected.key_digest()
+                    && actual.task() == expected.task()
+                    && actual.link() == expected.link()
+                    && actual.proven_link_capacity() == expected.proven_link_capacity()
+                    && actual.encoded_bytes() + actual.reserved_result_bytes()
+                        == expected.encoded_bytes() + expected.reserved_result_bytes()
+            }
             _ => false,
         }
     }
@@ -2043,6 +2081,96 @@ pub(crate) struct TaskReceiptOwnedActorBoundReceipt {
     cancel_requested: bool,
     reserved_result_bytes: u64,
     proven_link_capacity: ProvenTaskLinkCapacity,
+}
+
+impl TaskReceiptOwnedActorBoundReceipt {
+    pub(crate) fn new(
+        record: ReceiptRecordHeader,
+        task: ReceiptTaskProjection,
+        link: TaskLinkReference,
+        cancel_requested: bool,
+        reserved_result_bytes: u64,
+        proven_link_capacity: ProvenTaskLinkCapacity,
+    ) -> Result<Self, ReceiptLedgerError> {
+        if task.task_id() != record.key.reserved_task_id()
+            || task.invocation_id() != record.key.invocation_id()
+            || link.identity.receipt_key_digest != record.key_digest
+            || link.identity.task_id != task.task_id()
+            || link.identity.invocation_id != task.invocation_id()
+            || task_link_digest(&link.identity) != link.digest
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "receipt-owned actor-bound Task contradicts its receipt or link identity",
+            ));
+        }
+        match proven_link_capacity {
+            ProvenTaskLinkCapacity::Count {
+                observed_live_links,
+                maximum_live_links,
+            } if maximum_live_links == 0 || observed_live_links < maximum_live_links => {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "receipt-owned Task count-capacity evidence is not exhausted",
+                ));
+            }
+            ProvenTaskLinkCapacity::Bytes {
+                required_link_bytes,
+                available_link_bytes,
+            } if required_link_bytes == 0 || required_link_bytes <= available_link_bytes => {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "receipt-owned Task byte-capacity evidence is not exhausted",
+                ));
+            }
+            _ => {}
+        }
+        Ok(Self {
+            record,
+            task,
+            link,
+            cancel_requested,
+            reserved_result_bytes,
+            proven_link_capacity,
+        })
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        &self.record.key
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        &self.record.key_digest
+    }
+
+    pub(crate) fn task(&self) -> &ReceiptTaskProjection {
+        &self.task
+    }
+
+    pub(crate) fn link(&self) -> &TaskLinkReference {
+        &self.link
+    }
+
+    pub(crate) const fn cancel_requested(&self) -> bool {
+        self.cancel_requested
+    }
+
+    pub(crate) const fn reserved_result_bytes(&self) -> u64 {
+        self.reserved_result_bytes
+    }
+
+    pub(crate) const fn proven_link_capacity(&self) -> &ProvenTaskLinkCapacity {
+        &self.proven_link_capacity
+    }
+
+    pub(crate) const fn record_version(&self) -> ReceiptVersion {
+        self.record.record_version
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        self.record.mutation_sequence
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.record.encoded_bytes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

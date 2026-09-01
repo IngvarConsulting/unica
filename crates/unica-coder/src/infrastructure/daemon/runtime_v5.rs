@@ -93,6 +93,7 @@ enum V5ReceiptRuntimeEventKind {
     ExecuteEntered,
     UnboundPromiseCommitted,
     BoundHandoffCommitted,
+    BoundHandoffTerminalStaged,
     TaskBoundCommitted,
     TaskLinkCapacityReserved,
     TaskStoreCreated,
@@ -1983,6 +1984,26 @@ impl V5ReceiptRuntime {
                             )
                         })?;
                 }
+                ReceiptState::TaskReceiptOwnedActorBound(receipt_owned) => {
+                    let expected = TaskCancellationReceipt::ReceiptOwnedActorBound(receipt_owned);
+                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
+                        reason: V5SafeFailureReason::OutcomeUncertain,
+                    })
+                    .map_err(|error| {
+                        format!("prepare protocol-v5 receipt-owned recovery terminal: {error}")
+                    })?;
+                    self.receipt_ledger
+                        .publish_receipt_backed_task_terminal(
+                            key,
+                            expected,
+                            terminal_epoch_ms,
+                            terminal,
+                            deadline,
+                        )
+                        .map_err(|error| {
+                            format!("publish protocol-v5 receipt-owned recovery terminal: {error}")
+                        })?;
+                }
                 ReceiptState::TaskPromisedActorBound(promised) => {
                     let receipt_version = promised.record_version();
                     let (record, task_bound) = self
@@ -2179,6 +2200,9 @@ impl V5ReceiptRuntime {
                     }
                     ReceiptState::TaskHandoffActorBound(receipt) => {
                         TaskCancellationReceipt::HandoffActorBound(receipt)
+                    }
+                    ReceiptState::TaskReceiptOwnedActorBound(receipt) => {
+                        TaskCancellationReceipt::ReceiptOwnedActorBound(receipt)
                     }
                     ReceiptState::TaskTerminalReceiptBacked(receipt) => {
                         let snapshot = self.resolve_task(receipt.task().task_id(), deadline)?;

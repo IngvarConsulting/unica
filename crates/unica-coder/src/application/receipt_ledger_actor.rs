@@ -1,10 +1,11 @@
 use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelResolution,
-    CommittedDirectPublication, OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest,
-    ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion, ReserveOutcome,
-    ReservedReceipt, TaskBoundReceipt, TaskCancellationReceipt, TaskHandoffActorBoundReceipt,
-    TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt, TaskTerminalReceiptBackedReceipt,
-    TerminalDigest, V5CanonicalTerminal,
+    CommittedDirectPublication, OriginalCutoffDescriptor, ProvenTaskLinkCapacity, ReceiptKey,
+    ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion,
+    ReserveOutcome, ReservedReceipt, TaskBoundReceipt, TaskCancellationReceipt,
+    TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt,
+    TaskReceiptOwnedActorBoundReceipt, TaskTerminalReceiptBackedReceipt, TerminalDigest,
+    V5CanonicalTerminal,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -257,6 +258,13 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<TaskHandoffActorBoundReceipt>>,
     },
+    RetainBegunTaskAfterLinkCapacity {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        proven_link_capacity: ProvenTaskLinkCapacity,
+        deadline: Instant,
+        ticket: Arc<Ticket<TaskReceiptOwnedActorBoundReceipt>>,
+    },
     CompleteBoundTaskHandoff {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
@@ -486,6 +494,7 @@ enum TimeoutClass {
     PromiseTaskUnbound(ReceiptKeyDigest),
     BindPromisedTaskActor(ReceiptKeyDigest),
     BeginBoundTaskHandoff(ReceiptKeyDigest),
+    RetainBegunTaskAfterLinkCapacity(ReceiptKeyDigest),
     CompleteBoundTaskHandoff(ReceiptKeyDigest),
     RequestTaskCancel(ReceiptKeyDigest),
     PublishReceiptBackedTaskTerminal(ReceiptKeyDigest),
@@ -510,6 +519,7 @@ impl TimeoutClass {
             | Self::PromiseTaskUnbound(receipt_key_digest)
             | Self::BindPromisedTaskActor(receipt_key_digest)
             | Self::BeginBoundTaskHandoff(receipt_key_digest)
+            | Self::RetainBegunTaskAfterLinkCapacity(receipt_key_digest)
             | Self::CompleteBoundTaskHandoff(receipt_key_digest)
             | Self::RequestTaskCancel(receipt_key_digest)
             | Self::PublishReceiptBackedTaskTerminal(receipt_key_digest)
@@ -824,6 +834,39 @@ impl ReceiptLedgerActor {
                 key,
                 expected_version,
                 confirmed_task_bound: Box::new(confirmed_task_bound),
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn retain_begun_task_after_link_capacity(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        proven_link_capacity: ProvenTaskLinkCapacity,
+        deadline: Instant,
+    ) -> Result<TaskReceiptOwnedActorBoundReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::RetainBegunTaskAfterLinkCapacity(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::RetainBegunTaskAfterLinkCapacity {
+                key,
+                expected_version,
+                proven_link_capacity,
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -1348,6 +1391,30 @@ fn run_worker(
                         &key,
                         expected_version,
                         *confirmed_task_bound,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::RetainBegunTaskAfterLinkCapacity {
+                key,
+                expected_version,
+                proven_link_capacity,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.retain_begun_task_after_link_capacity(
+                        &key,
+                        expected_version,
+                        proven_link_capacity,
                         deadline,
                     )
                 }))

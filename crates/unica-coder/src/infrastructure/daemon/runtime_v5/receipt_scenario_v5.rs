@@ -13,11 +13,12 @@ use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason}
 use crate::application::ports::Clock;
 use crate::application::receipt_ledger::{
     canonical_v5_terminal, receipt_key_digest, request_scope_hash, task_link_digest,
-    AcknowledgedTombstoneReceipt, CoreIdentityDigest, OriginalCutoffDescriptor, ReceiptKey,
-    ReceiptKeyDigest, ReceiptLedgerError, ReceiptState, ReceiptTaskProjection,
-    ReceiptTerminalOutcome, RequestIdentity, ReservedPhase, TaskBoundReceipt,
-    TaskCancellationReceipt, TaskLinkIdentity, TaskLinkReference, TaskTerminalBoundReceipt,
-    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5ToolIdentity, DIRECT_TERMINAL_RETENTION_MS,
+    AcknowledgedTombstoneReceipt, CoreIdentityDigest, OriginalCutoffDescriptor,
+    ProvenTaskLinkCapacity, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptState,
+    ReceiptTaskProjection, ReceiptTerminalOutcome, RequestIdentity, ReservedPhase,
+    TaskBoundReceipt, TaskCancellationReceipt, TaskLinkIdentity, TaskLinkReference,
+    TaskTerminalBoundReceipt, TaskTerminalReceiptBackedReceipt, TerminalDigest, V5ToolIdentity,
+    DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::cancellation::CancellationToken;
@@ -920,6 +921,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
     let mut startup_listener_override = false;
     let mut seeded_task_versions = HashMap::new();
     let mut recovering_handoff_crash = false;
+    let mut corrupted_identity_snapshot: Option<Value> = None;
     for action in scenario.actions {
         match action {
             ReceiptScenarioAction::ConfigureValidation { reject } => {
@@ -1008,6 +1010,41 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                 )?;
                 drop(projection);
+            }
+            ReceiptScenarioAction::InjectPersistedIdentityCollision { index } => {
+                let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
+                let receipts = daemon_state.create_private_retained_subdirectory("receipts")?;
+                let store = ReceiptLedgerStore::open_retained_directory(receipts)
+                    .map_err(|error| format!("open identity-collision fixture store: {error}"))?;
+                store
+                    .reserve(
+                        exact_key.clone(),
+                        OriginalCutoffDescriptor::new(clock.now_epoch_millis(), 7_000)
+                            .map_err(|error| format!("construct collision cutoff: {error}"))?,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )
+                    .map_err(|error| format!("seed identity-collision receipt: {error}"))?;
+                drop(store);
+                push_known_key(&mut known_keys, exact_key.clone());
+                let snapshot = snapshot_from_state(
+                    state.path(),
+                    &identity,
+                    Arc::clone(&clock),
+                    &telemetry,
+                    &control,
+                    &known_keys,
+                )?;
+                let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
+                let receipts = daemon_state.create_private_retained_subdirectory("receipts")?;
+                let store = ReceiptLedgerStore::open_retained_directory(receipts)
+                    .map_err(|error| format!("reopen identity-collision fixture store: {error}"))?;
+                store
+                    .inject_identity_index_collision_for_test(
+                        matches!(index, ScenarioIdentityIndex::InvocationId),
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )
+                    .map_err(|error| format!("inject persisted identity collision: {error}"))?;
+                corrupted_identity_snapshot = Some(snapshot);
             }
             ReceiptScenarioAction::ReconcileStartup => {
                 startup_listener_override = true;
@@ -1175,11 +1212,42 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 }
             }
             ReceiptScenarioAction::Submit {
+                request,
                 response_budget_ms,
                 disconnect,
                 label,
-                ..
             } => {
+                if let ScenarioRequest::Mismatch(field) = request {
+                    let mismatch_key =
+                        scenario_mismatch_key(&exact_key, field, &mismatched_arguments_key)?;
+                    let receipts = DaemonStateDirectory::open(state.path(), &identity)?
+                        .create_private_retained_subdirectory("receipts")?;
+                    let store = ReceiptLedgerStore::open_retained_directory(receipts)
+                        .map_err(|error| format!("open mismatch receipt owner: {error}"))?;
+                    let actor = ReceiptLedgerActor::spawn(store);
+                    let outcome = actor.reserve(
+                        mismatch_key,
+                        OriginalCutoffDescriptor::new(clock.now_epoch_millis(), response_budget_ms)
+                            .map_err(|error| format!("construct mismatch cutoff: {error}"))?,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    );
+                    let response = match outcome {
+                        Err(error) => V5ServerResponse::Error {
+                            code: daemon_error_code(&error),
+                        },
+                        Ok(_) => {
+                            return Err(
+                                "mismatched receipt identity unexpectedly mutated the ledger"
+                                    .to_owned(),
+                            )
+                        }
+                    };
+                    report.responses.insert(
+                        label,
+                        response_observation(&response, original_submit_cutoff)?,
+                    );
+                    continue;
+                }
                 let invocation = V5InvocationRequest::new(
                     invocation_id,
                     reserved_task_id,
@@ -2027,43 +2095,61 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 }
             }
             ReceiptScenarioAction::Checkpoint { label } => {
-                let (mut snapshot, live_task_projection) = match &pending_submit {
-                    Some(pending) => (
-                        snapshot_with_actor(
-                            &pending.actor,
-                            &clock,
-                            &telemetry,
-                            control.side_effect_markers(),
-                            &known_keys,
-                        )?,
-                        Some((&pending.task_projection, pending.task_store_create_attempts)),
-                    ),
-                    None => match &live_actor {
-                        Some(actor) => (
+                let (mut snapshot, live_task_projection) = if let Some(snapshot) =
+                    &corrupted_identity_snapshot
+                {
+                    (snapshot.clone(), None)
+                } else {
+                    match &pending_submit {
+                        Some(pending) => (
                             snapshot_with_actor(
-                                actor,
+                                &pending.actor,
                                 &clock,
                                 &telemetry,
                                 control.side_effect_markers(),
                                 &known_keys,
                             )?,
-                            live_task_projection
-                                .as_ref()
-                                .map(|(projection, attempts)| (projection, *attempts)),
+                            Some((&pending.task_projection, pending.task_store_create_attempts)),
                         ),
-                        None => (
-                            snapshot_from_state(
-                                state.path(),
-                                &identity,
-                                Arc::clone(&clock),
-                                &telemetry,
-                                &control,
-                                &known_keys,
-                            )?,
-                            None,
-                        ),
-                    },
+                        None => match &live_actor {
+                            Some(actor) => (
+                                snapshot_with_actor(
+                                    actor,
+                                    &clock,
+                                    &telemetry,
+                                    control.side_effect_markers(),
+                                    &known_keys,
+                                )?,
+                                live_task_projection
+                                    .as_ref()
+                                    .map(|(projection, attempts)| (projection, *attempts)),
+                            ),
+                            None => (
+                                snapshot_from_state(
+                                    state.path(),
+                                    &identity,
+                                    Arc::clone(&clock),
+                                    &telemetry,
+                                    &control,
+                                    &known_keys,
+                                )?,
+                                None,
+                            ),
+                        },
+                    }
                 };
+                if corrupted_identity_snapshot.is_some() {
+                    snapshot["listener"] = Value::String(
+                        if startup_listener_override && !listener_published {
+                            "not_published"
+                        } else {
+                            "not_published"
+                        }
+                        .to_owned(),
+                    );
+                    snapshot["restartRequested"] = Value::Bool(startup_failed);
+                    snapshot["daemonRunning"] = Value::Bool(!startup_failed);
+                }
                 match live_task_projection {
                     Some((projection, expected_create_attempts)) => {
                         if let Some(terminal_task) = control.terminal_bound_task() {
@@ -2310,6 +2396,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                     )?;
                 }
+                ScenarioEvent::BoundHandoffTerminalStaged => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::BoundHandoffTerminalStaged,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
                 ScenarioEvent::TaskBoundCommitted => {
                     telemetry.wait_for_event(
                         V5ReceiptRuntimeEventKind::TaskBoundCommitted,
@@ -2325,6 +2417,18 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 ScenarioEvent::FalseCancelObservationReached => {
                     telemetry.wait_for_event(
                         V5ReceiptRuntimeEventKind::FalseCancelObservationReached,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::TaskStoreTerminalCommitted => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                }
+                ScenarioEvent::TaskStoreTerminalReadback => {
+                    telemetry.wait_for_event(
+                        V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
                         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                     )?;
                 }
@@ -2815,7 +2919,8 @@ fn seed_receipt_state(
         | ScenarioSeedReceiptState::TaskPromisedUnbound
         | ScenarioSeedReceiptState::TaskPromisedActorBound
         | ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun
-        | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun => {
+        | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun
+        | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound => {
             let reserved = runtime
                 .receipt_ledger
                 .reserve(key.clone(), cutoff, deadline)
@@ -2894,7 +2999,8 @@ fn seed_receipt_state(
                         .map_err(|error| format!("seed actor-bound Task promise: {error}"))?;
                 }
                 ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun
-                | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun => {
+                | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun
+                | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound => {
                     let bound = runtime
                         .receipt_ledger
                         .bind_reserved_actor(
@@ -2907,6 +3013,7 @@ fn seed_receipt_state(
                     let expected_version = if matches!(
                         seed_state,
                         ScenarioSeedReceiptState::TaskHandoffActorBoundBegun
+                            | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
                     ) {
                         runtime
                             .receipt_ledger
@@ -2916,7 +3023,7 @@ fn seed_receipt_state(
                     } else {
                         bound.record_version()
                     };
-                    runtime
+                    let handoff = runtime
                         .receipt_ledger
                         .begin_bound_task_handoff(
                             key.clone(),
@@ -2927,6 +3034,25 @@ fn seed_receipt_state(
                             deadline,
                         )
                         .map_err(|error| format!("seed actor-bound Task handoff: {error}"))?;
+                    if matches!(
+                        seed_state,
+                        ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
+                    ) {
+                        runtime
+                            .receipt_ledger
+                            .retain_begun_task_after_link_capacity(
+                                key.clone(),
+                                handoff.record_version(),
+                                ProvenTaskLinkCapacity::Count {
+                                    observed_live_links: 4_096,
+                                    maximum_live_links: 4_096,
+                                },
+                                deadline,
+                            )
+                            .map_err(|error| {
+                                format!("seed receipt-owned actor-bound Task: {error}")
+                            })?;
+                    }
                 }
                 _ => unreachable!("closed seeded reservation family"),
             }
@@ -2938,8 +3064,7 @@ fn seed_receipt_state(
             }
             true
         }
-        ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
-        | ScenarioSeedReceiptState::TaskTerminalBound
+        ScenarioSeedReceiptState::TaskTerminalBound
         | ScenarioSeedReceiptState::TaskTerminalReceiptBacked => false,
     };
     drop(runtime);
@@ -2948,6 +3073,55 @@ fn seed_receipt_state(
 
 fn scenario_workspace_identity_hash() -> SafeIdentityHash {
     SafeIdentityHash::from_sha256(Sha256::digest(b"unica.d0.scenario-workspace.v1").into())
+}
+
+fn scenario_mismatch_key(
+    exact: &ReceiptKey,
+    field: ScenarioIdentityField,
+    mismatched_arguments_key: &ReceiptKey,
+) -> Result<ReceiptKey, String> {
+    let invocation_id = if matches!(field, ScenarioIdentityField::InvocationId) {
+        InvocationId::new()
+    } else {
+        exact.invocation_id()
+    };
+    let reserved_task_id = if matches!(field, ScenarioIdentityField::ReservedTaskId) {
+        TaskId::new()
+    } else {
+        exact.reserved_task_id()
+    };
+    let core_identity_digest = if matches!(field, ScenarioIdentityField::CoreIdentity) {
+        CoreIdentityDigest::from_sha256([0x7f; 32])
+    } else {
+        exact.core_identity_digest().clone()
+    };
+    let tool = if matches!(field, ScenarioIdentityField::ToolIdentity) {
+        V5ToolIdentity::Apply
+    } else {
+        exact.tool()
+    };
+    let normalized_arguments_hash =
+        if matches!(field, ScenarioIdentityField::NormalizedArgumentsHash) {
+            mismatched_arguments_key.normalized_arguments_hash().clone()
+        } else {
+            exact.normalized_arguments_hash().clone()
+        };
+    let request_scope_hash = if matches!(field, ScenarioIdentityField::RequestScopeHash) {
+        request_scope_hash("mismatched-workspace")
+            .map_err(|error| format!("construct mismatched request scope: {error}"))?
+    } else {
+        exact.request_scope_hash().clone()
+    };
+    Ok(ReceiptKey::new(
+        invocation_id,
+        reserved_task_id,
+        RequestIdentity::new(
+            core_identity_digest,
+            tool,
+            normalized_arguments_hash,
+            request_scope_hash,
+        ),
+    ))
 }
 
 fn scenario_foreign_key(key: &ReceiptKey) -> ReceiptKey {
@@ -3219,6 +3393,7 @@ fn has_supported_shape(request: &str) -> Result<bool, String> {
                         | "seed_receipt"
                         | "seed_task"
                         | "seed_task_link_reservation"
+                        | "inject_persisted_identity_collision"
                         | "open_task_store_inspect_only"
                         | "reconcile_startup"
                         | "publish_listener"
@@ -7113,6 +7288,9 @@ enum ReceiptScenarioAction {
     SeedTaskLinkReservation {
         relation: ScenarioIdentityRelation,
     },
+    InjectPersistedIdentityCollision {
+        index: ScenarioIdentityIndex,
+    },
     OpenTaskStoreInspectOnly,
     ReconcileStartup,
     PublishListener,
@@ -7193,7 +7371,9 @@ impl ReceiptScenarioAction {
             } => {
                 matches!(
                     request,
-                    ScenarioRequest::Canonical | ScenarioRequest::SameIdentity
+                    ScenarioRequest::Canonical
+                        | ScenarioRequest::SameIdentity
+                        | ScenarioRequest::Mismatch(_)
                 ) && matches!(
                     disconnect,
                     ScenarioDisconnect::Never
@@ -7235,7 +7415,8 @@ impl ReceiptScenarioAction {
                 | ScenarioSeedReceiptState::TaskPromisedUnbound
                 | ScenarioSeedReceiptState::TaskPromisedActorBound
                 | ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun
-                | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun => {
+                | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun
+                | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound => {
                     staged_terminal.is_none()
                         && (!*cancel_requested
                             || matches!(
@@ -7254,11 +7435,11 @@ impl ReceiptScenarioAction {
                 }
                 ScenarioSeedReceiptState::TaskBoundNotBegun
                 | ScenarioSeedReceiptState::TaskBoundBegun => staged_terminal.is_none(),
-                ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
-                | ScenarioSeedReceiptState::TaskTerminalBound => false,
+                ScenarioSeedReceiptState::TaskTerminalBound => false,
             },
             Self::SeedTask { version, .. } => *version > 0,
             Self::SeedTaskLinkReservation { .. }
+            | Self::InjectPersistedIdentityCollision { .. }
             | Self::OpenTaskStoreInspectOnly
             | Self::ReconcileStartup
             | Self::PublishListener => true,
@@ -7330,6 +7511,7 @@ enum ScenarioTerminalFixture {
 enum ScenarioRequest {
     Canonical,
     SameIdentity,
+    Mismatch(ScenarioIdentityField),
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -7560,6 +7742,13 @@ enum ScenarioIdentityRelation {
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
+enum ScenarioIdentityIndex {
+    InvocationId,
+    ReservedTaskId,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum ScenarioReceiptLinkCase {
     Exact,
     Missing,
@@ -7634,9 +7823,12 @@ enum ScenarioEvent {
     FinalResultProjected,
     AcknowledgementCommitted,
     BoundHandoffCommitted,
+    BoundHandoffTerminalStaged,
     TaskBoundCommitted,
     TaskStoreWorkingReadback,
     FalseCancelObservationReached,
+    TaskStoreTerminalCommitted,
+    TaskStoreTerminalReadback,
     TaskTerminalBoundCommitted,
     LeaseReleased,
     ListenerClosed,

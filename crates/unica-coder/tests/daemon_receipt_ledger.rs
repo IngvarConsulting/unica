@@ -9095,6 +9095,9 @@ fn known_long_requires_begun_bound_handoff_intent() {
         Action::WaitForEvent {
             event: EventKind::BoundHandoffCommitted,
         },
+        Action::WaitForEvent {
+            event: EventKind::TaskBoundCommitted,
+        },
         checkpoint_action("handoff"),
     ]));
 

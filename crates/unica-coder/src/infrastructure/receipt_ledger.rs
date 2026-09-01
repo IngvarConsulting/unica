@@ -2,14 +2,15 @@ use crate::application::invocation_store::MAX_TASK_RECORD_ENVELOPE_BYTES;
 use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, AttemptPhase, CancelExpiryOutcome,
     CancelReservedReceipt, CancelResolution, CommittedDirectPublication,
-    DirectTerminalUnackedReceipt, HandoffTerminalStage, OriginalCutoffDescriptor, ReceiptKey,
-    ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort, ReceiptRecordHeader, ReceiptState,
-    ReceiptTaskProjection, ReceiptTerminalOutcome, ReceiptVersion, ReserveOutcome, ReservedPhase,
-    ReservedReceipt, TaskBoundReceipt, TaskCancellationReceipt, TaskHandoffActorBoundReceipt,
-    TaskLinkDigest, TaskLinkReference, TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt,
-    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal,
-    ACKNOWLEDGED_TOMBSTONE_TTL_MS, CANCEL_RESERVATION_TTL_MS, DIRECT_TERMINAL_RETENTION_MS,
-    MAX_ACKNOWLEDGED_TOMBSTONES, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
+    DirectTerminalUnackedReceipt, HandoffTerminalStage, OriginalCutoffDescriptor,
+    ProvenTaskLinkCapacity, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort,
+    ReceiptRecordHeader, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
+    ReceiptVersion, RequestIdentity, ReserveOutcome, ReservedPhase, ReservedReceipt,
+    TaskBoundReceipt, TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TaskLinkDigest,
+    TaskLinkReference, TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt,
+    TaskReceiptOwnedActorBoundReceipt, TaskTerminalReceiptBackedReceipt, TerminalDigest,
+    V5CanonicalTerminal, ACKNOWLEDGED_TOMBSTONE_TTL_MS, CANCEL_RESERVATION_TTL_MS,
+    DIRECT_TERMINAL_RETENTION_MS, MAX_ACKNOWLEDGED_TOMBSTONES, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
     MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES, MAX_LIVE_RECEIPTS, MAX_LIVE_RECEIPT_BYTES,
     MAX_RECEIPT_ENTITLEMENT_BYTES,
 };
@@ -283,6 +284,20 @@ enum StoredActiveLifecycleV1 {
         phase: AttemptPhase,
         cancel_requested: bool,
     },
+    TaskReceiptOwnedActorBound {
+        original_cutoff: OriginalCutoffDescriptor,
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        task_version: u64,
+        workspace_identity_hash: SafeIdentityHash,
+        task_link_digest: TaskLinkDigest,
+        proven_link_capacity: StoredProvenTaskLinkCapacityV1,
+        cancel_requested: bool,
+    },
     DirectTerminalUnacked {
         original_cutoff: OriginalCutoffDescriptor,
         terminal_epoch_ms: u64,
@@ -312,6 +327,66 @@ enum StoredActiveLifecycleV1 {
         terminal_digest: TerminalDigest,
         acknowledged_at_epoch_ms: u64,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "dimension",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum StoredProvenTaskLinkCapacityV1 {
+    Count {
+        observed_live_links: u64,
+        maximum_live_links: u64,
+    },
+    Bytes {
+        required_link_bytes: u64,
+        available_link_bytes: u64,
+    },
+}
+
+impl From<&ProvenTaskLinkCapacity> for StoredProvenTaskLinkCapacityV1 {
+    fn from(value: &ProvenTaskLinkCapacity) -> Self {
+        match value {
+            ProvenTaskLinkCapacity::Count {
+                observed_live_links,
+                maximum_live_links,
+            } => Self::Count {
+                observed_live_links: *observed_live_links,
+                maximum_live_links: *maximum_live_links,
+            },
+            ProvenTaskLinkCapacity::Bytes {
+                required_link_bytes,
+                available_link_bytes,
+            } => Self::Bytes {
+                required_link_bytes: *required_link_bytes,
+                available_link_bytes: *available_link_bytes,
+            },
+        }
+    }
+}
+
+impl From<&StoredProvenTaskLinkCapacityV1> for ProvenTaskLinkCapacity {
+    fn from(value: &StoredProvenTaskLinkCapacityV1) -> Self {
+        match value {
+            StoredProvenTaskLinkCapacityV1::Count {
+                observed_live_links,
+                maximum_live_links,
+            } => Self::Count {
+                observed_live_links: *observed_live_links,
+                maximum_live_links: *maximum_live_links,
+            },
+            StoredProvenTaskLinkCapacityV1::Bytes {
+                required_link_bytes,
+                available_link_bytes,
+            } => Self::Bytes {
+                required_link_bytes: *required_link_bytes,
+                available_link_bytes: *available_link_bytes,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -346,6 +421,7 @@ impl CatalogEntry {
             | StoredActiveLifecycleV1::TaskPromisedUnbound { .. }
             | StoredActiveLifecycleV1::TaskPromisedActorBound { .. }
             | StoredActiveLifecycleV1::TaskHandoffActorBound { .. }
+            | StoredActiveLifecycleV1::TaskReceiptOwnedActorBound { .. }
             | StoredActiveLifecycleV1::DirectTerminalUnacked { .. }
             | StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. } => {
                 MAX_RECEIPT_ENTITLEMENT_BYTES
@@ -560,6 +636,51 @@ impl CatalogEntry {
                         *cancel_requested,
                         self.reserved_result_bytes(),
                         HandoffTerminalStage::NoTerminal,
+                    )?,
+                ))
+            }
+            StoredActiveLifecycleV1::TaskReceiptOwnedActorBound {
+                task_id,
+                invocation_id,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                task_version,
+                workspace_identity_hash,
+                task_link_digest,
+                proven_link_capacity,
+                cancel_requested,
+                ..
+            } => {
+                let task = ReceiptTaskProjection::new(
+                    *task_id,
+                    *invocation_id,
+                    *created_at_epoch_ms,
+                    *updated_at_epoch_ms,
+                    *ttl_ms,
+                    *poll_interval_ms,
+                    *task_version,
+                )?;
+                let link = TaskLinkReference::new(
+                    self.record.key_digest.clone(),
+                    *task_id,
+                    *invocation_id,
+                    workspace_identity_hash.clone(),
+                );
+                if link.digest() != task_link_digest {
+                    return Err(ReceiptLedgerError::Corrupt(
+                        "receipt-owned Task link digest contradicts its actor identity",
+                    ));
+                }
+                Ok(ReceiptState::TaskReceiptOwnedActorBound(
+                    TaskReceiptOwnedActorBoundReceipt::new(
+                        self.record_header(),
+                        task,
+                        link,
+                        *cancel_requested,
+                        self.reserved_result_bytes(),
+                        proven_link_capacity.into(),
                     )?,
                 ))
             }
@@ -2786,6 +2907,155 @@ impl ReceiptLedgerStore {
         Ok(confirmed_task_bound)
     }
 
+    pub(crate) fn retain_begun_task_after_link_capacity(
+        &self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        proven_link_capacity: ProvenTaskLinkCapacity,
+        deadline: Instant,
+    ) -> Result<TaskReceiptOwnedActorBoundReceipt, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let key_digest = receipt_key_digest(key);
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+        let expected = self
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
+        if expected.record.key != *key {
+            return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
+        }
+        if expected.record.record_version != expected_version {
+            return Err(ReceiptLedgerError::ReceiptVersionMismatch {
+                expected: expected_version,
+                actual: expected.record.record_version,
+            });
+        }
+        let (
+            original_cutoff,
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            task_version,
+            workspace_identity_hash,
+            task_link_digest,
+            cancel_requested,
+        ) = match &expected.record.lifecycle {
+            StoredActiveLifecycleV1::TaskHandoffActorBound {
+                original_cutoff,
+                task_id,
+                invocation_id,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                task_version,
+                workspace_identity_hash,
+                task_link_digest,
+                phase: AttemptPhase::Begun,
+                cancel_requested,
+            } => (
+                *original_cutoff,
+                *task_id,
+                *invocation_id,
+                *created_at_epoch_ms,
+                *updated_at_epoch_ms,
+                *ttl_ms,
+                *poll_interval_ms,
+                *task_version,
+                workspace_identity_hash.clone(),
+                task_link_digest.clone(),
+                *cancel_requested,
+            ),
+            _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+        };
+        let record_version = expected_version
+            .checked_next()
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt record version exhausted u64",
+            ))?;
+        let mutation_sequence =
+            latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?
+                .checked_add(1)
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "receipt generation exhausted u64",
+                ))?;
+        let record = StoredActiveReceiptV1 {
+            schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+            mutation_sequence,
+            record_version,
+            key: key.clone(),
+            key_digest: key_digest.clone(),
+            lifecycle: StoredActiveLifecycleV1::TaskReceiptOwnedActorBound {
+                original_cutoff,
+                task_id,
+                invocation_id,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                task_version,
+                workspace_identity_hash,
+                task_link_digest,
+                proven_link_capacity: (&proven_link_capacity).into(),
+                cancel_requested,
+            },
+        };
+        let (record, encoded) =
+            serialize_reserved_record(record, MAX_TASK_RECORD_ENVELOPE_BYTES as u64)?;
+        let replacement = CatalogEntry {
+            record: record.clone(),
+            encoded_bytes: u64::try_from(encoded.len())
+                .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
+        };
+        validate_catalog_replace(&catalog, &expected, &replacement)?;
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_replace(&mut catalog, replacement);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        match self.read_active_record_bytes(&key_digest) {
+            Ok(Some(committed)) if committed == encoded => {}
+            Ok(Some(_)) | Ok(None) | Err(_) => {
+                catalog.unavailable = true;
+                return Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                });
+            }
+        }
+        match catalog
+            .records
+            .get(&key_digest)
+            .cloned()
+            .and_then(|entry| entry.state().ok())
+        {
+            Some(ReceiptState::TaskReceiptOwnedActorBound(receipt)) => Ok(receipt),
+            _ => {
+                catalog.unavailable = true;
+                Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                })
+            }
+        }
+    }
+
     pub(crate) fn request_task_cancel(
         &self,
         key: &ReceiptKey,
@@ -2869,6 +3139,9 @@ impl ReceiptLedgerStore {
                 cancel_requested, ..
             }
             | StoredActiveLifecycleV1::TaskHandoffActorBound {
+                cancel_requested, ..
+            }
+            | StoredActiveLifecycleV1::TaskReceiptOwnedActorBound {
                 cancel_requested, ..
             } => *cancel_requested = true,
             _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
@@ -3484,6 +3757,50 @@ impl ReceiptLedgerStore {
                 "test fixture terminal committed an unexpected state",
             )),
         }
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn inject_identity_index_collision_for_test(
+        &self,
+        collide_on_invocation_id: bool,
+        deadline: Instant,
+    ) -> Result<(), ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let mut record = catalog
+            .records
+            .values()
+            .find(|entry| !entry.is_tombstone())
+            .map(|entry| entry.record.clone())
+            .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
+        let colliding_key = ReceiptKey::new(
+            if collide_on_invocation_id {
+                record.key.invocation_id()
+            } else {
+                InvocationId::new()
+            },
+            if collide_on_invocation_id {
+                TaskId::new()
+            } else {
+                record.key.reserved_task_id()
+            },
+            RequestIdentity::new(
+                record.key.core_identity_digest().clone(),
+                record.key.tool(),
+                record.key.normalized_arguments_hash().clone(),
+                record.key.request_scope_hash().clone(),
+            ),
+        );
+        record.key_digest = receipt_key_digest(&colliding_key);
+        record.key = colliding_key;
+        let (record, encoded) = serialize_reserved_record(record, MAX_RECEIPT_ENTITLEMENT_BYTES)?;
+        self.publish_new_record(&record, &encoded, deadline, || {})
     }
 
     pub(crate) fn publish_direct_terminal_publication(
@@ -5335,6 +5652,22 @@ impl ReceiptLedgerPort for ReceiptLedgerStore {
         )
     }
 
+    fn retain_begun_task_after_link_capacity(
+        &mut self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        proven_link_capacity: ProvenTaskLinkCapacity,
+        deadline: Instant,
+    ) -> Result<TaskReceiptOwnedActorBoundReceipt, ReceiptLedgerError> {
+        ReceiptLedgerStore::retain_begun_task_after_link_capacity(
+            self,
+            key,
+            expected_version,
+            proven_link_capacity,
+            deadline,
+        )
+    }
+
     fn request_task_cancel(
         &mut self,
         key: &ReceiptKey,
@@ -5542,6 +5875,7 @@ fn read_active_record_from_retained(
             | StoredActiveLifecycleV1::TaskPromisedUnbound { .. }
             | StoredActiveLifecycleV1::TaskPromisedActorBound { .. }
             | StoredActiveLifecycleV1::TaskHandoffActorBound { .. }
+            | StoredActiveLifecycleV1::TaskReceiptOwnedActorBound { .. }
             | StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. }
             | StoredActiveLifecycleV1::AcknowledgementCommit { .. }
             | StoredActiveLifecycleV1::AcknowledgedTombstone { .. }
@@ -6220,7 +6554,8 @@ fn validate_persisted_reserved_record_bytes(
         | StoredActiveLifecycleV1::ReservedBegun { .. }
         | StoredActiveLifecycleV1::TaskPromisedUnbound { .. }
         | StoredActiveLifecycleV1::TaskPromisedActorBound { .. }
-        | StoredActiveLifecycleV1::TaskHandoffActorBound { .. } => {
+        | StoredActiveLifecycleV1::TaskHandoffActorBound { .. }
+        | StoredActiveLifecycleV1::TaskReceiptOwnedActorBound { .. } => {
             MAX_TASK_RECORD_ENVELOPE_BYTES as u64
         }
         StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. } => MAX_RECEIPT_ENTITLEMENT_BYTES,
@@ -6616,6 +6951,53 @@ fn validate_active_record(
             {
                 return Err(ReceiptLedgerError::Corrupt(
                     "Task handoff row contradicts its receipt, attempt, or link identity",
+                ));
+            }
+            MAX_TASK_RECORD_ENVELOPE_BYTES as u64
+        }
+        StoredActiveLifecycleV1::TaskReceiptOwnedActorBound {
+            original_cutoff,
+            task_id,
+            invocation_id,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            task_version,
+            workspace_identity_hash,
+            task_link_digest,
+            proven_link_capacity,
+            ..
+        } => {
+            let expected_link = TaskLinkReference::new(
+                record.key_digest.clone(),
+                *task_id,
+                *invocation_id,
+                workspace_identity_hash.clone(),
+            );
+            let capacity_is_exhausted = match proven_link_capacity {
+                StoredProvenTaskLinkCapacityV1::Count {
+                    observed_live_links,
+                    maximum_live_links,
+                } => *maximum_live_links > 0 && observed_live_links >= maximum_live_links,
+                StoredProvenTaskLinkCapacityV1::Bytes {
+                    required_link_bytes,
+                    available_link_bytes,
+                } => *required_link_bytes > 0 && required_link_bytes > available_link_bytes,
+            };
+            if record.record_version.get() < 5
+                || *task_id != record.key.reserved_task_id()
+                || *invocation_id != record.key.invocation_id()
+                || updated_at_epoch_ms < created_at_epoch_ms
+                || created_at_epoch_ms < &original_cutoff.accepted_epoch_ms()
+                || *ttl_ms == 0
+                || *poll_interval_ms == 0
+                || *task_version == 0
+                || expected_link.digest() != task_link_digest
+                || !capacity_is_exhausted
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "receipt-owned Task row contradicts its receipt, begun attempt, link, or capacity evidence",
                 ));
             }
             MAX_TASK_RECORD_ENVELOPE_BYTES as u64
@@ -12181,6 +12563,9 @@ mod tests {
             }
             StoredActiveLifecycleV1::TaskHandoffActorBound { .. } => {
                 panic!("unbound fixture decoded as a Task handoff")
+            }
+            StoredActiveLifecycleV1::TaskReceiptOwnedActorBound { .. } => {
+                panic!("unbound fixture decoded as a receipt-owned Task")
             }
             StoredActiveLifecycleV1::DirectTerminalUnacked { .. } => {
                 panic!("reserved fixture decoded as a direct terminal")
