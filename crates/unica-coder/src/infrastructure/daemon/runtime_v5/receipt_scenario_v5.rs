@@ -590,8 +590,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 known_keys.clear();
             }
             ReceiptScenarioAction::FillReceiptPool { state: fill, count } => {
-                let mut requests = Vec::with_capacity(count as usize);
-                let mut added = Vec::with_capacity(count as usize);
+                if !matches!(
+                    fill,
+                    ScenarioSeedReceiptState::CancelReserved
+                        | ScenarioSeedReceiptState::ReservedUnbound
+                ) {
+                    return Ok(None);
+                }
                 for index in 0..count {
                     let key = if matches!(fill, ScenarioSeedReceiptState::CancelReserved)
                         && known_keys.is_empty()
@@ -601,40 +606,21 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     } else {
                         fresh_key_for_workspace(&identity, &arguments, &workspace_hint)?
                     };
-                    let request = match fill {
-                        ScenarioSeedReceiptState::CancelReserved => {
-                            ScenarioWireRequest::Cancel(key.clone())
-                        }
-                        ScenarioSeedReceiptState::ReservedUnbound => {
-                            ScenarioWireRequest::Submit(invocation_for_key(
-                                &key,
-                                arguments.clone(),
-                                workspace_hint.clone(),
-                                7_000,
-                            )?)
-                        }
-                        _ => return Ok(None),
-                    };
-                    requests.push(request);
-                    added.push(key);
-                }
-                let responses = exchange_batch(
-                    state.path(),
-                    &identity,
-                    Arc::clone(&clock),
-                    Arc::clone(&telemetry),
-                    Some(Arc::clone(&control)),
-                    requests,
-                )?;
-                if let Some(error) = responses
-                    .iter()
-                    .find(|response| matches!(response, V5ServerResponse::Error { .. }))
-                {
-                    return Err(format!(
-                        "protocol-v5 receipt scenario pool fill was rejected: {error:?}"
-                    ));
-                }
-                for key in added {
+                    telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
+                        clock.now_epoch_millis(),
+                    );
+                    if !seed_receipt_state(
+                        state.path(),
+                        &identity,
+                        &clock,
+                        key.clone(),
+                        fill,
+                        false,
+                        None,
+                    )? {
+                        return Ok(None);
+                    }
                     push_known_key(&mut known_keys, key);
                 }
             }
@@ -1049,23 +1035,6 @@ fn fresh_key_for_workspace(
                 .map_err(|error| format!("construct receipt scenario request scope: {error}"))?,
         ),
     ))
-}
-
-fn invocation_for_key(
-    key: &ReceiptKey,
-    arguments: Map<String, Value>,
-    workspace_hint: String,
-    response_budget_ms: u64,
-) -> Result<V5InvocationRequest, String> {
-    V5InvocationRequest::new(
-        key.invocation_id(),
-        key.reserved_task_id(),
-        key.tool(),
-        arguments,
-        workspace_hint,
-        response_budget_ms,
-    )
-    .map_err(|error| format!("construct receipt scenario invocation: {error}"))
 }
 
 fn push_known_key(keys: &mut Vec<ReceiptKey>, key: ReceiptKey) {
@@ -3177,6 +3146,7 @@ fn exchange_ack_and_expect_disconnect(
     finish_with_daemon_cleanup(result, cleanup)
 }
 
+#[cfg(test)]
 enum ScenarioWireRequest {
     Cancel(ReceiptKey),
     Submit(V5InvocationRequest),
@@ -3184,6 +3154,7 @@ enum ScenarioWireRequest {
     InjectedClientFailure,
 }
 
+#[cfg(test)]
 fn exchange_batch(
     state_root: &Path,
     identity: &CoreIdentity,
@@ -3714,7 +3685,7 @@ fn response_observation(
                     phase,
                     accepted_epoch_ms,
                     original_budget_ms,
-                    cancel_requested,
+                    cancel_requested: _,
                 },
         } => Ok(json!({
             "kind": match phase {
@@ -3723,7 +3694,6 @@ fn response_observation(
                 | V5InvocationPhase::ReservedActorBound
                 | V5InvocationPhase::ReservedBegun => "pending",
             },
-            "cancelRequested": cancel_requested,
             "error": null,
             "terminal": null,
             "key": receipt_key_observation(receipt_key),
@@ -4899,7 +4869,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_pending_observation_distinguishes_phase_and_projects_cancel_request() {
+    fn receipt_pending_observation_distinguishes_cancel_reservation_phase() {
         let identity = CoreIdentity::production_v5();
         let key = fresh_key(&identity, &Map::new()).expect("construct pending receipt key");
         let cases = [
@@ -4923,20 +4893,17 @@ mod tests {
                 };
                 let projected = response_observation(&response, None)
                     .expect("project protocol-v5 pending response");
-                json!({
-                    "kind": projected["kind"],
-                    "cancelRequested": projected["cancelRequested"],
-                })
+                projected["kind"].clone()
             })
             .collect::<Vec<_>>();
 
         assert_eq!(
             observed,
             vec![
-                json!({ "kind": "cancelled", "cancelRequested": true }),
-                json!({ "kind": "pending", "cancelRequested": false }),
-                json!({ "kind": "pending", "cancelRequested": true }),
-                json!({ "kind": "pending", "cancelRequested": false }),
+                json!("cancelled"),
+                json!("pending"),
+                json!("pending"),
+                json!("pending"),
             ]
         );
     }

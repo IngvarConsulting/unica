@@ -2436,7 +2436,7 @@ fn execute(scenario: Scenario) -> ScenarioReport {
         response.len()
     );
     let envelope: FacadeEnvelope = serde_json::from_str(&response)
-        .unwrap_or_else(|_| panic!("HARNESS FAILURE: malformed_facade_envelope"));
+        .unwrap_or_else(|error| panic!("HARNESS FAILURE: malformed_facade_envelope: {error}"));
     match envelope {
         FacadeEnvelope::Observed(report) => {
             assert_report_raw_bounds(&report);
@@ -2925,11 +2925,12 @@ fn decode_persisted_record_artifact(evidence: &ArtifactEvidence) -> serde_json::
     );
     let record: serde_json::Value = serde_json::from_slice(&raw)
         .unwrap_or_else(|_| panic!("persisted record artifact must be one exact JSON object"));
-    assert!(record.is_object());
+    let root = record
+        .as_object()
+        .expect("persisted record artifact must be one exact JSON object");
     for wire_only in ["kind", "protocolVersion", "outcome"] {
-        assert_eq!(
-            count_json_field(&record, wire_only),
-            0,
+        assert!(
+            !root.contains_key(wire_only),
             "persisted record must not embed a transient wire envelope"
         );
     }
