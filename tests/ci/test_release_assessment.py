@@ -32,6 +32,27 @@ def load_bsp_harvest_module():
 
 
 class ReleaseAssessmentTests(unittest.TestCase):
+    def test_dry_assessment_declares_separate_p0_lifecycle_outcomes(self) -> None:
+        module = load_assessment_module()
+
+        self.assertEqual(
+            module.dry_lifecycle_outcomes(),
+            {
+                name: {
+                    "status": "deferred",
+                    "supported": False,
+                    "evidence": [f"release-assessment:{name}:not-run"],
+                }
+                for name in (
+                    "fresh_install",
+                    "upgrade",
+                    "offline_prefetch",
+                    "restart",
+                    "rollback",
+                )
+            },
+        )
+
     def building_section(self, role: str, provider: str) -> dict:
         """A role whose index is still being built: retryable, not broken."""
         return {

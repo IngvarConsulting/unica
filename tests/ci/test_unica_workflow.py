@@ -168,6 +168,30 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(upstream=upstream):
                 self.assertIn(f"      - {upstream}", gate)
 
+    def test_p0_dry_release_proof_is_read_only_and_aggregated(self) -> None:
+        text = self.release_text()
+        jobs = parse_workflow_jobs(text)
+        proof = jobs.get("p0-release-proof")
+        self.assertIsNotNone(proof)
+        assert proof is not None
+        self.assertEqual(
+            set(proof.needs),
+            {"build-tools", "package-thin", "release-assessment"},
+        )
+        for argument in (
+            "scripts/ci/release-proof.py",
+            "--mode dry",
+            "--native-wire",
+            "--compatibility-wire",
+            "--baseline",
+            "--out-dir dist/p0-proof",
+        ):
+            self.assertIn(argument, proof.body)
+        self.assertIn("permissions:\n      contents: read", proof.body)
+        self.assertNotIn("softprops/action-gh-release", proof.body)
+        self.assertNotIn("git tag", proof.body)
+        self.assertIn("      - p0-release-proof", job_block(text, "unica-ci"))
+
     def test_classifier_exposes_typed_contours_and_ci_full_override(self) -> None:
         text = self.release_text()
         classifier = job_block(text, "classify-changes")

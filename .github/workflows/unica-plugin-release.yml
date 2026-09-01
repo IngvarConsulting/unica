@@ -273,6 +273,8 @@ jobs:
           python scripts/ci/verify-release-assets.py
           --asset-dir ".build/runtime-assets/${{ matrix.target }}"
           --target "${{ matrix.target }}"
+          --source local-build
+          --report ".build/runtime-assets/${{ matrix.target }}/asset-verification-${{ matrix.target }}.json"
       - name: Report standalone runtime size evidence
         shell: bash
         env:
@@ -362,6 +364,36 @@ jobs:
             --binary "$executable" \
             --plugin-root "$runtime_root" \
             --total-timeout-seconds 120
+      - name: Probe native package wire profile
+        shell: bash
+        env:
+          UNICA_PROVIDER_STATE_DIR: ${{ runner.temp }}/unica-p0-${{ matrix.target }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          executable=".build/tool-bundles/$TARGET/bin/$TARGET/unica"
+          if [ "$TARGET" = "win-x64" ]; then executable="${executable}.exe"; fi
+          python scripts/ci/probe-unica-wire.py \
+            --binary "$executable" \
+            --protocol-version 2026-07-28 \
+            --tasks-capability on \
+            --profile native \
+            --output ".build/p0-wire/native-$TARGET.json"
+      - name: Probe compatibility package wire profile
+        shell: bash
+        env:
+          UNICA_PROVIDER_STATE_DIR: ${{ runner.temp }}/unica-p0-${{ matrix.target }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          executable=".build/tool-bundles/$TARGET/bin/$TARGET/unica"
+          if [ "$TARGET" = "win-x64" ]; then executable="${executable}.exe"; fi
+          python scripts/ci/probe-unica-wire.py \
+            --binary "$executable" \
+            --protocol-version 2025-06-18 \
+            --tasks-capability off \
+            --profile compatibility \
+            --output ".build/p0-wire/compatibility-$TARGET.json"
       - name: Stage exact bootstrap payload
         shell: bash
         run: |
@@ -379,11 +411,25 @@ jobs:
           path: .build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.json
           if-no-files-found: error
           retention-days: 1
+      - name: Upload runtime verification evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: unica-runtime-verification-${{ matrix.target }}
+          path: .build/runtime-assets/${{ matrix.target }}/asset-verification-${{ matrix.target }}.json
+          if-no-files-found: error
+          retention-days: 1
       - name: Upload bootstrap payload
         uses: actions/upload-artifact@v7
         with:
           name: unica-bootstrap-${{ matrix.target }}
           path: .build/bootstrap-artifacts/${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload P0 wire evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: unica-wire-${{ matrix.target }}
+          path: .build/p0-wire
           if-no-files-found: error
           retention-days: 1
       - name: Upload required runtime archive
@@ -481,6 +527,68 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: unica-p0-package-evidence
+          path: dist/thin/p0-package-evidence.json
+          if-no-files-found: error
+          retention-days: 1
+
+  p0-release-proof:
+    name: P0 dry RC/package proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-tools, package-thin, release-assessment]
+    if: >-
+      ${{
+        always() &&
+        needs.build-tools.result == 'success' &&
+        needs.package-thin.result == 'success' &&
+        needs.release-assessment.result == 'success' &&
+        (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
+      }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: unica-wire-*
+          path: .build/p0-wire
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: unica-p0-package-evidence
+          path: .build/p0-package
+      - uses: actions/download-artifact@v8
+        with:
+          name: unica-release-assessment
+          path: .build/release-assessment
+      - name: Evaluate read-only P0 proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python -c 'import json; print(json.load(open("plugins/unica/.codex-plugin/plugin.json"))["version"])')"
+          baseline="$(python -c 'from pathlib import Path; paths=sorted(Path("tests/fixtures/migration").glob("*-baseline.json")); assert len(paths) == 1; print(paths[0])')"
+          python scripts/ci/release-proof.py \
+            --native-wire .build/p0-wire/native-linux-x64.json \
+            --compatibility-wire .build/p0-wire/compatibility-linux-x64.json \
+            --baseline "$baseline" \
+            --assessment .build/release-assessment/assessment.json \
+            --package .build/p0-package/p0-package-evidence.json \
+            --release-tag "v$version" \
+            --mode dry \
+            --out-dir dist/p0-proof
+      - uses: actions/upload-artifact@v7
+        with:
+          name: unica-p0-proof
+          path: dist/p0-proof
+          if-no-files-found: error
+          retention-days: 14
 
   probe-thin-bootstrap:
     name: Probe thin bootstrap (${{ matrix.target }})
@@ -681,7 +789,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$GITHUB_REF_NAME" --pattern 'unica-runtime-*' --dir published
-      - run: python scripts/ci/verify-release-assets.py --asset-dir published
+      - run: python scripts/ci/verify-release-assets.py --asset-dir published --source re-downloaded --report published/asset-verification-re-downloaded.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: unica-published-asset-verification
+          path: published/asset-verification-re-downloaded.json
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/download-artifact@v8
         with:
           name: unica-thin-marketplace
@@ -712,6 +826,7 @@ jobs:
       - publish-release-assets
       - smoke-thin-plugin
       - verify-published-assets
+      - p0-release-proof
     steps:
       - uses: actions/checkout@v7
       - name: Evaluate required CI results

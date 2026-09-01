@@ -532,6 +532,7 @@ class WireProbe:
         *,
         protocol_version: str,
         tasks_capability: str,
+        profile: str | None = None,
         timeout_seconds: float,
         environment: dict[str, str] | None = None,
         cwd: Path | None = None,
@@ -539,6 +540,9 @@ class WireProbe:
         self.command = command
         self.protocol_version = protocol_version
         self.tasks_capability = tasks_capability
+        if profile is not None and profile not in {"native", "compatibility"}:
+            raise ValueError(f"unsupported wire evidence profile: {profile}")
+        self.profile = profile
         self.timeout_seconds = timeout_seconds
         self.environment = dict(environment or os.environ)
         self.cwd = (cwd or Path.cwd()).resolve()
@@ -657,6 +661,7 @@ class WireProbe:
                 request_id += 1
 
             output = {
+                "schemaVersion": 1 if self.profile is not None else None,
                 "protocolVersion": self.protocol_version,
                 "responseKinds": session.response_kinds,
                 "serverInfo": server_info,
@@ -665,6 +670,10 @@ class WireProbe:
                 "toolCount": len(tool_names),
                 "toolNames": sorted(tool_names),
             }
+            if self.profile is None:
+                output.pop("schemaVersion")
+            else:
+                output["profile"] = self.profile
             completed = True
             return output
         finally:
@@ -1314,6 +1323,7 @@ def main() -> None:
         "--tasks-capability", required=True, choices=("on", "off")
     )
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--profile", choices=("native", "compatibility"))
     parser.add_argument("--timeout-seconds", type=float, default=20.0)
     args = parser.parse_args()
     if args.timeout_seconds <= 0:
@@ -1327,6 +1337,7 @@ def main() -> None:
         command,
         protocol_version=args.protocol_version,
         tasks_capability=args.tasks_capability,
+        profile=args.profile,
         timeout_seconds=args.timeout_seconds,
     ).run()
     args.output.parent.mkdir(parents=True, exist_ok=True)

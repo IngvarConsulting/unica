@@ -34,6 +34,7 @@ PACKAGE_SUCCESS = {
     "package-thin": "success",
 }
 ASSESSMENT_SUCCESS = {"release-assessment": "success"}
+P0_SUCCESS = {"p0-release-proof": "success"}
 PUBLISH_SKIPPED = {
     "publish-release-assets": "skipped",
     "smoke-thin-plugin": "skipped",
@@ -53,6 +54,7 @@ def source_results() -> dict[str, str]:
         "test-search-integration": "skipped",
         "build-tools": "skipped",
         "package-thin": "skipped",
+        "p0-release-proof": "skipped",
         "probe-thin-bootstrap": "skipped",
         "release-assessment": "skipped",
         **PUBLISH_SKIPPED,
@@ -60,6 +62,29 @@ def source_results() -> dict[str, str]:
 
 
 class EvaluateCiGateTests(unittest.TestCase):
+    def test_p0_release_proof_runs_for_assessed_pr_without_publication(self) -> None:
+        module = load_gate_module()
+        outputs = classification(
+            package_changed=True,
+            release_required=True,
+            assessment_required=True,
+        )
+        results = {
+            **source_results(),
+            "build-tools": "success",
+            "package-thin": "success",
+            "p0-release-proof": "success",
+            "release-assessment": "success",
+            "probe-thin-bootstrap": "success",
+        }
+
+        evaluation = module.evaluate_gate(
+            "pull_request", "refs/pull/581/merge", outputs, results
+        )
+
+        self.assertTrue(evaluation.ok)
+        self.assertEqual("success", evaluation.expected["p0-release-proof"])
+
     def test_source_only_pr_accepts_only_classified_skips(self) -> None:
         module = load_gate_module()
         outputs = classification(plugin_content_changed=True)
@@ -117,7 +142,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             release_required=True,
             assessment_required=True,
         )
-        affected_results = {**ordinary_results, **ASSESSMENT_SUCCESS}
+        affected_results = {**ordinary_results, **ASSESSMENT_SUCCESS, **P0_SUCCESS}
 
         ordinary = module.evaluate_gate(
             "pull_request", "refs/pull/155/merge", ordinary_outputs, ordinary_results
@@ -140,6 +165,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
+            **P0_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
 
@@ -177,6 +203,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
+            **P0_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
         tag = {
@@ -185,6 +212,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "publish-release-assets": "success",
             "smoke-thin-plugin": "success",
             "verify-published-assets": "success",
+            "p0-release-proof": "skipped",
         }
 
         manual_evaluation = module.evaluate_gate("workflow_dispatch", "refs/heads/main", outputs, manual)
@@ -204,6 +232,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
+            **P0_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
 
@@ -257,6 +286,7 @@ class EvaluateCiGateTests(unittest.TestCase):
                 "verify-source": ("cancelled", "success"),
                 "test-rust-platforms": ("failure", "success"),
                 "package-thin": ("skipped", "success"),
+                "p0-release-proof": ("skipped", "success"),
             },
             {key: value for key, value in evaluation.unexpected.items() if key != "classification"},
         )

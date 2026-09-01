@@ -106,6 +106,18 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def package_tree_sha256(root: Path) -> str:
+    """Digest package paths and bytes so the proof binds the assembled tree."""
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
 def load_lock(path: Path) -> dict:
     lock = json.loads(path.read_text(encoding="utf-8"))
     if lock.get("schemaVersion") != 1:
@@ -667,6 +679,32 @@ def assert_archive_clean(marketplace_dir: Path) -> None:
             raise SystemExit(f"archive contains nested package artifact: {rel}")
 
 
+def write_p0_package_evidence(
+    marketplace_dir: Path, destination: Path, *, source_commit: str
+) -> None:
+    """Write package identity without claiming a tag or a publication."""
+    plugin_dir = marketplace_dir / "plugins" / PLUGIN_ID
+    version = read_release_version(plugin_dir)
+    runtime_manifest = plugin_dir / "runtime-manifest.json"
+    if not runtime_manifest.is_file():
+        raise SystemExit(f"packaged runtime manifest is missing: {runtime_manifest}")
+    evidence = {
+        "schemaVersion": 1,
+        "pluginVersion": version,
+        "sourceCommit": source_commit,
+        "packageSha256": package_tree_sha256(marketplace_dir),
+        "runtimeManifestSha256": sha256(runtime_manifest),
+        "versionBumped": False,
+        "published": False,
+        "tag": None,
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def package_local_debug(
     *,
     repo_root: Path,
@@ -809,6 +847,11 @@ def main() -> None:
     assert_archive_clean(marketplace_dir)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    write_p0_package_evidence(
+        marketplace_dir,
+        args.out_dir / "p0-package-evidence.json",
+        source_commit=args.source_commit,
+    )
 
 
 if __name__ == "__main__":

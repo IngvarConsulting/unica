@@ -230,6 +230,14 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             ci_changed=True,
         )
 
+    def test_p0_release_proof_changes_route_package_and_assessment_contours(self) -> None:
+        self.assert_classification(
+            ["scripts/ci/release-proof.py"],
+            package_changed=True,
+            release_required=True,
+            assessment_required=True,
+        )
+
     def test_mixed_changes_union_their_contours(self) -> None:
         self.assert_classification(
             [

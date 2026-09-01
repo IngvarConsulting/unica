@@ -44,10 +44,29 @@ EXPECTED_PUBLIC_TOOLS = {
 INDEX_WAIT_TIMEOUT_SECONDS = 300
 INDEX_POLL_INTERVAL_SECONDS = 1
 INDEXED_SEARCH_ROLES = ("semantic", "symbol")
+P0_LIFECYCLE_SCENARIOS = (
+    "fresh_install",
+    "upgrade",
+    "offline_prefetch",
+    "restart",
+    "rollback",
+)
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def dry_lifecycle_outcomes() -> dict[str, dict[str, Any]]:
+    """Name lifecycle evidence that is intentionally deferred outside RC joins."""
+    return {
+        name: {
+            "status": "deferred",
+            "supported": False,
+            "evidence": [f"release-assessment:{name}:not-run"],
+        }
+        for name in P0_LIFECYCLE_SCENARIOS
+    }
 
 
 def json_digest(value: Any) -> str:
@@ -1400,6 +1419,7 @@ def build_assessment_report(
         },
         "environment": environment_metadata(run_unica, runtime_overlay),
         "scenarios": scenarios,
+        "lifecycle": dry_lifecycle_outcomes(),
         "summary": build_summary(scenarios, diagnostic_codes, cache_dir),
     }
     write_report_files(report, out_dir)

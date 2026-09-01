@@ -107,10 +107,10 @@ class WireProbeTests(unittest.TestCase):
         *,
         tasks_capability: str = "off",
         protocol_version: str = "2025-06-18",
+        profile: str | None = None,
         timeout_seconds: float = 2.0,
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
+        command = [
                 sys.executable,
                 str(PROBE_SCRIPT),
                 "--binary",
@@ -125,7 +125,11 @@ class WireProbeTests(unittest.TestCase):
                 str(output),
                 "--timeout-seconds",
                 str(timeout_seconds),
-            ],
+            ]
+        if profile is not None:
+            command.extend(["--profile", profile])
+        return subprocess.run(
+            command,
             capture_output=True,
             text=True,
             check=False,
@@ -213,6 +217,29 @@ class WireProbeTests(unittest.TestCase):
             requests[1]["params"],
             {"_meta": expected_meta, "cursor": "1"},
         )
+
+    def test_profiled_probe_writes_a_versioned_p0_evidence_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            server = self.write_server(
+                root,
+                pages=[["unica.view"]],
+                capture_path=root / "requests.json",
+            )
+            output = root / "wire.json"
+            result = self.run_probe(
+                server,
+                output,
+                profile="native",
+                tasks_capability="on",
+                protocol_version="2026-07-28",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            evidence = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(evidence["schemaVersion"], 1)
+        self.assertEqual(evidence["profile"], "native")
 
     def test_exhausts_direct_first_pagination_and_writes_deterministic_json(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

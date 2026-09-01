@@ -5,6 +5,7 @@ import json
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -21,6 +22,30 @@ def load_module(path: Path, name: str):
 
 
 class VerifyReleaseAssetsTests(unittest.TestCase):
+    def test_builds_machine_readable_outcome_for_verified_target(self) -> None:
+        verifier = load_module(REPO_ROOT / "scripts/ci/verify-release-assets.py", "asset_verifier")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(verifier, "verify_release_target", return_value="0.13.0-rc.1"):
+                report = verifier.build_verification_report(
+                    Path(tmp), "linux-x64", source="local-build"
+                )
+
+        self.assertEqual(report["schemaVersion"], 1)
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["source"], "local-build")
+        self.assertEqual(report["pluginVersion"], "0.13.0-rc.1")
+        self.assertEqual(report["targets"], ["linux-x64"])
+        self.assertEqual(
+            report["checks"],
+            {
+                "artifactSet": True,
+                "archiveChecksum": True,
+                "memberChecksums": True,
+                "memberMetadata": True,
+            },
+        )
+
     def test_verifies_one_packaged_runtime_pair_and_detects_tampering(self) -> None:
         packager = load_module(REPO_ROOT / "scripts/ci/package-unica-runtime.py", "runtime_packager")
         verifier = load_module(REPO_ROOT / "scripts/ci/verify-release-assets.py", "asset_verifier")

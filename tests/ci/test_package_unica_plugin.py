@@ -1275,6 +1275,15 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertNotIn("source\": \"local", json.dumps(catalog))
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
             self.assertEqual(list(out_dir.glob("*.zip")), [])
+            package_evidence = json.loads(
+                (out_dir / "p0-package-evidence.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(package_evidence["schemaVersion"], 1)
+            self.assertEqual(package_evidence["pluginVersion"], version)
+            self.assertEqual(package_evidence["sourceCommit"], "a" * 40)
+            self.assertFalse(package_evidence["versionBumped"])
+            self.assertFalse(package_evidence["published"])
+            self.assertIsNone(package_evidence["tag"])
 
             # Maintainer material stays in the source tree. The donor index and
             # the dated review records answer questions a consumer never asks,

@@ -11,6 +11,8 @@ from pathlib import Path
 
 
 TARGETS = {"darwin-arm64", "linux-x64", "win-x64"}
+SCHEMA_VERSION = 1
+VERIFICATION_SOURCES = {"local-build", "re-downloaded"}
 
 
 def sha256(path: Path) -> str:
@@ -108,17 +110,59 @@ def verify_release_assets(asset_dir: Path) -> str:
     return versions.pop()
 
 
+def build_verification_report(
+    asset_dir: Path, target: str | None = None, *, source: str
+) -> dict:
+    """Return a durable outcome after all byte and composition checks pass."""
+    if source not in VERIFICATION_SOURCES:
+        raise SystemExit(f"unsupported runtime asset verification source: {source}")
+    targets = [target] if target else sorted(TARGETS)
+    if target:
+        if target not in TARGETS:
+            raise SystemExit(f"unsupported runtime asset target: {target}")
+        version = verify_release_target(asset_dir, target)
+    else:
+        version = verify_release_assets(asset_dir)
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "status": "passed",
+        "source": source,
+        "pluginVersion": version,
+        "targets": targets,
+        "checks": {
+            "artifactSet": True,
+            "archiveChecksum": True,
+            "memberChecksums": True,
+            "memberMetadata": True,
+        },
+    }
+
+
+def write_verification_report(report: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--asset-dir", type=Path, required=True)
     parser.add_argument("--target", choices=sorted(TARGETS))
-    args = parser.parse_args()
-    version = (
-        verify_release_target(args.asset_dir, args.target)
-        if args.target
-        else verify_release_assets(args.asset_dir)
+    parser.add_argument("--report", type=Path)
+    parser.add_argument(
+        "--source", choices=sorted(VERIFICATION_SOURCES), default="re-downloaded"
     )
-    print(f"verified published Unica runtime assets: {version}")
+    args = parser.parse_args()
+    report = build_verification_report(
+        args.asset_dir,
+        args.target,
+        source=args.source,
+    )
+    if args.report:
+        write_verification_report(report, args.report)
+    print(f"verified Unica runtime assets: {report['pluginVersion']}")
 
 
 if __name__ == "__main__":
