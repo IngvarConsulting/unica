@@ -23,6 +23,7 @@ const TERMINAL_OUTCOME_DOMAIN: &[u8] = b"unica.terminal-outcome.v1\0";
 /// The outer daemon request has the same 16 KiB ceiling, so a valid envelope
 /// can never rely on a larger scope being truncated before hashing.
 pub(crate) const MAX_REQUEST_SCOPE_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES: u64 = 1_024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DigestParseError;
@@ -1062,6 +1063,18 @@ impl TaskLinkReference {
         &self.digest
     }
 
+    pub(crate) fn receipt_key_digest(&self) -> &ReceiptKeyDigest {
+        &self.identity.receipt_key_digest
+    }
+
+    pub(crate) const fn task_id(&self) -> TaskId {
+        self.identity.task_id
+    }
+
+    pub(crate) const fn invocation_id(&self) -> InvocationId {
+        self.identity.invocation_id
+    }
+
     pub(crate) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
         &self.identity.workspace_identity_hash
     }
@@ -1182,7 +1195,8 @@ impl StagedTerminalTransferCertificate {
     const TASK_RECORD_SCHEMA_VERSION: u32 = 1;
     const LIFECYCLE_LINK_RECORD_SCHEMA_VERSION: u32 = 1;
     const TERMINAL_CODEC_VERSION: u32 = 1;
-    const MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES: u64 = 1_024;
+    const MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES: u64 =
+        crate::application::receipt_ledger::MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES;
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -1272,10 +1286,96 @@ pub(crate) struct LifecycleLinkRecordHeader {
     encoded_bytes: u64,
 }
 
+impl LifecycleLinkRecordHeader {
+    pub(crate) fn new(
+        key: ReceiptKey,
+        link: TaskLinkReference,
+        lifecycle_link_version: u64,
+        mutation_sequence: u64,
+        encoded_bytes: u64,
+    ) -> Result<Self, ReceiptLedgerError> {
+        let key_digest = receipt_key_digest(&key);
+        if lifecycle_link_version == 0 || mutation_sequence == 0 || encoded_bytes == 0 {
+            return Err(ReceiptLedgerError::Corrupt(
+                "lifecycle link requires nonzero version, mutation sequence, and encoded bytes",
+            ));
+        }
+        if encoded_bytes > MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES {
+            return Err(ReceiptLedgerError::RecordTooLarge);
+        }
+        if link.receipt_key_digest() != &key_digest
+            || link.task_id() != key.reserved_task_id()
+            || link.invocation_id() != key.invocation_id()
+            || task_link_digest(&link.identity) != link.digest
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "lifecycle link identity contradicts its exact receipt key or digest",
+            ));
+        }
+        Ok(Self {
+            key,
+            key_digest,
+            link,
+            lifecycle_link_version,
+            mutation_sequence,
+            encoded_bytes,
+        })
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        &self.key
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        &self.key_digest
+    }
+
+    pub(crate) fn link(&self) -> &TaskLinkReference {
+        &self.link
+    }
+
+    pub(crate) const fn lifecycle_link_version(&self) -> u64 {
+        self.lifecycle_link_version
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        self.mutation_sequence
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.encoded_bytes
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedDualIdAccounting {
     invocation_index_bytes: u64,
     reserved_task_index_bytes: u64,
+}
+
+impl RetainedDualIdAccounting {
+    pub(crate) const fn new(
+        invocation_index_bytes: u64,
+        reserved_task_index_bytes: u64,
+    ) -> Result<Self, ReceiptLedgerError> {
+        if invocation_index_bytes == 0 || reserved_task_index_bytes == 0 {
+            return Err(ReceiptLedgerError::Corrupt(
+                "retirement must retain nonzero dual-ID accounting",
+            ));
+        }
+        Ok(Self {
+            invocation_index_bytes,
+            reserved_task_index_bytes,
+        })
+    }
+
+    pub(crate) const fn invocation_index_bytes(&self) -> u64 {
+        self.invocation_index_bytes
+    }
+
+    pub(crate) const fn reserved_task_index_bytes(&self) -> u64 {
+        self.reserved_task_index_bytes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1872,6 +1972,76 @@ pub(crate) struct TaskBoundReceipt {
     phase: AttemptPhase,
 }
 
+impl TaskBoundReceipt {
+    pub(crate) fn new(
+        record: LifecycleLinkRecordHeader,
+        task: ReceiptTaskProjection,
+        task_record_version: u64,
+        bind_epoch_ms: u64,
+        phase: AttemptPhase,
+    ) -> Result<Self, ReceiptLedgerError> {
+        if task.task_id() != record.key.reserved_task_id()
+            || task.invocation_id() != record.key.invocation_id()
+            || task.task_id() != record.link.task_id()
+            || task.invocation_id() != record.link.invocation_id()
+            || task.version() != task_record_version
+            || task_record_version == 0
+            || bind_epoch_ms < task.created_at_epoch_ms()
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "TaskBound contradicts its exact receipt, link, Task version, or bind epoch",
+            ));
+        }
+        Ok(Self {
+            record,
+            task,
+            task_record_version,
+            bind_epoch_ms,
+            phase,
+        })
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        self.record.key()
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        self.record.key_digest()
+    }
+
+    pub(crate) fn link(&self) -> &TaskLinkReference {
+        self.record.link()
+    }
+
+    pub(crate) fn task(&self) -> &ReceiptTaskProjection {
+        &self.task
+    }
+
+    pub(crate) const fn task_record_version(&self) -> u64 {
+        self.task_record_version
+    }
+
+    pub(crate) const fn bind_epoch_ms(&self) -> u64 {
+        self.bind_epoch_ms
+    }
+
+    pub(crate) const fn phase(&self) -> AttemptPhase {
+        self.phase
+    }
+
+    pub(crate) const fn lifecycle_link_version(&self) -> u64 {
+        self.record.lifecycle_link_version()
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        self.record.mutation_sequence()
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.record.encoded_bytes()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TaskTerminalBoundReceipt {
     record: LifecycleLinkRecordHeader,
@@ -1881,6 +2051,93 @@ pub(crate) struct TaskTerminalBoundReceipt {
     terminal_digest: TerminalDigest,
     terminal_epoch_ms: u64,
     expires_at_epoch_ms: u64,
+}
+
+impl TaskTerminalBoundReceipt {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        record: LifecycleLinkRecordHeader,
+        task: ReceiptTaskProjection,
+        task_record_version: u64,
+        terminal_status: ClosedTerminalStatus,
+        terminal_digest: TerminalDigest,
+        terminal_epoch_ms: u64,
+        expires_at_epoch_ms: u64,
+    ) -> Result<Self, ReceiptLedgerError> {
+        let expected_expiry = terminal_epoch_ms
+            .checked_add(task.ttl_ms())
+            .ok_or(ReceiptLedgerError::TimestampOverflow)?;
+        if task.task_id() != record.key.reserved_task_id()
+            || task.invocation_id() != record.key.invocation_id()
+            || task.task_id() != record.link.task_id()
+            || task.invocation_id() != record.link.invocation_id()
+            || task.version() != task_record_version
+            || task_record_version == 0
+            || task.updated_at_epoch_ms() != terminal_epoch_ms
+            || expires_at_epoch_ms != expected_expiry
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "TaskTerminalBound contradicts its exact identity, Task version, or terminal retention",
+            ));
+        }
+        Ok(Self {
+            record,
+            task,
+            task_record_version,
+            terminal_status,
+            terminal_digest,
+            terminal_epoch_ms,
+            expires_at_epoch_ms,
+        })
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        self.record.key()
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        self.record.key_digest()
+    }
+
+    pub(crate) fn link(&self) -> &TaskLinkReference {
+        self.record.link()
+    }
+
+    pub(crate) fn task(&self) -> &ReceiptTaskProjection {
+        &self.task
+    }
+
+    pub(crate) const fn task_record_version(&self) -> u64 {
+        self.task_record_version
+    }
+
+    pub(crate) const fn terminal_status(&self) -> ClosedTerminalStatus {
+        self.terminal_status
+    }
+
+    pub(crate) fn terminal_digest(&self) -> &TerminalDigest {
+        &self.terminal_digest
+    }
+
+    pub(crate) const fn terminal_epoch_ms(&self) -> u64 {
+        self.terminal_epoch_ms
+    }
+
+    pub(crate) const fn expires_at_epoch_ms(&self) -> u64 {
+        self.expires_at_epoch_ms
+    }
+
+    pub(crate) const fn lifecycle_link_version(&self) -> u64 {
+        self.record.lifecycle_link_version()
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        self.record.mutation_sequence()
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.record.encoded_bytes()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1894,6 +2151,106 @@ pub(crate) struct TaskRetirementPendingReceipt {
     expires_at_epoch_ms: u64,
     retained_link_bytes: u64,
     retained_dual_id_accounting: RetainedDualIdAccounting,
+}
+
+impl TaskRetirementPendingReceipt {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        record: LifecycleLinkRecordHeader,
+        task: ReceiptTaskProjection,
+        expected_terminal_task_version: u64,
+        terminal_status: ClosedTerminalStatus,
+        terminal_digest: TerminalDigest,
+        terminal_epoch_ms: u64,
+        expires_at_epoch_ms: u64,
+        retained_link_bytes: u64,
+        retained_dual_id_accounting: RetainedDualIdAccounting,
+    ) -> Result<Self, ReceiptLedgerError> {
+        let expected_expiry = terminal_epoch_ms
+            .checked_add(task.ttl_ms())
+            .ok_or(ReceiptLedgerError::TimestampOverflow)?;
+        if task.task_id() != record.key.reserved_task_id()
+            || task.invocation_id() != record.key.invocation_id()
+            || task.task_id() != record.link.task_id()
+            || task.invocation_id() != record.link.invocation_id()
+            || task.version() != expected_terminal_task_version
+            || expected_terminal_task_version == 0
+            || task.updated_at_epoch_ms() != terminal_epoch_ms
+            || expires_at_epoch_ms != expected_expiry
+            || retained_link_bytes == 0
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "TaskRetirementPending contradicts its exact terminal Task or retained accounting",
+            ));
+        }
+        Ok(Self {
+            record,
+            task,
+            expected_terminal_task_version,
+            terminal_status,
+            terminal_digest,
+            terminal_epoch_ms,
+            expires_at_epoch_ms,
+            retained_link_bytes,
+            retained_dual_id_accounting,
+        })
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        self.record.key()
+    }
+
+    pub(crate) fn key_digest(&self) -> &ReceiptKeyDigest {
+        self.record.key_digest()
+    }
+
+    pub(crate) fn link(&self) -> &TaskLinkReference {
+        self.record.link()
+    }
+
+    pub(crate) fn task(&self) -> &ReceiptTaskProjection {
+        &self.task
+    }
+
+    pub(crate) const fn expected_terminal_task_version(&self) -> u64 {
+        self.expected_terminal_task_version
+    }
+
+    pub(crate) const fn terminal_status(&self) -> ClosedTerminalStatus {
+        self.terminal_status
+    }
+
+    pub(crate) fn terminal_digest(&self) -> &TerminalDigest {
+        &self.terminal_digest
+    }
+
+    pub(crate) const fn terminal_epoch_ms(&self) -> u64 {
+        self.terminal_epoch_ms
+    }
+
+    pub(crate) const fn expires_at_epoch_ms(&self) -> u64 {
+        self.expires_at_epoch_ms
+    }
+
+    pub(crate) const fn retained_link_bytes(&self) -> u64 {
+        self.retained_link_bytes
+    }
+
+    pub(crate) const fn retained_dual_id_accounting(&self) -> &RetainedDualIdAccounting {
+        &self.retained_dual_id_accounting
+    }
+
+    pub(crate) const fn lifecycle_link_version(&self) -> u64 {
+        self.record.lifecycle_link_version()
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        self.record.mutation_sequence()
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        self.record.encoded_bytes()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
