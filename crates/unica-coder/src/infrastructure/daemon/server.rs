@@ -6180,32 +6180,47 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    fn run_long_work_contract_obligation(name: &str, obligation: fn()) {
+        std::thread::Builder::new()
+            .name(name.to_owned())
+            // Each debug-only ownership oracle is independently valid on the
+            // test harness stack. Keep their stack frames isolated instead of
+            // compiling the whole named contract into one aggregate frame.
+            .stack_size(32 * 1024 * 1024)
+            .spawn(obligation)
+            .expect("long-work contract obligation thread should start")
+            .join()
+            .expect("long-work contract obligation thread should finish");
+    }
+
+    fn runtime_resource_tree_contract_obligation() {
+        crate::infrastructure::runtime_jobs::reset_runtime_resource_contract_executions_for_test();
+        crate::infrastructure::runtime_jobs::run_runtime_resource_tree_contract_for_test();
+        assert_eq!(
+            crate::infrastructure::runtime_jobs::runtime_resource_contract_executions_for_test(),
+            1,
+            "daemon CTR named check did not execute its runtime-tree obligations"
+        );
+    }
+
     #[test]
     fn daemon_exact_long_work_ownership_contract() {
-        std::thread::Builder::new()
-            .name("daemon-exact-long-work-contract".to_owned())
-            // The aggregate exercises several deeply nested debug-only
-            // ownership oracles. Windows' test harness stack is too small,
-            // and 8 MiB remained close enough to the limit to be flaky under
-            // the full workspace run.
-            .stack_size(32 * 1024 * 1024)
-            .spawn(|| {
-                crate::infrastructure::runtime_jobs::reset_runtime_resource_contract_executions_for_test();
-
-                daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership();
-                daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication();
-                daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication();
-                crate::infrastructure::runtime_jobs::run_runtime_resource_tree_contract_for_test();
-
-                assert_eq!(
-                    crate::infrastructure::runtime_jobs::runtime_resource_contract_executions_for_test(),
-                    1,
-                    "daemon CTR named check did not execute its runtime-tree obligations"
-                );
-            })
-            .expect("long-work contract thread should start")
-            .join()
-            .expect("long-work contract thread should finish");
+        run_long_work_contract_obligation(
+            "daemon-long-work-capabilities-contract",
+            daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership,
+        );
+        run_long_work_contract_obligation(
+            "daemon-index-revision-contract",
+            daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication,
+        );
+        run_long_work_contract_obligation(
+            "daemon-replaced-root-contract",
+            daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication,
+        );
+        run_long_work_contract_obligation(
+            "daemon-runtime-resource-contract",
+            runtime_resource_tree_contract_obligation,
+        );
     }
 
     fn live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root() {
