@@ -102,17 +102,39 @@ fn bootstrap_result(
             .source_sets
             .iter()
             .all(|source| source.source_format == SourceFormat::PlatformXml);
-    let health_budget = response_deadline.remaining_handoff_budget();
-    let cancellation = CancellationToken::new();
-    let health = inspect_project_health(
-        context,
-        &cancellation,
-        ProviderDeadline::from_budget(health_budget),
-    )
-    .map_err(|error| format!("{error:?}"))
-    .and_then(evaluate_project_health);
+    let health = if source_map.source_sets.is_empty() {
+        None
+    } else {
+        let health_budget = response_deadline.remaining_handoff_budget();
+        let cancellation = CancellationToken::new();
+        Some(
+            inspect_project_health(
+                context,
+                &cancellation,
+                ProviderDeadline::from_budget(health_budget),
+            )
+            .map_err(|error| format!("{error:?}"))
+            .and_then(evaluate_project_health),
+        )
+    };
     let (mut ready, repository_ready, checks, mut diagnostics, readiness_state) = match health {
-        Ok(report) => {
+        None => (
+            false,
+            false,
+            Value::Array(Vec::new()),
+            Value::Array(vec![object([
+                ("code", Value::String("source_roots_missing".to_string())),
+                (
+                    "message",
+                    Value::String(
+                        "No 1C source roots were found; choose whether to create sources or import them before creating v8project.yaml"
+                            .to_string(),
+                    ),
+                ),
+            ])]),
+            "complete",
+        ),
+        Some(Ok(report)) => {
             let readiness_state = if report.inspection_complete {
                 "complete"
             } else {
@@ -126,7 +148,7 @@ fn bootstrap_result(
                 readiness_state,
             )
         }
-        Err(reason) => (
+        Some(Err(reason)) => (
             false,
             false,
             Value::Array(Vec::new()),
@@ -233,7 +255,7 @@ fn bootstrap_result(
         ]))
     } else if config_state != "configured" {
         match project_config_recipe(&source_map) {
-            Some(content) => Some(object([
+            Some(content) if !source_map.source_sets.is_empty() => Some(object([
                 ("path", Value::String("v8project.yaml".to_string())),
                 ("content", Value::String(content)),
                 ("sourceSetExample", Value::Null),
@@ -242,6 +264,18 @@ fn bootstrap_result(
                 } else {
                     "Persist the autodetected source sets so future discovery is explicit and stable."
                 }.to_string())),
+            ])),
+            Some(_) => Some(object([
+                ("path", Value::String("v8project.yaml".to_string())),
+                ("content", Value::Null),
+                ("sourceSetExample", Value::Null),
+                (
+                    "reason",
+                    Value::String(
+                        "No source root can be attached yet; create or import the intended configuration, extension, external processor, or external report first."
+                            .to_string(),
+                    ),
+                ),
             ])),
             None => Some(object([
                 ("path", Value::String("v8project.yaml".to_string())),
@@ -265,7 +299,7 @@ fn bootstrap_result(
     let mut result = DomainResult::success(match config_state {
         "configured" => "workspace configuration and source sets discovered",
         "autodetected" => "source sets autodetected; v8project.yaml is not present",
-        _ => "workspace is empty; create v8project.yaml and a 1C XML source root",
+        _ => "workspace has no 1C source roots; create or import sources before attaching them",
     });
     result.data = Some(object([
         ("workspaceRoot", value(&context.workspace_root)),
@@ -297,6 +331,17 @@ fn bootstrap_result(
         ("diagnostics", diagnostics),
         ("setup", setup.unwrap_or(Value::Null)),
     ]));
+    if config_state == "autodetected" && project_config_recipe(&source_map).is_some() {
+        result.next.push(next_action(
+            "unica.run",
+            object([
+                ("op", Value::String("source.attach".to_string())),
+                ("args", Value::Object(Map::new())),
+                ("dryRun", Value::Bool(true)),
+            ]),
+            "preview creation of v8project.yaml from the autodetected source sets",
+        ));
+    }
     if let (true, Some(Ok(at))) = (ready, next_address) {
         result.next.push(next_action(
             "unica.view",
@@ -333,7 +378,7 @@ fn next_action(tool: &str, args: Value, reason: &str) -> Value {
     ])
 }
 
-fn project_config_recipe(source_map: &ProjectSourceMap) -> Option<String> {
+pub(super) fn project_config_recipe(source_map: &ProjectSourceMap) -> Option<String> {
     #[derive(Serialize)]
     struct ProjectRecipe<'a> {
         format: &'static str,
@@ -351,27 +396,24 @@ fn project_config_recipe(source_map: &ProjectSourceMap) -> Option<String> {
 
     let mut sources = source_map.source_sets.iter().collect::<Vec<_>>();
     sources.sort_by(|left, right| left.name.cmp(&right.name));
-    let effective_format = source_map
-        .effective_source_set
-        .as_deref()
-        .and_then(|name| sources.iter().find(|source| source.name == name))
-        .map(|source| source.source_format);
     let uniform_format = sources
         .first()
         .map(|source| source.source_format)
         .filter(|first| sources.iter().all(|source| source.source_format == *first));
-    let format = match effective_format.or(uniform_format) {
+    let format = match uniform_format {
         Some(SourceFormat::PlatformXml) => "DESIGNER",
         Some(SourceFormat::Edt) => "EDT",
         Some(SourceFormat::Unknown | SourceFormat::Invalid) => return None,
-        None if source_map
-            .configured_format_raw
-            .as_deref()
-            .is_some_and(|format| format.eq_ignore_ascii_case("EDT")) =>
+        None if sources.is_empty()
+            && source_map
+                .configured_format_raw
+                .as_deref()
+                .is_some_and(|format| format.eq_ignore_ascii_case("EDT")) =>
         {
             "EDT"
         }
-        None => "DESIGNER",
+        None if sources.is_empty() => "DESIGNER",
+        None => return None,
     };
     let source_sets = if sources.is_empty() {
         vec![SourceSetRecipe {

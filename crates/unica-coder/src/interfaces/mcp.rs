@@ -2944,7 +2944,9 @@ mod tests {
             .send(json!({
                 "jsonrpc":"2.0", "id":1, "method":"tools/call",
                 "params":{
-                    "name":"unica.run", "arguments":{}, "_meta":modern_meta()
+                    "name":"unica.run",
+                    "arguments":{"op":"test.run", "args":{}},
+                    "_meta":modern_meta()
                 }
             }))
             .await;

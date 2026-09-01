@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-09-01.VIEW-WORKSPACE-BOOTSTRAP
-status: active
+status: superseded
 governs: product
 realized: crates/unica-coder/tests/v13_workspace_bootstrap.rs::canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-09-02.RUN-INITIALIZATION-CONTRACT
 establishes: [CTR.WIRE.TOOL-SURFACE, INV.SURFACE.ARGUMENTS-DESCRIBED, INV.SURFACE.PROJECT-READINESS, INV.SURFACE.WORKSPACE-BOOTSTRAP]
 changes: [CTR.WIRE.TOOL-SURFACE]
 design: docs/design/2026-09-01-view-workspace-bootstrap-design.md

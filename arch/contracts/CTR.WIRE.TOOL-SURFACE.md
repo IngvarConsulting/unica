@@ -2,8 +2,8 @@
 id: CTR.WIRE.TOOL-SURFACE
 status: active
 governs: product
-version: 3
-decision: DEC.2026-09-01.VIEW-WORKSPACE-BOOTSTRAP
+version: 4
+decision: DEC.2026-09-02.RUN-INITIALIZATION-CONTRACT
 producer: scripts/ci/generate-tool-surface.py
 consumers: [review, docs]
 check: crates/unica-coder/src/interfaces/mcp.rs::production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility
@@ -22,3 +22,8 @@ scope: [wire]
 `unica.view` принимает пустой объект для bootstrap-наблюдения рабочего
 пространства или `at` для логического чтения. Все tools и опубликованные
 аргументы описаны; compatibility payload ограничен 16 KiB.
+
+`unica.run` без `op` доступен до source admission и возвращает закрытый словарь
+операций вместе с назначением, `effects`, режимом `execution` и требованиями
+preview/fence. Изменяющие операции принимают `dryRun`; applied-вызов
+связывается с preview через `ifRev`.
