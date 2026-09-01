@@ -17,7 +17,7 @@ use crate::application::invocation_store::{EpochMillisClock, ToolIdentity};
 use crate::application::invocation_store_v5::{
     InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
     V5SafeFailureReason, V5StartWorkingOutcome, V5StoredInvocationRecord, V5StoredTask,
-    V5TaskIdentity, V5TaskStoreError,
+    V5TaskIdentity, V5TaskStatus, V5TaskStoreError,
 };
 use crate::application::invocation_v5::{
     classify_cancel_reserved_expiry_outcome, classify_recovered_receipt,
@@ -32,8 +32,8 @@ use crate::application::receipt_ledger::{
     OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError,
     ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome, ReserveOutcome, ReservedPhase,
     TaskBoundReceipt, TaskCancellationReceipt, TaskHandoffActorBoundReceipt,
-    TaskPromisedActorBoundReceipt, TaskTerminalBoundReceipt, TerminalDigest,
-    DIRECT_TERMINAL_RETENTION_MS,
+    TaskPromisedActorBoundReceipt, TaskRetirementPendingReceipt, TaskTerminalBoundReceipt,
+    TerminalDigest, DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
@@ -43,7 +43,8 @@ use crate::infrastructure::receipt_ledger::StableReceiptLedgerObservation;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
 use crate::infrastructure::task_lifecycle_link_store_v5::{
-    TaskLifecycleLinkRecord, TaskLifecycleLinkStoreError, TaskLifecycleLinkStoreV5,
+    TaskLifecycleLinkCatalogEntry, TaskLifecycleLinkRecord, TaskLifecycleLinkStoreError,
+    TaskLifecycleLinkStoreV5,
 };
 use crate::infrastructure::task_store::SystemEpochMillisClock;
 use crate::infrastructure::task_store_v5::FileInvocationStoreV5;
@@ -538,6 +539,12 @@ struct V5TaskProjection {
     recovery: TaskStoreRecoveryCatalog,
 }
 
+struct StartupTaskTerminalizationPlan {
+    expected: TaskBoundReceipt,
+    record: V5StoredInvocationRecord,
+    reason: RecoveryTerminalReason,
+}
+
 impl V5TaskProjection {
     fn open(
         state: &DaemonStateDirectory,
@@ -575,6 +582,156 @@ impl V5TaskProjection {
         self.lifecycle_link_root
             .validate_named_identity()
             .map_err(|error| format!("validate protocol-v5 lifecycle-link root: {error}"))
+    }
+
+    fn reconcile_materialized_startup(
+        &self,
+        deadline: Instant,
+    ) -> Result<(), V5TaskProjectionFailure> {
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        let lifecycle = self
+            .lifecycle_links
+            .catalog_snapshot(provider_deadline)
+            .map_err(V5TaskProjectionFailure::from_link_store)?;
+        let mut plans = Vec::new();
+
+        // Re-read every Task from the inspect-only startup catalog after the
+        // receipt loop: that loop may have completed an exact handoff and
+        // legitimately advanced the Task and lifecycle link.
+        for recovery in self.recovery.entries() {
+            let record = self
+                .task_store
+                .get(recovery.identity().task_id(), provider_deadline)
+                .map_err(|error| {
+                    V5TaskProjectionFailure::from_task_store(
+                        error,
+                        recovery.identity().receipt_key_digest().clone(),
+                        true,
+                    )
+                })?;
+            if !recovery.identity().matches_record(&record) {
+                return Err(Self::startup_fail_stop(
+                    "TaskStore recovery identity changed before startup reconciliation",
+                ));
+            }
+            if !matches!(
+                record.task.status(),
+                V5TaskStatus::Queued | V5TaskStatus::Working
+            ) {
+                continue;
+            }
+            let matching = lifecycle
+                .entries()
+                .iter()
+                .filter(|entry| lifecycle_entry_task_id(entry) == recovery.identity().task_id())
+                .collect::<Vec<_>>();
+            let [TaskLifecycleLinkCatalogEntry::Record(TaskLifecycleLinkRecord::TaskBound(expected))] =
+                matching.as_slice()
+            else {
+                return Err(Self::startup_fail_stop(
+                    "active Task has no exact lifecycle link",
+                ));
+            };
+            plans.push(self.preflight_task_bound_startup(expected, record)?);
+        }
+
+        // Receipt-driven reconciliation can materialize rows that were absent
+        // from the initial TaskStore preimage. Validate those links too, and
+        // require terminal lifecycle evidence to match the exact terminal Task.
+        for entry in lifecycle.entries() {
+            let TaskLifecycleLinkCatalogEntry::Record(link) = entry else {
+                continue;
+            };
+            match link {
+                TaskLifecycleLinkRecord::TaskBound(expected) => {
+                    if plans
+                        .iter()
+                        .any(|plan| plan.record.task_id == expected.task().task_id())
+                    {
+                        continue;
+                    }
+                    let record = self.read_startup_linked_task(
+                        expected.key_digest(),
+                        expected.task().task_id(),
+                        provider_deadline,
+                    )?;
+                    plans.push(self.preflight_task_bound_startup(expected, record)?);
+                }
+                TaskLifecycleLinkRecord::TaskTerminalBound(expected) => {
+                    let record = self.read_startup_linked_task(
+                        expected.key_digest(),
+                        expected.task().task_id(),
+                        provider_deadline,
+                    )?;
+                    if !task_terminal_bound_matches_record(expected, &record)? {
+                        return Err(Self::startup_fail_stop(
+                            "TaskTerminalBound does not confirm the exact terminal Task",
+                        ));
+                    }
+                }
+                TaskLifecycleLinkRecord::TaskRetirementPending(expected) => {
+                    let record = self.read_startup_linked_task(
+                        expected.key_digest(),
+                        expected.task().task_id(),
+                        provider_deadline,
+                    )?;
+                    if !task_retirement_pending_matches_record(expected, &record)? {
+                        return Err(Self::startup_fail_stop(
+                            "TaskRetirementPending does not confirm the exact terminal Task",
+                        ));
+                    }
+                }
+            }
+        }
+
+        for plan in plans {
+            self.terminalize_recovered_bound(&plan.expected, plan.record, plan.reason, deadline)?;
+        }
+        Ok(())
+    }
+
+    fn read_startup_linked_task(
+        &self,
+        receipt_key_digest: &ReceiptKeyDigest,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: crate::domain::code_intelligence::ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskProjectionFailure> {
+        self.task_store.get(task_id, deadline).map_err(|error| {
+            V5TaskProjectionFailure::from_task_store(error, receipt_key_digest.clone(), true)
+        })
+    }
+
+    fn preflight_task_bound_startup(
+        &self,
+        expected: &TaskBoundReceipt,
+        record: V5StoredInvocationRecord,
+    ) -> Result<StartupTaskTerminalizationPlan, V5TaskProjectionFailure> {
+        if !task_bound_matches_record(expected, &record)? {
+            return Err(Self::startup_fail_stop(
+                "TaskBound does not authorize the exact active Task",
+            ));
+        }
+        let reason = match expected.phase() {
+            AttemptPhase::NotBegun if record.cancel_requested => RecoveryTerminalReason::Cancelled,
+            AttemptPhase::NotBegun => RecoveryTerminalReason::InterruptedBeforeExecution,
+            AttemptPhase::Begun if record.task == V5StoredTask::Working => {
+                RecoveryTerminalReason::OutcomeUncertain
+            }
+            AttemptPhase::Begun => {
+                return Err(Self::startup_fail_stop(
+                    "TaskBound Begun requires exact Working Task",
+                ))
+            }
+        };
+        Ok(StartupTaskTerminalizationPlan {
+            expected: expected.clone(),
+            record,
+            reason,
+        })
+    }
+
+    fn startup_fail_stop(message: &'static str) -> V5TaskProjectionFailure {
+        V5TaskProjectionFailure::fail_stop(ReceiptLedgerError::Corrupt(message))
     }
 
     fn materialize_bound_handoff(
@@ -937,6 +1094,145 @@ impl V5TaskProjection {
     }
 }
 
+fn lifecycle_entry_task_id(
+    entry: &TaskLifecycleLinkCatalogEntry,
+) -> crate::domain::invocation::TaskId {
+    match entry {
+        TaskLifecycleLinkCatalogEntry::Reservation(reservation) => {
+            reservation.key().reserved_task_id()
+        }
+        TaskLifecycleLinkCatalogEntry::Record(record) => record.key().reserved_task_id(),
+    }
+}
+
+fn task_bound_matches_record(
+    expected: &TaskBoundReceipt,
+    record: &V5StoredInvocationRecord,
+) -> Result<bool, V5TaskProjectionFailure> {
+    if !task_link_identity_matches_record(
+        expected.key(),
+        expected.key_digest(),
+        expected.link(),
+        expected.task(),
+        record,
+    ) {
+        return Ok(false);
+    }
+    let exact_projection = expected.task_record_version() == record.version
+        && expected.task().version() == record.version
+        && expected.task().updated_at_epoch_ms() == record.updated_at_epoch_ms;
+    let one_step_successor = expected
+        .task_record_version()
+        .checked_add(1)
+        .is_some_and(|version| version == record.version)
+        && expected.task().version() == expected.task_record_version()
+        && expected.task().updated_at_epoch_ms() <= record.updated_at_epoch_ms
+        && (record.cancel_requested
+            || (expected.phase() == AttemptPhase::NotBegun
+                && record.task == V5StoredTask::Working));
+    Ok(exact_projection || one_step_successor)
+}
+
+fn task_terminal_bound_matches_record(
+    expected: &TaskTerminalBoundReceipt,
+    record: &V5StoredInvocationRecord,
+) -> Result<bool, V5TaskProjectionFailure> {
+    Ok(task_link_identity_matches_record(
+        expected.key(),
+        expected.key_digest(),
+        expected.link(),
+        expected.task(),
+        record,
+    ) && expected.task() == &receipt_task_projection_from_store(record)?
+        && expected.task_record_version() == record.version
+        && terminal_record_matches(
+            record,
+            expected.terminal_status(),
+            expected.terminal_digest(),
+            expected.terminal_epoch_ms(),
+        ))
+}
+
+fn task_retirement_pending_matches_record(
+    expected: &TaskRetirementPendingReceipt,
+    record: &V5StoredInvocationRecord,
+) -> Result<bool, V5TaskProjectionFailure> {
+    Ok(task_link_identity_matches_record(
+        expected.key(),
+        expected.key_digest(),
+        expected.link(),
+        expected.task(),
+        record,
+    ) && expected.task() == &receipt_task_projection_from_store(record)?
+        && expected.expected_terminal_task_version() == record.version
+        && terminal_record_matches(
+            record,
+            expected.terminal_status(),
+            expected.terminal_digest(),
+            expected.terminal_epoch_ms(),
+        ))
+}
+
+fn task_link_identity_matches_record(
+    key: &ReceiptKey,
+    key_digest: &ReceiptKeyDigest,
+    link: &crate::application::receipt_ledger::TaskLinkReference,
+    task: &ReceiptTaskProjection,
+    record: &V5StoredInvocationRecord,
+) -> bool {
+    key_digest == &record.receipt_key_digest
+        && key.reserved_task_id() == record.task_id
+        && key.invocation_id() == record.invocation_id
+        && key.tool() == record.tool
+        && key.normalized_arguments_hash() == &record.normalized_arguments_hash
+        && link.receipt_key_digest() == &record.receipt_key_digest
+        && link.task_id() == record.task_id
+        && link.invocation_id() == record.invocation_id
+        && link.workspace_identity_hash() == &record.workspace_identity_hash
+        && task.task_id() == record.task_id
+        && task.invocation_id() == record.invocation_id
+        && task.created_at_epoch_ms() == record.created_at_epoch_ms
+        && task.ttl_ms() == record.ttl_ms
+        && task.poll_interval_ms() == record.poll_interval_ms
+}
+
+fn terminal_record_matches(
+    record: &V5StoredInvocationRecord,
+    expected_status: ClosedTerminalStatus,
+    expected_digest: &TerminalDigest,
+    expected_epoch_ms: u64,
+) -> bool {
+    match &record.task {
+        V5StoredTask::Completed {
+            terminal_epoch_ms,
+            terminal_digest,
+            ..
+        } => {
+            expected_status == ClosedTerminalStatus::Completed
+                && terminal_digest == expected_digest
+                && *terminal_epoch_ms == expected_epoch_ms
+        }
+        V5StoredTask::Failed {
+            terminal_epoch_ms,
+            terminal_digest,
+            ..
+        } => {
+            expected_status == ClosedTerminalStatus::Failed
+                && terminal_digest == expected_digest
+                && *terminal_epoch_ms == expected_epoch_ms
+        }
+        V5StoredTask::Cancelled {
+            terminal_epoch_ms,
+            terminal_digest,
+        } => {
+            expected_status == ClosedTerminalStatus::Cancelled
+                && terminal_digest == expected_digest
+                && *terminal_epoch_ms == expected_epoch_ms
+        }
+        V5StoredTask::Queued | V5StoredTask::Working => false,
+    }
+}
+
 struct V5TaskProjectionFailure {
     error: ReceiptLedgerError,
     fail_stop: bool,
@@ -1203,8 +1499,101 @@ impl V5ReceiptRuntime {
             #[cfg(feature = "receipt-ledger-test-support")]
             telemetry: Arc::new(V5ReceiptRuntimeTelemetry::new()),
         };
+        runtime.preflight_existing_handoff_tasks(&recovery_keys, startup_deadline)?;
         runtime.reconcile_pre_task_startup(recovery_keys, startup_deadline)?;
+        runtime
+            .task_projection
+            .reconcile_materialized_startup(startup_deadline)
+            .map_err(|failure| {
+                let error = runtime.project_task_failure(failure);
+                format!("reconcile protocol-v5 materialized Task startup: {error}")
+            })?;
         Ok(runtime)
+    }
+
+    fn preflight_existing_handoff_tasks(
+        &self,
+        recovery_keys: &[ReceiptKey],
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        let lifecycle = self
+            .task_projection
+            .lifecycle_links
+            .catalog_snapshot(provider_deadline)
+            .map_err(|error| {
+                format!("inspect protocol-v5 startup handoff reservations: {error}")
+            })?;
+        for key in recovery_keys {
+            let state = self
+                .receipt_ledger
+                .recover(key.clone(), deadline)
+                .map_err(|error| format!("inspect protocol-v5 startup handoff receipt: {error}"))?;
+            let ReceiptState::TaskHandoffActorBound(handoff) = state else {
+                continue;
+            };
+            let Some(recovery) = self
+                .task_projection
+                .recovery
+                .entry(handoff.task().task_id())
+            else {
+                continue;
+            };
+            let matching = lifecycle
+                .entries()
+                .iter()
+                .filter(|entry| lifecycle_entry_task_id(entry) == handoff.task().task_id())
+                .collect::<Vec<_>>();
+            let [TaskLifecycleLinkCatalogEntry::Reservation(reservation)] = matching.as_slice()
+            else {
+                return Err(
+                    "preexisting handoff Task has no exact prior link reservation".to_owned(),
+                );
+            };
+            if reservation.key() != handoff.key() || reservation.link() != handoff.link() {
+                return Err(
+                    "preexisting handoff Task has no exact prior link reservation".to_owned(),
+                );
+            }
+            let record = self
+                .task_projection
+                .task_store
+                .get(handoff.task().task_id(), provider_deadline)
+                .map_err(|error| format!("read preexisting protocol-v5 handoff Task: {error}"))?;
+            let expected = NewV5InvocationRecord::new(
+                V5TaskIdentity::new(
+                    handoff.task().task_id(),
+                    handoff.task().invocation_id(),
+                    handoff.key_digest().clone(),
+                ),
+                handoff.key().tool(),
+                handoff.key().normalized_arguments_hash().clone(),
+                handoff.workspace_identity_hash().clone(),
+                handoff.task().poll_interval_ms(),
+                handoff.task().ttl_ms(),
+            )
+            .with_initial_epoch_ms(handoff.task().created_at_epoch_ms());
+            let state_matches = match handoff.phase() {
+                AttemptPhase::NotBegun => {
+                    record.task == V5StoredTask::Queued
+                        && (!record.cancel_requested || handoff.cancel_requested())
+                }
+                AttemptPhase::Begun => {
+                    record.task == V5StoredTask::Working
+                        && record.cancel_requested == handoff.cancel_requested()
+                }
+            };
+            if !recovery.identity().matches_record(&record)
+                || recovery.version() != record.version
+                || recovery.status() != record.task.status()
+                || recovery.cancel_requested() != record.cancel_requested
+                || !expected.matches_record(&record)
+                || !state_matches
+            {
+                return Err("preexisting handoff Task contradicts its exact receipt".to_owned());
+            }
+        }
+        Ok(())
     }
 
     fn reconcile_pre_task_startup(
@@ -4313,6 +4702,606 @@ mod tests {
                 (_, _, other) => panic!("unexpected recovered handoff Task: {other:?}"),
             }
         }
+    }
+
+    fn materialize_startup_task_bound(
+        runtime: &V5ReceiptRuntime,
+        identity: &CoreIdentity,
+        phase: AttemptPhase,
+    ) -> (ReceiptKey, V5StoredInvocationRecord, TaskBoundReceipt) {
+        let key = ReceiptKey::new(
+            InvocationId::new(),
+            TaskId::new(),
+            RequestIdentity::new(
+                identity.digest().clone(),
+                V5ToolIdentity::View,
+                normalized_arguments_hash(&serde_json::Map::new()),
+                request_scope_hash("workspace-a").expect("request scope"),
+            ),
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let reserved = runtime
+            .receipt_ledger
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                deadline,
+            )
+            .expect("reserve materialized startup receipt")
+            .into_reservation()
+            .expect("new materialized startup receipt");
+        let actor_bound = runtime
+            .receipt_ledger
+            .bind_reserved_actor(
+                key.clone(),
+                reserved.record_version(),
+                SafeIdentityHash::from_sha256(Sha256::digest(b"materialized-startup").into()),
+                deadline,
+            )
+            .expect("bind materialized startup actor");
+        let receipt_version = match phase {
+            AttemptPhase::NotBegun => actor_bound.record_version(),
+            AttemptPhase::Begun => runtime
+                .receipt_ledger
+                .mark_reserved_begun(key.clone(), actor_bound.record_version(), deadline)
+                .expect("mark materialized startup receipt begun")
+                .record_version(),
+        };
+        let handoff = runtime
+            .receipt_ledger
+            .begin_bound_task_handoff(
+                key.clone(),
+                receipt_version,
+                1_009,
+                3_600_000,
+                V5_TASK_POLL_INTERVAL_MS,
+                deadline,
+            )
+            .expect("begin materialized startup handoff");
+        let (record, task_bound) = runtime
+            .task_projection
+            .materialize_bound_handoff(
+                &handoff,
+                1_009,
+                deadline,
+                #[cfg(feature = "receipt-ledger-test-support")]
+                &runtime.telemetry,
+            )
+            .unwrap_or_else(|failure| panic!("materialize startup TaskBound: {}", failure.error));
+        let task_bound = runtime
+            .receipt_ledger
+            .complete_bound_task_handoff(
+                key.clone(),
+                handoff.record_version(),
+                task_bound,
+                deadline,
+            )
+            .expect("complete startup TaskBound ownership");
+        (key, record, task_bound)
+    }
+
+    #[test]
+    fn startup_terminalizes_already_materialized_not_begun_task_bound() {
+        for cancel_requested in [false, true] {
+            let root = tempfile::tempdir().expect("temporary materialized TaskBound root");
+            let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+            let identity = CoreIdentity::production_v5();
+            let state = DaemonStateDirectory::open(&state_root, &identity)
+                .expect("open materialized TaskBound daemon state");
+            let config = DaemonServerConfig::new(
+                state_root.clone(),
+                identity.clone(),
+                Duration::from_millis(50),
+            );
+            let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+            let (key, _record, _task_bound) =
+                materialize_startup_task_bound(&runtime, &identity, AttemptPhase::NotBegun);
+            if cancel_requested {
+                runtime
+                    .task_projection
+                    .cancel_bound_task(
+                        key.reserved_task_id(),
+                        Instant::now() + Duration::from_secs(2),
+                    )
+                    .unwrap_or_else(|failure| {
+                        panic!("request materialized Task cancellation: {}", failure.error)
+                    })
+                    .expect("materialized Task exists");
+            }
+            drop(runtime);
+
+            let reopened = V5ReceiptRuntime::open(&state, &config)
+                .expect("reconcile already materialized TaskBound");
+            let snapshot = reopened
+                .resolve_task(
+                    key.reserved_task_id(),
+                    Instant::now() + Duration::from_secs(2),
+                )
+                .expect("resolve reconciled materialized Task");
+            match (cancel_requested, snapshot) {
+                (
+                    false,
+                    crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                        reason: V5SafeFailureReason::Interrupted,
+                        ..
+                    },
+                )
+                | (
+                    true,
+                    crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Cancelled {
+                        cancel_requested: true,
+                        ..
+                    },
+                ) => {}
+                (_, other) => panic!("unexpected materialized TaskBound recovery: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn startup_terminalizes_exact_working_begun_task_bound_as_outcome_uncertain() {
+        let root = tempfile::tempdir().expect("temporary begun TaskBound root");
+        let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+        let identity = CoreIdentity::production_v5();
+        let state = DaemonStateDirectory::open(&state_root, &identity)
+            .expect("open begun TaskBound daemon state");
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(50),
+        );
+        let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+        let (key, record, task_bound) =
+            materialize_startup_task_bound(&runtime, &identity, AttemptPhase::Begun);
+        let (_working, _working_bound) = runtime
+            .task_projection
+            .start_bound_task(&task_bound, record, Instant::now() + Duration::from_secs(2))
+            .unwrap_or_else(|failure| panic!("start exact begun Task: {}", failure.error));
+        drop(runtime);
+
+        let reopened =
+            V5ReceiptRuntime::open(&state, &config).expect("reconcile exact begun TaskBound");
+        assert!(matches!(
+            reopened
+                .resolve_task(
+                    key.reserved_task_id(),
+                    Instant::now() + Duration::from_secs(2)
+                )
+                .expect("resolve reconciled begun Task"),
+            crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                reason: V5SafeFailureReason::OutcomeUncertain,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn startup_rejects_queued_begun_task_bound_without_mutation() {
+        let root = tempfile::tempdir().expect("temporary invalid begun TaskBound root");
+        let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+        let identity = CoreIdentity::production_v5();
+        let state = DaemonStateDirectory::open(&state_root, &identity)
+            .expect("open invalid begun TaskBound daemon state");
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(50),
+        );
+        let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+        let (key, queued, _task_bound) =
+            materialize_startup_task_bound(&runtime, &identity, AttemptPhase::Begun);
+        drop(runtime);
+
+        let error = match V5ReceiptRuntime::open(&state, &config) {
+            Ok(_) => panic!("queued begun TaskBound must fail-stop startup"),
+            Err(error) => error,
+        };
+        assert!(error.contains("TaskBound Begun requires exact Working Task"));
+
+        let task_root = RetainedDirectoryCapability::open(&state.path().join("tasks"))
+            .expect("retain TaskStore after failed startup");
+        let (store, recovery) = FileInvocationStoreV5::open_retained_directory_inspect_only(
+            task_root,
+            Arc::new(SystemEpochMillisClock),
+            crate::domain::code_intelligence::ProviderDeadline::new(
+                Instant::now() + Duration::from_secs(2),
+            ),
+        )
+        .expect("inspect TaskStore after failed startup");
+        assert_eq!(
+            store
+                .get(
+                    key.reserved_task_id(),
+                    crate::domain::code_intelligence::ProviderDeadline::new(
+                        Instant::now() + Duration::from_secs(2),
+                    ),
+                )
+                .expect("read unchanged queued Task"),
+            queued
+        );
+        assert_eq!(recovery.entries().len(), 1);
+    }
+
+    #[test]
+    fn startup_rejects_active_task_without_lifecycle_link_without_mutation() {
+        let root = tempfile::tempdir().expect("temporary orphan Task root");
+        let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+        let identity = CoreIdentity::production_v5();
+        let state = DaemonStateDirectory::open(&state_root, &identity)
+            .expect("open orphan Task daemon state");
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(50),
+        );
+        let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+        let key = ReceiptKey::new(
+            InvocationId::new(),
+            TaskId::new(),
+            RequestIdentity::new(
+                identity.digest().clone(),
+                V5ToolIdentity::View,
+                normalized_arguments_hash(&serde_json::Map::new()),
+                request_scope_hash("workspace-a").expect("request scope"),
+            ),
+        );
+        let workspace_identity =
+            SafeIdentityHash::from_sha256(Sha256::digest(b"orphan-startup").into());
+        let orphan = runtime
+            .task_projection
+            .task_store
+            .create_exact(
+                NewV5InvocationRecord::new(
+                    V5TaskIdentity::new(
+                        key.reserved_task_id(),
+                        key.invocation_id(),
+                        receipt_key_digest(&key),
+                    ),
+                    key.tool(),
+                    key.normalized_arguments_hash().clone(),
+                    workspace_identity,
+                    V5_TASK_POLL_INTERVAL_MS,
+                    3_600_000,
+                )
+                .with_initial_epoch_ms(1_009),
+                crate::domain::code_intelligence::ProviderDeadline::new(
+                    Instant::now() + Duration::from_secs(2),
+                ),
+            )
+            .expect("create orphan startup Task");
+        drop(runtime);
+
+        let error = match V5ReceiptRuntime::open(&state, &config) {
+            Ok(_) => panic!("active Task without lifecycle link must fail-stop startup"),
+            Err(error) => error,
+        };
+        assert!(error.contains("active Task has no exact lifecycle link"));
+
+        let task_root = RetainedDirectoryCapability::open(&state.path().join("tasks"))
+            .expect("retain orphan TaskStore after failed startup");
+        let (store, recovery) = FileInvocationStoreV5::open_retained_directory_inspect_only(
+            task_root,
+            Arc::new(SystemEpochMillisClock),
+            crate::domain::code_intelligence::ProviderDeadline::new(
+                Instant::now() + Duration::from_secs(2),
+            ),
+        )
+        .expect("inspect orphan TaskStore after failed startup");
+        assert_eq!(
+            store
+                .get(
+                    key.reserved_task_id(),
+                    crate::domain::code_intelligence::ProviderDeadline::new(
+                        Instant::now() + Duration::from_secs(2),
+                    ),
+                )
+                .expect("read unchanged orphan Task"),
+            orphan
+        );
+        assert_eq!(recovery.entries().len(), 1);
+    }
+
+    #[test]
+    fn startup_receipt_loop_completes_exact_reserved_link_with_preexisting_queued_task() {
+        let root = tempfile::tempdir().expect("temporary preexisting handoff root");
+        let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+        let identity = CoreIdentity::production_v5();
+        let state = DaemonStateDirectory::open(&state_root, &identity)
+            .expect("open preexisting handoff daemon state");
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(50),
+        );
+        let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+        let key = ReceiptKey::new(
+            InvocationId::new(),
+            TaskId::new(),
+            RequestIdentity::new(
+                identity.digest().clone(),
+                V5ToolIdentity::View,
+                normalized_arguments_hash(&serde_json::Map::new()),
+                request_scope_hash("workspace-a").expect("request scope"),
+            ),
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let reserved = runtime
+            .receipt_ledger
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                deadline,
+            )
+            .expect("reserve preexisting handoff receipt")
+            .into_reservation()
+            .expect("new preexisting handoff receipt");
+        let workspace_identity =
+            SafeIdentityHash::from_sha256(Sha256::digest(b"preexisting-handoff").into());
+        let actor_bound = runtime
+            .receipt_ledger
+            .bind_reserved_actor(
+                key.clone(),
+                reserved.record_version(),
+                workspace_identity.clone(),
+                deadline,
+            )
+            .expect("bind preexisting handoff actor");
+        let handoff = runtime
+            .receipt_ledger
+            .begin_bound_task_handoff(
+                key.clone(),
+                actor_bound.record_version(),
+                1_009,
+                3_600_000,
+                V5_TASK_POLL_INTERVAL_MS,
+                deadline,
+            )
+            .expect("begin preexisting handoff");
+        runtime
+            .task_projection
+            .lifecycle_links
+            .reserve_task_link(
+                key.clone(),
+                handoff.link().clone(),
+                crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+            )
+            .expect("reserve exact preexisting Task link");
+        runtime
+            .task_projection
+            .task_store
+            .create_exact(
+                NewV5InvocationRecord::new(
+                    V5TaskIdentity::new(
+                        key.reserved_task_id(),
+                        key.invocation_id(),
+                        receipt_key_digest(&key),
+                    ),
+                    key.tool(),
+                    key.normalized_arguments_hash().clone(),
+                    workspace_identity,
+                    V5_TASK_POLL_INTERVAL_MS,
+                    3_600_000,
+                )
+                .with_initial_epoch_ms(1_009),
+                crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+            )
+            .expect("create exact preexisting queued Task");
+        drop(runtime);
+
+        let reopened = V5ReceiptRuntime::open(&state, &config)
+            .expect("receipt loop completes preexisting handoff");
+        assert!(matches!(
+            reopened
+                .resolve_task(
+                    key.reserved_task_id(),
+                    Instant::now() + Duration::from_secs(2)
+                )
+                .expect("resolve preexisting handoff Task"),
+            crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                reason: V5SafeFailureReason::Interrupted,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn startup_rejects_preexisting_handoff_task_without_prior_link_reservation() {
+        let root = tempfile::tempdir().expect("temporary missing handoff reservation root");
+        let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+        let identity = CoreIdentity::production_v5();
+        let state = DaemonStateDirectory::open(&state_root, &identity)
+            .expect("open missing handoff reservation daemon state");
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(50),
+        );
+        let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+        let key = ReceiptKey::new(
+            InvocationId::new(),
+            TaskId::new(),
+            RequestIdentity::new(
+                identity.digest().clone(),
+                V5ToolIdentity::View,
+                normalized_arguments_hash(&serde_json::Map::new()),
+                request_scope_hash("workspace-a").expect("request scope"),
+            ),
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let reserved = runtime
+            .receipt_ledger
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                deadline,
+            )
+            .expect("reserve missing-reservation handoff receipt")
+            .into_reservation()
+            .expect("new missing-reservation handoff receipt");
+        let workspace_identity =
+            SafeIdentityHash::from_sha256(Sha256::digest(b"missing-handoff-reservation").into());
+        let actor_bound = runtime
+            .receipt_ledger
+            .bind_reserved_actor(
+                key.clone(),
+                reserved.record_version(),
+                workspace_identity.clone(),
+                deadline,
+            )
+            .expect("bind missing-reservation handoff actor");
+        runtime
+            .receipt_ledger
+            .begin_bound_task_handoff(
+                key.clone(),
+                actor_bound.record_version(),
+                1_009,
+                3_600_000,
+                V5_TASK_POLL_INTERVAL_MS,
+                deadline,
+            )
+            .expect("begin missing-reservation handoff");
+        let queued = runtime
+            .task_projection
+            .task_store
+            .create_exact(
+                NewV5InvocationRecord::new(
+                    V5TaskIdentity::new(
+                        key.reserved_task_id(),
+                        key.invocation_id(),
+                        receipt_key_digest(&key),
+                    ),
+                    key.tool(),
+                    key.normalized_arguments_hash().clone(),
+                    workspace_identity,
+                    V5_TASK_POLL_INTERVAL_MS,
+                    3_600_000,
+                )
+                .with_initial_epoch_ms(1_009),
+                crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+            )
+            .expect("create preexisting handoff Task without reservation");
+        drop(runtime);
+
+        let error = match V5ReceiptRuntime::open(&state, &config) {
+            Ok(_) => panic!("handoff Task without prior reservation must fail-stop startup"),
+            Err(error) => error,
+        };
+        assert!(error.contains("preexisting handoff Task has no exact prior link reservation"));
+
+        let task_root = RetainedDirectoryCapability::open(&state.path().join("tasks"))
+            .expect("retain handoff TaskStore after failed startup");
+        let (store, _) = FileInvocationStoreV5::open_retained_directory_inspect_only(
+            task_root,
+            Arc::new(SystemEpochMillisClock),
+            crate::domain::code_intelligence::ProviderDeadline::new(
+                Instant::now() + Duration::from_secs(2),
+            ),
+        )
+        .expect("inspect handoff TaskStore after failed startup");
+        assert_eq!(
+            store
+                .get(
+                    key.reserved_task_id(),
+                    crate::domain::code_intelligence::ProviderDeadline::new(
+                        Instant::now() + Duration::from_secs(2),
+                    ),
+                )
+                .expect("read unchanged handoff Task"),
+            queued
+        );
+        let links = TaskLifecycleLinkStoreV5::open(
+            state.path().join("task-lifecycle-links"),
+            crate::domain::code_intelligence::ProviderDeadline::new(
+                Instant::now() + Duration::from_secs(2),
+            ),
+        )
+        .expect("inspect lifecycle store after failed startup")
+        .catalog_snapshot(crate::domain::code_intelligence::ProviderDeadline::new(
+            Instant::now() + Duration::from_secs(2),
+        ))
+        .expect("snapshot unchanged lifecycle store");
+        assert!(links.entries().is_empty());
+    }
+
+    #[test]
+    fn startup_rejects_task_terminal_bound_that_does_not_confirm_exact_terminal_task() {
+        let root = tempfile::tempdir().expect("temporary terminal mismatch root");
+        let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+        let identity = CoreIdentity::production_v5();
+        let state = DaemonStateDirectory::open(&state_root, &identity)
+            .expect("open terminal mismatch daemon state");
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(50),
+        );
+        let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+        let (key, queued, task_bound) =
+            materialize_startup_task_bound(&runtime, &identity, AttemptPhase::NotBegun);
+        let deadline = crate::domain::code_intelligence::ProviderDeadline::new(
+            Instant::now() + Duration::from_secs(2),
+        );
+        let terminal = runtime
+            .task_projection
+            .task_store
+            .terminalize_recovered_exact(
+                &queued.identity(),
+                queued.version,
+                RecoveryTerminalReason::InterruptedBeforeExecution,
+                deadline,
+            )
+            .expect("terminalize exact TaskStore record");
+        let V5StoredTask::Failed {
+            terminal_epoch_ms, ..
+        } = &terminal.task
+        else {
+            panic!("recovery terminal must be Failed")
+        };
+        let wrong_digest: TerminalDigest = "ff".repeat(32).parse().expect("wrong terminal digest");
+        runtime
+            .task_projection
+            .lifecycle_links
+            .publish_task_terminal_bound(
+                &task_bound,
+                receipt_task_projection_from_store(&terminal).unwrap_or_else(|failure| {
+                    panic!("project exact terminal Task: {}", failure.error)
+                }),
+                terminal.version,
+                ClosedTerminalStatus::Failed,
+                wrong_digest,
+                *terminal_epoch_ms,
+                deadline,
+            )
+            .expect("publish deliberately mismatched TaskTerminalBound");
+        drop(runtime);
+
+        let error = match V5ReceiptRuntime::open(&state, &config) {
+            Ok(_) => panic!("mismatched TaskTerminalBound must fail-stop startup"),
+            Err(error) => error,
+        };
+        assert!(error.contains("TaskTerminalBound does not confirm the exact terminal Task"));
+
+        let task_root = RetainedDirectoryCapability::open(&state.path().join("tasks"))
+            .expect("retain terminal TaskStore after failed startup");
+        let (store, _) = FileInvocationStoreV5::open_retained_directory_inspect_only(
+            task_root,
+            Arc::new(SystemEpochMillisClock),
+            crate::domain::code_intelligence::ProviderDeadline::new(
+                Instant::now() + Duration::from_secs(2),
+            ),
+        )
+        .expect("inspect terminal TaskStore after failed startup");
+        assert_eq!(
+            store
+                .get(
+                    key.reserved_task_id(),
+                    crate::domain::code_intelligence::ProviderDeadline::new(
+                        Instant::now() + Duration::from_secs(2),
+                    ),
+                )
+                .expect("read unchanged terminal Task"),
+            terminal
+        );
     }
 
     #[test]

@@ -7378,7 +7378,7 @@ fn v5_rejects_v3_v4_and_strictly_round_trips_receipt_messages() {
         let probe = matches[0];
         assert_eq!(probe.client, ProtocolVersion::V5);
         assert_eq!(probe.server, ProtocolVersion::V5);
-        assert_eq!(probe.error, None);
+        assert_eq!(probe.error, None, "{label}");
         assert_protocol_event_trace(probe, true, true);
         let client_write =
             protocol_jsonl_frame(&probe.client_write_frame_hex, MAX_PROTOCOL_FRAME_BYTES);
@@ -9772,7 +9772,15 @@ fn v5_active_task_without_exact_receipt_link_fail_stops_before_listener() {
     assert_eq!(reconciled.task_link_reserved_count, 0);
     assert_eq!(
         task_link_state(only_task_link(reconciled)),
-        SeedReceiptState::TaskBoundNotBegun
+        SeedReceiptState::TaskTerminalBound
+    );
+    assert_eq!(only_task(reconciled).status, TaskStatus::Failed);
+    assert_failed_terminal(
+        only_task(reconciled)
+            .terminal
+            .as_ref()
+            .expect("startup must close an exact not-begun Task"),
+        V5SafeFailureReason::Interrupted,
     );
     assert!(reconciled.receipts.is_empty());
     assert_eq!(reconciled.callbacks.total_domain(), 0);

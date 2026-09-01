@@ -73,6 +73,36 @@ pub(crate) struct FileInvocationStoreV5 {
 }
 
 impl FileInvocationStoreV5 {
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn seed_exact_record_for_test(
+        &self,
+        record: V5StoredInvocationRecord,
+        deadline: ProviderDeadline,
+    ) -> Result<(), V5TaskStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        if writer.records.contains_key(&record.task_id) {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: record.task_id,
+                reason: V5TaskMismatch::ExistingRecord,
+            });
+        }
+        if writer.records.len() >= self.limits.max_records {
+            return Err(V5TaskStoreError::Capacity {
+                max_records: self.limits.max_records,
+            });
+        }
+        if record.version == 0
+            || record.ttl_ms == 0
+            || record.poll_interval_ms == 0
+            || record.updated_at_epoch_ms < record.created_at_epoch_ms
+        {
+            return Err(V5TaskStoreError::Corrupt(
+                "test Task seed violates the persisted record contract",
+            ));
+        }
+        self.publish_record(&mut writer, &record, V5CommitOperation::Create, deadline)
+    }
+
     pub(crate) fn open_inspect_only(
         root: impl AsRef<Path>,
         clock: Arc<dyn EpochMillisClock>,
