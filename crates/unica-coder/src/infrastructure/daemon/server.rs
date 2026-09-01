@@ -1418,16 +1418,22 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(result.diagnostics[0]["code"], "invalid_project_config");
     }
 
-    #[cfg(unix)]
     #[test]
     fn canonical_view_bootstrap_classifies_broken_project_config_link_as_invalid() {
+        use crate::infrastructure::platform::testing::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
         let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(
+        let outcome = create_file_link_fixture_for_test(
             "missing-v8project.yaml",
             workspace.path().join("v8project.yaml"),
         )
         .unwrap();
+        if outcome != FileLinkFixtureOutcome::Created {
+            return;
+        }
         let runtime = bootstrap_runtime(task_root.path());
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
