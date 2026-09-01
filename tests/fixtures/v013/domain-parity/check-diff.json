@@ -2,6 +2,38 @@
   "schemaVersion": 2,
   "complete": false,
   "baselineDispositions": [],
-  "cases": [],
+  "cases": [
+    {
+      "caseId": "check-cf-real-validator",
+      "entry": "check",
+      "mode": "validation.profile=cf",
+      "fixture": "tests/fixtures/v013/domain-parity/check-diff.json",
+      "expected": {
+        "outcome": "normalized-diagnostics",
+        "rawStreams": false,
+        "physicalPaths": false
+      }
+    },
+    {
+      "caseId": "check-unavailable-dependency",
+      "entry": "check",
+      "mode": "validation.profile=cf;dependency=unavailable",
+      "fixture": "tests/fixtures/v013/domain-parity/check-diff.json",
+      "expected": {
+        "outcome": "dependency_unavailable"
+      }
+    },
+    {
+      "caseId": "diff-bounded-revision-cursor",
+      "entry": "diff",
+      "mode": "limit=2;cursor=both-revisions",
+      "fixture": "tests/fixtures/v013/domain-parity/check-diff.json",
+      "expected": {
+        "outcome": "stale_cursor_on_either_revision",
+        "boundedChanges": true,
+        "incomparableKinds": "rejected"
+      }
+    }
+  ],
   "newCapabilities": []
 }

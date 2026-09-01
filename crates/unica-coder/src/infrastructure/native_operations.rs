@@ -30,6 +30,10 @@ pub(crate) mod support;
 pub(crate) mod template;
 pub(crate) mod text_snapshot;
 pub(crate) mod typed_result;
+// The A0 validator adapter is consumed by the shared V13 dispatcher in J0.
+// Keep the seam compiled and tested before that wiring lands.
+#[allow(dead_code)]
+pub(crate) mod v13_analysis;
 // The staged B4 XDTO planner/writer remains dormant until its W1B actor route.
 #[allow(dead_code)]
 pub(crate) mod xdto;
