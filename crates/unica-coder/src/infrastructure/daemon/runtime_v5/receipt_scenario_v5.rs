@@ -2169,7 +2169,7 @@ fn run_v3_protocol_probe(
         record.token().to_string(),
         identity.clone(),
     ))?;
-    let request_frame = build_v3_probe_request_frame(&message)?;
+    let request_frame = build_v3_probe_request_frame(client, &message)?;
     let accepted = client == ScenarioProtocolVersion::V3;
     let response = if accepted {
         match message {
@@ -2346,7 +2346,27 @@ fn build_v5_probe_request_frame(
         ScenarioProtocolMessage::MalformedV5Schema { target } => {
             jsonl_bytes_from_value(&strict_schema_mutation_value(*target))
         }
-        _ => jsonl_frame(&V5ClientRequest::Ping {}),
+        ScenarioProtocolMessage::MaximumResponseFrame
+        | ScenarioProtocolMessage::OversizedResponseFrame
+        | ScenarioProtocolMessage::ErrorCodeFrame { .. }
+        | ScenarioProtocolMessage::ReceiptPendingOutcome
+        | ScenarioProtocolMessage::TaskOutcome
+        | ScenarioProtocolMessage::AcknowledgedOutcome
+        | ScenarioProtocolMessage::DirectCompletedTerminal
+        | ScenarioProtocolMessage::DirectSemanticCompletedTerminal
+        | ScenarioProtocolMessage::DirectCancelledTerminal
+        | ScenarioProtocolMessage::DirectFailureTerminal { .. }
+        | ScenarioProtocolMessage::TaskQueuedProjection
+        | ScenarioProtocolMessage::TaskWorkingProjection
+        | ScenarioProtocolMessage::TaskCompletedProjection
+        | ScenarioProtocolMessage::TaskSemanticCompletedProjection { .. }
+        | ScenarioProtocolMessage::TaskCancelledProjection
+        | ScenarioProtocolMessage::TaskFailureProjection { .. } => {
+            jsonl_frame(&V5ClientRequest::Ping {})
+        }
+        ScenarioProtocolMessage::StoredInvocationRecord { .. } => {
+            Err("protocol-v5 request builder does not support stored-record probes".to_owned())
+        }
     }
 }
 
@@ -2392,7 +2412,10 @@ fn seed_direct_probe_terminal(
     Ok((key, terminal_digest))
 }
 
-fn build_v3_probe_request_frame(message: &ScenarioProtocolMessage) -> Result<Vec<u8>, String> {
+fn build_v3_probe_request_frame(
+    client: ScenarioProtocolVersion,
+    message: &ScenarioProtocolMessage,
+) -> Result<Vec<u8>, String> {
     match message {
         ScenarioProtocolMessage::Ping => jsonl_frame(&protocol_v3::ClientRequest::Ping {}),
         ScenarioProtocolMessage::Release => jsonl_frame(&protocol_v3::ClientRequest::Release {}),
@@ -2418,7 +2441,42 @@ fn build_v3_probe_request_frame(message: &ScenarioProtocolMessage) -> Result<Vec
                 task_id: TaskId::new(),
             })
         }
-        _ => jsonl_frame(&protocol_v3::ClientRequest::Ping {}),
+        ScenarioProtocolMessage::DirectFailureTerminal { .. }
+        | ScenarioProtocolMessage::StoredInvocationRecord { .. }
+            if client == ScenarioProtocolVersion::V3 =>
+        {
+            jsonl_frame(&protocol_v3::ClientRequest::Ping {})
+        }
+        ScenarioProtocolMessage::RecoverReceipt
+        | ScenarioProtocolMessage::AcknowledgeReceipt
+        | ScenarioProtocolMessage::CancelReceipt
+            if client != ScenarioProtocolVersion::V3 =>
+        {
+            jsonl_frame(&protocol_v3::ClientRequest::Ping {})
+        }
+        ScenarioProtocolMessage::RecoverReceipt
+        | ScenarioProtocolMessage::AcknowledgeReceipt
+        | ScenarioProtocolMessage::CancelReceipt
+        | ScenarioProtocolMessage::MaximumResponseFrame
+        | ScenarioProtocolMessage::OversizedResponseFrame
+        | ScenarioProtocolMessage::ErrorCodeFrame { .. }
+        | ScenarioProtocolMessage::MalformedV5Schema { .. }
+        | ScenarioProtocolMessage::ReceiptPendingOutcome
+        | ScenarioProtocolMessage::TaskOutcome
+        | ScenarioProtocolMessage::AcknowledgedOutcome
+        | ScenarioProtocolMessage::DirectCompletedTerminal
+        | ScenarioProtocolMessage::DirectSemanticCompletedTerminal
+        | ScenarioProtocolMessage::DirectCancelledTerminal
+        | ScenarioProtocolMessage::DirectFailureTerminal { .. }
+        | ScenarioProtocolMessage::TaskQueuedProjection
+        | ScenarioProtocolMessage::TaskWorkingProjection
+        | ScenarioProtocolMessage::TaskCompletedProjection
+        | ScenarioProtocolMessage::TaskSemanticCompletedProjection { .. }
+        | ScenarioProtocolMessage::TaskCancelledProjection
+        | ScenarioProtocolMessage::TaskFailureProjection { .. }
+        | ScenarioProtocolMessage::StoredInvocationRecord { .. } => {
+            Err("protocol-v3 request builder does not support this probe".to_owned())
+        }
     }
 }
 
@@ -4010,15 +4068,15 @@ impl ReceiptScenarioAction {
                 matches!(
                     request,
                     ScenarioRequest::Canonical | ScenarioRequest::SameIdentity
-                ) && matches!(
-                    disconnect,
-                    ScenarioDisconnect::Never
-                        | ScenarioDisconnect::AfterSubmitWrite
-                        | ScenarioDisconnect::AfterTerminalCommit
-                )
+                ) && matches!(disconnect, ScenarioDisconnect::Never)
             }
             Self::SendOuterEnvelope { .. } => true,
-            Self::ProbeProtocol { .. } => true,
+            Self::ProbeProtocol {
+                client,
+                server,
+                message,
+                ..
+            } => protocol_probe_is_supported(*client, *server, message),
             Self::Recover { key, .. } => matches!(key, ScenarioKey::Exact),
             Self::Acknowledge {
                 key, disconnect, ..
@@ -4055,6 +4113,36 @@ impl ReceiptScenarioAction {
                     | ScenarioSeedReceiptState::ReservedUnbound
             ),
         }
+    }
+}
+
+fn protocol_probe_is_supported(
+    client: ScenarioProtocolVersion,
+    server: ScenarioProtocolVersion,
+    message: &ScenarioProtocolMessage,
+) -> bool {
+    match server {
+        ScenarioProtocolVersion::V4 => false,
+        ScenarioProtocolVersion::V5 => !matches!(
+            message,
+            ScenarioProtocolMessage::StoredInvocationRecord { .. }
+        ),
+        ScenarioProtocolVersion::V3 => match message {
+            ScenarioProtocolMessage::Ping
+            | ScenarioProtocolMessage::Release
+            | ScenarioProtocolMessage::SubmitWithCoreIdentity { .. }
+            | ScenarioProtocolMessage::GetTask
+            | ScenarioProtocolMessage::WaitTask
+            | ScenarioProtocolMessage::CancelTask => true,
+            ScenarioProtocolMessage::DirectFailureTerminal { .. }
+            | ScenarioProtocolMessage::StoredInvocationRecord { .. } => {
+                client == ScenarioProtocolVersion::V3
+            }
+            ScenarioProtocolMessage::RecoverReceipt
+            | ScenarioProtocolMessage::AcknowledgeReceipt
+            | ScenarioProtocolMessage::CancelReceipt => client != ScenarioProtocolVersion::V3,
+            _ => false,
+        },
     }
 }
 
@@ -4321,6 +4409,64 @@ mod tests {
     };
     use crate::infrastructure::daemon::protocol_v5::V5InvocationPhase as TestV5InvocationPhase;
     use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
+
+    #[test]
+    fn support_filter_rejects_actions_without_an_interpreter_path() {
+        for disconnect in [
+            ScenarioDisconnect::AfterSubmitWrite,
+            ScenarioDisconnect::AfterTerminalCommit,
+        ] {
+            let action = ReceiptScenarioAction::Submit {
+                request: ScenarioRequest::Canonical,
+                response_budget_ms: 7_000,
+                disconnect,
+                label: "unsupported-disconnect".to_owned(),
+            };
+            assert!(!action.is_supported());
+        }
+
+        for action in [
+            ReceiptScenarioAction::ProbeProtocol {
+                client: ScenarioProtocolVersion::V5,
+                server: ScenarioProtocolVersion::V4,
+                message: ScenarioProtocolMessage::Ping,
+                label: "unsupported-server".to_owned(),
+            },
+            ReceiptScenarioAction::ProbeProtocol {
+                client: ScenarioProtocolVersion::V3,
+                server: ScenarioProtocolVersion::V3,
+                message: ScenarioProtocolMessage::RecoverReceipt,
+                label: "unsupported-v3-request".to_owned(),
+            },
+            ReceiptScenarioAction::ProbeProtocol {
+                client: ScenarioProtocolVersion::V5,
+                server: ScenarioProtocolVersion::V5,
+                message: ScenarioProtocolMessage::StoredInvocationRecord {
+                    schema_version: 1,
+                    reason: ScenarioFailureProbeReason::InvocationFailed,
+                },
+                label: "unsupported-v5-request".to_owned(),
+            },
+        ] {
+            assert!(!action.is_supported());
+        }
+
+        assert!(ReceiptScenarioAction::AdvanceMonotonic { millis: 1 }.is_supported());
+        assert!(build_v3_probe_request_frame(
+            ScenarioProtocolVersion::V3,
+            &ScenarioProtocolMessage::RecoverReceipt,
+        )
+        .is_err());
+        assert!(build_v5_probe_request_frame(
+            Path::new("unused-for-rejected-message"),
+            &CoreIdentity::production_v5(),
+            &ScenarioProtocolMessage::StoredInvocationRecord {
+                schema_version: 1,
+                reason: ScenarioFailureProbeReason::InvocationFailed,
+            },
+        )
+        .is_err());
+    }
 
     #[test]
     fn receipt_pending_observation_distinguishes_phase_and_projects_cancel_request() {
