@@ -1062,38 +1062,66 @@ impl V5ReceiptRuntime {
                         ))
                     }
                 };
-            let ReceiptState::Reserved(reserved) = state else {
-                continue;
-            };
-            let outcome = match reserved.phase() {
-                ReservedPhase::Begun { .. } => ReceiptTerminalOutcome::Failed {
-                    reason: V5SafeFailureReason::OutcomeUncertain,
-                },
-                ReservedPhase::Unbound | ReservedPhase::ActorBound { .. }
-                    if reserved.cancel_requested() =>
-                {
-                    ReceiptTerminalOutcome::Cancelled
+            match state {
+                ReceiptState::Reserved(reserved) => {
+                    let outcome = match reserved.phase() {
+                        ReservedPhase::Begun { .. } => ReceiptTerminalOutcome::Failed {
+                            reason: V5SafeFailureReason::OutcomeUncertain,
+                        },
+                        ReservedPhase::Unbound | ReservedPhase::ActorBound { .. }
+                            if reserved.cancel_requested() =>
+                        {
+                            ReceiptTerminalOutcome::Cancelled
+                        }
+                        ReservedPhase::Unbound | ReservedPhase::ActorBound { .. } => {
+                            ReceiptTerminalOutcome::Failed {
+                                reason: V5SafeFailureReason::Interrupted,
+                            }
+                        }
+                    };
+                    let terminal = canonical_v5_terminal(&outcome).map_err(|error| {
+                        format!("prepare protocol-v5 startup recovery terminal: {error}")
+                    })?;
+                    self.receipt_ledger
+                        .publish_direct_terminal(
+                            key,
+                            reserved.record_version(),
+                            terminal_epoch_ms,
+                            terminal,
+                            deadline,
+                        )
+                        .map_err(|error| {
+                            format!("publish protocol-v5 startup recovery terminal: {error}")
+                        })?;
                 }
-                ReservedPhase::Unbound | ReservedPhase::ActorBound { .. } => {
-                    ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::Interrupted,
-                    }
+                ReceiptState::TaskPromisedUnbound(promised) => {
+                    let expected = TaskCancellationReceipt::PromisedUnbound(promised);
+                    let outcome = if expected.cancel_requested() {
+                        ReceiptTerminalOutcome::Cancelled
+                    } else {
+                        ReceiptTerminalOutcome::Failed {
+                            reason: V5SafeFailureReason::Interrupted,
+                        }
+                    };
+                    let terminal = canonical_v5_terminal(&outcome).map_err(|error| {
+                        format!("prepare protocol-v5 startup Task recovery terminal: {error}")
+                    })?;
+                    self.receipt_ledger
+                        .publish_receipt_backed_task_terminal(
+                            key,
+                            expected,
+                            terminal_epoch_ms,
+                            terminal,
+                            deadline,
+                        )
+                        .map_err(|error| {
+                            format!(
+                                "publish protocol-v5 startup receipt-backed Task terminal: {error}"
+                            )
+                        })?;
                 }
-            };
-            let terminal = canonical_v5_terminal(&outcome).map_err(|error| {
-                format!("prepare protocol-v5 startup recovery terminal: {error}")
-            })?;
-            self.receipt_ledger
-                .publish_direct_terminal(
-                    key,
-                    reserved.record_version(),
-                    terminal_epoch_ms,
-                    terminal,
-                    deadline,
-                )
-                .map_err(|error| {
-                    format!("publish protocol-v5 startup recovery terminal: {error}")
-                })?;
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -3700,6 +3728,85 @@ mod tests {
                 panic!("startup must publish one direct terminal")
             };
             assert_eq!(receipt.terminal().outcome(), &expected);
+        }
+    }
+
+    #[test]
+    fn startup_terminalizes_unbound_promised_task_without_task_store_create() {
+        for (cancel_requested, expected) in [
+            (
+                false,
+                ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::Interrupted,
+                },
+            ),
+            (true, ReceiptTerminalOutcome::Cancelled),
+        ] {
+            let root = tempfile::tempdir().expect("temporary promised recovery root");
+            let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+            let identity = CoreIdentity::production_v5();
+            let state = DaemonStateDirectory::open(&state_root, &identity)
+                .expect("open promised recovery daemon state");
+            let config = DaemonServerConfig::new(
+                state_root.clone(),
+                identity.clone(),
+                Duration::from_millis(50),
+            );
+            let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+            let key = ReceiptKey::new(
+                InvocationId::new(),
+                TaskId::new(),
+                RequestIdentity::new(
+                    identity.digest().clone(),
+                    V5ToolIdentity::View,
+                    normalized_arguments_hash(&serde_json::Map::new()),
+                    request_scope_hash("workspace-a").expect("request scope"),
+                ),
+            );
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let reserved = runtime
+                .receipt_ledger
+                .reserve(
+                    key.clone(),
+                    OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                    deadline,
+                )
+                .expect("reserve promised startup receipt")
+                .into_reservation()
+                .expect("new promised startup receipt");
+            let promised = runtime
+                .receipt_ledger
+                .promise_task_unbound(
+                    key.clone(),
+                    reserved.record_version(),
+                    1_007,
+                    3_600_000,
+                    V5_TASK_POLL_INTERVAL_MS,
+                    deadline,
+                )
+                .expect("promise startup Task");
+            if cancel_requested {
+                runtime
+                    .receipt_ledger
+                    .request_task_cancel(
+                        key.clone(),
+                        TaskCancellationReceipt::PromisedUnbound(promised),
+                        deadline,
+                    )
+                    .expect("persist promised Task cancellation");
+            }
+            drop(runtime);
+
+            let reopened = V5ReceiptRuntime::open(&state, &config).expect("reconcile startup");
+            let recovered = reopened
+                .receipt_ledger
+                .recover(key, Instant::now() + Duration::from_secs(2))
+                .expect("read reconciled promised Task receipt");
+            let ReceiptState::TaskTerminalReceiptBacked(receipt) = recovered else {
+                panic!("startup must publish one receipt-backed Task terminal")
+            };
+            assert_eq!(receipt.terminal().outcome(), &expected);
+            assert_eq!(reopened.task_projection.recovery.entries().len(), 0);
         }
     }
 

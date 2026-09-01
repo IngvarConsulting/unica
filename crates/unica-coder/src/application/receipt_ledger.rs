@@ -553,6 +553,17 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 
+    fn publish_receipt_backed_task_terminal(
+        &mut self,
+        _key: &ReceiptKey,
+        _expected: TaskCancellationReceipt,
+        _terminal_epoch_ms: u64,
+        _terminal: V5CanonicalTerminal,
+        _deadline: Instant,
+    ) -> Result<TaskTerminalReceiptBackedReceipt, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
     fn request_cancel_or_reserve(
         &mut self,
         key: ReceiptKey,

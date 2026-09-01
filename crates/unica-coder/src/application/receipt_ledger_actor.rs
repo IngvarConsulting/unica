@@ -3,7 +3,8 @@ use crate::application::receipt_ledger::{
     CommittedDirectPublication, OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest,
     ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion, ReserveOutcome,
     ReservedReceipt, TaskBoundReceipt, TaskCancellationReceipt, TaskHandoffActorBoundReceipt,
-    TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt, TerminalDigest, V5CanonicalTerminal,
+    TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt, TaskTerminalReceiptBackedReceipt,
+    TerminalDigest, V5CanonicalTerminal,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -269,6 +270,14 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<TaskCancellationReceipt>>,
     },
+    PublishReceiptBackedTaskTerminal {
+        key: ReceiptKey,
+        expected_state: Box<TaskCancellationReceipt>,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: Instant,
+        ticket: Arc<Ticket<TaskTerminalReceiptBackedReceipt>>,
+    },
     RequestCancelOrReserve {
         key: ReceiptKey,
         cancel_reserved_at_epoch_ms: u64,
@@ -479,6 +488,7 @@ enum TimeoutClass {
     BeginBoundTaskHandoff(ReceiptKeyDigest),
     CompleteBoundTaskHandoff(ReceiptKeyDigest),
     RequestTaskCancel(ReceiptKeyDigest),
+    PublishReceiptBackedTaskTerminal(ReceiptKeyDigest),
     RequestCancelOrReserve(ReceiptKeyDigest),
     ExpireCancelReserved(ReceiptKeyDigest),
     PublishDirectTerminal(ReceiptKeyDigest),
@@ -502,6 +512,7 @@ impl TimeoutClass {
             | Self::BeginBoundTaskHandoff(receipt_key_digest)
             | Self::CompleteBoundTaskHandoff(receipt_key_digest)
             | Self::RequestTaskCancel(receipt_key_digest)
+            | Self::PublishReceiptBackedTaskTerminal(receipt_key_digest)
             | Self::RequestCancelOrReserve(receipt_key_digest)
             | Self::ExpireCancelReserved(receipt_key_digest)
             | Self::PublishDirectTerminal(receipt_key_digest)
@@ -844,6 +855,41 @@ impl ReceiptLedgerActor {
             Command::RequestTaskCancel {
                 key,
                 expected_state: Box::new(expected_state),
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn publish_receipt_backed_task_terminal(
+        &self,
+        key: ReceiptKey,
+        expected_state: TaskCancellationReceipt,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: Instant,
+    ) -> Result<TaskTerminalReceiptBackedReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::PublishReceiptBackedTaskTerminal(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::PublishReceiptBackedTaskTerminal {
+                key,
+                expected_state: Box::new(expected_state),
+                terminal_epoch_ms,
+                terminal,
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -1322,6 +1368,32 @@ fn run_worker(
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.request_task_cancel(&key, *expected_state, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::PublishReceiptBackedTaskTerminal {
+                key,
+                expected_state,
+                terminal_epoch_ms,
+                terminal,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.publish_receipt_backed_task_terminal(
+                        &key,
+                        *expected_state,
+                        terminal_epoch_ms,
+                        terminal,
+                        deadline,
+                    )
                 }))
                 .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
                     receipt_key_digest: digest,
