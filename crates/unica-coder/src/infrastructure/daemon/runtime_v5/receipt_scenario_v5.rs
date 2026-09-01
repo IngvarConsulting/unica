@@ -6,7 +6,8 @@ use crate::application::invocation::normalized_arguments_hash;
 use crate::application::invocation_store::EpochMillisClock;
 use crate::application::invocation_store::ToolIdentity;
 use crate::application::invocation_store_v5::{
-    V5SafeFailureReason, V5StoredInvocationRecord, V5StoredInvocationSchemaVersion, V5StoredTask,
+    InvocationStoreV5, V5SafeFailureReason, V5StoredInvocationRecord,
+    V5StoredInvocationSchemaVersion, V5StoredTask,
 };
 use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
 use crate::application::ports::Clock;
@@ -38,12 +39,14 @@ use crate::infrastructure::daemon::server::{
 use crate::infrastructure::daemon::terminal_codec_v5::encode_strict_v5_response_jsonl;
 use crate::infrastructure::receipt_ledger::{ReceiptBackedTaskTerminalSeed, ReceiptLedgerStore};
 use crate::infrastructure::task_lifecycle_link_store_v5::{
-    TaskLifecycleLinkRecord, TaskLifecycleLinkStoreError, TaskLifecycleLinkStoreV5,
+    TaskLifecycleLinkCatalogEntry, TaskLifecycleLinkRecord, TaskLifecycleLinkStoreError,
+    TaskLifecycleLinkStoreV5,
 };
+use crate::infrastructure::task_store_v5::FileInvocationStoreV5;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -584,7 +587,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 // daemon lifetime. The explicit marker therefore requires no synthetic state.
             }
             ReceiptScenarioAction::Checkpoint { label } => {
-                let snapshot = match &pending_submit {
+                let mut snapshot = match &pending_submit {
                     Some(pending) => snapshot_with_actor(
                         &pending.actor,
                         &clock,
@@ -601,6 +604,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         &known_keys,
                     )?,
                 };
+                enrich_task_projection_snapshot(
+                    &mut snapshot,
+                    state.path(),
+                    &identity,
+                    Arc::clone(&clock),
+                )?;
                 report.terminal_publications = telemetry.snapshot().terminal_publications;
                 report.checkpoints.insert(label, snapshot);
             }
@@ -3591,6 +3600,231 @@ fn snapshot_with_actor(
     }))
 }
 
+fn enrich_task_projection_snapshot(
+    snapshot: &mut Value,
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: Arc<ScenarioEpochClock>,
+) -> Result<(), String> {
+    let state = DaemonStateDirectory::open(state_root, identity)?;
+    let deadline = crate::domain::code_intelligence::ProviderDeadline::new(
+        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+    );
+    let task_root = state.create_private_retained_subdirectory("tasks")?;
+    let (task_store, recovery) =
+        FileInvocationStoreV5::open_retained_directory_inspect_only(task_root, clock, deadline)
+            .map_err(|error| format!("inspect protocol-v5 TaskStore snapshot: {error}"))?;
+    let link_root = state.create_private_retained_subdirectory("task-lifecycle-links")?;
+    let link_store = TaskLifecycleLinkStoreV5::open(link_root.path(), deadline)
+        .map_err(|error| format!("inspect protocol-v5 lifecycle-link snapshot: {error}"))?;
+    let catalog = link_store
+        .catalog_snapshot(deadline)
+        .map_err(|error| format!("snapshot protocol-v5 lifecycle-link catalog: {error}"))?;
+
+    let mut key_by_task = HashMap::new();
+    for entry in catalog.entries() {
+        let key = match entry {
+            TaskLifecycleLinkCatalogEntry::Reservation(reservation) => reservation.key(),
+            TaskLifecycleLinkCatalogEntry::Record(TaskLifecycleLinkRecord::TaskBound(record)) => {
+                record.key()
+            }
+            TaskLifecycleLinkCatalogEntry::Record(TaskLifecycleLinkRecord::TaskTerminalBound(
+                record,
+            )) => record.key(),
+            TaskLifecycleLinkCatalogEntry::Record(
+                TaskLifecycleLinkRecord::TaskRetirementPending(record),
+            ) => record.key(),
+        };
+        key_by_task.insert(key.reserved_task_id(), key.clone());
+    }
+
+    let mut task_links = Vec::new();
+    for entry in catalog.entries() {
+        let TaskLifecycleLinkCatalogEntry::Record(record) = entry else {
+            continue;
+        };
+        let task_id = match record {
+            TaskLifecycleLinkRecord::TaskBound(record) => record.task().task_id(),
+            TaskLifecycleLinkRecord::TaskTerminalBound(record) => record.task().task_id(),
+            TaskLifecycleLinkRecord::TaskRetirementPending(record) => record.task().task_id(),
+        };
+        let task_record = task_store
+            .get(task_id, deadline)
+            .map_err(|error| format!("read lifecycle-linked TaskStore record: {error}"))?;
+        task_links.push(task_lifecycle_link_observation(record, &task_record)?);
+    }
+    drop(link_store);
+
+    let mut tasks = Vec::new();
+    let mut task_store_mutations = 0u64;
+    for entry in recovery.entries() {
+        let task_id = entry.identity().task_id();
+        let key = key_by_task.get(&task_id).ok_or_else(|| {
+            format!("active TaskStore record {task_id} has no exact lifecycle-link owner")
+        })?;
+        let record = task_store
+            .get(task_id, deadline)
+            .map_err(|error| format!("read protocol-v5 TaskStore snapshot: {error}"))?;
+        task_store_mutations = task_store_mutations.saturating_add(record.version);
+        tasks.push(task_observation_from_response(
+            V5ServerResponse::Task {
+                snapshot: super::task_store_snapshot(&record),
+            },
+            key,
+            state_root,
+            identity,
+        )?);
+    }
+
+    let object = snapshot
+        .as_object_mut()
+        .ok_or_else(|| "protocol-v5 checkpoint snapshot is not an object".to_owned())?;
+    let task_link_count = u64::try_from(task_links.len())
+        .map_err(|_| "Task lifecycle-link count exceeds u64".to_owned())?;
+    let reserved_count = u64::try_from(catalog.reserved_count())
+        .map_err(|_| "Task lifecycle-link reservation count exceeds u64".to_owned())?;
+    object.insert("tasks".to_owned(), Value::Array(tasks));
+    object.insert("taskLinks".to_owned(), Value::Array(task_links));
+    object.insert("taskLinkCount".to_owned(), task_link_count.into());
+    object.insert("taskLinkBytes".to_owned(), catalog.actual_bytes().into());
+    object.insert("taskLinkReservedCount".to_owned(), reserved_count.into());
+    object.insert(
+        "taskLinkReservedBytes".to_owned(),
+        catalog.reserved_bytes().into(),
+    );
+    object.insert("taskStoreMutations".to_owned(), task_store_mutations.into());
+    let receipt_generation = object
+        .get("storeGeneration")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    object.insert(
+        "storeGeneration".to_owned(),
+        receipt_generation
+            .saturating_add(catalog.generation())
+            .saturating_add(task_store_mutations)
+            .into(),
+    );
+    let receipt_owned = object
+        .get("receipts")
+        .and_then(Value::as_array)
+        .is_some_and(|receipts| {
+            receipts.iter().any(|receipt| {
+                receipt
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .is_some_and(|state| {
+                        state.starts_with("task_promised_") || state.starts_with("task_handoff_")
+                    })
+            })
+        });
+    object.insert(
+        "cancelAuthority".to_owned(),
+        if receipt_owned {
+            Value::String("receipt_ledger".to_owned())
+        } else if task_link_count > 0 || reserved_count > 0 {
+            Value::String("task_store".to_owned())
+        } else {
+            Value::Null
+        },
+    );
+    Ok(())
+}
+
+fn task_lifecycle_link_observation(
+    record: &TaskLifecycleLinkRecord,
+    task_record: &V5StoredInvocationRecord,
+) -> Result<Value, String> {
+    let (key, link, encoded_bytes, version, lifecycle) = match record {
+        TaskLifecycleLinkRecord::TaskBound(record) => {
+            let state = match record.phase() {
+                crate::application::receipt_ledger::AttemptPhase::NotBegun => {
+                    "task_bound_not_begun"
+                }
+                crate::application::receipt_ledger::AttemptPhase::Begun => "task_bound_begun",
+            };
+            (
+                record.key(),
+                record.link(),
+                record.encoded_bytes(),
+                record.lifecycle_link_version(),
+                json!({
+                    "state": state,
+                    "cancelRequested": task_record.cancel_requested,
+                    "taskVersion": record.task_record_version(),
+                }),
+            )
+        }
+        TaskLifecycleLinkRecord::TaskTerminalBound(record) => (
+            record.key(),
+            record.link(),
+            record.encoded_bytes(),
+            record.lifecycle_link_version(),
+            json!({
+                "state": "task_terminal_bound",
+                "terminalDigest": record.terminal_digest(),
+                "terminalEpochMs": record.terminal_epoch_ms(),
+                "ttlMs": record.task().ttl_ms(),
+                "expiresAtEpochMs": record.expires_at_epoch_ms(),
+                "taskVersion": record.task_record_version(),
+            }),
+        ),
+        TaskLifecycleLinkRecord::TaskRetirementPending(record) => {
+            let lifecycle_link_expected_version = record
+                .lifecycle_link_version()
+                .checked_sub(1)
+                .ok_or_else(|| "TaskRetirementPending has no predecessor version".to_owned())?;
+            let pending_record = json!({
+                "receiptKey": receipt_key_observation(record.key()),
+                "taskId": record.task().task_id(),
+                "taskLinkDigest": record.link().digest(),
+                "terminalDigest": record.terminal_digest(),
+                "terminalEpochMs": record.terminal_epoch_ms(),
+                "ttlMs": record.task().ttl_ms(),
+                "expiresAtEpochMs": record.expires_at_epoch_ms(),
+                "expectedTaskVersion": record.expected_terminal_task_version(),
+                "resolver": "task_expired",
+                "version": record.lifecycle_link_version(),
+            });
+            let encoded = serde_json::to_vec(&pending_record)
+                .map_err(|error| format!("encode TaskRetirementPending evidence: {error}"))?;
+            (
+                record.key(),
+                record.link(),
+                record.encoded_bytes(),
+                record.lifecycle_link_version(),
+                json!({
+                    "state": "task_retirement_pending",
+                    "pending": {
+                        "receiptKey": receipt_key_observation(record.key()),
+                        "taskId": record.task().task_id(),
+                        "taskLinkDigest": record.link().digest(),
+                        "terminalDigest": record.terminal_digest(),
+                        "terminalEpochMs": record.terminal_epoch_ms(),
+                        "ttlMs": record.task().ttl_ms(),
+                        "expiresAtEpochMs": record.expires_at_epoch_ms(),
+                        "expectedTaskVersion": record.expected_terminal_task_version(),
+                        "resolver": "task_expired",
+                        "version": record.lifecycle_link_version(),
+                        "lifecycleLinkExpectedVersion": lifecycle_link_expected_version,
+                        "committedLifecycleLinkVersion": record.lifecycle_link_version(),
+                        "committedPendingRecord": artifact_evidence(&encoded),
+                    }
+                }),
+            )
+        }
+    };
+    Ok(json!({
+        "key": receipt_key_observation(key),
+        "taskId": link.task_id(),
+        "invocationId": link.invocation_id(),
+        "workspaceIdentityHash": link.workspace_identity_hash(),
+        "linkDigest": link.digest(),
+        "encodedBytes": encoded_bytes,
+        "version": version,
+        "lifecycle": lifecycle,
+    }))
+}
+
 fn tombstone_observation(
     receipt: &crate::application::receipt_ledger::AcknowledgedTombstoneReceipt,
 ) -> Value {
@@ -5035,6 +5269,38 @@ mod tests {
                 Err(ReceiptLedgerError::ReceiptNotFound)
             );
         }
+    }
+
+    #[test]
+    fn checkpoint_projects_real_task_store_and_lifecycle_link_records() {
+        let request = json!({
+            "clock": "fake",
+            "actions": [
+                {
+                    "action": "seed_receipt",
+                    "state": "task_bound_begun",
+                    "cancel_requested": false,
+                    "staged_terminal": null
+                },
+                { "action": "checkpoint", "label": "bound" }
+            ]
+        });
+        let encoded = run_supported_receipt_scenario_for_test(&request.to_string())
+            .expect("run TaskBound checkpoint scenario")
+            .expect("TaskBound checkpoint scenario is supported");
+        let report: Value = serde_json::from_str(&encoded).expect("decode scenario report");
+        let snapshot = &report["payload"]["checkpoints"]["bound"];
+        assert_eq!(snapshot["receipts"].as_array().map(Vec::len), Some(0));
+        assert_eq!(snapshot["tasks"].as_array().map(Vec::len), Some(1));
+        assert_eq!(snapshot["tasks"][0]["status"], "working");
+        assert_eq!(snapshot["taskLinks"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            snapshot["taskLinks"][0]["lifecycle"]["state"],
+            "task_bound_begun"
+        );
+        assert_eq!(snapshot["taskLinkCount"], 1);
+        assert_eq!(snapshot["taskLinkReservedCount"], 0);
+        assert_eq!(snapshot["cancelAuthority"], "task_store");
     }
 
     #[test]
