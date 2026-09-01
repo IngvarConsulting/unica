@@ -80,7 +80,11 @@ class SurfaceFirstTransitionMatrixTests(unittest.TestCase):
         for root in roots:
             for path in root.rglob("*.md"):
                 text = path.read_text(encoding="utf-8")
-                for retired in ("unica.project.map", "unica.project.status"):
+                for retired in (
+                    "unica.project.map",
+                    "unica.project.status",
+                    "source-set-from-project-map",
+                ):
                     if retired in text:
                         offenders.append((str(path.relative_to(REPO_ROOT)), retired))
         self.assertEqual(offenders, [])

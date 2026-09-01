@@ -106,7 +106,7 @@ For переопределяемые modules:
     "name": "unica.code.search",
     "arguments": {
       "cwd": "<workspace>",
-      "sourceSet": "<source-set-from-project-map>",
+      "sourceSet": "<source-set-from-unica-view>",
       "query": "Устаревшие процедуры и функции",
       "limit": 20
     }
