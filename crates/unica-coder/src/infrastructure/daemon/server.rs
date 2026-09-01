@@ -4426,6 +4426,15 @@ struct ActorLogicalReadLease {"#,
                 "unsupported_section",
             ),
             (
+                ToolIdentity::Diff,
+                serde_json::json!({
+                    "left": "main:Catalog.Bare",
+                    "right": "main:Catalog.Bare",
+                    "filter": {"sections": ["can"]}
+                }),
+                "unsupported_filter",
+            ),
+            (
                 ToolIdentity::Apply,
                 serde_json::json!({
                     "at": "main:Catalog.Bare",
