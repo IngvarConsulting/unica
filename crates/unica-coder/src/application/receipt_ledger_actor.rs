@@ -2,8 +2,8 @@ use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelResolution,
     CommittedDirectPublication, OriginalCutoffDescriptor, ReceiptKey, ReceiptKeyDigest,
     ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion, ReserveOutcome,
-    ReservedReceipt, TaskBoundReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
-    TaskPromisedUnboundReceipt, TerminalDigest, V5CanonicalTerminal,
+    ReservedReceipt, TaskBoundReceipt, TaskCancellationReceipt, TaskHandoffActorBoundReceipt,
+    TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt, TerminalDigest, V5CanonicalTerminal,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -263,6 +263,12 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<TaskBoundReceipt>>,
     },
+    RequestTaskCancel {
+        key: ReceiptKey,
+        expected_state: Box<TaskCancellationReceipt>,
+        deadline: Instant,
+        ticket: Arc<Ticket<TaskCancellationReceipt>>,
+    },
     RequestCancelOrReserve {
         key: ReceiptKey,
         cancel_reserved_at_epoch_ms: u64,
@@ -472,6 +478,7 @@ enum TimeoutClass {
     BindPromisedTaskActor(ReceiptKeyDigest),
     BeginBoundTaskHandoff(ReceiptKeyDigest),
     CompleteBoundTaskHandoff(ReceiptKeyDigest),
+    RequestTaskCancel(ReceiptKeyDigest),
     RequestCancelOrReserve(ReceiptKeyDigest),
     ExpireCancelReserved(ReceiptKeyDigest),
     PublishDirectTerminal(ReceiptKeyDigest),
@@ -494,6 +501,7 @@ impl TimeoutClass {
             | Self::BindPromisedTaskActor(receipt_key_digest)
             | Self::BeginBoundTaskHandoff(receipt_key_digest)
             | Self::CompleteBoundTaskHandoff(receipt_key_digest)
+            | Self::RequestTaskCancel(receipt_key_digest)
             | Self::RequestCancelOrReserve(receipt_key_digest)
             | Self::ExpireCancelReserved(receipt_key_digest)
             | Self::PublishDirectTerminal(receipt_key_digest)
@@ -805,6 +813,37 @@ impl ReceiptLedgerActor {
                 key,
                 expected_version,
                 confirmed_task_bound: Box::new(confirmed_task_bound),
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn request_task_cancel(
+        &self,
+        key: ReceiptKey,
+        expected_state: TaskCancellationReceipt,
+        deadline: Instant,
+    ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::RequestTaskCancel(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::RequestTaskCancel {
+                key,
+                expected_state: Box::new(expected_state),
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -1271,6 +1310,24 @@ fn run_worker(
                 }));
                 ticket.finish(result, &health);
             }
+            Command::RequestTaskCancel {
+                key,
+                expected_state,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.request_task_cancel(&key, *expected_state, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
             Command::RequestCancelOrReserve {
                 key,
                 cancel_reserved_at_epoch_ms,
@@ -1425,9 +1482,10 @@ mod tests {
         AcknowledgedTombstoneReceipt, AttemptPhase, CancelExpiryOutcome, CancelReservedReceipt,
         CancelResolution, CommittedDirectPublication, CoreIdentityDigest,
         LifecycleLinkRecordHeader, OriginalCutoffDescriptor, ReceiptKey, ReceiptLedgerError,
-        ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome, ReceiptVersion,
-        RequestIdentity, ReserveOutcome, TaskBoundReceipt, TaskLinkReference, TerminalDigest,
-        V5CanonicalTerminal, V5ToolIdentity,
+        ReceiptRecordHeader, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
+        ReceiptVersion, RequestIdentity, ReserveOutcome, TaskBoundReceipt, TaskCancellationReceipt,
+        TaskLinkReference, TaskPromisedUnboundReceipt, TerminalDigest, V5CanonicalTerminal,
+        V5ToolIdentity,
     };
     use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
     use std::cell::Cell;
@@ -1520,6 +1578,15 @@ mod tests {
             _deadline: Instant,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             panic!("injected direct terminal panic")
+        }
+
+        fn request_task_cancel(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_state: TaskCancellationReceipt,
+            _deadline: Instant,
+        ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
+            panic!("injected Task cancellation panic")
         }
 
         fn request_cancel_or_reserve(
@@ -1911,6 +1978,17 @@ mod tests {
             Ok(confirmed_task_bound)
         }
 
+        fn request_task_cancel(
+            &mut self,
+            key: &ReceiptKey,
+            expected_state: TaskCancellationReceipt,
+            _deadline: Instant,
+        ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(key, expected_state.key());
+            Ok(expected_state)
+        }
+
         fn request_cancel_or_reserve(
             &mut self,
             _key: ReceiptKey,
@@ -1970,6 +2048,105 @@ mod tests {
         assert_eq!(completed, proof);
         assert_eq!(completed.phase(), AttemptPhase::Begun);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn request_task_cancel_round_trips_exact_state_through_serial_actor() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(CompleteHandoffPort {
+            calls: Arc::clone(&calls),
+        });
+        let key = receipt_key();
+        let task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            1_000,
+            1_000,
+            3_600_000,
+            250,
+            1,
+        )
+        .expect("valid promised Task projection");
+        let expected = TaskCancellationReceipt::PromisedUnbound(
+            TaskPromisedUnboundReceipt::new(
+                ReceiptRecordHeader::new(
+                    key.clone(),
+                    receipt_key_digest(&key),
+                    ReceiptVersion::new(2).expect("nonzero receipt version"),
+                    2,
+                    700,
+                ),
+                task,
+                false,
+                1_024,
+            )
+            .expect("valid promised Task receipt"),
+        );
+
+        assert_eq!(
+            actor.request_task_cancel(key.clone(), expected.clone(), Instant::now()),
+            Err(ReceiptLedgerError::DeadlineExceeded)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        assert_eq!(
+            actor
+                .request_task_cancel(
+                    key,
+                    expected.clone(),
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .expect("serial actor forwards exact Task cancellation"),
+            expected
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn task_cancel_panic_is_commit_uncertain_and_fail_stops_actor() {
+        let actor = ReceiptLedgerActor::spawn(PanickingPort);
+        let key = receipt_key();
+        let expected_digest = receipt_key_digest(&key);
+        let task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            1_000,
+            1_000,
+            3_600_000,
+            250,
+            1,
+        )
+        .expect("valid promised Task projection");
+        let expected = TaskCancellationReceipt::PromisedUnbound(
+            TaskPromisedUnboundReceipt::new(
+                ReceiptRecordHeader::new(
+                    key.clone(),
+                    expected_digest.clone(),
+                    ReceiptVersion::new(2).expect("nonzero receipt version"),
+                    2,
+                    700,
+                ),
+                task,
+                false,
+                1_024,
+            )
+            .expect("valid promised Task receipt"),
+        );
+
+        assert_eq!(
+            actor
+                .request_task_cancel(key, expected, Instant::now() + Duration::from_secs(1),)
+                .expect_err("Task cancellation panic cannot be a clean failure"),
+            ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: expected_digest,
+            }
+        );
+        assert_eq!(
+            actor
+                .recover(receipt_key(), Instant::now() + Duration::from_secs(1))
+                .expect_err("panicked actor requires recovery"),
+            ReceiptLedgerError::StoreUnavailable
+        );
     }
 
     struct AcknowledgePort {

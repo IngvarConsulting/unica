@@ -117,6 +117,7 @@ pub(crate) enum ReceiptLedgerError {
     InvocationIdentityMismatch,
     ReservedTaskIdentityMismatch,
     TaskBoundMismatch,
+    TaskCancellationMismatch,
     ReceiptVersionMismatch {
         expected: ReceiptVersion,
         actual: ReceiptVersion,
@@ -175,6 +176,9 @@ impl fmt::Display for ReceiptLedgerError {
             }
             Self::TaskBoundMismatch => formatter.write_str(
                 "confirmed TaskBound does not match the exact receipt handoff",
+            ),
+            Self::TaskCancellationMismatch => formatter.write_str(
+                "Task cancellation request does not match the exact receipt-owned Task state",
             ),
             Self::ReceiptVersionMismatch { expected, actual } => write!(
                 formatter,
@@ -537,6 +541,15 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _confirmed_task_bound: TaskBoundReceipt,
         _deadline: Instant,
     ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    fn request_task_cancel(
+        &mut self,
+        _key: &ReceiptKey,
+        _expected: TaskCancellationReceipt,
+        _deadline: Instant,
+    ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 
@@ -1881,6 +1894,133 @@ impl TaskHandoffActorBoundReceipt {
 
     pub(crate) const fn encoded_bytes(&self) -> u64 {
         self.record.encoded_bytes
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum TaskCancellationReceipt {
+    PromisedUnbound(TaskPromisedUnboundReceipt),
+    PromisedActorBound(TaskPromisedActorBoundReceipt),
+    HandoffActorBound(TaskHandoffActorBoundReceipt),
+}
+
+impl TaskCancellationReceipt {
+    // Transitional constructors keep the receipt-state vocabulary available to
+    // runtime callers while the enum variants avoid redundant `Task` prefixes.
+    #[allow(non_snake_case)]
+    pub(crate) fn TaskPromisedUnbound(receipt: TaskPromisedUnboundReceipt) -> Self {
+        Self::PromisedUnbound(receipt)
+    }
+
+    #[allow(non_snake_case)]
+    pub(crate) fn TaskPromisedActorBound(receipt: TaskPromisedActorBoundReceipt) -> Self {
+        Self::PromisedActorBound(receipt)
+    }
+
+    #[allow(non_snake_case)]
+    pub(crate) fn TaskHandoffActorBound(receipt: TaskHandoffActorBoundReceipt) -> Self {
+        Self::HandoffActorBound(receipt)
+    }
+
+    pub(crate) fn key(&self) -> &ReceiptKey {
+        match self {
+            Self::PromisedUnbound(receipt) => receipt.key(),
+            Self::PromisedActorBound(receipt) => receipt.key(),
+            Self::HandoffActorBound(receipt) => receipt.key(),
+        }
+    }
+
+    pub(crate) fn task(&self) -> &ReceiptTaskProjection {
+        match self {
+            Self::PromisedUnbound(receipt) => receipt.task(),
+            Self::PromisedActorBound(receipt) => receipt.task(),
+            Self::HandoffActorBound(receipt) => receipt.task(),
+        }
+    }
+
+    pub(crate) const fn cancel_requested(&self) -> bool {
+        match self {
+            Self::PromisedUnbound(receipt) => receipt.cancel_requested(),
+            Self::PromisedActorBound(receipt) => receipt.cancel_requested(),
+            Self::HandoffActorBound(receipt) => receipt.cancel_requested(),
+        }
+    }
+
+    pub(crate) const fn reserved_result_bytes(&self) -> u64 {
+        match self {
+            Self::PromisedUnbound(receipt) => receipt.reserved_result_bytes(),
+            Self::PromisedActorBound(receipt) => receipt.reserved_result_bytes(),
+            Self::HandoffActorBound(receipt) => receipt.reserved_result_bytes(),
+        }
+    }
+
+    pub(crate) const fn record_version(&self) -> ReceiptVersion {
+        match self {
+            Self::PromisedUnbound(receipt) => receipt.record_version(),
+            Self::PromisedActorBound(receipt) => receipt.record_version(),
+            Self::HandoffActorBound(receipt) => receipt.record_version(),
+        }
+    }
+
+    pub(crate) const fn mutation_sequence(&self) -> u64 {
+        match self {
+            Self::PromisedUnbound(receipt) => receipt.mutation_sequence(),
+            Self::PromisedActorBound(receipt) => receipt.mutation_sequence(),
+            Self::HandoffActorBound(receipt) => receipt.mutation_sequence(),
+        }
+    }
+
+    pub(crate) const fn encoded_bytes(&self) -> u64 {
+        match self {
+            Self::PromisedUnbound(receipt) => receipt.encoded_bytes(),
+            Self::PromisedActorBound(receipt) => receipt.encoded_bytes(),
+            Self::HandoffActorBound(receipt) => receipt.encoded_bytes(),
+        }
+    }
+
+    pub(crate) fn into_receipt_state(self) -> ReceiptState {
+        match self {
+            Self::PromisedUnbound(receipt) => ReceiptState::TaskPromisedUnbound(receipt),
+            Self::PromisedActorBound(receipt) => ReceiptState::TaskPromisedActorBound(receipt),
+            Self::HandoffActorBound(receipt) => ReceiptState::TaskHandoffActorBound(receipt),
+        }
+    }
+
+    pub(crate) fn is_exact_cancel_successor_of(&self, expected: &Self) -> bool {
+        if !self.cancel_requested()
+            || expected.cancel_requested()
+            || expected.record_version().checked_next() != Some(self.record_version())
+        {
+            return false;
+        }
+        match (self, expected) {
+            (Self::PromisedUnbound(actual), Self::PromisedUnbound(expected)) => {
+                actual.key() == expected.key()
+                    && actual.key_digest() == expected.key_digest()
+                    && actual.task() == expected.task()
+                    && actual.encoded_bytes() + actual.reserved_result_bytes()
+                        == expected.encoded_bytes() + expected.reserved_result_bytes()
+            }
+            (Self::PromisedActorBound(actual), Self::PromisedActorBound(expected)) => {
+                actual.key() == expected.key()
+                    && actual.key_digest() == expected.key_digest()
+                    && actual.task() == expected.task()
+                    && actual.link() == expected.link()
+                    && actual.encoded_bytes() + actual.reserved_result_bytes()
+                        == expected.encoded_bytes() + expected.reserved_result_bytes()
+            }
+            (Self::HandoffActorBound(actual), Self::HandoffActorBound(expected)) => {
+                actual.key() == expected.key()
+                    && actual.key_digest() == expected.key_digest()
+                    && actual.task() == expected.task()
+                    && actual.link() == expected.link()
+                    && actual.phase() == expected.phase()
+                    && actual.terminal_stage() == expected.terminal_stage()
+                    && actual.encoded_bytes() + actual.reserved_result_bytes()
+                        == expected.encoded_bytes() + expected.reserved_result_bytes()
+            }
+            _ => false,
+        }
     }
 }
 
