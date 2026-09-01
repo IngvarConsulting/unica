@@ -1,4 +1,6 @@
 pub(crate) mod apply;
+pub(crate) mod check;
+pub(crate) mod diff;
 pub(crate) mod find;
 pub(crate) mod task_tools;
 pub(crate) mod tool_catalog;
