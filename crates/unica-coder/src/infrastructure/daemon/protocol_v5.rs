@@ -3,11 +3,13 @@ use crate::application::invocation::normalized_arguments_hash;
 use crate::application::invocation_store::{
     MAX_CANONICAL_RESULT_BYTES, MAX_TASK_RECORD_ENVELOPE_BYTES,
 };
+use crate::application::invocation_store_v5::V5SafeFailureReason;
 use crate::application::receipt_ledger::{
-    receipt_key_digest, request_scope_hash, ReceiptKey, ReceiptKeyDigest, RequestIdentity,
-    TerminalDigest, V5ToolIdentity,
+    canonical_v5_terminal, receipt_key_digest, request_scope_hash, AcknowledgedTombstoneReceipt,
+    ReceiptKey, ReceiptKeyDigest, ReceiptTerminalOutcome, RequestIdentity, TerminalDigest,
+    V5ToolIdentity,
 };
-use crate::domain::invocation::{InvocationId, TaskId};
+use crate::domain::invocation::{DomainResult, InvocationId, TaskId};
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
 use serde::{Deserialize, Serialize};
@@ -208,7 +210,6 @@ pub(crate) struct V5InvocationRequest {
 }
 
 impl V5InvocationRequest {
-    #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn new(
         invocation_id: InvocationId,
         reserved_task_id: TaskId,
@@ -530,6 +531,221 @@ impl V5ProbeServerResponse {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum V5InvocationPhase {
+    CancelReserved,
+    ReservedUnbound,
+    ReservedActorBound,
+    ReservedBegun,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct V5PendingDirectReceipt {
+    receipt_key: ReceiptKey,
+    terminal: ReceiptTerminalOutcome,
+    terminal_digest: TerminalDigest,
+    terminal_epoch_ms: u64,
+}
+
+impl V5PendingDirectReceipt {
+    pub(crate) fn new(
+        receipt_key: ReceiptKey,
+        terminal: ReceiptTerminalOutcome,
+        terminal_digest: TerminalDigest,
+        terminal_epoch_ms: u64,
+    ) -> Self {
+        Self {
+            receipt_key,
+            terminal,
+            terminal_digest,
+            terminal_epoch_ms,
+        }
+    }
+
+    pub(crate) fn receipt_key(&self) -> &ReceiptKey {
+        &self.receipt_key
+    }
+
+    pub(crate) fn terminal(&self) -> &ReceiptTerminalOutcome {
+        &self.terminal
+    }
+
+    pub(crate) fn terminal_digest(&self) -> &TerminalDigest {
+        &self.terminal_digest
+    }
+
+    pub(crate) const fn terminal_epoch_ms(&self) -> u64 {
+        self.terminal_epoch_ms
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct V5AcknowledgedReceipt {
+    receipt_key: ReceiptKey,
+    terminal_digest: TerminalDigest,
+    ack_epoch_ms: u64,
+    expires_epoch_ms: u64,
+}
+
+impl V5AcknowledgedReceipt {
+    pub(crate) fn from_receipt(receipt: &AcknowledgedTombstoneReceipt) -> Self {
+        Self {
+            receipt_key: receipt.key().clone(),
+            terminal_digest: receipt.terminal_digest().clone(),
+            ack_epoch_ms: receipt.acknowledged_at_epoch_ms(),
+            expires_epoch_ms: receipt.expires_at_epoch_ms(),
+        }
+    }
+
+    pub(crate) fn receipt_key(&self) -> &ReceiptKey {
+        &self.receipt_key
+    }
+
+    pub(crate) fn terminal_digest(&self) -> &TerminalDigest {
+        &self.terminal_digest
+    }
+
+    pub(crate) const fn ack_epoch_ms(&self) -> u64 {
+        self.ack_epoch_ms
+    }
+
+    pub(crate) const fn expires_epoch_ms(&self) -> u64 {
+        self.expires_epoch_ms
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub(crate) enum V5DaemonTaskSnapshot {
+    Queued {
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        receipt_key_digest: ReceiptKeyDigest,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        version: u64,
+        cancel_requested: bool,
+    },
+    Working {
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        receipt_key_digest: ReceiptKeyDigest,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        version: u64,
+        cancel_requested: bool,
+    },
+    Completed {
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        receipt_key_digest: ReceiptKeyDigest,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        version: u64,
+        cancel_requested: bool,
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+        result: Box<DomainResult>,
+    },
+    Failed {
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        receipt_key_digest: ReceiptKeyDigest,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        version: u64,
+        cancel_requested: bool,
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+        reason: V5SafeFailureReason,
+    },
+    Cancelled {
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        receipt_key_digest: ReceiptKeyDigest,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        version: u64,
+        cancel_requested: bool,
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "resultType",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub(crate) enum V5InvocationResponse {
+    ReceiptPending {
+        receipt_key: ReceiptKey,
+        phase: V5InvocationPhase,
+        accepted_epoch_ms: u64,
+        original_budget_ms: u64,
+        cancel_requested: bool,
+    },
+    Direct {
+        receipt: V5PendingDirectReceipt,
+    },
+    Task {
+        snapshot: V5DaemonTaskSnapshot,
+    },
+    Acknowledged {
+        acknowledgement: V5AcknowledgedReceipt,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub(crate) enum V5ServerResponse {
+    Ready {
+        protocol_version: u32,
+        core_identity: CoreIdentity,
+        daemon_pid: u32,
+        instance_id: String,
+    },
+    Pong,
+    Released,
+    Invocation {
+        outcome: V5InvocationResponse,
+    },
+    Task {
+        snapshot: V5DaemonTaskSnapshot,
+    },
+    InvocationAcknowledged {
+        acknowledgement: V5AcknowledgedReceipt,
+    },
+    Error {
+        code: V5DaemonErrorCode,
+    },
+}
+
 pub(crate) struct DecodedV5Request {
     raw_frame: Vec<u8>,
     request: V5ClientRequest,
@@ -559,6 +775,10 @@ impl StrictV5Submit {
     #[allow(dead_code)]
     pub(crate) fn response_budget_ms(&self) -> u64 {
         self.invocation.response_budget_ms()
+    }
+
+    pub(crate) fn into_parts(self) -> (ReceiptKey, u64) {
+        (self.receipt_key, self.invocation.response_budget_ms())
     }
 }
 
@@ -666,9 +886,14 @@ where
     R: BufRead,
     F: FnMut(&mut R) -> io::Result<()>,
 {
-    let raw_frame =
-        read_bounded_json_line_with_limit_before(reader, MAX_V5_REQUEST_LINE_BYTES, before_fill)
-            .map_err(V5RequestFrameError::Read)?;
+    let raw_frame = read_bounded_v5_request_frame_before(reader, before_fill)
+        .map_err(V5RequestFrameError::Read)?;
+    decode_v5_request_frame(raw_frame)
+}
+
+pub(crate) fn decode_v5_request_frame(
+    raw_frame: Vec<u8>,
+) -> Result<DecodedV5Request, V5RequestFrameError> {
     let request =
         decode_v5_client_request(&raw_frame).map_err(V5RequestFrameError::InvalidRequest)?;
     Ok(DecodedV5Request { raw_frame, request })
@@ -676,6 +901,17 @@ where
 
 pub(crate) fn read_bounded_v5_request_frame<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
     read_bounded_json_line_with_limit(reader, MAX_V5_REQUEST_LINE_BYTES)
+}
+
+pub(crate) fn read_bounded_v5_request_frame_before<R, F>(
+    reader: &mut R,
+    before_fill: F,
+) -> io::Result<Vec<u8>>
+where
+    R: BufRead,
+    F: FnMut(&mut R) -> io::Result<()>,
+{
+    read_bounded_json_line_with_limit_before(reader, MAX_V5_REQUEST_LINE_BYTES, before_fill)
 }
 
 pub(crate) fn read_bounded_v5_probe_response_frame<R: BufRead>(
@@ -770,6 +1006,23 @@ pub(crate) fn decode_v5_probe_response(bytes: &[u8]) -> Result<V5ProbeServerResp
     ensure_frame_fits(bytes, MAX_V5_RESPONSE_LINE_BYTES, "response")?;
     serde_json::from_slice(bytes)
         .map_err(|_| "v5 daemon probe response is not strict versioned JSON".to_string())
+}
+
+pub(crate) fn decode_v5_server_response(bytes: &[u8]) -> Result<V5ServerResponse, String> {
+    ensure_frame_fits(bytes, MAX_V5_RESPONSE_LINE_BYTES, "response")?;
+    let response: V5ServerResponse = serde_json::from_slice(bytes)
+        .map_err(|_| "v5 daemon response is not strict versioned JSON".to_string())?;
+    if let V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Direct { receipt },
+    } = &response
+    {
+        let terminal = canonical_v5_terminal(receipt.terminal())
+            .map_err(|_| "v5 daemon direct receipt terminal is not canonical".to_string())?;
+        if terminal.digest() != receipt.terminal_digest() {
+            return Err("v5 daemon direct receipt terminal digest does not match".to_string());
+        }
+    }
+    Ok(response)
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -971,11 +1224,97 @@ mod tests {
     const TASK_ID: &str = "22222222-2222-4222-8222-222222222222";
     const CORE_IDENTITY: &str = "884b76181583ce34907a2a9758e2b493e5b40883e7cbb0d7f88dcec0e468cfa0";
     const ZERO_DIGEST: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+    const CANCELLED_DIGEST: &str =
+        "f2d0423d2613a0d09397b750542e4542f7653d78ebd5e0448f1326d09145d9ae";
 
     fn receipt_key_json() -> String {
         format!(
             "{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"coreIdentityDigest\":\"{CORE_IDENTITY}\",\"tool\":\"unica.view\",\"normalizedArgumentsHash\":\"{ZERO_DIGEST}\",\"requestScopeHash\":\"{ZERO_DIGEST}\"}}"
         )
+    }
+
+    #[test]
+    fn strict_v5_server_response_round_trips_the_cr0_invocation_algebra() {
+        let frames = [
+            format!(
+                "{{\"kind\":\"invocation\",\"outcome\":{{\"resultType\":\"receipt_pending\",\"receiptKey\":{},\"phase\":\"cancel_reserved\",\"acceptedEpochMs\":1700000000000,\"originalBudgetMs\":0,\"cancelRequested\":true}}}}",
+                receipt_key_json()
+            ),
+            format!(
+                "{{\"kind\":\"invocation\",\"outcome\":{{\"resultType\":\"direct\",\"receipt\":{{\"receiptKey\":{},\"terminal\":{{\"status\":\"cancelled\"}},\"terminalDigest\":\"{CANCELLED_DIGEST}\",\"terminalEpochMs\":1700000000000}}}}}}",
+                receipt_key_json()
+            ),
+            "{\"kind\":\"error\",\"code\":\"receipt_not_found\"}".to_string(),
+        ];
+
+        for frame in frames {
+            let decoded = decode_v5_server_response(frame.as_bytes())
+                .unwrap_or_else(|error| panic!("decode frozen response {frame}: {error}"));
+            let encoded = serde_json::to_vec(&decoded).expect("encode typed response");
+            let round_tripped =
+                decode_v5_server_response(&encoded).expect("decode encoded typed response");
+            assert_eq!(round_tripped, decoded);
+        }
+    }
+
+    #[test]
+    fn strict_v5_server_response_rejects_unknown_kinds_extra_fields_and_invalid_enums() {
+        let cases = [
+            ("unknown kind", "{\"kind\":\"future_response\"}".to_string()),
+            (
+                "top-level extra field",
+                "{\"kind\":\"error\",\"code\":\"receipt_not_found\",\"unexpected\":true}"
+                    .to_string(),
+            ),
+            (
+                "nested outcome extra field",
+                format!(
+                    "{{\"kind\":\"invocation\",\"outcome\":{{\"resultType\":\"receipt_pending\",\"receiptKey\":{},\"phase\":\"cancel_reserved\",\"acceptedEpochMs\":1700000000000,\"originalBudgetMs\":0,\"cancelRequested\":true,\"unexpected\":true}}}}",
+                    receipt_key_json()
+                ),
+            ),
+            (
+                "nested direct receipt extra field",
+                format!(
+                    "{{\"kind\":\"invocation\",\"outcome\":{{\"resultType\":\"direct\",\"receipt\":{{\"receiptKey\":{},\"terminal\":{{\"status\":\"cancelled\"}},\"terminalDigest\":\"{CANCELLED_DIGEST}\",\"terminalEpochMs\":1700000000000,\"unexpected\":true}}}}}}",
+                    receipt_key_json()
+                ),
+            ),
+            (
+                "invalid invocation phase",
+                format!(
+                    "{{\"kind\":\"invocation\",\"outcome\":{{\"resultType\":\"receipt_pending\",\"receiptKey\":{},\"phase\":\"future_phase\",\"acceptedEpochMs\":1700000000000,\"originalBudgetMs\":0,\"cancelRequested\":true}}}}",
+                    receipt_key_json()
+                ),
+            ),
+            (
+                "invalid terminal outcome",
+                format!(
+                    "{{\"kind\":\"invocation\",\"outcome\":{{\"resultType\":\"direct\",\"receipt\":{{\"receiptKey\":{},\"terminal\":{{\"status\":\"future_terminal\"}},\"terminalDigest\":\"{CANCELLED_DIGEST}\",\"terminalEpochMs\":1700000000000}}}}}}",
+                    receipt_key_json()
+                ),
+            ),
+        ];
+
+        for (case, frame) in cases {
+            assert!(
+                decode_v5_server_response(frame.as_bytes()).is_err(),
+                "strict decoder accepted {case}: {frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_v5_direct_receipt_rejects_a_terminal_digest_mismatch() {
+        let frame = format!(
+            "{{\"kind\":\"invocation\",\"outcome\":{{\"resultType\":\"direct\",\"receipt\":{{\"receiptKey\":{},\"terminal\":{{\"status\":\"cancelled\"}},\"terminalDigest\":\"{ZERO_DIGEST}\",\"terminalEpochMs\":1700000000000}}}}}}",
+            receipt_key_json()
+        );
+
+        assert!(
+            decode_v5_server_response(frame.as_bytes()).is_err(),
+            "strict decoder accepted a digest that does not bind the terminal"
+        );
     }
 
     fn valid_request_frames() -> Vec<(V5ClientRequestKind, String)> {

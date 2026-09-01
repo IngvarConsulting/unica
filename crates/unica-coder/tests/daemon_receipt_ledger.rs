@@ -10576,6 +10576,16 @@ fn cancel_before_submit_is_full_key_bounded_and_expires() {
         &reserved.key
     );
     assert_eq!(after_submit.callbacks.total_domain(), 0);
+    assert_eq!(
+        count_event(&report, EventKind::V5ReceiptRuntimeEntered),
+        4,
+        "one runtime-entry event must come from each authenticated action frame"
+    );
+    assert_eq!(
+        count_event(&report, EventKind::CancelReservationConverted),
+        1
+    );
+    assert_eq!(count_event(&report, EventKind::ReceiptTerminalCommitted), 1);
 }
 
 #[test]
@@ -10622,6 +10632,17 @@ fn cancel_reserved_reopens_with_original_7125ms_expiry() {
         response(&report, "after-expiry").error,
         Some(ErrorCode::ReceiptExpired | ErrorCode::ReceiptNotFound)
     ));
+    assert_eq!(checkpoint(&report, "expired").callbacks.total_domain(), 0);
+    assert_eq!(
+        count_event(&report, EventKind::V5ReceiptRuntimeEntered),
+        3,
+        "reopen markers and checkpoints must not invent action-frame events"
+    );
+    assert_eq!(
+        count_event(&report, EventKind::CancelReservationConverted),
+        0
+    );
+    assert_eq!(count_event(&report, EventKind::ReceiptTerminalCommitted), 0);
 }
 
 #[test]
@@ -10722,6 +10743,10 @@ fn cancel_reserved_shares_live_64_count_without_result_reservation() {
         converted_in_flight[0].state,
         SeedReceiptState::ReservedUnbound
     );
+    assert_eq!(converting.listener, ListenerState::Listening);
+    assert!(converting.daemon_running);
+    assert_eq!(converting.actor_leases, 1);
+    assert_eq!(converting.callbacks.total_domain(), 0);
     let after = checkpoint(&report, "after-conversion");
     assert_eq!(after.receipt_live_count, LIVE_RECEIPT_LIMIT - 1);
     assert!(after.receipt_actual_bytes + after.receipt_reserved_bytes <= LIVE_RECEIPT_BYTES_LIMIT);
@@ -10742,6 +10767,27 @@ fn cancel_reserved_shares_live_64_count_without_result_reservation() {
         response_terminal(response(&report, "converted-submit")),
         terminal_of_receipt(converted_terminal)
     );
+    assert_eq!(after.listener, ListenerState::Closed);
+    assert!(!after.daemon_running);
+    assert_eq!(after.actor_leases, 0);
+    assert_eq!(
+        count_event(&report, EventKind::V5ReceiptRuntimeEntered),
+        129,
+        "batched actions must report every authenticated action frame"
+    );
+    assert_event_order(
+        &report,
+        &[
+            EventKind::V5ReceiptRuntimeEntered,
+            EventKind::CancelReservationConverted,
+            EventKind::ReceiptTerminalCommitted,
+        ],
+    );
+    assert_eq!(
+        count_event(&report, EventKind::CancelReservationConverted),
+        1
+    );
+    assert_eq!(count_event(&report, EventKind::ReceiptTerminalCommitted), 1);
 }
 
 #[test]

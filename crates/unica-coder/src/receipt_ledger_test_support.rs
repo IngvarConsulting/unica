@@ -16,7 +16,7 @@ use crate::infrastructure::daemon::protocol_v5::{
 use crate::infrastructure::daemon::runtime_v5::{
     run_direct_load_reachability_probe_for_test, run_lazy_cancel_storm_reachability_probe_for_test,
     run_protocol_ping_reachability_probe_for_test, run_seed_task_reachability_probe_for_test,
-    run_submit_reachability_probe_for_test,
+    run_submit_reachability_probe_for_test, run_supported_receipt_scenario_for_test,
 };
 use crate::infrastructure::receipt_ledger_reachability::{
     run_acknowledge_reachability_probe_for_test,
@@ -137,6 +137,11 @@ fn execute_scenario(request: &str) -> Result<String, ScenarioExecutionError> {
 
     let scenario: ScenarioInput = serde_json::from_str(request)
         .map_err(|error| ScenarioExecutionError::InvalidScenario(error.to_string()))?;
+    if let Some(observed) = run_supported_receipt_scenario_for_test(request)
+        .map_err(ScenarioExecutionError::ProductionProbe)?
+    {
+        return Ok(observed);
+    }
     let ScenarioInput { clock, actions } = scenario;
     let mut setup = StagedScenarioSetup::new(clock);
 
@@ -1069,19 +1074,52 @@ enum EventKindInput {
 mod tests {
     use super::*;
     use proc_macro2::{TokenStream, TokenTree};
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use syn::parse::Parser;
     use syn::visit::Visit;
+
+    const FACADE_PRODUCTION_SOURCES: &[(&str, &str)] = &[
+        (
+            "receipt_ledger_test_support.rs",
+            include_str!("receipt_ledger_test_support.rs"),
+        ),
+        (
+            "infrastructure/receipt_ledger_reachability.rs",
+            include_str!("infrastructure/receipt_ledger_reachability.rs"),
+        ),
+        (
+            "infrastructure/receipt_ledger_test_evidence.rs",
+            include_str!("infrastructure/receipt_ledger_test_evidence.rs"),
+        ),
+    ];
+
+    const OWNER_HELPER_PRODUCTION_SOURCES: &[(&str, &str)] = &[(
+        "infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs",
+        include_str!("infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs"),
+    )];
 
     fn facade_forbidden_authority_references(
         source: &str,
         forbidden: &[&str],
+    ) -> Result<BTreeSet<String>, String> {
+        facade_forbidden_authority_references_with_mode(
+            source,
+            forbidden,
+            FacadeAuthorityGuardMode::SealedRuntimeStrings,
+        )
+    }
+
+    fn facade_forbidden_authority_references_with_mode(
+        source: &str,
+        forbidden: &[&str],
+        mode: FacadeAuthorityGuardMode,
     ) -> Result<BTreeSet<String>, String> {
         let syntax = syn::parse_file(source).map_err(|error| error.to_string())?;
         let mut finder = FacadeAuthorityReferenceFinder {
             forbidden,
             references: BTreeSet::new(),
             unsupported_syntax: BTreeSet::new(),
+            mode,
         };
         finder.visit_file(&syntax);
         if finder.unsupported_syntax.is_empty() {
@@ -1095,10 +1133,40 @@ mod tests {
         }
     }
 
+    fn facade_forbidden_authority_references_by_source(
+        sources: &[(&str, &str)],
+        forbidden: &[&str],
+    ) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+        let mut source_paths = BTreeSet::new();
+        let mut references_by_source = BTreeMap::new();
+        for (path, source) in sources {
+            if !source_paths.insert(*path) {
+                return Err(format!("duplicate facade production source `{path}`"));
+            }
+            let references = facade_forbidden_authority_references_with_mode(
+                source,
+                forbidden,
+                FacadeAuthorityGuardMode::RustAuthorityOnly,
+            )
+            .map_err(|error| format!("{path}: {error}"))?;
+            if !references.is_empty() {
+                references_by_source.insert((*path).to_string(), references);
+            }
+        }
+        Ok(references_by_source)
+    }
+
     struct FacadeAuthorityReferenceFinder<'a> {
         forbidden: &'a [&'a str],
         references: BTreeSet<String>,
         unsupported_syntax: BTreeSet<String>,
+        mode: FacadeAuthorityGuardMode,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FacadeAuthorityGuardMode {
+        SealedRuntimeStrings,
+        RustAuthorityOnly,
     }
 
     impl FacadeAuthorityReferenceFinder<'_> {
@@ -1106,6 +1174,44 @@ mod tests {
             for authority in self.forbidden {
                 if text.contains(authority) {
                     self.references.insert((*authority).to_string());
+                }
+            }
+        }
+
+        fn scan_path(&mut self, path: &syn::Path) {
+            let path = path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::");
+            self.scan_text(&path);
+        }
+
+        fn scan_use_tree(&mut self, tree: &syn::UseTree, prefix: &mut Vec<String>) {
+            match tree {
+                syn::UseTree::Path(path) => {
+                    prefix.push(path.ident.to_string());
+                    self.scan_text(&prefix.join("::"));
+                    self.scan_use_tree(&path.tree, prefix);
+                    prefix.pop();
+                }
+                syn::UseTree::Name(name) => {
+                    prefix.push(name.ident.to_string());
+                    self.scan_text(&prefix.join("::"));
+                    prefix.pop();
+                }
+                syn::UseTree::Rename(rename) => {
+                    prefix.push(rename.ident.to_string());
+                    self.scan_text(&prefix.join("::"));
+                    self.scan_text(&rename.rename.to_string());
+                    prefix.pop();
+                }
+                syn::UseTree::Glob(_) => self.scan_text(&prefix.join("::")),
+                syn::UseTree::Group(group) => {
+                    for tree in &group.items {
+                        self.scan_use_tree(tree, prefix);
+                    }
                 }
             }
         }
@@ -1358,6 +1464,7 @@ mod tests {
                                 | "include_str"
                                 | "include_bytes"
                         )
+                            && self.mode != FacadeAuthorityGuardMode::RustAuthorityOnly
                             && tokens.get(index + 1).is_some_and(
                                 |token| matches!(token, TokenTree::Punct(punct) if punct.as_char() == '!'),
                             )
@@ -1494,6 +1601,16 @@ mod tests {
             self.scan_text(&identifier.to_string());
         }
 
+        fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+            self.scan_use_tree(&item.tree, &mut Vec::new());
+            syn::visit::visit_item_use(self, item);
+        }
+
+        fn visit_path(&mut self, path: &'ast syn::Path) {
+            self.scan_path(path);
+            syn::visit::visit_path(self, path);
+        }
+
         fn visit_lit(&mut self, literal: &'ast syn::Lit) {
             self.scan_literal(literal);
         }
@@ -1503,6 +1620,14 @@ mod tests {
             match macro_.path.segments.last().map(|segment| &segment.ident) {
                 Some(identifier) if identifier == "concat" => {
                     self.scan_concat_tokens(macro_.tokens.clone());
+                }
+                Some(identifier)
+                    if matches!(
+                        identifier.to_string().as_str(),
+                        "format" | "format_args" | "write" | "writeln"
+                    ) && self.mode == FacadeAuthorityGuardMode::RustAuthorityOnly =>
+                {
+                    self.scan_macro_tokens(macro_.tokens.clone());
                 }
                 Some(identifier)
                     if matches!(
@@ -1656,6 +1781,163 @@ mod tests {
         }
 
         assert_eq!(fingerprints.len(), cases.len());
+    }
+
+    #[test]
+    fn facade_authority_guard_scans_every_named_production_source() {
+        let sources = [
+            ("receipt_ledger_test_support.rs", "fn entrypoint() {}"),
+            (
+                "infrastructure/receipt_ledger_reachability.rs",
+                r#"
+                    use crate::application::receipt_ledger::ReceiptLedgerPort;
+                    use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
+                    use crate::infrastructure::daemon::identity::DaemonStateDirectory;
+                    use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
+
+                    fn bypass_the_owner() {}
+                "#,
+            ),
+            (
+                "infrastructure/receipt_ledger_test_evidence.rs",
+                r#"
+                    use std::{fs as retained_state_fs};
+                    use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+
+                    fn bypass_retained_state() {
+                        let _ = retained_state_fs::read("receipts");
+                    }
+                "#,
+            ),
+        ];
+        let forbidden = [
+            "ReceiptLedgerStore",
+            "ReceiptLedgerActor",
+            "ReceiptLedgerPort",
+            "DaemonStateDirectory",
+            "RetainedDirectoryCapability",
+            "::fs",
+            "filesystem",
+        ];
+
+        let references = facade_forbidden_authority_references_by_source(&sources, &forbidden)
+            .expect("synthetic facade sources parse");
+        assert_eq!(
+            references,
+            BTreeMap::from([
+                (
+                    "infrastructure/receipt_ledger_reachability.rs".to_string(),
+                    BTreeSet::from([
+                        "DaemonStateDirectory".to_string(),
+                        "ReceiptLedgerActor".to_string(),
+                        "ReceiptLedgerPort".to_string(),
+                        "ReceiptLedgerStore".to_string(),
+                    ]),
+                ),
+                (
+                    "infrastructure/receipt_ledger_test_evidence.rs".to_string(),
+                    BTreeSet::from([
+                        "::fs".to_string(),
+                        "RetainedDirectoryCapability".to_string(),
+                        "filesystem".to_string(),
+                    ]),
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn facade_and_non_owner_helpers_have_no_direct_receipt_ledger_authority() {
+        assert_eq!(
+            FACADE_PRODUCTION_SOURCES
+                .iter()
+                .map(|(path, _)| *path)
+                .collect::<Vec<_>>(),
+            [
+                "receipt_ledger_test_support.rs",
+                "infrastructure/receipt_ledger_reachability.rs",
+                "infrastructure/receipt_ledger_test_evidence.rs",
+            ],
+            "every non-owner production helper belongs to the guard inventory"
+        );
+
+        let forbidden = [
+            "ReceiptLedgerStore",
+            "ReceiptLedgerActor",
+            "ReceiptLedgerPort",
+            "DaemonStateDirectory",
+            "ReceiptAuthorityLock",
+            "RetainedDirectoryCapability",
+            "RetainedRegularFileCapability",
+            "RetainedChildCapability",
+            "open_retained_directory",
+            "create_private_retained_subdirectory",
+            "::fs",
+            "filesystem",
+        ];
+        let references =
+            facade_forbidden_authority_references_by_source(FACADE_PRODUCTION_SOURCES, &forbidden)
+                .unwrap_or_else(|error| panic!("facade authority guard failed closed: {error}"));
+        assert!(
+            references.is_empty(),
+            "facade production sources contain direct receipt-ledger authority: {references:?}"
+        );
+    }
+
+    #[test]
+    fn scenario_owner_helpers_cannot_bypass_the_actor_store_boundary() {
+        assert_eq!(
+            OWNER_HELPER_PRODUCTION_SOURCES
+                .iter()
+                .map(|(path, _)| *path)
+                .collect::<Vec<_>>(),
+            ["infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs"],
+            "every scenario owner helper belongs to the narrow authority inventory"
+        );
+
+        let forbidden = ["ReceiptLedgerStore", "ReceiptLedgerPort"];
+        let references = facade_forbidden_authority_references_by_source(
+            OWNER_HELPER_PRODUCTION_SOURCES,
+            &forbidden,
+        )
+        .unwrap_or_else(|error| panic!("scenario owner authority guard failed closed: {error}"));
+        assert!(
+            references.is_empty(),
+            "scenario owner helpers bypass the actor/store boundary: {references:?}"
+        );
+    }
+
+    #[test]
+    fn scenario_driver_cannot_mint_runtime_telemetry_events() {
+        let references = facade_forbidden_authority_references_by_source(
+            OWNER_HELPER_PRODUCTION_SOURCES,
+            &["record_runtime_entry", "record_event"],
+        )
+        .unwrap_or_else(|error| panic!("scenario telemetry guard failed closed: {error}"));
+        assert!(
+            references.is_empty(),
+            "scenario driver mints runtime telemetry instead of reading it: {references:?}"
+        );
+    }
+
+    #[test]
+    fn rust_authority_guard_finds_store_identifiers_inside_formatting_macros() {
+        let source = r#"
+            fn bypass() {
+                let _ = format!("{}", format!("{:?}", ReceiptLedgerStore::open));
+            }
+        "#;
+        let references = facade_forbidden_authority_references_with_mode(
+            source,
+            &["ReceiptLedgerStore", "ReceiptLedgerPort"],
+            FacadeAuthorityGuardMode::RustAuthorityOnly,
+        )
+        .expect("Rust authority scanning accepts dynamic formatting syntax");
+
+        assert_eq!(
+            references,
+            BTreeSet::from(["ReceiptLedgerStore".to_owned()])
+        );
     }
 
     #[test]
