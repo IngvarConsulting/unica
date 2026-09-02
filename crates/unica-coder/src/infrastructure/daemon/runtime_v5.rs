@@ -740,7 +740,7 @@ impl Drop for V5ReceiptRuntimeListenerLease {
             .active_listeners
             .checked_sub(1)
             .expect("protocol-v5 runtime listener telemetry lease released only once");
-        if state.active_listeners == 0 && state.restart_requested {
+        if state.active_listeners == 0 {
             state.listener = V5ReceiptRuntimeListenerState::Closed;
             state.daemon_running = false;
         }

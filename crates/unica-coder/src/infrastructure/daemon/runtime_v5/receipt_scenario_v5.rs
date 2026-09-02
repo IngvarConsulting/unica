@@ -5664,7 +5664,12 @@ fn run_direct_load(
         cooperative_cancel: true,
         side_effect_marker: false,
     });
-    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
+    let mut config =
+        scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
+    // This production-backed load owns the daemon explicitly until the operation completes.
+    // Direct actor batches do not create listener traffic, so an ordinary idle deadline would
+    // otherwise close the real listener mid-load while work is still being admitted.
+    config.idle_grace = Duration::MAX;
     let daemon_control = Arc::clone(&control);
     let daemon_clock = Arc::clone(&clock);
     let daemon_telemetry = Arc::clone(&telemetry);
