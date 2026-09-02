@@ -2945,7 +2945,20 @@ impl V5ReceiptRuntime {
                     )?;
                 }
             }
-            let (task_record, bound) = self
+            #[cfg(feature = "receipt-ledger-test-support")]
+            let scenario_gate_acquired = if let Some(control) = &self.scenario_control {
+                if control.is_barrier_installed(
+                    receipt_scenario_v5::ScenarioBarrierPoint::AfterWorkingReadback,
+                ) {
+                    control.acquire_lifecycle_gate("submit", deadline)?;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            let (mut task_record, bound) = self
                 .task_projection
                 .start_not_begun_bound_task(&authorized_bound, task_record, deadline)
                 .map_err(|failure| self.project_task_failure(failure))?;
@@ -2987,6 +3000,8 @@ impl V5ReceiptRuntime {
                 {
                     self.telemetry
                         .record_event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
+                    self.telemetry
+                        .record_event(V5ReceiptRuntimeEventKind::TokenSignalled, epoch_ms);
                     if let Some(control) = &self.scenario_control {
                         control.record_bound_task_start_authorization(
                             &authorized_bound,
@@ -3000,6 +3015,21 @@ impl V5ReceiptRuntime {
             } else {
                 bound
             };
+            #[cfg(feature = "receipt-ledger-test-support")]
+            if scenario_gate_acquired {
+                if let Some(control) = &self.scenario_control {
+                    control.release_lifecycle_gate("submit");
+                    control.wait_for_gate_cancel(deadline)?;
+                    if let Some(cancelled) = self
+                        .task_projection
+                        .cancel_exact_bound_task(bound.key(), deadline)
+                        .map_err(|failure| self.project_task_failure(failure))?
+                    {
+                        task_record = cancelled;
+                        control.record_bound_task(task_record.clone(), bound.clone());
+                    }
+                }
+            }
             if task_record.cancel_requested {
                 let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
                     .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;

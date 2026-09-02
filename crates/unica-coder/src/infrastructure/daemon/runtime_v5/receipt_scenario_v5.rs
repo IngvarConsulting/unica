@@ -77,6 +77,8 @@ pub(super) struct ReceiptScenarioControl {
     changed: Condvar,
     lifecycle_gate_changed: Condvar,
     operation_changed: Condvar,
+    gate_cancel_requested: Mutex<bool>,
+    gate_cancel_changed: Condvar,
     drop_ack_response_after_commit: AtomicBool,
     drop_submit_response_after_commit: AtomicBool,
     skip_next_startup_reconciliation: AtomicBool,
@@ -135,6 +137,8 @@ impl ReceiptScenarioControl {
             changed: Condvar::new(),
             lifecycle_gate_changed: Condvar::new(),
             operation_changed: Condvar::new(),
+            gate_cancel_requested: Mutex::new(false),
+            gate_cancel_changed: Condvar::new(),
             drop_ack_response_after_commit: AtomicBool::new(false),
             drop_submit_response_after_commit: AtomicBool::new(false),
             skip_next_startup_reconciliation: AtomicBool::new(false),
@@ -274,6 +278,35 @@ impl ReceiptScenarioControl {
             .expect("scenario lifecycle gate mutex poisoned") = false;
         self.record_gate_event(label, "released");
         self.lifecycle_gate_changed.notify_all();
+    }
+
+    fn request_gate_cancel(&self) {
+        *self
+            .gate_cancel_requested
+            .lock()
+            .expect("scenario gate cancel mutex poisoned") = true;
+        self.gate_cancel_changed.notify_all();
+    }
+
+    pub(super) fn wait_for_gate_cancel(&self, deadline: Instant) -> Result<(), ReceiptLedgerError> {
+        let mut requested = self
+            .gate_cancel_requested
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("scenario gate cancel mutex poisoned"))?;
+        while !*requested {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(ReceiptLedgerError::DeadlineExceeded);
+            };
+            let (next, timeout) = self
+                .gate_cancel_changed
+                .wait_timeout(requested, remaining)
+                .map_err(|_| ReceiptLedgerError::Corrupt("scenario gate cancel mutex poisoned"))?;
+            requested = next;
+            if timeout.timed_out() && !*requested {
+                return Err(ReceiptLedgerError::DeadlineExceeded);
+            }
+        }
+        Ok(())
     }
 
     fn configure_validation(&self, reject: bool) {
@@ -1015,6 +1048,10 @@ impl ReceiptScenarioControl {
             .lock()
             .expect("scenario lifecycle gate mutex poisoned") = false;
         *self
+            .gate_cancel_requested
+            .lock()
+            .expect("scenario gate cancel mutex poisoned") = false;
+        *self
             .actor_workspace_identity
             .lock()
             .expect("scenario actor identity mutex poisoned") = None;
@@ -1316,6 +1353,31 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             } => {
                 if !matches!(key, ScenarioKey::Exact) || operations.contains_key(&label) {
                     return Ok(None);
+                }
+                if pending_submit.is_some() || live_daemon.is_some() {
+                    let worker_label = label.clone();
+                    let worker_control = Arc::clone(&control);
+                    let operation = spawn_scenario_operation(
+                        label.clone(),
+                        Arc::clone(&control),
+                        Arc::clone(&telemetry),
+                        clock.now_epoch_millis(),
+                        move || {
+                            worker_control
+                                .acquire_lifecycle_gate(
+                                    &worker_label,
+                                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                                )
+                                .map_err(|error| {
+                                    format!("acquire live cancel lifecycle gate: {error}")
+                                })?;
+                            worker_control.request_gate_cancel();
+                            worker_control.release_lifecycle_gate(&worker_label);
+                            Ok(())
+                        },
+                    );
+                    operations.insert(label, operation);
+                    continue;
                 }
                 let runtime = match &operation_runtime {
                     Some(runtime) => Arc::clone(runtime),

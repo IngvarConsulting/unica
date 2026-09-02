@@ -11426,10 +11426,18 @@ fn cancel_after_working_before_receipt_begun_waits_and_is_post_begun() {
     let waiting = checkpoint(&report, "cancel-waiting");
     assert_eq!(waiting.token_signals, 0);
     assert!(!only_task(waiting).cancel_requested);
-    assert!(!only_receipt(waiting).begun);
+    assert_eq!(
+        task_link_state(only_task_link(waiting)),
+        SeedReceiptState::TaskBoundNotBegun
+    );
+    assert!(waiting.receipts.is_empty());
     let after = checkpoint(&report, "post-begun-cancel");
-    assert!(only_receipt(after).begun);
     assert!(only_task(after).cancel_requested);
+    assert_eq!(
+        task_link_state(only_task_link(after)),
+        SeedReceiptState::TaskTerminalBound
+    );
+    assert!(after.receipts.is_empty());
     assert_eq!(after.token_signals, 1);
     assert_event_order(
         &report,
