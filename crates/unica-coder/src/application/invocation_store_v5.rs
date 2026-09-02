@@ -753,6 +753,13 @@ pub(crate) trait InvocationStoreV5: Send + Sync {
         deadline: ProviderDeadline,
     ) -> Result<V5StoredInvocationRecord, V5TaskStoreError>;
 
+    fn publish_staged_terminal_against_exact_provisional(
+        &self,
+        expected: &V5StoredInvocationRecord,
+        publication: V5TerminalPublication,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError>;
+
     fn terminalize_recovered_exact(
         &self,
         identity: &V5TaskIdentity,

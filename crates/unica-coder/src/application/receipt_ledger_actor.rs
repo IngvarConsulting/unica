@@ -1,11 +1,12 @@
 use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelResolution,
-    CommittedDirectPublication, OriginalCutoffDescriptor, ProvenTaskLinkCapacity, ReceiptKey,
-    ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion,
-    ReserveOutcome, ReservedReceipt, StagedTerminalTransferCertificate, TaskBoundReceipt,
-    TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
-    TaskPromisedUnboundReceipt, TaskReceiptOwnedActorBoundReceipt, TaskTerminalBoundReceipt,
-    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal,
+    CommittedDirectPublication, DirectTerminalUnackedReceipt, OriginalCutoffDescriptor,
+    ProvenTaskLinkCapacity, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort,
+    ReceiptState, ReceiptVersion, ReserveOutcome, ReservedReceipt,
+    StagedTerminalTransferCertificate, TaskBoundReceipt, TaskCancellationReceipt,
+    TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt,
+    TaskReceiptOwnedActorBoundReceipt, TaskTerminalBoundReceipt, TaskTerminalReceiptBackedReceipt,
+    TerminalDigest, V5CanonicalTerminal,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -214,6 +215,11 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<u64>>,
     },
+    #[cfg(feature = "receipt-ledger-test-support")]
+    RotateGenerationForTest {
+        deadline: Instant,
+        ticket: Arc<Ticket<u64>>,
+    },
     Reserve {
         key: ReceiptKey,
         original_cutoff: OriginalCutoffDescriptor,
@@ -307,6 +313,38 @@ enum Command {
         cancel_reserved_at_epoch_ms: u64,
         deadline: Instant,
         ticket: Arc<Ticket<CancelResolution>>,
+    },
+    PublishCancelledDirectBatch {
+        requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: Instant,
+        ticket: Arc<Ticket<Vec<DirectTerminalUnackedReceipt>>>,
+    },
+    ReserveBatch {
+        requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+        deadline: Instant,
+        ticket: Arc<Ticket<Vec<ReserveOutcome>>>,
+    },
+    BindReservedActorBatch {
+        requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+        deadline: Instant,
+        ticket: Arc<Ticket<Vec<ReservedReceipt>>>,
+    },
+    MarkReservedBegunBatch {
+        requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+        deadline: Instant,
+        ticket: Arc<Ticket<Vec<ReservedReceipt>>>,
+    },
+    PublishDirectTerminalBatch {
+        requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
+        deadline: Instant,
+        ticket: Arc<Ticket<Vec<CommittedDirectPublication>>>,
+    },
+    AcknowledgeDirectBatch {
+        requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
+        deadline: Instant,
+        ticket: Arc<Ticket<Vec<AcknowledgedTombstoneReceipt>>>,
     },
     ExpireCancelReserved {
         key: ReceiptKey,
@@ -504,6 +542,8 @@ enum TimeoutClass {
     #[cfg(feature = "receipt-ledger-test-support")]
     SnapshotCatalog,
     Generation,
+    #[cfg(feature = "receipt-ledger-test-support")]
+    RotateGenerationForTest,
     Reserve(ReceiptKeyDigest),
     BindReservedActor(ReceiptKeyDigest),
     MarkReservedBegun(ReceiptKeyDigest),
@@ -517,6 +557,12 @@ enum TimeoutClass {
     RequestTaskCancel(ReceiptKeyDigest),
     PublishReceiptBackedTaskTerminal(ReceiptKeyDigest),
     RequestCancelOrReserve(ReceiptKeyDigest),
+    PublishCancelledDirectBatch(ReceiptKeyDigest),
+    ReserveBatch(ReceiptKeyDigest),
+    BindReservedActorBatch(ReceiptKeyDigest),
+    MarkReservedBegunBatch(ReceiptKeyDigest),
+    PublishDirectTerminalBatch(ReceiptKeyDigest),
+    AcknowledgeDirectBatch(ReceiptKeyDigest),
     ExpireCancelReserved(ReceiptKeyDigest),
     PublishDirectTerminal(ReceiptKeyDigest),
     AcknowledgeDirect(ReceiptKeyDigest),
@@ -531,6 +577,8 @@ impl TimeoutClass {
             #[cfg(feature = "receipt-ledger-test-support")]
             Self::SnapshotCatalog => ReceiptLedgerError::StoreUnavailable,
             Self::Generation => ReceiptLedgerError::StoreUnavailable,
+            #[cfg(feature = "receipt-ledger-test-support")]
+            Self::RotateGenerationForTest => ReceiptLedgerError::StoreUnavailable,
             Self::Reserve(receipt_key_digest)
             | Self::BindReservedActor(receipt_key_digest)
             | Self::MarkReservedBegun(receipt_key_digest)
@@ -544,6 +592,12 @@ impl TimeoutClass {
             | Self::RequestTaskCancel(receipt_key_digest)
             | Self::PublishReceiptBackedTaskTerminal(receipt_key_digest)
             | Self::RequestCancelOrReserve(receipt_key_digest)
+            | Self::PublishCancelledDirectBatch(receipt_key_digest)
+            | Self::ReserveBatch(receipt_key_digest)
+            | Self::BindReservedActorBatch(receipt_key_digest)
+            | Self::MarkReservedBegunBatch(receipt_key_digest)
+            | Self::PublishDirectTerminalBatch(receipt_key_digest)
+            | Self::AcknowledgeDirectBatch(receipt_key_digest)
             | Self::ExpireCancelReserved(receipt_key_digest)
             | Self::PublishDirectTerminal(receipt_key_digest)
             | Self::AcknowledgeDirect(receipt_key_digest) => {
@@ -614,6 +668,32 @@ impl ReceiptLedgerActor {
         let ticket = Arc::new(Ticket::queued(deadline, TimeoutClass::Generation));
         self.enqueue(
             Command::Generation {
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn rotate_generation_for_test(
+        &self,
+        deadline: Instant,
+    ) -> Result<u64, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::RotateGenerationForTest,
+        ));
+        self.enqueue(
+            Command::RotateGenerationForTest {
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -1063,6 +1143,142 @@ impl ReceiptLedgerActor {
         ticket.wait(&self.health)
     }
 
+    pub(crate) fn publish_cancelled_direct_batch(
+        &self,
+        requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: Instant,
+    ) -> Result<Vec<DirectTerminalUnackedReceipt>, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let digest = requests
+            .first()
+            .map(|(key, _)| receipt_key_digest(key))
+            .ok_or(ReceiptLedgerError::ReceiptRowPresentUnsupported)?;
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::PublishCancelledDirectBatch(digest),
+        ));
+        self.enqueue(
+            Command::PublishCancelledDirectBatch {
+                requests,
+                terminal_epoch_ms,
+                terminal,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn reserve_batch(
+        &self,
+        requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+        deadline: Instant,
+    ) -> Result<Vec<ReserveOutcome>, ReceiptLedgerError> {
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
+        let ticket = Arc::new(Ticket::queued(deadline, TimeoutClass::ReserveBatch(digest)));
+        self.enqueue(
+            Command::ReserveBatch {
+                requests,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn bind_reserved_actor_batch(
+        &self,
+        requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+        deadline: Instant,
+    ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::BindReservedActorBatch(digest),
+        ));
+        self.enqueue(
+            Command::BindReservedActorBatch {
+                requests,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn mark_reserved_begun_batch(
+        &self,
+        requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+        deadline: Instant,
+    ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::MarkReservedBegunBatch(digest),
+        ));
+        self.enqueue(
+            Command::MarkReservedBegunBatch {
+                requests,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn publish_direct_terminal_batch(
+        &self,
+        requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
+        deadline: Instant,
+    ) -> Result<Vec<CommittedDirectPublication>, ReceiptLedgerError> {
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::PublishDirectTerminalBatch(digest),
+        ));
+        self.enqueue(
+            Command::PublishDirectTerminalBatch {
+                requests,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn acknowledge_direct_batch(
+        &self,
+        requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
+        deadline: Instant,
+    ) -> Result<Vec<AcknowledgedTombstoneReceipt>, ReceiptLedgerError> {
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::AcknowledgeDirectBatch(digest),
+        ));
+        self.enqueue(
+            Command::AcknowledgeDirectBatch {
+                requests,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
     pub(crate) fn expire_cancel_reserved(
         &self,
         key: ReceiptKey,
@@ -1299,6 +1515,24 @@ impl ReceiptLedgerActor {
     }
 }
 
+fn batch_digest<T>(
+    requests: &[T],
+    deadline: Instant,
+    health: &ActorHealth,
+    key: impl Fn(&T) -> &ReceiptKey,
+) -> Result<ReceiptKeyDigest, ReceiptLedgerError> {
+    if Instant::now() >= deadline {
+        return Err(ReceiptLedgerError::DeadlineExceeded);
+    }
+    if !health.is_ready() {
+        return Err(ReceiptLedgerError::StoreUnavailable);
+    }
+    requests
+        .first()
+        .map(|request| receipt_key_digest(key(request)))
+        .ok_or(ReceiptLedgerError::ReceiptRowPresentUnsupported)
+}
+
 fn run_worker(
     mut port: impl ReceiptLedgerPort,
     receiver: mpsc::Receiver<Command>,
@@ -1317,12 +1551,119 @@ fn run_worker(
                 .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
                 ticket.finish(result, &health);
             }
+            Command::ReserveBatch {
+                requests,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let result =
+                    catch_unwind(AssertUnwindSafe(|| port.reserve_batch(requests, deadline)))
+                        .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::BindReservedActorBatch {
+                requests,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.bind_reserved_actor_batch(requests, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::MarkReservedBegunBatch {
+                requests,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.mark_reserved_begun_batch(requests, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::PublishDirectTerminalBatch {
+                requests,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.publish_direct_terminal_batch(requests, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::AcknowledgeDirectBatch {
+                requests,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.acknowledge_direct_batch(requests, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::PublishCancelledDirectBatch {
+                requests,
+                terminal_epoch_ms,
+                terminal,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = requests
+                    .first()
+                    .map(|(key, _)| receipt_key_digest(key))
+                    .expect("validated cancelled Direct batch is nonempty");
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.publish_cancelled_direct_batch(
+                        requests,
+                        terminal_epoch_ms,
+                        terminal,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
             Command::Generation { deadline, ticket } => {
                 if !ticket.try_begin(&health) {
                     continue;
                 }
                 let result = catch_unwind(AssertUnwindSafe(|| port.generation(deadline)))
                     .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            #[cfg(feature = "receipt-ledger-test-support")]
+            Command::RotateGenerationForTest { deadline, ticket } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.rotate_generation_for_test(deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
                 ticket.finish(result, &health);
             }
             Command::Reserve {

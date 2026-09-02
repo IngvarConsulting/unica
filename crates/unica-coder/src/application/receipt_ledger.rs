@@ -7,6 +7,8 @@ use crate::domain::invocation::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "receipt-ledger-test-support")]
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::num::NonZeroU64;
 use std::str::FromStr;
@@ -381,8 +383,6 @@ impl ReceiptLedgerCatalogSnapshotAuthority {
                 "receipt catalog telemetry contradicts its tombstone pool",
             ));
         }
-        let mut indexed_keys = keys.clone();
-        indexed_keys.extend(tombstones.iter().map(|receipt| receipt.key().clone()));
         let indexed_count =
             live_count
                 .checked_add(tombstone_count)
@@ -391,39 +391,40 @@ impl ReceiptLedgerCatalogSnapshotAuthority {
                 ))?;
         if u64::try_from(invocation_index.len()).ok() != Some(indexed_count)
             || u64::try_from(reserved_task_index.len()).ok() != Some(indexed_count)
-            || !same_exact_receipt_key_set(&indexed_keys, &invocation_index)
-            || !same_exact_receipt_key_set(&indexed_keys, &reserved_task_index)
         {
             return Err(ReceiptLedgerError::Corrupt(
                 "receipt catalog telemetry indexes contradict its keys",
             ));
         }
-        for (offset, key) in indexed_keys.iter().enumerate() {
-            let prior = &indexed_keys[..offset];
-            if prior
-                .iter()
-                .any(|candidate| receipt_key_digest(candidate) == receipt_key_digest(key))
-            {
+        let mut exact_keys = HashMap::with_capacity(indexed_count as usize);
+        let mut invocation_ids = HashSet::with_capacity(indexed_count as usize);
+        let mut reserved_task_ids = HashSet::with_capacity(indexed_count as usize);
+        for key in keys
+            .iter()
+            .chain(tombstones.iter().map(|receipt| receipt.key()))
+        {
+            if exact_keys.insert(receipt_key_digest(key), key).is_some() {
                 return Err(ReceiptLedgerError::Corrupt(
                     "receipt catalog telemetry contains a duplicate key digest",
                 ));
             }
-            if prior
-                .iter()
-                .any(|candidate| candidate.invocation_id() == key.invocation_id())
-            {
+            if !invocation_ids.insert(key.invocation_id()) {
                 return Err(ReceiptLedgerError::Corrupt(
                     "receipt catalog telemetry contains a duplicate invocation id",
                 ));
             }
-            if prior
-                .iter()
-                .any(|candidate| candidate.reserved_task_id() == key.reserved_task_id())
-            {
+            if !reserved_task_ids.insert(key.reserved_task_id()) {
                 return Err(ReceiptLedgerError::Corrupt(
                     "receipt catalog telemetry contains a duplicate reserved task id",
                 ));
             }
+        }
+        if !same_exact_receipt_key_set(&exact_keys, &invocation_index)
+            || !same_exact_receipt_key_set(&exact_keys, &reserved_task_index)
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "receipt catalog telemetry indexes contradict its keys",
+            ));
         }
         if actual_bytes
             .checked_add(reserved_result_bytes)
@@ -448,10 +449,16 @@ impl ReceiptLedgerCatalogSnapshotAuthority {
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
-fn same_exact_receipt_key_set(expected: &[ReceiptKey], observed: &[ReceiptKey]) -> bool {
-    expected
-        .iter()
-        .all(|key| observed.iter().any(|candidate| candidate == key))
+fn same_exact_receipt_key_set(
+    expected: &HashMap<ReceiptKeyDigest, &ReceiptKey>,
+    observed: &[ReceiptKey],
+) -> bool {
+    observed.len() == expected.len()
+        && observed.iter().all(|key| {
+            expected
+                .get(&receipt_key_digest(key))
+                .is_some_and(|candidate| *candidate == key)
+        })
 }
 
 /// Sole-writer boundary owned by the application actor.
@@ -469,6 +476,64 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
     }
 
     fn generation(&mut self, _deadline: Instant) -> Result<u64, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    fn rotate_generation_for_test(
+        &mut self,
+        _deadline: Instant,
+    ) -> Result<u64, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    fn publish_cancelled_direct_batch(
+        &mut self,
+        _requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+        _terminal_epoch_ms: u64,
+        _terminal: V5CanonicalTerminal,
+        _deadline: Instant,
+    ) -> Result<Vec<DirectTerminalUnackedReceipt>, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    fn reserve_batch(
+        &mut self,
+        _requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+        _deadline: Instant,
+    ) -> Result<Vec<ReserveOutcome>, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    fn bind_reserved_actor_batch(
+        &mut self,
+        _requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+        _deadline: Instant,
+    ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    fn mark_reserved_begun_batch(
+        &mut self,
+        _requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+        _deadline: Instant,
+    ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    fn publish_direct_terminal_batch(
+        &mut self,
+        _requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
+        _deadline: Instant,
+    ) -> Result<Vec<CommittedDirectPublication>, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    fn acknowledge_direct_batch(
+        &mut self,
+        _requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
+        _deadline: Instant,
+    ) -> Result<Vec<AcknowledgedTombstoneReceipt>, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 

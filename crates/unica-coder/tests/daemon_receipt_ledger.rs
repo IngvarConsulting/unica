@@ -2123,13 +2123,14 @@ struct CrashCaseObservation {
 #[serde(tag = "owner", rename_all = "snake_case", deny_unknown_fields)]
 enum CrashLedgerObservation {
     ActiveReceipt { receipt: ReceiptObservation },
+    DirectReceipt { receipt: ReceiptObservation },
     LifecycleLink { link: TaskLinkObservation },
 }
 
 impl CrashLedgerObservation {
     fn key(&self) -> &ReceiptKeyObservation {
         match self {
-            Self::ActiveReceipt { receipt } => &receipt.key,
+            Self::ActiveReceipt { receipt } | Self::DirectReceipt { receipt } => &receipt.key,
             Self::LifecycleLink { link } => &link.key,
         }
     }
@@ -2137,14 +2138,27 @@ impl CrashLedgerObservation {
     fn active_receipt(&self) -> &ReceiptObservation {
         match self {
             Self::ActiveReceipt { receipt } => receipt,
-            Self::LifecycleLink { .. } => panic!("expected active receipt crash owner"),
+            Self::DirectReceipt { .. } | Self::LifecycleLink { .. } => {
+                panic!("expected active receipt crash owner")
+            }
+        }
+    }
+
+    fn direct_receipt(&self) -> &ReceiptObservation {
+        match self {
+            Self::DirectReceipt { receipt } => receipt,
+            Self::ActiveReceipt { .. } | Self::LifecycleLink { .. } => {
+                panic!("expected direct receipt crash owner")
+            }
         }
     }
 
     fn lifecycle_link(&self) -> &TaskLinkObservation {
         match self {
             Self::LifecycleLink { link } => link,
-            Self::ActiveReceipt { .. } => panic!("expected sole lifecycle-link crash owner"),
+            Self::ActiveReceipt { .. } | Self::DirectReceipt { .. } => {
+                panic!("expected sole lifecycle-link crash owner")
+            }
         }
     }
 }
@@ -9384,6 +9398,30 @@ fn every_cross_store_crash_point_reconciles_without_split_brain() {
         let case = matches[0];
         let key = case.ledger.key();
         assert_receipt_key(key);
+        let direct_pre_intent = matches!(
+            point,
+            CrashPoint::BeforePromisedActorIntent | CrashPoint::BeforeBoundHandoffIntent
+        );
+        if direct_pre_intent {
+            assert!(case.projections.is_empty(), "{case:#?}");
+            assert!(case.task_store_records.is_empty(), "{case:#?}");
+            assert!(case.callback_invocation_ids.is_empty(), "{case:#?}");
+            assert!(case.staged_terminal_before_crash.is_none(), "{case:#?}");
+            let receipt = case.ledger.direct_receipt();
+            assert_eq!(receipt.state, SeedReceiptState::DirectTerminalUnacked);
+            assert_eq!(receipt.terminal.as_ref(), Some(&case.recovered_terminal));
+            match expected_terminal {
+                ExpectedTerminal::Completed => {
+                    assert!(completed_result(&case.recovered_terminal).ok, "{case:#?}")
+                }
+                ExpectedTerminal::Failed(reason) => {
+                    assert_failed_terminal(&case.recovered_terminal, reason)
+                }
+            }
+            assert!(case.receipt_store_generation > 0);
+            assert_eq!(case.task_store_generation, 0);
+            continue;
+        }
         assert_eq!(case.projections.len(), 1, "{case:#?}");
         assert_eq!(
             case.task_store_records.len(),
@@ -13017,6 +13055,57 @@ fn deterministic_horizon_load_does_not_saturate() {
 }
 
 #[test]
+fn explicit_retention_reuses_the_live_receipt_owner() {
+    let report = execute(Scenario::fake(vec![
+        direct_provider(),
+        submit("live-owner"),
+        Action::ReclaimExpiredEvidence,
+        Action::RotateReceiptSegments,
+        checkpoint_action("after-reclaim"),
+    ]));
+
+    assert_eq!(response(&report, "live-owner").kind, ResponseKind::Direct);
+    assert_eq!(checkpoint(&report, "after-reclaim").receipt_live_count, 1);
+}
+
+#[test]
+fn tombstone_capacity_rejection_keeps_the_live_owner_usable() {
+    let report = execute(Scenario::fake(vec![
+        Action::FillTombstones,
+        direct_provider(),
+        submit("terminal"),
+        Action::Acknowledge {
+            key: KeyCase::Exact,
+            digest: DigestCase::ExactTerminal,
+            disconnect: AckDisconnectPoint::Never,
+            label: "overflow-ack".to_string(),
+        },
+        Action::AdvanceEpoch {
+            millis: TOMBSTONE_TTL_MS,
+        },
+        Action::ReclaimExpiredEvidence,
+        Action::RotateReceiptSegments,
+        Action::Acknowledge {
+            key: KeyCase::Exact,
+            digest: DigestCase::ExactTerminal,
+            disconnect: AckDisconnectPoint::Never,
+            label: "post-reclaim-ack".to_string(),
+        },
+        checkpoint_action("after-reclaim"),
+    ]));
+
+    assert_eq!(
+        response(&report, "overflow-ack").error,
+        Some(ErrorCode::TombstoneCapacity)
+    );
+    assert_eq!(
+        response(&report, "post-reclaim-ack").kind,
+        ResponseKind::Acknowledged
+    );
+    assert_eq!(checkpoint(&report, "after-reclaim").tombstone_count, 1);
+}
+
+#[test]
 fn wall_clock_writer_sustains_32_receipts_per_second_on_each_os() {
     let report = execute(Scenario::wall(vec![Action::RunDirectLoad {
         calls: 1_920,
@@ -13041,6 +13130,30 @@ fn wall_clock_writer_sustains_32_receipts_per_second_on_each_os() {
     assert!(max_concurrency_sample(load, |sample| sample.live_receipts) <= LIVE_RECEIPT_LIMIT);
     assert_eq!(load.task_store_create_attempts, 0);
     assert_eq!(load.listener, ListenerState::Listening);
+}
+
+#[test]
+fn production_direct_load_survives_ten_full_connection_batches() {
+    let report = execute(Scenario::fake(vec![
+        Action::RunDirectLoad {
+            calls: 320,
+            duration_ms: 10_000,
+            concurrency: 32,
+            retained_receipt_terminals: 32,
+            immediate_ack: true,
+            label: "ten-batches".to_string(),
+        },
+        checkpoint_action("ten-batches-retained"),
+    ]));
+
+    let load = load_run(&report, "ten-batches");
+    assert_direct_load_lifecycles(load, 320);
+    assert_eq!(completed_at_window_end(load), 320);
+    assert!(load.capacity_rejections.is_empty());
+    assert!(load.store_errors.is_empty());
+    assert_eq!(load.task_store_create_attempts, 0);
+    assert_eq!(load.listener, ListenerState::Listening);
+    assert_retained_receipt_backed_set(checkpoint(&report, "ten-batches-retained"), 32);
 }
 
 #[test]

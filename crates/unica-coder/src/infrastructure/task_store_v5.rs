@@ -787,6 +787,47 @@ impl InvocationStoreV5 for FileInvocationStoreV5 {
         Ok(record)
     }
 
+    fn publish_staged_terminal_against_exact_provisional(
+        &self,
+        expected: &V5StoredInvocationRecord,
+        publication: V5TerminalPublication,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        let mut record = self.read_record(expected.task_id, deadline)?;
+        if record.task.is_terminal()
+            && expected
+                .version
+                .checked_add(1)
+                .is_some_and(|version| version == record.version)
+            && publication.matches_task(&record.task)
+        {
+            return Ok(record);
+        }
+        if record != *expected
+            || !matches!(expected.task, V5StoredTask::Queued | V5StoredTask::Working)
+        {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: expected.task_id,
+                reason: V5TaskMismatch::State,
+            });
+        }
+        let terminal_epoch_ms = publication.terminal_epoch_ms();
+        record.task = publication.into_stored_task();
+        record.version = Self::next_version(&record)?;
+        record.updated_at_epoch_ms = record
+            .updated_at_epoch_ms
+            .max(self.clock.now_epoch_millis())
+            .max(terminal_epoch_ms);
+        self.publish_record(
+            &mut writer,
+            &record,
+            V5CommitOperation::PublishTerminal,
+            deadline,
+        )?;
+        Ok(record)
+    }
+
     fn terminalize_recovered_exact(
         &self,
         identity: &V5TaskIdentity,

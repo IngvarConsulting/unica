@@ -409,6 +409,38 @@ impl StoreCatalog {
         self.entries.insert(key_digest, entry);
         Ok(())
     }
+
+    fn remove_exact_pending(
+        &mut self,
+        expected: &TaskRetirementPendingReceipt,
+    ) -> Result<(), TaskLifecycleLinkStoreError> {
+        let key_digest = expected.key_digest();
+        let current =
+            self.entries
+                .get(key_digest)
+                .ok_or(TaskLifecycleLinkStoreError::NotFound {
+                    task_id: expected.task().task_id(),
+                })?;
+        if current
+            != &CatalogEntry::Link(TaskLifecycleLinkRecord::TaskRetirementPending(
+                expected.clone(),
+            ))
+        {
+            return Err(TaskLifecycleLinkStoreError::StateMismatch);
+        }
+        if self.task_index.get(&expected.task().task_id()) != Some(key_digest)
+            || self.invocation_index.get(&expected.task().invocation_id()) != Some(key_digest)
+        {
+            return Err(TaskLifecycleLinkStoreError::Corrupt(
+                "TaskRetirementPending indexes do not bind its exact identity",
+            ));
+        }
+        self.entries.remove(key_digest);
+        self.task_index.remove(&expected.task().task_id());
+        self.invocation_index
+            .remove(&expected.task().invocation_id());
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1347,6 +1379,20 @@ impl TaskLifecycleLinkStoreV5 {
         Ok(result)
     }
 
+    pub(crate) fn finalize_task_retirement(
+        &self,
+        expected: &TaskRetirementPendingReceipt,
+        deadline: ProviderDeadline,
+    ) -> Result<(), TaskLifecycleLinkStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        let mut next = writer.clone();
+        next.remove_exact_pending(expected)?;
+        next.mutation_sequence = next_sequence(writer.mutation_sequence)?;
+        let committed = self.publish_and_readback(&next, expected.key_digest(), deadline)?;
+        *writer = committed;
+        Ok(())
+    }
+
     pub(crate) fn read_by_task_id(
         &self,
         task_id: TaskId,
@@ -1484,11 +1530,9 @@ impl TaskLifecycleLinkStoreV5 {
             }
             catalog.insert_exact(entry)?;
         }
-        if (catalog.entries.is_empty() && catalog.mutation_sequence != 0)
-            || (!catalog.entries.is_empty() && maximum_sequence != catalog.mutation_sequence)
-        {
+        if maximum_sequence > catalog.mutation_sequence {
             return Err(TaskLifecycleLinkStoreError::Corrupt(
-                "Task lifecycle-link mutation sequence is not the exact high-water mark",
+                "Task lifecycle-link entry mutation exceeds the durable high-water mark",
             ));
         }
         validate_capacity(&catalog, self.limits)?;
@@ -2283,6 +2327,69 @@ mod tests {
                 .expect("reopened pending link"),
             TaskLifecycleLinkRecord::TaskRetirementPending(pending)
         );
+    }
+
+    #[test]
+    fn finalized_retirement_removes_exact_link_and_both_indexes_across_reopen() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let (key, link, task) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("open store");
+        let reservation = store
+            .reserve_task_link(key.clone(), link, deadline())
+            .expect("reserve link");
+        let bound = store
+            .materialize_task_bound(
+                &reservation,
+                task,
+                1,
+                1_000,
+                AttemptPhase::Begun,
+                deadline(),
+            )
+            .expect("materialize TaskBound");
+        let terminal_task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            1_000,
+            2_000,
+            3_600_000,
+            100,
+            2,
+        )
+        .expect("terminal projection");
+        let terminal = store
+            .publish_task_terminal_bound(
+                &bound,
+                terminal_task,
+                2,
+                ClosedTerminalStatus::Completed,
+                terminal_digest(),
+                2_000,
+                deadline(),
+            )
+            .expect("publish terminal link");
+        let pending = store
+            .begin_task_retirement(&terminal, 64, 64, deadline())
+            .expect("commit pending retirement");
+
+        store
+            .finalize_task_retirement(&pending, deadline())
+            .expect("finalize exact retirement");
+        assert!(matches!(
+            store.read_by_task_id(key.reserved_task_id(), deadline()),
+            Err(TaskLifecycleLinkStoreError::NotFound { .. })
+        ));
+        assert_eq!(store.catalog_snapshot(deadline()).unwrap().count(), 0);
+        drop(store);
+
+        let reopened =
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("reopen store");
+        assert!(matches!(
+            reopened.read_by_task_id(key.reserved_task_id(), deadline()),
+            Err(TaskLifecycleLinkStoreError::NotFound { .. })
+        ));
+        assert_eq!(reopened.catalog_snapshot(deadline()).unwrap().count(), 0);
     }
 
     #[test]
