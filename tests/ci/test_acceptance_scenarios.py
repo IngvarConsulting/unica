@@ -66,7 +66,16 @@ def substitute(value, context):
 
 
 def classify(response, context):
-    if response is None or "error" in response:
+    if response is None:
+        return "error", "no response"
+    if "error" in response:
+        message = str((response.get("error") or {}).get("message", ""))
+        # The daemon's own typed answer when a provider (documentation,
+        # search index) does not respond within its deadline. It is not a
+        # transport failure: the tool ran and its provider was unavailable,
+        # which the environment-shaped steps freeze as `provider`.
+        if "deadline expired" in message:
+            return "provider", message[:160]
         return "error", json.dumps(response, ensure_ascii=False)[:200]
     structured = response.get("result", {}).get("structuredContent")
     if structured is None:
