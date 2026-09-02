@@ -5924,17 +5924,16 @@ pub(crate) mod tests {
         // `unica.cf.*` reads `Configuration.xml` at the root of a source set,
         // so no branch of its schema can honour an address. Publishing one
         // would advertise a selector the tool cannot use.
-        for name in ["unica.cf.info"] {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == name)
-                .expect("tool is registered");
-            let schema = input_schema_for_tool(&tool);
-            assert!(
-                schema["properties"].get("metadataPath").is_none(),
-                "{name} publishes an address it cannot use: {schema}"
-            );
-        }
+        let name = "unica.cf.info";
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .expect("tool is registered");
+        let schema = input_schema_for_tool(&tool);
+        assert!(
+            schema["properties"].get("metadataPath").is_none(),
+            "{name} publishes an address it cannot use: {schema}"
+        );
     }
 
     /// The bridged tools whose arguments come from `NATIVE_XML_DSL_ARGS`. The

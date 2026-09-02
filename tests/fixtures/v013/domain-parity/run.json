@@ -1,7 +1,46 @@
 {
   "schemaVersion": 2,
   "complete": false,
-  "baselineDispositions": [],
+  "baselineDispositions": [
+    {
+      "legacyTool": "unica.runtime.job.status",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "transport-replaced",
+          "projections": [
+            {
+              "kind": "native-task",
+              "method": "tasks/get"
+            },
+            {
+              "kind": "compatibility-tool",
+              "tool": "unica.task.get"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "legacyTool": "unica.runtime.job.cancel",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "transport-replaced",
+          "projections": [
+            {
+              "kind": "native-task",
+              "method": "tasks/cancel"
+            },
+            {
+              "kind": "compatibility-tool",
+              "tool": "unica.task.cancel"
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "cases": [],
   "newCapabilities": []
 }
