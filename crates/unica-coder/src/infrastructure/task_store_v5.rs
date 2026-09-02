@@ -772,12 +772,15 @@ impl InvocationStoreV5 for FileInvocationStoreV5 {
             });
         }
         let terminal_epoch_ms = publication.terminal_epoch_ms();
+        if terminal_epoch_ms < record.updated_at_epoch_ms {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: identity.task_id(),
+                reason: V5TaskMismatch::State,
+            });
+        }
         record.task = publication.into_stored_task();
         record.version = Self::next_version(&record)?;
-        record.updated_at_epoch_ms = record
-            .updated_at_epoch_ms
-            .max(self.clock.now_epoch_millis())
-            .max(terminal_epoch_ms);
+        record.updated_at_epoch_ms = terminal_epoch_ms;
         self.publish_record(
             &mut writer,
             &record,
@@ -813,12 +816,15 @@ impl InvocationStoreV5 for FileInvocationStoreV5 {
             });
         }
         let terminal_epoch_ms = publication.terminal_epoch_ms();
+        if terminal_epoch_ms < record.updated_at_epoch_ms {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: expected.task_id,
+                reason: V5TaskMismatch::State,
+            });
+        }
         record.task = publication.into_stored_task();
         record.version = Self::next_version(&record)?;
-        record.updated_at_epoch_ms = record
-            .updated_at_epoch_ms
-            .max(self.clock.now_epoch_millis())
-            .max(terminal_epoch_ms);
+        record.updated_at_epoch_ms = terminal_epoch_ms;
         self.publish_record(
             &mut writer,
             &record,
@@ -1603,6 +1609,52 @@ mod tests {
             visible,
             "an exact retry after uncertain commit must read back the winner"
         );
+    }
+
+    #[test]
+    fn terminal_publication_keeps_its_authoritative_epoch_when_store_clock_advances() {
+        let root = tempfile::tempdir().expect("temporary v5 root");
+        let root_path = physical_root(&root);
+        let clock = Arc::new(ManualEpochClock::at(6_000));
+        let (store, _) =
+            FileInvocationStoreV5::open_inspect_only(&root_path, clock.clone(), deadline())
+                .unwrap();
+        let created = store
+            .create_exact(
+                new_record(
+                    task_id("25252525-2525-4525-8525-252525252525"),
+                    invocation_id("26262626-2626-4626-8626-262626262626"),
+                    0x1a,
+                ),
+                deadline(),
+            )
+            .unwrap();
+        let identity = created.identity();
+        let V5StartWorkingOutcome::Started(working) = store
+            .start_working_if_not_cancel_requested(&identity, created.version, deadline())
+            .unwrap()
+        else {
+            panic!("task did not enter working");
+        };
+        let publication = V5TerminalPublication::Completed {
+            terminal_epoch_ms: 6_100,
+            terminal_digest: terminal_digest(0xba),
+            result: Box::new(DomainResult::success("done")),
+        };
+        clock.set(6_200);
+
+        let terminal = store
+            .publish_terminal_exact(&identity, working.version, publication, deadline())
+            .unwrap();
+
+        assert_eq!(terminal.updated_at_epoch_ms, 6_100);
+        assert!(matches!(
+            terminal.task,
+            V5StoredTask::Completed {
+                terminal_epoch_ms: 6_100,
+                ..
+            }
+        ));
     }
 
     #[test]

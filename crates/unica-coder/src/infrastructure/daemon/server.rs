@@ -458,6 +458,7 @@ pub(super) struct V5CanonicalInvocationRuntime {
 
 #[derive(Debug)]
 pub(super) enum V5CanonicalPrepareError {
+    Direct(Box<DomainResult>),
     Rejected(Box<DomainResult>),
     WorkspaceCapacity,
     WorkspaceRegistryFailed,
@@ -497,6 +498,17 @@ impl V5CanonicalInvocationRuntime {
                 DomainResult::canonical_rejection(None, "bad_value", summary),
             )));
         }
+        if let Some(result) =
+            super::v13_workspace_bootstrap::execute_view_bootstrap(&request, &response_deadline)
+        {
+            return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
+        }
+        if let Some(result) = super::v13_workspace_initialize::execute_workspace_initialize(
+            &request,
+            &response_deadline,
+        ) {
+            return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
+        }
         let invocation = bind_workspace_invocation(
             &request,
             &self.workspace_actors,
@@ -511,9 +523,19 @@ impl V5CanonicalInvocationRuntime {
             WorkspaceAdmissionError::RegistryFailed => {
                 V5CanonicalPrepareError::WorkspaceRegistryFailed
             }
-            WorkspaceAdmissionError::Invalid => V5CanonicalPrepareError::Rejected(Box::new(
-                failed_domain_result("workspace actor admission failed"),
-            )),
+            WorkspaceAdmissionError::Invalid => {
+                if let Some(result) =
+                    super::v13_workspace_initialize::reject_unavailable_run_before_admission(
+                        &request,
+                    )
+                {
+                    V5CanonicalPrepareError::Direct(Box::new(result))
+                } else {
+                    V5CanonicalPrepareError::Rejected(Box::new(failed_domain_result(
+                        "workspace actor admission failed",
+                    )))
+                }
+            }
         })?;
         Ok(V5ActorBoundCanonicalInvocation {
             invocation,
@@ -542,8 +564,10 @@ impl V5PreparedCanonicalInvocation {
         &self.class
     }
 
-    pub(super) fn execute(self) -> Result<DomainResult, InvocationFailure> {
-        let cancellation = CancellationToken::new();
+    pub(super) fn execute(
+        self,
+        cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
         let execution = self
             .invocation
             .begin_execution(&cancellation)
@@ -6140,6 +6164,71 @@ struct ActorLogicalReadLease {"#,
         let prepared = bound.prepare().expect("enter domain prepare explicitly");
         assert_eq!(preparations.load(Ordering::SeqCst), 1);
         assert_eq!(prepared.execution_class(), &ExecutionClass::InlineCandidate);
+    }
+
+    #[test]
+    fn v5_view_without_at_returns_the_workspace_bootstrap_before_actor_admission() {
+        let workspace = tempfile::tempdir().expect("temporary empty workspace");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({}),
+            std::fs::canonicalize(workspace.path())
+                .expect("canonical workspace")
+                .to_string_lossy(),
+            7_000,
+        )
+        .expect("valid bootstrap request");
+
+        let result = match runtime.bind(request) {
+            Err(V5CanonicalPrepareError::Direct(result)) => result,
+            Ok(_) => panic!("workspace bootstrap must not enter actor admission"),
+            Err(other) => panic!("workspace bootstrap returned infrastructure failure: {other:?}"),
+        };
+
+        assert!(result.ok, "v5 bootstrap was misclassified: {result:?}");
+        assert_eq!(result.data.as_ref().unwrap()["config"]["state"], "missing");
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
+        let workspace = tempfile::tempdir().expect("temporary empty workspace");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({}),
+            std::fs::canonicalize(workspace.path())
+                .expect("canonical workspace")
+                .to_string_lossy(),
+            7_000,
+        )
+        .expect("valid run dictionary request");
+
+        let result = match runtime.bind(request) {
+            Err(V5CanonicalPrepareError::Direct(result)) => result,
+            Ok(_) => panic!("run dictionary must not enter actor admission"),
+            Err(other) => panic!("run dictionary returned infrastructure failure: {other:?}"),
+        };
+
+        assert!(result.ok, "v5 run dictionary was misclassified: {result:?}");
+        assert!(!result.data.as_ref().unwrap()["operations"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
     impl CanonicalInvocationService for SharedDeliveryService {

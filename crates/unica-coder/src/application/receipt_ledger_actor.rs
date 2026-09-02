@@ -1150,16 +1150,7 @@ impl ReceiptLedgerActor {
         terminal: V5CanonicalTerminal,
         deadline: Instant,
     ) -> Result<Vec<DirectTerminalUnackedReceipt>, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
-            return Err(ReceiptLedgerError::DeadlineExceeded);
-        }
-        if !self.health.is_ready() {
-            return Err(ReceiptLedgerError::StoreUnavailable);
-        }
-        let digest = requests
-            .first()
-            .map(|(key, _)| receipt_key_digest(key))
-            .ok_or(ReceiptLedgerError::ReceiptRowPresentUnsupported)?;
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
         let ticket = Arc::new(Ticket::queued(
             deadline,
             TimeoutClass::PublishCancelledDirectBatch(digest),
@@ -1527,10 +1518,17 @@ fn batch_digest<T>(
     if !health.is_ready() {
         return Err(ReceiptLedgerError::StoreUnavailable);
     }
+    batch_receipt_key_digest(requests, key)
+}
+
+fn batch_receipt_key_digest<T>(
+    requests: &[T],
+    key: impl Fn(&T) -> &ReceiptKey,
+) -> Result<ReceiptKeyDigest, ReceiptLedgerError> {
     requests
         .first()
         .map(|request| receipt_key_digest(key(request)))
-        .ok_or(ReceiptLedgerError::ReceiptRowPresentUnsupported)
+        .ok_or(ReceiptLedgerError::EmptyBatch)
 }
 
 fn run_worker(
@@ -1559,9 +1557,13 @@ fn run_worker(
                 if !ticket.try_begin(&health) {
                     continue;
                 }
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
+                    .expect("validated reserve batch is nonempty");
                 let result =
                     catch_unwind(AssertUnwindSafe(|| port.reserve_batch(requests, deadline)))
-                        .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                        .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                            receipt_key_digest: digest,
+                        }));
                 ticket.finish(result, &health);
             }
             Command::BindReservedActorBatch {
@@ -1572,10 +1574,14 @@ fn run_worker(
                 if !ticket.try_begin(&health) {
                     continue;
                 }
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
+                    .expect("validated actor-binding batch is nonempty");
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.bind_reserved_actor_batch(requests, deadline)
                 }))
-                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
                 ticket.finish(result, &health);
             }
             Command::MarkReservedBegunBatch {
@@ -1586,10 +1592,14 @@ fn run_worker(
                 if !ticket.try_begin(&health) {
                     continue;
                 }
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
+                    .expect("validated begun batch is nonempty");
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.mark_reserved_begun_batch(requests, deadline)
                 }))
-                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
                 ticket.finish(result, &health);
             }
             Command::PublishDirectTerminalBatch {
@@ -1600,10 +1610,14 @@ fn run_worker(
                 if !ticket.try_begin(&health) {
                     continue;
                 }
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
+                    .expect("validated terminal batch is nonempty");
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.publish_direct_terminal_batch(requests, deadline)
                 }))
-                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
                 ticket.finish(result, &health);
             }
             Command::AcknowledgeDirectBatch {
@@ -1614,10 +1628,14 @@ fn run_worker(
                 if !ticket.try_begin(&health) {
                     continue;
                 }
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
+                    .expect("validated acknowledgement batch is nonempty");
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.acknowledge_direct_batch(requests, deadline)
                 }))
-                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
                 ticket.finish(result, &health);
             }
             Command::PublishCancelledDirectBatch {
@@ -1630,9 +1648,7 @@ fn run_worker(
                 if !ticket.try_begin(&health) {
                     continue;
                 }
-                let digest = requests
-                    .first()
-                    .map(|(key, _)| receipt_key_digest(key))
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
                     .expect("validated cancelled Direct batch is nonempty");
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.publish_cancelled_direct_batch(
@@ -2105,9 +2121,9 @@ mod tests {
         CancelResolution, CommittedDirectPublication, CoreIdentityDigest,
         LifecycleLinkRecordHeader, OriginalCutoffDescriptor, ReceiptKey, ReceiptLedgerError,
         ReceiptRecordHeader, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
-        ReceiptVersion, RequestIdentity, ReserveOutcome, TaskBoundReceipt, TaskCancellationReceipt,
-        TaskLinkReference, TaskPromisedUnboundReceipt, TerminalDigest, V5CanonicalTerminal,
-        V5ToolIdentity,
+        ReceiptVersion, RequestIdentity, ReserveOutcome, ReservedReceipt, TaskBoundReceipt,
+        TaskCancellationReceipt, TaskLinkReference, TaskPromisedUnboundReceipt, TerminalDigest,
+        V5CanonicalTerminal, V5ToolIdentity,
     };
     use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
     use std::cell::Cell;
@@ -2115,6 +2131,25 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn empty_batches_report_the_caller_error_without_entering_the_port() {
+        let actor = ReceiptLedgerActor::spawn(PanickingPort);
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        let errors = [
+            actor
+                .publish_cancelled_direct_batch(Vec::new(), 1_000, cancelled_terminal(), deadline)
+                .expect_err("an empty cancelled batch is invalid"),
+            actor
+                .reserve_batch(Vec::new(), deadline)
+                .expect_err("an empty reserve batch is invalid"),
+        ];
+
+        for error in errors {
+            assert_eq!(error.to_string(), "receipt batch must not be empty");
+        }
+    }
 
     struct BlockingPort {
         entered: Option<mpsc::Sender<()>>,
@@ -2182,6 +2217,46 @@ mod tests {
     struct PanickingPort;
 
     impl ReceiptLedgerPort for PanickingPort {
+        fn reserve_batch(
+            &mut self,
+            _requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+            _deadline: Instant,
+        ) -> Result<Vec<ReserveOutcome>, ReceiptLedgerError> {
+            panic!("injected reserve batch panic")
+        }
+
+        fn bind_reserved_actor_batch(
+            &mut self,
+            _requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+            _deadline: Instant,
+        ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+            panic!("injected bind batch panic")
+        }
+
+        fn mark_reserved_begun_batch(
+            &mut self,
+            _requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+            _deadline: Instant,
+        ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+            panic!("injected begun batch panic")
+        }
+
+        fn publish_direct_terminal_batch(
+            &mut self,
+            _requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
+            _deadline: Instant,
+        ) -> Result<Vec<CommittedDirectPublication>, ReceiptLedgerError> {
+            panic!("injected terminal batch panic")
+        }
+
+        fn acknowledge_direct_batch(
+            &mut self,
+            _requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
+            _deadline: Instant,
+        ) -> Result<Vec<AcknowledgedTombstoneReceipt>, ReceiptLedgerError> {
+            panic!("injected acknowledgement batch panic")
+        }
+
         fn reserve(
             &mut self,
             _key: ReceiptKey,
@@ -3858,6 +3933,69 @@ mod tests {
                 )
                 .expect_err("panicked actor requires recovery"),
             ReceiptLedgerError::StoreUnavailable
+        );
+    }
+
+    #[test]
+    fn batch_mutation_panics_preserve_the_reconciliation_digest() {
+        let key = receipt_key();
+        let expected = ReceiptLedgerError::CommitUncertain {
+            receipt_key_digest: receipt_key_digest(&key),
+        };
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        assert_eq!(
+            ReceiptLedgerActor::spawn(PanickingPort)
+                .reserve_batch(vec![(key.clone(), cutoff())], deadline)
+                .expect_err("reserve batch panic is commit-uncertain"),
+            expected
+        );
+        assert_eq!(
+            ReceiptLedgerActor::spawn(PanickingPort)
+                .bind_reserved_actor_batch(
+                    vec![(
+                        key.clone(),
+                        ReceiptVersion::initial(),
+                        SafeIdentityHash::from_sha256([7; 32]),
+                    )],
+                    deadline,
+                )
+                .expect_err("bind batch panic is commit-uncertain"),
+            expected
+        );
+        assert_eq!(
+            ReceiptLedgerActor::spawn(PanickingPort)
+                .mark_reserved_begun_batch(
+                    vec![(
+                        key.clone(),
+                        ReceiptVersion::initial(),
+                        SafeIdentityHash::from_sha256([7; 32]),
+                    )],
+                    deadline,
+                )
+                .expect_err("begun batch panic is commit-uncertain"),
+            expected
+        );
+        assert_eq!(
+            ReceiptLedgerActor::spawn(PanickingPort)
+                .publish_direct_terminal_batch(
+                    vec![(
+                        key.clone(),
+                        ReceiptVersion::initial(),
+                        1_234,
+                        cancelled_terminal(),
+                    )],
+                    deadline,
+                )
+                .expect_err("terminal batch panic is commit-uncertain"),
+            expected
+        );
+        let terminal = cancelled_terminal();
+        assert_eq!(
+            ReceiptLedgerActor::spawn(PanickingPort)
+                .acknowledge_direct_batch(vec![(key, terminal.digest().clone(), 1_235)], deadline,)
+                .expect_err("acknowledgement batch panic is commit-uncertain"),
+            expected
         );
     }
 

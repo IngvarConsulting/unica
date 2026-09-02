@@ -6745,6 +6745,23 @@ fn known_long_provider() -> Action {
     }
 }
 
+#[test]
+fn production_known_long_task_executes_after_the_initial_working_projection() {
+    let report = execute(Scenario::fake(vec![
+        known_long_provider(),
+        submit("submit"),
+        Action::WaitForEvent {
+            event: EventKind::TaskTerminalBoundCommitted,
+        },
+        checkpoint_action("after-wait"),
+    ]));
+
+    let snapshot = checkpoint(&report, "after-wait");
+    assert_eq!(only_task(snapshot).status, TaskStatus::Completed);
+    assert_eq!(snapshot.callbacks.prepare, 1);
+    assert_eq!(snapshot.callbacks.execute, 1);
+}
+
 fn submit(label: &str) -> Action {
     Action::Submit {
         request: RequestCase::Canonical,
@@ -9206,6 +9223,9 @@ fn known_long_requires_begun_bound_handoff_intent() {
 fn known_long_after_prepare_never_becomes_unbound_promise() {
     let report = execute(Scenario::fake(vec![
         known_long_provider(),
+        Action::InstallBarrier {
+            point: BarrierPoint::BeforeTaskTerminalReceipt,
+        },
         submit("submit"),
         Action::WaitForEvent {
             event: EventKind::TaskBoundCommitted,
@@ -9215,6 +9235,13 @@ fn known_long_after_prepare_never_becomes_unbound_promise() {
             label: "working".to_string(),
         },
         checkpoint_action("bound"),
+        Action::ReleaseBarrier {
+            point: BarrierPoint::BeforeTaskTerminalReceipt,
+        },
+        Action::WaitForEvent {
+            event: EventKind::TaskTerminalBoundCommitted,
+        },
+        checkpoint_action("terminal"),
     ]));
 
     assert_eq!(count_event(&report, EventKind::UnboundPromiseCommitted), 0);
@@ -9224,6 +9251,10 @@ fn known_long_after_prepare_never_becomes_unbound_promise() {
     assert_eq!(task.status, TaskStatus::Working);
     assert_eq!(task.projection_source, ProjectionSource::TaskStore);
     assert_eq!(checkpoint(&report, "bound").task_store_create_attempts, 1);
+    assert_eq!(
+        only_task(checkpoint(&report, "terminal")).status,
+        TaskStatus::Completed
+    );
 }
 
 #[test]

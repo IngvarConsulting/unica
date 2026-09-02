@@ -144,6 +144,7 @@ pub(crate) enum ReceiptLedgerError {
         generation_after: u64,
     },
     Corrupt(&'static str),
+    EmptyBatch,
     ReceiptRowPresentUnsupported,
     Storage {
         operation: &'static str,
@@ -224,6 +225,7 @@ impl fmt::Display for ReceiptLedgerError {
                 "receipt ledger generation changed during exact inspection: {generation_before} -> {generation_after}"
             ),
             Self::Corrupt(message) => write!(formatter, "corrupt receipt ledger: {message}"),
+            Self::EmptyBatch => formatter.write_str("receipt batch must not be empty"),
             Self::ReceiptRowPresentUnsupported => {
                 formatter.write_str("receipt row exists but record decoding is not implemented")
             }
