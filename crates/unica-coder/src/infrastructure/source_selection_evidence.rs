@@ -2279,7 +2279,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn published_replacement_of_a_retained_source_map_file_passes_the_final_gate() {
+    fn published_replacement_of_a_retained_source_map_file_passes_the_final_gate() {
         let root = configured_workspace("unica-source-selection-published-replacement");
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets::generous());
         let mut checkpoint = || Ok(());
