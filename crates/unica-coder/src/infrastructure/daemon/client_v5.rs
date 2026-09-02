@@ -6,7 +6,7 @@ use super::protocol_v5::{
     V5EndpointRecord, V5HandshakeServerResponse, V5InvocationRequest, V5ProbeResponseKind,
     V5ProbeServerResponse, V5ServerResponse,
 };
-use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
+use crate::application::invocation::{RESPONSE_SERIALIZATION_MARGIN, TASK_RECONCILIATION_BUDGET};
 use crate::application::receipt_ledger::{ReceiptKey, TerminalDigest};
 #[cfg(any(test, feature = "receipt-ledger-test-support"))]
 use crate::domain::invocation::TaskId;
@@ -452,14 +452,7 @@ impl V5DaemonProcessOwner {
         request: V5ClientRequest,
         stage: &'static str,
     ) -> Result<V5ServerResponse, String> {
-        let response_timeout = match &request {
-            V5ClientRequest::SubmitInvocation { invocation } => {
-                Duration::from_millis(invocation.response_budget_ms())
-                    .saturating_add(RESPONSE_SERIALIZATION_MARGIN)
-            }
-            _ => CONNECT_TIMEOUT,
-        }
-        .min(OWNER_RESPONSE_SAFETY_TIMEOUT);
+        let response_timeout = response_timeout_for_request(&request);
         let deadline = Instant::now()
             .checked_add(response_timeout)
             .ok_or_else(|| format!("protocol-v5 {stage} deadline overflow"))?;
@@ -591,6 +584,20 @@ impl V5DaemonProcessOwner {
     }
 }
 
+fn response_timeout_for_request(request: &V5ClientRequest) -> Duration {
+    match request {
+        V5ClientRequest::SubmitInvocation { invocation } => {
+            Duration::from_millis(invocation.response_budget_ms())
+                .saturating_add(RESPONSE_SERIALIZATION_MARGIN)
+        }
+        V5ClientRequest::WaitTask { wait_ms, .. } => Duration::from_millis(*wait_ms)
+            .saturating_add(TASK_RECONCILIATION_BUDGET)
+            .saturating_add(RESPONSE_SERIALIZATION_MARGIN),
+        _ => CONNECT_TIMEOUT,
+    }
+    .min(OWNER_RESPONSE_SAFETY_TIMEOUT)
+}
+
 fn remaining(deadline: Instant, stage: &'static str) -> Result<Duration, String> {
     deadline
         .checked_duration_since(Instant::now())
@@ -713,6 +720,29 @@ mod tests {
         assert!(
             trailing.is_empty(),
             "poisoned owner wrote another request after malformed response"
+        );
+    }
+
+    #[test]
+    fn seven_second_wait_task_does_not_use_the_five_second_default_timeout() {
+        let (mut owner, mut peer) = connected_owner();
+        let task_id = TaskId::new();
+        let peer_thread = thread::spawn(move || {
+            let mut request = Vec::new();
+            BufReader::new(&peer)
+                .read_until(b'\n', &mut request)
+                .expect("read wait_task request");
+            thread::sleep(Duration::from_millis(5_200));
+            let _ = peer.write_all(b"{\"kind\":\"error\",\"code\":\"task_not_found\"}\n");
+        });
+
+        let response = owner.wait_task(task_id, 7_000);
+        drop(owner);
+        peer_thread.join().expect("join delayed wait_task peer");
+
+        assert!(
+            matches!(response, Ok(V5ServerResponse::Error { .. })),
+            "seven-second wait used the shorter default timeout: {response:?}"
         );
     }
 

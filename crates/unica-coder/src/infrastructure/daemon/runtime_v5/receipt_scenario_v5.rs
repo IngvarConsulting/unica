@@ -5670,9 +5670,9 @@ fn run_direct_load(
     });
     let mut config =
         scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
-    // This production-backed load owns the daemon explicitly until the operation completes.
-    // Direct actor batches do not create listener traffic, so an ordinary idle deadline would
-    // otherwise close the real listener mid-load while work is still being admitted.
+    // This actor/store batch benchmark owns the daemon explicitly until the operation completes.
+    // The anchor proves that the listener remains available, but the measured calls intentionally
+    // enter below TCP admission; process-session throughput is separate evidence.
     config.idle_grace = Duration::MAX;
     let daemon_control = Arc::clone(&control);
     let daemon_clock = Arc::clone(&clock);
@@ -5769,9 +5769,9 @@ fn run_direct_load(
             samples.push(json!({
                 "monotonicMs": clock.now_monotonic_millis(),
                 "liveReceipts": live_receipts,
-                "ownerSlots": u64::from(batch) + live_receipts.min(33),
-                "handshakes": batch,
-                "acceptBatch": batch,
+                "ownerSlots": 1,
+                "handshakes": 1,
+                "acceptBatch": 1,
             }));
             let acknowledgements = runtime
                 .receipt_ledger
@@ -5830,6 +5830,7 @@ fn run_direct_load(
         let window_ended = clock.now_monotonic_millis();
         let telemetry_snapshot = telemetry.snapshot();
         let load = json!({
+            "path": "actor_batch",
             "windowStartedMonotonicMs": window_started,
             "windowEndedMonotonicMs": window_ended,
             "drainCompletedMonotonicMs": clock.now_monotonic_millis(),
@@ -5965,6 +5966,7 @@ fn run_lazy_cancel_storm(
         let window_ended = clock.now_monotonic_millis();
         let telemetry_snapshot = telemetry.snapshot();
         let load = json!({
+            "path": "actor_batch",
             "windowStartedMonotonicMs": window_started,
             "windowEndedMonotonicMs": window_ended,
             "drainCompletedMonotonicMs": clock.now_monotonic_millis(),
@@ -5973,9 +5975,9 @@ fn run_lazy_cancel_storm(
             "concurrencySamples": [{
                 "monotonicMs": window_started,
                 "liveReceipts": submits,
-                "ownerSlots": u64::from(submits) + u64::from(cancels) + 1,
-                "handshakes": submits,
-                "acceptBatch": submits,
+                "ownerSlots": 0,
+                "handshakes": 0,
+                "acceptBatch": 0,
             }],
             "capacityRejections": [],
             "storeErrors": [],

@@ -12,9 +12,9 @@ use super::protocol_v5::{
 use super::protocol_v5::{decode_v5_server_response, read_bounded_v5_probe_response_frame};
 use super::server::{
     CanonicalInvocationService, DaemonServerConfig, V5ActorBoundCanonicalInvocation,
-    V5CanonicalInvocationRuntime, V5CanonicalPrepareError,
+    V5CanonicalInvocationRuntime, V5CanonicalPrepareError, MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
 };
-use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
+use crate::application::invocation::{RESPONSE_SERIALIZATION_MARGIN, TASK_RECONCILIATION_BUDGET};
 use crate::application::invocation_store::{EpochMillisClock, ToolIdentity};
 use crate::application::invocation_store_v5::{
     InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
@@ -70,12 +70,12 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufReader, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 #[cfg(feature = "receipt-ledger-test-support")]
 use std::sync::mpsc::{sync_channel, SyncSender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 #[cfg(feature = "receipt-ledger-test-support")]
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Condvar, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -1024,6 +1024,9 @@ struct V5TaskProjection {
     retirement_process_instance_id: Uuid,
     retirement_process_generation: u64,
     retirement_issued_sequence: AtomicU64,
+    retirement_coordinator: Mutex<()>,
+    #[cfg(all(test, feature = "receipt-ledger-test-support"))]
+    retirement_snapshot_barrier: Mutex<Option<Arc<std::sync::Barrier>>>,
 }
 
 #[derive(Clone)]
@@ -1073,7 +1076,18 @@ impl V5TaskProjection {
             retirement_process_generation: NEXT_RETIREMENT_PROCESS_GENERATION
                 .fetch_add(1, Ordering::AcqRel),
             retirement_issued_sequence: AtomicU64::new(1),
+            retirement_coordinator: Mutex::new(()),
+            #[cfg(all(test, feature = "receipt-ledger-test-support"))]
+            retirement_snapshot_barrier: Mutex::new(None),
         })
+    }
+
+    #[cfg(all(test, feature = "receipt-ledger-test-support"))]
+    fn install_retirement_snapshot_barrier_for_test(&self, barrier: Arc<std::sync::Barrier>) {
+        *self
+            .retirement_snapshot_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(barrier);
     }
 
     fn authorize_task_retirement(
@@ -1361,6 +1375,31 @@ impl V5TaskProjection {
         &self,
         deadline: Instant,
     ) -> Result<(), V5TaskProjectionFailure> {
+        #[cfg(all(test, feature = "receipt-ledger-test-support"))]
+        let retirement_snapshot_barrier = self
+            .retirement_snapshot_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        #[cfg(all(test, feature = "receipt-ledger-test-support"))]
+        if let Some(barrier) = retirement_snapshot_barrier {
+            barrier.wait();
+        }
+        // One process owns the receipt authority, and this coordinator makes
+        // terminal retirement a single-owner operation inside that process.
+        // A concurrent observation waits and then takes a fresh catalog snapshot
+        // instead of treating an ordinary optimistic-version race as corruption.
+        let _retirement_owner = self.retirement_coordinator.lock().map_err(|_| {
+            V5TaskProjectionFailure::fail_stop(ReceiptLedgerError::Corrupt(
+                "protocol-v5 task retirement coordinator is poisoned",
+            ))
+        })?;
+        if Instant::now() >= deadline {
+            return Err(V5TaskProjectionFailure {
+                error: ReceiptLedgerError::DeadlineExceeded,
+                fail_stop: false,
+            });
+        }
         let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
         let observed_at_epoch_ms = self.epoch_clock.now_epoch_millis();
         let snapshot = self
@@ -6435,6 +6474,9 @@ fn run_daemon_configured_until(
     }
     #[cfg(feature = "receipt-ledger-test-support")]
     let listener_telemetry = runtime.telemetry.listener_lease();
+    let active_leases = Arc::new(V5LeaseRegistry::default());
+    let admitted_connections = Arc::new(AtomicUsize::new(0));
+    let shutting_down = Arc::new(AtomicBool::new(false));
     let mut idle_since = Instant::now();
     let mut restart_requested = false;
     let mut sessions = Vec::new();
@@ -6464,53 +6506,214 @@ fn run_daemon_configured_until(
                     runtime.telemetry.record_forced_process_exit();
                     break;
                 }
-                idle_since = Instant::now();
-                let session_runtime = Arc::clone(&runtime);
-                let session_record = record.clone();
-                sessions.push(thread::spawn(move || {
-                    let _ = handle_probe_connection(stream, &session_record, &session_runtime);
-                }));
+                let connection = V5AcceptedConnection {
+                    stream,
+                    handshake_deadline: Instant::now() + HANDSHAKE_READ_TIMEOUT,
+                };
+                match V5ConnectionSlot::acquire(Arc::clone(&admitted_connections)) {
+                    Some(slot) => sessions.push(spawn_v5_connection_handler(
+                        connection,
+                        record.clone(),
+                        Arc::clone(&active_leases),
+                        Arc::clone(&shutting_down),
+                        Arc::clone(&runtime),
+                        slot,
+                    )),
+                    None => reject_overloaded_v5_connection(connection),
+                }
             }
             Ok((_stream, _)) => {}
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if idle_since.elapsed() >= config.idle_grace {
-                    break;
-                }
-                thread::sleep(ACCEPT_POLL_INTERVAL);
-            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) => {
+                shutting_down.store(true, Ordering::Release);
+                join_v5_handlers(sessions);
                 let _ = state.remove_v5_endpoint_if_owned(&published);
                 return Err(daemon_io_error("accept protocol-v5 connection", error));
             }
         }
+
+        sessions = reap_finished_v5_handlers(sessions);
+        if active_leases.is_empty()? && admitted_connections.load(Ordering::Acquire) == 0 {
+            if idle_since.elapsed() >= config.idle_grace {
+                break;
+            }
+        } else {
+            idle_since = Instant::now();
+        }
+        thread::sleep(ACCEPT_POLL_INTERVAL);
     }
 
+    shutting_down.store(true, Ordering::Release);
     drop(listener);
     #[cfg(feature = "receipt-ledger-test-support")]
     drop(listener_telemetry);
-    for session in sessions {
-        let _ = session.join();
-    }
     if restart_requested {
         // INV.APP.DAEMON-STORE-FAIL-STOP: keep both the PID-bound endpoint and
         // receipt authority alive until process death. A detached worker may
         // still be inside an uninterruptible adapter or syscall.
-        #[cfg(not(feature = "receipt-ledger-test-support"))]
-        std::mem::forget(runtime);
-        #[cfg(feature = "receipt-ledger-test-support")]
-        drop(runtime);
+        #[cfg(all(feature = "receipt-ledger-test-support", not(test)))]
+        {
+            // Integration scenarios run the feature-only daemon in a thread;
+            // joining that thread is their simulated process-death boundary.
+            // Release its authority so unrelated scenarios do not share resources
+            // that production releases at PID exit.
+            join_v5_handlers(sessions);
+            drop(runtime);
+        }
+        #[cfg(any(
+            not(feature = "receipt-ledger-test-support"),
+            all(feature = "receipt-ledger-test-support", test)
+        ))]
+        {
+            drop(sessions);
+            std::mem::forget(runtime);
+        }
         return Ok(());
     }
+    join_v5_handlers(sessions);
     state.remove_v5_endpoint_if_owned(&published)?;
     Ok(())
 }
 
+struct V5AcceptedConnection {
+    stream: TcpStream,
+    handshake_deadline: Instant,
+}
+
+fn spawn_v5_connection_handler(
+    connection: V5AcceptedConnection,
+    record: V5EndpointRecord,
+    active_leases: Arc<V5LeaseRegistry>,
+    shutting_down: Arc<AtomicBool>,
+    runtime: Arc<V5ReceiptRuntime>,
+    slot: V5ConnectionSlot,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let _ = handle_probe_connection(
+            connection.stream,
+            connection.handshake_deadline,
+            &record,
+            &active_leases,
+            &shutting_down,
+            &runtime,
+            slot,
+        );
+    })
+}
+
+fn reject_overloaded_v5_connection(connection: V5AcceptedConnection) {
+    let mut stream = connection.stream;
+    let _ = write_json_line_before(
+        &mut stream,
+        &V5ServerResponse::Error {
+            code: V5DaemonErrorCode::Overloaded,
+        },
+        connection
+            .handshake_deadline
+            .min(Instant::now() + Duration::from_millis(100)),
+    );
+}
+
+fn reap_finished_v5_handlers(handlers: Vec<thread::JoinHandle<()>>) -> Vec<thread::JoinHandle<()>> {
+    let mut active = Vec::with_capacity(handlers.len());
+    for handler in handlers {
+        if handler.is_finished() {
+            let _ = handler.join();
+        } else {
+            active.push(handler);
+        }
+    }
+    active
+}
+
+fn join_v5_handlers(handlers: Vec<thread::JoinHandle<()>>) {
+    for handler in handlers {
+        let _ = handler.join();
+    }
+}
+
+#[derive(Default)]
+struct V5LeaseRegistry {
+    leases: Mutex<HashSet<String>>,
+}
+
+impl V5LeaseRegistry {
+    fn acquire(self: &Arc<Self>, lease: String) -> Result<V5LeaseAdmission, String> {
+        let mut leases = self
+            .leases
+            .lock()
+            .map_err(|_| "protocol-v5 owner lease registry is poisoned".to_string())?;
+        if leases.contains(&lease) {
+            return Ok(V5LeaseAdmission::Duplicate);
+        }
+        if leases.len() >= MAX_OWNER_SESSIONS {
+            return Ok(V5LeaseAdmission::Capacity);
+        }
+        leases.insert(lease.clone());
+        drop(leases);
+        Ok(V5LeaseAdmission::Acquired(V5LeaseGuard {
+            registry: Arc::clone(self),
+            lease,
+        }))
+    }
+
+    fn is_empty(&self) -> Result<bool, String> {
+        self.leases
+            .lock()
+            .map(|leases| leases.is_empty())
+            .map_err(|_| "protocol-v5 owner lease registry is poisoned".to_string())
+    }
+}
+
+enum V5LeaseAdmission {
+    Acquired(V5LeaseGuard),
+    Duplicate,
+    Capacity,
+}
+
+struct V5LeaseGuard {
+    registry: Arc<V5LeaseRegistry>,
+    lease: String,
+}
+
+impl Drop for V5LeaseGuard {
+    fn drop(&mut self) {
+        if let Ok(mut leases) = self.registry.leases.lock() {
+            leases.remove(&self.lease);
+        }
+    }
+}
+
+struct V5ConnectionSlot {
+    admitted: Arc<AtomicUsize>,
+}
+
+impl V5ConnectionSlot {
+    fn acquire(admitted: Arc<AtomicUsize>) -> Option<Self> {
+        admitted
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < MAX_HANDSHAKES).then_some(current + 1)
+            })
+            .ok()
+            .map(|_| Self { admitted })
+    }
+}
+
+impl Drop for V5ConnectionSlot {
+    fn drop(&mut self) {
+        self.admitted.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 fn handle_probe_connection(
     mut stream: TcpStream,
+    handshake_deadline: Instant,
     record: &V5EndpointRecord,
+    active_leases: &Arc<V5LeaseRegistry>,
+    shutting_down: &AtomicBool,
     runtime: &V5ReceiptRuntime,
+    handshake_slot: V5ConnectionSlot,
 ) -> Result<(), String> {
-    let handshake_deadline = Instant::now() + HANDSHAKE_READ_TIMEOUT;
     runtime.ensure_named_authority_before(handshake_deadline)?;
     stream
         .set_nonblocking(false)
@@ -6541,7 +6744,7 @@ fn handle_probe_connection(
         }
         Err(V5RequestFrameError::Read(_)) => return Ok(()),
     };
-    let Some((protocol_version, token, core_identity, _owner_lease)) =
+    let Some((protocol_version, token, core_identity, owner_lease)) =
         decoded.request().hello_parts()
     else {
         write_runtime_probe_error_before(
@@ -6579,268 +6782,318 @@ fn handle_probe_connection(
         )?;
         return Ok(());
     }
+    let _owner = match active_leases.acquire(owner_lease.to_owned())? {
+        V5LeaseAdmission::Acquired(owner) => owner,
+        V5LeaseAdmission::Duplicate => {
+            write_runtime_probe_error_before(
+                &mut stream,
+                runtime,
+                V5DaemonErrorCode::DuplicateLease,
+                handshake_deadline,
+            )?;
+            return Ok(());
+        }
+        V5LeaseAdmission::Capacity => {
+            write_runtime_probe_error_before(
+                &mut stream,
+                runtime,
+                V5DaemonErrorCode::OwnerCapacity,
+                handshake_deadline,
+            )?;
+            return Ok(());
+        }
+    };
+    // The owner lease fences listener shutdown before pre-authentication admission
+    // is released, so idle observation cannot see a gap between the two states.
+    drop(handshake_slot);
     write_runtime_json_line_before(
         &mut stream,
         runtime,
         &V5HandshakeServerResponse::ready(record),
         handshake_deadline,
     )?;
-    let session_read_deadline = Instant::now() + SESSION_READ_TIMEOUT;
-    let (decoded, request_received_at) =
-        match read_v5_request_before(&mut reader, session_read_deadline) {
-            Ok(observation) => observation,
-            Err(V5RequestFrameError::InvalidRequest(_)) => {
-                write_runtime_probe_error_before(
+    while !shutting_down.load(Ordering::Acquire) {
+        let session_read_deadline = Instant::now() + SESSION_READ_TIMEOUT;
+        let (decoded, request_received_at) =
+            match read_v5_request_before(&mut reader, session_read_deadline) {
+                Ok(observation) => observation,
+                Err(V5RequestFrameError::InvalidRequest(_)) => {
+                    write_runtime_probe_error_before(
+                        &mut stream,
+                        runtime,
+                        V5DaemonErrorCode::InvalidRequest,
+                        session_read_deadline,
+                    )?;
+                    break;
+                }
+                Err(V5RequestFrameError::Read(error))
+                    if error.kind() == io::ErrorKind::InvalidData =>
+                {
+                    write_runtime_probe_error_before(
+                        &mut stream,
+                        runtime,
+                        V5DaemonErrorCode::InvalidRequest,
+                        session_read_deadline,
+                    )?;
+                    break;
+                }
+                Err(V5RequestFrameError::Read(error))
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    continue;
+                }
+                Err(V5RequestFrameError::Read(error))
+                    if error.kind() == io::ErrorKind::UnexpectedEof =>
+                {
+                    break;
+                }
+                Err(V5RequestFrameError::Read(_)) => break,
+            };
+        let deadlines = v5_request_deadlines(&decoded, request_received_at)?;
+        #[cfg(feature = "receipt-ledger-test-support")]
+        let mut deadlines = deadlines;
+        #[cfg(feature = "receipt-ledger-test-support")]
+        if runtime
+            .scenario_control
+            .as_ref()
+            .is_some_and(|control| control.has_precomputed_terminal())
+        {
+            let bulk_deadline = Instant::now()
+                .checked_add(receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT)
+                .ok_or_else(|| "protocol-v5 scenario bulk deadline overflow".to_owned())?;
+            deadlines.operation = bulk_deadline;
+            deadlines.response = bulk_deadline;
+        }
+        #[cfg(feature = "receipt-ledger-test-support")]
+        runtime.telemetry.record_event(
+            V5ReceiptRuntimeEventKind::StrictEnvelopeParsed,
+            runtime.epoch_ms(),
+        );
+        #[cfg(feature = "receipt-ledger-test-support")]
+        runtime.telemetry.record_event(
+            V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
+            runtime.epoch_ms(),
+        );
+        runtime.ensure_named_authority_before(deadlines.operation)?;
+        let kind = decoded.request().kind();
+        #[cfg(feature = "receipt-ledger-test-support")]
+        let _actor_telemetry_lease = (kind == V5ClientRequestKind::SubmitInvocation)
+            .then(|| runtime.telemetry.actor_lease());
+        let result = match kind {
+            V5ClientRequestKind::Ping => {
+                #[cfg(feature = "receipt-ledger-test-support")]
+                runtime.capture_protocol_transition_after_frame(&decoded)?;
+                write_runtime_json_line_before(
                     &mut stream,
                     runtime,
-                    V5DaemonErrorCode::InvalidRequest,
-                    session_read_deadline,
-                )?;
-                return Ok(());
+                    &V5ProbeServerResponse::Pong {},
+                    deadlines.response,
+                )
             }
-            Err(V5RequestFrameError::Read(error)) if error.kind() == io::ErrorKind::InvalidData => {
-                write_runtime_probe_error_before(
-                    &mut stream,
-                    runtime,
-                    V5DaemonErrorCode::InvalidRequest,
-                    session_read_deadline,
-                )?;
-                return Ok(());
+            V5ClientRequestKind::SubmitInvocation => {
+                let epoch_ms = runtime.epoch_ms();
+                match runtime.submit_invocation(decoded, epoch_ms, deadlines.operation) {
+                    Ok(reply) => {
+                        #[cfg(feature = "receipt-ledger-test-support")]
+                        runtime.capture_missing_submit_writer_after_reserve(
+                            &reply,
+                            deadlines.operation,
+                        )?;
+                        #[cfg(feature = "receipt-ledger-test-support")]
+                        if runtime
+                            .scenario_control
+                            .as_ref()
+                            .is_some_and(|control| control.take_submit_response_disconnect())
+                        {
+                            return Ok(());
+                        }
+                        write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
+                    }
+                    Err(error) => write_runtime_ledger_error_before(
+                        &mut stream,
+                        runtime,
+                        &error,
+                        deadlines.response,
+                    ),
+                }
             }
-            Err(V5RequestFrameError::Read(_)) => return Ok(()),
-        };
-    let deadlines = v5_request_deadlines(&decoded, request_received_at)?;
-    #[cfg(feature = "receipt-ledger-test-support")]
-    let mut deadlines = deadlines;
-    #[cfg(feature = "receipt-ledger-test-support")]
-    if runtime
-        .scenario_control
-        .as_ref()
-        .is_some_and(|control| control.has_precomputed_terminal())
-    {
-        let bulk_deadline = Instant::now()
-            .checked_add(receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT)
-            .ok_or_else(|| "protocol-v5 scenario bulk deadline overflow".to_owned())?;
-        deadlines.operation = bulk_deadline;
-        deadlines.response = bulk_deadline;
-    }
-    #[cfg(feature = "receipt-ledger-test-support")]
-    runtime.telemetry.record_event(
-        V5ReceiptRuntimeEventKind::StrictEnvelopeParsed,
-        runtime.epoch_ms(),
-    );
-    #[cfg(feature = "receipt-ledger-test-support")]
-    runtime.telemetry.record_event(
-        V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
-        runtime.epoch_ms(),
-    );
-    runtime.ensure_named_authority_before(deadlines.operation)?;
-    let kind = decoded.request().kind();
-    #[cfg(feature = "receipt-ledger-test-support")]
-    let _actor_telemetry_lease =
-        (kind == V5ClientRequestKind::SubmitInvocation).then(|| runtime.telemetry.actor_lease());
-    match kind {
-        V5ClientRequestKind::Ping => {
-            #[cfg(feature = "receipt-ledger-test-support")]
-            runtime.capture_protocol_transition_after_frame(&decoded)?;
-            write_runtime_json_line_before(
+            V5ClientRequestKind::CancelInvocation => {
+                let V5ClientRequest::CancelInvocation { receipt_key } = decoded.into_request()
+                else {
+                    unreachable!("request kind and decoded cancel variant diverged");
+                };
+                let epoch_ms = runtime.epoch_ms();
+                match runtime.cancel_invocation(receipt_key, epoch_ms, deadlines.operation) {
+                    Ok(reply) => {
+                        write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
+                    }
+                    Err(error) => write_runtime_ledger_error_before(
+                        &mut stream,
+                        runtime,
+                        &error,
+                        deadlines.response,
+                    ),
+                }
+            }
+            V5ClientRequestKind::RecoverInvocationReceipt => {
+                let V5ClientRequest::RecoverInvocationReceipt { receipt_key } =
+                    decoded.into_request()
+                else {
+                    unreachable!("request kind and decoded recover variant diverged");
+                };
+                let epoch_ms = runtime.epoch_ms();
+                match runtime.recover_invocation(receipt_key, epoch_ms, deadlines.operation) {
+                    Ok(reply) => {
+                        write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
+                    }
+                    Err(error) => write_runtime_ledger_error_before(
+                        &mut stream,
+                        runtime,
+                        &error,
+                        deadlines.response,
+                    ),
+                }
+            }
+            V5ClientRequestKind::AcknowledgeInvocationReceipt => {
+                let V5ClientRequest::AcknowledgeInvocationReceipt {
+                    receipt_key,
+                    terminal_digest,
+                } = decoded.into_request()
+                else {
+                    unreachable!("request kind and decoded acknowledgement variant diverged");
+                };
+                let epoch_ms = runtime.epoch_ms();
+                match runtime.acknowledge_invocation(
+                    receipt_key,
+                    terminal_digest,
+                    epoch_ms,
+                    deadlines.operation,
+                ) {
+                    Ok(reply) => {
+                        #[cfg(feature = "receipt-ledger-test-support")]
+                        if runtime
+                            .scenario_control
+                            .as_ref()
+                            .is_some_and(|control| control.take_ack_response_disconnect())
+                        {
+                            return Ok(());
+                        }
+                        write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
+                    }
+                    Err(
+                        ReceiptLedgerError::TerminalMismatch
+                        | ReceiptLedgerError::ReceiptRowPresentUnsupported,
+                    ) => write_runtime_probe_error_before(
+                        &mut stream,
+                        runtime,
+                        V5DaemonErrorCode::InvalidRequest,
+                        deadlines.response,
+                    ),
+                    Err(error) => write_runtime_ledger_error_before(
+                        &mut stream,
+                        runtime,
+                        &error,
+                        deadlines.response,
+                    ),
+                }
+            }
+            V5ClientRequestKind::GetTask => {
+                let V5ClientRequest::GetTask { task_id } = decoded.into_request() else {
+                    unreachable!("request kind and decoded get Task variant diverged");
+                };
+                match runtime.resolve_task(task_id, deadlines.operation) {
+                    Ok(snapshot) => write_runtime_json_line_before(
+                        &mut stream,
+                        runtime,
+                        &V5ServerResponse::Task { snapshot },
+                        deadlines.response,
+                    ),
+                    Err(ReceiptLedgerError::ReceiptNotFound) => write_runtime_probe_error_before(
+                        &mut stream,
+                        runtime,
+                        V5DaemonErrorCode::TaskNotFound,
+                        deadlines.response,
+                    ),
+                    Err(error) => write_runtime_ledger_error_before(
+                        &mut stream,
+                        runtime,
+                        &error,
+                        deadlines.response,
+                    ),
+                }
+            }
+            V5ClientRequestKind::WaitTask => {
+                let V5ClientRequest::WaitTask { task_id, wait_ms } = decoded.into_request() else {
+                    unreachable!("request kind and decoded wait Task variant diverged");
+                };
+                match runtime.wait_task(task_id, wait_ms, deadlines.operation) {
+                    Ok(snapshot) => write_runtime_json_line_before(
+                        &mut stream,
+                        runtime,
+                        &V5ServerResponse::Task { snapshot },
+                        deadlines.response,
+                    ),
+                    Err(ReceiptLedgerError::ReceiptNotFound) => write_runtime_probe_error_before(
+                        &mut stream,
+                        runtime,
+                        V5DaemonErrorCode::TaskNotFound,
+                        deadlines.response,
+                    ),
+                    Err(error) => write_runtime_ledger_error_before(
+                        &mut stream,
+                        runtime,
+                        &error,
+                        deadlines.response,
+                    ),
+                }
+            }
+            V5ClientRequestKind::CancelTask => {
+                let V5ClientRequest::CancelTask { task_id } = decoded.into_request() else {
+                    unreachable!("request kind and decoded cancel Task variant diverged");
+                };
+                match runtime.cancel_task(task_id, deadlines.operation) {
+                    Ok(snapshot) => write_runtime_json_line_before(
+                        &mut stream,
+                        runtime,
+                        &V5ServerResponse::Task { snapshot },
+                        deadlines.response,
+                    ),
+                    Err(ReceiptLedgerError::ReceiptNotFound) => write_runtime_probe_error_before(
+                        &mut stream,
+                        runtime,
+                        V5DaemonErrorCode::TaskNotFound,
+                        deadlines.response,
+                    ),
+                    Err(error) => write_runtime_ledger_error_before(
+                        &mut stream,
+                        runtime,
+                        &error,
+                        deadlines.response,
+                    ),
+                }
+            }
+            V5ClientRequestKind::Release => write_runtime_json_line_before(
                 &mut stream,
                 runtime,
-                &V5ProbeServerResponse::Pong {},
+                &V5ServerResponse::Released,
                 deadlines.response,
-            )
+            ),
+            _ => write_runtime_probe_error_before(
+                &mut stream,
+                runtime,
+                V5DaemonErrorCode::InvalidRequest,
+                deadlines.response,
+            ),
+        };
+        result?;
+        if kind == V5ClientRequestKind::Release {
+            break;
         }
-        V5ClientRequestKind::SubmitInvocation => {
-            let epoch_ms = runtime.epoch_ms();
-            match runtime.submit_invocation(decoded, epoch_ms, deadlines.operation) {
-                Ok(reply) => {
-                    #[cfg(feature = "receipt-ledger-test-support")]
-                    runtime
-                        .capture_missing_submit_writer_after_reserve(&reply, deadlines.operation)?;
-                    #[cfg(feature = "receipt-ledger-test-support")]
-                    if runtime
-                        .scenario_control
-                        .as_ref()
-                        .is_some_and(|control| control.take_submit_response_disconnect())
-                    {
-                        return Ok(());
-                    }
-                    write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
-                }
-                Err(error) => write_runtime_ledger_error_before(
-                    &mut stream,
-                    runtime,
-                    &error,
-                    deadlines.response,
-                ),
-            }
-        }
-        V5ClientRequestKind::CancelInvocation => {
-            let V5ClientRequest::CancelInvocation { receipt_key } = decoded.into_request() else {
-                unreachable!("request kind and decoded cancel variant diverged");
-            };
-            let epoch_ms = runtime.epoch_ms();
-            match runtime.cancel_invocation(receipt_key, epoch_ms, deadlines.operation) {
-                Ok(reply) => {
-                    write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
-                }
-                Err(error) => write_runtime_ledger_error_before(
-                    &mut stream,
-                    runtime,
-                    &error,
-                    deadlines.response,
-                ),
-            }
-        }
-        V5ClientRequestKind::RecoverInvocationReceipt => {
-            let V5ClientRequest::RecoverInvocationReceipt { receipt_key } = decoded.into_request()
-            else {
-                unreachable!("request kind and decoded recover variant diverged");
-            };
-            let epoch_ms = runtime.epoch_ms();
-            match runtime.recover_invocation(receipt_key, epoch_ms, deadlines.operation) {
-                Ok(reply) => {
-                    write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
-                }
-                Err(error) => write_runtime_ledger_error_before(
-                    &mut stream,
-                    runtime,
-                    &error,
-                    deadlines.response,
-                ),
-            }
-        }
-        V5ClientRequestKind::AcknowledgeInvocationReceipt => {
-            let V5ClientRequest::AcknowledgeInvocationReceipt {
-                receipt_key,
-                terminal_digest,
-            } = decoded.into_request()
-            else {
-                unreachable!("request kind and decoded acknowledgement variant diverged");
-            };
-            let epoch_ms = runtime.epoch_ms();
-            match runtime.acknowledge_invocation(
-                receipt_key,
-                terminal_digest,
-                epoch_ms,
-                deadlines.operation,
-            ) {
-                Ok(reply) => {
-                    #[cfg(feature = "receipt-ledger-test-support")]
-                    if runtime
-                        .scenario_control
-                        .as_ref()
-                        .is_some_and(|control| control.take_ack_response_disconnect())
-                    {
-                        return Ok(());
-                    }
-                    write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
-                }
-                Err(
-                    ReceiptLedgerError::TerminalMismatch
-                    | ReceiptLedgerError::ReceiptRowPresentUnsupported,
-                ) => write_runtime_probe_error_before(
-                    &mut stream,
-                    runtime,
-                    V5DaemonErrorCode::InvalidRequest,
-                    deadlines.response,
-                ),
-                Err(error) => write_runtime_ledger_error_before(
-                    &mut stream,
-                    runtime,
-                    &error,
-                    deadlines.response,
-                ),
-            }
-        }
-        V5ClientRequestKind::GetTask => {
-            let V5ClientRequest::GetTask { task_id } = decoded.into_request() else {
-                unreachable!("request kind and decoded get Task variant diverged");
-            };
-            match runtime.resolve_task(task_id, deadlines.operation) {
-                Ok(snapshot) => write_runtime_json_line_before(
-                    &mut stream,
-                    runtime,
-                    &V5ServerResponse::Task { snapshot },
-                    deadlines.response,
-                ),
-                Err(ReceiptLedgerError::ReceiptNotFound) => write_runtime_probe_error_before(
-                    &mut stream,
-                    runtime,
-                    V5DaemonErrorCode::TaskNotFound,
-                    deadlines.response,
-                ),
-                Err(error) => write_runtime_ledger_error_before(
-                    &mut stream,
-                    runtime,
-                    &error,
-                    deadlines.response,
-                ),
-            }
-        }
-        V5ClientRequestKind::WaitTask => {
-            let V5ClientRequest::WaitTask { task_id, wait_ms } = decoded.into_request() else {
-                unreachable!("request kind and decoded wait Task variant diverged");
-            };
-            match runtime.wait_task(task_id, wait_ms, deadlines.operation) {
-                Ok(snapshot) => write_runtime_json_line_before(
-                    &mut stream,
-                    runtime,
-                    &V5ServerResponse::Task { snapshot },
-                    deadlines.response,
-                ),
-                Err(ReceiptLedgerError::ReceiptNotFound) => write_runtime_probe_error_before(
-                    &mut stream,
-                    runtime,
-                    V5DaemonErrorCode::TaskNotFound,
-                    deadlines.response,
-                ),
-                Err(error) => write_runtime_ledger_error_before(
-                    &mut stream,
-                    runtime,
-                    &error,
-                    deadlines.response,
-                ),
-            }
-        }
-        V5ClientRequestKind::CancelTask => {
-            let V5ClientRequest::CancelTask { task_id } = decoded.into_request() else {
-                unreachable!("request kind and decoded cancel Task variant diverged");
-            };
-            match runtime.cancel_task(task_id, deadlines.operation) {
-                Ok(snapshot) => write_runtime_json_line_before(
-                    &mut stream,
-                    runtime,
-                    &V5ServerResponse::Task { snapshot },
-                    deadlines.response,
-                ),
-                Err(ReceiptLedgerError::ReceiptNotFound) => write_runtime_probe_error_before(
-                    &mut stream,
-                    runtime,
-                    V5DaemonErrorCode::TaskNotFound,
-                    deadlines.response,
-                ),
-                Err(error) => write_runtime_ledger_error_before(
-                    &mut stream,
-                    runtime,
-                    &error,
-                    deadlines.response,
-                ),
-            }
-        }
-        V5ClientRequestKind::Release => write_runtime_json_line_before(
-            &mut stream,
-            runtime,
-            &V5ServerResponse::Released,
-            deadlines.response,
-        ),
-        _ => write_runtime_probe_error_before(
-            &mut stream,
-            runtime,
-            V5DaemonErrorCode::InvalidRequest,
-            deadlines.response,
-        ),
     }
+    Ok(())
 }
 
 struct V5RequestDeadlines {
@@ -6855,6 +7108,9 @@ fn v5_request_deadlines(
     let operation_budget = match decoded.request() {
         V5ClientRequest::SubmitInvocation { invocation } => {
             Duration::from_millis(invocation.response_budget_ms())
+        }
+        V5ClientRequest::WaitTask { wait_ms, .. } => {
+            Duration::from_millis(*wait_ms).saturating_add(TASK_RECONCILIATION_BUDGET)
         }
         _ => SESSION_READ_TIMEOUT,
     };
@@ -7916,6 +8172,13 @@ mod tests {
         let successor_pong: V5ProbeServerResponse =
             serde_json::from_slice(&successor_pong).expect("decode successor pong");
         assert_eq!(successor_pong.kind(), V5ProbeResponseKind::Pong);
+        write_json_line(&mut successor, &json!({"kind": "release"}));
+        let successor_released = read_bounded_v5_probe_response_frame(&mut successor_reader)
+            .expect("release successor session");
+        assert_eq!(
+            decode_v5_server_response(&successor_released),
+            Ok(V5ServerResponse::Released)
+        );
         drop(successor);
 
         server
@@ -8542,6 +8805,90 @@ mod tests {
             )
             .expect("complete startup TaskBound ownership");
         (key, record, task_bound)
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    #[test]
+    fn concurrent_terminal_retirement_is_idempotent() {
+        let root = tempfile::tempdir().expect("temporary retirement-race state root");
+        let state_root =
+            std::fs::canonicalize(root.path()).expect("physical retirement-race state root");
+        let identity = CoreIdentity::production_v5();
+        let clock = Arc::new(ManualEpochClock::new(1_000));
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(50),
+        )
+        .with_v5_epoch_clock_for_test(clock.clone());
+        let state = DaemonStateDirectory::open(&state_root, &identity)
+            .expect("open retirement-race daemon state");
+        let runtime =
+            V5ReceiptRuntime::open(&state, &config).expect("open retirement-race runtime");
+        let (_key, queued, task_bound) =
+            materialize_startup_task_bound(&runtime, &identity, AttemptPhase::NotBegun);
+        clock.set(2_000);
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(
+            Instant::now() + Duration::from_secs(2),
+        );
+        let terminal = runtime
+            .task_projection
+            .task_store
+            .terminalize_recovered_exact(
+                &queued.identity(),
+                queued.version,
+                RecoveryTerminalReason::InterruptedBeforeExecution,
+                provider_deadline,
+            )
+            .expect("terminalize retirement-race Task");
+        let V5StoredTask::Failed {
+            terminal_epoch_ms,
+            terminal_digest,
+            ..
+        } = &terminal.task
+        else {
+            panic!("retirement-race Task must be terminal")
+        };
+        runtime
+            .task_projection
+            .lifecycle_links
+            .publish_task_terminal_bound(
+                &task_bound,
+                receipt_task_projection_from_store(&terminal)
+                    .unwrap_or_else(|failure| panic!("project terminal Task: {}", failure.error)),
+                terminal.version,
+                ClosedTerminalStatus::Failed,
+                terminal_digest.clone(),
+                *terminal_epoch_ms,
+                provider_deadline,
+            )
+            .expect("publish retirement-race terminal link");
+        clock.set(4_000_000);
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        runtime
+            .task_projection
+            .install_retirement_snapshot_barrier_for_test(barrier);
+        let runtime = Arc::new(runtime);
+        let workers = (0..2)
+            .map(|_| {
+                let runtime = Arc::clone(&runtime);
+                thread::spawn(move || {
+                    runtime
+                        .task_projection
+                        .retire_expired_terminal_tasks(Instant::now() + Duration::from_secs(2))
+                })
+            })
+            .collect::<Vec<_>>();
+        let outcomes = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("join retirement worker"))
+            .collect::<Vec<_>>();
+
+        assert!(
+            outcomes.iter().all(Result::is_ok),
+            "ordinary concurrent retirement produced a fail-stop failure"
+        );
     }
 
     #[test]
@@ -9224,6 +9571,9 @@ mod tests {
             .recover_invocation_receipt(key)
             .expect("recover committed direct terminal");
         assert_eq!(recovered, submit, "recovery changed the prepared response");
+        drop(cancel_owner);
+        drop(submit_owner);
+        drop(recover_owner);
 
         server.join().expect("join v5 runtime").expect("v5 runtime");
     }
@@ -9245,6 +9595,232 @@ mod tests {
             assert!(Instant::now() < deadline, "v5 endpoint was not published");
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    fn connect_v5_owner(
+        record: &V5EndpointRecord,
+        identity: &CoreIdentity,
+        owner_lease: &str,
+    ) -> (TcpStream, BufReader<TcpStream>) {
+        let mut stream = TcpStream::connect(record.loopback_addr().expect("v5 loopback address"))
+            .expect("connect v5 daemon owner");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bound v5 owner response read");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone v5 owner stream"));
+        write_json_line(
+            &mut stream,
+            &json!({
+                "kind": "hello",
+                "protocolVersion": 5,
+                "token": record.token(),
+                "coreIdentity": identity.as_str(),
+                "ownerLease": owner_lease
+            }),
+        );
+        let ready = read_bounded_v5_probe_response_frame(&mut reader).expect("read v5 owner ready");
+        assert!(matches!(
+            decode_v5_server_response(&ready),
+            Ok(V5ServerResponse::Ready { .. })
+        ));
+        (stream, reader)
+    }
+
+    #[test]
+    fn v5_owner_session_accepts_ping_then_release() {
+        let root = tempfile::tempdir().expect("temporary session state root");
+        let state_root = std::fs::canonicalize(root.path()).expect("physical session state root");
+        let identity = CoreIdentity::production_v5();
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(100),
+        );
+        let server = thread::spawn(move || run_daemon(config));
+        let record = wait_for_v5_record(&state_root, &identity);
+        let (mut stream, mut reader) =
+            connect_v5_owner(&record, &identity, "44444444-4444-4444-8444-444444444444");
+
+        write_json_line(&mut stream, &json!({"kind": "ping"}));
+        let pong = read_bounded_v5_probe_response_frame(&mut reader).expect("read v5 pong");
+        assert_eq!(decode_v5_server_response(&pong), Ok(V5ServerResponse::Pong));
+
+        write_json_line(&mut stream, &json!({"kind": "release"}));
+        let released =
+            read_bounded_v5_probe_response_frame(&mut reader).expect("read v5 release response");
+        assert_eq!(
+            decode_v5_server_response(&released),
+            Ok(V5ServerResponse::Released)
+        );
+        drop(stream);
+
+        server
+            .join()
+            .expect("join v5 session runtime")
+            .expect("v5 session runtime");
+    }
+
+    #[test]
+    fn seven_second_wait_task_keeps_its_requested_operation_window() {
+        let task_id = TaskId::new();
+        let frame = serde_json::to_vec(&json!({
+            "kind": "wait_task",
+            "taskId": task_id.to_string(),
+            "waitMs": 7_000
+        }))
+        .expect("serialize v5 wait request");
+        let decoded = decode_v5_request_frame(frame).expect("decode v5 wait request");
+        let received_at = Instant::now();
+
+        let deadlines =
+            v5_request_deadlines(&decoded, received_at).expect("derive v5 wait deadlines");
+
+        assert_eq!(
+            deadlines.operation.duration_since(received_at),
+            Duration::from_secs(9)
+        );
+    }
+
+    #[test]
+    fn v5_duplicate_live_owner_lease_is_rejected() {
+        let root = tempfile::tempdir().expect("temporary duplicate-lease state root");
+        let state_root =
+            std::fs::canonicalize(root.path()).expect("physical duplicate-lease state root");
+        let identity = CoreIdentity::production_v5();
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(100),
+        );
+        let server = thread::spawn(move || run_daemon(config));
+        let record = wait_for_v5_record(&state_root, &identity);
+        let lease = "55555555-5555-4555-8555-555555555555";
+        let (mut first, mut first_reader) = connect_v5_owner(&record, &identity, lease);
+
+        let mut duplicate =
+            TcpStream::connect(record.loopback_addr().expect("v5 loopback address"))
+                .expect("connect duplicate v5 owner");
+        duplicate
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bound duplicate response read");
+        let mut duplicate_reader =
+            BufReader::new(duplicate.try_clone().expect("clone duplicate stream"));
+        write_json_line(
+            &mut duplicate,
+            &json!({
+                "kind": "hello",
+                "protocolVersion": 5,
+                "token": record.token(),
+                "coreIdentity": identity.as_str(),
+                "ownerLease": lease
+            }),
+        );
+        let response = read_bounded_v5_probe_response_frame(&mut duplicate_reader)
+            .expect("read duplicate owner rejection");
+        assert_eq!(
+            decode_v5_server_response(&response),
+            Ok(V5ServerResponse::Error {
+                code: V5DaemonErrorCode::DuplicateLease,
+            })
+        );
+
+        write_json_line(&mut first, &json!({"kind": "release"}));
+        let released = read_bounded_v5_probe_response_frame(&mut first_reader)
+            .expect("release original v5 owner");
+        assert_eq!(
+            decode_v5_server_response(&released),
+            Ok(V5ServerResponse::Released)
+        );
+        drop(first);
+        drop(duplicate);
+
+        server
+            .join()
+            .expect("join duplicate-lease runtime")
+            .expect("duplicate-lease runtime");
+    }
+
+    #[test]
+    fn v5_rejects_connections_above_handshake_limit() {
+        let root = tempfile::tempdir().expect("temporary handshake-limit state root");
+        let state_root =
+            std::fs::canonicalize(root.path()).expect("physical handshake-limit state root");
+        let identity = CoreIdentity::production_v5();
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(100),
+        );
+        let server = thread::spawn(move || run_daemon(config));
+        let record = wait_for_v5_record(&state_root, &identity);
+        let address = record.loopback_addr().expect("v5 loopback address");
+        let blockers = (0..MAX_HANDSHAKES)
+            .map(|_| TcpStream::connect(address).expect("occupy v5 handshake slot"))
+            .collect::<Vec<_>>();
+        thread::sleep(Duration::from_millis(100));
+
+        let overflow = TcpStream::connect(address).expect("connect overflow v5 handshake");
+        overflow
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("bound overflow response read");
+        let mut overflow_reader = BufReader::new(overflow);
+        let response = read_bounded_v5_probe_response_frame(&mut overflow_reader)
+            .expect("read overloaded v5 handshake response");
+        assert_eq!(
+            decode_v5_server_response(&response),
+            Ok(V5ServerResponse::Error {
+                code: V5DaemonErrorCode::Overloaded,
+            })
+        );
+
+        drop(blockers);
+        server
+            .join()
+            .expect("join handshake-limit runtime")
+            .expect("handshake-limit runtime");
+    }
+
+    #[test]
+    fn live_v5_owner_prevents_idle_listener_shutdown() {
+        let root = tempfile::tempdir().expect("temporary owner-idle state root");
+        let state_root =
+            std::fs::canonicalize(root.path()).expect("physical owner-idle state root");
+        let identity = CoreIdentity::production_v5();
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(80),
+        );
+        let server = thread::spawn(move || run_daemon(config));
+        let record = wait_for_v5_record(&state_root, &identity);
+        let (mut first, mut first_reader) =
+            connect_v5_owner(&record, &identity, "66666666-6666-4666-8666-666666666666");
+
+        thread::sleep(Duration::from_millis(200));
+        let (mut successor, mut successor_reader) =
+            connect_v5_owner(&record, &identity, "77777777-7777-4777-8777-777777777777");
+        write_json_line(&mut successor, &json!({"kind": "release"}));
+        let successor_released = read_bounded_v5_probe_response_frame(&mut successor_reader)
+            .expect("release successor v5 owner");
+        assert_eq!(
+            decode_v5_server_response(&successor_released),
+            Ok(V5ServerResponse::Released)
+        );
+        drop(successor);
+
+        write_json_line(&mut first, &json!({"kind": "release"}));
+        let first_released = read_bounded_v5_probe_response_frame(&mut first_reader)
+            .expect("release original idle-fencing owner");
+        assert_eq!(
+            decode_v5_server_response(&first_released),
+            Ok(V5ServerResponse::Released)
+        );
+        drop(first);
+
+        server
+            .join()
+            .expect("join owner-idle runtime")
+            .expect("owner-idle runtime");
     }
 
     #[test]
@@ -9293,6 +9869,13 @@ mod tests {
         let pong: V5ProbeServerResponse =
             serde_json::from_slice(&pong).expect("decode strict v5 pong");
         assert_eq!(pong.kind(), V5ProbeResponseKind::Pong);
+        write_json_line(&mut stream, &json!({"kind": "release"}));
+        let released =
+            read_bounded_v5_probe_response_frame(&mut reader).expect("read v5 release response");
+        assert_eq!(
+            decode_v5_server_response(&released),
+            Ok(V5ServerResponse::Released)
+        );
         drop(stream);
 
         server.join().expect("join v5 runtime").expect("v5 runtime");
@@ -9305,108 +9888,6 @@ mod tests {
             std::fs::read(receipts.path().join("generation")).expect("read v5 generation"),
             b"0\n"
         );
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    #[test]
-    fn task_projection_evidence_changes_with_production_stable_receipt_observation() {
-        let root = tempfile::tempdir().expect("temporary task projection state");
-        let state_root =
-            std::fs::canonicalize(root.path()).expect("physical task projection state");
-        let identity = CoreIdentity::production_v5();
-        let state = DaemonStateDirectory::open(&state_root, &identity)
-            .expect("open task projection daemon state");
-        let encode_projection = |runtime: &V5ReceiptRuntime| {
-            let observation = runtime.initial_receipt_observation.clone();
-            let token = runtime
-                .observe_missing_task_projection_writer()
-                .expect("observe production task projection boundary");
-            let evidence = ProductionMissingTransitionEvidence::task_projection_unavailable(token);
-            let encoded = evidence
-                .encode_facade_envelope(0, "seed_task")
-                .expect("encode task projection evidence");
-            (
-                observation,
-                serde_json::from_str::<serde_json::Value>(&encoded)
-                    .expect("decode task projection evidence"),
-            )
-        };
-
-        let runtime = V5ReceiptRuntime::open(
-            &state,
-            &DaemonServerConfig::new(
-                state_root.clone(),
-                identity.clone(),
-                Duration::from_millis(50),
-            ),
-        )
-        .expect("open baseline production v5 receipt runtime");
-        let (baseline_observation, baseline) = encode_projection(&runtime);
-        drop(runtime);
-        std::fs::write(state.path().join("receipts/generation"), b"7\n")
-            .expect("advance production receipt generation fixture");
-        let runtime = V5ReceiptRuntime::open(
-            &state,
-            &DaemonServerConfig::new(state_root, identity, Duration::from_millis(50)),
-        )
-        .expect("open advanced production v5 receipt runtime");
-        let (advanced_observation, advanced) = encode_projection(&runtime);
-
-        assert_eq!(baseline_observation.generation_before(), 0);
-        assert_eq!(baseline_observation.generation_after(), 0);
-        assert_eq!(advanced_observation.generation_before(), 7);
-        assert_eq!(advanced_observation.generation_after(), 7);
-        assert_eq!(baseline["payload"]["evidence"]["generationBefore"], 0);
-        assert_eq!(baseline["payload"]["evidence"]["generationAfter"], 0);
-        assert_eq!(advanced["payload"]["evidence"]["generationBefore"], 7);
-        assert_eq!(advanced["payload"]["evidence"]["generationAfter"], 7);
-        assert_ne!(
-            baseline["payload"]["evidence"]["fingerprint"],
-            advanced["payload"]["evidence"]["fingerprint"]
-        );
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    #[test]
-    fn missing_executor_and_task_projection_writers_are_minted_only_after_v5_owner_entry() {
-        type Probe = fn() -> Result<ProductionMissingTransitionEvidence, String>;
-        for (action, boundary, code, event, probe) in [
-            (
-                "run_direct_load",
-                "v5_executor",
-                "writer_path_unavailable",
-                Some("v5_executor_entered"),
-                run_direct_load_reachability_probe_for_test as Probe,
-            ),
-            (
-                "run_lazy_cancel_storm",
-                "v5_executor",
-                "writer_path_unavailable",
-                Some("v5_executor_entered"),
-                run_lazy_cancel_storm_reachability_probe_for_test as Probe,
-            ),
-            (
-                "seed_task",
-                "task_projection",
-                "task_projection_unavailable",
-                None,
-                run_seed_task_reachability_probe_for_test as Probe,
-            ),
-        ] {
-            let evidence = probe().unwrap_or_else(|error| panic!("{action} owner entry: {error}"));
-            let encoded = evidence
-                .encode_facade_envelope(0, action)
-                .expect("owner evidence correlates");
-            let encoded: serde_json::Value =
-                serde_json::from_str(&encoded).expect("closed owner evidence envelope");
-            assert_eq!(encoded["payload"]["reachedBoundary"], boundary);
-            assert_eq!(encoded["payload"]["currentProtocol"], "v5");
-            assert_eq!(encoded["payload"]["evidence"]["code"], code);
-            match event {
-                Some(event) => assert_eq!(encoded["payload"]["evidence"]["event"], event),
-                None => assert!(encoded["payload"]["evidence"]["event"].is_null()),
-            }
-        }
     }
 
     #[test]
@@ -9784,62 +10265,5 @@ mod tests {
             response.is_empty(),
             "displaced response escaped: {response:?}"
         );
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    #[test]
-    fn real_tcp_ping_mints_protocol_evidence_only_after_runtime_frame_handling() {
-        let evidence = run_protocol_ping_reachability_probe_for_test()
-            .expect("run typed protocol-v5 reachability probe");
-        let encoded = evidence
-            .encode_facade_envelope(9, "probe_protocol")
-            .expect("encode runtime-owned protocol evidence");
-        let encoded: serde_json::Value =
-            serde_json::from_str(&encoded).expect("decode evidence envelope");
-
-        assert_eq!(encoded["kind"], "production_missing_transition");
-        assert_eq!(encoded["payload"]["actionIndex"], 9);
-        assert_eq!(encoded["payload"]["actionKind"], "probe_protocol");
-        assert_eq!(
-            encoded["payload"]["reachedBoundary"],
-            "protocol_negotiation"
-        );
-        assert_eq!(encoded["payload"]["currentProtocol"], "v5");
-        assert_eq!(
-            encoded["payload"]["evidence"]["code"],
-            "protocol_behavior_unavailable"
-        );
-        assert_eq!(
-            encoded["payload"]["evidence"]["event"],
-            "protocol_frame_read"
-        );
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    #[test]
-    fn tcp_submit_reserves_before_reporting_the_missing_executor_writer() {
-        let evidence =
-            run_submit_reachability_probe_for_test().expect("run typed submit reachability probe");
-        let encoded = evidence
-            .encode_facade_envelope(3, "submit")
-            .expect("encode runtime-owned receipt evidence");
-        let encoded: serde_json::Value =
-            serde_json::from_str(&encoded).expect("decode evidence envelope");
-
-        assert_eq!(encoded["kind"], "production_missing_transition");
-        assert_eq!(encoded["payload"]["actionIndex"], 3);
-        assert_eq!(encoded["payload"]["actionKind"], "submit");
-        assert_eq!(encoded["payload"]["reachedBoundary"], "v5_executor");
-        assert_eq!(encoded["payload"]["currentProtocol"], "v5");
-        assert_eq!(
-            encoded["payload"]["evidence"]["code"],
-            "writer_path_unavailable"
-        );
-        assert_eq!(
-            encoded["payload"]["evidence"]["event"],
-            "v5_executor_entered"
-        );
-        assert_eq!(encoded["payload"]["evidence"]["generationBefore"], 0);
-        assert_eq!(encoded["payload"]["evidence"]["generationAfter"], 0);
     }
 }

@@ -2323,6 +2323,7 @@ enum TaskRetirementEvent {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LoadObservation {
+    path: LoadPath,
     window_started_monotonic_ms: u64,
     window_ended_monotonic_ms: u64,
     drain_completed_monotonic_ms: u64,
@@ -2332,6 +2333,12 @@ struct LoadObservation {
     capacity_rejections: Vec<ErrorCode>,
     store_errors: Vec<ErrorCode>,
     task_store_create_attempts: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LoadPath {
+    ActorBatch,
 }
 
 #[derive(Debug, Deserialize)]
@@ -6534,6 +6541,7 @@ fn max_concurrency_sample(
 }
 
 fn assert_direct_load_lifecycles(load: &LoadObservation, expected: usize) {
+    assert_eq!(load.path, LoadPath::ActorBatch);
     assert_eq!(load.lifecycles.len(), expected);
     assert!(load.capacity_rejections.is_empty());
     assert!(load.store_errors.is_empty());
@@ -11481,7 +11489,7 @@ fn cancel_after_working_before_receipt_begun_waits_and_is_post_begun() {
 }
 
 #[test]
-fn thirty_two_lazy_cancel_sessions_finish_within_125ms() {
+fn thirty_two_lazy_cancel_actor_batch_finishes_within_125ms() {
     let report = execute(Scenario::wall(vec![Action::RunLazyCancelStorm {
         submits: 32,
         cancels: 32,
@@ -11493,14 +11501,11 @@ fn thirty_two_lazy_cancel_sessions_finish_within_125ms() {
     assert_eq!(load.lifecycles.len(), 32);
     assert!(load.capacity_rejections.is_empty());
     assert!(load.store_errors.is_empty());
-    assert_eq!(
-        max_concurrency_sample(load, |sample| sample.owner_slots),
-        65
-    );
-    assert_eq!(max_concurrency_sample(load, |sample| sample.handshakes), 32);
+    assert_eq!(max_concurrency_sample(load, |sample| sample.owner_slots), 0);
+    assert_eq!(max_concurrency_sample(load, |sample| sample.handshakes), 0);
     assert_eq!(
         max_concurrency_sample(load, |sample| sample.accept_batch),
-        32
+        0
     );
     assert!(load_p99_ms(load) <= 125);
     let mut receipt_keys: Vec<_> = load
@@ -13137,7 +13142,7 @@ fn wall_clock_writer_sustains_32_receipts_per_second_on_each_os() {
 }
 
 #[test]
-fn production_direct_load_survives_ten_full_connection_batches() {
+fn actor_owned_direct_load_survives_ten_full_reservation_batches() {
     let report = execute(Scenario::fake(vec![
         Action::RunDirectLoad {
             calls: 320,
