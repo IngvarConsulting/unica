@@ -541,13 +541,25 @@ impl CanonicalV13ReadService {
                 return viewed;
             }
             if let Some(profile) = validation.as_deref() {
-                return error_result(
-                    Some(at.to_string()),
-                    "unsupported_operation",
-                    format!(
-                        "validation profile `{profile}` is reserved but has no canonical validator yet"
-                    ),
+                let kind = viewed
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("kind"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let mut result = run_validation_profile(
+                    invocation,
+                    at,
+                    &kind,
+                    profile,
+                    arguments.get("filter"),
+                    cancellation,
                 );
+                if result.ok {
+                    result.rev = viewed.rev;
+                }
+                return result;
             }
             let mut result = DomainResult::success("logical node is readable");
             result.at = Some(at.to_string());
@@ -923,6 +935,200 @@ fn bounded_usize(value: &Value) -> Option<usize> {
     usize::try_from(value.as_u64()?)
         .ok()
         .filter(|value| *value > 0)
+}
+
+/// Runs one closed validation profile over an admitted logical node. The
+/// bridged validators keep the source of validation truth; this only maps the
+/// logical target onto their `{sourceSet, metadataPath}` selector and folds
+/// the verdict into the check envelope: the call succeeds when the validator
+/// ran, and the verdict travels in `data`.
+fn run_validation_profile(
+    invocation: &ActorBoundExecution,
+    at: &str,
+    kind: &str,
+    profile: &str,
+    filter: Option<&Value>,
+    cancellation: &CancellationToken,
+) -> DomainResult {
+    use crate::application::v13::check::{normalize_native_outcome, CheckError, CheckRequest};
+
+    let address = match QualifiedAddress::parse(at) {
+        Ok(address) => address,
+        Err(error) => return error_result(Some(at.to_string()), "bad_value", error.to_string()),
+    };
+    let context = invocation.workspace_context();
+    let metadata_path = validator_metadata_path(&address);
+    let mut selector = Map::new();
+    selector.insert(
+        "sourceSet".to_string(),
+        Value::String(address.source_set().to_string()),
+    );
+    if let Some(path) = metadata_path.as_deref() {
+        selector.insert("metadataPath".to_string(), Value::String(path.to_string()));
+    }
+
+    let verdict: Result<(bool, Vec<Value>), DomainResult> = if profile == "meta" {
+        let Some(path) = metadata_path.as_deref() else {
+            return error_result(
+                Some(at.to_string()),
+                "bad_value",
+                "the meta profile validates one metadata object; the root has no descriptor",
+            );
+        };
+        let target = match crate::domain::source_target::MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            path,
+        ) {
+            Ok(target) => target,
+            Err(error) => {
+                return error_result(Some(at.to_string()), "bad_value", error.to_string())
+            }
+        };
+        let request = crate::application::metadata::MetaInfoRequest {
+            source_set: address.source_set().to_string(),
+            metadata_path: target,
+            sections: Vec::new(),
+            limit: 0,
+        };
+        let readers = crate::infrastructure::support_state::WorkspaceSupportStateReaderFactory;
+        let reader = crate::infrastructure::support_state::SupportStateReaderFactory::create(
+            &readers, context,
+        );
+        match crate::infrastructure::metadata_operations::MetadataOperations::read_local(
+            &request,
+            context,
+            cancellation,
+            reader.as_ref(),
+        ) {
+            Ok(read) => {
+                let validated =
+                    crate::infrastructure::metadata_operations::MetadataOperations::validate(
+                        &read.validation_subject,
+                        context,
+                        cancellation,
+                    );
+                let diagnostics = validated
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| serde_json::to_value(diagnostic).unwrap_or(Value::Null))
+                    .collect::<Vec<_>>();
+                Ok((
+                    validated.status == crate::domain::metadata::MetaValidationStatus::Passed,
+                    diagnostics,
+                ))
+            }
+            Err(failure) => {
+                let message = failure
+                    .diagnostics
+                    .iter()
+                    .filter_map(|diagnostic| {
+                        serde_json::to_value(diagnostic).ok().and_then(|value| {
+                            value
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                Err(error_result(
+                    Some(at.to_string()),
+                    "provider_unavailable",
+                    if message.is_empty() {
+                        "the metadata descriptor could not be read for validation".to_string()
+                    } else {
+                        message
+                    },
+                ))
+            }
+        }
+    } else {
+        let request = match CheckRequest::new(at, filter) {
+            Ok(request) => request,
+            Err(CheckError::UnsupportedFilter { message, .. }) => {
+                return error_result(Some(at.to_string()), "unsupported_filter", message)
+            }
+            Err(error) => {
+                return error_result(Some(at.to_string()), error.code(), error.to_string())
+            }
+        };
+        if !request.profile().accepts_kind(kind) {
+            return error_result(
+                Some(at.to_string()),
+                "bad_value",
+                format!(
+                    "validation profile `{profile}` does not validate {kind} nodes; pick the profile of `{at}` or omit the filter"
+                ),
+            );
+        }
+        let native = crate::infrastructure::native_operations::v13_analysis::validate(
+            request.profile(),
+            &selector,
+            context,
+        );
+        match normalize_native_outcome(&request, kind, native) {
+            Ok(checked) => Ok((
+                checked.ok(),
+                checked
+                    .diagnostics()
+                    .iter()
+                    .map(|diagnostic| {
+                        serde_json::json!({
+                            "severity": diagnostic.severity(),
+                            "code": diagnostic.code(),
+                            "message": diagnostic.message(),
+                        })
+                    })
+                    .collect(),
+            )),
+            Err(CheckError::DependencyUnavailable) => Err(error_result(
+                Some(at.to_string()),
+                "provider_unavailable",
+                "the native validator dependency is unavailable",
+            )),
+            Err(error) => Err(error_result(
+                Some(at.to_string()),
+                error.code(),
+                error.to_string(),
+            )),
+        }
+    };
+
+    match verdict {
+        Err(refusal) => refusal,
+        Ok((passed, diagnostics)) => {
+            let mut result = DomainResult::success(if passed {
+                "validation profile passed"
+            } else {
+                "validation profile reported findings"
+            });
+            result.at = Some(at.to_string());
+            result.data = Some(serde_json::json!({
+                "status": if passed { "passed" } else { "failed" },
+                "profile": profile,
+                "at": at,
+                "kind": kind,
+                "diagnostics": diagnostics,
+            }));
+            result
+        }
+    }
+}
+
+/// The v0.12 metadata selector of a logical node: `Kind.Name` pairs joined by
+/// dots, or `None` for the configuration root.
+fn validator_metadata_path(address: &QualifiedAddress) -> Option<String> {
+    let segments = address.segments();
+    if segments.len() == 1 && segments[0].kind() == crate::domain::address::NodeKind::Configuration
+    {
+        return None;
+    }
+    let mut parts = Vec::with_capacity(segments.len() * 2);
+    for segment in segments {
+        parts.push(segment.kind().as_str().to_string());
+        parts.push(segment.name()?.to_string());
+    }
+    Some(parts.join("."))
 }
 
 fn error_result(

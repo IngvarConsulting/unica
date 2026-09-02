@@ -39,7 +39,7 @@
     },
     "unica.check": {
       "status": "partial",
-      "reason": "Workspace admission and logical readability are implemented; validation filter parsing and meta/cf kind routing are provisional because no real validator execution is proven.",
+      "reason": "Workspace admission and logical readability are implemented; the closed validation profiles (cf, cfe, form, dcs, mxl, role, subsystem, interface) run the native validators over the logical node and the meta profile runs the typed metadata validator, with the verdict returned in data.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"

@@ -4046,6 +4046,14 @@ struct ActorLogicalReadLease {"#,
             ),
             (ToolIdentity::Check, serde_json::json!({}), "sources"),
             (
+                ToolIdentity::Check,
+                serde_json::json!({
+                    "at": "main:Catalog.Items",
+                    "filter": {"validation": {"profile": "meta"}}
+                }),
+                "status",
+            ),
+            (
                 ToolIdentity::Diff,
                 serde_json::json!({
                     "left": "main:Catalog.Items",
@@ -4217,9 +4225,9 @@ struct ActorLogicalReadLease {"#,
                 ToolIdentity::Check,
                 serde_json::json!({
                     "at": "main:Catalog.Items",
-                    "filter": {"validation": {"profile": "meta"}}
+                    "filter": {"validation": {"profile": "form"}}
                 }),
-                "unsupported_operation",
+                "bad_value",
             ),
             (
                 ToolIdentity::Check,
