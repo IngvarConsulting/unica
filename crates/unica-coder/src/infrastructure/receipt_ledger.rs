@@ -5,8 +5,8 @@ use crate::application::receipt_ledger::{
     DirectTerminalUnackedReceipt, HandoffTerminalStage, OriginalCutoffDescriptor,
     ProvenTaskLinkCapacity, ProvisionalTaskStatus, ReceiptKey, ReceiptKeyDigest,
     ReceiptLedgerError, ReceiptLedgerPort, ReceiptRecordHeader, ReceiptState,
-    ReceiptTaskProjection, ReceiptTerminalOutcome, ReceiptVersion, RequestIdentity, ReserveOutcome,
-    ReservedPhase, ReservedReceipt, StagedCapacityFallbackCase, StagedTaskPublicationCase,
+    ReceiptTaskProjection, ReceiptTerminalOutcome, ReceiptVersion, ReserveOutcome, ReservedPhase,
+    ReservedReceipt, StagedCapacityFallbackCase, StagedTaskPublicationCase,
     StagedTerminalTransferCertificate, TaskBoundReceipt, TaskCancellationReceipt,
     TaskHandoffActorBoundReceipt, TaskLinkDigest, TaskLinkReference, TaskPromisedActorBoundReceipt,
     TaskPromisedUnboundReceipt, TaskReceiptOwnedActorBoundReceipt, TaskTerminalBoundReceipt,
@@ -19,7 +19,7 @@ use crate::application::receipt_ledger::{
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
     ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
-    ReceiptLedgerCatalogSnapshotParts,
+    ReceiptLedgerCatalogSnapshotParts, RequestIdentity,
 };
 use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
 use crate::infrastructure::daemon::terminal_codec_v5::{
@@ -3868,13 +3868,20 @@ impl ReceiptLedgerStore {
         if expected_state.key() != key {
             return Err(ReceiptLedgerError::TaskBoundMismatch);
         }
-        if matches!(
-            &expected_state,
-            TaskCancellationReceipt::HandoffActorBound(receipt)
-                if receipt.phase() == AttemptPhase::Begun
-                    || !matches!(receipt.terminal_stage(), HandoffTerminalStage::NoTerminal)
-        ) {
-            return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
+        if let TaskCancellationReceipt::HandoffActorBound(receipt) = &expected_state {
+            match receipt.terminal_stage() {
+                HandoffTerminalStage::NoTerminal if receipt.phase() == AttemptPhase::Begun => {
+                    return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported)
+                }
+                HandoffTerminalStage::Staged {
+                    terminal_epoch_ms: staged_epoch_ms,
+                    terminal: staged_terminal,
+                    ..
+                } if *staged_epoch_ms != terminal_epoch_ms || staged_terminal != &terminal => {
+                    return Err(ReceiptLedgerError::TerminalMismatch)
+                }
+                HandoffTerminalStage::NoTerminal | HandoffTerminalStage::Staged { .. } => {}
+            }
         }
         let expected_task = expected_state.task();
         let task_version =
