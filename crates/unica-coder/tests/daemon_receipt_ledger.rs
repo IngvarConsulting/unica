@@ -13371,7 +13371,16 @@ fn oversized_result_and_uncertain_store_commit_fail_closed() {
     assert_eq!(task_failed.fallback_executions, 0);
     assert_eq!(task_failed.task_store_create_attempts, 1);
     assert_eq!(task_failed.task_link_reserved_count, 1);
-    assert!(task_failed.tasks.is_empty());
+    let uncertain_task = only_task(task_failed);
+    assert_task_observation(uncertain_task);
+    assert_eq!(uncertain_task.status, TaskStatus::Working);
+    assert_eq!(
+        uncertain_task.projection_source,
+        ProjectionSource::ReceiptLedger
+    );
+    assert_eq!(uncertain_task.receipt_key, only_receipt(task_failed).key);
+    assert!(!uncertain_task.cancel_requested);
+    assert!(uncertain_task.terminal.is_none());
     assert_eq!(
         only_receipt(task_failed).state,
         SeedReceiptState::TaskHandoffActorBoundBegun
