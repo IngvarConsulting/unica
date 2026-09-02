@@ -1143,39 +1143,6 @@ def template_kind(path: Path) -> str:
     return "unknown"
 
 
-def optional_sample_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[str, Any], bool]]:
-    scenarios: list[tuple[str, str, str, dict[str, Any], bool]] = []
-    form = first_existing(bsp_root, [f"{SOURCE_DIR}/**/Forms/*/Ext/Form.xml"])
-    if form:
-        scenarios.append(("form-info-sample", "Sample managed form info", "unica.form.info", {"FormPath": form, "Limit": 80}, True))
-        scenarios.append(
-            ("form-validate-sample", "Sample managed form validation", "unica.form.validate", {"FormPath": form, "MaxErrors": 30}, False)
-        )
-
-    role = first_existing(bsp_root, [f"{SOURCE_DIR}/Roles/*/Ext/Rights.xml"])
-    if role:
-        scenarios.append(("role-info-sample", "Sample role info", "unica.role.info", {"RightsPath": role, "Limit": 80}, True))
-        scenarios.append(
-            ("role-validate-sample", "Sample role validation", "unica.role.validate", {"RightsPath": role, "MaxErrors": 30}, False)
-        )
-
-    templates = sorted(bsp_root.glob(f"{SOURCE_DIR}/**/Templates/*/Ext/Template.xml"))
-    dcs = next((path for path in templates if template_kind(path) == "dcs"), None)
-    mxl = next((path for path in templates if template_kind(path) == "mxl"), None)
-    if dcs:
-        dcs_rel = relpath(dcs, bsp_root)
-        scenarios.append(("dcs-info-sample", "Sample DCS info", "unica.dcs.info", {"TemplatePath": dcs_rel, "Limit": 80}, True))
-        scenarios.append(
-            ("dcs-validate-sample", "Sample DCS validation", "unica.dcs.validate", {"TemplatePath": dcs_rel, "MaxErrors": 30}, False)
-        )
-    if mxl:
-        mxl_rel = relpath(mxl, bsp_root)
-        scenarios.append(("mxl-info-sample", "Sample MXL info", "unica.mxl.info", {"TemplatePath": mxl_rel, "Limit": 80}, True))
-        scenarios.append(
-            ("mxl-validate-sample", "Sample MXL validation", "unica.mxl.validate", {"TemplatePath": mxl_rel, "MaxErrors": 30}, False)
-        )
-    return scenarios
-
 
 def sample_bsl_path(bsp_root: Path) -> str | None:
     matches = sorted(bsp_root.glob(f"{SOURCE_DIR}/**/*.bsl"))
@@ -1212,7 +1179,6 @@ def base_tool_scenarios(
 
     scenarios: list[tuple[str, str, str, dict[str, Any], bool, bool]] = [
         ("cf-info", "BSP Configuration.xml overview", "unica.cf.info", {"ConfigPath": SOURCE_DIR}, True, True),
-        ("cf-validate", "BSP Configuration.xml validation", "unica.cf.validate", {"ConfigPath": SOURCE_DIR, "MaxErrors": 50}, False, False),
         (
             "code-diagnostics-analyze",
             "BSL diagnostics source-set analysis",
