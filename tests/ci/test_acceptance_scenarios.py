@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import queue
+import re
 import threading
 import os
 import shutil
@@ -111,6 +112,50 @@ def classify(response, context):
         return "refused", f"{code}: {message[:160]}"
     return "gap-candidate", f"{code}: {message[:200]}"
 
+
+
+def derive_source_sets(workspace: Path) -> None:
+    """Derive the format-probe source sets the corpus addresses from `src`.
+
+    `v8project.yaml` of the fixture declares three sets next to `main`:
+    `newer` is the same tree with every 2.20 root rewritten to 2.21 (and the
+    Reports and XDTO packages dropped, because the strict read port cannot
+    open a 2.21 template wrapper and `find` walks every identity), `nosupport`
+    is `src` without `Ext/ParentConfigurations.bin`, and `unversioned` is
+    `src` whose Configuration root carries no version attribute. Deriving
+    them here keeps one copy of the platform XML in the repository.
+    """
+    source = workspace / "src"
+
+    def copy(name: str, rewrite, drop_bin: bool = False, drop_dirs=()):
+        target = workspace / name
+        shutil.copytree(source, target)
+        for directory in drop_dirs:
+            shutil.rmtree(target / directory, ignore_errors=True)
+        if drop_bin:
+            (target / "Ext/ParentConfigurations.bin").unlink()
+        for path in target.rglob("*.xml"):
+            raw = path.read_bytes()
+            bom = raw.startswith(b"\xef\xbb\xbf")
+            text = raw.decode("utf-8-sig")
+            rewritten = rewrite(path, text)
+            if rewritten != text:
+                path.write_bytes((b"\xef\xbb\xbf" if bom else b"") + rewritten.encode("utf-8"))
+
+    def newer(path: Path, text: str) -> str:
+        text = text.replace('version="2.20"', 'version="2.21"')
+        if path.name == "Configuration.xml":
+            text = re.sub(r"<(Report|XDTOPackage)>[^<]+</\1>", "", text)
+        return text
+
+    def unversioned(path: Path, text: str) -> str:
+        if path.name == "Configuration.xml":
+            text = re.sub(r'(<MetaDataObject[^>]*?) version="2\.20"', r"\1", text, count=1)
+        return text
+
+    copy("src-newer", newer, drop_dirs=("Reports", "XDTOPackages"))
+    copy("src-nosupport", lambda path, text: text, drop_bin=True)
+    copy("src-unversioned", unversioned)
 
 def scenario_publishes(scenario) -> bool:
     """True when a step can change the workspace: an apply that is not a preview."""
@@ -367,6 +412,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
                 home = root / f"run-{generation}"
                 workspace = home / "workspace"
                 shutil.copytree(workspace_source, workspace)
+                derive_source_sets(workspace)
                 state = home / "state"
                 state.mkdir()
                 return AcceptanceServer(workspace, state, corpus["protocolVersion"])
