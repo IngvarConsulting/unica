@@ -2241,6 +2241,74 @@ impl V5ReceiptRuntime {
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]
+    fn seed_cancel_reserved_pool_entry_for_test(
+        &self,
+        key: ReceiptKey,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<(), ReceiptLedgerError> {
+        self.telemetry
+            .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
+        self.receipt_ledger
+            .request_cancel_or_reserve(key, epoch_ms, deadline)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    fn seed_reserved_pool_entry_for_test(
+        &self,
+        key: ReceiptKey,
+        cutoff: OriginalCutoffDescriptor,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<(), ReceiptLedgerError> {
+        self.telemetry
+            .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
+        self.receipt_ledger.reserve(key, cutoff, deadline)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    fn seed_receipt_backed_terminal_pool_entry_for_test(
+        &self,
+        key: ReceiptKey,
+        epoch_ms: u64,
+        task_ttl_ms: u64,
+        task_poll_interval_ms: u64,
+        terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
+        deadline: Instant,
+    ) -> Result<(), ReceiptLedgerError> {
+        self.telemetry
+            .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
+        let reserved = self
+            .receipt_ledger
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(epoch_ms, 7_000)
+                    .map_err(|_| ReceiptLedgerError::TimestampOverflow)?,
+                deadline,
+            )?
+            .into_reservation()
+            .map_err(|_| ReceiptLedgerError::Corrupt("fixture receipt already exists"))?;
+        let promised = self.receipt_ledger.promise_task_unbound(
+            key.clone(),
+            reserved.record_version(),
+            epoch_ms,
+            task_ttl_ms,
+            task_poll_interval_ms,
+            deadline,
+        )?;
+        self.receipt_ledger.publish_receipt_backed_task_terminal(
+            key,
+            TaskCancellationReceipt::PromisedUnbound(promised),
+            epoch_ms,
+            terminal,
+            deadline,
+        )?;
+        Ok(())
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
     fn mark_reserved_begun_under_gate_for_test(
         &self,
         key: &ReceiptKey,
@@ -2357,13 +2425,10 @@ impl V5ReceiptRuntime {
         let result = (|| {
             self.cancel_invocation(key.clone(), self.epoch_ms(), deadline)
                 .map_err(|error| format!("cancel under lifecycle gate: {error}"))?;
-            if let ReceiptState::Reserved(reserved) = self
-                .receipt_ledger
-                .recover(key.clone(), deadline)
-                .map_err(|error| format!("recover cancel winner: {error}"))?
-            {
-                if matches!(reserved.phase(), ReservedPhase::ActorBound { .. })
-                    && reserved.cancel_requested()
+            match self.receipt_ledger.recover(key.clone(), deadline) {
+                Ok(ReceiptState::Reserved(reserved))
+                    if matches!(reserved.phase(), ReservedPhase::ActorBound { .. })
+                        && reserved.cancel_requested() =>
                 {
                     let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
                         .map_err(|error| format!("prepare cancel winner terminal: {error}"))?;
@@ -2381,6 +2446,8 @@ impl V5ReceiptRuntime {
                         self.epoch_ms(),
                     );
                 }
+                Ok(_) | Err(ReceiptLedgerError::ReceiptNotFound) => {}
+                Err(error) => return Err(format!("recover cancel winner: {error}")),
             }
             Ok(())
         })();
@@ -4211,6 +4278,13 @@ impl V5ReceiptRuntime {
                     receipt.cancel_requested(),
                 ));
             }
+            ReceiptState::TaskReceiptOwnedActorBound(receipt) => {
+                return Ok(queued_receipt_task_snapshot(
+                    receipt.task(),
+                    receipt.key_digest().clone(),
+                    receipt.cancel_requested(),
+                ));
+            }
             ReceiptState::TaskTerminalReceiptBacked(receipt) => receipt,
             _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
         };
@@ -4308,19 +4382,72 @@ impl V5ReceiptRuntime {
             .cancel_bound_task(task_id, deadline)
             .map_err(|failure| self.project_task_failure(failure))?
         {
+            let provider_deadline =
+                crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+            let link = self
+                .task_projection
+                .lifecycle_links
+                .read_by_task_id(task_id, provider_deadline)
+                .map_err(|error| {
+                    self.project_task_failure(V5TaskProjectionFailure::from_link_store(error))
+                })?;
+            if let TaskLifecycleLinkRecord::TaskBound(bound) = link {
+                if bound.phase() == AttemptPhase::NotBegun && record.cancel_requested {
+                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+                        .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                    let (terminal_record, terminal_link) = self
+                        .task_projection
+                        .publish_bound_task_terminal(
+                            &bound,
+                            record,
+                            &terminal,
+                            self.epoch_ms(),
+                            deadline,
+                        )
+                        .map_err(|failure| self.project_task_failure(failure))?;
+                    #[cfg(feature = "receipt-ledger-test-support")]
+                    {
+                        self.telemetry.record_event(
+                            V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+                            self.epoch_ms(),
+                        );
+                        self.telemetry.record_event(
+                            V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+                            self.epoch_ms(),
+                        );
+                        self.telemetry.record_event(
+                            V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+                            self.epoch_ms(),
+                        );
+                        if let Some(control) = &self.scenario_control {
+                            control
+                                .record_terminal_bound_task(terminal_record.clone(), terminal_link);
+                        }
+                    }
+                    return Ok(task_store_snapshot(&terminal_record));
+                }
+            }
             return Ok(task_store_snapshot(&record));
         }
         let state = self.receipt_ledger.resolve_task(task_id, deadline)?;
-        let expected = match state {
+        let (expected, terminalize_without_started_attempt) = match state {
             ReceiptState::TaskPromisedUnbound(receipt) => {
-                TaskCancellationReceipt::PromisedUnbound(receipt)
+                (TaskCancellationReceipt::PromisedUnbound(receipt), true)
             }
             ReceiptState::TaskPromisedActorBound(receipt) => {
-                TaskCancellationReceipt::PromisedActorBound(receipt)
+                (TaskCancellationReceipt::PromisedActorBound(receipt), true)
             }
             ReceiptState::TaskHandoffActorBound(receipt) => {
-                TaskCancellationReceipt::HandoffActorBound(receipt)
+                let terminalize = receipt.phase() == AttemptPhase::NotBegun;
+                (
+                    TaskCancellationReceipt::HandoffActorBound(receipt),
+                    terminalize,
+                )
             }
+            ReceiptState::TaskReceiptOwnedActorBound(receipt) => (
+                TaskCancellationReceipt::ReceiptOwnedActorBound(receipt),
+                false,
+            ),
             ReceiptState::TaskTerminalReceiptBacked(receipt) => {
                 return self.resolve_task(receipt.task().task_id(), deadline)
             }
@@ -4329,6 +4456,35 @@ impl V5ReceiptRuntime {
         let cancelled =
             self.receipt_ledger
                 .request_task_cancel(expected.key().clone(), expected, deadline)?;
+        if terminalize_without_started_attempt {
+            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+                .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+            let committed = self.receipt_ledger.publish_receipt_backed_task_terminal(
+                cancelled.key().clone(),
+                cancelled,
+                self.epoch_ms(),
+                terminal,
+                deadline,
+            )?;
+            #[cfg(feature = "receipt-ledger-test-support")]
+            {
+                if let Some(control) = &self.scenario_control {
+                    control
+                        .record_receipt_backed_terminal(committed)
+                        .map_err(|_| {
+                            ReceiptLedgerError::Corrupt(
+                                "capture receipt-backed terminal evidence failed",
+                            )
+                        })?;
+                    control.release_pre_actor_barriers();
+                }
+                self.telemetry.record_event(
+                    V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
+                    self.epoch_ms(),
+                );
+            }
+            return self.resolve_task(task_id, deadline);
+        }
         Ok(queued_receipt_task_snapshot(
             cancelled.task(),
             crate::application::receipt_ledger::receipt_key_digest(cancelled.key()),

@@ -424,6 +424,12 @@ impl V5DaemonProcessOwner {
         self.exchange(V5ClientRequest::WaitTask { task_id, wait_ms }, "wait task")
     }
 
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn cancel_task(&mut self, task_id: TaskId) -> Result<V5ServerResponse, String> {
+        self.exchange(V5ClientRequest::CancelTask { task_id }, "cancel task")
+    }
+
     #[allow(dead_code)]
     fn exchange(
         &mut self,

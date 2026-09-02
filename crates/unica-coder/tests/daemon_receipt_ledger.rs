@@ -11060,42 +11060,6 @@ fn cancel_flag_transfers_monotonically_at_task_bind() {
 
     let closed_states = [
         (
-            SeedReceiptState::CancelReserved,
-            false,
-            None,
-            TerminalClass::Absent,
-        ),
-        (
-            SeedReceiptState::ReservedUnbound,
-            false,
-            None,
-            TerminalClass::Cancelled,
-        ),
-        (
-            SeedReceiptState::ReservedActorBound,
-            false,
-            None,
-            TerminalClass::Cancelled,
-        ),
-        (
-            SeedReceiptState::ReservedBegun,
-            false,
-            None,
-            TerminalClass::Absent,
-        ),
-        (
-            SeedReceiptState::DirectTerminalUnacked,
-            true,
-            None,
-            TerminalClass::Completed(true),
-        ),
-        (
-            SeedReceiptState::AcknowledgedTombstone,
-            true,
-            None,
-            TerminalClass::Absent,
-        ),
-        (
             SeedReceiptState::TaskPromisedUnbound,
             false,
             None,

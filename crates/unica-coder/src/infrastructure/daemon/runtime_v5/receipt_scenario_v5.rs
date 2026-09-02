@@ -1584,8 +1584,18 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     seed_state,
                     ScenarioSeedReceiptState::TaskBoundNotBegun
                         | ScenarioSeedReceiptState::TaskBoundBegun
+                        | ScenarioSeedReceiptState::TaskTerminalBound
                 ) {
-                    if cancel_requested || staged_terminal.is_some() {
+                    let valid = match seed_state {
+                        ScenarioSeedReceiptState::TaskTerminalBound => {
+                            !cancel_requested
+                                && staged_terminal.as_ref().is_some_and(|terminal| {
+                                    matches!(terminal, ScenarioTerminalFixture::Success { .. })
+                                })
+                        }
+                        _ => !cancel_requested && staged_terminal.is_none(),
+                    };
+                    if !valid {
                         return Ok(None);
                     }
                     deferred_task_bound = Some(seed_state);
@@ -1998,6 +2008,65 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     }
                 }
             }
+            ReceiptScenarioAction::CancelTask {
+                api,
+                task,
+                lazy_session: _,
+                label,
+            } => {
+                let task_id = match task {
+                    ScenarioTaskSelector::ExactProjected => exact_key.reserved_task_id(),
+                    ScenarioTaskSelector::ForReadLabel(read_label) => report
+                        .task_reads
+                        .get(&read_label)
+                        .and_then(|task| task.get("taskId"))
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            format!("Task cancel selector references missing read {read_label}")
+                        })?
+                        .parse()
+                        .map_err(|error| {
+                            format!("parse Task cancel selector from {read_label}: {error}")
+                        })?,
+                };
+                control.arm_skip_next_startup_reconciliation();
+                let response = exchange_once(
+                    state.path(),
+                    &identity,
+                    Arc::clone(&clock),
+                    Arc::clone(&telemetry),
+                    Some(Arc::clone(&control)),
+                    |owner| match api {
+                        ScenarioTaskCancelApi::Native | ScenarioTaskCancelApi::Compatibility => {
+                            owner.cancel_task(task_id)
+                        }
+                    },
+                )?;
+                let observation = match &response {
+                    V5ServerResponse::Task { .. } => {
+                        let task = task_observation_from_response_with_workspace(
+                            response,
+                            &exact_key,
+                            state.path(),
+                            &identity,
+                            None,
+                        )?;
+                        json!({
+                            "kind": "task",
+                            "error": null,
+                            "terminal": task.get("terminal").cloned().unwrap_or(Value::Null),
+                            "key": receipt_key_observation(&exact_key),
+                            "task": task,
+                            "acknowledgement": null,
+                            "cutoffEpochMs": null,
+                            "originalBudgetMs": null,
+                            "latencyMs": 0,
+                        })
+                    }
+                    _ => response_observation(&response, None)?,
+                };
+                report.responses.insert(label, observation);
+            }
             ReceiptScenarioAction::Submit {
                 request,
                 response_budget_ms,
@@ -2333,21 +2402,24 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 };
                 let response = match available_response {
                     Some(response) => response,
-                    None => exchange_once(
-                        state.path(),
-                        &identity,
-                        Arc::clone(&clock),
-                        Arc::clone(&telemetry),
-                        Some(Arc::clone(&control)),
-                        |owner| match api {
-                            ScenarioTaskApi::NativeWait => {
-                                owner.wait_task(task_id, SCENARIO_TASK_POLL_INTERVAL_MS)
-                            }
-                            ScenarioTaskApi::NativeGet
-                            | ScenarioTaskApi::CompatibilityGet
-                            | ScenarioTaskApi::CompatibilityResult => owner.get_task(task_id),
-                        },
-                    )?,
+                    None => {
+                        control.arm_skip_next_startup_reconciliation();
+                        exchange_once(
+                            state.path(),
+                            &identity,
+                            Arc::clone(&clock),
+                            Arc::clone(&telemetry),
+                            Some(Arc::clone(&control)),
+                            |owner| match api {
+                                ScenarioTaskApi::NativeWait => {
+                                    owner.wait_task(task_id, SCENARIO_TASK_POLL_INTERVAL_MS)
+                                }
+                                ScenarioTaskApi::NativeGet
+                                | ScenarioTaskApi::CompatibilityGet
+                                | ScenarioTaskApi::CompatibilityResult => owner.get_task(task_id),
+                            },
+                        )?
+                    }
                 };
                 report.task_reads.insert(
                     label,
@@ -3136,7 +3208,8 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 let config =
                     scenario_server_config_with_clock(state.path(), &identity, None, &clock);
                 let runtime =
-                    V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?;
+                    V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
+                        .with_shared_telemetry(Arc::clone(&telemetry));
                 let epoch_ms = clock.now_epoch_millis();
                 for index in 0..count {
                     let key = if matches!(fill, ScenarioSeedReceiptState::CancelReserved)
@@ -3150,8 +3223,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     match fill {
                         ScenarioSeedReceiptState::CancelReserved => {
                             runtime
-                                .receipt_ledger
-                                .request_cancel_or_reserve(
+                                .seed_cancel_reserved_pool_entry_for_test(
                                     key.clone(),
                                     epoch_ms,
                                     Instant::now() + SCENARIO_OPERATION_TIMEOUT,
@@ -3160,62 +3232,28 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         }
                         ScenarioSeedReceiptState::ReservedUnbound => {
                             runtime
-                                .receipt_ledger
-                                .reserve(
+                                .seed_reserved_pool_entry_for_test(
                                     key.clone(),
                                     OriginalCutoffDescriptor::new(epoch_ms, 7_000).map_err(
                                         |error| format!("construct filled receipt cutoff: {error}"),
                                     )?,
+                                    epoch_ms,
                                     Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                                 )
                                 .map_err(|error| format!("fill ReservedUnbound pool: {error}"))?;
                         }
                         ScenarioSeedReceiptState::TaskTerminalReceiptBacked => {
-                            let reserved = runtime
-                                .receipt_ledger
-                                .reserve(
-                                    key.clone(),
-                                    OriginalCutoffDescriptor::new(epoch_ms, 7_000).map_err(
-                                        |error| {
-                                            format!("construct filled Task receipt cutoff: {error}")
-                                        },
-                                    )?,
-                                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                                )
-                                .map_err(|error| {
-                                    format!("reserve filled receipt-backed Task: {error}")
-                                })?
-                                .into_reservation()
-                                .map_err(|state| {
-                                    format!(
-                                        "filled Task receipt already exists as {}",
-                                        state.kind().diagnostic_name()
-                                    )
-                                })?;
-                            let promised = runtime
-                                .receipt_ledger
-                                .promise_task_unbound(
-                                    key.clone(),
-                                    reserved.record_version(),
-                                    epoch_ms,
-                                    SCENARIO_TASK_TTL_MS,
-                                    SCENARIO_TASK_POLL_INTERVAL_MS,
-                                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                                )
-                                .map_err(|error| {
-                                    format!("promise filled receipt-backed Task: {error}")
-                                })?;
                             let terminal =
                                 canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
                                     result: Box::new(DomainResult::success("receipt-pool")),
                                 })
                                 .map_err(|error| format!("encode filled Task terminal: {error}"))?;
                             runtime
-                                .receipt_ledger
-                                .publish_receipt_backed_task_terminal(
+                                .seed_receipt_backed_terminal_pool_entry_for_test(
                                     key.clone(),
-                                    TaskCancellationReceipt::PromisedUnbound(promised),
                                     epoch_ms,
+                                    SCENARIO_TASK_TTL_MS,
+                                    SCENARIO_TASK_POLL_INTERVAL_MS,
                                     terminal,
                                     Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                                 )
@@ -3873,7 +3911,12 @@ fn seed_receipt_state(
         ScenarioSeedReceiptState::DirectTerminalUnacked
             | ScenarioSeedReceiptState::AcknowledgedTombstone
     );
-    if staged_terminal.is_some() && !seeds_direct_terminal {
+    let seeds_staged_handoff = matches!(
+        seed_state,
+        ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun
+            | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun
+    );
+    if staged_terminal.is_some() && !seeds_direct_terminal && !seeds_staged_handoff {
         return Ok(false);
     }
 
@@ -4149,6 +4192,21 @@ fn seed_receipt_state(
                             )
                             .map_err(|error| {
                                 format!("seed receipt-owned actor-bound Task: {error}")
+                            })?;
+                    }
+                    if let Some(ScenarioTerminalFixture::Success { payload }) =
+                        staged_terminal.as_ref()
+                    {
+                        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+                            result: Box::new(DomainResult::success(payload.clone())),
+                        })
+                        .map_err(|error| format!("construct staged Task terminal: {error}"))?;
+                        runtime
+                            .publish_staged_handoff_terminal_reply(
+                                handoff, terminal, epoch_ms, deadline,
+                            )
+                            .map_err(|error| {
+                                format!("publish staged Task terminal fixture: {error}")
                             })?;
                     }
                 }
@@ -4452,9 +4510,9 @@ fn seed_task_record(
         Some(ScenarioSeedReceiptState::TaskBoundBegun) => {
             crate::application::receipt_ledger::AttemptPhase::Begun
         }
-        Some(ScenarioSeedReceiptState::TaskBoundNotBegun) | None => {
-            crate::application::receipt_ledger::AttemptPhase::NotBegun
-        }
+        Some(ScenarioSeedReceiptState::TaskBoundNotBegun)
+        | Some(ScenarioSeedReceiptState::TaskTerminalBound)
+        | None => crate::application::receipt_ledger::AttemptPhase::NotBegun,
         Some(_) => return Err("deferred Task seed is not a TaskBound state".to_owned()),
     };
     let link_root = state.create_private_retained_subdirectory("task-lifecycle-links")?;
@@ -4466,9 +4524,6 @@ fn seed_task_record(
         link_key.invocation_id(),
         scenario_workspace_identity_hash(),
     );
-    let reservation = links
-        .reserve_task_link(link_key.clone(), link, deadline)
-        .map_err(|error| format!("reserve seeded lifecycle link: {error}"))?;
     let projection = ReceiptTaskProjection::new(
         link_key.reserved_task_id(),
         link_key.invocation_id(),
@@ -4479,6 +4534,31 @@ fn seed_task_record(
         record.version,
     )
     .map_err(|error| format!("construct seeded lifecycle Task projection: {error}"))?;
+    if matches!(
+        deferred_task_bound,
+        Some(ScenarioSeedReceiptState::TaskTerminalBound)
+    ) {
+        let terminal = terminal.as_ref().ok_or_else(|| {
+            "TaskTerminalBound fixture requires a terminal Task record".to_owned()
+        })?;
+        links
+            .seed_task_terminal_bounds_bulk_for_test(
+                vec![(
+                    link_key,
+                    link,
+                    projection,
+                    record.version,
+                    epoch_ms,
+                    terminal.digest().clone(),
+                )],
+                deadline,
+            )
+            .map_err(|error| format!("seed terminal lifecycle link: {error}"))?;
+        return Ok(record_key);
+    }
+    let reservation = links
+        .reserve_task_link(link_key.clone(), link, deadline)
+        .map_err(|error| format!("reserve seeded lifecycle link: {error}"))?;
     links
         .materialize_task_bound(
             &reservation,
@@ -4792,6 +4872,7 @@ fn has_supported_shape(request: &str) -> Result<bool, String> {
                         | "configure_admission"
                         | "configure_prepare"
                         | "cancel"
+                        | "cancel_task"
                         | "spawn_cancel"
                         | "spawn_mark_reserved_begun"
                         | "spawn_task_store_create_and_bind_under_gate"
@@ -9009,6 +9090,12 @@ enum ReceiptScenarioAction {
         lazy_session: bool,
         label: String,
     },
+    CancelTask {
+        api: ScenarioTaskCancelApi,
+        task: ScenarioTaskSelector,
+        lazy_session: bool,
+        label: String,
+    },
     SpawnCancel {
         key: ScenarioKey,
         #[serde(rename = "lazy_session")]
@@ -9159,6 +9246,18 @@ impl ReceiptScenarioAction {
                         | ScenarioKey::Mismatch(ScenarioIdentityField::NormalizedArgumentsHash)
                 )
             }
+            Self::CancelTask {
+                api,
+                task,
+                lazy_session,
+                ..
+            } => {
+                let _ = (api, lazy_session);
+                matches!(
+                    task,
+                    ScenarioTaskSelector::ExactProjected | ScenarioTaskSelector::ForReadLabel(_)
+                )
+            }
             Self::SpawnCancel { key, .. } => matches!(key, ScenarioKey::Exact),
             Self::SpawnMarkReservedBegun { proof, .. } => {
                 matches!(proof, ScenarioActorProof::Exact)
@@ -9216,8 +9315,6 @@ impl ReceiptScenarioAction {
                 | ScenarioSeedReceiptState::ReservedBegun
                 | ScenarioSeedReceiptState::TaskPromisedUnbound
                 | ScenarioSeedReceiptState::TaskPromisedActorBound
-                | ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun
-                | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun
                 | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound => {
                     staged_terminal.is_none()
                         && (!*cancel_requested
@@ -9229,10 +9326,15 @@ impl ReceiptScenarioAction {
                                     | ScenarioSeedReceiptState::ReservedBegun
                                     | ScenarioSeedReceiptState::TaskPromisedUnbound
                                     | ScenarioSeedReceiptState::TaskPromisedActorBound
-                                    | ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun
-                                    | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun
                                     | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
                             ))
+                }
+                ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun
+                | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun => {
+                    staged_terminal.is_none()
+                        || staged_terminal.as_ref().is_some_and(|terminal| {
+                            matches!(terminal, ScenarioTerminalFixture::Success { .. })
+                        })
                 }
                 ScenarioSeedReceiptState::DirectTerminalUnacked
                 | ScenarioSeedReceiptState::AcknowledgedTombstone => {
@@ -9242,7 +9344,12 @@ impl ReceiptScenarioAction {
                 }
                 ScenarioSeedReceiptState::TaskBoundNotBegun
                 | ScenarioSeedReceiptState::TaskBoundBegun => staged_terminal.is_none(),
-                ScenarioSeedReceiptState::TaskTerminalBound => false,
+                ScenarioSeedReceiptState::TaskTerminalBound => {
+                    !*cancel_requested
+                        && staged_terminal.as_ref().is_some_and(|terminal| {
+                            matches!(terminal, ScenarioTerminalFixture::Success { .. })
+                        })
+                }
             },
             Self::SeedTask { version, .. } => *version > 0,
             Self::SeedTaskLinkReservation { .. }
@@ -9336,6 +9443,20 @@ enum ScenarioTaskApi {
     NativeWait,
     CompatibilityGet,
     CompatibilityResult,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioTaskCancelApi {
+    Native,
+    Compatibility,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioTaskSelector {
+    ExactProjected,
+    ForReadLabel(String),
 }
 
 #[derive(Clone, Copy, Deserialize)]
