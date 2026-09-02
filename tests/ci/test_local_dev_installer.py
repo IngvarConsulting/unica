@@ -167,6 +167,14 @@ class LocalDevInstallerTests(unittest.TestCase):
         )
         self.assertLess(create_home, first_codex_call)
 
+    def test_prompt_verification_requires_only_installed_visible_skills(self) -> None:
+        installer = INSTALLER.read_text(encoding="utf-8")
+
+        self.assertIn('for needle in "Unica" "db-auth-check"; do', installer)
+        self.assertNotIn(
+            'for needle in "Unica" "v8-runner" "db-auth-check"; do', installer
+        )
+
     def test_installer_preserves_persistent_cargo_work_and_writes_metrics(self) -> None:
         installer = INSTALLER.read_text(encoding="utf-8")
         workflow = (
