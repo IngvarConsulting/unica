@@ -201,11 +201,7 @@ fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
         }
         visible.insert(entry.file_name().to_string_lossy().into_owned());
     }
-    for required in [
-        "code-search",
-        "platform-help",
-        "release-support",
-    ] {
+    for required in ["code-search", "platform-help", "release-support"] {
         if !visible.contains(required) {
             return Err(unica_bootstrap::BootstrapError::new(format!(
                 "installed prompt-visible skill is missing: {required}"
