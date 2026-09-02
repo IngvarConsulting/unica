@@ -1,6 +1,8 @@
-# `unica.check` выбирает валидаторы по виду узла
+- Date: `2026-09-03`
+- Status: `approved`
+- Decision: `DEC.2026-09-03.CHECK-INFERS-VALIDATORS`
 
-Решение: `DEC.2026-09-03.CHECK-INFERS-VALIDATORS`.
+# `unica.check` выбирает валидаторы по виду узла
 
 ## Почему профили сняты
 
