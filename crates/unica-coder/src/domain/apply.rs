@@ -306,9 +306,16 @@ impl OperationApplicability {
             ),
             Self::Subsystem => matches!(kind, NodeKind::Configuration | NodeKind::Subsystem),
             Self::Support => metadata || kind == NodeKind::Subsystem,
+            // A common module is its own module terminal: the read projection
+            // already shows it as kind `Module`, and the code planner writes it
+            // through the same capability as an owner's named module.
             Self::Code => matches!(
                 kind,
-                NodeKind::Module | NodeKind::Method | NodeKind::Body | NodeKind::Region
+                NodeKind::Module
+                    | NodeKind::Method
+                    | NodeKind::Body
+                    | NodeKind::Region
+                    | NodeKind::CommonModule
             ),
             Self::Event => kind == NodeKind::Event,
         }
@@ -407,6 +414,13 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "relation.add",
     "relation.replace",
     "relation.remove",
+    "code.insert",
+    "code.replace",
+    "valueType.add",
+    "objectType.add",
+    "property.add",
+    "type.remove",
+    "property.remove",
 ];
 
 impl OperationDescriptor {
@@ -579,11 +593,11 @@ operation_descriptors!(
     ("structure.set", Dcs, Dcs, Values),
     ("structure.patch", Dcs, Dcs, Values),
     ("mxl.set", Mxl, Mxl, Values),
-    ("valueType.add", Xdto, Xdto, Items),
-    ("objectType.add", Xdto, Xdto, Items),
-    ("property.add", Xdto, Xdto, Items),
+    ("valueType.add", Xdto, Xdto, Values),
+    ("objectType.add", Xdto, Xdto, Values),
+    ("property.add", Xdto, Xdto, Values),
     ("type.remove", Xdto, Xdto, Target),
-    ("property.remove", Xdto, Xdto, Target),
+    ("property.remove", Xdto, Xdto, Values),
     ("subsystem.create", Subsystem, Subsystem, Values),
     ("content.add", Subsystem, Subsystem, Items),
     ("content.remove", Subsystem, Subsystem, Target),

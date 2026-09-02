@@ -1214,9 +1214,13 @@ pub(crate) fn canonical_v13_docs_search(
             result.data = Some(data);
             result
         }
+        // No usable documentation provider is an environment condition, not a
+        // new failure vocabulary: it answers with the closed provider code so
+        // the caller's recovery (install help, restore network) stays the same
+        // as for every other unavailable engine.
         Err(error) => crate::domain::invocation::DomainResult::canonical_rejection(
             None,
-            "documentation_search_failed",
+            "provider_unavailable",
             error,
         ),
     }

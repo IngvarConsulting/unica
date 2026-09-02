@@ -397,19 +397,30 @@ impl CanonicalV13ReadService {
         if query.trim().is_empty() {
             return error_result(None, "bad_value", "search query must not be blank");
         }
-        if let Some(regex) = arguments.get("regex") {
-            match regex.as_bool() {
-                Some(true) => {
-                    return error_result(
-                        None,
-                        "unsupported_operation",
-                        "regex search is not implemented; use the literal mode",
-                    )
-                }
-                Some(false) => {}
-                None => return error_result(None, "bad_value", "search regex must be a boolean"),
+        let matcher = match arguments.get("regex") {
+            None | Some(Value::Bool(false)) => {
+                super::v13_read_modes::SearchMatcher::Literal(query.to_string())
             }
-        }
+            Some(Value::Bool(true)) => {
+                // Bounded compile: a pattern that cannot be compiled within
+                // the size budget is a caller error, not a provider failure.
+                match regex::RegexBuilder::new(query)
+                    .size_limit(1 << 20)
+                    .dfa_size_limit(1 << 20)
+                    .build()
+                {
+                    Ok(compiled) => super::v13_read_modes::SearchMatcher::Regex(compiled),
+                    Err(error) => {
+                        return error_result(
+                            None,
+                            "bad_value",
+                            format!("search regex is not a valid pattern: {error}"),
+                        )
+                    }
+                }
+            }
+            Some(_) => return error_result(None, "bad_value", "search regex must be a boolean"),
+        };
         let limit = match arguments.get("limit") {
             Some(value) => match bounded_usize(value).filter(|limit| *limit <= 200) {
                 Some(limit) => limit,
@@ -484,7 +495,7 @@ impl CanonicalV13ReadService {
                 }
             };
             match source.search_bsl_literal(
-                query,
+                &matcher,
                 limit.saturating_sub(matches.len()),
                 scope_prefix.as_deref(),
                 &scope_at,

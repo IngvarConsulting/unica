@@ -120,9 +120,39 @@ pub(crate) fn parse_xdto_plan_operation(
     binding: &ProviderRootBinding,
 ) -> Result<XdtoPlanOperation, ApplyPlanError> {
     let base = format!("ops[{op_index}].args");
-    let object = value
+    let raw_object = value
         .as_object()
         .ok_or_else(|| bad_xdto_argument(&base, "XDTO operation arguments must be an object"))?;
+    // The published skeleton of the XDTO writers is `values`: the flat member
+    // fields arrive inside that envelope next to the operation target, and the
+    // legacy flat form stays accepted for the typed migration.
+    let unwrapped;
+    let object = match raw_object.get("values") {
+        Some(Value::Object(values)) => {
+            let mut merged = values.clone();
+            if let Some(at) = raw_object.get("at") {
+                merged.insert("at".to_string(), at.clone());
+            }
+            if let Some(extra) = raw_object
+                .keys()
+                .find(|key| !matches!(key.as_str(), "values" | "at"))
+            {
+                return Err(bad_xdto_argument(
+                    &format!("{base}.{extra}"),
+                    "XDTO operation arguments travel inside `values`",
+                ));
+            }
+            unwrapped = merged;
+            &unwrapped
+        }
+        Some(_) => {
+            return Err(bad_xdto_argument(
+                &format!("{base}.values"),
+                "values must be an object",
+            ))
+        }
+        None => raw_object,
+    };
     let allowed = match operation {
         "valueType.add" => &["at", "name", "base"][..],
         "objectType.add" => &["at", "name"][..],

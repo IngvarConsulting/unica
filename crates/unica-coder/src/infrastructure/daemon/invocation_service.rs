@@ -112,7 +112,7 @@ impl ActorReadSourceCapability {
 
     pub(in crate::infrastructure::daemon) fn search_bsl_literal(
         &self,
-        query: &str,
+        matcher: &super::super::v13_read_modes::SearchMatcher,
         limit: usize,
         scope_prefix: Option<&str>,
         scope_at: &QualifiedAddress,
@@ -252,7 +252,7 @@ impl ActorReadSourceCapability {
                             continue;
                         };
                         for (line_index, line) in text.lines().enumerate() {
-                            for (byte_column, _) in line.match_indices(query) {
+                            for byte_column in matcher.match_starts(line) {
                                 let mut item = serde_json::Map::new();
                                 item.insert(
                                     "scope".to_string(),

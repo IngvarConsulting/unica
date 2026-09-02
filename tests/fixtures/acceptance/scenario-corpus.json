@@ -2454,7 +2454,7 @@
       }
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -2475,7 +2475,7 @@
       }
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -4145,7 +4145,7 @@
   },
   {
    "area": "Формы",
-   "task": "Словарь операций узла языка (текущее покрытие видов за пределами metadata-семейства)",
+   "task": "Словарь операций узла языка",
    "wire": [
     {
      "tool": "unica.view",
@@ -4158,7 +4158,7 @@
       }
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -4282,7 +4282,7 @@
   },
   {
    "area": "Код BSL",
-   "task": "Поиск регулярным выражением (текущий ответ поверхности)",
+   "task": "Поиск регулярным выражением",
    "wire": [
     {
      "tool": "unica.search",
@@ -4291,7 +4291,7 @@
       "regex": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -4315,24 +4315,28 @@
   },
   {
    "area": "Код BSL",
-   "task": "Вставить служебный код после метода (текущий ответ поверхности)",
+   "task": "Вставить служебный код после метода модуля",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки",
+      "at": "main:CommonModule.GoogleПереводчик",
       "ops": [
        {
         "op": "code.insert",
         "args": {
-         "text": "// приёмочная вставка"
+         "text": "// приёмочная вставка после ДоступныеЯзыки",
+         "selector": {
+          "method": "ДоступныеЯзыки"
+         },
+         "position": "after"
         }
        }
       ],
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -4340,24 +4344,27 @@
   },
   {
    "area": "Код BSL",
-   "task": "Заменить реализацию функции (текущий ответ поверхности)",
+   "task": "Заменить реализацию функции модуля",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции",
+      "at": "main:CommonModule.GoogleПереводчик",
       "ops": [
        {
         "op": "code.replace",
         "args": {
-         "text": "Функция МаксимальныйРазмерПорции()\n\tВозврат 100;\nКонецФункции"
+         "text": "Функция МаксимальныйРазмерПорции()\n\tВозврат 100;\nКонецФункции",
+         "selector": {
+          "method": "МаксимальныйРазмерПорции"
+         }
         }
        }
       ],
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -4413,19 +4420,23 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:CommonModule.GoogleПереводчик.Method.НастройкиАвторизации",
+      "at": "main:CommonModule.GoogleПереводчик",
       "ops": [
        {
         "op": "code.insert",
         "args": {
-         "text": "// приёмочная вставка"
+         "text": "// приёмочная вставка",
+         "selector": {
+          "method": "НастройкиАвторизации"
+         },
+         "position": "after"
         }
        }
       ],
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -4481,7 +4492,7 @@
   },
   {
    "area": "Код BSL",
-   "task": "Изучить словарь операций модуля (текущее покрытие видов)",
+   "task": "Изучить словарь операций модуля",
    "wire": [
     {
      "tool": "unica.view",
@@ -4494,7 +4505,7 @@
       }
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -4787,7 +4798,7 @@
   },
   {
    "area": "Роли и права",
-   "task": "Словарь операций роли (текущее покрытие видов)",
+   "task": "Словарь операций роли",
    "wire": [
     {
      "tool": "unica.view",
@@ -4800,7 +4811,7 @@
       }
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -5282,7 +5293,7 @@
   },
   {
    "area": "СКД",
-   "task": "Изучить словарь операций схемы (текущее покрытие видов)",
+   "task": "Изучить словарь операций схемы",
    "wire": [
     {
      "tool": "unica.view",
@@ -5295,7 +5306,7 @@
       }
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -5672,7 +5683,7 @@
   },
   {
    "area": "Подсистемы и интерфейс",
-   "task": "Словарь операций подсистемы (текущее покрытие видов)",
+   "task": "Словарь операций подсистемы",
    "wire": [
     {
      "tool": "unica.view",
@@ -5685,7 +5696,7 @@
       }
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -5728,29 +5739,27 @@
   },
   {
    "area": "XDTO и обмены",
-   "task": "Добавить тип-значение в XDTO-пакет (текущий ответ поверхности)",
+   "task": "Добавить тип-значение в XDTO-пакет",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:XDTOPackage.ОбменДанными",
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3",
       "ops": [
        {
         "op": "valueType.add",
         "args": {
-         "items": [
-          {
-           "name": "КодВалюты",
-           "base": "xs:string"
-          }
-         ]
+         "values": {
+          "name": "КодВалюты",
+          "base": "xs:string"
+         }
         }
        }
       ],
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -5758,28 +5767,26 @@
   },
   {
    "area": "XDTO и обмены",
-   "task": "Добавить объектный тип в пакет (текущий ответ поверхности)",
+   "task": "Добавить объектный тип в пакет",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:XDTOPackage.ОбменДанными",
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3",
       "ops": [
        {
         "op": "objectType.add",
         "args": {
-         "items": [
-          {
-           "name": "Валюта"
-          }
-         ]
+         "values": {
+          "name": "Валюта"
+         }
         }
        }
       ],
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -5787,29 +5794,30 @@
   },
   {
    "area": "XDTO и обмены",
-   "task": "Добавить свойство в объектный тип (текущий ответ поверхности)",
+   "task": "Добавить свойство в объектный тип",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:XDTOPackage.ОбменДанными.Type.Валюта",
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
       "ops": [
        {
         "op": "property.add",
         "args": {
-         "items": [
-          {
-           "name": "Код",
-           "type": "xs:string"
+         "values": {
+          "property": {
+           "name": "КодСклада",
+           "type": "xs:string",
+           "minOccurs": 0
           }
-         ]
+         }
         }
        }
       ],
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -5817,12 +5825,12 @@
   },
   {
    "area": "XDTO и обмены",
-   "task": "Удалить тип из пакета (текущий ответ поверхности)",
+   "task": "Удалить неиспользуемый тип из пакета",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:XDTOPackage.ОбменДанными.Type.Валюта",
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
       "ops": [
        {
         "op": "type.remove"
@@ -5831,7 +5839,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -5839,21 +5847,26 @@
   },
   {
    "area": "XDTO и обмены",
-   "task": "Удалить свойство типа (текущий ответ поверхности)",
+   "task": "Удалить свойство типа",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:XDTOPackage.ОбменДанными.Type.Валюта.Property.Код",
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
       "ops": [
        {
-        "op": "property.remove"
+        "op": "property.remove",
+        "args": {
+         "values": {
+          "name": "Версия"
+         }
+        }
        }
       ],
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],

@@ -45,6 +45,19 @@ impl ProvisionalApplyEffect {
         }
     }
 
+    /// An effect a family planner ties to every path its batch changed.
+    pub(crate) fn spanning(
+        paths: Vec<PathBuf>,
+        event: DomainEvent,
+        operation_index: usize,
+    ) -> Self {
+        Self {
+            paths,
+            event,
+            operation_index,
+        }
+    }
+
     pub(crate) fn event(&self) -> &DomainEvent {
         &self.event
     }

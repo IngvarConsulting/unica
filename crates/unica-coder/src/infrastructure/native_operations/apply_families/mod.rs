@@ -10,13 +10,45 @@ use crate::infrastructure::native_operations::apply::{
     PlannedApplyEffects,
 };
 use crate::infrastructure::workspace_actor::{ApplyAdmission, ProviderRootBinding};
-use request::{reconcile_effects, IndexedPlanOperation};
+use request::{reconcile_effects, IndexedPlanOperation, ProvisionalApplyEffect};
 
 enum ParsedApplyOperation {
     Metadata(IndexedPlanOperation<metadata::MetadataPlanOperation>),
     FormResource(IndexedPlanOperation<form_resource::FormResourcePlanOperation>),
     DcsMxl(IndexedPlanOperation<dcs_mxl::DcsMxlPlanOperation>),
+    Code(IndexedPlanOperation<crate::infrastructure::native_operations::code::CodePlanOperation>),
+    Xdto(IndexedPlanOperation<crate::infrastructure::native_operations::xdto::XdtoPlanOperation>),
     Unsupported(usize),
+}
+
+impl ParsedApplyOperation {
+    /// Consecutive operations of one family plan as a single batch.
+    fn same_family(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
+/// A planner that already reconciled its events against its own staged
+/// changes reports them tied to every path the batch changed: the request
+/// finalizer then keeps an event only while all of those paths stay changed
+/// in the final postimage.
+fn batch_effects_as_provisional(
+    before: &[std::path::PathBuf],
+    staged: &ApplyStagedState,
+    effects: PlannedApplyEffects,
+    op_index: usize,
+) -> Vec<ProvisionalApplyEffect> {
+    let changed = staged
+        .planned_changes()
+        .into_iter()
+        .map(|change| change.relative_path)
+        .filter(|path| !before.contains(path))
+        .collect::<Vec<_>>();
+    effects
+        .into_events()
+        .into_iter()
+        .map(|event| ProvisionalApplyEffect::spanning(changed.clone(), event, op_index))
+        .collect()
 }
 
 fn validate_platform_xml_binding(
@@ -67,7 +99,6 @@ pub(crate) fn plan_hidden_v13_apply(
                 }
                 OperationFamily::Form
                 | OperationFamily::Role
-                | OperationFamily::Xdto
                 | OperationFamily::Subsystem
                 | OperationFamily::Support => {
                     let parsed = form_resource::parse_form_resource_plan_operation(
@@ -87,9 +118,27 @@ pub(crate) fn plan_hidden_v13_apply(
                     )?;
                     ParsedApplyOperation::DcsMxl(IndexedPlanOperation::new(op_index, parsed))
                 }
-                OperationFamily::Code | OperationFamily::Event => {
-                    ParsedApplyOperation::Unsupported(op_index)
+                OperationFamily::Code => {
+                    let parsed =
+                        crate::infrastructure::native_operations::code::parse_code_plan_operation(
+                            operation.name(),
+                            &args,
+                            op_index,
+                            binding,
+                        )?;
+                    ParsedApplyOperation::Code(IndexedPlanOperation::new(op_index, parsed))
                 }
+                OperationFamily::Xdto => {
+                    let parsed =
+                        crate::infrastructure::native_operations::xdto::parse_xdto_plan_operation(
+                            operation.name(),
+                            &args,
+                            op_index,
+                            binding,
+                        )?;
+                    ParsedApplyOperation::Xdto(IndexedPlanOperation::new(op_index, parsed))
+                }
+                OperationFamily::Event => ParsedApplyOperation::Unsupported(op_index),
             };
             Ok(parsed)
         })
@@ -101,35 +150,63 @@ pub(crate) fn plan_hidden_v13_apply(
     let mut provisional = Vec::new();
     let mut cursor = 0;
     while cursor < parsed.len() {
-        let end = match &parsed[cursor] {
-            ParsedApplyOperation::Metadata(_) => {
-                parsed[cursor..]
-                    .iter()
-                    .take_while(|operation| matches!(operation, ParsedApplyOperation::Metadata(_)))
-                    .count()
-                    + cursor
-            }
-            ParsedApplyOperation::FormResource(_) => {
-                parsed[cursor..]
-                    .iter()
-                    .take_while(|operation| {
-                        matches!(operation, ParsedApplyOperation::FormResource(_))
-                    })
-                    .count()
-                    + cursor
-            }
-            ParsedApplyOperation::DcsMxl(_) => {
-                parsed[cursor..]
-                    .iter()
-                    .take_while(|operation| matches!(operation, ParsedApplyOperation::DcsMxl(_)))
-                    .count()
-                    + cursor
-            }
-            ParsedApplyOperation::Unsupported(index) => {
-                return Err(hidden_apply_family_unimplemented(*index));
-            }
-        };
+        if let ParsedApplyOperation::Unsupported(index) = &parsed[cursor] {
+            return Err(hidden_apply_family_unimplemented(*index));
+        }
+        let end = parsed[cursor..]
+            .iter()
+            .take_while(|operation| operation.same_family(&parsed[cursor]))
+            .count()
+            + cursor;
         match &parsed[cursor] {
+            ParsedApplyOperation::Code(_) => {
+                let operations = parsed[cursor..end]
+                    .iter()
+                    .map(|operation| match operation {
+                        ParsedApplyOperation::Code(operation) => operation.operation().clone(),
+                        _ => unreachable!("the selected run is code-only"),
+                    })
+                    .collect::<Vec<_>>();
+                let before = staged
+                    .planned_changes()
+                    .into_iter()
+                    .map(|change| change.relative_path)
+                    .collect::<Vec<_>>();
+                let authority = admission.code_planning_authority(binding)?;
+                let planned = crate::infrastructure::native_operations::code::plan_code_batch(
+                    staged,
+                    authority,
+                    &operations,
+                )?;
+                staged = planned.0;
+                provisional.extend(batch_effects_as_provisional(
+                    &before, &staged, planned.1, cursor,
+                ));
+            }
+            ParsedApplyOperation::Xdto(_) => {
+                let operations = parsed[cursor..end]
+                    .iter()
+                    .map(|operation| match operation {
+                        ParsedApplyOperation::Xdto(operation) => operation.operation().clone(),
+                        _ => unreachable!("the selected run is XDTO-only"),
+                    })
+                    .collect::<Vec<_>>();
+                let before = staged
+                    .planned_changes()
+                    .into_iter()
+                    .map(|change| change.relative_path)
+                    .collect::<Vec<_>>();
+                let authority = admission.xdto_planning_authority(binding)?;
+                let planned = crate::infrastructure::native_operations::xdto::plan_xdto_batch(
+                    staged,
+                    authority,
+                    &operations,
+                )?;
+                staged = planned.0;
+                provisional.extend(batch_effects_as_provisional(
+                    &before, &staged, planned.1, cursor,
+                ));
+            }
             ParsedApplyOperation::Metadata(_) => {
                 let operations = parsed[cursor..end]
                     .iter()
