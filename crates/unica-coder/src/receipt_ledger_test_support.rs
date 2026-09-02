@@ -1710,6 +1710,22 @@ mod tests {
         assert!(execute_scenario_json(unknown_action_field).is_err());
     }
 
+    fn assert_observed_invalid_request(encoded: &str, label: &str) -> serde_json::Value {
+        let envelope: serde_json::Value = serde_json::from_str(encoded).unwrap();
+        assert_eq!(
+            envelope["kind"], "observed",
+            "supported malformed envelopes must execute through the production scenario runner"
+        );
+        let response = &envelope["payload"]["responses"][label];
+        assert_eq!(response["kind"], "rejected", "{label}");
+        assert_eq!(response["error"], "invalid_request", "{label}");
+        assert!(
+            envelope["payload"].get("evidence").is_none(),
+            "a supported production response must not mint fallback transition evidence"
+        );
+        envelope
+    }
+
     #[test]
     fn crash_is_a_staged_control_and_does_not_mint_receipt_transition_evidence() {
         let scenario = r#"{
@@ -1721,15 +1737,15 @@ mod tests {
         }"#;
 
         let encoded = execute_scenario_json(scenario)
-            .expect("the next real production operation owns the missing-boundary evidence");
-        let envelope: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            .expect("the staged crash allows the next production operation to execute");
+        let envelope = assert_observed_invalid_request(&encoded, "strict");
         assert_eq!(
-            envelope["payload"]["actionIndex"], 1,
+            envelope["payload"]["responses"]
+                .as_object()
+                .expect("bounded response report")
+                .len(),
+            1,
             "crash configures the next operation instead of terminating the scenario"
-        );
-        assert_eq!(
-            envelope["payload"]["reachedBoundary"],
-            "strict_envelope_validation"
         );
     }
 
@@ -1750,7 +1766,7 @@ mod tests {
             "malformed_workspace_hint",
             "oversized_workspace_hint",
         ];
-        let mut fingerprints = std::collections::BTreeSet::new();
+        let mut routed_cases = std::collections::BTreeSet::new();
 
         for envelope_case in cases {
             let scenario = format!(
@@ -1758,29 +1774,11 @@ mod tests {
             );
             let encoded = execute_scenario_json(&scenario)
                 .unwrap_or_else(|error| panic!("{envelope_case} reaches production: {error}"));
-            let envelope: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-            let payload = &envelope["payload"];
-            assert_eq!(payload["actionIndex"], 0, "{envelope_case}");
-            assert_eq!(
-                payload["reachedBoundary"], "strict_envelope_validation",
-                "{envelope_case}"
-            );
-            assert_eq!(
-                payload["evidence"]["code"], "strict_envelope_observation_unavailable",
-                "{envelope_case}"
-            );
-            assert!(
-                fingerprints.insert(
-                    payload["evidence"]["fingerprint"]
-                        .as_str()
-                        .expect("bounded production fingerprint")
-                        .to_string()
-                ),
-                "{envelope_case} must retain distinct rejected bytes/reason evidence"
-            );
+            assert_observed_invalid_request(&encoded, "strict");
+            assert!(routed_cases.insert(envelope_case));
         }
 
-        assert_eq!(fingerprints.len(), cases.len());
+        assert_eq!(routed_cases.len(), cases.len());
     }
 
     #[test]

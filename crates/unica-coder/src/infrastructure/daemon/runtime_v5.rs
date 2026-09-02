@@ -107,6 +107,12 @@ enum V5ReceiptRuntimeEventKind {
     TaskStoreTerminalCommitted,
     TaskStoreTerminalReadback,
     TaskTerminalBoundCommitted,
+    TokenSignalled,
+    MarkReservedBegunBlocked,
+    CancelCommitBlocked,
+    TaskStoreReadbackBeforeBind,
+    CancelCommitted,
+    OperationCompleted,
     LeaseReleased,
     ListenerPublished,
     ListenerClosed,
@@ -1961,6 +1967,237 @@ impl V5ReceiptRuntime {
             }
         });
         Ok((response, observation))
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    fn mark_reserved_begun_under_gate_for_test(
+        &self,
+        key: &ReceiptKey,
+        operation_label: &str,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        self.telemetry.record_event(
+            V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
+            self.epoch_ms(),
+        );
+        let control = self
+            .scenario_control
+            .as_ref()
+            .ok_or_else(|| "reserved-begin scenario control is unavailable".to_owned())?;
+        if control.is_barrier_installed(
+            receipt_scenario_v5::ScenarioBarrierPoint::BeforeMarkReservedBegunGateAcquire,
+        ) {
+            control.record_operation_event(operation_label, "blocked");
+            self.telemetry.record_event(
+                V5ReceiptRuntimeEventKind::MarkReservedBegunBlocked,
+                self.epoch_ms(),
+            );
+            control
+                .pause(
+                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeMarkReservedBegunGateAcquire,
+                    deadline,
+                )
+                .map_err(|error| format!("wait before reserved-begin lifecycle gate: {error}"))?;
+        }
+        control
+            .acquire_lifecycle_gate(operation_label, deadline)
+            .map_err(|error| format!("acquire reserved-begin lifecycle gate: {error}"))?;
+        let result = (|| {
+            let current = self
+                .receipt_ledger
+                .recover(key.clone(), deadline)
+                .map_err(|error| format!("recover actor-bound receipt before begin: {error}"))?;
+            let ReceiptState::Reserved(reserved) = current else {
+                return Ok(());
+            };
+            if !matches!(reserved.phase(), ReservedPhase::ActorBound { .. }) {
+                return Ok(());
+            }
+            let begun = match self.receipt_ledger.mark_reserved_begun(
+                key.clone(),
+                reserved.record_version(),
+                deadline,
+            ) {
+                Ok(begun) => begun,
+                Err(error) => {
+                    let winner = self.receipt_ledger.recover(key.clone(), deadline).map_err(
+                        |recover_error| {
+                            format!(
+                                "mark actor-bound receipt begun: {error}; recover winner: {recover_error}"
+                            )
+                        },
+                    )?;
+                    if !matches!(winner, ReceiptState::Reserved(_)) {
+                        return Ok(());
+                    }
+                    return Err(format!("mark actor-bound receipt begun: {error}"));
+                }
+            };
+            control.record_reserved_begin_authorization(operation_label, begun.key());
+            self.telemetry.record_event(
+                V5ReceiptRuntimeEventKind::ReceiptBegunCommitted,
+                self.epoch_ms(),
+            );
+            self.telemetry
+                .record_event(V5ReceiptRuntimeEventKind::TokenSignalled, self.epoch_ms());
+            Ok(())
+        })();
+        control.release_lifecycle_gate(operation_label);
+        result
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    fn cancel_under_gate_for_test(
+        &self,
+        key: &ReceiptKey,
+        operation_label: &str,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        self.telemetry.record_event(
+            V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
+            self.epoch_ms(),
+        );
+        let control = self
+            .scenario_control
+            .as_ref()
+            .ok_or_else(|| "cancel scenario control is unavailable".to_owned())?;
+        if control.is_barrier_installed(
+            receipt_scenario_v5::ScenarioBarrierPoint::BeforeCancelGateAcquire,
+        ) {
+            control.record_operation_event(operation_label, "blocked");
+            self.telemetry.record_event(
+                V5ReceiptRuntimeEventKind::CancelCommitBlocked,
+                self.epoch_ms(),
+            );
+            control
+                .pause(
+                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeCancelGateAcquire,
+                    deadline,
+                )
+                .map_err(|error| format!("wait before cancel lifecycle gate: {error}"))?;
+        }
+        control
+            .acquire_lifecycle_gate(operation_label, deadline)
+            .map_err(|error| format!("acquire cancel lifecycle gate: {error}"))?;
+        let result = (|| {
+            self.cancel_invocation(key.clone(), self.epoch_ms(), deadline)
+                .map_err(|error| format!("cancel under lifecycle gate: {error}"))?;
+            if let ReceiptState::Reserved(reserved) = self
+                .receipt_ledger
+                .recover(key.clone(), deadline)
+                .map_err(|error| format!("recover cancel winner: {error}"))?
+            {
+                if matches!(reserved.phase(), ReservedPhase::ActorBound { .. })
+                    && reserved.cancel_requested()
+                {
+                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+                        .map_err(|error| format!("prepare cancel winner terminal: {error}"))?;
+                    self.receipt_ledger
+                        .publish_direct_terminal(
+                            key.clone(),
+                            reserved.record_version(),
+                            self.epoch_ms(),
+                            terminal,
+                            deadline,
+                        )
+                        .map_err(|error| format!("publish cancel winner terminal: {error}"))?;
+                    self.telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
+                        self.epoch_ms(),
+                    );
+                }
+            }
+            Ok(())
+        })();
+        if result.is_ok() {
+            self.telemetry
+                .record_event(V5ReceiptRuntimeEventKind::CancelCommitted, self.epoch_ms());
+        }
+        control.release_lifecycle_gate(operation_label);
+        result
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    fn bind_task_under_gate_for_test(
+        &self,
+        key: &ReceiptKey,
+        operation_label: &str,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        self.telemetry.record_event(
+            V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
+            self.epoch_ms(),
+        );
+        let control = self
+            .scenario_control
+            .as_ref()
+            .ok_or_else(|| "Task bind scenario control is unavailable".to_owned())?;
+        control
+            .acquire_lifecycle_gate(operation_label, deadline)
+            .map_err(|error| format!("acquire Task bind lifecycle gate: {error}"))?;
+        let result = (|| {
+            let current = self
+                .receipt_ledger
+                .recover(key.clone(), deadline)
+                .map_err(|error| format!("recover actor-bound Task promise: {error}"))?;
+            let handoff = match current {
+                ReceiptState::TaskPromisedActorBound(promised) => self
+                    .receipt_ledger
+                    .begin_bound_task_handoff(
+                        promised.key().clone(),
+                        promised.record_version(),
+                        promised.task().created_at_epoch_ms(),
+                        promised.task().ttl_ms(),
+                        promised.task().poll_interval_ms(),
+                        deadline,
+                    )
+                    .map_err(|error| format!("begin Task handoff: {error}"))?,
+                ReceiptState::TaskHandoffActorBound(handoff) => handoff,
+                other => {
+                    return Err(format!(
+                        "Task bind requires actor-bound promise, found {}",
+                        other.kind().diagnostic_name()
+                    ))
+                }
+            };
+            let (record, bound) = self
+                .task_projection
+                .materialize_bound_handoff(&handoff, self.epoch_ms(), deadline, &self.telemetry)
+                .map_err(|failure| format!("materialize actor-bound Task: {}", failure.error))?;
+            control.record_bound_task(record.clone(), bound.clone());
+            self.telemetry.record_event(
+                V5ReceiptRuntimeEventKind::TaskStoreReadbackBeforeBind,
+                self.epoch_ms(),
+            );
+            if control.is_barrier_installed(
+                receipt_scenario_v5::ScenarioBarrierPoint::AfterTaskStoreReadbackBeforeTaskBound,
+            ) {
+                control.record_operation_event(operation_label, "blocked");
+                control
+                    .pause(
+                        receipt_scenario_v5::ScenarioBarrierPoint::AfterTaskStoreReadbackBeforeTaskBound,
+                        deadline,
+                    )
+                    .map_err(|error| format!("wait after TaskStore readback: {error}"))?;
+            }
+            self.receipt_ledger
+                .complete_bound_task_handoff(
+                    handoff.key().clone(),
+                    handoff.record_version(),
+                    bound.clone(),
+                    deadline,
+                )
+                .map_err(|error| format!("complete Task handoff: {error}"))?;
+            control.record_handoff_task_binding(operation_label, &handoff, &bound);
+            control.record_bound_task(record, bound);
+            self.telemetry.record_event(
+                V5ReceiptRuntimeEventKind::TaskBoundCommitted,
+                self.epoch_ms(),
+            );
+            Ok(())
+        })();
+        control.release_lifecycle_gate(operation_label);
+        result
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]
