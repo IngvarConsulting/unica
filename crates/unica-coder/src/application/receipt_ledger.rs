@@ -532,6 +532,18 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 
+    fn stage_bound_task_handoff_terminal(
+        &mut self,
+        _key: &ReceiptKey,
+        _expected_version: ReceiptVersion,
+        _terminal_epoch_ms: u64,
+        _terminal: V5CanonicalTerminal,
+        _certificate: StagedTerminalTransferCertificate,
+        _deadline: Instant,
+    ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
     /// Persists sole receipt ownership when a begun attempt cannot reserve a
     /// lifecycle-link/TaskStore slot. The attempt may finish only into the
     /// receipt-backed terminal family and must never retry TaskStore create.
@@ -554,6 +566,18 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _confirmed_task_bound: TaskBoundReceipt,
         _deadline: Instant,
     ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
+        Err(ReceiptLedgerError::StoreUnavailable)
+    }
+
+    /// Removes a staged receipt-owned handoff only after the exact terminal
+    /// Task and its durable `TaskTerminalBound` lifecycle link are confirmed.
+    fn complete_staged_task_handoff(
+        &mut self,
+        _key: &ReceiptKey,
+        _expected_version: ReceiptVersion,
+        _confirmed_terminal_bound: TaskTerminalBoundReceipt,
+        _deadline: Instant,
+    ) -> Result<TaskTerminalBoundReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 
@@ -1133,18 +1157,21 @@ impl TaskLinkReference {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum V5CertificateProtocolIdentity {
     V5,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ProvisionalTaskStatus {
     Queued,
     Working,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum StagedTaskPublicationCase {
     Absent {
         final_task_record_max_bytes: u64,
@@ -1159,7 +1186,8 @@ pub(crate) enum StagedTaskPublicationCase {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
 pub(crate) struct StagedTaskPublicationCases([StagedTaskPublicationCase; 5]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1211,7 +1239,8 @@ impl StagedTaskPublicationCases {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
 pub(crate) enum StagedCapacityFallbackCase {
     LinkCapacity {
         receipt_backed_record_max_bytes: u64,
@@ -1219,7 +1248,8 @@ pub(crate) enum StagedCapacityFallbackCase {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct StagedTerminalTransferCertificate {
     certificate_version: u32,
     protocol_identity: V5CertificateProtocolIdentity,
@@ -1295,6 +1325,24 @@ impl StagedTerminalTransferCertificate {
             task_publication_cases,
             capacity_fallback_cases,
         })
+    }
+
+    pub(crate) fn matches_staged_terminal(
+        &self,
+        key: &ReceiptKey,
+        key_digest: &ReceiptKeyDigest,
+        link: &TaskLinkReference,
+        terminal_epoch_ms: u64,
+        terminal: &V5CanonicalTerminal,
+    ) -> bool {
+        self.protocol_identity == V5CertificateProtocolIdentity::V5
+            && &self.core_identity_digest == key.core_identity_digest()
+            && &self.receipt_key_digest == key_digest
+            && self.task_id == key.reserved_task_id()
+            && self.invocation_id == key.invocation_id()
+            && &self.task_link_digest == link.digest()
+            && &self.terminal_digest == terminal.digest()
+            && self.terminal_epoch_ms == terminal_epoch_ms
     }
 }
 
@@ -1860,6 +1908,24 @@ impl TaskHandoffActorBoundReceipt {
             return Err(ReceiptLedgerError::Corrupt(
                 "actor-bound Task handoff contradicts its receipt or link identity",
             ));
+        }
+        if let HandoffTerminalStage::Staged {
+            terminal_epoch_ms,
+            terminal,
+            certificate,
+        } = &terminal_stage
+        {
+            if !certificate.matches_staged_terminal(
+                &record.key,
+                &record.key_digest,
+                &link,
+                *terminal_epoch_ms,
+                terminal,
+            ) {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "staged handoff terminal contradicts its transfer certificate",
+                ));
+            }
         }
         Ok(Self {
             record,

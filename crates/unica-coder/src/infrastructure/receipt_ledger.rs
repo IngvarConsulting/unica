@@ -3,16 +3,18 @@ use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, AttemptPhase, CancelExpiryOutcome,
     CancelReservedReceipt, CancelResolution, CommittedDirectPublication,
     DirectTerminalUnackedReceipt, HandoffTerminalStage, OriginalCutoffDescriptor,
-    ProvenTaskLinkCapacity, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort,
-    ReceiptRecordHeader, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
-    ReceiptVersion, RequestIdentity, ReserveOutcome, ReservedPhase, ReservedReceipt,
-    TaskBoundReceipt, TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TaskLinkDigest,
-    TaskLinkReference, TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt,
-    TaskReceiptOwnedActorBoundReceipt, TaskTerminalReceiptBackedReceipt, TerminalDigest,
-    V5CanonicalTerminal, ACKNOWLEDGED_TOMBSTONE_TTL_MS, CANCEL_RESERVATION_TTL_MS,
-    DIRECT_TERMINAL_RETENTION_MS, MAX_ACKNOWLEDGED_TOMBSTONES, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
+    ProvenTaskLinkCapacity, ProvisionalTaskStatus, ReceiptKey, ReceiptKeyDigest,
+    ReceiptLedgerError, ReceiptLedgerPort, ReceiptRecordHeader, ReceiptState,
+    ReceiptTaskProjection, ReceiptTerminalOutcome, ReceiptVersion, RequestIdentity, ReserveOutcome,
+    ReservedPhase, ReservedReceipt, StagedCapacityFallbackCase, StagedTaskPublicationCase,
+    StagedTerminalTransferCertificate, TaskBoundReceipt, TaskCancellationReceipt,
+    TaskHandoffActorBoundReceipt, TaskLinkDigest, TaskLinkReference, TaskPromisedActorBoundReceipt,
+    TaskPromisedUnboundReceipt, TaskReceiptOwnedActorBoundReceipt, TaskTerminalBoundReceipt,
+    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal,
+    ACKNOWLEDGED_TOMBSTONE_TTL_MS, CANCEL_RESERVATION_TTL_MS, DIRECT_TERMINAL_RETENTION_MS,
+    MAX_ACKNOWLEDGED_TOMBSTONES, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
     MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES, MAX_LIVE_RECEIPTS, MAX_LIVE_RECEIPT_BYTES,
-    MAX_RECEIPT_ENTITLEMENT_BYTES,
+    MAX_RECEIPT_ENTITLEMENT_BYTES, MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -228,6 +230,8 @@ enum StoredActiveLifecycleV1 {
         task_record_version: u64,
         bind_epoch_ms: u64,
         phase: AttemptPhase,
+        #[serde(default)]
+        terminal_staged: bool,
     },
     ReservedUnbound {
         reserved_at_epoch_ms: u64,
@@ -283,6 +287,8 @@ enum StoredActiveLifecycleV1 {
         task_link_digest: TaskLinkDigest,
         phase: AttemptPhase,
         cancel_requested: bool,
+        #[serde(default)]
+        terminal_stage: StoredHandoffTerminalStageV1,
     },
     TaskReceiptOwnedActorBound {
         original_cutoff: OriginalCutoffDescriptor,
@@ -327,6 +333,84 @@ enum StoredActiveLifecycleV1 {
         terminal_digest: TerminalDigest,
         acknowledged_at_epoch_ms: u64,
     },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "state",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum StoredHandoffTerminalStageV1 {
+    #[default]
+    NoTerminal,
+    Staged {
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+        terminal: Arc<ReceiptTerminalOutcome>,
+    },
+}
+
+pub(crate) fn canonical_staged_transfer_certificate(
+    key: &ReceiptKey,
+    key_digest: &ReceiptKeyDigest,
+    link: &TaskLinkReference,
+    terminal_epoch_ms: u64,
+    terminal: &V5CanonicalTerminal,
+) -> Result<StagedTerminalTransferCertificate, ReceiptLedgerError> {
+    let task_record_max_bytes = MAX_RECEIPT_ENTITLEMENT_BYTES;
+    let response_frame_max_bytes = MAX_RECEIPT_ENTITLEMENT_BYTES;
+    StagedTerminalTransferCertificate::new(
+        key.core_identity_digest().clone(),
+        key_digest.clone(),
+        key.reserved_task_id(),
+        key.invocation_id(),
+        link.digest().clone(),
+        terminal.digest().clone(),
+        terminal_epoch_ms,
+        MAX_RECEIPT_ENTITLEMENT_BYTES,
+        MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
+        [
+            StagedTaskPublicationCase::Absent {
+                final_task_record_max_bytes: task_record_max_bytes,
+                task_response_frame_max_bytes: response_frame_max_bytes,
+            },
+            StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Queued,
+                version: u64::MAX,
+                cancel_requested: false,
+                final_task_record_max_bytes: task_record_max_bytes,
+                task_response_frame_max_bytes: response_frame_max_bytes,
+            },
+            StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Queued,
+                version: u64::MAX,
+                cancel_requested: true,
+                final_task_record_max_bytes: task_record_max_bytes,
+                task_response_frame_max_bytes: response_frame_max_bytes,
+            },
+            StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Working,
+                version: u64::MAX,
+                cancel_requested: false,
+                final_task_record_max_bytes: task_record_max_bytes,
+                task_response_frame_max_bytes: response_frame_max_bytes,
+            },
+            StagedTaskPublicationCase::ExactProvisional {
+                status: ProvisionalTaskStatus::Working,
+                version: u64::MAX,
+                cancel_requested: true,
+                final_task_record_max_bytes: task_record_max_bytes,
+                task_response_frame_max_bytes: response_frame_max_bytes,
+            },
+        ],
+        [StagedCapacityFallbackCase::LinkCapacity {
+            receipt_backed_record_max_bytes: MAX_RECEIPT_ENTITLEMENT_BYTES,
+            task_response_frame_max_bytes: MAX_RECEIPT_ENTITLEMENT_BYTES,
+        }],
+    )
+    .map_err(|_| ReceiptLedgerError::Corrupt("invalid staged terminal transfer certificate"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -605,6 +689,7 @@ impl CatalogEntry {
                 task_link_digest,
                 phase,
                 cancel_requested,
+                terminal_stage,
                 ..
             } => {
                 let task = ReceiptTaskProjection::new(
@@ -627,6 +712,29 @@ impl CatalogEntry {
                         "Task handoff link digest contradicts its actor identity",
                     ));
                 }
+                let terminal_stage = match terminal_stage {
+                    StoredHandoffTerminalStageV1::NoTerminal => HandoffTerminalStage::NoTerminal,
+                    StoredHandoffTerminalStageV1::Staged {
+                        terminal_epoch_ms,
+                        terminal_digest,
+                        terminal,
+                    } => {
+                        let terminal =
+                            restore_canonical_terminal(Arc::clone(terminal), terminal_digest)?;
+                        let certificate = canonical_staged_transfer_certificate(
+                            &self.record.key,
+                            &self.record.key_digest,
+                            &link,
+                            *terminal_epoch_ms,
+                            &terminal,
+                        )?;
+                        HandoffTerminalStage::Staged {
+                            terminal_epoch_ms: *terminal_epoch_ms,
+                            terminal,
+                            certificate: Box::new(certificate),
+                        }
+                    }
+                };
                 Ok(ReceiptState::TaskHandoffActorBound(
                     TaskHandoffActorBoundReceipt::new(
                         self.record_header(),
@@ -635,7 +743,7 @@ impl CatalogEntry {
                         *phase,
                         *cancel_requested,
                         self.reserved_result_bytes(),
-                        HandoffTerminalStage::NoTerminal,
+                        terminal_stage,
                     )?,
                 ))
             }
@@ -2707,6 +2815,7 @@ impl ReceiptLedgerStore {
                 task_link_digest: link.digest().clone(),
                 phase,
                 cancel_requested,
+                terminal_stage: StoredHandoffTerminalStageV1::NoTerminal,
             },
         };
         let (record, encoded) =
@@ -2910,6 +3019,287 @@ impl ReceiptLedgerStore {
         Ok(confirmed_task_bound)
     }
 
+    pub(crate) fn complete_staged_task_handoff(
+        &self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        confirmed_terminal_bound: TaskTerminalBoundReceipt,
+        deadline: Instant,
+    ) -> Result<TaskTerminalBoundReceipt, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let key_digest = receipt_key_digest(key);
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+        let expected = catalog
+            .records
+            .get(&key_digest)
+            .cloned()
+            .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
+        if &expected.record.key != key {
+            return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
+        }
+        let persisted = self
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "catalogued receipt row is missing",
+            ))?;
+        if persisted != expected {
+            return latch_catalog_error(
+                &mut catalog,
+                ReceiptLedgerError::Corrupt("catalogued receipt row changed on disk"),
+            );
+        }
+        if persisted.record.record_version != expected_version {
+            return Err(ReceiptLedgerError::ReceiptVersionMismatch {
+                expected: expected_version,
+                actual: persisted.record.record_version,
+            });
+        }
+        let handoff = match persisted.state() {
+            Ok(ReceiptState::TaskHandoffActorBound(handoff)) => handoff,
+            Ok(_) => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+            Err(error) => return latch_catalog_error(&mut catalog, error),
+        };
+        let (terminal_epoch_ms, terminal_digest) = match handoff.terminal_stage() {
+            HandoffTerminalStage::Staged {
+                terminal_epoch_ms,
+                terminal,
+                ..
+            } => (*terminal_epoch_ms, terminal.digest()),
+            HandoffTerminalStage::NoTerminal => {
+                return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported)
+            }
+        };
+        let confirmed_task = confirmed_terminal_bound.task();
+        if confirmed_terminal_bound.key() != key
+            || confirmed_terminal_bound.key_digest() != &key_digest
+            || confirmed_terminal_bound.link() != handoff.link()
+            || confirmed_task.task_id() != handoff.task().task_id()
+            || confirmed_task.invocation_id() != handoff.task().invocation_id()
+            || confirmed_task.created_at_epoch_ms() != handoff.task().created_at_epoch_ms()
+            || confirmed_task.ttl_ms() != handoff.task().ttl_ms()
+            || confirmed_task.poll_interval_ms() != handoff.task().poll_interval_ms()
+            || confirmed_terminal_bound.terminal_epoch_ms() != terminal_epoch_ms
+            || confirmed_terminal_bound.terminal_digest() != terminal_digest
+        {
+            return self.reject_before_mutation(
+                &mut catalog,
+                deadline,
+                ReceiptLedgerError::TaskBoundMismatch,
+            );
+        }
+
+        let generation = latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = generation
+            .checked_add(1)
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt generation exhausted u64",
+            ))?;
+        let record = match build_completed_staged_task_handoff_deletion_record(
+            &persisted,
+            &confirmed_terminal_bound,
+            mutation_sequence,
+        ) {
+            Ok(record) => record,
+            Err(error) => return latch_catalog_error(&mut catalog, error),
+        };
+        let (record, encoded) =
+            match serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES) {
+                Ok(serialized) => serialized,
+                Err(error) => return self.reject_before_mutation(&mut catalog, deadline, error),
+            };
+        if let Err(error) = validate_catalog_remove(&catalog, &persisted) {
+            return latch_catalog_error(&mut catalog, error);
+        }
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_remove(&mut catalog, &persisted);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        if let Err(error) = self.remove_expired_deletion_witness(&key_digest, &encoded, deadline) {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        if check_deadline(deadline).is_err() || self.verify_named_authority().is_err() {
+            catalog.unavailable = true;
+            return Err(ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: key_digest,
+            });
+        }
+        Ok(confirmed_terminal_bound)
+    }
+
+    pub(crate) fn stage_bound_task_handoff_terminal(
+        &self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        certificate: StagedTerminalTransferCertificate,
+        deadline: Instant,
+    ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let key_digest = receipt_key_digest(key);
+        let mut catalog = self
+            .writer
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
+        if catalog.unavailable {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        latch_catalog_result(&mut catalog, self.verify_named_authority())?;
+        let expected = catalog
+            .records
+            .get(&key_digest)
+            .cloned()
+            .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
+        if &expected.record.key != key {
+            return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
+        }
+        let persisted = self
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "catalogued receipt row is missing",
+            ))?;
+        if persisted != expected {
+            return latch_catalog_error(
+                &mut catalog,
+                ReceiptLedgerError::Corrupt("catalogued receipt row changed on disk"),
+            );
+        }
+        let handoff = match persisted.state() {
+            Ok(ReceiptState::TaskHandoffActorBound(handoff)) => handoff,
+            Ok(_) => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+            Err(error) => return latch_catalog_error(&mut catalog, error),
+        };
+        if let HandoffTerminalStage::Staged {
+            terminal_epoch_ms: actual_epoch,
+            terminal: actual_terminal,
+            certificate: actual_certificate,
+        } = handoff.terminal_stage()
+        {
+            if *actual_epoch == terminal_epoch_ms
+                && actual_terminal == &terminal
+                && actual_certificate.as_ref() == &certificate
+            {
+                return Ok(handoff);
+            }
+            return Err(ReceiptLedgerError::TerminalMismatch);
+        }
+        if handoff.record_version() != expected_version {
+            return Err(ReceiptLedgerError::ReceiptVersionMismatch {
+                expected: expected_version,
+                actual: handoff.record_version(),
+            });
+        }
+        if !certificate.matches_staged_terminal(
+            key,
+            &key_digest,
+            handoff.link(),
+            terminal_epoch_ms,
+            &terminal,
+        ) {
+            return Err(ReceiptLedgerError::TerminalMismatch);
+        }
+
+        let next_record_version =
+            expected_version
+                .checked_next()
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "receipt record version exhausted u64",
+                ))?;
+        let generation = latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = generation
+            .checked_add(1)
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt generation exhausted u64",
+            ))?;
+        let mut lifecycle = persisted.record.lifecycle.clone();
+        let StoredActiveLifecycleV1::TaskHandoffActorBound { terminal_stage, .. } = &mut lifecycle
+        else {
+            return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
+        };
+        *terminal_stage = StoredHandoffTerminalStageV1::Staged {
+            terminal_epoch_ms,
+            terminal_digest: terminal.digest().clone(),
+            terminal: terminal.outcome_shared(),
+        };
+        let record = StoredActiveReceiptV1 {
+            schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+            mutation_sequence,
+            record_version: next_record_version,
+            key: key.clone(),
+            key_digest: key_digest.clone(),
+            lifecycle,
+        };
+        let (record, encoded) =
+            serialize_reserved_record(record, MAX_TASK_RECORD_ENVELOPE_BYTES as u64)?;
+        let replacement = CatalogEntry {
+            record: record.clone(),
+            encoded_bytes: u64::try_from(encoded.len())
+                .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
+        };
+        validate_catalog_replace(&catalog, &expected, &replacement)?;
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_replace(&mut catalog, replacement);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        match self.read_active_record_bytes(&key_digest) {
+            Ok(Some(committed)) if committed == encoded => {}
+            Ok(Some(_)) | Ok(None) | Err(_) => {
+                catalog.unavailable = true;
+                return Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                });
+            }
+        }
+        match catalog
+            .records
+            .get(&key_digest)
+            .and_then(|entry| entry.state().ok())
+        {
+            Some(ReceiptState::TaskHandoffActorBound(committed))
+                if matches!(
+                    committed.terminal_stage(),
+                    HandoffTerminalStage::Staged { .. }
+                ) =>
+            {
+                Ok(committed)
+            }
+            _ => {
+                catalog.unavailable = true;
+                Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: key_digest,
+                })
+            }
+        }
+    }
+
     pub(crate) fn retain_begun_task_after_link_capacity(
         &self,
         key: &ReceiptKey,
@@ -2965,6 +3355,7 @@ impl ReceiptLedgerStore {
                 task_link_digest,
                 phase: AttemptPhase::Begun,
                 cancel_requested,
+                ..
             } => (
                 *original_cutoff,
                 *task_id,
@@ -5747,6 +6138,26 @@ impl ReceiptLedgerPort for ReceiptLedgerStore {
         )
     }
 
+    fn stage_bound_task_handoff_terminal(
+        &mut self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        certificate: StagedTerminalTransferCertificate,
+        deadline: Instant,
+    ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+        ReceiptLedgerStore::stage_bound_task_handoff_terminal(
+            self,
+            key,
+            expected_version,
+            terminal_epoch_ms,
+            terminal,
+            certificate,
+            deadline,
+        )
+    }
+
     fn complete_bound_task_handoff(
         &mut self,
         key: &ReceiptKey,
@@ -5759,6 +6170,22 @@ impl ReceiptLedgerPort for ReceiptLedgerStore {
             key,
             expected_version,
             confirmed_task_bound,
+            deadline,
+        )
+    }
+
+    fn complete_staged_task_handoff(
+        &mut self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        confirmed_terminal_bound: TaskTerminalBoundReceipt,
+        deadline: Instant,
+    ) -> Result<TaskTerminalBoundReceipt, ReceiptLedgerError> {
+        ReceiptLedgerStore::complete_staged_task_handoff(
+            self,
+            key,
+            expected_version,
+            confirmed_terminal_bound,
             deadline,
         )
     }
@@ -6544,6 +6971,71 @@ fn build_completed_task_handoff_deletion_record(
             task_record_version: confirmed_task_bound.task_record_version(),
             bind_epoch_ms: confirmed_task_bound.bind_epoch_ms(),
             phase,
+            terminal_staged: false,
+        },
+    })
+}
+
+fn build_completed_staged_task_handoff_deletion_record(
+    expected: &CatalogEntry,
+    confirmed_terminal_bound: &TaskTerminalBoundReceipt,
+    mutation_sequence: u64,
+) -> Result<StoredActiveReceiptV1, ReceiptLedgerError> {
+    let (
+        prior_created_at_epoch_ms,
+        prior_task_version,
+        workspace_identity_hash,
+        task_link_digest,
+        phase,
+    ) = match &expected.record.lifecycle {
+        StoredActiveLifecycleV1::TaskHandoffActorBound {
+            created_at_epoch_ms,
+            task_version,
+            workspace_identity_hash,
+            task_link_digest,
+            phase,
+            terminal_stage: StoredHandoffTerminalStageV1::Staged { .. },
+            ..
+        } => (
+            *created_at_epoch_ms,
+            *task_version,
+            workspace_identity_hash.clone(),
+            task_link_digest.clone(),
+            *phase,
+        ),
+        _ => {
+            return Err(ReceiptLedgerError::Corrupt(
+                "completed staged handoff witness requires a staged Task handoff predecessor",
+            ))
+        }
+    };
+    let record_version =
+        expected
+            .record
+            .record_version
+            .checked_next()
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt record version exhausted u64",
+            ))?;
+    Ok(StoredActiveReceiptV1 {
+        schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+        mutation_sequence,
+        record_version,
+        key: expected.record.key.clone(),
+        key_digest: expected.record.key_digest.clone(),
+        lifecycle: StoredActiveLifecycleV1::CompletedTaskHandoffDeletion {
+            prior_record_version: expected.record.record_version,
+            prior_mutation_sequence: expected.record.mutation_sequence,
+            prior_created_at_epoch_ms,
+            prior_task_version,
+            workspace_identity_hash,
+            task_link_digest,
+            task_bound_lifecycle_link_version: confirmed_terminal_bound.lifecycle_link_version(),
+            task_bound_mutation_sequence: confirmed_terminal_bound.mutation_sequence(),
+            task_record_version: confirmed_terminal_bound.task_record_version(),
+            bind_epoch_ms: confirmed_terminal_bound.terminal_epoch_ms(),
+            phase,
+            terminal_staged: true,
         },
     })
 }
@@ -6915,6 +7407,7 @@ fn validate_active_record(
             task_record_version,
             bind_epoch_ms,
             phase,
+            terminal_staged,
         } => {
             let minimum_prior_version = match phase {
                 AttemptPhase::NotBegun => 3,
@@ -6931,7 +7424,11 @@ fn validate_active_record(
                 || *prior_mutation_sequence == 0
                 || *prior_mutation_sequence >= record.mutation_sequence
                 || *prior_task_version == 0
-                || *task_record_version != *prior_task_version
+                || if *terminal_staged {
+                    *task_record_version <= *prior_task_version
+                } else {
+                    *task_record_version != *prior_task_version
+                }
                 || *task_bound_lifecycle_link_version == 0
                 || *task_bound_mutation_sequence == 0
                 || *bind_epoch_ms < *prior_created_at_epoch_ms

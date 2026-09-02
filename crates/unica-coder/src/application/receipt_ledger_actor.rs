@@ -2,10 +2,10 @@ use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelResolution,
     CommittedDirectPublication, OriginalCutoffDescriptor, ProvenTaskLinkCapacity, ReceiptKey,
     ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion,
-    ReserveOutcome, ReservedReceipt, TaskBoundReceipt, TaskCancellationReceipt,
-    TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt,
-    TaskReceiptOwnedActorBoundReceipt, TaskTerminalReceiptBackedReceipt, TerminalDigest,
-    V5CanonicalTerminal,
+    ReserveOutcome, ReservedReceipt, StagedTerminalTransferCertificate, TaskBoundReceipt,
+    TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
+    TaskPromisedUnboundReceipt, TaskReceiptOwnedActorBoundReceipt, TaskTerminalBoundReceipt,
+    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -258,6 +258,15 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<TaskHandoffActorBoundReceipt>>,
     },
+    StageBoundTaskHandoffTerminal {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        certificate: Box<StagedTerminalTransferCertificate>,
+        deadline: Instant,
+        ticket: Arc<Ticket<TaskHandoffActorBoundReceipt>>,
+    },
     RetainBegunTaskAfterLinkCapacity {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
@@ -271,6 +280,13 @@ enum Command {
         confirmed_task_bound: Box<TaskBoundReceipt>,
         deadline: Instant,
         ticket: Arc<Ticket<TaskBoundReceipt>>,
+    },
+    CompleteStagedTaskHandoff {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        confirmed_terminal_bound: Box<TaskTerminalBoundReceipt>,
+        deadline: Instant,
+        ticket: Arc<Ticket<TaskTerminalBoundReceipt>>,
     },
     RequestTaskCancel {
         key: ReceiptKey,
@@ -494,8 +510,10 @@ enum TimeoutClass {
     PromiseTaskUnbound(ReceiptKeyDigest),
     BindPromisedTaskActor(ReceiptKeyDigest),
     BeginBoundTaskHandoff(ReceiptKeyDigest),
+    StageBoundTaskHandoffTerminal(ReceiptKeyDigest),
     RetainBegunTaskAfterLinkCapacity(ReceiptKeyDigest),
     CompleteBoundTaskHandoff(ReceiptKeyDigest),
+    CompleteStagedTaskHandoff(ReceiptKeyDigest),
     RequestTaskCancel(ReceiptKeyDigest),
     PublishReceiptBackedTaskTerminal(ReceiptKeyDigest),
     RequestCancelOrReserve(ReceiptKeyDigest),
@@ -519,8 +537,10 @@ impl TimeoutClass {
             | Self::PromiseTaskUnbound(receipt_key_digest)
             | Self::BindPromisedTaskActor(receipt_key_digest)
             | Self::BeginBoundTaskHandoff(receipt_key_digest)
+            | Self::StageBoundTaskHandoffTerminal(receipt_key_digest)
             | Self::RetainBegunTaskAfterLinkCapacity(receipt_key_digest)
             | Self::CompleteBoundTaskHandoff(receipt_key_digest)
+            | Self::CompleteStagedTaskHandoff(receipt_key_digest)
             | Self::RequestTaskCancel(receipt_key_digest)
             | Self::PublishReceiptBackedTaskTerminal(receipt_key_digest)
             | Self::RequestCancelOrReserve(receipt_key_digest)
@@ -809,6 +829,43 @@ impl ReceiptLedgerActor {
         ticket.wait(&self.health)
     }
 
+    pub(crate) fn stage_bound_task_handoff_terminal(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        certificate: StagedTerminalTransferCertificate,
+        deadline: Instant,
+    ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::StageBoundTaskHandoffTerminal(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::StageBoundTaskHandoffTerminal {
+                key,
+                expected_version,
+                terminal_epoch_ms,
+                terminal,
+                certificate: Box::new(certificate),
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
     pub(crate) fn complete_bound_task_handoff(
         &self,
         key: ReceiptKey,
@@ -834,6 +891,39 @@ impl ReceiptLedgerActor {
                 key,
                 expected_version,
                 confirmed_task_bound: Box::new(confirmed_task_bound),
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub(crate) fn complete_staged_task_handoff(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        confirmed_terminal_bound: TaskTerminalBoundReceipt,
+        deadline: Instant,
+    ) -> Result<TaskTerminalBoundReceipt, ReceiptLedgerError> {
+        if Instant::now() >= deadline {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::CompleteStagedTaskHandoff(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::CompleteStagedTaskHandoff {
+                key,
+                expected_version,
+                confirmed_terminal_bound: Box::new(confirmed_terminal_bound),
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -1375,6 +1465,34 @@ fn run_worker(
                 }));
                 ticket.finish(result, &health);
             }
+            Command::StageBoundTaskHandoffTerminal {
+                key,
+                expected_version,
+                terminal_epoch_ms,
+                terminal,
+                certificate,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.stage_bound_task_handoff_terminal(
+                        &key,
+                        expected_version,
+                        terminal_epoch_ms,
+                        terminal,
+                        *certificate,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
             Command::CompleteBoundTaskHandoff {
                 key,
                 expected_version,
@@ -1391,6 +1509,30 @@ fn run_worker(
                         &key,
                         expected_version,
                         *confirmed_task_bound,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::CompleteStagedTaskHandoff {
+                key,
+                expected_version,
+                confirmed_terminal_bound,
+                deadline,
+                ticket,
+            } => {
+                if !ticket.try_begin(&health) {
+                    continue;
+                }
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.complete_staged_task_handoff(
+                        &key,
+                        expected_version,
+                        *confirmed_terminal_bound,
                         deadline,
                     )
                 }))
