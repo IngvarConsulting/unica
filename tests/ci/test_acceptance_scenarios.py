@@ -1,4 +1,7 @@
-"""Acceptance corpus: 300 real developer tasks ride the canonical surface.
+"""Acceptance corpus: real developer tasks ride the canonical surface.
+
+The run dictionary and Task lifecycle are excluded on purpose: that half of
+the surface is being built separately and gets its own acceptance corpus.
 
 Every scenario in tests/fixtures/acceptance/scenario-corpus.json is a real
 configuration-development task expressed as a wire of canonical unica.* calls
@@ -171,11 +174,20 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
 
-    def test_corpus_holds_exactly_three_hundred_uniquely_numbered_scenarios(self) -> None:
+    def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 300)
+        self.assertEqual(len(scenarios), 265)
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 301)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 266)])
+
+    def test_the_run_half_of_the_surface_stays_out_of_this_corpus(self) -> None:
+        for scenario in self.corpus["scenarios"]:
+            for step in scenario["wire"]:
+                self.assertNotIn(
+                    step["tool"],
+                    {"unica.run", "unica.task.get", "unica.task.result", "unica.task.cancel"},
+                    f"{scenario['id']}: run and Task acceptance lives in its own corpus",
+                )
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
         for scenario in self.corpus["scenarios"]:
@@ -222,7 +234,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
         )
         cls.corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
 
-    def test_all_three_hundred_wires_answer_their_frozen_classes(self) -> None:
+    def test_every_wire_answers_its_frozen_classes(self) -> None:
         corpus = self.corpus
         workspace_source = REPO_ROOT / corpus["workspace"]
         mismatches = []
