@@ -23,10 +23,11 @@ Use the package-selected MCP runtime surface directly. In v0.13, call
 том же вызове, приложив названную причину риска (`runtime_risk_*`)
 предупреждением; неклассифицированная операция по-прежнему отказывает
 `runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Долговременное задание запускай через
-`unica.runtime.job.start` для явно выбранной длинной работы; не используй
-`unica.runtime.job.start` как запасной путь. Не обходи контракт прямым
-runner-ом или через `unica.build.*`.
+исполнением не является. Долгую работу отдельно запускать не нужно: вызов
+`unica.run`, переживший окно передачи, сам становится Task (см. ниже);
+переходный `unica.runtime.job.start` остаётся для явно выбранной длинной
+работы и не служит запасным путём. Не обходи контракт прямым runner-ом или
+через `unica.build.*`.
 
 After clone or workspace initialization, and before `build` or `dump`, first
 call `unica.view {}`. It returns `ready`, `repositoryReady`, `checks[]`,

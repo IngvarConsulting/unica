@@ -869,6 +869,44 @@ class V013ParityInventoryTest(unittest.TestCase):
             tracked_paths=tracked_paths,
         )
 
+    def test_repository_cases_on_the_acceptance_corpus_name_real_scenarios(self) -> None:
+        """A case that cites the acceptance corpus must cite a scenario that
+        exists and freezes the same answer; a dangling or mismatched citation
+        would let a parity shard claim evidence the corpus never gives."""
+        corpus_path = "tests/fixtures/acceptance/scenario-corpus.json"
+        corpus = json.loads((REPO_ROOT / corpus_path).read_text(encoding="utf-8"))
+        scenarios = {scenario["id"]: scenario for scenario in corpus["scenarios"]}
+        documents, _, _ = load_repository_inputs(REPO_ROOT)
+        offenders = []
+        for shard, document in documents.items():
+            for case in document.get("cases", []):
+                if case.get("fixture") != corpus_path:
+                    continue
+                expected = case["expected"]
+                scenario = scenarios.get(expected.get("scenario"))
+                if scenario is None:
+                    offenders.append(f"{shard}:{case['caseId']} cites {expected.get('scenario')!r}")
+                    continue
+                step = scenario["wire"][0]
+                if expected["class"] not in step["expect"]:
+                    offenders.append(
+                        f"{shard}:{case['caseId']} expects {expected['class']!r}, "
+                        f"{scenario['id']} freezes {step['expect']}"
+                    )
+                if "status" in expected and step.get("status") != expected["status"]:
+                    offenders.append(
+                        f"{shard}:{case['caseId']} expects status {expected['status']!r}, "
+                        f"{scenario['id']} freezes {step.get('status')!r}"
+                    )
+                if "code" in expected and not (step.get("refusal") or "").startswith(
+                    expected["code"] + ":"
+                ):
+                    offenders.append(
+                        f"{shard}:{case['caseId']} expects code {expected['code']!r}, "
+                        f"{scenario['id']} freezes {step.get('refusal')!r}"
+                    )
+        self.assertEqual(offenders, [])
+
     def test_repository_adapter_preserves_newline_in_tracked_filename(self) -> None:
         repository = self.root / "repository"
         repository.mkdir()

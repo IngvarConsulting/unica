@@ -109,10 +109,11 @@ converts a path discovered by other means into one.
 
 ### Readers that accept either selector
 
-Thirteen readers and validators are in the transitional state ADR-0049
-defines: they accept the logical selector **and** still accept their existing
-path. Nothing is removed here, so no call breaks; removing each path is its own
-later merge request.
+Seven readers remain in the transitional state ADR-0049 defines: they accept
+the logical selector **and** still accept their existing path. The six
+`*.validate` tools that used to share this table are retired in favour of
+`unica.check` (see below); removing each remaining path is its own later merge
+request.
 
 | Tool | Logical selector | Path kept for now |
 | --- | --- | --- |

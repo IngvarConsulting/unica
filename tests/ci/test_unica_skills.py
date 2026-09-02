@@ -2543,7 +2543,8 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("choiceParameters", form_compile)
         self.assertIn("availableTypes", form_compile)
         self.assertIn("unica.form.info", form_edit)
-        self.assertIn("unica.form.validate", form_edit)
+        self.assertIn("`unica.check`", form_edit)
+        self.assertNotIn("unica.form.validate", form_edit)
 
     def test_form_patterns_ux_guidance_is_mirrored_and_uses_supported_dsl(self) -> None:
         heading = "## UX-правила для элементов и компоновки форм"

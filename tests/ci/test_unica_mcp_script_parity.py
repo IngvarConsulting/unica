@@ -700,7 +700,23 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         # The retired v0.12 stand keeps its BSP fixtures until the stand itself
         # is retired; scenarios must not name a fixture the manifest lost.
         self.assertEqual(used_sources - manifest_sources - {s for s in used_sources if not s.startswith("bsp/")}, set())
-        self.assertTrue(retired_meta_sources <= manifest_sources)
+        # The retained meta inventory is pinned by name: a manifest that lost a
+        # fixture would otherwise shrink this derived set without a trace.
+        self.assertEqual(
+            retired_meta_sources,
+            {
+                "bsp/meta/Catalogs/Валюты.xml",
+                "bsp/meta/CommonModules/GoogleПереводчик.xml",
+                "bsp/meta/CommonModules/GoogleПереводчик/Module.bsl",
+                "bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+                "bsp/meta/Enums/ВажностьПроблемыУчета.xml",
+                "bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+                "bsp/meta/Languages/Русский.xml",
+                "bsp/meta/Reports/АнализВерсийОбъектов.xml",
+                "bsp/meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+                "bsp/meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+            },
+        )
 
     def test_language_aware_fixture_proves_list_presentation_precedence(self) -> None:
         fixture = (

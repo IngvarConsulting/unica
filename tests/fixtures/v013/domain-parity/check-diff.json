@@ -61,7 +61,8 @@
           },
           "caseIds": [
             "batch1-check-subsystem-passed",
-            "batch1-check-subsystem-newer-export-warns"
+            "batch1-check-subsystem-newer-export-warns",
+            "batch1-check-missing-subsystem-refuses"
           ]
         }
       ]
@@ -91,8 +92,7 @@
             "entry": "check"
           },
           "caseIds": [
-            "batch1-check-mxl-passed",
-            "batch1-check-missing-subsystem-refuses"
+            "batch1-check-mxl-passed"
           ]
         }
       ]
@@ -250,7 +250,7 @@
       "mode": "validation.profile=subsystem;target=missing",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
-        "scenario": "S274",
+        "scenario": "S272",
         "class": "refused",
         "code": "not_found"
       }

@@ -111,7 +111,7 @@
       "mode": "form.add;export=2.21",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
-        "scenario": "S275",
+        "scenario": "S273",
         "class": "refused",
         "code": "invalid_source"
       },
@@ -145,7 +145,7 @@
       "mode": "supportRule.set;export=2.21",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
-        "scenario": "S276",
+        "scenario": "S274",
         "class": "refused",
         "code": "invalid_source"
       },
@@ -157,7 +157,7 @@
       "mode": "supportCapability.set;no ParentConfigurations.bin",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
-        "scenario": "S282",
+        "scenario": "S280",
         "class": "refused",
         "code": "invalid_state"
       },
