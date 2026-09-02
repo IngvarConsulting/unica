@@ -10,7 +10,7 @@ use crate::application::receipt_ledger::{
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
 use crate::infrastructure::platform::filesystem::{
-    create_new_regular_child, file_identity, open_directory_ownership_lock,
+    create_owner_only_file_child, file_identity, open_directory_ownership_lock,
     open_regular_child_nofollow, read_directory_names_bounded, remove_identity_bound_regular_child,
     rename_identity_bound_regular_child_no_replace, replace_identity_bound_regular_child,
     restrict_stage_to_owner, sync_directory, verify_owner_only_acl, RetainedDirectoryCapability,
@@ -1563,7 +1563,7 @@ impl TaskLifecycleLinkStoreV5 {
             Uuid::new_v4()
         );
         let temporary_name = OsStr::new(&temporary_name);
-        let mut staged = create_new_regular_child(&self.root_file, temporary_name)
+        let mut staged = create_owner_only_file_child(&self.root_file, temporary_name)
             .map_err(|error| storage_error("create Task lifecycle-link staging file", error))?;
         let staged_identity = file_identity(&staged)
             .map_err(|error| storage_error("identify Task lifecycle-link staging file", error))?;

@@ -13,7 +13,7 @@ use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalO
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::TaskId;
 use crate::infrastructure::platform::filesystem::{
-    create_new_regular_child, file_identity, open_directory_ownership_lock,
+    create_owner_only_file_child, file_identity, open_directory_ownership_lock,
     open_regular_child_nofollow, read_directory_names_bounded, remove_identity_bound_regular_child,
     rename_identity_bound_regular_child_no_replace, replace_identity_bound_regular_child,
     restrict_stage_to_owner, sync_directory, verify_owner_only_acl, RetainedDirectoryCapability,
@@ -115,7 +115,7 @@ impl FileInvocationStoreV5 {
                 check_deadline(deadline)?;
             }
             let target_name = format!("{}.json", record.task_id);
-            let mut file = create_new_regular_child(&self.root_file, OsStr::new(&target_name))
+            let mut file = create_owner_only_file_child(&self.root_file, OsStr::new(&target_name))
                 .map_err(|error| storage_error("create bulk Task fixture record", error))?;
             restrict_stage_to_owner(&file)
                 .map_err(|error| storage_error("restrict bulk Task fixture record", error))?;
@@ -429,7 +429,7 @@ impl FileInvocationStoreV5 {
         let target_name = format!("{}.json", record.task_id);
         let temporary_name = format!(".{}.{}.tmp", record.task_id, Uuid::new_v4());
         let temporary_name = OsStr::new(&temporary_name);
-        let mut staged = create_new_regular_child(&self.root_file, temporary_name)
+        let mut staged = create_owner_only_file_child(&self.root_file, temporary_name)
             .map_err(|error| storage_error("create protocol-v5 task staging file", error))?;
         let staged_identity = file_identity(&staged)
             .map_err(|error| storage_error("identify protocol-v5 task staging file", error))?;
@@ -1147,9 +1147,11 @@ mod tests {
         DomainResult, InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId,
     };
     use crate::infrastructure::platform::filesystem::{
-        create_owner_only_directory_child, open_directory_nofollow, restrict_stage_to_owner,
+        create_owner_only_directory_child, create_owner_only_file_child, open_directory_nofollow,
+        restrict_stage_to_owner,
     };
-    use std::fs::{self, OpenOptions};
+    use std::ffi::OsStr;
+    use std::fs;
     use std::str::FromStr;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
@@ -1244,12 +1246,10 @@ mod tests {
 
     fn write_record(root: &std::path::Path, record: &V5StoredInvocationRecord) -> Vec<u8> {
         let bytes = serde_json::to_vec(record).expect("serialize fixture");
-        let path = root.join(format!("{}.json", record.task_id));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .expect("create fixture record");
+        let parent = open_directory_nofollow(root).expect("retain fixture root");
+        let name = format!("{}.json", record.task_id);
+        let mut file = create_owner_only_file_child(&parent, OsStr::new(&name))
+            .expect("create owner-only fixture record");
         restrict_stage_to_owner(&file).expect("restrict fixture record");
         std::io::Write::write_all(&mut file, &bytes).expect("write fixture record");
         file.sync_all().expect("sync fixture record");
@@ -1261,11 +1261,9 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary v5 root");
         let root_path = physical_root(&root);
         let staging_path = root_path.join(".abandoned.tmp");
-        let mut staging = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staging_path)
-            .expect("create abandoned staging entry");
+        let parent = open_directory_nofollow(&root_path).expect("retain fixture root");
+        let mut staging = create_owner_only_file_child(&parent, OsStr::new(".abandoned.tmp"))
+            .expect("create owner-only abandoned staging entry");
         restrict_stage_to_owner(&staging).expect("restrict abandoned staging entry");
         std::io::Write::write_all(&mut staging, b"partial").expect("write staging entry");
         staging.sync_all().expect("sync staging entry");
