@@ -58,6 +58,7 @@ const MAX_ACTIVE_DIRECTORY_ENTRIES: usize = MAX_RETAINED_RECEIPT_ROWS * 2;
 const MAX_GENERATION_STAGING_ENTRIES: usize = MAX_RETAINED_RECEIPT_ROWS;
 const MAX_RECEIPT_ROOT_DIRECTORY_ENTRIES: usize = MAX_GENERATION_STAGING_ENTRIES + 3;
 const DEFAULT_RECEIPT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_COMPLETED_TASK_HANDOFF_WITNESS_BYTES: u64 = 2_048;
 const RECEIPT_BATCH_SCHEMA_VERSION: u32 = 1;
 const MAX_RECEIPT_MUTATION_BATCH_ROWS: usize = 32;
 const MAX_RECEIPT_BATCH_ENVELOPE_ROWS: usize = 256;
@@ -3671,7 +3672,7 @@ impl ReceiptLedgerStore {
             Err(error) => return latch_catalog_error(&mut catalog, error),
         };
         let (record, encoded) =
-            match serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES) {
+            match serialize_reserved_record(record, MAX_COMPLETED_TASK_HANDOFF_WITNESS_BYTES) {
                 Ok(serialized) => serialized,
                 Err(error) => return self.reject_before_mutation(&mut catalog, deadline, error),
             };
@@ -3796,7 +3797,7 @@ impl ReceiptLedgerStore {
             Err(error) => return latch_catalog_error(&mut catalog, error),
         };
         let (record, encoded) =
-            match serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES) {
+            match serialize_reserved_record(record, MAX_COMPLETED_TASK_HANDOFF_WITNESS_BYTES) {
                 Ok(serialized) => serialized,
                 Err(error) => return self.reject_before_mutation(&mut catalog, deadline, error),
             };
@@ -7804,13 +7805,13 @@ fn append_lower_hex(target: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 fn decode_lower_hex(encoded: &str) -> Result<Vec<u8>, ReceiptLedgerError> {
-    if encoded.len() % 2 != 0 {
+    if !encoded.len().is_multiple_of(2) {
         return Err(ReceiptLedgerError::Corrupt(
             "receipt batch row is not canonical lowercase hex",
         ));
     }
     let mut decoded = Vec::with_capacity(encoded.len() / 2);
-    for pair in encoded.as_bytes().chunks_exact(2) {
+    for pair in encoded.as_bytes().as_chunks::<2>().0 {
         let high = lower_hex_nibble(pair[0]).ok_or(ReceiptLedgerError::Corrupt(
             "receipt batch row is not canonical lowercase hex",
         ))?;
@@ -8596,8 +8597,10 @@ fn validate_persisted_reserved_record_bytes(
         | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
         | StoredActiveLifecycleV1::ExpiredDirectDeletion { .. }
         | StoredActiveLifecycleV1::ExpiredTaskReceiptDeletion { .. }
-        | StoredActiveLifecycleV1::CompletedTaskHandoffDeletion { .. }
         | StoredActiveLifecycleV1::AcknowledgementCommit { .. } => MAX_CANCEL_RESERVED_RECORD_BYTES,
+        StoredActiveLifecycleV1::CompletedTaskHandoffDeletion { .. } => {
+            MAX_COMPLETED_TASK_HANDOFF_WITNESS_BYTES
+        }
         StoredActiveLifecycleV1::TaskHandoffActorBound {
             terminal_stage: StoredHandoffTerminalStageV1::Staged { .. },
             ..
@@ -9015,7 +9018,7 @@ fn validate_active_record(
                     "completed Task handoff witness contradicts its receipt or confirmed TaskBound",
                 ));
             }
-            MAX_CANCEL_RESERVED_RECORD_BYTES
+            MAX_COMPLETED_TASK_HANDOFF_WITNESS_BYTES
         }
         StoredActiveLifecycleV1::ReservedUnbound {
             reserved_at_epoch_ms,

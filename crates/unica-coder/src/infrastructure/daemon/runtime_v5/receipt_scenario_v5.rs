@@ -5300,13 +5300,15 @@ fn scenario_foreign_key(key: &ReceiptKey) -> ReceiptKey {
     )
 }
 
+type CrossStoreCrashObservations = (Vec<Value>, Vec<Value>, Vec<Value>);
+
 fn run_cross_store_crash_cases(
     identity: &CoreIdentity,
     clock: &Arc<ScenarioEpochClock>,
     arguments: &Map<String, Value>,
     workspace_hint: &str,
     cases: Vec<ScenarioCrashWorkload>,
-) -> Result<(Vec<Value>, Vec<Value>, Vec<Value>), String> {
+) -> Result<CrossStoreCrashObservations, String> {
     let mut observations = Vec::with_capacity(cases.len());
     let mut preparations = Vec::new();
     let mut publications = Vec::new();
@@ -11788,9 +11790,7 @@ impl ReceiptScenarioAction {
             | Self::ConfigureAdmission { .. }
             | Self::ConfigurePrepare { .. } => true,
             Self::ConfigureProvider {
-                execution_class,
-                terminal: _,
-                ..
+                execution_class, ..
             } => {
                 matches!(
                     execution_class,

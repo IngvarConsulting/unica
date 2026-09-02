@@ -1932,6 +1932,7 @@ impl V5TaskProjection {
         Ok(bound)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn publish_bound_task_terminal(
         &self,
         expected: &TaskBoundReceipt,
@@ -5237,13 +5238,13 @@ impl V5ReceiptRuntime {
             } else {
                 None
             };
-            return self.publish_direct_terminal_with_candidate(
+            self.publish_direct_terminal_with_candidate(
                 begun,
                 epoch_ms,
                 terminal,
                 deadline,
                 candidate_result_override,
-            );
+            )
         }
         #[cfg(not(feature = "receipt-ledger-test-support"))]
         self.publish_direct_terminal(begun, epoch_ms, terminal, deadline)
@@ -6454,28 +6455,26 @@ fn run_daemon_configured_until(
         if stop_requested() {
             break;
         }
-        if let Err(error) = runtime.ensure_named_authority() {
-            if runtime.restart_required() {
-                restart_requested = true;
-                #[cfg(feature = "receipt-ledger-test-support")]
-                runtime.telemetry.record_forced_process_exit();
-                break;
-            }
-            let _ = state.remove_v5_endpoint_if_owned(&published);
-            return Err(error);
+        // A durable generation probe is an actor command. Enqueuing one on every listener poll
+        // lets a healthy request occupy the sole writer long enough for the probe's shorter
+        // maintenance deadline to expire, which then tears down the listener before the
+        // request's own response budget elapses. Mutations and session admission validate the
+        // named authority themselves; the accept loop only observes their process-owned
+        // fail-stop latch.
+        if runtime.restart_required() {
+            restart_requested = true;
+            #[cfg(feature = "receipt-ledger-test-support")]
+            runtime.telemetry.record_forced_process_exit();
+            break;
         }
         match listener.accept() {
             Ok((stream, address)) if address.ip().is_loopback() => {
-                if let Err(error) = runtime.ensure_named_authority() {
+                if runtime.restart_required() {
                     drop(stream);
-                    if runtime.restart_required() {
-                        restart_requested = true;
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        runtime.telemetry.record_forced_process_exit();
-                        break;
-                    }
-                    let _ = state.remove_v5_endpoint_if_owned(&published);
-                    return Err(error);
+                    restart_requested = true;
+                    #[cfg(feature = "receipt-ledger-test-support")]
+                    runtime.telemetry.record_forced_process_exit();
+                    break;
                 }
                 idle_since = Instant::now();
                 let session_runtime = Arc::clone(&runtime);
@@ -7632,7 +7631,7 @@ mod tests {
         assert_eq!(
             response,
             Ok(V5ServerResponse::Error {
-                code: V5DaemonErrorCode::DurabilityUncertain,
+                code: V5DaemonErrorCode::StoreCommitUncertain,
             })
         );
         assert_eq!(server_result, Ok(()));
@@ -7719,7 +7718,7 @@ mod tests {
 
         match response {
             Ok(V5ServerResponse::Error {
-                code: V5DaemonErrorCode::DurabilityUncertain,
+                code: V5DaemonErrorCode::StoreCommitUncertain,
             }) => {}
             Err(error) => {
                 assert_eq!(
@@ -8665,8 +8664,21 @@ mod tests {
             Duration::from_millis(50),
         );
         let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
-        let (key, queued, _task_bound) =
-            materialize_startup_task_bound(&runtime, &identity, AttemptPhase::Begun);
+        let (key, queued, task_bound) =
+            materialize_startup_task_bound(&runtime, &identity, AttemptPhase::NotBegun);
+        assert_eq!(queued.task, V5StoredTask::Queued);
+        runtime
+            .task_projection
+            .lifecycle_links
+            .mark_task_bound_begun(
+                &task_bound,
+                queued.version,
+                queued.updated_at_epoch_ms,
+                crate::domain::code_intelligence::ProviderDeadline::new(
+                    Instant::now() + Duration::from_secs(2),
+                ),
+            )
+            .expect("mark lifecycle link begun without advancing the queued Task fixture");
         drop(runtime);
 
         let error = match V5ReceiptRuntime::open(&state, &config) {
@@ -8752,7 +8764,10 @@ mod tests {
             Ok(_) => panic!("active Task without lifecycle link must fail-stop startup"),
             Err(error) => error,
         };
-        assert!(error.contains("active Task has no exact lifecycle link"));
+        assert!(
+            error.contains("TaskStore Task has no exact lifecycle link"),
+            "unexpected startup failure: {error}"
+        );
 
         let task_root = RetainedDirectoryCapability::open(&state.path().join("tasks"))
             .expect("retain orphan TaskStore after failed startup");
