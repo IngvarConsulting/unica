@@ -1,0 +1,129 @@
+name: Новая операция
+description: Предложить операцию `apply` или задачу разработчика, которую поверхность ещё не решает
+labels: ["area:surface"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Реестр операций и приёмочных сценариев лежит в
+        [`docs/acceptance-scenarios.md`](https://github.com/IngvarConsulting/unica/blob/main/docs/acceptance-scenarios.md):
+        там видно, какие операции закрытого реестра уже есть, какие покрыты
+        сценариями, а какие помечены «не покрыто — предложите задачу».
+        Сверьтесь с ним перед заполнением: возможно, нужна не новая операция,
+        а сценарий для существующей — эта форма годится и для этого.
+
+  - type: textarea
+    id: task
+    attributes:
+      label: Задача разработчика
+      description: >-
+        Что нужно сделать в конфигурации — словами разработчика 1С, одной-двумя
+        фразами и без реализации: «сделать реквизит обязательным», а не
+        «дописать элемент в XML».
+      placeholder: Добавить команду объекта в справочник и вывести её в форму списка
+    validations:
+      required: true
+
+  - type: dropdown
+    id: family
+    attributes:
+      label: Семейство реестра
+      description: Раздел реестра `apply`, к которому относится операция.
+      options:
+        - "Метаданные: объекты и коллекции"
+        - "Свойства"
+        - "Формы"
+        - "Роли и права"
+        - "Схемы компоновки данных"
+        - "Табличные документы"
+        - "Пакеты XDTO"
+        - "Подсистемы"
+        - "Поддержка поставщика"
+        - "Код BSL"
+        - "События"
+        - "Другое или новое семейство"
+    validations:
+      required: true
+
+  - type: input
+    id: operation
+    attributes:
+      label: Имя операции
+      description: >-
+        В нотации реестра `предмет.глагол`: `attribute.set`, `command.add`,
+        `filter.remove`. Для сценария к существующей операции укажите её имя.
+      placeholder: command.add
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arguments
+    attributes:
+      label: Форма аргументов
+      description: >-
+        Как в реестре: `items` — список добавляемых элементов, `values` —
+        свойства одного узла, «только `at`» — операция над адресом без данных.
+      options:
+        - "items"
+        - "values"
+        - "только at"
+        - "Не знаю"
+    validations:
+      required: true
+
+  - type: textarea
+    id: wire
+    attributes:
+      label: Провод вызовов
+      description: >-
+        Адрес `at` и вызов, которым задачу должно быть можно решить одним шагом.
+        Адреса берите из фикстурного пространства `tests/fixtures/acceptance/workspace/`
+        (состав описан в `tests/fixtures/acceptance/README.md`) или из своей
+        конфигурации, обезличив имена. Пример шага — в реестре, раздел
+        «Как предложить сценарий или операцию».
+      render: json
+      placeholder: |
+        {
+          "tool": "unica.apply",
+          "args": {
+            "at": "main:Catalog.Валюты",
+            "ops": [{"op": "command.add", "args": {"items": [{"name": "Пересчитать"}]}}],
+            "dryRun": true
+          },
+          "expect": ["ok"]
+        }
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемый результат
+      description: >-
+        Что должно измениться в исходниках (какие файлы и узлы) и чем должна
+        закончиться операция: результатом или умышленным отказом с кодом.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Как это делается сейчас
+      description: >-
+        Конфигуратор, EDT, ручная правка XML или обход через другие операции —
+        и почему это не подходит.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Готовность добавить сценарий
+      description: >-
+        Сценарий в корпусе — заявка на приёмку: он замораживает класс ответа
+        и проверяется в CI.
+      options:
+        - "Добавлю сценарий в корпус по инструкции из реестра"
+        - "Опишу задачу, сценарий допишем вместе"
+    validations:
+      required: true
