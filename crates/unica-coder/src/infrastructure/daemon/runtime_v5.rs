@@ -4455,10 +4455,6 @@ impl V5ReceiptRuntime {
                         V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
                         epoch_ms,
                     );
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::TaskLinkReservationConverted,
-                        epoch_ms,
-                    );
                 }
                 let _terminal_link = self.receipt_ledger.complete_staged_task_handoff(
                     handoff.key().clone(),
@@ -5075,10 +5071,6 @@ impl V5ReceiptRuntime {
                         V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
                         epoch_ms,
                     );
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::TaskLinkReservationConverted,
-                        epoch_ms,
-                    );
                 }
                 let _terminal_link = self.receipt_ledger.complete_staged_task_handoff(
                     handoff.key().clone(),
@@ -5452,10 +5444,6 @@ impl V5ReceiptRuntime {
             );
             self.telemetry.record_event(
                 V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
-                epoch_ms,
-            );
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::TaskLinkReservationConverted,
                 epoch_ms,
             );
         }

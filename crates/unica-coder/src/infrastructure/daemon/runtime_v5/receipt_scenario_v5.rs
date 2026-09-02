@@ -3771,10 +3771,14 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                 state.path(),
                                 &identity,
                             )?;
-                            apply_task_projection(
-                                &mut snapshot,
-                                current.as_ref().unwrap_or(projection),
-                            )?;
+                            if bulk_task_projection.is_some() {
+                                apply_task_projection(&mut snapshot, projection)?;
+                            } else {
+                                apply_task_projection(
+                                    &mut snapshot,
+                                    current.as_ref().unwrap_or(projection),
+                                )?;
+                            }
                         } else if let Some(terminal_task) = control.terminal_bound_task() {
                             if let Some(bulk_projection) = &bulk_task_projection {
                                 apply_task_projection(&mut snapshot, bulk_projection)?;
