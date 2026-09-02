@@ -386,6 +386,15 @@ impl OperationSkeleton {
 /// The `can` dictionary prints this as `implemented`, mirroring the honesty
 /// rule of the Run dictionary: a name in the registry is not support.
 pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
+    "form.add",
+    "form.set",
+    "form.remove",
+    "form.create",
+    "element.add",
+    "element.remove",
+    "formAttribute.add",
+    "formCommand.add",
+    "event.bind",
     "right.set",
     "role.create",
     "subsystem.create",

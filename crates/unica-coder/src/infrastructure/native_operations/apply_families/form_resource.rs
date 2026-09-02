@@ -54,6 +54,26 @@ enum FormResourcePlanKind {
         target: MetadataAddress,
         rule: SupportObjectRule,
     },
+    /// `form.add` / `form.create`: a managed form from the platform shapes.
+    FormAdd {
+        owner: MetadataAddress,
+        forms: Vec<(String, String)>,
+    },
+    /// `form.set`: default-form slots of the owner.
+    FormSet {
+        owner: MetadataAddress,
+        defaults: Vec<(String, String)>,
+    },
+    FormRemove {
+        owner: MetadataAddress,
+        form: String,
+    },
+    /// Definition-driven edits of one form's Form.xml.
+    FormEdit {
+        owner: MetadataAddress,
+        form: String,
+        definitions: Vec<Value>,
+    },
     Unsupported,
 }
 
@@ -258,6 +278,7 @@ pub(crate) fn parse_form_resource_plan_operation(
         Some(OperationFamily::Support) => {
             parse_support_operation(operation, object, op_index, binding)?
         }
+        Some(OperationFamily::Form) => parse_form_operation(operation, object, op_index, binding)?,
         _ => FormResourcePlanKind::Unsupported,
     };
     Ok(FormResourcePlanOperation {
@@ -457,13 +478,15 @@ fn parse_support_operation(
                 "NotEditable" | "locked" => SupportObjectRule::Locked,
                 "EditableWithSupport" | "editable" => SupportObjectRule::Editable,
                 "NotSupported" | "off-support" => SupportObjectRule::OffSupport,
-                other => return Err(bad(
-                    op_index,
-                    "values.rule",
-                    format!(
+                other => {
+                    return Err(bad(
+                        op_index,
+                        "values.rule",
+                        format!(
                         "unknown support rule `{other}`; use `locked`, `editable` or `off-support`"
                     ),
-                )),
+                    ))
+                }
             };
             let [owner] = target.segments() else {
                 return Err(bad(
@@ -484,6 +507,955 @@ fn parse_support_operation(
         }
         _ => Ok(FormResourcePlanKind::Unsupported),
     }
+}
+
+/// The owner object of a form address (`Owner.Name[.Form.F[.Item.X]]`).
+struct FormTarget {
+    owner: MetadataAddress,
+    owner_kind: String,
+    owner_name: String,
+    form: Option<String>,
+    item: Option<String>,
+}
+
+fn form_target(target: &QualifiedAddress, op_index: usize) -> Result<FormTarget, ApplyPlanError> {
+    let segments = target.segments();
+    let [owner, rest @ ..] = segments else {
+        return Err(bad(
+            op_index,
+            "at",
+            "form operations address a metadata owner or its form",
+        ));
+    };
+    if owner.kind() == NodeKind::Configuration || owner.kind() == NodeKind::Form {
+        return Err(bad(
+            op_index,
+            "at",
+            "form operations address `Owner.Name`, `Owner.Name.Form.F` or `Owner.Name.Form.F.Item.X`",
+        ));
+    }
+    let owner_name = owner
+        .name()
+        .ok_or_else(|| bad(op_index, "at", "the form owner must be named"))?
+        .to_string();
+    let owner_kind = owner.kind().as_str().to_string();
+    let address = MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("{owner_kind}.{owner_name}"),
+    )
+    .map_err(|error| bad(op_index, "at", error.to_string()))?;
+    let mut form = None;
+    let mut item = None;
+    match rest {
+        [] => {}
+        [form_segment] if form_segment.kind() == NodeKind::Form => {
+            form = Some(
+                form_segment
+                    .name()
+                    .ok_or_else(|| bad(op_index, "at", "the form must be named"))?
+                    .to_string(),
+            );
+        }
+        [form_segment, item_segment]
+            if form_segment.kind() == NodeKind::Form && item_segment.kind() == NodeKind::Item =>
+        {
+            form = Some(
+                form_segment
+                    .name()
+                    .ok_or_else(|| bad(op_index, "at", "the form must be named"))?
+                    .to_string(),
+            );
+            item = Some(
+                item_segment
+                    .name()
+                    .ok_or_else(|| bad(op_index, "at", "the form item must be named"))?
+                    .to_string(),
+            );
+        }
+        _ => {
+            return Err(bad(
+                op_index,
+                "at",
+                "form operations address `Owner.Name`, `Owner.Name.Form.F` or `Owner.Name.Form.F.Item.X`",
+            ))
+        }
+    }
+    Ok(FormTarget {
+        owner: address,
+        owner_kind,
+        owner_name,
+        form,
+        item,
+    })
+}
+
+fn form_purpose(
+    kind: Option<&str>,
+    op_index: usize,
+    location: &str,
+) -> Result<String, ApplyPlanError> {
+    Ok(match kind.map(str::trim).filter(|kind| !kind.is_empty()) {
+        None | Some("ObjectForm") | Some("Object") | Some("object") => "Object".to_string(),
+        Some("ListForm") | Some("List") | Some("list") => "List".to_string(),
+        Some("ChoiceForm") | Some("Choice") | Some("choice") => "Choice".to_string(),
+        Some("RecordForm") | Some("RecordSetForm") | Some("Record") | Some("record") => {
+            "Record".to_string()
+        }
+        Some("SettingsForm") | Some("Settings") | Some("FolderForm") | Some("Generic") => {
+            "Object".to_string()
+        }
+        Some(other) => {
+            return Err(bad(
+                op_index,
+                &format!("{location}.type"),
+                format!(
+                    "unknown form type `{other}`; use ObjectForm, ListForm, ChoiceForm, RecordSetForm or SettingsForm"
+                ),
+            ))
+        }
+    })
+}
+
+fn default_form_property(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "defaultObjectForm" => "DefaultObjectForm",
+        "defaultListForm" => "DefaultListForm",
+        "defaultChoiceForm" => "DefaultChoiceForm",
+        "defaultFolderForm" => "DefaultFolderForm",
+        "defaultFolderChoiceForm" => "DefaultFolderChoiceForm",
+        "defaultRecordForm" => "DefaultRecordForm",
+        "defaultForm" => "DefaultForm",
+        "defaultSettingsForm" => "DefaultSettingsForm",
+        "defaultVariantForm" => "DefaultVariantForm",
+        "defaultSaveForm" => "DefaultSaveForm",
+        "auxiliaryObjectForm" => "AuxiliaryObjectForm",
+        "auxiliaryListForm" => "AuxiliaryListForm",
+        "auxiliaryChoiceForm" => "AuxiliaryChoiceForm",
+        _ => return None,
+    })
+}
+
+fn form_attribute_type(type_name: &str) -> String {
+    match type_name {
+        "Boolean" | "boolean" | "Булево" => "xs:boolean".to_string(),
+        "String" | "string" | "Строка" => "xs:string".to_string(),
+        "Number" | "number" | "Число" => "xs:decimal".to_string(),
+        "Date" | "date" | "Дата" => "xs:dateTime".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// The legacy element definition for one typed v0.13 item: the discriminator
+/// key named after the element type, every other property passed through.
+fn legacy_element_definition(
+    item: &Map<String, Value>,
+    op_index: usize,
+    location: &str,
+) -> Result<(Value, Option<String>, Option<String>), ApplyPlanError> {
+    let name = required_string(item, "name", op_index, location)?.to_string();
+    let kind = item
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("InputField");
+    let mut definition = Map::new();
+    definition.insert("name".to_string(), Value::String(name.clone()));
+    match kind {
+        "InputField" | "Input" | "Field" => {}
+        "Group" | "UsualGroup" => {
+            let orientation = item
+                .get("orientation")
+                .and_then(Value::as_str)
+                .unwrap_or("vertical");
+            definition.insert("group".to_string(), Value::String(orientation.to_string()));
+        }
+        "Table" => {
+            definition.insert("table".to_string(), Value::String(name.clone()));
+        }
+        "Button" => {
+            definition.insert("button".to_string(), Value::String(name.clone()));
+        }
+        "Label" | "LabelDecoration" => {
+            definition.insert("label".to_string(), Value::String(name.clone()));
+        }
+        "LabelField" => {
+            definition.insert("labelField".to_string(), Value::String(name.clone()));
+        }
+        "CheckBox" | "CheckBoxField" => {
+            definition.insert("check".to_string(), Value::String(name.clone()));
+        }
+        "Pages" => {
+            definition.insert("pages".to_string(), Value::String(name.clone()));
+        }
+        "Page" => {
+            definition.insert("page".to_string(), Value::String(name.clone()));
+        }
+        "CommandBar" => {
+            definition.insert("cmdBar".to_string(), Value::String(name.clone()));
+        }
+        other => {
+            return Err(bad(
+                op_index,
+                &format!("{location}.type"),
+                format!(
+                    "unknown form element type `{other}`; use InputField, Group, Table, Button, Label, LabelField, CheckBox, Pages, Page or CommandBar"
+                ),
+            ))
+        }
+    }
+    let mut into = None;
+    let mut after = None;
+    for (key, value) in item {
+        match key.as_str() {
+            "name" | "type" | "orientation" => {}
+            "after" => after = value.as_str().map(str::to_string),
+            "into" => into = value.as_str().map(str::to_string),
+            _ => {
+                definition.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    Ok((Value::Object(definition), into, after))
+}
+
+/// The registry spells form events in English; Russian names travel in from
+/// developers and are mapped here, unknown names pass through to the matrix.
+fn canonical_form_event(name: &str) -> &str {
+    match name {
+        "ПриОткрытии" => "OnOpen",
+        "ПриПовторномОткрытии" => "OnReopen",
+        "ПриЗакрытии" => "OnClose",
+        "ПередЗакрытием" => "BeforeClose",
+        "ПриСозданииНаСервере" => "OnCreateAtServer",
+        "ПриЧтенииНаСервере" => "OnReadAtServer",
+        "ПередЗаписью" => "BeforeWrite",
+        "ПередЗаписьюНаСервере" => "BeforeWriteAtServer",
+        "ПриЗаписиНаСервере" => "OnWriteAtServer",
+        "ПослеЗаписи" => "AfterWrite",
+        "ПослеЗаписиНаСервере" => "AfterWriteAtServer",
+        "ОбработкаВыбора" => "ChoiceProcessing",
+        "ОбработкаОповещения" => "NotificationProcessing",
+        "ОбработкаПроверкиЗаполненияНаСервере" => {
+            "FillCheckProcessingAtServer"
+        }
+        "ПриЗагрузкеДанныхИзНастроекНаСервере" => {
+            "OnLoadDataFromSettingsAtServer"
+        }
+        "ПередЗагрузкойДанныхИзНастроекНаСервере" => {
+            "BeforeLoadDataFromSettingsAtServer"
+        }
+        "ПриСохраненииДанныхВНастройкахНаСервере" => {
+            "OnSaveDataInSettingsAtServer"
+        }
+        "ПриИзменении" => "OnChange",
+        "НачалоВыбора" => "StartChoice",
+        "Очистка" => "Clearing",
+        "АвтоПодбор" => "AutoComplete",
+        "ОкончаниеВводаТекста" => "TextEditEnd",
+        "Нажатие" => "Click",
+        "Выбор" => "Selection",
+        "ПриАктивизацииСтроки" => "OnActivateRow",
+        "ПередНачаломДобавления" => "BeforeAddRow",
+        "ПередУдалением" => "BeforeDeleteRow",
+        "ПередНачаломИзменения" => "BeforeRowChange",
+        "ПриНачалеРедактирования" => "OnStartEdit",
+        "ПриОкончанииРедактирования" => "OnEditEnd",
+        "ПередОкончаниемРедактирования" => "BeforeEditEnd",
+        "ПриАктивизацииЯчейки" => "OnActivateCell",
+        "ПриАктивизацииПоля" => "OnActivateField",
+        "ПередРазворачиванием" => "BeforeExpand",
+        "ПриПолученииДанныхНаСервере" => "OnGetDataAtServer",
+        "ПередЗагрузкойПользовательскихНастроекНаСервере" => {
+            "BeforeLoadUserSettingsAtServer"
+        }
+        "ПриЗагрузкеПользовательскихНастроекНаСервере" => {
+            "OnLoadUserSettingsAtServer"
+        }
+        "ПриОбновленииСоставаПользовательскихНастроекНаСервере" => {
+            "OnUpdateUserSettingSetAtServer"
+        }
+        other => other,
+    }
+}
+
+fn parse_form_operation(
+    operation: &str,
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<FormResourcePlanKind, ApplyPlanError> {
+    let address = qualified_target(args, op_index, binding)?;
+    let target = form_target(&address, op_index)?;
+    let items_path = format!("ops[{op_index}].args.items");
+    let form_of = |target: &FormTarget| -> Result<String, ApplyPlanError> {
+        target.form.clone().ok_or_else(|| {
+            bad(
+                op_index,
+                "at",
+                "this operation addresses one form: `Owner.Name.Form.F`",
+            )
+        })
+    };
+    match operation {
+        "form.add" => {
+            if target.form.is_some() {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    "form.add targets the owner; name the forms in `items`",
+                ));
+            }
+            let items = args
+                .get("items")
+                .and_then(Value::as_array)
+                .ok_or_else(|| bad(op_index, "items", "`items` must be an array"))?;
+            let mut forms = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let location = format!("items[{index}]");
+                let item = item
+                    .as_object()
+                    .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
+                let name = required_string(item, "name", op_index, &location)?.to_string();
+                let purpose = form_purpose(
+                    item.get("type").and_then(Value::as_str),
+                    op_index,
+                    &location,
+                )?;
+                forms.push((name, purpose));
+            }
+            if forms.is_empty() {
+                return Err(bad(
+                    op_index,
+                    "items",
+                    "`items` must list at least one form",
+                ));
+            }
+            Ok(FormResourcePlanKind::FormAdd {
+                owner: target.owner,
+                forms,
+            })
+        }
+        "form.create" => {
+            let form = form_of(&target)?;
+            let values = required_values(args, op_index, &["name", "type"])?;
+            if let Some(name) = values.get("name").and_then(Value::as_str) {
+                if name != form {
+                    return Err(bad(
+                        op_index,
+                        "values.name",
+                        "`values.name` must match the form named in `at`",
+                    ));
+                }
+            }
+            let purpose = form_purpose(
+                values.get("type").and_then(Value::as_str),
+                op_index,
+                "values",
+            )?;
+            Ok(FormResourcePlanKind::FormAdd {
+                owner: target.owner,
+                forms: vec![(form, purpose)],
+            })
+        }
+        "form.set" => {
+            let values = args
+                .get("values")
+                .and_then(Value::as_object)
+                .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
+            let mut defaults = Vec::new();
+            for (key, value) in values {
+                let property = default_form_property(key).ok_or_else(|| {
+                    bad(
+                        op_index,
+                        &format!("values.{key}"),
+                        format!("unknown form slot `{key}`; use defaultObjectForm, defaultListForm, defaultChoiceForm, defaultRecordForm, defaultForm, defaultSettingsForm, ..."),
+                    )
+                })?;
+                let form_name = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| {
+                        bad(
+                            op_index,
+                            &format!("values.{key}"),
+                            "the form slot takes a form name",
+                        )
+                    })?;
+                let form_name = form_name
+                    .rsplit(".Form.")
+                    .next()
+                    .unwrap_or(form_name)
+                    .to_string();
+                defaults.push((property.to_string(), form_name));
+            }
+            if defaults.is_empty() {
+                return Err(bad(
+                    op_index,
+                    "values",
+                    "form.set needs at least one form slot",
+                ));
+            }
+            Ok(FormResourcePlanKind::FormSet {
+                owner: target.owner,
+                defaults,
+            })
+        }
+        "form.remove" => {
+            let form = form_of(&target)?;
+            Ok(FormResourcePlanKind::FormRemove {
+                owner: target.owner,
+                form,
+            })
+        }
+        "element.add" => {
+            let form = form_of(&target)?;
+            let items = args
+                .get("items")
+                .and_then(Value::as_array)
+                .ok_or_else(|| bad(op_index, "items", "`items` must be an array"))?;
+            let mut definitions = Vec::new();
+            for (index, item) in items.iter().enumerate() {
+                let location = format!("items[{index}]");
+                let item = item
+                    .as_object()
+                    .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
+                let (definition, into, after) =
+                    legacy_element_definition(item, op_index, &location)?;
+                let mut wrapper = Map::new();
+                wrapper.insert("elements".to_string(), Value::Array(vec![definition]));
+                if let Some(into) = into {
+                    wrapper.insert("into".to_string(), Value::String(into));
+                }
+                if let Some(after) = after {
+                    wrapper.insert("after".to_string(), Value::String(after));
+                }
+                definitions.push(Value::Object(wrapper));
+            }
+            if definitions.is_empty() {
+                return Err(bad(
+                    op_index,
+                    &items_path,
+                    "`items` must list at least one element",
+                ));
+            }
+            Ok(FormResourcePlanKind::FormEdit {
+                owner: target.owner,
+                form,
+                definitions,
+            })
+        }
+        "element.remove" => {
+            let form = form_of(&target)?;
+            let names = match &target.item {
+                Some(item) => vec![item.clone()],
+                None => listed_names(args, "name", op_index).map_err(|_| {
+                    bad(
+                        op_index,
+                        "at",
+                        "element.remove names the element in the address (`...Form.F.Item.X`) or in `items`",
+                    )
+                })?,
+            };
+            let definition = serde_json::json!({
+                "removeElements": names
+                    .into_iter()
+                    .map(|name| serde_json::json!({"name": name}))
+                    .collect::<Vec<_>>()
+            });
+            Ok(FormResourcePlanKind::FormEdit {
+                owner: target.owner,
+                form,
+                definitions: vec![definition],
+            })
+        }
+        "formAttribute.add" | "formCommand.add" => {
+            let form = form_of(&target)?;
+            let items = args
+                .get("items")
+                .and_then(Value::as_array)
+                .ok_or_else(|| bad(op_index, "items", "`items` must be an array"))?;
+            let mut entries = Vec::new();
+            for (index, item) in items.iter().enumerate() {
+                let location = format!("items[{index}]");
+                let item = item
+                    .as_object()
+                    .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
+                let name = required_string(item, "name", op_index, &location)?.to_string();
+                let mut entry = item.clone();
+                entry.insert("name".to_string(), Value::String(name.clone()));
+                if operation == "formAttribute.add" {
+                    if let Some(type_name) = item.get("type").and_then(Value::as_str) {
+                        entry.insert(
+                            "type".to_string(),
+                            Value::String(form_attribute_type(type_name)),
+                        );
+                    }
+                } else if !entry.contains_key("action") {
+                    entry.insert("action".to_string(), Value::String(name));
+                }
+                entries.push(Value::Object(entry));
+            }
+            if entries.is_empty() {
+                return Err(bad(
+                    op_index,
+                    &items_path,
+                    "`items` must list at least one entry",
+                ));
+            }
+            let key = if operation == "formAttribute.add" {
+                "attributes"
+            } else {
+                "commands"
+            };
+            let mut wrapper = Map::new();
+            wrapper.insert(key.to_string(), Value::Array(entries));
+            Ok(FormResourcePlanKind::FormEdit {
+                owner: target.owner,
+                form,
+                definitions: vec![Value::Object(wrapper)],
+            })
+        }
+        "event.bind" => {
+            let form = form_of(&target)?;
+            let values =
+                required_values(args, op_index, &["event", "handler", "element", "callType"])?;
+            let event = required_string(values, "event", op_index, "values")?;
+            let handler = required_string(values, "handler", op_index, "values")?;
+            let mut entry = Map::new();
+            entry.insert(
+                "name".to_string(),
+                Value::String(canonical_form_event(event).to_string()),
+            );
+            entry.insert("handler".to_string(), Value::String(handler.to_string()));
+            if let Some(call_type) = values.get("callType").and_then(Value::as_str) {
+                entry.insert("callType".to_string(), Value::String(call_type.to_string()));
+            }
+            let element = values
+                .get("element")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| target.item.clone());
+            let definition = match element {
+                Some(element) => {
+                    entry.insert("element".to_string(), Value::String(element));
+                    serde_json::json!({"elementEvents": [Value::Object(entry)]})
+                }
+                None => serde_json::json!({"formEvents": [Value::Object(entry)]}),
+            };
+            Ok(FormResourcePlanKind::FormEdit {
+                owner: target.owner,
+                form,
+                definitions: vec![definition],
+            })
+        }
+        _ => Ok(FormResourcePlanKind::Unsupported),
+    }
+}
+
+/// `Kind.Name` → `Kinds/Name.xml`, the owner descriptor of a form.
+fn owner_descriptor_relative(
+    owner: &MetadataAddress,
+    authority: &FormResourceApplyAuthority<'_>,
+    op_index: usize,
+) -> Result<PathBuf, ApplyPlanError> {
+    crate::infrastructure::logical_event_source::metadata_descriptor_relative(
+        owner,
+        authority.source_kind(),
+    )
+    .map_err(|message| bad(op_index, "at", message))
+}
+
+fn read_required(
+    staged: &mut ApplyStagedState,
+    relative: &std::path::Path,
+    what: &str,
+    at_path: &str,
+) -> Result<Vec<u8>, ApplyPlanError> {
+    staged
+        .read(relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.to_string()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                format!("{what} was not found"),
+            )
+            .at_path(at_path.to_string())
+        })
+}
+
+fn utf8_body(bytes: &[u8], what: &str, at_path: &str) -> Result<String, ApplyPlanError> {
+    String::from_utf8(bytes.strip_prefix(UTF8_BOM).unwrap_or(bytes).to_vec()).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            format!("{what} is not UTF-8"),
+        )
+        .at_path(at_path.to_string())
+    })
+}
+
+fn with_bom(text: &str) -> Vec<u8> {
+    let mut bytes = UTF8_BOM.to_vec();
+    bytes.extend_from_slice(text.as_bytes());
+    bytes
+}
+
+/// Clears every default-form slot of the owner that points at `form`.
+fn clear_default_form_slots(owner_text: &str, reference: &str) -> String {
+    let mut text = owner_text.to_string();
+    for property in [
+        "DefaultObjectForm",
+        "DefaultListForm",
+        "DefaultChoiceForm",
+        "DefaultFolderForm",
+        "DefaultFolderChoiceForm",
+        "DefaultRecordForm",
+        "DefaultForm",
+        "DefaultSettingsForm",
+        "DefaultVariantForm",
+        "DefaultSaveForm",
+        "AuxiliaryObjectForm",
+        "AuxiliaryListForm",
+        "AuxiliaryChoiceForm",
+    ] {
+        let filled = format!("<{property}>{reference}</{property}>");
+        if text.contains(&filled) {
+            text = text.replace(&filled, &format!("<{property}/>"));
+        }
+    }
+    text
+}
+
+fn stage_form_add(
+    staged: &mut ApplyStagedState,
+    authority: &FormResourceApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    forms: &[(String, String)],
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    use crate::infrastructure::native_operations::form::{
+        form_add_content_xml, form_add_metadata_xml, form_add_module_bsl, form_default_property,
+        replace_form_default_property,
+    };
+    let at_path = format!("ops[{op_index}].args.at");
+    let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
+    let owner_preimage = read_required(
+        staged,
+        &owner_relative,
+        "the form owner descriptor",
+        &at_path,
+    )?;
+    let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
+    let (object_type, object_name) =
+        crate::infrastructure::native_operations::common::detect_form_add_object(&owner_source)
+            .map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
+            })?;
+    let mut owner_text = owner_source.clone();
+    let format_version = authority.expected_format();
+    let forms_dir = owner_relative.with_extension("").join("Forms");
+    let mut touched = Vec::new();
+    for (index, (form_name, purpose)) in forms.iter().enumerate() {
+        let name_path = format!("ops[{op_index}].args.items[{index}].name");
+        if !crate::infrastructure::native_operations::common::is_1c_identifier(form_name) {
+            return Err(bad(
+                op_index,
+                &format!("items[{index}].name"),
+                format!("`{form_name}` is not a valid 1C identifier"),
+            ));
+        }
+        crate::infrastructure::native_operations::common::validate_form_purpose(
+            &object_type,
+            purpose,
+        )
+        .map_err(|message| bad(op_index, &format!("items[{index}].type"), message))?;
+        if owner_text.contains(&format!("<Form>{form_name}</Form>")) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                format!("form `{form_name}` already exists on `{}`", owner.as_str()),
+            )
+            .at_path(name_path));
+        }
+        let uuid = seeded_uuid(&format!(
+            "{}\0{}.Form.{form_name}",
+            authority.source_set_name(),
+            owner.as_str()
+        ));
+        let descriptor =
+            form_add_metadata_xml(form_name, form_name, &object_type, format_version, &uuid);
+        let content = form_add_content_xml(&object_type, &object_name, purpose, format_version)
+            .map_err(|message| bad(op_index, &format!("items[{index}].type"), message))?;
+        let descriptor_relative = forms_dir.join(format!("{form_name}.xml"));
+        let content_relative = forms_dir.join(form_name).join("Ext/Form.xml");
+        let module_relative = forms_dir.join(form_name).join("Ext/Form/Module.bsl");
+        stage_new_file(
+            staged,
+            &descriptor_relative,
+            descriptor.as_bytes(),
+            &name_path,
+        )?;
+        stage_new_file(staged, &content_relative, content.as_bytes(), &name_path)?;
+        stage_new_file(
+            staged,
+            &module_relative,
+            form_add_module_bsl().as_bytes(),
+            &name_path,
+        )?;
+        touched.push(descriptor_relative);
+        touched.push(content_relative);
+        touched.push(module_relative);
+        owner_text = crate::infrastructure::native_operations::common::register_form_in_object_text(
+            &owner_text,
+            form_name,
+        );
+        let property = form_default_property(&object_type, purpose);
+        let (updated, _) = replace_form_default_property(
+            &owner_text,
+            property,
+            &format!("{object_type}.{object_name}.Form.{form_name}"),
+            false,
+        );
+        owner_text = updated;
+    }
+    let owner_postimage = with_bom(
+        &crate::infrastructure::native_operations::common::lxml_tree_serialized_text_like_source_preserving_final_newline(
+            &owner_text,
+            &owner_source,
+        ),
+    );
+    if owner_postimage != owner_preimage {
+        staged
+            .replace(&owner_relative, &owner_preimage, owner_postimage)
+            .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+        touched.push(owner_relative);
+    }
+    provisional.push(ProvisionalApplyEffect::spanning(
+        touched,
+        DomainEvent::new(DomainEventKind::FormChanged, owner.as_str().to_string()),
+        op_index,
+    ));
+    Ok(())
+}
+
+fn stage_form_set(
+    staged: &mut ApplyStagedState,
+    authority: &FormResourceApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    defaults: &[(String, String)],
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
+    let owner_preimage = read_required(
+        staged,
+        &owner_relative,
+        "the form owner descriptor",
+        &at_path,
+    )?;
+    let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
+    let mut owner_text = owner_source.clone();
+    for (property, form_name) in defaults {
+        if !owner_text.contains(&format!("<Form>{form_name}</Form>")) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                format!("form `{form_name}` is not a form of `{}`", owner.as_str()),
+            )
+            .at_path(format!("ops[{op_index}].args.values")));
+        }
+        if !owner_text.contains(&format!("<{property}>"))
+            && !owner_text.contains(&format!("<{property}/>"))
+        {
+            return Err(bad(
+                op_index,
+                "values",
+                format!("`{}` has no `{property}` slot", owner.as_str()),
+            ));
+        }
+        let (updated, _) =
+            crate::infrastructure::native_operations::form::replace_form_default_property(
+                &owner_text,
+                property,
+                &format!("{}.Form.{form_name}", owner.as_str()),
+                true,
+            );
+        owner_text = updated;
+    }
+    let owner_postimage = with_bom(
+        &crate::infrastructure::native_operations::common::lxml_tree_serialized_text_like_source_preserving_final_newline(
+            &owner_text,
+            &owner_source,
+        ),
+    );
+    if owner_postimage == owner_preimage {
+        return Ok(());
+    }
+    staged
+        .replace(&owner_relative, &owner_preimage, owner_postimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    provisional.push(ProvisionalApplyEffect::single(
+        owner_relative,
+        DomainEvent::new(DomainEventKind::MetadataChanged, owner.as_str().to_string()),
+        op_index,
+    ));
+    Ok(())
+}
+
+fn stage_form_remove(
+    staged: &mut ApplyStagedState,
+    authority: &FormResourceApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    form: &str,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
+    let owner_preimage = read_required(
+        staged,
+        &owner_relative,
+        "the form owner descriptor",
+        &at_path,
+    )?;
+    let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
+    let forms_dir = owner_relative.with_extension("").join("Forms");
+    let descriptor_relative = forms_dir.join(format!("{form}.xml"));
+    let descriptor_preimage = read_required(
+        staged,
+        &descriptor_relative,
+        "the form descriptor",
+        &at_path,
+    )?;
+    let mut touched = Vec::new();
+    let root = authority.source_root();
+    let payload_dir = root.join(&forms_dir).join(form);
+    if payload_dir.is_dir() {
+        let traversal =
+            crate::infrastructure::native_operations::meta::remove::metadata_files_recursive(
+                &payload_dir,
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error)
+                    .at_path(at_path.clone())
+            })?;
+        for file in &traversal.files {
+            let relative = super::metadata::staged_relative(root, file, op_index)?;
+            let preimage = read_required(staged, &relative, "a form payload file", &at_path)?;
+            staged
+                .remove(&relative, &preimage)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            touched.push(relative);
+        }
+    }
+    staged
+        .remove(&descriptor_relative, &descriptor_preimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    touched.push(descriptor_relative);
+    let (deregistered, removed) =
+        crate::infrastructure::native_operations::meta::remove::remove_metadata_child_text_with_flag(
+            &owner_source,
+            "Form",
+            form,
+        );
+    if !removed {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            format!("`{}` does not register form `{form}`", owner.as_str()),
+        )
+        .at_path(at_path));
+    }
+    let owner_text =
+        clear_default_form_slots(&deregistered, &format!("{}.Form.{form}", owner.as_str()));
+    let owner_postimage = with_bom(&owner_text);
+    staged
+        .replace(&owner_relative, &owner_preimage, owner_postimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    touched.push(owner_relative);
+    provisional.push(ProvisionalApplyEffect::spanning(
+        touched,
+        DomainEvent::new(
+            DomainEventKind::FormChanged,
+            format!("{}.Form.{form}", owner.as_str()),
+        ),
+        op_index,
+    ));
+    Ok(())
+}
+
+fn stage_form_edit(
+    staged: &mut ApplyStagedState,
+    authority: &FormResourceApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    form: &str,
+    definitions: &[Value],
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
+    let relative = owner_relative
+        .with_extension("")
+        .join("Forms")
+        .join(form)
+        .join("Ext/Form.xml");
+    let preimage = read_required(staged, &relative, "the form (Ext/Form.xml)", &at_path)?;
+    let mut xml_text = utf8_body(&preimage, "the form", &at_path)?;
+    let root_start = {
+        let document = roxmltree::Document::parse(&xml_text).map_err(|error| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                format!("the form is not well-formed XML: {error}"),
+            )
+            .at_path(at_path.clone())
+        })?;
+        let root = document.root_element();
+        crate::infrastructure::native_operations::form::require_form_root(root).map_err(
+            |error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error)
+                    .at_path(at_path.clone())
+            },
+        )?;
+        root.range().start
+    };
+    let absolute = authority.source_root().join(&relative);
+    let args_path = format!("ops[{op_index}].args");
+    for definition in definitions {
+        crate::infrastructure::native_operations::form::form_edit_apply_definition(
+            &mut xml_text,
+            definition,
+            &absolute,
+            root_start,
+        )
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(args_path.clone())
+        })?;
+    }
+    let postimage = with_bom(&xml_text);
+    if postimage == preimage {
+        return Ok(());
+    }
+    let validation = crate::infrastructure::native_operations::form::validate_form_with_source(
+        &Map::new(),
+        authority.workspace_context(),
+        Some((&absolute, &xml_text)),
+    );
+    crate::infrastructure::native_operations::form::form_edit_require_valid(validation).map_err(
+        |message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, message).at_path(args_path)
+        },
+    )?;
+    staged
+        .replace(&relative, &preimage, postimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    provisional.push(ProvisionalApplyEffect::single(
+        relative,
+        DomainEvent::new(
+            DomainEventKind::FormChanged,
+            format!("{}.Form.{form}", owner.as_str()),
+        ),
+        op_index,
+    ));
+    Ok(())
 }
 
 fn minimal_rights_xml() -> String {
@@ -1018,6 +1990,51 @@ pub(crate) fn plan_form_resource_batch(
                     ));
                 }
             }
+            FormResourcePlanKind::FormAdd { owner, forms } => {
+                stage_form_add(
+                    &mut staged,
+                    &authority,
+                    owner,
+                    forms,
+                    op_index,
+                    &mut provisional,
+                )?;
+            }
+            FormResourcePlanKind::FormSet { owner, defaults } => {
+                stage_form_set(
+                    &mut staged,
+                    &authority,
+                    owner,
+                    defaults,
+                    op_index,
+                    &mut provisional,
+                )?;
+            }
+            FormResourcePlanKind::FormRemove { owner, form } => {
+                stage_form_remove(
+                    &mut staged,
+                    &authority,
+                    owner,
+                    form,
+                    op_index,
+                    &mut provisional,
+                )?;
+            }
+            FormResourcePlanKind::FormEdit {
+                owner,
+                form,
+                definitions,
+            } => {
+                stage_form_edit(
+                    &mut staged,
+                    &authority,
+                    owner,
+                    form,
+                    definitions,
+                    op_index,
+                    &mut provisional,
+                )?;
+            }
             FormResourcePlanKind::SupportCapability(capability) => {
                 let at_path = format!("ops[{op_index}].args.at");
                 let relative = PathBuf::from("Ext/ParentConfigurations.bin");
@@ -1207,6 +2224,63 @@ mod tests {
             panic!("`{relative}` keeps bytes");
         };
         String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn form_add_then_element_and_event_edits_compose_in_one_batch() {
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .form_resource_planning_authority(&fixture.binding)
+            .unwrap();
+        let parse = |op: &str, args: serde_json::Value, index: usize| {
+            IndexedPlanOperation::new(
+                index,
+                parse_form_resource_plan_operation(op, &args, index, &fixture.binding)
+                    .unwrap_or_else(|error| panic!("{op}: {error:?}")),
+            )
+        };
+        let operations = [
+            parse(
+                "form.add",
+                json!({"at": "main:Document.First", "items": [{"name": "ФормаДокумента", "type": "ObjectForm"}]}),
+                0,
+            ),
+            parse(
+                "element.add",
+                json!({
+                    "at": "main:Document.First.Form.ФормаДокумента",
+                    "items": [{"name": "ПолеИтог", "path": "Объект.Total", "title": "Итог"}]
+                }),
+                1,
+            ),
+            parse(
+                "event.bind",
+                json!({
+                    "at": "main:Document.First.Form.ФормаДокумента",
+                    "values": {"event": "ПриОткрытии", "handler": "ПриОткрытии"}
+                }),
+                2,
+            ),
+        ];
+        let (staged, effects) = plan_form_resource_batch(staged, authority, &operations)
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        assert_eq!(effects.len(), 3);
+        let form = staged_text(&staged, "Documents/First/Forms/ФормаДокумента/Ext/Form.xml");
+        assert!(form.contains("<InputField name=\"ПолеИтог\""), "{form}");
+        assert!(form.contains("<DataPath>Объект.Total</DataPath>"), "{form}");
+        assert!(form.contains("ПриОткрытии"), "{form}");
+        let owner = staged_text(&staged, "Documents/First.xml");
+        assert!(owner.contains("<Form>ФормаДокумента</Form>"), "{owner}");
+        assert!(
+            staged
+                .planned_changes()
+                .iter()
+                .any(|change| change.relative_path
+                    == Path::new("Documents/First/Forms/ФормаДокумента/Ext/Form/Module.bsl")),
+            "the form module is staged"
+        );
     }
 
     #[test]
@@ -1414,29 +2488,16 @@ mod tests {
     }
 
     #[test]
-    fn form_resource_apply_seam_routes_actor_authorized_batch_to_stable_unsupported() {
+    fn form_operations_refuse_a_root_target_and_name_the_argument() {
         let fixture = ApplySeamFixture::new();
-        let admission = fixture.admission();
-        let staged = admission.staged_state().unwrap();
-        let authority = admission
-            .form_resource_planning_authority(&fixture.binding)
-            .unwrap();
-        let operation = parse_form_resource_plan_operation(
+        let error = parse_form_resource_plan_operation(
             "form.create",
-            &json!({"at": "main:Configuration"}),
+            &json!({"at": "main:Configuration", "values": {"name": "Форма"}}),
             0,
             &fixture.binding,
         )
-        .unwrap();
-
-        let operation = IndexedPlanOperation::new(0, operation);
-        let error = plan_form_resource_batch(staged, authority, &[operation]).unwrap_err();
-
-        assert_eq!(error.kind(), ApplyPlanErrorKind::ProviderUnavailable);
-        assert_eq!(error.path(), Some("ops[0].op"));
-        assert_eq!(
-            error.to_string(),
-            "hidden v0.13 apply family is not implemented"
-        );
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.path(), Some("ops[0].args.at"));
     }
 }

@@ -179,7 +179,7 @@ pub(crate) fn validate_form(
     validate_form_with_source(args, context, None)
 }
 
-fn validate_form_with_source(
+pub(crate) fn validate_form_with_source(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     source_override: Option<(&Path, &str)>,
@@ -3853,6 +3853,7 @@ pub(crate) fn form_add_supported_object_types() -> &'static [&'static str] {
     &[
         "Document",
         "Catalog",
+        "Enum",
         "DataProcessor",
         "Report",
         "ExternalDataProcessor",
@@ -4592,7 +4593,7 @@ pub(crate) struct FormEditData {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FormEditAddedElement {
+pub(crate) struct FormEditAddedElement {
     kind: String,
     name: String,
     /// The data path the element is bound to; `null` when it binds nothing.
@@ -4606,7 +4607,7 @@ struct FormEditAddedElement {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FormEditAddedAttribute {
+pub(crate) struct FormEditAddedAttribute {
     name: String,
     #[serde(rename = "type")]
     type_name: String,
@@ -4615,7 +4616,7 @@ struct FormEditAddedAttribute {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FormEditAddedCommand {
+pub(crate) struct FormEditAddedCommand {
     name: String,
     /// The command's action handler; `null` when it has none.
     action: Option<String>,
@@ -4624,7 +4625,7 @@ struct FormEditAddedCommand {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FormEditAddedEvent {
+pub(crate) struct FormEditAddedEvent {
     /// The element the handler belongs to; `null` for a form-level event.
     element: Option<String>,
     name: String,
@@ -4700,165 +4701,16 @@ fn form_edit_with_mode_data(
             require_form_root(root).map_err(|error| format!("[ERROR] {error}"))?;
             root.range().start
         };
-        if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
-            form_edit_validate_named_objects(&xml_text, attributes, "Attribute", "attribute")?;
-        }
-        if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
-            form_edit_validate_named_objects(&xml_text, commands, "Command", "command")?;
-        }
-        let planned_removals = form_edit_plan_removals(&defn, &xml_text)?;
-        form_edit_validate_removal_definition_conflicts(&defn, &planned_removals)?;
-        let planned_events = form_edit_plan_events(&defn, &xml_text)?;
-        form_edit_apply_planned_removals(&mut xml_text, &planned_removals);
-        let form_name = form_edit_form_name(&form_path);
-        let mut elem_ids = FormIdAllocator {
-            next: form_edit_next_id(
-                &xml_text,
-                &[
-                    "InputField",
-                    "ContextMenu",
-                    "ExtendedTooltip",
-                    "UsualGroup",
-                    "Table",
-                    "Button",
-                    "CommandBar",
-                ],
-            ),
-        };
-        let mut attr_ids = FormIdAllocator {
-            next: form_edit_next_id(&xml_text, &["Attribute", "Column"]),
-        };
-        let mut cmd_ids = FormIdAllocator {
-            next: form_edit_next_id(&xml_text, &["Command"]),
-        };
-        if form_edit_is_extension_form(&xml_text) {
-            elem_ids.next = elem_ids.next.max(999_999);
-            attr_ids.next = attr_ids.next.max(999_999);
-            cmd_ids.next = cmd_ids.next.max(999_999);
-        }
-
-        let mut added_elements = Vec::<FormEditAddedElement>::new();
-        let mut emitted_fragments = String::new();
-        let mut companion_count = 0usize;
-        if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
-            if !elements.is_empty() {
-                form_compile_validate_element_property_tree(elements)?;
-                let elements_are_idempotent = form_edit_elements_are_idempotent_noop(
-                    &xml_text,
-                    elements,
-                    defn.get("into").and_then(Value::as_str),
-                    defn.get("after").and_then(Value::as_str),
-                )?;
-                if !elements_are_idempotent {
-                    form_edit_validate_element_names(&xml_text, elements)?;
-                    let insert_target = form_edit_target_child_items_range(
-                        &xml_text,
-                        defn.get("into").and_then(Value::as_str),
-                        defn.get("after").and_then(Value::as_str),
-                    )?;
-                    let element_indent = insert_target.child_indent().to_string();
-                    let start = elem_ids.next;
-                    let mut lines = Vec::<String>::new();
-                    for element in elements {
-                        let record = form_edit_element_record(element);
-                        emit_form_element(&mut lines, element, &element_indent, &mut elem_ids)?;
-                        if let Some(record) = record {
-                            added_elements.push(record);
-                        }
-                    }
-                    emitted_fragments.push_str(&lines.join("\n"));
-                    form_edit_insert_lines_into_target(&mut xml_text, insert_target, &lines)?;
-                    companion_count = elem_ids.next.saturating_sub(start + added_elements.len());
-                }
-            }
-        }
-
-        let mut added_attrs = Vec::<FormEditAddedAttribute>::new();
-        if let Some(attrs) = defn.get("attributes").and_then(Value::as_array) {
-            if !attrs.is_empty() {
-                form_edit_validate_attribute_columns(attrs)?;
-                let mut lines = Vec::<String>::new();
-                for attr in attrs {
-                    let Some(object) = attr.as_object() else {
-                        continue;
-                    };
-                    let Some(name) = object.get("name").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    let id = attr_ids.next();
-                    emit_form_edit_attribute_item(&mut lines, object, name, id, "\t\t")?;
-                    let type_name = object
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("(no type)");
-                    added_attrs.push(FormEditAddedAttribute {
-                        name: name.to_string(),
-                        type_name: type_name.to_string(),
-                        id: id.to_string(),
-                    });
-                }
-                emitted_fragments.push_str(&lines.join("\n"));
-                form_edit_insert_section_items(&mut xml_text, "Attributes", &lines)?;
-            }
-        }
-
-        let mut added_cmds = Vec::<FormEditAddedCommand>::new();
-        if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
-            if !commands.is_empty() {
-                let mut lines = Vec::<String>::new();
-                for cmd in commands {
-                    let Some(object) = cmd.as_object() else {
-                        continue;
-                    };
-                    let Some(name) = object.get("name").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    let id = cmd_ids.next();
-                    emit_form_edit_command_item(&mut lines, object, name, id, "\t\t");
-                    added_cmds.push(FormEditAddedCommand {
-                        name: name.to_string(),
-                        action: object
-                            .get("action")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        id: id.to_string(),
-                    });
-                }
-                emitted_fragments.push_str(&lines.join("\n"));
-                form_edit_insert_section_items(&mut xml_text, "Commands", &lines)?;
-            }
-        }
-
-        let mut added_form_events = Vec::<FormEditAddedEvent>::new();
-        let mut added_element_events = Vec::<FormEditAddedEvent>::new();
-        for event in &planned_events {
-            form_edit_apply_planned_event(&mut xml_text, event)?;
-            match &event.owner {
-                FormEditEventOwner::Form => added_form_events.push(FormEditAddedEvent {
-                    element: None,
-                    name: event.name.clone(),
-                    handler: event.handler.clone(),
-                    call_type: event.call_type.clone(),
-                }),
-                FormEditEventOwner::Element(element) => {
-                    added_element_events.push(FormEditAddedEvent {
-                        element: Some(element.clone()),
-                        name: event.name.clone(),
-                        handler: event.handler.clone(),
-                        call_type: event.call_type.clone(),
-                    })
-                }
-            }
-        }
-
-        let emitted_type_qnames = form_edit_collect_emitted_type_qnames(&emitted_fragments)?;
-        form_edit_ensure_emitted_namespaces(&mut xml_text, form_root_start, &emitted_fragments)?;
-        let edited_document = Document::parse(&xml_text)
-            .map_err(|err| format!("[ERROR] XML parse error after edit: {err}"))?;
-        let edited_root = edited_document.root_element();
-        require_form_root(edited_root).map_err(|error| format!("[ERROR] {error}"))?;
-        form_edit_validate_surviving_removal_references(edited_root, &planned_removals)?;
-        form_edit_validate_emitted_type_qnames(edited_root, &emitted_type_qnames)?;
+        let FormEditApplied {
+            added_elements,
+            added_attrs,
+            added_cmds,
+            added_form_events,
+            added_element_events,
+            planned_removals,
+            companion_count,
+            form_name,
+        } = form_edit_apply_definition(&mut xml_text, &defn, &form_path, form_root_start)?;
         form_edit_require_valid(validate_form_with_source(
             args,
             context,
@@ -4963,6 +4815,212 @@ fn form_edit_with_mode_data(
     }
 }
 
+/// What one applied form definition added, for the caller's report.
+pub(crate) struct FormEditApplied {
+    pub(crate) added_elements: Vec<FormEditAddedElement>,
+    pub(crate) added_attrs: Vec<FormEditAddedAttribute>,
+    pub(crate) added_cmds: Vec<FormEditAddedCommand>,
+    pub(crate) added_form_events: Vec<FormEditAddedEvent>,
+    pub(crate) added_element_events: Vec<FormEditAddedEvent>,
+    pub(crate) planned_removals: Vec<FormEditPlannedRemoval>,
+    pub(crate) companion_count: usize,
+    pub(crate) form_name: String,
+}
+
+impl FormEditApplied {
+    /// Names of the elements the definition removed, requested and contained.
+    pub(crate) fn removed_element_names(&self) -> Vec<String> {
+        self.planned_removals
+            .iter()
+            .flat_map(|removal| {
+                std::iter::once(removal.name.clone())
+                    .chain(removal.contained.iter().map(|node| node.name.clone()))
+            })
+            .collect()
+    }
+}
+
+/// Applies one managed-form definition (`elements`, `attributes`,
+/// `commands`, `events`, `removeElements`, `into`, `after`) to the form text
+/// in memory. This is the single source of the form transforms: the legacy
+/// editor and the v0.13 staged planner both route through it. The text must
+/// already be a parsed managed form (`form_root_start` is its root offset).
+pub(crate) fn form_edit_apply_definition(
+    xml_text: &mut String,
+    defn: &Value,
+    form_path: &Path,
+    form_root_start: usize,
+) -> Result<FormEditApplied, String> {
+    if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
+        form_edit_validate_named_objects(xml_text, attributes, "Attribute", "attribute")?;
+    }
+    if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
+        form_edit_validate_named_objects(xml_text, commands, "Command", "command")?;
+    }
+    let planned_removals = form_edit_plan_removals(defn, xml_text)?;
+    form_edit_validate_removal_definition_conflicts(defn, &planned_removals)?;
+    let planned_events = form_edit_plan_events(defn, xml_text)?;
+    form_edit_apply_planned_removals(xml_text, &planned_removals);
+    let form_name = form_edit_form_name(form_path);
+    let mut elem_ids = FormIdAllocator {
+        next: form_edit_next_id(
+            xml_text,
+            &[
+                "InputField",
+                "ContextMenu",
+                "ExtendedTooltip",
+                "UsualGroup",
+                "Table",
+                "Button",
+                "CommandBar",
+            ],
+        ),
+    };
+    let mut attr_ids = FormIdAllocator {
+        next: form_edit_next_id(xml_text, &["Attribute", "Column"]),
+    };
+    let mut cmd_ids = FormIdAllocator {
+        next: form_edit_next_id(xml_text, &["Command"]),
+    };
+    if form_edit_is_extension_form(xml_text) {
+        elem_ids.next = elem_ids.next.max(999_999);
+        attr_ids.next = attr_ids.next.max(999_999);
+        cmd_ids.next = cmd_ids.next.max(999_999);
+    }
+
+    let mut added_elements = Vec::<FormEditAddedElement>::new();
+    let mut emitted_fragments = String::new();
+    let mut companion_count = 0usize;
+    if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
+        if !elements.is_empty() {
+            form_compile_validate_element_property_tree(elements)?;
+            let elements_are_idempotent = form_edit_elements_are_idempotent_noop(
+                xml_text,
+                elements,
+                defn.get("into").and_then(Value::as_str),
+                defn.get("after").and_then(Value::as_str),
+            )?;
+            if !elements_are_idempotent {
+                form_edit_validate_element_names(xml_text, elements)?;
+                let insert_target = form_edit_target_child_items_range(
+                    xml_text,
+                    defn.get("into").and_then(Value::as_str),
+                    defn.get("after").and_then(Value::as_str),
+                )?;
+                let element_indent = insert_target.child_indent().to_string();
+                let start = elem_ids.next;
+                let mut lines = Vec::<String>::new();
+                for element in elements {
+                    let record = form_edit_element_record(element);
+                    emit_form_element(&mut lines, element, &element_indent, &mut elem_ids)?;
+                    if let Some(record) = record {
+                        added_elements.push(record);
+                    }
+                }
+                emitted_fragments.push_str(&lines.join("\n"));
+                form_edit_insert_lines_into_target(xml_text, insert_target, &lines)?;
+                companion_count = elem_ids.next.saturating_sub(start + added_elements.len());
+            }
+        }
+    }
+
+    let mut added_attrs = Vec::<FormEditAddedAttribute>::new();
+    if let Some(attrs) = defn.get("attributes").and_then(Value::as_array) {
+        if !attrs.is_empty() {
+            form_edit_validate_attribute_columns(attrs)?;
+            let mut lines = Vec::<String>::new();
+            for attr in attrs {
+                let Some(object) = attr.as_object() else {
+                    continue;
+                };
+                let Some(name) = object.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let id = attr_ids.next();
+                emit_form_edit_attribute_item(&mut lines, object, name, id, "\t\t")?;
+                let type_name = object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(no type)");
+                added_attrs.push(FormEditAddedAttribute {
+                    name: name.to_string(),
+                    type_name: type_name.to_string(),
+                    id: id.to_string(),
+                });
+            }
+            emitted_fragments.push_str(&lines.join("\n"));
+            form_edit_insert_section_items(xml_text, "Attributes", &lines)?;
+        }
+    }
+
+    let mut added_cmds = Vec::<FormEditAddedCommand>::new();
+    if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
+        if !commands.is_empty() {
+            let mut lines = Vec::<String>::new();
+            for cmd in commands {
+                let Some(object) = cmd.as_object() else {
+                    continue;
+                };
+                let Some(name) = object.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let id = cmd_ids.next();
+                emit_form_edit_command_item(&mut lines, object, name, id, "\t\t");
+                added_cmds.push(FormEditAddedCommand {
+                    name: name.to_string(),
+                    action: object
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    id: id.to_string(),
+                });
+            }
+            emitted_fragments.push_str(&lines.join("\n"));
+            form_edit_insert_section_items(xml_text, "Commands", &lines)?;
+        }
+    }
+
+    let mut added_form_events = Vec::<FormEditAddedEvent>::new();
+    let mut added_element_events = Vec::<FormEditAddedEvent>::new();
+    for event in &planned_events {
+        form_edit_apply_planned_event(xml_text, event)?;
+        match &event.owner {
+            FormEditEventOwner::Form => added_form_events.push(FormEditAddedEvent {
+                element: None,
+                name: event.name.clone(),
+                handler: event.handler.clone(),
+                call_type: event.call_type.clone(),
+            }),
+            FormEditEventOwner::Element(element) => added_element_events.push(FormEditAddedEvent {
+                element: Some(element.clone()),
+                name: event.name.clone(),
+                handler: event.handler.clone(),
+                call_type: event.call_type.clone(),
+            }),
+        }
+    }
+
+    let emitted_type_qnames = form_edit_collect_emitted_type_qnames(&emitted_fragments)?;
+    form_edit_ensure_emitted_namespaces(xml_text, form_root_start, &emitted_fragments)?;
+    let edited_document = Document::parse(xml_text)
+        .map_err(|err| format!("[ERROR] XML parse error after edit: {err}"))?;
+    let edited_root = edited_document.root_element();
+    require_form_root(edited_root).map_err(|error| format!("[ERROR] {error}"))?;
+    form_edit_validate_surviving_removal_references(edited_root, &planned_removals)?;
+    form_edit_validate_emitted_type_qnames(edited_root, &emitted_type_qnames)?;
+
+    Ok(FormEditApplied {
+        added_elements,
+        added_attrs,
+        added_cmds,
+        added_form_events,
+        added_element_events,
+        planned_removals,
+        companion_count,
+        form_name,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FormEditContainedNode {
     name: String,
@@ -4970,7 +5028,7 @@ struct FormEditContainedNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct FormEditPlannedRemoval {
+pub(crate) struct FormEditPlannedRemoval {
     name: String,
     kind: String,
     contained: Vec<FormEditContainedNode>,
@@ -6263,7 +6321,7 @@ pub(crate) fn form_edit_publish_preserving_bom(
     Ok(report.cleanup_warnings)
 }
 
-fn form_edit_require_valid(outcome: AdapterOutcome) -> Result<(), String> {
+pub(crate) fn form_edit_require_valid(outcome: AdapterOutcome) -> Result<(), String> {
     if outcome.ok {
         return Ok(());
     }
@@ -6839,7 +6897,20 @@ pub(crate) fn form_edit_insert_section_items(
         return Ok(());
     }
     let Some(pos) = form_edit_find_section_close(xml_text, section) else {
-        return Err(format!("No <{section}> section found in form"));
+        // A form the platform wrote without this section (a fresh form has no
+        // commands or attributes yet): open the section before the root close.
+        let Some(root_close) = xml_text.rfind("</Form>") else {
+            return Err(format!("No <{section}> section found in form"));
+        };
+        let line_start = xml_text[..root_close]
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(root_close);
+        xml_text.insert_str(
+            line_start,
+            &format!("\t<{section}>\n{content}\n\t</{section}>\n"),
+        );
+        return Ok(());
     };
     let insert_pos = xml_text[..pos]
         .rfind('\n')

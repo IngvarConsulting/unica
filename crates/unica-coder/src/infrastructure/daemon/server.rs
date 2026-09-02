@@ -4562,7 +4562,7 @@ struct ActorLogicalReadLease {"#,
         );
         assert_eq!(
             entry("form.add"),
-            serde_json::json!({"op": "form.add", "args": "items", "implemented": false})
+            serde_json::json!({"op": "form.add", "args": "items", "implemented": true})
         );
         assert!(
             can.iter().all(|entry| entry["op"] != "enumValue.add"),
