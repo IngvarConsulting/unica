@@ -281,7 +281,7 @@ fn parse_help_create(
     })
 }
 
-fn qualified_target(
+pub(super) fn qualified_target(
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,

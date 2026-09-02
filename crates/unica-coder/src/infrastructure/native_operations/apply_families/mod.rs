@@ -277,6 +277,11 @@ mod tests {
     }
 
     impl ApplySeamFixture {
+        /// The physical `src` root, for tests that lay out extra resources.
+        pub(super) fn source_dir(&self) -> std::path::PathBuf {
+            std::fs::canonicalize(self._root.path().join("src")).unwrap()
+        }
+
         pub(super) fn new() -> Self {
             let root = tempfile::tempdir().unwrap();
             let source = root.path().join("src");
