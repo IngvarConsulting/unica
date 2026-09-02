@@ -872,9 +872,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
         "at".to_owned(),
         Value::String("main:Configuration".to_owned()),
     );
-    let invocation_id = InvocationId::new();
-    let reserved_task_id = TaskId::new();
-    let exact_key = ReceiptKey::new(
+    let mut invocation_id = InvocationId::new();
+    let mut reserved_task_id = TaskId::new();
+    let mut exact_key = ReceiptKey::new(
         invocation_id,
         reserved_task_id,
         RequestIdentity::new(
@@ -885,7 +885,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 .map_err(|error| format!("construct receipt scenario request scope: {error}"))?,
         ),
     );
-    let mismatched_arguments_key = {
+    let mut mismatched_arguments_key = {
         let mut mismatched = Map::new();
         mismatched.insert("mismatch".to_owned(), Value::Bool(true));
         ReceiptKey::new(
@@ -1062,23 +1062,17 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 match V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())
                 {
                     Ok(runtime) => {
-                        bulk_receipt_snapshot = Some(match &bulk_receipt_catalog {
-                            Some(catalog) => snapshot_with_actor_and_bulk_catalog(
+                        bulk_receipt_snapshot = match &bulk_receipt_catalog {
+                            Some(catalog) => Some(snapshot_with_actor_and_bulk_catalog(
                                 &runtime.receipt_ledger,
                                 &clock,
                                 &telemetry,
                                 control.side_effect_markers(),
                                 &known_keys,
                                 catalog,
-                            )?,
-                            None => snapshot_with_actor(
-                                &runtime.receipt_ledger,
-                                &clock,
-                                &telemetry,
-                                control.side_effect_markers(),
-                                &known_keys,
-                            )?,
-                        });
+                            )?),
+                            None => None,
+                        };
                         drop(runtime);
                         startup_failed = false;
                         listener_published = true;
@@ -2130,23 +2124,17 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 match V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())
                 {
                     Ok(runtime) => {
-                        bulk_receipt_snapshot = Some(match &bulk_receipt_catalog {
-                            Some(catalog) => snapshot_with_actor_and_bulk_catalog(
+                        bulk_receipt_snapshot = match &bulk_receipt_catalog {
+                            Some(catalog) => Some(snapshot_with_actor_and_bulk_catalog(
                                 &runtime.receipt_ledger,
                                 &clock,
                                 &telemetry,
                                 control.side_effect_markers(),
                                 &known_keys,
                                 catalog,
-                            )?,
-                            None => snapshot_with_actor(
-                                &runtime.receipt_ledger,
-                                &clock,
-                                &telemetry,
-                                control.side_effect_markers(),
-                                &known_keys,
-                            )?,
-                        });
+                            )?),
+                            None => None,
+                        };
                         drop(runtime);
                         if recovering_handoff_crash {
                             telemetry.record_task_store_create_attempt();
@@ -2297,7 +2285,10 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 if let Some(elapsed_ms) = control.process_exit_elapsed_ms() {
                     snapshot["processExitElapsedMs"] = Value::from(elapsed_ms);
                 }
-                report.terminal_publications = telemetry.snapshot().terminal_publications;
+                merge_unique_values(
+                    &mut report.terminal_publications,
+                    telemetry.snapshot().terminal_publications,
+                );
                 report.checkpoints.insert(label, snapshot);
             }
             ReceiptScenarioAction::Reset => {
@@ -2313,6 +2304,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         "protocol-v5 receipt scenario live daemon panicked before reset",
                     )?;
                 }
+                for (receipt, record_bytes) in control.receipt_backed_terminals() {
+                    telemetry.record_receipt_backed_publication(&receipt, &record_bytes);
+                }
+                merge_unique_values(
+                    &mut report.terminal_publications,
+                    telemetry.snapshot().terminal_publications,
+                );
                 telemetry.reset_for_scenario();
                 control.reset_for_scenario();
                 state = ScenarioStateRoot::new()?;
@@ -2329,6 +2327,23 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 bulk_task_projection = None;
                 bulk_receipt_snapshot = None;
                 bulk_receipt_catalog = None;
+                exact_key = fresh_key_for_workspace(&identity, &arguments, &workspace_hint)?;
+                invocation_id = exact_key.invocation_id();
+                reserved_task_id = exact_key.reserved_task_id();
+                let mut mismatched = Map::new();
+                mismatched.insert("mismatch".to_owned(), Value::Bool(true));
+                mismatched_arguments_key = ReceiptKey::new(
+                    invocation_id,
+                    reserved_task_id,
+                    RequestIdentity::new(
+                        identity.digest().clone(),
+                        V5ToolIdentity::View,
+                        normalized_arguments_hash(&mismatched),
+                        request_scope_hash(&workspace_hint).map_err(|error| {
+                            format!("construct reset mismatched request scope: {error}")
+                        })?,
+                    ),
+                );
             }
             ReceiptScenarioAction::FillReceiptPool { state: fill, count } => {
                 if !matches!(
@@ -2789,7 +2804,10 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
     for (receipt, record_bytes) in control.receipt_backed_terminals() {
         telemetry.record_receipt_backed_publication(&receipt, &record_bytes);
     }
-    report.terminal_publications = telemetry.snapshot().terminal_publications;
+    merge_unique_values(
+        &mut report.terminal_publications,
+        telemetry.snapshot().terminal_publications,
+    );
     report.actor_bindings = control.actor_bindings();
     report.actor_authorizations = control.actor_authorizations();
     let encoded = report.encode(telemetry.snapshot().events).map(Some);
@@ -3797,6 +3815,14 @@ fn fresh_key_for_workspace(
 fn push_known_key(keys: &mut Vec<ReceiptKey>, key: ReceiptKey) {
     if !keys.iter().any(|known| known == &key) {
         keys.push(key);
+    }
+}
+
+fn merge_unique_values(target: &mut Vec<Value>, values: Vec<Value>) {
+    for value in values {
+        if !target.contains(&value) {
+            target.push(value);
+        }
     }
 }
 
