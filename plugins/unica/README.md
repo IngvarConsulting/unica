@@ -71,8 +71,7 @@ atomically replaces the transliterated `skd` domain with the official
 | `unica.skd.compile` | `unica.dcs.compile` |
 | `unica.skd.edit` | `unica.dcs.edit` |
 | `unica.skd.info` | `unica.dcs.info` |
-| `unica.skd.validate` | `unica.dcs.validate` |
-| `skd-compile/edit/info/validate` | `dcs-compile/edit/info/validate` |
+| `skd-compile/edit/info` | `dcs-compile/edit/info` |
 
 The operation arguments and `DataCompositionSchema` XML format are unchanged.
 
@@ -117,13 +116,12 @@ later merge request.
 
 | Tool | Logical selector | Path kept for now |
 | --- | --- | --- |
-| `unica.cf.info`, `unica.cf.validate` | `sourceSet` | `ConfigPath` |
+| `unica.cf.info` | `sourceSet` | `ConfigPath` |
 | `unica.subsystem.info` | `sourceSet`, optional `metadataPath` | `SubsystemPath` |
-| `unica.subsystem.validate` | `sourceSet` + `metadataPath` | `SubsystemPath` |
-| `unica.role.info`, `unica.role.validate` | `sourceSet` + `metadataPath` | `RightsPath` |
-| `unica.form.info`, `unica.form.validate` | `sourceSet` + `metadataPath` | `FormPath` |
-| `unica.dcs.info`, `unica.dcs.validate` | `sourceSet` + `metadataPath` | `TemplatePath` |
-| `unica.mxl.info`, `unica.mxl.validate`, `unica.mxl.decompile` | `sourceSet` + `metadataPath` | `TemplatePath` |
+| `unica.role.info` | `sourceSet` + `metadataPath` | `RightsPath` |
+| `unica.form.info` | `sourceSet` + `metadataPath` | `FormPath` |
+| `unica.dcs.info` | `sourceSet` + `metadataPath` | `TemplatePath` |
+| `unica.mxl.info`, `unica.mxl.decompile` | `sourceSet` + `metadataPath` | `TemplatePath` |
 
 Exactly one selector per call. Passing both fails with `selector_conflict`,
 because resolving a conflict silently would hide which selector produced the
@@ -157,25 +155,16 @@ package writer has always read. Operations in one call apply in order, see
 each other's results, and publish once; a failed element leaves no partial
 write, and every effect is reported by `operationIndex`.
 
-## Template and help migration
+## Templates, embedded help and validation
 
-The release containing [issue #375](https://github.com/IngvarConsulting/unica/issues/375)
-retires `unica.template.add`, `unica.template.remove` and `unica.help.add`
-(ADR-0072). There is no compatibility alias: every call answers
-`unknown unica tool`. Template registration and embedded help are operations
-of the shared `unica.meta.add`/`unica.meta.edit` union:
-
-| Removed call | Canonical `operations` element |
-| --- | --- |
-| `unica.template.add` + `ObjectName`, `TemplateName`, `TemplateType` | `{"op": "add", "collection": "templates", "elements": [{"name": "Basic", "templateType": "SpreadsheetDocument"}]}` |
-| `unica.template.remove` + `ObjectName`, `TemplateName` | `{"op": "remove", "collection": "templates", "names": ["Basic"]}` |
-| `unica.help.add` + `ObjectName`, `Lang` | `{"op": "addHelp", "lang": "ru"}` |
-
-The owner is addressed by `sourceSet + metadataPath`; the retired
-`ObjectName` path dialect under `SrcDir` is gone. `templateType` defaults to
-`SpreadsheetDocument`; `addHelp` is create-only and flips
-`IncludeHelpInContents` on the owner's forms exactly the way the retired tool
-did.
+Template registration and embedded help are `unica.apply` operations of the
+owning object: `template.add`, `template.set`, `template.remove` and
+`help.create`. Validation is one closed profile of `unica.check`
+(`filter.validation.profile`: `cf`, `cfe`, `form`, `dcs`, `mxl`, `role`,
+`subsystem`, `interface`, `meta`); the verdict travels in `data.status` and a
+root outside the platform XML profile `2.20` is reported as a warning
+diagnostic next to it. The retired `unica.template.*`, `unica.help.add` and
+`unica.*.validate` names have no alias.
 
 ## Runtime delivery
 

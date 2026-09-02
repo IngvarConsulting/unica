@@ -500,8 +500,8 @@ allowed-tools:
 ## Workflow
 
 1. **Компиляция**: `unica.form.compile` генерирует `Form.xml` и автоматически регистрирует `<Form>` в `ChildObjects` родительского объекта (если OutputPath следует конвенции `.../TypePlural/ObjectName/Forms/FormName/Ext/Form.xml`).
-2. **Метаданные формы** (`ФормаСписка.xml`) и `Module.bsl` создаёт `unica.form.add`. Если `unica.form.add` ещё не вызывался — вызови его после `unica.form.compile`. Он не перезаписывает существующий Form.xml.
-3. **Проверка**: `unica.form.validate`, затем `unica.form.info`.
+2. **Метаданные формы** (`ФормаСписка.xml`) и `Module.bsl` создаёт `unica.apply` с операцией `form.add`. Если `form.add` ещё не вызывался — вызови его после `unica.form.compile`. Он не перезаписывает существующий Form.xml.
+3. **Проверка**: `unica.check` с профилем `form`, затем `unica.form.info`.
 
 ## Верификация
 
@@ -512,10 +512,10 @@ allowed-tools:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.form.validate",
+    "name": "unica.check",
     "arguments": {
-      "cwd": "<workspace>",
-      "FormPath": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+      "at": "<sourceSet>:Catalog.Валюты.Form.ФормаЭлемента",
+      "filter": {"validation": {"profile": "form"}}
     }
   }
 }

@@ -130,10 +130,10 @@ allowed-tools:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.role.validate",
+    "name": "unica.check",
     "arguments": {
-      "cwd": "<workspace>",
-      "RightsPath": "<RightsPath>"
+      "at": "<sourceSet>:Role.<Name>",
+      "filter": {"validation": {"profile": "role"}}
     }
   }
 }

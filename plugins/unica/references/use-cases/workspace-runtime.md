@@ -38,14 +38,12 @@ update `v8project.yaml` safely.
 
 ### Work the call must not wait for
 
-A long applied operation belongs in a durable job: `unica.runtime.job.start` runs
-it in a detached process that outlives the call, so a host deadline cannot lose
-the result. Keep the returned `jobId`, read progress with
-`unica.runtime.job.status`, wait for a bounded interval with
-`unica.runtime.job.wait`, and fetch diagnostic tails with
-`unica.runtime.job.logs`. A normal build can keep both logs empty until its
-terminal envelope; phase and heartbeat are what distinguish that from a stalled
-job.
+A long operation does not need a separate call: any `unica.run` invocation
+that outlives the handoff window becomes a durable Task. Keep the returned
+`taskId`, read the state with `unica.task.get`, wait for a bounded interval with
+`unica.task.result`, and cancel with `unica.task.cancel`; a client with native
+Tasks uses `tasks/get` and `tasks/cancel` instead. The terminal result never
+publishes raw stdout, so liveness is judged by the Task state, not by logs.
 
 Each `sourceSets[].sourceFormat` describes working-tree discovery. Repository
 checks may additionally become applicable from staged index markers; do not

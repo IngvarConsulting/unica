@@ -1,7 +1,7 @@
 # JSON DSL для схемы компоновки данных (СКД)
 
 Компактный JSON-формат для описания `DataCompositionSchema` (Template.xml).
-Компилируется через MCP `unica.dcs.compile` в XML, валидируется через MCP `unica.dcs.validate`.
+Структуру `Template.xml` проверяет `unica.check` с профилем `dcs`; правки выполняет `unica.apply` операциями семейства СКД.
 
 ## Граница `dcs.compile` и `dcs.edit`
 
