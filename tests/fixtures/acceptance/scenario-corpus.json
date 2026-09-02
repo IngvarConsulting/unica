@@ -1106,7 +1106,7 @@
   },
   {
    "area": "Свойства объектов",
-   "task": "Индексирование реквизита типизированный контракт пока не выражает (граница словаря)",
+   "task": "Включить индексирование реквизита документа (превью)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -1125,9 +1125,8 @@
       "dryRun": true
      },
      "expect": [
-      "gap"
-     ],
-     "gap": "Типизированный контракт attribute.set не выражает индексирование (legacy DSL умел)"
+      "ok"
+     ]
     }
    ],
    "id": "S053"
@@ -1268,9 +1267,8 @@
       "dryRun": true
      },
      "expect": [
-      "gap"
-     ],
-     "gap": "Писатель свойств роли не существует: props.set отвечает bad_value вместо typed unsupported"
+      "ok"
+     ]
     }
    ],
    "id": "S057"
@@ -1296,9 +1294,8 @@
       "dryRun": true
      },
      "expect": [
-      "gap"
-     ],
-     "gap": "Писатель свойств подсистемы не существует: props.set отвечает bad_value вместо typed unsupported"
+      "ok"
+     ]
     }
    ],
    "id": "S058"
@@ -2199,7 +2196,7 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Добавить колонку в журнал документов (текущий ответ поверхности)",
+   "task": "Добавить колонку в журнал документов",
    "wire": [
     {
      "tool": "unica.apply",
@@ -2220,16 +2217,15 @@
       "dryRun": true
      },
      "expect": [
-      "gap"
-     ],
-     "gap": "column.* на DocumentJournal порождает невалидный XML (postcondition_failed) — дефект эмиттера колонок журнала"
+      "ok"
+     ]
     }
    ],
    "id": "S085"
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Изменить колонку журнала (текущий ответ поверхности)",
+   "task": "Изменить колонку журнала",
    "wire": [
     {
      "tool": "unica.apply",
@@ -2240,8 +2236,8 @@
         "op": "column.set",
         "args": {
          "values": {
-          "name": "Контрагент",
-          "synonym": "Контрагент документа"
+          "name": "Организация",
+          "synonym": "Организация документа"
          }
         }
        }
@@ -2249,16 +2245,15 @@
       "dryRun": true
      },
      "expect": [
-      "gap"
-     ],
-     "gap": "column.* на DocumentJournal порождает невалидный XML (postcondition_failed) — дефект эмиттера колонок журнала"
+      "ok"
+     ]
     }
    ],
    "id": "S086"
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Удалить колонку журнала (текущий ответ поверхности)",
+   "task": "Удалить колонку журнала",
    "wire": [
     {
      "tool": "unica.apply",
@@ -2269,7 +2264,7 @@
         "op": "column.remove",
         "args": {
          "values": {
-          "name": "Контрагент"
+          "name": "Организация"
          }
         }
        }
@@ -2277,9 +2272,8 @@
       "dryRun": true
      },
      "expect": [
-      "gap"
-     ],
-     "gap": "column.* на DocumentJournal порождает невалидный XML (postcondition_failed) — дефект эмиттера колонок журнала"
+      "ok"
+     ]
     }
    ],
    "id": "S087"
@@ -2746,9 +2740,8 @@
       "dryRun": true
      },
      "expect": [
-      "gap"
-     ],
-     "gap": "tabularSection.add на реальном объекте с DefinedType-реквизитами роняет постобраз: existing defined type is not a metadata address (дефект проекции info_projection)"
+      "ok"
+     ]
     }
    ],
    "id": "S098"
@@ -4386,7 +4379,7 @@
   },
   {
    "area": "Код BSL",
-   "task": "Реализовать обработчик события объекта (текущий ответ поверхности)",
+   "task": "Реализовать обработчик события объекта в модуле объекта",
    "wire": [
     {
      "tool": "unica.apply",
@@ -4403,7 +4396,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -5359,7 +5352,7 @@
   },
   {
    "area": "Макеты",
-   "task": "Поменять синоним макета (текущий ответ поверхности)",
+   "task": "Поменять синоним макета",
    "wire": [
     {
      "tool": "unica.apply",
@@ -5379,16 +5372,15 @@
       "dryRun": true
      },
      "expect": [
-      "gap"
-     ],
-     "gap": "template.set не находит макет, видимый чтением — рассинхрон reader/writer typed-движка по коллекции templates"
+      "ok"
+     ]
     }
    ],
    "id": "S197"
   },
   {
    "area": "Макеты",
-   "task": "Удалить устаревший макет (текущий ответ поверхности)",
+   "task": "Удалить устаревший макет",
    "wire": [
     {
      "tool": "unica.apply",
@@ -5407,29 +5399,41 @@
       "dryRun": true
      },
      "expect": [
-      "gap"
-     ],
-     "gap": "template.remove не находит макет, видимый чтением — рассинхрон reader/writer typed-движка по коллекции templates"
+      "ok"
+     ]
     }
    ],
    "id": "S198"
   },
   {
    "area": "Макеты",
-   "task": "Заполнить ячейки табличного макета (текущий ответ поверхности)",
+   "task": "Добавить табличный макет справочнику и заполнить шапку одним пакетом",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты.Template.ПФ_MXL_СписокВалют",
+      "at": "main:Catalog.Валюты",
       "ops": [
+       {
+        "op": "template.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПФ_MXL_СписокВалют",
+           "templateType": "SpreadsheetDocument"
+          }
+         ]
+        }
+       },
        {
         "op": "mxl.set",
         "args": {
+         "at": "main:Catalog.Валюты.Template.ПФ_MXL_СписокВалют",
          "values": {
           "area": "Шапка",
           "cells": {
-           "R1C1": "Валюта"
+           "R1C1": "Валюта",
+           "R1C2": "Курс"
           }
          }
         }
@@ -5438,7 +5442,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],

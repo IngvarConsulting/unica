@@ -522,6 +522,7 @@ pub(crate) struct MetaElementInput {
     pub(crate) attributes: Option<Vec<MetaElementInput>>,
     pub(crate) position: Option<MetaPosition>,
     pub(crate) template_type: Option<MetaTemplateKind>,
+    pub(crate) indexing: Option<String>,
 }
 
 impl MetaElementInput {
@@ -545,6 +546,7 @@ pub(crate) struct MetaElementDefinition {
     pub(crate) attributes: Vec<MetaElementDefinition>,
     pub(crate) position: Option<MetaPosition>,
     pub(crate) template_type: Option<MetaTemplateKind>,
+    pub(crate) indexing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -557,6 +559,7 @@ pub(crate) struct MetaElementUpdateInput {
     pub(crate) required: Option<bool>,
     pub(crate) fill_value: Option<MetaFillValue>,
     pub(crate) position: Option<MetaPosition>,
+    pub(crate) indexing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -569,6 +572,7 @@ pub(crate) struct MetaElementUpdate {
     pub(crate) required: Option<bool>,
     pub(crate) fill_value: Option<MetaFillValue>,
     pub(crate) position: Option<MetaPosition>,
+    pub(crate) indexing: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -812,6 +816,7 @@ impl MetaElementDefinition {
             attributes,
             position: input.position,
             template_type: input.template_type,
+            indexing: input.indexing,
         })
     }
 }
@@ -837,6 +842,7 @@ impl MetaElementUpdate {
             && input.required.is_none()
             && input.fill_value.is_none()
             && input.position.is_none()
+            && input.indexing.is_none()
         {
             return Err(invalid_operation(
                 field,
@@ -862,6 +868,7 @@ impl MetaElementUpdate {
             required: input.required,
             fill_value: input.fill_value,
             position: input.position,
+            indexing: input.indexing,
         })
     }
 }

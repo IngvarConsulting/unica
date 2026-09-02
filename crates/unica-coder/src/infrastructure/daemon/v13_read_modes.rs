@@ -387,24 +387,24 @@ mod tests {
             json!({"op": "form.add", "args": "items", "implemented": true})
         );
         // The honesty flag stays false for a registry name without a planner.
-        let template = project_view_sections(
+        let data_set = project_view_sections(
             &json!({
-                "at": "main:Report.Sales.Template.Layout",
-                "kind": "Template",
-                "title": "Layout",
+                "at": "main:Report.Sales.Template.Layout.DataSet.Main",
+                "kind": "DataSet",
+                "title": "Main",
                 "props": {}
             }),
             &json!(["can"]),
         )
         .unwrap();
-        let template_can = template["can"].as_array().expect("computed can entries");
-        let mxl = template_can
+        let data_set_can = data_set["can"].as_array().expect("computed can entries");
+        let dcs_set = data_set_can
             .iter()
-            .find(|entry| entry["op"] == "mxl.set")
-            .unwrap_or_else(|| panic!("missing `mxl.set` in {template_can:?}"));
+            .find(|entry| entry["op"] == "dcs.set")
+            .unwrap_or_else(|| panic!("missing `dcs.set` in {data_set_can:?}"));
         assert_eq!(
-            mxl,
-            &json!({"op": "mxl.set", "args": "values", "implemented": false})
+            dcs_set,
+            &json!({"op": "dcs.set", "args": "values", "implemented": false})
         );
         assert_eq!(
             entry("object.remove"),

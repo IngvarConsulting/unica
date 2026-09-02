@@ -1068,6 +1068,7 @@ fn parse_element_input(
             "attributes",
             "position",
             "templateType",
+            "indexing",
         ][..]
     } else {
         &[
@@ -1078,6 +1079,7 @@ fn parse_element_input(
             "required",
             "fillValue",
             "position",
+            "indexing",
         ][..]
     };
     reject_unknown_fields(object, allowed, &format!("{field}."))?;
@@ -1129,7 +1131,30 @@ fn parse_element_input(
                 MetaTemplateKind::parse(value).map_err(|diagnostic| diagnostic.with_field(field))
             })
             .transpose()?,
+        indexing: parse_indexing(object, field)?,
     })
+}
+
+/// `indexing`: the platform's closed set for attribute, dimension, resource
+/// and column indexing.
+fn parse_indexing(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<String>, MetaDiagnostic> {
+    let Some(value) = object.get("indexing") else {
+        return Ok(None);
+    };
+    let field = format!("{field}.indexing");
+    let value = value
+        .as_str()
+        .ok_or_else(|| invalid(&field, "`indexing` must be a string"))?;
+    match value {
+        "DontIndex" | "Index" | "IndexWithAdditionalOrder" => Ok(Some(value.to_string())),
+        _ => Err(invalid(
+            &field,
+            "`indexing` must be DontIndex, Index or IndexWithAdditionalOrder",
+        )),
+    }
 }
 
 fn parse_element_update(
@@ -1150,10 +1175,12 @@ fn parse_element_update(
             "required",
             "fillValue",
             "position",
+            "indexing",
         ],
         &format!("{field}."),
     )?;
     Ok(MetaElementUpdateInput {
+        indexing: parse_indexing(object, field)?,
         name: required_string_at(object, "name", &format!("{field}.name"))?,
         new_name: optional_string_at(object, "newName", &format!("{field}.newName"))?,
         synonym: optional_string_at(object, "synonym", &format!("{field}.synonym"))?,

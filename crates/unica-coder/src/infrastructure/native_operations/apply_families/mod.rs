@@ -18,6 +18,9 @@ enum ParsedApplyOperation {
     DcsMxl(IndexedPlanOperation<dcs_mxl::DcsMxlPlanOperation>),
     Code(IndexedPlanOperation<crate::infrastructure::native_operations::code::CodePlanOperation>),
     Xdto(IndexedPlanOperation<crate::infrastructure::native_operations::xdto::XdtoPlanOperation>),
+    Event(
+        IndexedPlanOperation<crate::infrastructure::native_operations::event::EventImplementArgs>,
+    ),
     Unsupported(usize),
 }
 
@@ -32,6 +35,139 @@ impl ParsedApplyOperation {
 /// changes reports them tied to every path the batch changed: the request
 /// finalizer then keeps an event only while all of those paths stay changed
 /// in the final postimage.
+/// Object and manager events by their Russian names, as developers write them.
+const RUSSIAN_EVENT_NAMES: &[(&str, &str)] = &[
+    ("ПередЗаписью", "BeforeWrite"),
+    ("ПриЗаписи", "OnWrite"),
+    ("ПередУдалением", "BeforeDelete"),
+    ("ОбработкаЗаполнения", "Filling"),
+    ("ОбработкаПроверкиЗаполнения", "FillCheckProcessing"),
+    ("ПриКопировании", "OnCopy"),
+    ("ПриУстановкеНовогоНомера", "OnSetNewNumber"),
+    ("ПриУстановкеНовогоКода", "OnSetNewCode"),
+    ("ОбработкаПроведения", "Posting"),
+    ("ОбработкаУдаленияПроведения", "UndoPosting"),
+    ("ОбработкаПолученияДанныхВыбора", "ChoiceDataGetProcessing"),
+    ("ОбработкаПолученияФормы", "FormGetProcessing"),
+    (
+        "ОбработкаПолученияПолейПредставления",
+        "PresentationFieldsGetProcessing",
+    ),
+    (
+        "ОбработкаПолученияПредставления",
+        "PresentationGetProcessing",
+    ),
+    (
+        "ОбработкаФормированияИзВерсииИсторииДанных",
+        "GenerateFromDataHistoryVersionProcessing",
+    ),
+    (
+        "ОбработкаПослеЗаписиВерсийИсторииДанных",
+        "AfterWriteDataHistoryVersionsProcessing",
+    ),
+];
+
+const MANAGER_EVENTS: &[&str] = &[
+    "ChoiceDataGetProcessing",
+    "FormGetProcessing",
+    "PresentationFieldsGetProcessing",
+    "PresentationGetProcessing",
+    "AfterWriteDataHistoryVersionsProcessing",
+];
+
+/// `Owner.Name.Event.ПриЗаписи` is how a developer names an object event; the
+/// event planner addresses the module that hosts it
+/// (`Owner.Name.Module.Object.Event.OnWrite`). Both spellings are accepted:
+/// the module role follows the owner kind and the event, and Russian event
+/// names map onto the registry. Anything else passes through unchanged.
+fn canonical_event_args(args: serde_json::Value) -> serde_json::Value {
+    use crate::domain::address::{NodeKind, QualifiedAddress};
+    let Some(raw) = args.get("at").and_then(serde_json::Value::as_str) else {
+        return args;
+    };
+    let Ok(address) = QualifiedAddress::parse(raw) else {
+        return args;
+    };
+    let segments = address.segments();
+    let english = |name: &str| -> String {
+        RUSSIAN_EVENT_NAMES
+            .iter()
+            .find(|(russian, _)| *russian == name)
+            .map_or_else(|| name.to_string(), |(_, english)| (*english).to_string())
+    };
+    let rewritten = match segments {
+        [owner, event] if event.kind() == NodeKind::Event => {
+            let (Some(owner_name), Some(event_name)) = (owner.name(), event.name()) else {
+                return args;
+            };
+            let event_name = english(event_name);
+            let role = if MANAGER_EVENTS.contains(&event_name.as_str()) {
+                "Manager"
+            } else {
+                match owner.kind() {
+                    NodeKind::InformationRegister
+                    | NodeKind::AccumulationRegister
+                    | NodeKind::AccountingRegister
+                    | NodeKind::CalculationRegister => "RecordSet",
+                    NodeKind::Constant => "ValueManager",
+                    _ => "Object",
+                }
+            };
+            format!(
+                "{}:{}.{owner_name}.Module.{role}.Event.{event_name}",
+                address.source_set(),
+                owner.kind().as_str()
+            )
+        }
+        [owner, module, role, event]
+            if module.kind() == NodeKind::Module && event.kind() == NodeKind::Event =>
+        {
+            let (Some(owner_name), Some(role_name), Some(event_name)) = (
+                owner.name(),
+                role.name().or(Some(role.kind().as_str())),
+                event.name(),
+            ) else {
+                return args;
+            };
+            format!(
+                "{}:{}.{owner_name}.Module.{role_name}.Event.{}",
+                address.source_set(),
+                owner.kind().as_str(),
+                english(event_name)
+            )
+        }
+        _ => return args,
+    };
+    let mut args = args;
+    if let Some(object) = args.as_object_mut() {
+        object.insert("at".to_string(), serde_json::Value::String(rewritten));
+    }
+    args
+}
+
+/// The event planner reports through its own error type; the apply seam
+/// speaks one refusal vocabulary, so the kinds map one to one.
+fn event_plan_error_to_apply(
+    error: crate::infrastructure::native_operations::event::EventPlanError,
+) -> ApplyPlanError {
+    use crate::infrastructure::native_operations::event::EventPlanErrorKind;
+    let kind = match error.kind() {
+        EventPlanErrorKind::BadValue => ApplyPlanErrorKind::BadValue,
+        EventPlanErrorKind::NotFound => ApplyPlanErrorKind::NotFound,
+        EventPlanErrorKind::ProviderUnavailable => ApplyPlanErrorKind::ProviderUnavailable,
+        EventPlanErrorKind::InvalidState => ApplyPlanErrorKind::InvalidState,
+        EventPlanErrorKind::InvalidSource => ApplyPlanErrorKind::InvalidSource,
+        EventPlanErrorKind::Staging(kind) => ApplyPlanErrorKind::Staging(kind),
+        EventPlanErrorKind::Postcondition => ApplyPlanErrorKind::Postcondition,
+    };
+    let path = error.path().map(str::to_string);
+    let planned = ApplyPlanError::new(kind, error.to_string());
+    match path {
+        Some(path) => planned.at_path(path),
+        None => planned,
+    }
+}
+
 fn batch_effects_as_provisional(
     before: &[std::path::PathBuf],
     staged: &ApplyStagedState,
@@ -138,7 +274,16 @@ pub(crate) fn plan_hidden_v13_apply(
                         )?;
                     ParsedApplyOperation::Xdto(IndexedPlanOperation::new(op_index, parsed))
                 }
-                OperationFamily::Event => ParsedApplyOperation::Unsupported(op_index),
+                OperationFamily::Event => {
+                    let args = canonical_event_args(args);
+                    let parsed =
+                        crate::infrastructure::native_operations::event::parse_event_implement_args(
+                            &args,
+                            &format!("ops[{op_index}].args"),
+                        )
+                        .map_err(event_plan_error_to_apply)?;
+                    ParsedApplyOperation::Event(IndexedPlanOperation::new(op_index, parsed))
+                }
             };
             Ok(parsed)
         })
@@ -178,6 +323,34 @@ pub(crate) fn plan_hidden_v13_apply(
                     authority,
                     &operations,
                 )?;
+                staged = planned.0;
+                provisional.extend(batch_effects_as_provisional(
+                    &before, &staged, planned.1, cursor,
+                ));
+            }
+            ParsedApplyOperation::Event(_) => {
+                let operations = parsed[cursor..end]
+                    .iter()
+                    .map(|operation| match operation {
+                        ParsedApplyOperation::Event(operation) => operation.operation().clone(),
+                        _ => unreachable!("the selected run is event-only"),
+                    })
+                    .collect::<Vec<_>>();
+                let before = staged
+                    .planned_changes()
+                    .into_iter()
+                    .map(|change| change.relative_path)
+                    .collect::<Vec<_>>();
+                let authority = admission.metadata_planning_authority(binding)?;
+                let planned =
+                    crate::infrastructure::native_operations::event::plan_event_implement_batch(
+                        staged,
+                        authority.source_set_name(),
+                        authority.source_kind(),
+                        authority.profile(),
+                        &operations,
+                    )
+                    .map_err(event_plan_error_to_apply)?;
                 staged = planned.0;
                 provisional.extend(batch_effects_as_provisional(
                     &before, &staged, planned.1, cursor,

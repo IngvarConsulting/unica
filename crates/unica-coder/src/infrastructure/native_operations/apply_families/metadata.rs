@@ -41,6 +41,29 @@ enum MetadataPlanKind {
         name: String,
         lang: String,
     },
+    /// Templates live in their own descriptors under `Templates/`, registered
+    /// on the owner by name; the typed collection writer does not know that.
+    TemplateAdd {
+        owner: MetadataAddress,
+        items: Vec<(String, crate::domain::metadata::MetaTemplateKind)>,
+    },
+    TemplateSet {
+        owner: MetadataAddress,
+        name: String,
+        values: Map<String, Value>,
+    },
+    TemplateRemove {
+        owner: MetadataAddress,
+        name: String,
+    },
+    /// `props.set` on a role or subsystem: descriptor kinds outside the typed
+    /// metadata writer, edited through their own small property sets.
+    SimpleProps {
+        kind: NodeKind,
+        name: String,
+        relative: PathBuf,
+        values: Map<String, Value>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -94,11 +117,9 @@ pub(crate) fn parse_metadata_plan_operation(
         "column.add" => parse_member_add(operation, "columns", object, op_index, binding)?,
         "column.set" => parse_member_set(operation, "columns", object, op_index, binding)?,
         "column.remove" => parse_member_remove(operation, "columns", object, op_index, binding)?,
-        "template.add" => parse_member_add(operation, "templates", object, op_index, binding)?,
-        "template.set" => parse_member_set(operation, "templates", object, op_index, binding)?,
-        "template.remove" => {
-            parse_member_remove(operation, "templates", object, op_index, binding)?
-        }
+        "template.add" => parse_template_add(object, op_index, binding)?,
+        "template.set" => parse_template_set(object, op_index, binding)?,
+        "template.remove" => parse_template_remove(object, op_index, binding)?,
         "command.add" => parse_member_add(operation, "commands", object, op_index, binding)?,
         "command.set" => parse_member_set(operation, "commands", object, op_index, binding)?,
         "command.remove" => parse_member_remove(operation, "commands", object, op_index, binding)?,
@@ -169,6 +190,162 @@ fn required_array<'a>(
             )
             .at_path(format!("ops[{op_index}].args.{name}"))
         })
+}
+
+fn parse_template_add(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    reject_unknown_args("template.add", args, &["at", "items"], op_index)?;
+    let target = qualified_target(args, op_index, binding)?;
+    let (owner, _) = metadata_owner(&target, op_index)?;
+    let items = required_array(args, "items", op_index)?;
+    let mut planned = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let location = format!("ops[{op_index}].args.items[{index}]");
+        let item = item.as_object().ok_or_else(|| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "each item must be an object")
+                .at_path(location.clone())
+        })?;
+        if let Some(field) = item
+            .keys()
+            .find(|field| !["name", "templateType", "synonym"].contains(&field.as_str()))
+        {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!(
+                    "template items accept `name`, `templateType` and `synonym`, not `{field}`"
+                ),
+            )
+            .at_path(format!("{location}.{field}")));
+        }
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "`name` is required")
+                    .at_path(format!("{location}.name"))
+            })?;
+        if !crate::infrastructure::native_operations::common::is_1c_identifier(name) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("`{name}` is not a valid 1C identifier"),
+            )
+            .at_path(format!("{location}.name")));
+        }
+        let kind = match item.get("templateType").and_then(Value::as_str) {
+            None => crate::domain::metadata::MetaTemplateKind::SpreadsheetDocument,
+            Some(raw) => {
+                crate::domain::metadata::MetaTemplateKind::parse(raw).map_err(|diagnostic| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
+                        .at_path(format!("{location}.templateType"))
+                })?
+            }
+        };
+        planned.push((name.to_string(), kind));
+    }
+    if planned.is_empty() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "`items` must list at least one template",
+        )
+        .at_path(format!("ops[{op_index}].args.items")));
+    }
+    Ok(MetadataPlanKind::TemplateAdd {
+        owner,
+        items: planned,
+    })
+}
+
+fn template_name_from(
+    target: &QualifiedAddress,
+    values: Option<&Map<String, Value>>,
+    op_index: usize,
+) -> Result<(MetadataAddress, String), ApplyPlanError> {
+    // `Owner.Name.Template.T` names the template in the address; `values.name`
+    // is the other accepted spelling.
+    match target.segments() {
+        [owner, template] if template.kind() == NodeKind::Template => {
+            let owner_address = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!(
+                    "{}.{}",
+                    owner.kind().as_str(),
+                    owner.name().unwrap_or_default()
+                ),
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
+                    .at_path(format!("ops[{op_index}].args.at"))
+            })?;
+            let name = template
+                .name()
+                .ok_or_else(|| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "the template must be named")
+                        .at_path(format!("ops[{op_index}].args.at"))
+                })?
+                .to_string();
+            Ok((owner_address, name))
+        }
+        _ => {
+            let (owner, _) = metadata_owner(target, op_index)?;
+            let name = values
+                .and_then(|values| values.get("name"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::BadValue,
+                        "name the template in the address (`Owner.Name.Template.T`) or in `values.name`",
+                    )
+                    .at_path(format!("ops[{op_index}].args.values.name"))
+                })?
+                .to_string();
+            Ok((owner, name))
+        }
+    }
+}
+
+fn parse_template_set(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    reject_unknown_args("template.set", args, &["at", "values"], op_index)?;
+    let target = qualified_target(args, op_index, binding)?;
+    let values = required_object(args, "values", op_index)?.clone();
+    let (owner, name) = template_name_from(&target, Some(&values), op_index)?;
+    if let Some(field) = values
+        .keys()
+        .find(|field| !["name", "synonym", "comment", "templateType"].contains(&field.as_str()))
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!(
+                "template.set values accept `synonym`, `comment` and `templateType`, not `{field}`"
+            ),
+        )
+        .at_path(format!("ops[{op_index}].args.values.{field}")));
+    }
+    Ok(MetadataPlanKind::TemplateSet {
+        owner,
+        name,
+        values,
+    })
+}
+
+fn parse_template_remove(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    reject_unknown_args("template.remove", args, &["at", "values"], op_index)?;
+    let target = qualified_target(args, op_index, binding)?;
+    let values = args.get("values").and_then(Value::as_object);
+    let (owner, name) = template_name_from(&target, values, op_index)?;
+    Ok(MetadataPlanKind::TemplateRemove { owner, name })
 }
 
 fn parse_object_create(
@@ -440,6 +617,29 @@ fn parse_props_set(
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
     reject_unknown_args("props.set", args, &["at", "values"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
+    if let [only] = target.segments() {
+        if matches!(only.kind(), NodeKind::Role | NodeKind::Subsystem) {
+            let name = only
+                .name()
+                .ok_or_else(|| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "the target must be named")
+                        .at_path(format!("ops[{op_index}].args.at"))
+                })?
+                .to_string();
+            let relative = if only.kind() == NodeKind::Role {
+                PathBuf::from("Roles").join(format!("{name}.xml"))
+            } else {
+                PathBuf::from("Subsystems").join(format!("{name}.xml"))
+            };
+            let values = required_object(args, "values", op_index)?.clone();
+            return Ok(MetadataPlanKind::SimpleProps {
+                kind: only.kind(),
+                name,
+                relative,
+                values,
+            });
+        }
+    }
     let (owner, kind) = metadata_owner(&target, op_index)?;
     let values = required_object(args, "values", op_index)?.clone();
     parse_legacy_edit(
@@ -767,6 +967,61 @@ pub(crate) fn plan_metadata_batch(
                     target,
                     *kind,
                     name,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
+            MetadataPlanKind::TemplateAdd { owner, items } => {
+                stage_template_add(
+                    &mut staged,
+                    &authority,
+                    owner,
+                    items,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
+            MetadataPlanKind::TemplateSet {
+                owner,
+                name,
+                values,
+            } => {
+                stage_template_set(
+                    &mut staged,
+                    &authority,
+                    owner,
+                    name,
+                    values,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
+            MetadataPlanKind::TemplateRemove { owner, name } => {
+                stage_template_remove(
+                    &mut staged,
+                    &authority,
+                    owner,
+                    name,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
+            MetadataPlanKind::SimpleProps {
+                kind,
+                name,
+                relative,
+                values,
+            } => {
+                stage_simple_props(
+                    &mut staged,
+                    *kind,
+                    name,
+                    relative,
+                    values,
                     op_index,
                     &mut provisional,
                 )?;
@@ -1258,6 +1513,616 @@ fn stage_object_remove(
             DomainEventKind::MetadataChanged,
             target.as_str().to_string(),
         ),
+        op_index,
+    ));
+    Ok(())
+}
+
+/// `<Tag>` as a multilingual text block (ru), or the empty element.
+fn ml_text_block(indent: &str, tag: &str, text: &str) -> String {
+    if text.is_empty() {
+        return format!("{indent}<{tag}/>");
+    }
+    let escaped = text
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!(
+        "{indent}<{tag}>\n{indent}\t<v8:item>\n{indent}\t\t<v8:lang>ru</v8:lang>\n{indent}\t\t<v8:content>{escaped}</v8:content>\n{indent}\t</v8:item>\n{indent}</{tag}>"
+    )
+}
+
+/// Replaces the first `<Tag>…</Tag>` or `<Tag/>` inside `<Properties>`.
+fn replace_property_block(text: &str, tag: &str, replacement: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let empty = format!("<{tag}/>");
+    let properties_start = text.find("<Properties>")?;
+    let properties_end = text[properties_start..].find("</Properties>")? + properties_start;
+    let scope = &text[properties_start..properties_end];
+    let (start, end) = if let Some(index) = scope.find(&empty) {
+        (index, index + empty.len())
+    } else {
+        let index = scope.find(&open)?;
+        let close_index = scope[index..].find(&close)? + index + close.len();
+        (index, close_index)
+    };
+    let mut updated = text.to_string();
+    updated.replace_range(
+        properties_start + start..properties_start + end,
+        replacement.trim_start(),
+    );
+    Some(updated)
+}
+
+fn stage_simple_props(
+    staged: &mut ApplyStagedState,
+    kind: NodeKind,
+    name: &str,
+    relative: &std::path::Path,
+    values: &Map<String, Value>,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let preimage = staged
+        .read(relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "metadata descriptor was not found",
+            )
+            .at_path(at_path.clone())
+        })?;
+    let (bom, body) = match preimage.strip_prefix(b"\xef\xbb\xbf") {
+        Some(body) => (&b"\xef\xbb\xbf"[..], body),
+        None => (&b""[..], preimage.as_slice()),
+    };
+    let source = String::from_utf8(body.to_vec()).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "metadata descriptor is not UTF-8",
+        )
+        .at_path(at_path.clone())
+    })?;
+    let text_value = |key: &str| -> Result<Option<String>, ApplyPlanError> {
+        let Some(value) = values.get(key) else {
+            return Ok(None);
+        };
+        value
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::BadValue,
+                    format!("property `{key}` takes a string"),
+                )
+                .at_path(format!("ops[{op_index}].args.values.{key}"))
+            })
+            .map(Some)
+    };
+    let postimage_text = match kind {
+        NodeKind::Role => {
+            for key in values.keys() {
+                if !matches!(key.as_str(), "synonym" | "Synonym" | "comment" | "Comment") {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::BadValue,
+                        format!("role properties accept `synonym` and `comment`, not `{key}`"),
+                    )
+                    .at_path(format!("ops[{op_index}].args.values.{key}")));
+                }
+            }
+            let mut text = source.clone();
+            let indent = "\t\t\t";
+            if let Some(synonym) = text_value("synonym")?.or(text_value("Synonym")?) {
+                text = replace_property_block(
+                    &text,
+                    "Synonym",
+                    &ml_text_block(indent, "Synonym", &synonym),
+                )
+                .ok_or_else(|| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::InvalidSource,
+                        "the role descriptor has no Synonym property",
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            }
+            if let Some(comment) = text_value("comment")?.or(text_value("Comment")?) {
+                let block = if comment.is_empty() {
+                    format!("{indent}<Comment/>")
+                } else {
+                    format!(
+                        "{indent}<Comment>{}</Comment>",
+                        comment
+                            .replace('&', "&amp;")
+                            .replace('<', "&lt;")
+                            .replace('>', "&gt;")
+                    )
+                };
+                text = replace_property_block(&text, "Comment", &block).ok_or_else(|| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::InvalidSource,
+                        "the role descriptor has no Comment property",
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            }
+            text
+        }
+        NodeKind::Subsystem => {
+            let mut model =
+                crate::infrastructure::native_operations::common::parse_subsystem_edit_model(
+                    &source,
+                    &relative.display().to_string(),
+                )
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?;
+            for (key, value) in values {
+                let bool_text = || -> Result<String, ApplyPlanError> {
+                    match value {
+                        Value::Bool(flag) => Ok(flag.to_string()),
+                        Value::String(text) if text == "true" || text == "false" => {
+                            Ok(text.clone())
+                        }
+                        _ => Err(ApplyPlanError::new(
+                            ApplyPlanErrorKind::BadValue,
+                            format!("property `{key}` takes a boolean"),
+                        )
+                        .at_path(format!("ops[{op_index}].args.values.{key}"))),
+                    }
+                };
+                match key.as_str() {
+                    "synonym" | "Synonym" => model.synonym = text_value(key)?.unwrap_or_default(),
+                    "comment" | "Comment" => model.comment = text_value(key)?.unwrap_or_default(),
+                    "explanation" | "Explanation" => {
+                        model.explanation = text_value(key)?.unwrap_or_default()
+                    }
+                    "includeHelpInContents" | "IncludeHelpInContents" => {
+                        model.include_help = bool_text()?
+                    }
+                    "includeInCommandInterface" | "IncludeInCommandInterface" => {
+                        model.include_ci = bool_text()?
+                    }
+                    "useOneCommand" | "UseOneCommand" => model.use_one_command = bool_text()?,
+                    other => {
+                        return Err(ApplyPlanError::new(
+                            ApplyPlanErrorKind::BadValue,
+                            format!(
+                                "subsystem properties accept synonym, comment, explanation, includeHelpInContents, includeInCommandInterface and useOneCommand, not `{other}`"
+                            ),
+                        )
+                        .at_path(format!("ops[{op_index}].args.values.{other}")))
+                    }
+                }
+            }
+            crate::infrastructure::native_operations::common::emit_subsystem_edit_model(&model)
+        }
+        _ => unreachable!("simple props are parsed for roles and subsystems only"),
+    };
+    let mut postimage = Vec::with_capacity(bom.len() + postimage_text.len());
+    postimage.extend_from_slice(bom);
+    postimage.extend_from_slice(postimage_text.as_bytes());
+    if postimage == preimage {
+        return Ok(());
+    }
+    staged
+        .replace(relative, &preimage, postimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    provisional.push(ProvisionalApplyEffect::single(
+        relative.to_path_buf(),
+        DomainEvent::new(
+            if kind == NodeKind::Role {
+                DomainEventKind::RoleChanged
+            } else {
+                DomainEventKind::SubsystemChanged
+            },
+            format!("{}.{name}", kind.as_str()),
+        ),
+        op_index,
+    ));
+    Ok(())
+}
+
+fn template_descriptor_xml(
+    name: &str,
+    kind: crate::domain::metadata::MetaTemplateKind,
+    format_version: &str,
+    uuid: &str,
+) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{format_version}\">\n\t<Template uuid=\"{uuid}\">\n\t\t<Properties>\n\t\t\t<Name>{name}</Name>\n{}\n\t\t\t<Comment/>\n\t\t\t<TemplateType>{}</TemplateType>\n\t\t</Properties>\n\t</Template>\n</MetaDataObject>\n",
+        crate::infrastructure::native_operations::template::full_md_namespace_declarations(),
+        ml_text_block("\t\t\t", "Synonym", &crate::infrastructure::native_operations::common::split_camel_case(name)),
+        kind.as_str()
+    )
+}
+
+fn empty_data_composition_schema_xml() -> String {
+    concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+        "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n",
+        "\t<dataSource>\n\t\t<name>ИсточникДанных1</name>\n\t\t<dataSourceType>Local</dataSourceType>\n\t</dataSource>\n",
+        "\t<settingsVariant>\n\t\t<dcsset:name>Основной</dcsset:name>\n\t\t<dcsset:presentation xsi:type=\"xs:string\">Основной</dcsset:presentation>\n\t\t<dcsset:settings xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\">\n\t\t\t<dcsset:selection/>\n\t\t\t<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">\n\t\t\t\t<dcsset:order/>\n\t\t\t\t<dcsset:selection>\n\t\t\t\t\t<dcsset:item xsi:type=\"dcsset:SelectedItemAuto\"/>\n\t\t\t\t</dcsset:selection>\n\t\t\t</dcsset:item>\n\t\t</dcsset:settings>\n\t</settingsVariant>\n",
+        "</DataCompositionSchema>\n",
+    )
+    .to_string()
+}
+
+/// Adds `<Tag>Name</Tag>` to the owner's outer `ChildObjects` (the block
+/// closed at two tabs), after the last sibling of the same tag when there
+/// is one.
+fn register_owner_child_ref(text: &str, tag: &str, name: &str) -> Option<String> {
+    let entry = format!("\t\t\t<{tag}>{name}</{tag}>\n");
+    let mut updated = text.to_string();
+    if let Some(index) = text.rfind(&format!("\n\t\t\t<{tag}>")) {
+        let line_end = text[index + 1..].find('\n')? + index + 2;
+        updated.insert_str(line_end, &entry);
+        return Some(updated);
+    }
+    if let Some(close) = text.rfind("\n\t\t</ChildObjects>") {
+        updated.insert_str(close + 1, &entry);
+        return Some(updated);
+    }
+    // Compact layouts: an empty `<ChildObjects/>` or a close on the same
+    // line as its content.
+    if let Some(empty) = text.rfind("<ChildObjects/>") {
+        updated.replace_range(
+            empty..empty + "<ChildObjects/>".len(),
+            &format!("<ChildObjects>\n{entry}\t\t</ChildObjects>"),
+        );
+        return Some(updated);
+    }
+    let close = text.rfind("</ChildObjects>")?;
+    updated.insert_str(close, &format!("\n{entry}\t\t"));
+    Some(updated)
+}
+
+fn owner_descriptor_and_text(
+    staged: &mut ApplyStagedState,
+    authority: &MetadataApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    op_index: usize,
+) -> Result<(PathBuf, Vec<u8>, String), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let relative =
+        metadata_descriptor_relative(owner, authority.source_kind()).map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
+        })?;
+    let preimage = staged
+        .read(&relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "metadata descriptor was not found",
+            )
+            .at_path(at_path.clone())
+        })?;
+    let text = String::from_utf8(
+        preimage
+            .strip_prefix(b"\xef\xbb\xbf")
+            .unwrap_or(&preimage)
+            .to_vec(),
+    )
+    .map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "metadata descriptor is not UTF-8",
+        )
+        .at_path(at_path)
+    })?;
+    Ok((relative, preimage, text))
+}
+
+fn bom_bytes(text: &str) -> Vec<u8> {
+    let mut bytes = b"\xef\xbb\xbf".to_vec();
+    bytes.extend_from_slice(text.as_bytes());
+    bytes
+}
+
+fn stage_template_add(
+    staged: &mut ApplyStagedState,
+    authority: &MetadataApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    items: &[(String, crate::domain::metadata::MetaTemplateKind)],
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    use crate::domain::metadata::MetaTemplateKind;
+    let (owner_relative, owner_preimage, owner_source) =
+        owner_descriptor_and_text(staged, authority, owner, op_index)?;
+    let mut owner_text = owner_source.clone();
+    let templates_dir = owner_relative.with_extension("").join("Templates");
+    let mut touched = Vec::new();
+    for (index, (name, kind)) in items.iter().enumerate() {
+        let name_path = format!("ops[{op_index}].args.items[{index}].name");
+        if owner_text.contains(&format!("<Template>{name}</Template>")) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                format!("template `{name}` already exists on `{}`", owner.as_str()),
+            )
+            .at_path(name_path));
+        }
+        let content = match kind {
+            MetaTemplateKind::SpreadsheetDocument => {
+                crate::infrastructure::native_operations::mxl::empty_spreadsheet_document_xml()
+            }
+            MetaTemplateKind::DataCompositionSchema => empty_data_composition_schema_xml(),
+            MetaTemplateKind::TextDocument | MetaTemplateKind::HtmlDocument | MetaTemplateKind::BinaryData => {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::BadValue,
+                    format!(
+                        "template type `{}` needs content the planner cannot synthesize; create a SpreadsheetDocument or DataCompositionSchema template",
+                        kind.as_str()
+                    ),
+                )
+                .at_path(format!("ops[{op_index}].args.items[{index}].templateType")))
+            }
+        };
+        let uuid = {
+            use sha2::Digest;
+            let digest = sha2::Sha256::digest(format!(
+                "unica-v13-template-uuid-v1\0{}\0{}.Template.{name}",
+                authority.source_set_name(),
+                owner.as_str()
+            ));
+            let mut bytes = [0_u8; 16];
+            bytes.copy_from_slice(&digest[..16]);
+            bytes[6] = (bytes[6] & 0x0f) | 0x40;
+            bytes[8] = (bytes[8] & 0x3f) | 0x80;
+            uuid::Uuid::from_bytes(bytes).to_string()
+        };
+        let descriptor = template_descriptor_xml(name, *kind, authority.expected_format(), &uuid);
+        let descriptor_relative = templates_dir.join(format!("{name}.xml"));
+        let content_relative = templates_dir.join(name).join("Ext/Template.xml");
+        for (relative, text) in [
+            (&descriptor_relative, &descriptor),
+            (&content_relative, &content),
+        ] {
+            if staged
+                .read(relative)
+                .map_err(|error| ApplyPlanError::staging(error, name_path.clone()))?
+                .is_some()
+            {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    format!("`{}` already exists", relative.display()),
+                )
+                .at_path(name_path));
+            }
+            staged
+                .create(relative, bom_bytes(text))
+                .map_err(|error| ApplyPlanError::staging(error, name_path.clone()))?;
+            touched.push(relative.clone());
+        }
+        owner_text = register_owner_child_ref(&owner_text, "Template", name).ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "the owner descriptor has no ChildObjects block to register the template",
+            )
+            .at_path(format!("ops[{op_index}].args.at"))
+        })?;
+    }
+    let owner_postimage = bom_bytes(&owner_text);
+    staged
+        .replace(&owner_relative, &owner_preimage, owner_postimage)
+        .map_err(|error| ApplyPlanError::staging(error, format!("ops[{op_index}].args.at")))?;
+    touched.push(owner_relative);
+    provisional.push(ProvisionalApplyEffect::spanning(
+        touched,
+        DomainEvent::new(DomainEventKind::TemplateChanged, owner.as_str().to_string()),
+        op_index,
+    ));
+    Ok(())
+}
+
+fn stage_template_set(
+    staged: &mut ApplyStagedState,
+    authority: &MetadataApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    name: &str,
+    values: &Map<String, Value>,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let (owner_relative, _, owner_source) =
+        owner_descriptor_and_text(staged, authority, owner, op_index)?;
+    if !owner_source.contains(&format!("<Template>{name}</Template>")) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::NotFound,
+            format!("`{}` has no template `{name}`", owner.as_str()),
+        )
+        .at_path(at_path));
+    }
+    let relative = owner_relative
+        .with_extension("")
+        .join("Templates")
+        .join(format!("{name}.xml"));
+    let preimage = staged
+        .read(&relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "the template descriptor was not found",
+            )
+            .at_path(at_path.clone())
+        })?;
+    let (bom, body) = match preimage.strip_prefix(b"\xef\xbb\xbf") {
+        Some(body) => (&b"\xef\xbb\xbf"[..], body),
+        None => (&b""[..], preimage.as_slice()),
+    };
+    let mut text = String::from_utf8(body.to_vec()).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "the template descriptor is not UTF-8",
+        )
+        .at_path(at_path.clone())
+    })?;
+    let string_value = |key: &str| -> Result<Option<String>, ApplyPlanError> {
+        match values.get(key) {
+            None => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text.clone())),
+            Some(_) => Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("`{key}` must be a string"),
+            )
+            .at_path(format!("ops[{op_index}].args.values.{key}"))),
+        }
+    };
+    let indent = "\t\t\t";
+    if let Some(synonym) = string_value("synonym")? {
+        text = replace_property_block(
+            &text,
+            "Synonym",
+            &ml_text_block(indent, "Synonym", &synonym),
+        )
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "the template descriptor has no Synonym property",
+            )
+            .at_path(at_path.clone())
+        })?;
+    }
+    if let Some(comment) = string_value("comment")? {
+        let block = if comment.is_empty() {
+            format!("{indent}<Comment/>")
+        } else {
+            format!(
+                "{indent}<Comment>{}</Comment>",
+                comment
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+            )
+        };
+        text = replace_property_block(&text, "Comment", &block).ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "the template descriptor has no Comment property",
+            )
+            .at_path(at_path.clone())
+        })?;
+    }
+    if let Some(kind) = string_value("templateType")? {
+        let kind =
+            crate::domain::metadata::MetaTemplateKind::parse(&kind).map_err(|diagnostic| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
+                    .at_path(format!("ops[{op_index}].args.values.templateType"))
+            })?;
+        text = replace_property_block(
+            &text,
+            "TemplateType",
+            &format!("{indent}<TemplateType>{}</TemplateType>", kind.as_str()),
+        )
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "the template descriptor has no TemplateType property",
+            )
+            .at_path(at_path.clone())
+        })?;
+    }
+    let mut postimage = bom.to_vec();
+    postimage.extend_from_slice(text.as_bytes());
+    if postimage == preimage {
+        return Ok(());
+    }
+    staged
+        .replace(&relative, &preimage, postimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    provisional.push(ProvisionalApplyEffect::single(
+        relative,
+        DomainEvent::new(
+            DomainEventKind::TemplateChanged,
+            format!("{}.Template.{name}", owner.as_str()),
+        ),
+        op_index,
+    ));
+    Ok(())
+}
+
+fn stage_template_remove(
+    staged: &mut ApplyStagedState,
+    authority: &MetadataApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    name: &str,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let (owner_relative, owner_preimage, owner_source) =
+        owner_descriptor_and_text(staged, authority, owner, op_index)?;
+    let (deregistered, removed) =
+        crate::infrastructure::native_operations::meta::remove::remove_metadata_child_text_with_flag(
+            &owner_source,
+            "Template",
+            name,
+        );
+    if !removed {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::NotFound,
+            format!("`{}` has no template `{name}`", owner.as_str()),
+        )
+        .at_path(at_path));
+    }
+    let reference = format!("{}.Template.{name}", owner.as_str());
+    let mut owner_text = deregistered;
+    for property in ["MainDataCompositionSchema", "DefaultTemplate"] {
+        let filled = format!("<{property}>{reference}</{property}>");
+        if owner_text.contains(&filled) {
+            owner_text = owner_text.replace(&filled, &format!("<{property}/>"));
+        }
+    }
+    let mut touched = Vec::new();
+    let templates_dir = owner_relative.with_extension("").join("Templates");
+    let descriptor_relative = templates_dir.join(format!("{name}.xml"));
+    if let Some(preimage) = staged
+        .read(&descriptor_relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+    {
+        staged
+            .remove(&descriptor_relative, &preimage)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+        touched.push(descriptor_relative);
+    }
+    let root = authority.source_root();
+    let payload_dir = root.join(&templates_dir).join(name);
+    if payload_dir.is_dir() {
+        let traversal =
+            crate::infrastructure::native_operations::meta::remove::metadata_files_recursive(
+                &payload_dir,
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error)
+                    .at_path(at_path.clone())
+            })?;
+        for file in &traversal.files {
+            let relative = staged_relative(root, file, op_index)?;
+            if let Some(preimage) = staged
+                .read(&relative)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+            {
+                staged
+                    .remove(&relative, &preimage)
+                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+                touched.push(relative);
+            }
+        }
+    }
+    staged
+        .replace(&owner_relative, &owner_preimage, bom_bytes(&owner_text))
+        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    touched.push(owner_relative);
+    provisional.push(ProvisionalApplyEffect::spanning(
+        touched,
+        DomainEvent::new(DomainEventKind::TemplateChanged, reference),
         op_index,
     ));
     Ok(())

@@ -26,9 +26,26 @@ struct DcsEdit {
     variant: String,
 }
 
+/// One cell write of `mxl.set`: 1-based row and column inside the area.
+#[derive(Debug, Clone)]
+struct MxlCellWrite {
+    row: i64,
+    col: i64,
+    text: String,
+}
+
+#[derive(Debug, Clone)]
+struct MxlEdit {
+    template: MetadataAddress,
+    area: String,
+    columns: Option<i64>,
+    cells: Vec<MxlCellWrite>,
+}
+
 #[derive(Debug, Clone)]
 enum DcsMxlPlanKind {
     Dcs(DcsEdit),
+    Mxl(MxlEdit),
     Unsupported,
 }
 
@@ -236,6 +253,9 @@ pub(crate) fn parse_dcs_mxl_plan_operation(
     let kind = match crate::application::v13::apply::dispatch_family(operation) {
         Some(crate::domain::apply::OperationFamily::Dcs) => {
             parse_dcs_operation(operation, object, op_index, binding)?
+        }
+        Some(crate::domain::apply::OperationFamily::Mxl) if operation == "mxl.set" => {
+            parse_mxl_set(object, op_index, binding)?
         }
         _ => DcsMxlPlanKind::Unsupported,
     };
@@ -503,6 +523,178 @@ fn parse_dcs_operation(
     }))
 }
 
+fn parse_cell_address(key: &str) -> Option<(i64, i64)> {
+    let rest = key.strip_prefix('R')?;
+    let (row, col) = rest.split_once('C')?;
+    let row = row.parse::<i64>().ok()?;
+    let col = col.parse::<i64>().ok()?;
+    (row >= 1 && col >= 1).then_some((row, col))
+}
+
+fn parse_mxl_set(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<DcsMxlPlanKind, ApplyPlanError> {
+    let address = qualified_target(args, op_index, binding)?;
+    let target = dcs_target(&address, op_index)?;
+    if target.terminal.is_some() || !target.data_set.is_empty() || !target.variant.is_empty() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "mxl.set addresses the spreadsheet template itself: `Owner.Name.Template.T`",
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    }
+    let values = required_values(args, op_index)?;
+    let values_path = format!("ops[{op_index}].args.values");
+    if let Some(field) = values
+        .keys()
+        .find(|field| !["area", "cells", "columns"].contains(&field.as_str()))
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("mxl.set values accept `area`, `cells` and `columns`, not `{field}`"),
+        )
+        .at_path(format!("{values_path}.{field}")));
+    }
+    let area = required_text(values, &["area"], &values_path)?.to_string();
+    let columns = match values.get("columns") {
+        None => None,
+        Some(Value::Number(number)) if number.as_i64().is_some_and(|value| value >= 1) => {
+            number.as_i64()
+        }
+        Some(_) => {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "`columns` must be a positive integer",
+            )
+            .at_path(format!("{values_path}.columns")))
+        }
+    };
+    let cells_object = values
+        .get("cells")
+        .and_then(Value::as_object)
+        .filter(|cells| !cells.is_empty())
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "`cells` must be a non-empty object keyed by cell address, e.g. {\"R1C1\": \"Валюта\"}",
+            )
+            .at_path(format!("{values_path}.cells"))
+        })?;
+    let mut cells = Vec::with_capacity(cells_object.len());
+    for (key, value) in cells_object {
+        let (row, col) = parse_cell_address(key).ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!(
+                    "`{key}` is not a cell address; use `R<row>C<column>` with 1-based numbers"
+                ),
+            )
+            .at_path(format!("{values_path}.cells.{key}"))
+        })?;
+        let text = match value {
+            Value::String(text) => text.clone(),
+            Value::Null => String::new(),
+            Value::Number(number) => number.to_string(),
+            Value::Bool(flag) => flag.to_string(),
+            _ => {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::BadValue,
+                    "a cell value must be a string, number, boolean or null",
+                )
+                .at_path(format!("{values_path}.cells.{key}")))
+            }
+        };
+        cells.push(MxlCellWrite { row, col, text });
+    }
+    cells.sort_by_key(|cell| (cell.row, cell.col));
+    Ok(DcsMxlPlanKind::Mxl(MxlEdit {
+        template: target.template,
+        area,
+        columns,
+        cells,
+    }))
+}
+
+/// Applies the cell writes to a decompiled definition: the area is found or
+/// appended, compressed empty rows are expanded, cells are set by column.
+fn apply_mxl_edit(definition: &mut Value, edit: &MxlEdit) -> Result<(), String> {
+    let object = definition
+        .as_object_mut()
+        .ok_or_else(|| "the decompiled spreadsheet definition is not an object".to_string())?;
+    let max_col = edit.cells.iter().map(|cell| cell.col).max().unwrap_or(1);
+    let current_columns = object.get("columns").and_then(Value::as_i64).unwrap_or(0);
+    let columns = current_columns.max(max_col).max(edit.columns.unwrap_or(0));
+    object.insert("columns".to_string(), Value::from(columns));
+    let areas = object
+        .entry("areas".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let areas = areas
+        .as_array_mut()
+        .ok_or_else(|| "the decompiled definition has no areas array".to_string())?;
+    let index = match areas
+        .iter()
+        .position(|area| area.get("name").and_then(Value::as_str) == Some(edit.area.as_str()))
+    {
+        Some(index) => index,
+        None => {
+            areas.push(serde_json::json!({"name": edit.area, "rows": []}));
+            areas.len() - 1
+        }
+    };
+    let area = areas[index]
+        .as_object_mut()
+        .ok_or_else(|| "an area of the decompiled definition is not an object".to_string())?;
+    let rows = area
+        .entry("rows".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let mut expanded = Vec::new();
+    for row in rows.as_array().cloned().unwrap_or_default() {
+        match row.get("empty").and_then(Value::as_i64) {
+            Some(count) if row.as_object().is_some_and(|object| object.len() == 1) => {
+                for _ in 0..count.max(0) {
+                    expanded.push(Value::Object(Map::new()));
+                }
+            }
+            _ if row.is_array() => expanded.push(Value::Object(Map::new())),
+            _ => expanded.push(row),
+        }
+    }
+    let needed = edit.cells.iter().map(|cell| cell.row).max().unwrap_or(0) as usize;
+    while expanded.len() < needed {
+        expanded.push(Value::Object(Map::new()));
+    }
+    for cell in &edit.cells {
+        let row = expanded[cell.row as usize - 1]
+            .as_object_mut()
+            .ok_or_else(|| "a row of the decompiled definition is not an object".to_string())?;
+        row.remove("empty");
+        let cells = row
+            .entry("cells".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let cells = cells
+            .as_array_mut()
+            .ok_or_else(|| "a row's cells are not an array".to_string())?;
+        match cells
+            .iter_mut()
+            .find(|existing| existing.get("col").and_then(Value::as_i64) == Some(cell.col))
+        {
+            Some(existing) => {
+                if let Some(existing) = existing.as_object_mut() {
+                    existing.insert("text".to_string(), Value::String(cell.text.clone()));
+                    existing.remove("param");
+                    existing.remove("template");
+                }
+            }
+            None => cells.push(serde_json::json!({"col": cell.col, "text": cell.text})),
+        }
+        cells.sort_by_key(|existing| existing.get("col").and_then(Value::as_i64).unwrap_or(0));
+    }
+    *rows = Value::Array(expanded);
+    Ok(())
+}
+
 pub(crate) fn plan_dcs_mxl_batch(
     staged: ApplyStagedState,
     authority: DcsMxlApplyAuthority<'_>,
@@ -522,8 +714,15 @@ pub(crate) fn plan_dcs_mxl_batch(
     let mut provisional = Vec::new();
     for operation in operations {
         let op_index = operation.index();
-        let DcsMxlPlanKind::Dcs(edit) = &operation.operation().kind else {
-            return Err(hidden_apply_family_unimplemented(op_index));
+        let edit = match &operation.operation().kind {
+            DcsMxlPlanKind::Dcs(edit) => edit,
+            DcsMxlPlanKind::Mxl(edit) => {
+                stage_mxl_edit(&mut staged, &authority, edit, op_index, &mut provisional)?;
+                continue;
+            }
+            DcsMxlPlanKind::Unsupported => {
+                return Err(hidden_apply_family_unimplemented(op_index));
+            }
         };
         let at_path = format!("ops[{op_index}].args.at");
         let relative =
@@ -641,6 +840,83 @@ pub(crate) fn plan_dcs_mxl_batch(
     Ok((staged, provisional))
 }
 
+fn stage_mxl_edit(
+    staged: &mut ApplyStagedState,
+    authority: &DcsMxlApplyAuthority<'_>,
+    edit: &MxlEdit,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let values_path = format!("ops[{op_index}].args.values");
+    let relative =
+        attached_resource_relative(&edit.template, "Template.xml", authority.source_kind())
+            .map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
+            })?;
+    let preimage = staged
+        .read(&relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "the spreadsheet template (Ext/Template.xml) was not found",
+            )
+            .at_path(at_path.clone())
+        })?;
+    let text = String::from_utf8(
+        preimage
+            .strip_prefix(b"\xef\xbb\xbf")
+            .unwrap_or(&preimage)
+            .to_vec(),
+    )
+    .map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "the spreadsheet template is not UTF-8",
+        )
+        .at_path(at_path.clone())
+    })?;
+    let decompiled = crate::infrastructure::native_operations::mxl::mxl_decompile_document(
+        &text,
+        &relative.display().to_string(),
+    )
+    .map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+    })?;
+    let mut definition: Value = serde_json::from_str(&decompiled.json_text).map_err(|error| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::ProviderUnavailable,
+            format!("the decompiled spreadsheet definition is not JSON: {error}"),
+        )
+        .at_path(at_path.clone())
+    })?;
+    apply_mxl_edit(&mut definition, edit).map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(values_path.clone())
+    })?;
+    let compiled = crate::infrastructure::native_operations::mxl::mxl_compile_document(&definition)
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(values_path)
+        })?;
+    let mut postimage = b"\xef\xbb\xbf".to_vec();
+    postimage.extend_from_slice(compiled.xml.as_bytes());
+    if postimage == preimage {
+        return Ok(());
+    }
+    staged
+        .replace(&relative, &preimage, postimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    provisional.push(ProvisionalApplyEffect::single(
+        relative,
+        DomainEvent::new(
+            DomainEventKind::MxlChanged,
+            edit.template.as_str().to_string(),
+        ),
+        op_index,
+    ));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_dcs_mxl_plan_operation, plan_dcs_mxl_batch};
@@ -750,8 +1026,8 @@ mod tests {
             .dcs_mxl_planning_authority(&fixture.binding)
             .unwrap();
         let operation = parse_dcs_mxl_plan_operation(
-            "mxl.set",
-            &json!({"at": "main:Configuration"}),
+            "dcs.set",
+            &json!({"at": "main:Report.Sales.Template.Layout"}),
             0,
             &fixture.binding,
         )

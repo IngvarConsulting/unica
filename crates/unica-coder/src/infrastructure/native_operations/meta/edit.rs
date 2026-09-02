@@ -4381,6 +4381,10 @@ fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition)
         let _ =
             meta_edit_replace_or_insert_property(&mut text, "FillChecking", &replacement, &indent);
     }
+    if let Some(indexing) = &element.indexing {
+        let replacement = format!("{indent}<Indexing>{}</Indexing>", escape_xml(indexing));
+        let _ = meta_edit_replace_or_insert_property(&mut text, "Indexing", &replacement, &indent);
+    }
     xml.replace_range(range, &text);
 }
 
@@ -4593,6 +4597,22 @@ fn update_typed_element(
                 MetaDiagnosticCode::ProviderUnavailable,
                 "metadata required flag could not be updated",
                 Some("required"),
+            )
+        })?;
+    }
+    if let Some(indexing) = &update.indexing {
+        let replacement = format!("{indent}<Indexing>{}</Indexing>", escape_xml(indexing));
+        meta_edit_replace_or_insert_property(
+            &mut properties_text,
+            "Indexing",
+            &replacement,
+            &indent,
+        )
+        .map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata indexing could not be updated",
+                Some("indexing"),
             )
         })?;
     }
