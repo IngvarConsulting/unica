@@ -4165,7 +4165,7 @@ struct ActorLogicalReadLease {"#,
                         "op": "props.set",
                         "args": {"values": {"Comment": "must not publish"}}
                     },
-                    {"op": "relation.replace", "args": {"items": []}}
+                    {"op": "object.create", "args": {"values": {"kind": "Catalog", "name": "Ghost"}}}
                 ],
                 "dryRun": false
             }),
@@ -5107,7 +5107,7 @@ struct ActorLogicalReadLease {"#,
             "at": "main:Document.Order",
             "ops": [
                 {"op": "props.set", "args": {"values": {"Comment": "must not publish"}}},
-                {"op": "relation.replace", "args": {"items": []}}
+                {"op": "object.create", "args": {"values": {"kind": "Catalog", "name": "Ghost"}}}
             ],
             "dryRun": false,
         }));

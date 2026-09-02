@@ -1127,8 +1127,7 @@
      "expect": [
       "gap"
      ],
-     "gap": "Типизированный контракт attribute.set не выражает индексирование (legacy DSL умел)",
-     "observed": "bad:bad_value: unknown field `indexing`"
+     "gap": "Типизированный контракт attribute.set не выражает индексирование (legacy DSL умел)"
     }
    ],
    "id": "S053"
@@ -1242,7 +1241,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -1271,8 +1270,7 @@
      "expect": [
       "gap"
      ],
-     "gap": "Писатель свойств роли не существует: props.set отвечает bad_value вместо typed unsupported",
-     "observed": "bad:bad_value: unsupported metadata kind `Role`"
+     "gap": "Писатель свойств роли не существует: props.set отвечает bad_value вместо typed unsupported"
     }
    ],
    "id": "S057"
@@ -1300,8 +1298,7 @@
      "expect": [
       "gap"
      ],
-     "gap": "Писатель свойств подсистемы не существует: props.set отвечает bad_value вместо typed unsupported",
-     "observed": "bad:bad_value: unsupported metadata kind `Subsystem`"
+     "gap": "Писатель свойств подсистемы не существует: props.set отвечает bad_value вместо typed unsupported"
     }
    ],
    "id": "S058"
@@ -1797,16 +1794,19 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Добавить реквизит в существующую табличную часть — граница словаря (не выражается)",
+   "task": "Добавить реквизит в существующую табличную часть документа через scope (превью)",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных",
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
       "ops": [
        {
         "op": "attribute.add",
         "args": {
+         "scope": {
+          "tabularSection": "КатегорииДанных"
+         },
          "items": [
           {
            "name": "Основание",
@@ -1818,6 +1818,9 @@
               "allowedLength": "variable"
              }
             ]
+           },
+           "position": {
+            "after": "Категория"
            }
           }
          ]
@@ -1827,17 +1830,15 @@
       "dryRun": true
      },
      "expect": [
-      "gap"
-     ],
-     "gap": "Добавление реквизита в существующую ТЧ не выражается: ни адресом ТЧ, ни scope",
-     "observed": "bad:bad_value: apply operation `attribute.add` does not apply to TabularSection"
+      "ok"
+     ]
     }
    ],
    "id": "S072"
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Добавить табличную часть справочнику (текущий ответ поверхности)",
+   "task": "Создать пустую табличную часть документа (превью)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -1858,7 +1859,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "provider"
      ]
     }
    ],
@@ -1886,7 +1887,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -1913,7 +1914,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -1934,7 +1935,18 @@
          "items": [
           {
            "name": "Регион",
-           "type": "String(50)"
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 50,
+              "allowedLength": "variable"
+             }
+            ]
+           },
+           "position": {
+            "after": "КодСубъектаРФ"
+           }
           }
          ]
         }
@@ -1943,7 +1955,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -1971,7 +1983,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -1998,7 +2010,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -2019,7 +2031,16 @@
          "items": [
           {
            "name": "Вес",
-           "type": "Number(10,2)"
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 2,
+              "sign": "any"
+             }
+            ]
+           }
           }
          ]
         }
@@ -2028,7 +2049,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -2036,7 +2057,7 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Изменить ресурс регистра (текущий ответ поверхности)",
+   "task": "Изменить измерение регистра (в фикстуре нет ресурсов — правим измерение)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -2044,11 +2065,11 @@
       "at": "main:InformationRegister.АдминистративнаяИерархия",
       "ops": [
        {
-        "op": "resource.set",
+        "op": "dimension.set",
         "args": {
          "values": {
-          "name": "Наименование",
-          "synonym": "Наименование узла"
+          "name": "Идентификатор",
+          "synonym": "Идентификатор узла"
          }
         }
        }
@@ -2056,7 +2077,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -2064,7 +2085,7 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Удалить ресурс регистра (текущий ответ поверхности)",
+   "task": "Удалить измерение регистра (в фикстуре нет ресурсов — удаляем измерение)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -2072,10 +2093,10 @@
       "at": "main:InformationRegister.АдминистративнаяИерархия",
       "ops": [
        {
-        "op": "resource.remove",
+        "op": "dimension.remove",
         "args": {
          "values": {
-          "name": "Наименование"
+          "name": "РодительскийИдентификатор"
          }
         }
        }
@@ -2083,7 +2104,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -2103,7 +2124,10 @@
         "args": {
          "items": [
           {
-           "name": "Критично"
+           "name": "Критично",
+           "position": {
+            "after": "ПолезныйСовет"
+           }
           }
          ]
         }
@@ -2112,7 +2136,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -2140,7 +2164,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -2167,7 +2191,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -2196,8 +2220,9 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
-     ]
+      "gap"
+     ],
+     "gap": "column.* на DocumentJournal порождает невалидный XML (postcondition_failed) — дефект эмиттера колонок журнала"
     }
    ],
    "id": "S085"
@@ -2224,8 +2249,9 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
-     ]
+      "gap"
+     ],
+     "gap": "column.* на DocumentJournal порождает невалидный XML (postcondition_failed) — дефект эмиттера колонок журнала"
     }
    ],
    "id": "S086"
@@ -2251,8 +2277,9 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
-     ]
+      "gap"
+     ],
+     "gap": "column.* на DocumentJournal порождает невалидный XML (postcondition_failed) — дефект эмиттера колонок журнала"
     }
    ],
    "id": "S087"
@@ -2272,7 +2299,7 @@
          "items": [
           {
            "name": "Рубль",
-           "code": "643"
+           "id": "a1b2c3d4-1111-4111-8111-111111111111"
           }
          ]
         }
@@ -2281,7 +2308,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -2289,7 +2316,7 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Изменить предопределённый элемент (текущий ответ поверхности)",
+   "task": "Добавить предопределённый элемент и уточнить его описание одним пакетом (превью)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -2297,10 +2324,21 @@
       "at": "main:Catalog.Валюты",
       "ops": [
        {
+        "op": "predefinedItem.add",
+        "args": {
+         "items": [
+          {
+           "name": "Рубль",
+           "id": "a1b2c3d4-1111-4111-8111-111111111111"
+          }
+         ]
+        }
+       },
+       {
         "op": "predefinedItem.set",
         "args": {
          "values": {
-          "name": "Рубль",
+          "id": "a1b2c3d4-1111-4111-8111-111111111111",
           "description": "Российский рубль"
          }
         }
@@ -2309,7 +2347,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -2317,7 +2355,7 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Удалить предопределённый элемент (текущий ответ поверхности)",
+   "task": "Добавить и удалить предопределённый элемент одним пакетом (обратимость превью)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -2325,13 +2363,29 @@
       "at": "main:Catalog.Валюты",
       "ops": [
        {
-        "op": "predefinedItem.remove"
+        "op": "predefinedItem.add",
+        "args": {
+         "items": [
+          {
+           "name": "Тестовый",
+           "id": "a1b2c3d4-2222-4222-8222-222222222222"
+          }
+         ]
+        }
+       },
+       {
+        "op": "predefinedItem.remove",
+        "args": {
+         "values": {
+          "id": "a1b2c3d4-2222-4222-8222-222222222222"
+         }
+        }
        }
       ],
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -2671,7 +2725,7 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Создать табличную часть сразу с реквизитами (текущий ответ поверхности)",
+   "task": "Создать пустую табличную часть документа (превью)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -2683,20 +2737,7 @@
         "args": {
          "items": [
           {
-           "name": "ИсторияСогласований",
-           "attributes": [
-            {
-             "name": "Дата",
-             "type": {
-              "variants": [
-               {
-                "kind": "date",
-                "fractions": "date"
-               }
-              ]
-             }
-            }
-           ]
+           "name": "ИсторияСогласований"
           }
          ]
         }
@@ -2705,8 +2746,9 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
-     ]
+      "gap"
+     ],
+     "gap": "tabularSection.add на реальном объекте с DefinedType-реквизитами роняет постобраз: existing defined type is not a metadata address (дефект проекции info_projection)"
     }
    ],
    "id": "S098"
@@ -3132,7 +3174,7 @@
   },
   {
    "area": "Создание и удаление объектов",
-   "task": "Добавить ссылочную связь объекту (текущий ответ поверхности)",
+   "task": "Добавить документ в основания создания справочника (превью)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -3142,18 +3184,21 @@
        {
         "op": "relation.add",
         "args": {
-         "items": [
-          {
-           "type": "CatalogRef.Валюты"
-          }
-         ]
+         "values": {
+          "relation": "basedOn",
+          "targets": [
+           {
+            "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+           }
+          ]
+         }
         }
        }
       ],
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -3161,7 +3206,7 @@
   },
   {
    "area": "Создание и удаление объектов",
-   "task": "Заменить состав ссылочных связей объекта (текущий ответ поверхности)",
+   "task": "Заменить состав оснований создания справочника (превью)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -3171,18 +3216,21 @@
        {
         "op": "relation.replace",
         "args": {
-         "items": [
-          {
-           "type": "CatalogRef.Валюты"
-          }
-         ]
+         "values": {
+          "relation": "basedOn",
+          "targets": [
+           {
+            "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+           }
+          ]
+         }
         }
        }
       ],
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -3190,7 +3238,7 @@
   },
   {
    "area": "Создание и удаление объектов",
-   "task": "Убрать ссылочную связь объекта (текущий ответ поверхности)",
+   "task": "Добавить и убрать основание создания одним пакетом (обратимость связи, превью)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -3198,13 +3246,36 @@
       "at": "main:Catalog.Валюты",
       "ops": [
        {
-        "op": "relation.remove"
+        "op": "relation.add",
+        "args": {
+         "values": {
+          "relation": "basedOn",
+          "targets": [
+           {
+            "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+           }
+          ]
+         }
+        }
+       },
+       {
+        "op": "relation.remove",
+        "args": {
+         "values": {
+          "relation": "basedOn",
+          "targets": [
+           {
+            "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+           }
+          ]
+         }
+        }
        }
       ],
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "ok"
      ]
     }
    ],
@@ -3212,7 +3283,7 @@
   },
   {
    "area": "Создание и удаление объектов",
-   "task": "Написать справку к справочнику (текущий ответ поверхности)",
+   "task": "Завести встроенную справку объекта (facet Ext/Help ещё не строится — honest unsupported)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -3222,7 +3293,9 @@
        {
         "op": "help.create",
         "args": {
-         "text": "<p>Справочник валют ведётся по классификатору.</p>"
+         "values": {
+          "lang": "ru"
+         }
         }
        }
       ],
@@ -5252,7 +5325,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "provider"
      ]
     }
    ],
@@ -5280,8 +5353,9 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
-     ]
+      "gap"
+     ],
+     "gap": "template.set не находит макет, видимый чтением — рассинхрон reader/writer typed-движка по коллекции templates"
     }
    ],
    "id": "S197"
@@ -5307,8 +5381,9 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
-     ]
+      "gap"
+     ],
+     "gap": "template.remove не находит макет, видимый чтением — рассинхрон reader/writer typed-движка по коллекции templates"
     }
    ],
    "id": "S198"
@@ -5423,7 +5498,7 @@
       "dryRun": true
      },
      "expect": [
-      "unsupported"
+      "provider"
      ]
     }
    ],
@@ -6676,10 +6751,8 @@
       "dryRun": true
      },
      "expect": [
-      "gap"
-     ],
-     "gap": "Реальный объект БСП (Валюты) не проходит постусловие ридера постобраза при любой правке реквизитов",
-     "observed": "bad:postcondition_failed: existing reference fill value is not a metadata address"
+      "provider"
+     ]
     }
    ],
    "id": "S260"

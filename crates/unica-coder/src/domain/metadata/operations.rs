@@ -208,6 +208,14 @@ pub(crate) enum MetaFillValue {
     Boolean(bool),
     DateTime(String),
     Reference(MetadataReference),
+    /// A platform design-time reference that carries an item designator after
+    /// the metadata address — `Catalog.Валюты.EmptyRef` or a predefined item.
+    /// Real platform dumps hold these, and re-emission must round-trip the
+    /// exact value, so the designator is preserved verbatim.
+    DesignTimeItemRef {
+        reference: MetadataReference,
+        item: String,
+    },
 }
 
 /// Metadata kinds that expose a platform `Ref` generated type in the active
@@ -327,13 +335,16 @@ pub(crate) fn validate_metadata_element_value_profile(
                     .iter()
                     .any(|variant| matches!(variant, MetadataTypeVariant::Date { .. }))
         }
-        MetaFillValue::Reference(reference) => metadata_type.variants.iter().any(|variant| {
-            matches!(
-                variant,
-                MetadataTypeVariant::Reference { metadata_path }
-                    if metadata_path == &reference.metadata_path
-            )
-        }),
+        MetaFillValue::Reference(reference)
+        | MetaFillValue::DesignTimeItemRef { reference, .. } => {
+            metadata_type.variants.iter().any(|variant| {
+                matches!(
+                    variant,
+                    MetadataTypeVariant::Reference { metadata_path }
+                        if metadata_path == &reference.metadata_path
+                )
+            })
+        }
     };
     if compatible {
         Ok(())
@@ -487,6 +498,13 @@ impl Serialize for MetaFillValue {
                 let mut state = serializer.serialize_struct("MetaFillValue", 2)?;
                 state.serialize_field("kind", "reference")?;
                 state.serialize_field("metadataPath", &reference.metadata_path)?;
+                state.end()
+            }
+            Self::DesignTimeItemRef { reference, item } => {
+                let mut state = serializer.serialize_struct("MetaFillValue", 3)?;
+                state.serialize_field("kind", "reference")?;
+                state.serialize_field("metadataPath", &reference.metadata_path)?;
+                state.serialize_field("item", item)?;
                 state.end()
             }
         }

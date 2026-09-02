@@ -4741,18 +4741,45 @@ pub(super) fn parse_typed_fill_value_node(
             "existing date-time fill value is not canonical",
             Some("fillValue"),
         )),
-        (READABLE_NAMESPACE, "DesignTimeRef") => Ok(Some(MetaFillValue::Reference(
-            crate::domain::metadata::MetadataReference {
-                metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
-                    .map_err(|_| {
-                        typed_diagnostic(
-                            MetaDiagnosticCode::ValidationFailed,
-                            "existing reference fill value is not a metadata address",
-                            Some("fillValue"),
-                        )
-                    })?,
-            },
-        ))),
+        (READABLE_NAMESPACE, "DesignTimeRef") => {
+            // Real platform dumps carry item designators after the metadata
+            // address — `Catalog.Валюты.EmptyRef` or a predefined item name.
+            // The address prefix is validated; the designator round-trips
+            // verbatim so re-emission cannot corrupt the value.
+            if let Ok(metadata_path) =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
+            {
+                return Ok(Some(MetaFillValue::Reference(
+                    crate::domain::metadata::MetadataReference { metadata_path },
+                )));
+            }
+            let Some((prefix, item)) = value.rsplit_once('.') else {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "existing reference fill value is not a metadata address",
+                    Some("fillValue"),
+                ));
+            };
+            let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, prefix)
+                .map_err(|_| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ValidationFailed,
+                        "existing reference fill value is not a metadata address",
+                        Some("fillValue"),
+                    )
+                })?;
+            if item.is_empty() {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "existing reference fill value is not a metadata address",
+                    Some("fillValue"),
+                ));
+            }
+            Ok(Some(MetaFillValue::DesignTimeItemRef {
+                reference: crate::domain::metadata::MetadataReference { metadata_path },
+                item: item.to_string(),
+            }))
+        }
         _ => Err(typed_diagnostic(
             MetaDiagnosticCode::ValidationFailed,
             "existing fill value type is unsupported by typed metadata edit",

@@ -9,6 +9,6 @@
 			<Language>Русский</Language>
 			<Language>English</Language>
 			<Enum>LanguageAware</Enum>
-		<Catalog>Валюты</Catalog><Document>АктОбУничтоженииПерсональныхДанных</Document><Enum>ВажностьПроблемыУчета</Enum><InformationRegister>АдминистративнаяИерархия</InformationRegister><CommonModule>GoogleПереводчик</CommonModule><Report>АнализВерсийОбъектов</Report><Role>SalesReader</Role><Subsystem>Администрирование</Subsystem></ChildObjects>
+		<Catalog>Валюты</Catalog><Document>АктОбУничтоженииПерсональныхДанных</Document><Enum>ВажностьПроблемыУчета</Enum><InformationRegister>АдминистративнаяИерархия</InformationRegister><CommonModule>GoogleПереводчик</CommonModule><Report>АнализВерсийОбъектов</Report><Role>SalesReader</Role><Subsystem>Администрирование</Subsystem><DocumentJournal>ДокументыОрганизации</DocumentJournal></ChildObjects>
 	</Configuration>
 </MetaDataObject>
