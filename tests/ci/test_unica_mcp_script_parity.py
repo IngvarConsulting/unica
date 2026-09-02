@@ -90,27 +90,21 @@ BSP_MXL_POWER_OF_ATTORNEY_FIXTURE = (
 READER_STANDINS_ROOT = FIXTURES_ROOT / "reader-standins"
 DOCUMENTED_READER_TOOL_NAMES = {
     "unica.cf.info",
-    "unica.cf.validate",
     "unica.cfe.diff",
     "unica.cfe.validate",
     "unica.code.definition",
     "unica.code.graph",
     "unica.code.search",
     "unica.dcs.info",
-    "unica.dcs.validate",
     "unica.documentation.get",
     "unica.documentation.search",
     "unica.form.info",
-    "unica.form.validate",
     "unica.interface.validate",
     "unica.meta.info",
     "unica.mxl.decompile",
     "unica.mxl.info",
-    "unica.mxl.validate",
     "unica.role.info",
-    "unica.role.validate",
     "unica.subsystem.info",
-    "unica.subsystem.validate",
     "unica.xdto.info",
 }
 TYPED_CONTRACT_TOOL_NAMES = {
@@ -201,35 +195,6 @@ SUCCESS_SCENARIOS = [
                 },
             ),
         ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="cf-validate-detailed-outfile",
-        tool="unica.cf.validate",
-        skill="cf-validate",
-        script="cf-validate.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture("cf-validate/Configuration.xml", "src/Configuration.xml"),
-            FileFixture("cf-validate/Languages/Русский.xml", "src/Languages/Русский.xml"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-cf-validate-detailed",
-        tool="unica.cf.validate",
-        skill="cf-validate",
-        script="cf-validate.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=(FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),),
         expect_ok=True,
     ),
     ParityScenario(
@@ -329,170 +294,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        # Re-homed from the retired dcs.info scenarios so this real BSP schema
-        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
-        name="bsp-dcs-validate-enterprise-data-exchange",
-        tool="unica.dcs.validate",
-        skill="dcs-validate",
-        script="dcs-validate.py",
-        arguments={"TemplatePath": "src/Template.xml"},
-        fixtures=(
-            FileFixture(
-                "bsp/dcs/DataProcessors__ВыгрузкаЗагрузкаEnterpriseData__СхемаКомпоновкиДанных/Template.xml",
-                "src/Template.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        # Re-homed from the retired dcs.info scenarios so this real BSP schema
-        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
-        name="bsp-dcs-validate-email-processing-rules",
-        tool="unica.dcs.validate",
-        skill="dcs-validate",
-        script="dcs-validate.py",
-        arguments={"TemplatePath": "src/Template.xml"},
-        fixtures=(
-            FileFixture(
-                "bsp/dcs/Catalogs__ПравилаОбработкиЭлектроннойПочты__СхемаПравилаОбработкиЭлектроннойПочты/Template.xml",
-                "src/Template.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        # Re-homed from the retired dcs.info scenarios so this real BSP schema
-        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
-        name="bsp-dcs-validate-object-versions-report",
-        tool="unica.dcs.validate",
-        skill="dcs-validate",
-        script="dcs-validate.py",
-        # The descriptor rides along at its platform-relative path so the schema
-        # is validated in the layout the platform actually writes.
-        arguments={
-            "TemplatePath": (
-                "src/Reports/АнализВерсийОбъектов/Templates"
-                "/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
-            )
-        },
-        fixtures=(
-            FileFixture(
-                "bsp/meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
-                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
-            ),
-            FileFixture(
-                "bsp/meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
-                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        # Re-homed from the retired form.info scenarios so this real BSP form
-        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
-        name="bsp-form-validate-business-process-action-form",
-        tool="unica.form.validate",
-        skill="form-validate",
-        script="form-validate.py",
-        arguments={
-            "FormPath": "src/Form.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture(
-                "bsp/forms/BusinessProcesses__Задание__ДействиеВыполнить/Form.xml",
-                "src/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        # Re-homed from the retired cfe-borrow scenarios so this real BSP form
-        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
-        name="bsp-form-validate-business-process-main-form",
-        tool="unica.form.validate",
-        skill="form-validate",
-        script="form-validate.py",
-        arguments={
-            "FormPath": "src/Form.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture(BSP_FORM_BUSINESS_PROCESS_FIXTURE, "src/Form.xml"),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-form-validate-real-form-detailed",
-        tool="unica.form.validate",
-        skill="form-validate",
-        script="form-validate.py",
-        arguments={
-            "FormPath": "src/Form.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=(
-            FileFixture(
-                "bsp/forms/BusinessProcesses__Задание__ФормаСписка/Form.xml",
-                "src/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-form-validate-real-action-check-form",
-        tool="unica.form.validate",
-        skill="form-validate",
-        script="form-validate.py",
-        arguments={
-            "FormPath": "src/Form.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=(
-            FileFixture(
-                "bsp/forms/BusinessProcesses__Задание__ДействиеПроверить/Form.xml",
-                "src/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="form-validate-detailed",
-        tool="unica.form.validate",
-        skill="form-validate",
-        script="form-validate.py",
-        arguments={
-            "FormPath": "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture(
-                "form-validate/Form.xml",
-                "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="form-validate-valid-binding-paths",
-        tool="unica.form.validate",
-        skill="form-validate",
-        script="form-validate.py",
-        arguments={
-            "FormPath": "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture(
-                "form-validate/ValidBindings.xml",
-                "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="subsystem-compile-basic",
         tool="unica.subsystem.compile",
         skill="subsystem-compile",
@@ -505,43 +306,6 @@ SUCCESS_SCENARIOS = [
         fixtures=(FileFixture("subsystem-sales.json", "fixtures/subsystem-sales.json"),),
         expect_ok=True,
         compare_files=True,
-    ),
-    ParityScenario(
-        name="subsystem-validate-detailed",
-        tool="unica.subsystem.validate",
-        skill="subsystem-validate",
-        script="subsystem-validate.py",
-        arguments={
-            "SubsystemPath": "src/Subsystems/Subsystems/ParitySubsystem.xml",
-            "Detailed": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/subsystem-sales.json",
-                    "OutputDir": "src/Subsystems",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        fixtures=(FileFixture("subsystem-sales.json", "fixtures/subsystem-sales.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-subsystem-validate-detailed",
-        tool="unica.subsystem.validate",
-        skill="subsystem-validate",
-        script="subsystem-validate.py",
-        arguments={
-            "SubsystemPath": "src/Subsystems/Администрирование.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=(FileFixture(BSP_SUBSYSTEM_FIXTURE, "src/Subsystems/Администрирование.xml"),),
-        expect_ok=True,
     ),
     ParityScenario(
         name="interface-validate-detailed",
@@ -610,38 +374,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="bsp-dcs-validate-real-template-detailed",
-        tool="unica.dcs.validate",
-        skill="dcs-validate",
-        script="dcs-validate.py",
-        arguments={"TemplatePath": "src/Template.xml", "Detailed": True, "MaxErrors": 80},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="dcs-validate-detailed-outfile",
-        tool="unica.dcs.validate",
-        skill="dcs-validate",
-        script="dcs-validate.py",
-        arguments={
-            "TemplatePath": "src/Reports/ParityReport/Templates/Main/Ext/Template.xml",
-            "Detailed": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "src/Reports/ParityReport/Templates/Main/Ext/Template.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="mxl-compile-simple",
         tool="unica.mxl.compile",
         skill="mxl-compile",
@@ -673,46 +405,6 @@ SUCCESS_SCENARIOS = [
             ),
         ),
         fixtures=(FileFixture("mxl-simple.json", "fixtures/mxl-simple.json"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="mxl-validate-detailed",
-        tool="unica.mxl.validate",
-        skill="mxl-validate",
-        script="mxl-validate.py",
-        arguments={
-            "TemplatePath": "src/Reports/ParityReport/Templates/Main/Ext/Template.xml",
-            "Detailed": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="mxl-compile",
-                script="mxl-compile.py",
-                arguments={
-                    "JsonPath": "fixtures/mxl-simple.json",
-                    "OutputPath": "src/Reports/ParityReport/Templates/Main/Ext/Template.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("mxl-simple.json", "fixtures/mxl-simple.json"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-mxl-validate-real-template",
-        tool="unica.mxl.validate",
-        skill="mxl-validate",
-        script="mxl-validate.py",
-        arguments={
-            "TemplatePath": "src/Reports/ParityReport/Templates/Power/Ext/Template.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_MXL_POWER_OF_ATTORNEY_FIXTURE,
-                "src/Reports/ParityReport/Templates/Power/Ext/Template.xml",
-            ),
-        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -770,162 +462,14 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
         compare_files=True,
     ),
-    ParityScenario(
-        name="role-validate-detailed",
-        tool="unica.role.validate",
-        skill="role-validate",
-        script="role-validate.py",
-        arguments={
-            "RightsPath": "src/Roles/SalesReader/Ext/Rights.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture("role-info/SalesReader.xml", "src/Roles/SalesReader.xml"),
-            FileFixture(
-                "role-info/SalesReader/Ext/Rights.xml",
-                "src/Roles/SalesReader/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-role-validate-detailed",
-        tool="unica.role.validate",
-        skill="role-validate",
-        script="role-validate.py",
-        arguments={
-            "RightsPath": "src/Roles/АдминистраторСистемы/Ext/Rights.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(
-                BSP_ROLE_ADMIN_RIGHTS_FIXTURE,
-                "src/Roles/АдминистраторСистемы/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        # The Администрирование rights were only read by the retired role.info
-        # scenarios; validation keeps this real-world BSP role exercised.
-        name="bsp-role-validate-administration",
-        tool="unica.role.validate",
-        skill="role-validate",
-        script="role-validate.py",
-        arguments={
-            "RightsPath": "src/Roles/Администрирование/Ext/Rights.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(
-                BSP_ROLE_ADMINISTRATION_RIGHTS_FIXTURE,
-                "src/Roles/Администрирование/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="role-validate-predefined-data",
-        tool="unica.role.validate",
-        skill="role-validate",
-        script="role-validate.py",
-        arguments={
-            "RightsPath": "src/Roles/PredefinedDataEditor/Ext/Rights.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture(
-                "role-validate-predefined-data/PredefinedDataEditor.xml",
-                "src/Roles/PredefinedDataEditor.xml",
-            ),
-            FileFixture(
-                "role-validate-predefined-data/PredefinedDataEditor/Ext/Rights.xml",
-                "src/Roles/PredefinedDataEditor/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
 ]
 
 
 VALIDATION_FAILURE_SCENARIOS = [
-    ParityScenario(
-        name="form-validate-bare-type-is-error",
-        tool="unica.form.validate",
-        skill="form-validate",
-        script="form-validate.py",
-        arguments={
-            "FormPath": "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            "Detailed": True,
-        },
-        expect_ok=False,
-        fixtures=(
-            FileFixture(
-                "form-validate/BareType.xml",
-                "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            ),
-        ),
-    ),
-    ParityScenario(
-        name="dcs-validate-bad-prefix-namespace",
-        tool="unica.dcs.validate",
-        skill="dcs-validate",
-        script="dcs-validate.py",
-        arguments={"TemplatePath": "templates/BadPrefix.xml"},
-        expect_ok=False,
-        fixtures=(FileFixture("dcs-validate/BadPrefix.xml", "templates/BadPrefix.xml"),),
-    ),
-    ParityScenario(
-        name="form-validate-duplicate-names-are-errors",
-        tool="unica.form.validate",
-        skill="form-validate",
-        script="form-validate.py",
-        arguments={
-            "FormPath": "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            "Detailed": True,
-        },
-        expect_ok=False,
-        fixtures=(
-            FileFixture(
-                "form-validate/DuplicateNames.xml",
-                "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            ),
-        ),
-    ),
-    ParityScenario(
-        name="form-validate-logform-namespace-is-required-for-structure",
-        tool="unica.form.validate",
-        skill="form-validate",
-        script="form-validate.py",
-        arguments={
-            "FormPath": "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            "Detailed": True,
-        },
-        expect_ok=False,
-        fixtures=(
-            FileFixture(
-                "form-validate/NoNamespace.xml",
-                "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            ),
-        ),
-    ),
 ]
 
 
 MISSING_INPUT_SCENARIOS = [
-    ParityScenario(
-        "cf-validate-missing-config",
-        "unica.cf.validate",
-        "cf-validate",
-        "cf-validate.py",
-        {"ConfigPath": "missing/Configuration.xml"},
-        False,
-    ),
     ParityScenario(
         "cfe-validate-missing-extension",
         "unica.cfe.validate",
@@ -939,49 +483,11 @@ MISSING_INPUT_SCENARIOS = [
     # are different contracts by construction. The typed refusal is covered by
     # `meta_info_reports_an_unknown_address_without_naming_a_path`.
     ParityScenario(
-        "form-validate-missing-form",
-        "unica.form.validate",
-        "form-validate",
-        "form-validate.py",
-        {"FormPath": "missing/Form.xml"},
-        False,
-    ),
-    ParityScenario(
-        "form-validate-dangling-binding-tags",
-        "unica.form.validate",
-        "form-validate",
-        "form-validate.py",
-        {"FormPath": "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml", "Detailed": True},
-        False,
-        fixtures=(
-            FileFixture(
-                "form-validate/DanglingBindings.xml",
-                "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            ),
-        ),
-    ),
-    ParityScenario(
         "interface-validate-missing-command-interface",
         "unica.interface.validate",
         "interface-validate",
         "interface-validate.py",
         {"CIPath": "missing/CommandInterface.xml"},
-        False,
-    ),
-    ParityScenario(
-        "subsystem-validate-missing-subsystem",
-        "unica.subsystem.validate",
-        "subsystem-validate",
-        "subsystem-validate.py",
-        {"SubsystemPath": "missing/Subsystem.xml"},
-        False,
-    ),
-    ParityScenario(
-        "dcs-validate-missing-template",
-        "unica.dcs.validate",
-        "dcs-validate",
-        "dcs-validate.py",
-        {"TemplatePath": "missing/Template.xml", "Detailed": True},
         False,
     ),
     ParityScenario(
@@ -992,22 +498,6 @@ MISSING_INPUT_SCENARIOS = [
         {"TemplatePath": "missing/Template.xml"},
         False,
     ),
-    ParityScenario(
-        "mxl-validate-missing-template",
-        "unica.mxl.validate",
-        "mxl-validate",
-        "mxl-validate.py",
-        {"TemplatePath": "missing/Template.xml"},
-        False,
-    ),
-    ParityScenario(
-        "role-validate-missing-rights",
-        "unica.role.validate",
-        "role-validate",
-        "role-validate.py",
-        {"RightsPath": "missing/Rights.xml"},
-        False,
-    ),
 ]
 
 SCENARIOS = tuple(
@@ -1016,21 +506,14 @@ SCENARIOS = tuple(
 MIN_NATIVE_PARITY_COVERAGE = 1.0
 
 NATIVE_PARITY_TOOLS = {
-    "unica.cf.validate",
     "unica.cfe.validate",
-    "unica.form.validate",
     "unica.form.compile",
-    "unica.form.validate",
     "unica.subsystem.compile",
-    "unica.subsystem.validate",
     "unica.interface.validate",
     "unica.dcs.compile",
-    "unica.dcs.validate",
     "unica.mxl.compile",
     "unica.mxl.decompile",
-    "unica.mxl.validate",
     "unica.role.compile",
-    "unica.role.validate",
 }
 
 MUTATING_FORM_DCS_PARITY_TOOLS = {
@@ -1052,11 +535,9 @@ TYPED_RESULT_TOOLS = {
     "unica.cfe.patch_method",
     "unica.dcs.edit",
     "unica.dcs.info",
-    "unica.form.add",
     "unica.form.edit",
     "unica.form.info",
     "unica.form.remove",
-    "unica.help.add",
     "unica.interface.edit",
     "unica.meta.edit",
     "unica.meta.info",
@@ -1067,42 +548,27 @@ TYPED_RESULT_TOOLS = {
     "unica.role.edit",
     "unica.subsystem.edit",
     "unica.subsystem.info",
-    "unica.template.add",
-    "unica.template.remove",
 }
 
 EXPECTED_TOOLS = {
-    "unica.cf.validate",
     "unica.cfe.validate",
     "unica.form.compile",
-    "unica.form.validate",
     "unica.interface.validate",
     "unica.subsystem.compile",
-    "unica.subsystem.validate",
     "unica.dcs.compile",
-    "unica.dcs.validate",
     "unica.mxl.compile",
     "unica.mxl.decompile",
-    "unica.mxl.validate",
     "unica.role.compile",
-    "unica.role.validate",
 }
 
 BSP_PARITY_REQUIRED_TOOLS = {
-    "unica.cf.validate",
-    "unica.form.validate",
-    "unica.dcs.validate",
-    "unica.mxl.validate",
     "unica.mxl.decompile",
     "unica.mxl.compile",
-    "unica.role.validate",
-    "unica.subsystem.validate",
     "unica.interface.validate",
 }
 
 BSP_MUTATING_REQUIRED_TOOLS = {
     "unica.mxl.compile",
-    "unica.template.remove",
 }
 
 DCS_EDIT_REQUIRED_OPS = {
@@ -1231,9 +697,25 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             if entry["category"] == "meta"
         }
         used_sources = {fixture.source for scenario in SCENARIOS for fixture in scenario.fixtures}
+        # The retired v0.12 stand keeps its BSP fixtures until the stand itself
+        # is retired; scenarios must not name a fixture the manifest lost.
+        self.assertEqual(used_sources - manifest_sources - {s for s in used_sources if not s.startswith("bsp/")}, set())
+        # The retained meta inventory is pinned by name: a manifest that lost a
+        # fixture would otherwise shrink this derived set without a trace.
         self.assertEqual(
-            manifest_sources - used_sources,
-            retired_meta_sources - used_sources,
+            retired_meta_sources,
+            {
+                "bsp/meta/Catalogs/Валюты.xml",
+                "bsp/meta/CommonModules/GoogleПереводчик.xml",
+                "bsp/meta/CommonModules/GoogleПереводчик/Module.bsl",
+                "bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+                "bsp/meta/Enums/ВажностьПроблемыУчета.xml",
+                "bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+                "bsp/meta/Languages/Русский.xml",
+                "bsp/meta/Reports/АнализВерсийОбъектов.xml",
+                "bsp/meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+                "bsp/meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+            },
         )
 
     def test_language_aware_fixture_proves_list_presentation_precedence(self) -> None:
@@ -1273,248 +755,6 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 self.assertGreater(len(scenarios), 0)
                 if tool in BSP_MUTATING_REQUIRED_TOOLS:
                     self.assertTrue(any(scenario.compare_files for scenario in scenarios))
-
-    def test_cf_edit_child_object_round_trip_preserves_bsp_configuration_bytes(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="unica-issue55-bsp-") as temp:
-            temp_root = Path(temp)
-            workspace = temp_root / "workspace"
-            cache = temp_root / "cache"
-            (workspace / "src" / "Catalogs").mkdir(parents=True)
-            config_path = workspace / "src" / "Configuration.xml"
-            shutil.copyfile(FIXTURES_ROOT / BSP_CF_CONFIGURATION_FIXTURE, config_path)
-            shutil.copyfile(
-                FIXTURES_ROOT / BSP_META_CATALOG_FIXTURE,
-                workspace / "src" / "Catalogs" / "Валюты.xml",
-            )
-            before = config_path.read_bytes()
-
-            remove = self.call_mcp_tool(
-                "unica.cf.edit",
-                {
-                    "ConfigPath": "src/Configuration.xml",
-                    "Operation": "remove-childObject",
-                    "Value": "Catalog.Валюты",
-                    "NoValidate": True,
-                },
-                workspace,
-                cache,
-            )
-            self.assertTrue(remove["ok"], json.dumps(remove, ensure_ascii=False, indent=2))
-
-            add = self.call_mcp_tool(
-                "unica.cf.edit",
-                {
-                    "ConfigPath": "src/Configuration.xml",
-                    "Operation": "add-childObject",
-                    "Value": "Catalog.Валюты",
-                    "NoValidate": True,
-                },
-                workspace,
-                cache,
-            )
-            self.assertTrue(add["ok"], json.dumps(add, ensure_ascii=False, indent=2))
-
-            validate = self.call_mcp_tool(
-                "unica.cf.validate",
-                {
-                    "ConfigPath": "src/Configuration.xml",
-                    "Detailed": True,
-                    "MaxErrors": 20,
-                },
-                workspace,
-                cache,
-            )
-            self.assertTrue(validate["ok"], json.dumps(validate, ensure_ascii=False, indent=2))
-            self.assertEqual(config_path.read_bytes(), before)
-
-    def test_form_edit_rejects_invalid_platform_event_without_writing(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="unica-issue77-form-events-") as temp:
-            temp_root = Path(temp)
-            workspace = temp_root / "workspace"
-            cache = temp_root / "cache"
-            workspace.mkdir()
-            form_path = workspace / "Form.xml"
-            form_path.write_text(
-                """<?xml version="1.0" encoding="UTF-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"
-      xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"
-      xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
-\t<AutoCommandBar name="FormCommandBar" id="-1"/>
-\t<ChildItems/>
-\t<Attributes>
-\t\t<Attribute name="Object" id="1">
-\t\t\t<Type><v8:Type>cfg:DataProcessorObject.EventProbe</v8:Type></Type>
-\t\t\t<MainAttribute>true</MainAttribute>
-\t\t</Attribute>
-\t</Attributes>
-\t<Commands/>
-</Form>""",
-                encoding="utf-8",
-            )
-            definition_path = workspace / "invalid-events.json"
-            shutil.copyfile(
-                FIXTURES_ROOT / "form-edit" / "invalid-events.json",
-                definition_path,
-            )
-            before = form_path.read_bytes()
-
-            result = self.call_mcp_tool(
-                "unica.form.edit",
-                {
-                    "FormPath": "Form.xml",
-                    "JsonPath": "invalid-events.json",
-                },
-                workspace,
-                cache,
-            )
-
-            self.assertFalse(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
-            self.assertIn("FORM_EVENT_NOT_ALLOWED", "\n".join(result.get("errors", [])))
-            self.assertEqual(result.get("changes"), [])
-            self.assertEqual(form_path.read_bytes(), before)
-
-    def test_form_edit_accepts_extended_persistent_event_families(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="unica-issue77-persistent-events-") as temp:
-            temp_root = Path(temp)
-            workspace = temp_root / "workspace"
-            cache = temp_root / "cache"
-            workspace.mkdir()
-            persistent_types = [
-                "ChartOfAccountsObject.Main",
-                "ChartOfCalculationTypesObject.Payroll",
-                "AccumulationRegisterRecordSet.Stock",
-                "AccountingRegisterRecordSet.Accounting",
-                "CalculationRegisterRecordSet.Payroll",
-            ]
-
-            for index, persistent_type in enumerate(persistent_types, start=1):
-                with self.subTest(persistent_type=persistent_type):
-                    form_path = workspace / f"Form{index}.xml"
-                    form_path.write_text(
-                        f"""<?xml version="1.0" encoding="UTF-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"
-      xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"
-      xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
-\t<AutoCommandBar name="FormCommandBar" id="-1"/>
-\t<ChildItems/>
-\t<Attributes>
-\t\t<Attribute name="Object" id="1">
-\t\t\t<Type><v8:Type>cfg:{persistent_type}</v8:Type></Type>
-\t\t\t<MainAttribute>true</MainAttribute>
-\t\t</Attribute>
-\t</Attributes>
-\t<Commands/>
-</Form>""",
-                        encoding="utf-8",
-                    )
-
-                    edit = self.call_mcp_tool(
-                        "unica.form.edit",
-                        {
-                            "FormPath": form_path.name,
-                            "definition": {
-                                "formEvents": [
-                                    {"name": "OnReadAtServer", "handler": "ObjectOnReadAtServer"}
-                                ]
-                            },
-                        },
-                        workspace,
-                        cache,
-                    )
-
-                    self.assertTrue(edit["ok"], json.dumps(edit, ensure_ascii=False, indent=2))
-                    updated = form_path.read_text(encoding="utf-8-sig")
-                    self.assertEqual(updated.count('name="OnReadAtServer"'), 1)
-
-                    validate = self.call_mcp_tool(
-                        "unica.form.validate",
-                        {"FormPath": form_path.name},
-                        workspace,
-                        cache,
-                    )
-                    self.assertTrue(
-                        validate["ok"], json.dumps(validate, ensure_ascii=False, indent=2)
-                    )
-
-    def test_form_compile_dry_run_uses_event_registry_without_writing(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="unica-issue77-compile-preview-") as temp:
-            temp_root = Path(temp)
-            workspace = temp_root / "workspace"
-            cache = temp_root / "cache"
-            workspace.mkdir()
-            (workspace / "src" / "cf").mkdir(parents=True)
-            (workspace / "v8project.yaml").write_text(
-                "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n",
-                encoding="utf-8",
-            )
-            shutil.copyfile(
-                FIXTURES_ROOT / "meta-remove" / "Configuration.xml",
-                workspace / "src" / "cf" / "Configuration.xml",
-            )
-            invalid_definition = workspace / "invalid.json"
-            valid_definition = workspace / "valid.json"
-            invalid_definition.write_text(
-                json.dumps({"events": {"Opening": "OnOpening"}}),
-                encoding="utf-8",
-            )
-            valid_definition.write_text(
-                json.dumps({"events": {"OnCreateAtServer": "OnCreateAtServer"}}),
-                encoding="utf-8",
-            )
-            invalid_output = workspace / "src" / "cf" / "InvalidForm.xml"
-            valid_output = workspace / "src" / "cf" / "ValidForm.xml"
-            invalid_before = (
-                b'<?xml version="1.0" encoding="UTF-8"?>\n'
-                b'<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>\n'
-            )
-            valid_before = invalid_before
-            invalid_output.write_bytes(invalid_before)
-            valid_output.write_bytes(valid_before)
-            messages = [
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "unica.form.compile",
-                        "arguments": {
-                            "cwd": str(workspace),
-                            "JsonPath": "invalid.json",
-                            "OutputPath": "src/cf/InvalidForm.xml",
-                            "dryRun": True,
-                        },
-                    },
-                },
-                {
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "unica.form.compile",
-                        "arguments": {
-                            "cwd": str(workspace),
-                            "JsonPath": "valid.json",
-                            "OutputPath": "src/cf/ValidForm.xml",
-                            "dryRun": True,
-                        },
-                    },
-                },
-            ]
-
-            responses = self.call_mcp_messages(messages, cache)
-            invalid = json.loads(responses[1]["result"]["content"][0]["text"])
-            valid = json.loads(responses[2]["result"]["content"][0]["text"])
-
-            self.assertFalse(invalid["ok"], json.dumps(invalid, ensure_ascii=False, indent=2))
-            self.assertIn("FORM_EVENT_NOT_ALLOWED", "\n".join(invalid.get("errors", [])))
-            self.assertEqual(invalid.get("changes"), [])
-            self.assertTrue(valid["ok"], json.dumps(valid, ensure_ascii=False, indent=2))
-            self.assertTrue(
-                any("would update" in change and "ValidForm.xml" in change for change in valid["changes"]),
-                json.dumps(valid, ensure_ascii=False, indent=2),
-            )
-            self.assertEqual(invalid_output.read_bytes(), invalid_before)
-            self.assertEqual(valid_output.read_bytes(), valid_before)
 
     def test_every_documented_dcs_edit_operation_stays_under_test(self) -> None:
         # unica.dcs.edit left the scenario stand for typed data (ADR-0023), so
@@ -1574,481 +814,6 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 rf"(?im)^\s*(?:Procedure|Процедура)\s+{re.escape(procedure_name)}"
                 rf"\s*\([^)]*\)\s+(?:Export|Экспорт)\s*$",
             )
-
-    def test_every_skill_tools_call_example_executes_by_tool_mode(self) -> None:
-        examples = list(iter_skill_mcp_examples())
-        self.assertGreater(len(examples), 0)
-
-        with tempfile.TemporaryDirectory(prefix="unica-skill-example-mcp-") as temp:
-            temp_root = Path(temp)
-            workspace = temp_root / "workspace"
-            workspace.mkdir()
-            workspace = workspace.resolve()
-            source_roots = {
-                "main": workspace / "src" / "cf",
-                "myExtension": workspace / "src" / "cfe",
-            }
-            for source_root in source_roots.values():
-                source_root.mkdir(parents=True)
-            (workspace / "v8project.yaml").write_text(
-                """format: DESIGNER
-source-set:
-  - name: main
-    type: CONFIGURATION
-    path: src/cf
-  - name: myExtension
-    type: EXTENSION
-    path: src/cfe
-""",
-                encoding="utf-8",
-            )
-            _plugin_root, extra_env, standin_call_log = prepare_reader_standins(temp_root)
-            v8std = V8StdStandin()
-            extra_env["UNICA_STANDARDS_MCP_URL"] = v8std.start()
-            self.addCleanup(v8std.stop)
-            prepare_platform_help_installation(temp_root, workspace)
-            (workspace / "unica.toml").write_text(
-                """[network]
-default = "deny"
-
-[providers.v8std]
-network = "allow"
-""",
-                encoding="utf-8",
-            )
-            tool_list_responses = self.call_mcp_messages(
-                [
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/list",
-                        "params": {},
-                    }
-                ],
-                temp_root / "cache",
-                process_cwd=workspace,
-                extra_env=extra_env,
-            )
-            execution_by_tool = {
-                tool["name"]: (
-                    "mutation"
-                    if "dryRun" in tool["inputSchema"]["properties"]
-                    else "read"
-                )
-                for tool in tool_list_responses[1]["result"]["tools"]
-            }
-            shutil.copyfile(
-                FIXTURES_ROOT / "meta-remove" / "Configuration.xml",
-                workspace / "src" / "cf" / "Configuration.xml",
-            )
-            (workspace / "src" / "cfe" / "Configuration.xml").write_text(
-                """<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <Configuration>
-    <Properties>
-      <Name>ParityExtension</Name>
-      <ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>
-    </Properties>
-  </Configuration>
-</MetaDataObject>
-""",
-                encoding="utf-8",
-            )
-            xdto_examples = [example for example in examples if example.skill == "xdto"]
-            if xdto_examples:
-                xdto_target = "XDTOPackage.EnterpriseData_1_17_3"
-                package_name = xdto_target.partition(".")[2]
-                fixture_root = (
-                    REPO_ROOT / "tests" / "fixtures" / "xdto" / "enterprise-data-minimal"
-                )
-                fixture_tree = fixture_root / "XDTOPackages"
-                source_root = source_roots["main"]
-
-                for example in xdto_examples:
-                    arguments = example.payload["params"]["arguments"]
-                    self.assertEqual(arguments.get("sourceSet"), "main")
-                    self.assertEqual(arguments.get("metadataPath"), xdto_target)
-                    if example.payload["params"]["name"] == "unica.xdto.edit":
-                        self.assertEqual(
-                            arguments["operations"][0]["property"]["type"],
-                            "tns:Документ_ЗаказКлиента",
-                        )
-
-                fixture_configuration = ET.parse(
-                    fixture_root / "Configuration.xml"
-                ).getroot()
-                fixture_registrations = [
-                    node.text
-                    for node in fixture_configuration.findall(
-                        ".//{http://v8.1c.ru/8.3/MDClasses}XDTOPackage"
-                    )
-                ]
-                self.assertEqual(fixture_registrations, [package_name])
-
-                shutil.copytree(
-                    fixture_tree,
-                    source_root / "XDTOPackages",
-                    dirs_exist_ok=True,
-                )
-                for fixture_path in fixture_tree.rglob("*"):
-                    if fixture_path.is_file():
-                        copied_path = source_root / fixture_path.relative_to(fixture_root)
-                        self.assertEqual(copied_path.read_bytes(), fixture_path.read_bytes())
-
-                configuration = source_root / "Configuration.xml"
-                configuration_before = configuration.read_text(encoding="utf-8")
-                closing_tag = "\t\t</ChildObjects>"
-                registration = f"\t\t\t<XDTOPackage>{package_name}</XDTOPackage>\n"
-                self.assertEqual(configuration_before.count(closing_tag), 1)
-                self.assertNotIn(registration, configuration_before)
-                configuration_after = configuration_before.replace(
-                    closing_tag,
-                    registration + closing_tag,
-                    1,
-                )
-                configuration.write_text(configuration_after, encoding="utf-8")
-                self.assertEqual(
-                    configuration.read_text(encoding="utf-8"),
-                    configuration_after,
-                )
-                self.assertIn("<Name>ParityConfiguration</Name>", configuration_after)
-                self.assertEqual(configuration_after.count(registration), 1)
-            if any(example.skill == "source-access" for example in examples):
-                source_access_name = "SourceAccessExample"
-                configuration = workspace / "src" / "cf" / "Configuration.xml"
-                configuration_text = configuration.read_text(encoding="utf-8")
-                registration = (
-                    f"\t\t\t<CommonModule>{source_access_name}</CommonModule>\n"
-                )
-                self.assertIn("\t\t</ChildObjects>", configuration_text)
-                configuration.write_text(
-                    configuration_text.replace(
-                        "\t\t</ChildObjects>",
-                        f"{registration}\t\t</ChildObjects>",
-                        1,
-                    ),
-                    encoding="utf-8",
-                )
-                module_root = (
-                    workspace
-                    / "src"
-                    / "cf"
-                    / "CommonModules"
-                    / source_access_name
-                )
-                (module_root / "Ext").mkdir(parents=True)
-                (module_root / "Ext" / "Module.bsl").write_text(
-                    "Procedure BeforeReplacement()\nEndProcedure\n",
-                    encoding="utf-8",
-                )
-                (module_root.parent / f"{source_access_name}.xml").write_text(
-                    f"""<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <CommonModule>
-    <Properties><Name>{source_access_name}</Name></Properties>
-  </CommonModule>
-</MetaDataObject>
-""",
-                    encoding="utf-8",
-                )
-            code_patch_source_sets: set[str] = set()
-            for example in examples:
-                arguments = example.payload["params"]["arguments"]
-                if example.skill == "form-edit":
-                    form_path = workspace / arguments["FormPath"]
-                    form_path.parent.mkdir(parents=True, exist_ok=True)
-                    form_path.write_text(
-                        """<?xml version="1.0" encoding="UTF-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
-\t<AutoCommandBar name="FormCommandBar" id="-1"/>
-\t<ChildItems/>
-\t<Attributes/>
-\t<Commands/>
-</Form>
-""",
-                        encoding="utf-8",
-                    )
-                    json_path = workspace / arguments["JsonPath"]
-                    json_path.parent.mkdir(parents=True, exist_ok=True)
-                    json_path.write_text("{}\n", encoding="utf-8")
-                elif example.skill == "form-compile":
-                    output_path = (
-                        workspace
-                        / "src"
-                        / "cf"
-                        / "Catalogs"
-                        / "SkillExample"
-                        / "Forms"
-                        / f"Form{example.line}"
-                        / "Ext"
-                        / "Form.xml"
-                    )
-                    # Only the compiler takes an output path. The skill also
-                    # documents a `form.info` read, and injecting the argument
-                    # there sent the reader a selector it does not publish.
-                    if example.payload["params"]["name"] == "unica.form.compile":
-                        arguments["OutputPath"] = str(output_path.relative_to(workspace))
-                    elif example.payload["params"]["name"] == "unica.form.info":
-                        arguments["FormPath"] = str(output_path.relative_to(workspace))
-                    if example.payload["params"]["name"] != "unica.form.compile":
-                        pass
-                    elif arguments.get("FromObject") is True:
-                        object_path = workspace / "src" / "cf" / "Catalogs" / "Валюты.xml"
-                        object_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copyfile(FIXTURES_ROOT / BSP_META_CATALOG_FIXTURE, object_path)
-                        arguments["ObjectPath"] = str(object_path.relative_to(workspace))
-                        arguments["Purpose"] = "Item"
-                    else:
-                        json_path = workspace / "fixtures" / f"form-{example.line}.json"
-                        json_path.parent.mkdir(parents=True, exist_ok=True)
-                        json_path.write_text("{}\n", encoding="utf-8")
-                        arguments["JsonPath"] = str(json_path.relative_to(workspace))
-                elif example.skill == "code-patch":
-                    address = arguments["metadataPath"].split(".")
-                    self.assertEqual(
-                        len(address),
-                        3,
-                        "the code-patch example fixture supports one explicit module layout",
-                    )
-                    kind, name, role = address
-                    self.assertEqual((kind, role), ("CommonModule", "Module"))
-                    self.assertIn(arguments["sourceSet"], source_roots)
-                    code_patch_source_sets.add(arguments["sourceSet"])
-                    source_root = source_roots[arguments["sourceSet"]]
-                    module_path = (
-                        source_root
-                        / "CommonModules"
-                        / name
-                        / "Ext"
-                        / "Module.bsl"
-                    )
-                    module_path.parent.mkdir(parents=True, exist_ok=True)
-                    # A selector-less insert is served by the same module as a
-                    # selector-bearing one: the end of the module is always
-                    # addressable, so no separate empty-module seed is needed.
-                    module_path.write_text(
-                        """Процедура ПриСозданииНаСервере()\n
-    Сообщить(\"Готово\");\n
-КонецПроцедуры\n""",
-                        encoding="utf-8",
-                    )
-                    descriptor_path = source_root / "CommonModules" / f"{name}.xml"
-                    descriptor_path.write_text(
-                        f"""<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <CommonModule>
-    <Properties><Name>{name}</Name></Properties>
-  </CommonModule>
-</MetaDataObject>
-""",
-                        encoding="utf-8",
-                    )
-                elif (
-                    example.payload["params"]["name"]
-                    in {"unica.meta.edit", "unica.meta.remove"}
-                ):
-                    prepare_meta_edit_skill_example(source_roots, example, arguments)
-                elif example.payload["params"]["name"] == "unica.meta.add":
-                    prepare_meta_add_skill_example(source_roots, arguments)
-                elif example.payload["params"]["name"] == "unica.role.edit":
-                    prepare_role_edit_skill_example(source_roots, arguments)
-                if example.payload["params"]["name"] == "unica.meta.info":
-                    prepare_meta_info_skill_example(source_roots, arguments)
-            self.assertEqual(code_patch_source_sets, {"main", "myExtension"})
-            prepare_skill_reader_fixtures(
-                examples,
-                execution_by_tool,
-                workspace,
-                source_roots,
-            )
-            messages = [
-                execution_message_for_example(
-                    example,
-                    index + 1,
-                    workspace,
-                    execution_by_tool,
-                )
-                for index, example in enumerate(examples)
-            ]
-            # No example needs a live snapshot any more: the source surface is
-            # read-only and the source-access skill previews through
-            # unica.code.patch like every other writer example.
-            workspace_before_calls = snapshot_workspace_bytes(workspace)
-            transport_messages = sorted(
-                messages,
-                key=lambda message: message["params"]["name"] == "unica.code.definition",
-            )
-            responses = self.call_mcp_messages(
-                transport_messages,
-                temp_root / "cache",
-                process_cwd=workspace,
-                extra_env=extra_env,
-            )
-            self.assertEqual(
-                snapshot_workspace_bytes(workspace),
-                workspace_before_calls,
-            )
-            self.assertTrue(
-                standin_call_log.is_file(),
-                f"no reader stand-in was invoked: {standin_call_log}",
-            )
-            standin_calls = [
-                json.loads(line)
-                for line in standin_call_log.read_text(encoding="utf-8").splitlines()
-            ]
-            called_tools = {call["tool"] for call in standin_calls}
-            self.assertIn("graph", called_tools)
-            self.assertIn("search", called_tools)
-            if sys.platform == "darwin":
-                self.assertIn("rlm_execute", called_tools)
-                self.assertTrue(
-                    any(
-                        "find_definition" in str(call["arguments"].get("code", ""))
-                        for call in standin_calls
-                        if call["tool"] == "rlm_execute"
-                    ),
-                    standin_calls,
-                )
-            else:
-                self.assertNotIn(
-                    "rlm_execute",
-                    called_tools,
-                    "RLM must fail closed where a source-revision fence is unavailable",
-                )
-            self.assertGreater(len(v8std.calls), 0)
-            self.assertEqual({call["path"] for call in v8std.calls}, {"/mcp"})
-            self.assertTrue(
-                all(str(call["host"]).startswith("127.0.0.1:") for call in v8std.calls),
-                v8std.calls,
-            )
-        self.assertEqual(len(responses), len(examples))
-        for example, message in zip(examples, messages):
-            with self.subTest(skill=example.skill, line=example.line):
-                response = responses[message["id"]]
-                self.assertNotIn("error", response)
-                tool_name = example.payload["params"]["name"]
-                if tool_name.startswith("unica.meta."):
-                    result = response["result"]["structuredContent"]
-                else:
-                    result = json.loads(response["result"]["content"][0]["text"])
-                if tool_name == "unica.meta.info":
-                    self.assertIn("data", result, json.dumps(result, ensure_ascii=False, indent=2))
-                    self.assertNotIn(
-                        "target_not_found",
-                        {diagnostic.get("code") for diagnostic in result.get("diagnostics", [])},
-                    )
-                elif tool_name in {
-                    "unica.meta.add",
-                    "unica.meta.edit",
-                    "unica.meta.remove",
-                } and not result["ok"]:
-                    # All top-level examples share one synthetic configuration.
-                    # The read examples intentionally materialize incomplete
-                    # descriptors before this batch, so add can fail its final
-                    # whole-graph validation. Exact mutation success is
-                    # exercised by the isolated JSON-RPC smoke and crate tests.
-                    self.assertEqual(
-                        {diagnostic.get("code") for diagnostic in result["diagnostics"]},
-                        {"provider_unavailable"},
-                        json.dumps(result, ensure_ascii=False, indent=2),
-                    )
-                elif tool_name == "unica.cf.init" and not result["ok"]:
-                    # The shared parity workspace pre-seeds reader fixtures at
-                    # the example targets; the honest preview (ADR-0073) now
-                    # refuses to clobber them, exactly as apply would. Exact
-                    # scaffold success is exercised by the crate tests.
-                    self.assertTrue(
-                        result["errors"]
-                        and all(
-                            "create-only compile target" in error
-                            for error in result["errors"]
-                        ),
-                        json.dumps(result, ensure_ascii=False, indent=2),
-                    )
-                    continue
-                elif tool_name == "unica.code.definition" and sys.platform != "darwin":
-                    # The example is still a valid MCP call, but the RLM reader
-                    # must fail closed on platforms where the runtime cannot
-                    # prove source freshness. The assertions above also prove
-                    # that no rlm_execute stand-in was invoked in this state.
-                    self.assertFalse(result["ok"])
-                    self.assertEqual(len(result["errors"]), 1)
-                    self.assertTrue(
-                        result["errors"][0].startswith("index_unavailable:"),
-                        json.dumps(result, ensure_ascii=False, indent=2),
-                    )
-                    self.assertNotIn("data", result)
-                else:
-                    self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
-                if tool_name == "unica.code.definition" and sys.platform != "darwin":
-                    continue
-                if tool_name == "unica.xdto.info":
-                    self.assertEqual(
-                        result["summary"],
-                        "unica.xdto.info inspected XDTO package",
-                    )
-                elif tool_name == "unica.meta.info":
-                    self.assertIn("data", result)
-                elif tool_name.startswith("unica.meta."):
-                    if result["ok"]:
-                        self.assertIn("preview", result["summary"])
-                elif execution_by_tool[tool_name] == "read":
-                    if tool_name in TYPED_CONTRACT_TOOL_NAMES:
-                        self.assertIn(
-                            "data",
-                            result,
-                            json.dumps(result, ensure_ascii=False, indent=2),
-                        )
-                    self.assertNotRegex(result["summary"].lower(), r"preview|dry run")
-                else:
-                    self.assertIn("dry run", result["summary"])
-                if example.skill == "code-patch":
-                    arguments = example.payload["params"]["arguments"]
-                    self.assertNotIn("path", arguments)
-                    self.assertNotIn("sourceDir", arguments)
-                    self.assertEqual(
-                        result["data"]["sourceSet"], arguments["sourceSet"]
-                    )
-                    self.assertEqual(
-                        result["data"]["metadataPath"], arguments["metadataPath"]
-                    )
-
-    def test_every_documented_tools_call_uses_published_argument_names(self) -> None:
-        # Task 11 still audits retained legacy companion files. Only top-level
-        # current help is executable package routing during the Task 10 switch.
-        examples = list(iter_skill_mcp_examples())
-        self.assertGreater(len(examples), 0)
-
-        with tempfile.TemporaryDirectory(prefix="unica-skill-schema-") as temp:
-            responses = self.call_mcp_messages(
-                [
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/list",
-                        "params": {},
-                    }
-                ],
-                Path(temp) / "cache",
-            )
-        tools = {
-            tool["name"]: tool["inputSchema"]
-            for tool in responses[1]["result"]["tools"]
-        }
-
-        for example in examples:
-            tool_name = example.payload["params"]["name"]
-            with self.subTest(document=example.document, line=example.line, tool=tool_name):
-                self.assertIn(tool_name, tools)
-                published = set(tools[tool_name]["properties"])
-                arguments = set(example.payload["params"]["arguments"])
-                self.assertEqual(
-                    arguments - published,
-                    set(),
-                    f"{example.document}:{example.line} uses unpublished arguments",
-                )
-
-    def test_mcp_calls_match_unica_reference_models(self) -> None:
-        for scenario in SCENARIOS:
-            with self.subTest(scenario=scenario.name, tool=scenario.tool):
-                self.assert_parity(scenario)
 
     def test_every_donor_case_has_one_reviewed_relation(self) -> None:
         cases = {case.case_id for case in iter_cc_1c_skill_cases()}
@@ -4464,15 +3229,8 @@ def snapshot_workspace_bytes(workspace: Path) -> dict[str, bytes]:
 
 
 for _retired_test in {
-    "test_cf_edit_child_object_round_trip_preserves_bsp_configuration_bytes",
     "test_donor_cases_match_reviewed_relations",
     "test_donor_inventory_relations_preview_and_snapshot_are_closed",
-    "test_every_documented_tools_call_uses_published_argument_names",
-    "test_every_skill_tools_call_example_executes_by_tool_mode",
-    "test_form_compile_dry_run_uses_event_registry_without_writing",
-    "test_form_edit_accepts_extended_persistent_event_families",
-    "test_form_edit_rejects_invalid_platform_event_without_writing",
-    "test_mcp_calls_match_unica_reference_models",
 }:
     setattr(
         UnicaMcpScriptParityTests,

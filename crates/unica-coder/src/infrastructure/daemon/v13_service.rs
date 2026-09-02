@@ -528,6 +528,12 @@ impl CanonicalV13ReadService {
                 Map::from_iter([("at".to_string(), Value::String(at.to_string()))]);
             let viewed = self.execute_view_arguments(invocation, &view_arguments, cancellation);
             if !viewed.ok {
+                if let Some(profile) = validation.as_deref() {
+                    if let Some(refusal) = unreadable_target_format_refusal(invocation, at, profile)
+                    {
+                        return refusal;
+                    }
+                }
                 return viewed;
             }
             if let Some(profile) = validation.as_deref() {
@@ -1102,6 +1108,58 @@ fn run_validation_profile(
             result
         }
     }
+}
+
+/// A profile target the read port cannot open is named by its export format
+/// when the format guard knows it: the closed refusal replaces a provider
+/// failure that would otherwise hide a root outside the active profile
+/// (`DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE`).
+fn unreadable_target_format_refusal(
+    invocation: &ActorBoundExecution,
+    at: &str,
+    profile: &str,
+) -> Option<DomainResult> {
+    use crate::application::ports::FormatGuardCheck;
+    use crate::application::v13::check::CheckProfile;
+
+    let profile = CheckProfile::parse(profile).ok()?;
+    let address = QualifiedAddress::parse(at).ok()?;
+    let mut selector = Map::new();
+    selector.insert(
+        "sourceSet".to_string(),
+        Value::String(address.source_set().to_string()),
+    );
+    if let Some(path) = validator_metadata_path(&address) {
+        selector.insert("metadataPath".to_string(), Value::String(path));
+    }
+    let check = crate::infrastructure::format_guard::evaluate_read_format_guard(
+        profile.native_operation(),
+        &selector,
+        invocation.workspace_context(),
+    )
+    .ok()?;
+    let (warning, diagnostic) = match check {
+        FormatGuardCheck::Allow => return None,
+        FormatGuardCheck::Warn {
+            warning,
+            diagnostic,
+        } => (warning, diagnostic),
+        FormatGuardCheck::Block {
+            outcome,
+            diagnostic,
+            ..
+        } => (outcome.warnings.join(" "), diagnostic),
+    };
+    let actual = diagnostic
+        .get("actualFormat")
+        .and_then(Value::as_str)
+        .map(|actual| format!(" (export format {actual})"))
+        .unwrap_or_default();
+    Some(error_result(
+        Some(at.to_string()),
+        "invalid_source",
+        format!("{warning}{actual}"),
+    ))
 }
 
 /// The v0.12 metadata selector of a logical node: `Kind.Name` pairs joined by

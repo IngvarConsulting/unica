@@ -1,7 +1,90 @@
 {
   "schemaVersion": 2,
   "complete": false,
-  "baselineDispositions": [],
-  "cases": [],
+  "baselineDispositions": [
+    {
+      "legacyTool": "unica.template.add",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "apply",
+            "operation": "template.add"
+          },
+          "caseIds": [
+            "batch1-apply-template-add"
+          ]
+        }
+      ]
+    },
+    {
+      "legacyTool": "unica.template.remove",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "apply",
+            "operation": "template.remove"
+          },
+          "caseIds": [
+            "batch1-apply-template-remove"
+          ]
+        }
+      ]
+    },
+    {
+      "legacyTool": "unica.help.add",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "apply",
+            "operation": "help.create"
+          },
+          "caseIds": [
+            "batch1-apply-help-create"
+          ]
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "batch1-apply-template-add",
+      "entry": "apply",
+      "mode": "template.add",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S196",
+        "class": "ok"
+      },
+      "operation": "template.add"
+    },
+    {
+      "caseId": "batch1-apply-template-remove",
+      "entry": "apply",
+      "mode": "template.remove",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S198",
+        "class": "ok"
+      },
+      "operation": "template.remove"
+    },
+    {
+      "caseId": "batch1-apply-help-create",
+      "entry": "apply",
+      "mode": "help.create;lang=ru",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S116",
+        "class": "ok"
+      },
+      "operation": "help.create"
+    }
+  ],
   "newCapabilities": []
 }

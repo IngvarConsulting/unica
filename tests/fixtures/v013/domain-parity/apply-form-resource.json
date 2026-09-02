@@ -1,7 +1,168 @@
 {
   "schemaVersion": 2,
   "complete": false,
-  "baselineDispositions": [],
-  "cases": [],
+  "baselineDispositions": [
+    {
+      "legacyTool": "unica.form.add",
+      "variants": [
+        {
+          "legacyVariant": "Purpose=Object",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "apply",
+            "operation": "form.add"
+          },
+          "caseIds": [
+            "batch1-apply-form-add-object",
+            "batch1-apply-form-add-newer-export-refuses"
+          ]
+        },
+        {
+          "legacyVariant": "Purpose=List",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "apply",
+            "operation": "form.add"
+          },
+          "caseIds": [
+            "batch1-apply-form-add-list"
+          ]
+        },
+        {
+          "legacyVariant": "whole form definition",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "apply",
+            "operation": "form.create"
+          },
+          "caseIds": [
+            "batch1-apply-form-create"
+          ]
+        }
+      ]
+    },
+    {
+      "legacyTool": "unica.support.edit",
+      "variants": [
+        {
+          "legacyVariant": "Capability=on|off",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "apply",
+            "operation": "supportCapability.set"
+          },
+          "caseIds": [
+            "batch1-apply-support-capability-off",
+            "batch1-apply-support-without-vendor-support-refuses"
+          ]
+        },
+        {
+          "legacyVariant": "Set=editable|locked|…",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "apply",
+            "operation": "supportRule.set"
+          },
+          "caseIds": [
+            "batch1-apply-support-rule-editable",
+            "batch1-apply-support-rule-newer-export-refuses"
+          ]
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "batch1-apply-form-add-list",
+      "entry": "apply",
+      "mode": "form.add;type=ListForm",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S125",
+        "class": "ok"
+      },
+      "operation": "form.add"
+    },
+    {
+      "caseId": "batch1-apply-form-add-object",
+      "entry": "apply",
+      "mode": "form.add;type=ObjectForm",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S126",
+        "class": "ok"
+      },
+      "operation": "form.add"
+    },
+    {
+      "caseId": "batch1-apply-form-create",
+      "entry": "apply",
+      "mode": "form.create",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S129",
+        "class": "ok"
+      },
+      "operation": "form.create"
+    },
+    {
+      "caseId": "batch1-apply-form-add-newer-export-refuses",
+      "entry": "apply",
+      "mode": "form.add;export=2.21",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S273",
+        "class": "refused",
+        "code": "invalid_source"
+      },
+      "operation": "form.add"
+    },
+    {
+      "caseId": "batch1-apply-support-capability-off",
+      "entry": "apply",
+      "mode": "supportCapability.set;enabled=false",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S246",
+        "class": "ok"
+      },
+      "operation": "supportCapability.set"
+    },
+    {
+      "caseId": "batch1-apply-support-rule-editable",
+      "entry": "apply",
+      "mode": "supportRule.set;rule=editable",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S247",
+        "class": "ok"
+      },
+      "operation": "supportRule.set"
+    },
+    {
+      "caseId": "batch1-apply-support-rule-newer-export-refuses",
+      "entry": "apply",
+      "mode": "supportRule.set;export=2.21",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S274",
+        "class": "refused",
+        "code": "invalid_source"
+      },
+      "operation": "supportRule.set"
+    },
+    {
+      "caseId": "batch1-apply-support-without-vendor-support-refuses",
+      "entry": "apply",
+      "mode": "supportCapability.set;no ParentConfigurations.bin",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S280",
+        "class": "refused",
+        "code": "invalid_state"
+      },
+      "operation": "supportCapability.set"
+    }
+  ],
   "newCapabilities": []
 }

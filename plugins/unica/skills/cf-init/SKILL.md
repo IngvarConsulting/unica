@@ -136,10 +136,10 @@ allowed-tools:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.cf.validate",
+    "name": "unica.check",
     "arguments": {
-      "cwd": "<workspace>",
-      "ConfigPath": "test-tmp/cf"
+      "at": "<sourceSet>:Configuration",
+      "filter": {"validation": {"profile": "cf"}}
     }
   }
 }

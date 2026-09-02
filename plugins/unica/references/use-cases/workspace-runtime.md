@@ -23,10 +23,11 @@ Use the package-selected MCP runtime surface directly. In v0.13, call
 том же вызове, приложив названную причину риска (`runtime_risk_*`)
 предупреждением; неклассифицированная операция по-прежнему отказывает
 `runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Долговременное задание запускай через
-`unica.runtime.job.start` для явно выбранной длинной работы; не используй
-`unica.runtime.job.start` как запасной путь. Не обходи контракт прямым
-runner-ом или через `unica.build.*`.
+исполнением не является. Долгую работу отдельно запускать не нужно: вызов
+`unica.run`, переживший окно передачи, сам становится Task (см. ниже);
+переходный `unica.runtime.job.start` остаётся для явно выбранной длинной
+работы и не служит запасным путём. Не обходи контракт прямым runner-ом или
+через `unica.build.*`.
 
 After clone or workspace initialization, and before `build` or `dump`, first
 call `unica.view {}`. It returns `ready`, `repositoryReady`, `checks[]`,
@@ -38,14 +39,12 @@ update `v8project.yaml` safely.
 
 ### Work the call must not wait for
 
-A long applied operation belongs in a durable job: `unica.runtime.job.start` runs
-it in a detached process that outlives the call, so a host deadline cannot lose
-the result. Keep the returned `jobId`, read progress with
-`unica.runtime.job.status`, wait for a bounded interval with
-`unica.runtime.job.wait`, and fetch diagnostic tails with
-`unica.runtime.job.logs`. A normal build can keep both logs empty until its
-terminal envelope; phase and heartbeat are what distinguish that from a stalled
-job.
+A long operation does not need a separate call: any `unica.run` invocation
+that outlives the handoff window becomes a durable Task. Keep the returned
+`taskId`, read the state with `unica.task.get`, wait for a bounded interval with
+`unica.task.result`, and cancel with `unica.task.cancel`; a client with native
+Tasks uses `tasks/get` and `tasks/cancel` instead. The terminal result never
+publishes raw stdout, so liveness is judged by the Task state, not by logs.
 
 Each `sourceSets[].sourceFormat` describes working-tree discovery. Repository
 checks may additionally become applicable from staged index markers; do not

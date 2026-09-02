@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import queue
+import re
 import threading
 import os
 import shutil
@@ -111,6 +112,55 @@ def classify(response, context):
         return "refused", f"{code}: {message[:160]}"
     return "gap-candidate", f"{code}: {message[:200]}"
 
+
+
+FORMAT_WORKSPACE = "tests/fixtures/acceptance/workspace-format"
+
+
+def derive_source_sets(source: Path, workspace: Path) -> None:
+    """Derive the format-probe source sets of `workspace-format/` from `src`.
+
+    `v8project.yaml` of that fixture declares three sets and no `main`:
+    `newer` is the same tree with every 2.20 root rewritten to 2.21 (and the
+    Reports and XDTO packages dropped, because the strict read port cannot
+    open a 2.21 template wrapper), `nosupport` is `src` without
+    `Ext/ParentConfigurations.bin`, and `unversioned` is `src` whose
+    Configuration root carries no version attribute. Deriving them here keeps
+    one copy of the platform XML in the repository. The probes live in their
+    own workspace because `find` walks every identity of every declared set
+    on each call, and the scenarios of the default workspace freeze `find` as
+    an immediate result.
+    """
+
+    def copy(name: str, rewrite, drop_bin: bool = False, drop_dirs=()):
+        target = workspace / name
+        shutil.copytree(source, target)
+        for directory in drop_dirs:
+            shutil.rmtree(target / directory, ignore_errors=True)
+        if drop_bin:
+            (target / "Ext/ParentConfigurations.bin").unlink()
+        for path in target.rglob("*.xml"):
+            raw = path.read_bytes()
+            bom = raw.startswith(b"\xef\xbb\xbf")
+            text = raw.decode("utf-8-sig")
+            rewritten = rewrite(path, text)
+            if rewritten != text:
+                path.write_bytes((b"\xef\xbb\xbf" if bom else b"") + rewritten.encode("utf-8"))
+
+    def newer(path: Path, text: str) -> str:
+        text = text.replace('version="2.20"', 'version="2.21"')
+        if path.name == "Configuration.xml":
+            text = re.sub(r"<(Report|XDTOPackage)>[^<]+</\1>", "", text)
+        return text
+
+    def unversioned(path: Path, text: str) -> str:
+        if path.name == "Configuration.xml":
+            text = re.sub(r'(<MetaDataObject[^>]*?) version="2\.20"', r"\1", text, count=1)
+        return text
+
+    copy("src-newer", newer, drop_dirs=("Reports", "XDTOPackages"))
+    copy("src-nosupport", lambda path, text: text, drop_bin=True)
+    copy("src-unversioned", unversioned)
 
 def scenario_publishes(scenario) -> bool:
     """True when a step can change the workspace: an apply that is not a preview."""
@@ -248,14 +298,14 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 266)
+        self.assertEqual(len(scenarios), 280)
         self.assertEqual(
             sum(len(scenario["wire"]) for scenario in scenarios),
-            295,
-            "a wire step went missing: the corpus freezes 295 steps",
+            309,
+            "a wire step went missing: the corpus freezes 309 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 267)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 281)])
 
     def test_the_run_half_of_the_surface_stays_out_of_this_corpus(self) -> None:
         for scenario in self.corpus["scenarios"]:
@@ -268,6 +318,12 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
         for scenario in self.corpus["scenarios"]:
+            workspace = scenario.get("workspace", self.corpus["workspace"])
+            self.assertIn(
+                workspace,
+                {self.corpus["workspace"], FORMAT_WORKSPACE},
+                f"{scenario['id']}: a scenario runs on one of the two fixture workspaces",
+            )
             for index, step in enumerate(scenario["wire"]):
                 with self.subTest(scenario=scenario["id"], step=index):
                     self.assertTrue(step["tool"].startswith("unica."))
@@ -353,7 +409,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
 
     def test_every_wire_answers_its_frozen_classes(self) -> None:
         corpus = self.corpus
-        workspace_source = REPO_ROOT / corpus["workspace"]
+        default_workspace = corpus["workspace"]
         mismatches = []
         with tempfile.TemporaryDirectory(
             prefix="unica-acceptance-", ignore_cleanup_errors=True
@@ -361,19 +417,29 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
             root = Path(raw).resolve()
             generation = 0
 
-            def fresh_server() -> AcceptanceServer:
+            def fresh_server(workspace_relative: str) -> AcceptanceServer:
                 nonlocal generation
                 generation += 1
                 home = root / f"run-{generation}"
                 workspace = home / "workspace"
-                shutil.copytree(workspace_source, workspace)
+                shutil.copytree(REPO_ROOT / workspace_relative, workspace)
+                if workspace_relative == FORMAT_WORKSPACE:
+                    derive_source_sets(REPO_ROOT / default_workspace / "src", workspace)
                 state = home / "state"
                 state.mkdir()
                 return AcceptanceServer(workspace, state, corpus["protocolVersion"])
 
-            server = fresh_server()
+            current_workspace = default_workspace
+            server = fresh_server(current_workspace)
             try:
                 for scenario in corpus["scenarios"]:
+                    wanted = scenario.get("workspace", default_workspace)
+                    if wanted != current_workspace:
+                        # A scenario may address another fixture workspace;
+                        # the session is bound to one, so it starts over.
+                        server.close()
+                        current_workspace = wanted
+                        server = fresh_server(current_workspace)
                     context = {}
                     broken = False
                     for index, step in enumerate(scenario["wire"]):
@@ -412,6 +478,22 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
                                     f"{label}: expected validation status {step['status']!r}, "
                                     f"got {verdict!r}"
                                 )
+                        if "diagnostic" in step and actual == "ok":
+                            # A validation step may freeze one diagnostic code it
+                            # expects next to the verdict: the export-format guard
+                            # of a root outside the active profile.
+                            structured = response.get("result", {}).get("structuredContent") or {}
+                            codes = [
+                                diagnostic.get("code")
+                                for diagnostic in (
+                                    (structured.get("data") or {}).get("diagnostics") or []
+                                )
+                            ]
+                            if step["diagnostic"] not in codes:
+                                mismatches.append(
+                                    f"{label}: expected diagnostic {step['diagnostic']!r}, "
+                                    f"got {codes!r}"
+                                )
                     # A scenario that published changes leaves its mark on the
                     # workspace; the next one starts from the pristine fixture
                     # so results never depend on corpus order. The old run
@@ -419,7 +501,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
                     # after the daemon's idle grace has passed.
                     if broken or scenario_publishes(scenario):
                         server.close()
-                        server = fresh_server()
+                        server = fresh_server(current_workspace)
             finally:
                 server.close()
         self.assertEqual(

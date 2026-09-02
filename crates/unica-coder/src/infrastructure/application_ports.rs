@@ -1646,7 +1646,6 @@ mod tests {
             "unica.dcs.edit",
             "unica.epf.init",
             "unica.erf.init",
-            "unica.form.add",
             "unica.form.compile",
             "unica.form.edit",
             "unica.form.remove",
@@ -1659,7 +1658,6 @@ mod tests {
             "unica.role.edit",
             "unica.subsystem.compile",
             "unica.subsystem.edit",
-            "unica.support.edit",
             "unica.xdto.edit",
         ];
         let expected_planned_command = [
@@ -1669,7 +1667,6 @@ mod tests {
             "unica.build.run",
             "unica.build.update",
             "unica.runtime.execute",
-            "unica.runtime.job.cancel",
             "unica.runtime.job.start",
         ];
         let mut post_image = Vec::new();

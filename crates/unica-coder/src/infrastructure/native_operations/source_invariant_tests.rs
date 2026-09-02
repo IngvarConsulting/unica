@@ -17,7 +17,6 @@ fn public_platform_xml_mutator_inventory() -> BTreeMap<&'static str, &'static st
         ("unica.dcs.edit", "dcs"),
         ("unica.epf.init", "external"),
         ("unica.erf.init", "external"),
-        ("unica.form.add", "form"),
         ("unica.form.compile", "form"),
         ("unica.form.edit", "form"),
         ("unica.form.remove", "form"),
@@ -30,7 +29,6 @@ fn public_platform_xml_mutator_inventory() -> BTreeMap<&'static str, &'static st
         ("unica.role.edit", "role"),
         ("unica.subsystem.compile", "subsystem"),
         ("unica.subsystem.edit", "subsystem"),
-        ("unica.support.edit", "support"),
         ("unica.xdto.edit", "xdto"),
     ]);
     let actual = tools()
@@ -58,7 +56,7 @@ fn public_platform_xml_mutator_inventory() -> BTreeMap<&'static str, &'static st
 
 #[test]
 fn verified_public_mutator_idempotence_cases_are_exact() {
-    let cases: [(&str, fn()); 12] = [
+    let cases: [(&str, fn()); 11] = [
         ("unica.cf.edit", crate::application::tests::cf_edit_equal_serialized_result_is_a_public_noop_and_preserves_identity),
         ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_preserves_object_and_file_identity_on_repeated_borrow),
         ("unica.code.patch", super::code::tests::applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_stable_identity),
@@ -69,7 +67,6 @@ fn verified_public_mutator_idempotence_cases_are_exact() {
         ("unica.mxl.compile", super::mxl::tests::repeated_mxl_compile_preserves_identity_but_reports_attempted_update),
         ("unica.role.edit", super::role::role_edit_contract_tests::role_edit_without_vendor_support_is_logically_addressed_and_preserves_identity),
         ("unica.subsystem.compile", super::subsystem::tests::repeated_subsystem_compile_preserves_file_identities_and_reports_no_changes),
-        ("unica.support.edit", super::support::tests::repeated_support_edit_is_a_byte_and_identity_exact_noop),
         ("unica.xdto.edit", super::xdto::tests::xdto_events_and_file_identity_follow_changed_plan_and_exact_noop),
     ];
     let registered = public_platform_xml_mutator_inventory();
@@ -91,7 +88,7 @@ fn typed_platform_resource_noop_emits_no_effects() {
 
 #[test]
 fn public_platform_xml_mutator_preimage_contract_is_complete() {
-    let cases: [(&str, fn()); 25] = [
+    let cases: [(&str, fn()); 23] = [
         ("unica.cf.edit", super::cf::cf_edit_transaction_tests::cf_edit_external_only_change_rejects_concurrent_format_owner_change),
         ("unica.cf.init", super::cf::cf_init_transaction_tests::cf_init_reauthorizes_containing_owner_immediately_before_publication),
         ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_rejects_concurrent_base_format_owner_change),
@@ -102,7 +99,6 @@ fn public_platform_xml_mutator_preimage_contract_is_complete() {
         ("unica.dcs.edit", super::dcs::tests::dcs_edit_preserves_a_concurrent_replacement_instead_of_overwriting_it),
         ("unica.epf.init", super::external::tests::external_init_reauthorizes_containing_owner_immediately_before_publication),
         ("unica.erf.init", super::external::tests::external_init_reauthorizes_containing_owner_immediately_before_publication),
-        ("unica.form.add", super::form::tests::add_form_rejects_scaffold_member_created_after_planning),
         ("unica.form.compile", super::form::tests::form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication),
         ("unica.form.edit", super::form::tests::edit_form_rejects_stale_preimage_without_overwriting_concurrent_change),
         ("unica.form.remove", super::form::tests::remove_form_rejects_payload_directory_that_appears_after_absent_probe),
@@ -115,7 +111,6 @@ fn public_platform_xml_mutator_preimage_contract_is_complete() {
         ("unica.role.edit", super::role::role_edit_contract_tests::rights_drift_in_the_staging_window_is_classified_as_concurrent),
         ("unica.subsystem.compile", super::subsystem::tests::subsystem_compile_exact_binds_a_reused_existing_child),
         ("unica.subsystem.edit", super::subsystem::tests::subsystem_edit_exact_binds_a_reused_existing_child),
-        ("unica.support.edit", super::support::tests::support_edit_rejects_a_concurrent_configuration_owner_change),
         ("unica.xdto.edit", super::xdto::tests::xdto_guard_rejects_descriptor_identity_drift_before_commit),
     ];
     let inventory = public_platform_xml_mutator_inventory();
@@ -145,10 +140,10 @@ fn mutation_idempotence_scope_decision_is_fully_realized() {
     repeated_interface_and_mxl_mutations_preserve_file_identity_but_report_attempted_updates();
 }
 
-/// One registry-facing falsifier for response parity across the complete
-/// subject-reader bridge. Each family keeps its focused fixture below its
-/// handler; this aggregate prevents a partial family list from grounding the
-/// cross-family invariant.
+/// Every reader the migration inventory keeps in `bridge` mode answers a
+/// logical selector with the same typed data as its physical selector. The
+/// case table is compared against the inventory so a reader cannot enter or
+/// leave the bridge without its focused parity test following.
 #[test]
 fn bridged_reader_outputs_are_identical_for_logical_and_physical_selectors() {
     use crate::application::tool_contracts::{
@@ -156,20 +151,14 @@ fn bridged_reader_outputs_are_identical_for_logical_and_physical_selectors() {
     };
     use std::collections::BTreeSet;
 
-    let cases: [(&str, fn()); 13] = [
+    let cases: [(&str, fn()); 7] = [
         ("unica.cf.info", super::cf::cf_read_selector_bridge_tests::cf_info_answers_identically_for_a_source_set_and_a_config_path),
-        ("unica.cf.validate", super::cf::cf_read_selector_bridge_tests::cf_validate_answers_identically_for_a_source_set_and_a_config_path),
         ("unica.form.info", super::form::form_read_selector_bridge_tests::form_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.form.validate", super::form::form_read_selector_bridge_tests::form_validate_answers_identically_for_a_logical_and_a_physical_selector),
         ("unica.role.info", super::role::role_info_typed_result_tests::role_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.role.validate", super::role::role_info_typed_result_tests::role_validate_answers_identically_for_a_logical_and_a_physical_selector),
         ("unica.mxl.info", super::mxl::mxl_read_selector_bridge_tests::mxl_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.mxl.validate", super::mxl::mxl_read_selector_bridge_tests::mxl_validate_answers_identically_for_a_logical_and_a_physical_selector),
         ("unica.mxl.decompile", super::mxl::mxl_read_selector_bridge_tests::mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector),
         ("unica.dcs.info", super::mxl::mxl_read_selector_bridge_tests::dcs_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.dcs.validate", super::mxl::mxl_read_selector_bridge_tests::dcs_validate_answers_identically_for_a_logical_and_a_physical_selector),
         ("unica.subsystem.info", super::subsystem::subsystem_read_selector_bridge_tests::subsystem_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.subsystem.validate", super::subsystem::subsystem_read_selector_bridge_tests::subsystem_validate_answers_identically_for_a_logical_and_a_physical_selector),
     ];
     let expected = authoritative_reader_migration_inventory()
         .filter_map(|(name, mode)| (mode == ReaderMigrationMode::Bridge).then_some(name))

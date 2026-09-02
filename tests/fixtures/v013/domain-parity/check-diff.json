@@ -1,7 +1,103 @@
 {
   "schemaVersion": 2,
   "complete": false,
-  "baselineDispositions": [],
+  "baselineDispositions": [
+    {
+      "legacyTool": "unica.cf.validate",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "check"
+          },
+          "caseIds": [
+            "batch1-check-cf-passed",
+            "batch1-check-cf-newer-export-warns"
+          ]
+        }
+      ]
+    },
+    {
+      "legacyTool": "unica.form.validate",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "check"
+          },
+          "caseIds": [
+            "batch1-check-form-passed",
+            "batch1-check-form-newer-export-warns"
+          ]
+        }
+      ]
+    },
+    {
+      "legacyTool": "unica.role.validate",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "check"
+          },
+          "caseIds": [
+            "batch1-check-role-passed",
+            "batch1-check-role-newer-export-warns"
+          ]
+        }
+      ]
+    },
+    {
+      "legacyTool": "unica.subsystem.validate",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "check"
+          },
+          "caseIds": [
+            "batch1-check-subsystem-passed",
+            "batch1-check-subsystem-newer-export-warns",
+            "batch1-check-missing-subsystem-refuses"
+          ]
+        }
+      ]
+    },
+    {
+      "legacyTool": "unica.dcs.validate",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "check"
+          },
+          "caseIds": [
+            "batch1-check-dcs-passed"
+          ]
+        }
+      ]
+    },
+    {
+      "legacyTool": "unica.mxl.validate",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "check"
+          },
+          "caseIds": [
+            "batch1-check-mxl-passed"
+          ]
+        }
+      ]
+    }
+  ],
   "cases": [
     {
       "caseId": "check-cf-real-validator",
@@ -32,6 +128,131 @@
         "outcome": "stale_cursor_on_either_revision",
         "boundedChanges": true,
         "incomparableKinds": "rejected"
+      }
+    },
+    {
+      "caseId": "batch1-check-cf-passed",
+      "entry": "check",
+      "mode": "validation.profile=cf",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S224",
+        "class": "ok",
+        "status": "passed"
+      }
+    },
+    {
+      "caseId": "batch1-check-cf-newer-export-warns",
+      "entry": "check",
+      "mode": "validation.profile=cf;export=2.21",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S267",
+        "class": "ok",
+        "status": "passed",
+        "diagnostic": "platformVersionUnsupported"
+      }
+    },
+    {
+      "caseId": "batch1-check-form-passed",
+      "entry": "check",
+      "mode": "validation.profile=form",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S225",
+        "class": "ok",
+        "status": "passed"
+      }
+    },
+    {
+      "caseId": "batch1-check-form-newer-export-warns",
+      "entry": "check",
+      "mode": "validation.profile=form;export=2.21",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S268",
+        "class": "ok",
+        "status": "passed",
+        "diagnostic": "platformVersionUnsupported"
+      }
+    },
+    {
+      "caseId": "batch1-check-role-passed",
+      "entry": "check",
+      "mode": "validation.profile=role",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S175",
+        "class": "ok",
+        "status": "passed"
+      }
+    },
+    {
+      "caseId": "batch1-check-role-newer-export-warns",
+      "entry": "check",
+      "mode": "validation.profile=role;export=2.21",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S269",
+        "class": "ok",
+        "status": "passed",
+        "diagnostic": "platformVersionUnsupported"
+      }
+    },
+    {
+      "caseId": "batch1-check-subsystem-passed",
+      "entry": "check",
+      "mode": "validation.profile=subsystem",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S210",
+        "class": "ok",
+        "status": "passed"
+      }
+    },
+    {
+      "caseId": "batch1-check-subsystem-newer-export-warns",
+      "entry": "check",
+      "mode": "validation.profile=subsystem;export=2.21",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S270",
+        "class": "ok",
+        "status": "passed",
+        "diagnostic": "platformVersionUnsupported"
+      }
+    },
+    {
+      "caseId": "batch1-check-dcs-passed",
+      "entry": "check",
+      "mode": "validation.profile=dcs",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S194",
+        "class": "ok",
+        "status": "passed"
+      }
+    },
+    {
+      "caseId": "batch1-check-mxl-passed",
+      "entry": "check",
+      "mode": "validation.profile=mxl",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S201",
+        "class": "ok",
+        "status": "passed"
+      }
+    },
+    {
+      "caseId": "batch1-check-missing-subsystem-refuses",
+      "entry": "check",
+      "mode": "validation.profile=subsystem;target=missing",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S272",
+        "class": "refused",
+        "code": "not_found"
       }
     }
   ],

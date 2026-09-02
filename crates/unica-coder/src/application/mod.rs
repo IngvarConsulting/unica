@@ -150,11 +150,9 @@ pub const PREVIEW_GATED_OPERATIONS: &[&str] = &[
     "dcs-edit",
     "epf-init",
     "erf-init",
-    "form-add",
     "form-remove",
     "interface-edit",
     "subsystem-edit",
-    "support-edit",
 ];
 
 /// The preview class of a mutating tool, or `None` for a reader.
@@ -893,16 +891,6 @@ pub fn tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.runtime.job.status",
-            description: "Read a durable runtime job snapshot by jobId.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::RuntimeJob {
-                action: RuntimeJobAction::Status,
-            },
-        },
-        ToolSpec {
             name: "unica.runtime.job.wait",
             description: "Wait for a durable runtime job with a caller-side bounded timeout.",
             execution: ToolExecution::Read,
@@ -920,16 +908,6 @@ pub fn tools() -> Vec<ToolSpec> {
             cache_access: CacheAccess::default(),
             handler: ToolHandler::RuntimeJob {
                 action: RuntimeJobAction::Logs,
-            },
-        },
-        ToolSpec {
-            name: "unica.runtime.job.cancel",
-            description: "Request safe cancellation for a durable runtime job.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::RuntimeJob {
-                action: RuntimeJobAction::Cancel,
             },
         },
         ToolSpec {
@@ -2897,28 +2875,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.cf.validate",
-            description: "Validate root configuration XML structure.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("cf-validate", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "cf-validate",
-                event: None,
-            },
-        },
-        ToolSpec {
-            name: "unica.support.edit",
-            description: "Toggle 1C vendor support editing capability or per-object support rule.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("support-edit", Some(DomainEventKind::ConfigXmlChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "support-edit",
-                event: Some(DomainEventKind::ConfigXmlChanged),
-            },
-        },
-        ToolSpec {
             name: "unica.cfe.borrow",
             description: "Borrow configuration objects/forms into an extension.",
             execution: ToolExecution::Mutation,
@@ -3060,17 +3016,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.form.add",
-            description: "Add managed form metadata and files.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("form-add", Some(DomainEventKind::FormChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "form-add",
-                event: Some(DomainEventKind::FormChanged),
-            },
-        },
-        ToolSpec {
             name: "unica.form.compile",
             description: "Compile managed Form.xml from JSON DSL or metadata.",
             execution: ToolExecution::Mutation,
@@ -3113,17 +3058,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             handler: ToolHandler::NativeOperation {
                 operation: "form-remove",
                 event: Some(DomainEventKind::FormChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.form.validate",
-            description: "Validate managed Form.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("form-validate", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "form-validate",
-                event: None,
             },
         },
         ToolSpec {
@@ -3191,17 +3125,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.subsystem.validate",
-            description: "Validate subsystem XML.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("subsystem-validate", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "subsystem-validate",
-                event: None,
-            },
-        },
-        ToolSpec {
             name: "unica.dcs.compile",
             description: "Compile Data Composition Schema XML from JSON DSL.",
             execution: ToolExecution::Mutation,
@@ -3231,17 +3154,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             cache_access: cache_access_for("dcs-info", None),
             handler: ToolHandler::NativeOperation {
                 operation: "dcs-info",
-                event: None,
-            },
-        },
-        ToolSpec {
-            name: "unica.dcs.validate",
-            description: "Validate Data Composition Schema Template.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("dcs-validate", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "dcs-validate",
                 event: None,
             },
         },
@@ -3279,17 +3191,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.mxl.validate",
-            description: "Validate spreadsheet Template.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("mxl-validate", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "mxl-validate",
-                event: None,
-            },
-        },
-        ToolSpec {
             name: "unica.role.compile",
             description: "Compile role metadata and Rights.xml from JSON DSL.",
             execution: ToolExecution::Mutation,
@@ -3322,17 +3223,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             cache_access: cache_access_for("role-info", None),
             handler: ToolHandler::NativeOperation {
                 operation: "role-info",
-                event: None,
-            },
-        },
-        ToolSpec {
-            name: "unica.role.validate",
-            description: "Validate role Rights.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("role-validate", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "role-validate",
                 event: None,
             },
         },
@@ -5047,21 +4937,16 @@ pub(crate) mod tests {
         let names = tools().iter().map(|tool| tool.name).collect::<Vec<_>>();
         assert!(names.contains(&"unica.project.status"));
         assert!(names.contains(&"unica.project.map"));
-        assert!(names.contains(&"unica.form.validate"));
         assert!(names.contains(&"unica.dcs.edit"));
         assert!(names.contains(&"unica.mxl.compile"));
-        assert!(names.contains(&"unica.role.validate"));
-        assert!(names.contains(&"unica.support.edit"));
         assert!(names.contains(&"unica.epf.init"));
         assert!(names.contains(&"unica.erf.init"));
         assert!(names.contains(&"unica.build.load"));
         assert!(names.contains(&"unica.runtime.execute"));
         for name in [
             "unica.runtime.job.start",
-            "unica.runtime.job.status",
             "unica.runtime.job.wait",
             "unica.runtime.job.logs",
-            "unica.runtime.job.cancel",
             "unica.runtime.job.list",
         ] {
             assert!(names.contains(&name), "missing {name}");
@@ -5720,19 +5605,6 @@ pub(crate) mod tests {
         assert_eq!(applied.data, Some(expected_data));
         assert_eq!(applied.cache.events, vec!["FormChanged"]);
         assert!(applied.stdout.is_none(), "{applied:?}");
-
-        let validation_args = json!({
-            "cwd": workspace,
-            "FormPath": form_path
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let validation = app
-            .call_tool("unica.form.validate", &validation_args)
-            .unwrap();
-        assert!(validation.ok, "{:?}", validation.errors);
-        assert!(validation.cache.events.is_empty());
 
         let non_removal_form_path = workspace.join("NonRemoval.xml");
         std::fs::write(
@@ -7225,22 +7097,16 @@ pub(crate) mod tests {
         // `unica.cf.info` left the parity stand when it started answering with
         // typed data: there is no prose left to compare (ADR-0023).
         const PARITY_COVERED_TOOLS: &[&str] = &[
-            "unica.cf.validate",
             "unica.cfe.validate",
             "unica.form.compile",
-            "unica.form.validate",
             "unica.interface.validate",
             "unica.subsystem.compile",
-            "unica.subsystem.validate",
             "unica.dcs.compile",
-            "unica.dcs.validate",
             "unica.mxl.compile",
             "unica.mxl.decompile",
-            "unica.mxl.validate",
             "unica.role.compile",
-            "unica.role.validate",
         ];
-        const REPO_OWNED_NATIVE_TOOLS: &[&str] = &["unica.support.edit"];
+        const REPO_OWNED_NATIVE_TOOLS: &[&str] = &[];
         // A tool that answers with typed data has no prose left for the parity
         // stand to compare, so it is covered by its own crate tests instead
         // (ADR-0023).
@@ -7262,7 +7128,6 @@ pub(crate) mod tests {
             "unica.cfe.borrow",
             "unica.cfe.patch_method",
             "unica.subsystem.edit",
-            "unica.form.add",
             "unica.dcs.edit",
             "unica.form.edit",
             "unica.form.info",
@@ -7334,11 +7199,6 @@ pub(crate) mod tests {
     fn form_and_dcs_tools_route_through_native_handlers() {
         let expected = [
             (
-                "unica.form.add",
-                "form-add",
-                Some(DomainEventKind::FormChanged),
-            ),
-            (
                 "unica.form.compile",
                 "form-compile",
                 Some(DomainEventKind::FormChanged),
@@ -7354,7 +7214,6 @@ pub(crate) mod tests {
                 "form-remove",
                 Some(DomainEventKind::FormChanged),
             ),
-            ("unica.form.validate", "form-validate", None),
             (
                 "unica.dcs.compile",
                 "dcs-compile",
@@ -7366,7 +7225,6 @@ pub(crate) mod tests {
                 Some(DomainEventKind::DcsChanged),
             ),
             ("unica.dcs.info", "dcs-info", None),
-            ("unica.dcs.validate", "dcs-validate", None),
         ];
         for (tool_name, expected_operation, expected_event) in expected {
             let tool = tools()
@@ -8874,14 +8732,6 @@ pub(crate) mod tests {
             .expect("the configuration registers a Bot");
         assert_eq!(bots["count"], 1);
 
-        let validation = UnicaApplication::new()
-            .call_tool("unica.cf.validate", &args)
-            .unwrap();
-        assert!(validation.ok, "{validation:?}");
-        let validation_stdout = validation.stdout.unwrap_or_default();
-        assert!(!validation_stdout.contains("Unknown type 'Bot'"));
-        assert!(!validation_stdout.contains("out of canonical order"));
-
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -9262,26 +9112,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn support_edit_tool_is_mutating_native_operation() {
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.support.edit")
-            .expect("support-edit tool exists");
-
-        assert!(tool.execution.is_mutating());
-        assert_eq!(tool.cache_access.writes, &["metadata_graph"]);
-        match tool.handler {
-            ToolHandler::NativeOperation { operation, event } => {
-                assert_eq!(operation, "support-edit");
-                assert_eq!(event, Some(DomainEventKind::ConfigXmlChanged));
-            }
-            other => {
-                panic!("unica.support.edit should route through native operation, got {other:?}")
-            }
-        }
-    }
-
-    #[test]
     fn reader_schemas_never_publish_dry_run_and_mutations_keep_it() {
         for tool in tools() {
             let schema = input_schema_for_tool(&tool);
@@ -9488,7 +9318,6 @@ pub(crate) mod tests {
                 "code-patch",
                 "dcs-compile",
                 "dcs-edit",
-                "form-add",
                 "form-compile",
                 "form-edit",
                 "form-remove",
@@ -9509,10 +9338,6 @@ pub(crate) mod tests {
             ("cfe-patch-method", "writes only into an extension"),
             ("epf-init", "creates a new external processor tree"),
             ("erf-init", "creates a new external report tree"),
-            (
-                "support-edit",
-                "must remain available to change the support lock itself",
-            ),
         ];
         assert!(expected_exemptions
             .iter()
@@ -9559,7 +9384,6 @@ pub(crate) mod tests {
             [
                 "unica.build.make",
                 "unica.build.run",
-                "unica.runtime.job.cancel",
                 "unica.runtime.job.start",
             ]
         );
@@ -9580,11 +9404,6 @@ pub(crate) mod tests {
             ),
             ("cf-init", &["OutputDir", "outputDir"][..], "DeclaredArgs"),
             (
-                "support-edit",
-                &["Path", "path", "TargetPath", "targetPath"][..],
-                "DeclaredArgs",
-            ),
-            (
                 "cfe-borrow",
                 &["ExtensionPath", "ConfigPath", "extensionPath", "configPath"][..],
                 "DeclaredArgs",
@@ -9600,11 +9419,6 @@ pub(crate) mod tests {
                 "cfe-patch-method",
                 &["ExtensionPath", "extensionPath"][..],
                 "DeclaredArgs",
-            ),
-            (
-                "form-add",
-                &["ObjectPath", "objectPath", "Path", "path"][..],
-                "HandlerResolved",
             ),
             (
                 "form-compile",
@@ -10093,74 +9907,6 @@ pub(crate) mod tests {
             !missing.exists(),
             "argument rejection must not create the missing target"
         );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn public_subsystem_validate_rejects_dry_run_before_reading_target() {
-        let root = test_workspace_root("unica-subsystem-validate-dry-run-missing-target");
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
-        let missing = workspace.join("Subsystems/Продажи.xml");
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.canonicalize().unwrap().display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String("Subsystems/Продажи.xml".to_string()),
-            ),
-            ("dryRun".to_string(), Value::Bool(true)),
-        ]);
-
-        assert!(!missing.exists());
-        let error = UnicaApplication::new()
-            .call_tool("unica.subsystem.validate", &args)
-            .expect_err("reader must reject dryRun before target discovery");
-
-        assert!(
-            error.contains("does not accept argument `dryRun`"),
-            "{error}"
-        );
-        assert!(
-            !missing.exists(),
-            "argument rejection must not create the missing target"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn public_subsystem_validate_missing_target_is_a_normal_typed_failure() {
-        let root = test_workspace_root("unica-subsystem-validate-missing-target");
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.canonicalize().unwrap().display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String("missing/Subsystem.xml".to_string()),
-            ),
-        ]);
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.subsystem.validate", &args)
-            .expect("validation failures stay inside the public tool envelope");
-
-        assert!(!result.ok, "{result:?}");
-        assert!(
-            result
-                .errors
-                .iter()
-                .any(|error| error.contains("File not found")),
-            "{result:?}"
-        );
-        assert!(result.data.is_none(), "{result:?}");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -11288,10 +11034,8 @@ pub(crate) mod tests {
 
         for (tool, alias, directory) in [
             ("unica.cf.info", "Path", src.clone()),
-            ("unica.cf.validate", "path", src.clone()),
             ("unica.cfe.validate", "Path", extension.clone()),
             ("unica.role.info", "path", role_dir.clone()),
-            ("unica.role.validate", "Path", role_dir.clone()),
         ] {
             let mut args = Map::new();
             args.insert("cwd".into(), Value::String(root.display().to_string()));
@@ -12228,357 +11972,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn support_edit_dry_run_does_not_change_parent_configurations() {
-        let (root, workspace, bin_path) = support_test_workspace(
-            "unica-support-edit-dry-run",
-            support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        );
-        write_support_test_vendor_payload(&workspace);
-        let before = std::fs::read_to_string(&bin_path).unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("Path".to_string(), Value::String("src".to_string()));
-        args.insert("Capability".to_string(), Value::String("off".to_string()));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &args)
-            .unwrap();
-
-        assert!(result.ok);
-        assert!(result.summary.contains("dry run"));
-        assert_eq!(std::fs::read_to_string(&bin_path).unwrap(), before);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn support_edit_missing_vendor_payload_blocks_preview_and_apply_before_side_effects() {
-        let bin = support_test_parent_configurations_bin(
-            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "cccccccc-cccc-cccc-cccc-cccccccccccc",
-        )
-        .replace("{6,0,", "{6,1,");
-        let (root, workspace, bin_path) =
-            support_test_workspace("unica-support-edit-missing-vendor-payload", bin);
-        let before = std::fs::read(&bin_path).unwrap();
-        let state_path = workspace.join(".build/unica/state.json");
-        let mut args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            ("Path".to_string(), Value::String("src".to_string())),
-            ("Capability".to_string(), Value::String("on".to_string())),
-        ]);
-        let mut results = Vec::new();
-
-        for dry_run in [false, true] {
-            args.insert("dryRun".to_string(), Value::Bool(dry_run));
-            let result = UnicaApplication::new()
-                .call_tool("unica.support.edit", &args)
-                .unwrap();
-
-            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
-            assert!(
-                result.errors.join("\n").contains("VendorConf.cf"),
-                "dryRun={dry_run}: {result:?}"
-            );
-            assert!(result.cache.events.is_empty(), "{result:?}");
-            assert_eq!(std::fs::read(&bin_path).unwrap(), before);
-            assert!(!state_path.exists(), "dryRun={dry_run}");
-            results.push(result);
-        }
-        assert_support_guard_block_parity(&results[0], &results[1]);
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn support_edit_unreadable_vendor_payload_blocks_preview_and_apply_before_side_effects() {
-        let bin = support_test_parent_configurations_bin(
-            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "cccccccc-cccc-cccc-cccc-cccccccccccc",
-        )
-        .replace("{6,0,", "{6,1,");
-        let (root, workspace, bin_path) =
-            support_test_workspace("unica-support-edit-unreadable-vendor-payload", bin);
-        write_support_test_vendor_payload(&workspace);
-        let vendor_payload = workspace.join("src/Ext/ParentConfigurations/VendorConf.cf");
-        let before = std::fs::read(&bin_path).unwrap();
-        let state_path = workspace.join(".build/unica/state.json");
-        if !set_unix_mode_for_test(&vendor_payload, 0o000).unwrap() {
-            eprintln!("[SKIPPED FIXTURE] Unix permission modes are unsupported on this host");
-            std::fs::remove_dir_all(root).unwrap();
-            return;
-        }
-        let mut args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            ("Path".to_string(), Value::String("src".to_string())),
-            ("Capability".to_string(), Value::String("on".to_string())),
-        ]);
-        let mut results = Vec::new();
-
-        for dry_run in [false, true] {
-            args.insert("dryRun".to_string(), Value::Bool(dry_run));
-            let result = UnicaApplication::new()
-                .call_tool("unica.support.edit", &args)
-                .unwrap();
-
-            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
-            assert!(
-                result.errors.join("\n").contains("VendorConf.cf"),
-                "dryRun={dry_run}: {result:?}"
-            );
-            assert!(result.cache.events.is_empty(), "{result:?}");
-            assert_eq!(std::fs::read(&bin_path).unwrap(), before);
-            assert!(!state_path.exists(), "dryRun={dry_run}");
-            results.push(result);
-        }
-        assert_support_guard_block_parity(&results[0], &results[1]);
-
-        assert!(set_unix_mode_for_test(&vendor_payload, 0o600).unwrap());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn support_edit_capability_on_enables_global_editing() {
-        let bin = support_test_parent_configurations_bin(
-            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "cccccccc-cccc-cccc-cccc-cccccccccccc",
-        )
-        .replace("{6,0,", "{6,1,");
-        let (root, workspace, _bin_path) =
-            support_test_workspace("unica-support-edit-capability-on", bin);
-        write_support_test_vendor_payload(&workspace);
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert("Path".to_string(), Value::String("src".to_string()));
-        args.insert("Capability".to_string(), Value::String("on".to_string()));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &args)
-            .unwrap();
-
-        assert!(result.ok, "{:?}", result.errors);
-        assert!(result.summary.contains("Возможность изменения"));
-        let mut info_args = Map::new();
-        info_args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        info_args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
-        let info = UnicaApplication::new()
-            .call_tool("unica.cf.info", &info_args)
-            .unwrap();
-        assert_eq!(info.data.unwrap()["support"]["editingEnabled"], true);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn support_edit_capability_off_disables_global_editing_and_blocks_set() {
-        let (root, workspace, bin_path) = support_test_workspace(
-            "unica-support-edit-capability-off",
-            support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        );
-        write_support_test_vendor_payload(&workspace);
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert("Path".to_string(), Value::String("src".to_string()));
-        args.insert("Capability".to_string(), Value::String("off".to_string()));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &args)
-            .unwrap();
-
-        assert!(result.ok, "{:?}", result.errors);
-        assert!(result.summary.contains("ВЫКЛЮЧЕНА"));
-        let bin_text = std::fs::read_to_string(&bin_path).unwrap();
-        assert!(bin_text.contains("{6,1,"));
-        assert!(bin_text.contains(
-            "dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
-        ));
-        assert!(bin_text.contains(",0,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"));
-        assert!(bin_text.contains(",0,0,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"));
-        assert!(bin_text.contains(",0,0,cccccccc-cccc-cccc-cccc-cccccccccccc"));
-
-        let mut info_args = Map::new();
-        info_args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        info_args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
-        let info = UnicaApplication::new()
-            .call_tool("unica.cf.info", &info_args)
-            .unwrap();
-        assert_eq!(info.data.unwrap()["support"]["editingEnabled"], false);
-
-        let mut set_args = Map::new();
-        set_args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        set_args.insert("dryRun".to_string(), Value::Bool(false));
-        set_args.insert(
-            "Path".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
-        );
-        set_args.insert("Set".to_string(), Value::String("editable".to_string()));
-        let set_result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &set_args)
-            .unwrap();
-        assert!(!set_result.ok);
-        assert!(set_result.errors.join("\n").contains("Capability=on"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn support_edit_set_editable_updates_object_rule_and_meta_info() {
-        let (root, workspace, _bin_path) = support_test_workspace(
-            "unica-support-edit-set-editable",
-            support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        );
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "Path".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
-        );
-        args.insert("Set".to_string(), Value::String("editable".to_string()));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &args)
-            .unwrap();
-
-        assert!(result.ok, "{:?}", result.errors);
-        assert!(result.summary.contains("редактируется"));
-        let mut info_args = Map::new();
-        info_args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-        info_args.insert(
-            "metadataPath".to_string(),
-            Value::String("Catalog.Items".to_string()),
-        );
-        let info =
-            call_public_tool_from_workspace(&workspace, "unica.meta.info", &info_args).unwrap();
-        let info_data = info.data.as_ref().expect("meta.info answers with data");
-        assert_eq!(
-            info_data["support"],
-            serde_json::json!("supported"),
-            "{info_data:?}"
-        );
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn support_edit_set_requires_global_capability_on() {
-        let bin = support_test_parent_configurations_bin(
-            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "cccccccc-cccc-cccc-cccc-cccccccccccc",
-        )
-        .replace("{6,0,", "{6,1,");
-        let (root, workspace, bin_path) =
-            support_test_workspace("unica-support-edit-set-capability-off", bin);
-        let before = std::fs::read_to_string(&bin_path).unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "Path".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
-        );
-        args.insert("Set".to_string(), Value::String("editable".to_string()));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &args)
-            .unwrap();
-
-        assert!(!result.ok);
-        assert!(result.errors.join("\n").contains("Capability=on"));
-        assert_eq!(std::fs::read_to_string(&bin_path).unwrap(), before);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn support_edit_missing_parent_configurations_is_safe_noop() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-support-edit-no-bin-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Configuration.xml"),
-            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert("Path".to_string(), Value::String("src".to_string()));
-        args.insert("Capability".to_string(), Value::String("on".to_string()));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &args)
-            .unwrap();
-
-        assert!(result.ok);
-        assert!(result.changes.is_empty());
-        assert!(result.summary.contains("не на поддержке"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn role_compile_registers_in_canonical_position_and_preserves_crlf() {
         let root =
             temp_scaffolded_configuration_workspace("unica-role-compile-canonical-registration");
@@ -13035,7 +12428,6 @@ pub(crate) mod tests {
         successful_typed_reader_with_stdout_duplicate_fails_closed();
         failed_typed_reader_may_omit_data();
         successful_typed_mutation_may_omit_data();
-        successful_external_stream_reader_may_omit_data();
     }
 
     #[test]
@@ -13063,23 +12455,6 @@ pub(crate) mod tests {
         }))
         .call_tool("unica.cf.edit", &Map::new())
         .expect("typed mutation remains outside the reader postcondition");
-
-        assert!(result.ok);
-        assert!(result.data.is_none());
-    }
-
-    #[test]
-    fn successful_external_stream_reader_may_omit_data() {
-        let args = Map::from_iter([(
-            "ConfigPath".to_string(),
-            Value::String("src/Configuration.xml".to_string()),
-        )]);
-        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
-            outcome: AdapterOutcome::ok("validator reported through its external stream"),
-            data: None,
-        }))
-        .call_tool("unica.cf.validate", &args)
-        .expect("external-stream reader remains outside the typed postcondition");
 
         assert!(result.ok);
         assert!(result.data.is_none());
@@ -13395,7 +12770,6 @@ pub(crate) mod tests {
 
         let affected_tools = [
             ("unica.cf.info", "ConfigPath", "OutFile", "outFile"),
-            ("unica.cf.validate", "ConfigPath", "OutFile", "outFile"),
             ("unica.cfe.validate", "ExtensionPath", "OutFile", "outFile"),
             // Retired metadata readers are covered by the exact unknown-tool
             // contract; typed meta.info has no output sink in its schema.
@@ -13406,16 +12780,8 @@ pub(crate) mod tests {
                 "OutFile",
                 "outFile",
             ),
-            (
-                "unica.subsystem.validate",
-                "SubsystemPath",
-                "OutFile",
-                "outFile",
-            ),
             ("unica.dcs.info", "TemplatePath", "OutFile", "outFile"),
-            ("unica.dcs.validate", "TemplatePath", "OutFile", "outFile"),
             ("unica.role.info", "RightsPath", "OutFile", "outFile"),
-            ("unica.role.validate", "RightsPath", "OutFile", "outFile"),
             (
                 "unica.mxl.decompile",
                 "TemplatePath",
@@ -13504,13 +12870,7 @@ pub(crate) mod tests {
             let path_selector = |name: &str, path: &std::path::Path| {
                 vec![(name.to_string(), Value::String(path.display().to_string()))]
             };
-            for (tool, selector) in [
-                ("unica.dcs.info", path_selector("TemplatePath", &template)),
-                (
-                    "unica.dcs.validate",
-                    path_selector("TemplatePath", &template),
-                ),
-            ] {
+            for (tool, selector) in [("unica.dcs.info", path_selector("TemplatePath", &template))] {
                 let mut args = Map::new();
                 args.insert(
                     "cwd".to_string(),
@@ -13692,12 +13052,6 @@ pub(crate) mod tests {
 </MetaDataObject>"#,
         )
         .unwrap();
-    }
-
-    fn write_support_test_vendor_payload(workspace: &std::path::Path) {
-        let vendor_dir = workspace.join("src/Ext/ParentConfigurations");
-        std::fs::create_dir_all(&vendor_dir).unwrap();
-        std::fs::write(vendor_dir.join("VendorConf.cf"), b"platform vendor payload").unwrap();
     }
 
     fn support_test_catalog_xml(uuid: &str) -> String {

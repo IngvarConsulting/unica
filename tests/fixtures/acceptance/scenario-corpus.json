@@ -6928,6 +6928,386 @@
      "refusal": "bad_value: validation profile `form` does not validate Catalog nodes; pick the profile of `main:Catalog.Валюты` or omit the filter"
     }
    ]
+  },
+  {
+   "id": "S267",
+   "area": "Проверки качества",
+   "task": "Проверить корень конфигурации профилем cf в выгрузке формата 2.21 — проверка проходит и предупреждает о формате новее профиля",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "newer:Configuration",
+      "filter": {
+       "validation": {
+        "profile": "cf"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "platformVersionUnsupported"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S268",
+   "area": "Проверки качества",
+   "task": "Проверить форму списка профилем form в выгрузке 2.21 — предупреждение о формате рядом с вердиктом",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "newer:Catalog.Валюты.Form.ФормаСписка",
+      "filter": {
+       "validation": {
+        "profile": "form"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "platformVersionUnsupported"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S269",
+   "area": "Проверки качества",
+   "task": "Проверить роль профилем role в выгрузке 2.21 — предупреждение о формате рядом с вердиктом",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "newer:Role.SalesReader",
+      "filter": {
+       "validation": {
+        "profile": "role"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "platformVersionUnsupported"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S270",
+   "area": "Проверки качества",
+   "task": "Проверить подсистему профилем subsystem в выгрузке 2.21 с командным интерфейсом 2.21 — предупреждение о формате",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "newer:Subsystem.Администрирование",
+      "filter": {
+       "validation": {
+        "profile": "subsystem"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "platformVersionUnsupported"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S271",
+   "area": "Проверки качества",
+   "task": "Проверить корень конфигурации без атрибута версии профилем cf — формат считается 1.0 и проверка предупреждает о миграции",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "unversioned:Configuration",
+      "filter": {
+       "validation": {
+        "profile": "cf"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "formatMigrationAvailable"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S272",
+   "area": "Проверки качества",
+   "task": "Проверить отсутствующую подсистему профилем subsystem — типизированный отказ, а не транспортная ошибка",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Subsystem.Отсутствует",
+      "filter": {
+       "validation": {
+        "profile": "subsystem"
+       }
+      }
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: metadata owner `Subsystem.Отсутствует` is not registered"
+    }
+   ]
+  },
+  {
+   "id": "S273",
+   "area": "Формы",
+   "task": "Добавить форму справочнику в выгрузке 2.21 — запись вне записываемого профиля отказывает до первого байта",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаНовая",
+           "type": "ListForm"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S274",
+   "area": "Поддержка поставщика",
+   "task": "Разрешить редактирование объекта поставщика в выгрузке 2.21 — отказ по формату до чтения ParentConfigurations.bin",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "editable"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S275",
+   "area": "Свойства объектов",
+   "task": "Изменить комментарий справочника в выгрузке 2.21 — отказ по формату новее профиля",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Ведём по классификатору"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S276",
+   "area": "Свойства объектов",
+   "task": "Изменить комментарий справочника в выгрузке без версии корня — формат 1.0 старше профиля, отказ до записи",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "unversioned:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Ведём по классификатору"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 1.0 is older than the writable profile 2.20 for 1C 8.3.27; re-export the sources with the platform before editing them"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S277",
+   "area": "Макеты",
+   "task": "Добавить макет справочнику в выгрузке 2.21 — отказ по формату",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "template.add",
+        "args": {
+         "items": [
+          {
+           "name": "Проба",
+           "templateType": "SpreadsheetDocument"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S278",
+   "area": "Код BSL",
+   "task": "Вставить код в общий модуль выгрузки 2.21 — отказ по формату владельца",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "// проба\n"
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S279",
+   "area": "Роли и права",
+   "task": "Выдать право в роли выгрузки 2.21 — отказ по формату до правки Rights.xml",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "object": "Catalog.Валюты",
+          "right": "Read",
+          "value": true
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S280",
+   "area": "Поддержка поставщика",
+   "task": "Включить возможность изменения в конфигурации, которая не на поддержке — типизированный отказ вместо тихого no-op",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "nosupport:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "supportCapability.set",
+        "args": {
+         "values": {
+          "enabled": true
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: the configuration is not on vendor support (no Ext/ParentConfigurations.bin); there is no support state to switch"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   }
  ]
 }

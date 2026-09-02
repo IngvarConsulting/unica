@@ -12,6 +12,112 @@ use crate::infrastructure::native_operations::apply::{
 use crate::infrastructure::workspace_actor::{ApplyAdmission, ProviderRootBinding};
 use request::{reconcile_effects, IndexedPlanOperation, ProvisionalApplyEffect};
 
+/// The writable platform XML profile is single (`DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE`):
+/// a write outside it refuses before the first byte. The retired v0.12
+/// mutators proved this through the dispatcher's format guard; the canonical
+/// planner proves it here, over the owner chain of the addressed node, read
+/// through the staged state so no ambient file is touched after admission.
+fn refuse_targets_outside_writable_profile(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    staged: &mut ApplyStagedState,
+) -> Result<(), ApplyPlanError> {
+    let at = request.at().to_string();
+    for relative in writable_profile_owner_chain(request, binding.source_kind()) {
+        let Some(bytes) = staged
+            .read(&relative)
+            .map_err(|error| ApplyPlanError::staging(error, at.clone()))?
+        else {
+            continue;
+        };
+        if let Some(finding) =
+            crate::infrastructure::format_guard::classify_staged_platform_xml_root(
+                &relative, &bytes,
+            )
+        {
+            return Err(
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, finding.message).at_path(at),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The platform XML documents whose root version decides whether the
+/// addressed node may be written: the source-set root descriptor, the owner
+/// descriptor of every metadata segment, the wrapper of a nested form,
+/// template or command, and the attached content the kind owns.
+fn writable_profile_owner_chain(
+    request: &ApplyRequest,
+    source_kind: SourceSetKind,
+) -> Vec<std::path::PathBuf> {
+    use crate::domain::address::NodeKind;
+    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use crate::infrastructure::logical_event_source::{
+        attached_resource_relative, metadata_descriptor_relative,
+    };
+
+    let mut chain = Vec::new();
+    if matches!(
+        source_kind,
+        SourceSetKind::Configuration | SourceSetKind::Extension
+    ) {
+        chain.push(std::path::PathBuf::from("Configuration.xml"));
+    }
+    let segments = request.at().segments();
+    let Some(owner) = segments.first() else {
+        return chain;
+    };
+    let Some(owner_name) = owner.name() else {
+        return chain;
+    };
+    if owner.kind() == NodeKind::Configuration || !owner.kind().is_metadata_kind() {
+        return chain;
+    }
+    let owner_path = format!("{}.{}", owner.kind().as_str(), owner_name);
+    let Ok(owner_address) = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner_path)
+    else {
+        return chain;
+    };
+    if let Ok(descriptor) = metadata_descriptor_relative(&owner_address, source_kind) {
+        chain.push(descriptor);
+    }
+    let owner_resource = match owner.kind() {
+        NodeKind::Role => Some("Rights.xml"),
+        NodeKind::Subsystem => Some("CommandInterface.xml"),
+        NodeKind::CommonForm => Some("Form.xml"),
+        _ => None,
+    };
+    if let Some(resource) = owner_resource {
+        if let Ok(content) = attached_resource_relative(&owner_address, resource, source_kind) {
+            chain.push(content);
+        }
+    }
+    if let Some(nested) = segments.get(1) {
+        let nested_resource = match nested.kind() {
+            NodeKind::Form => Some("Form.xml"),
+            NodeKind::Template => Some("Template.xml"),
+            _ => None,
+        };
+        if let (Some(resource), Some(nested_name)) = (nested_resource, nested.name()) {
+            let nested_path = format!("{owner_path}.{}.{nested_name}", nested.kind().as_str());
+            if let Ok(nested_address) =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &nested_path)
+            {
+                if let Ok(wrapper) = metadata_descriptor_relative(&nested_address, source_kind) {
+                    chain.push(wrapper);
+                }
+                if let Ok(content) =
+                    attached_resource_relative(&nested_address, resource, source_kind)
+                {
+                    chain.push(content);
+                }
+            }
+        }
+    }
+    chain
+}
+
 enum ParsedApplyOperation {
     Metadata(IndexedPlanOperation<metadata::MetadataPlanOperation>),
     FormResource(IndexedPlanOperation<form_resource::FormResourcePlanOperation>),
@@ -300,6 +406,7 @@ pub(crate) fn plan_hidden_v13_apply(
     let mut staged = admission
         .staged_state()
         .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
+    refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
     let mut provisional = Vec::new();
     let mut cursor = 0;
     while cursor < parsed.len() {

@@ -350,7 +350,6 @@ IN_SCOPE_TOOLS = {
     "cf-edit": "unica.cf.edit",
     "cf-info": "unica.cf.info",
     "cf-init": "unica.cf.init",
-    "cf-validate": "unica.cf.validate",
     "cfe-borrow": "unica.cfe.borrow",
     "cfe-diff": "unica.cfe.diff",
     "cfe-init": "unica.cfe.init",
@@ -362,30 +361,24 @@ IN_SCOPE_TOOLS = {
     "meta-edit": "unica.meta.edit",
     "meta-info": "unica.meta.info",
     "meta-remove": "unica.meta.remove",
-    "form-add": "unica.form.add",
     "form-compile": "unica.form.compile",
     "form-edit": "unica.form.edit",
     "form-info": "unica.form.info",
     "form-remove": "unica.form.remove",
-    "form-validate": "unica.form.validate",
     "interface-edit": "unica.interface.edit",
     "interface-validate": "unica.interface.validate",
     "subsystem-compile": "unica.subsystem.compile",
     "subsystem-edit": "unica.subsystem.edit",
     "subsystem-info": "unica.subsystem.info",
-    "subsystem-validate": "unica.subsystem.validate",
     "dcs-compile": "unica.dcs.compile",
     "dcs-edit": "unica.dcs.edit",
     "dcs-info": "unica.dcs.info",
-    "dcs-validate": "unica.dcs.validate",
     "mxl-compile": "unica.mxl.compile",
     "mxl-decompile": "unica.mxl.decompile",
     "mxl-info": "unica.mxl.info",
-    "mxl-validate": "unica.mxl.validate",
     "role-compile": "unica.role.compile",
     "role-edit": "unica.role.edit",
     "role-info": "unica.role.info",
-    "role-validate": "unica.role.validate",
 }
 
 SCENARIO_SKILLS = {
@@ -824,7 +817,6 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "cf-edit": ["ConfigPath", "Operation", "Value"],
     "cf-info": ["ConfigPath"],
     "cf-init": ["Name", "OutputDir"],
-    "cf-validate": ["ConfigPath"],
     "cfe-borrow": ["ExtensionPath", "ConfigPath", "Object"],
     "cfe-diff": ["ExtensionPath", "ConfigPath"],
     "cfe-init": ["Name", "OutputDir"],
@@ -836,37 +828,30 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "meta-edit": ["sourceSet", "metadataPath", "operations"],
     "meta-info": ["sourceSet", "metadataPath"],
     "meta-remove": ["sourceSet", "metadataPath", "dryRun"],
-    "form-add": ["ObjectPath", "FormName", "Purpose"],
     "form-compile": ["JsonPath", "OutputPath"],
     "form-edit": ["FormPath", "JsonPath"],
     "form-info": ["FormPath"],
     "form-remove": ["ObjectName", "FormName", "SrcDir"],
-    "form-validate": ["FormPath"],
     "interface-edit": ["CIPath", "Operation", "Value"],
     "interface-validate": ["CIPath"],
     "subsystem-compile": ["Value", "OutputDir"],
     "subsystem-edit": ["SubsystemPath", "Operation", "Value"],
     "subsystem-info": ["SubsystemPath"],
-    "subsystem-validate": ["SubsystemPath"],
     "dcs-compile": ["DefinitionFile", "OutputPath"],
     "dcs-edit": ["TemplatePath", "Operation", "Value"],
     "dcs-info": ["TemplatePath"],
-    "dcs-validate": ["TemplatePath"],
     "mxl-compile": ["JsonPath", "OutputPath"],
     "mxl-decompile": ["TemplatePath"],
     "mxl-info": ["TemplatePath", "WithText"],
-    "mxl-validate": ["TemplatePath"],
     "role-compile": ["JsonPath", "OutputDir"],
     "role-edit": ["sourceSet", "metadataPath", "operations"],
     "role-info": ["RightsPath"],
-    "role-validate": ["RightsPath"],
 }
 
 SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cf-edit": 6,
     "cf-info": 6,
     "cf-init": 6,
-    "cf-validate": 2,
     "cfe-borrow": 7,
     "cfe-diff": 3,
     "cfe-init": 6,
@@ -876,20 +861,15 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "meta-edit": 3,
     "meta-info": 6,
     "meta-remove": 1,
-    "form-add": 6,
     "form-compile": 4,
-    "form-validate": 2,
     "interface-edit": 8,
     "interface-validate": 2,
     "subsystem-compile": 4,
     "subsystem-edit": 6,
     "subsystem-info": 5,
-    "subsystem-validate": 2,
     "dcs-compile": 5,
     "dcs-info": 12,
-    "dcs-validate": 2,
     "mxl-info": 3,
-    "mxl-validate": 2,
     "role-info": 2,
     "role-edit": 1,
     "dcs-edit": 4,
@@ -897,16 +877,16 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
 }
 
 ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
-    "cf-init": {"unica.cf.info", "unica.cf.validate"},
+    "cf-init": {"unica.cf.info", "unica.check"},
     "cfe-borrow": {"unica.cfe.validate"},
     "cfe-init": {"unica.cfe.validate"},
     "epf-init": {"unica.runtime.execute"},
     "erf-init": {"unica.runtime.execute"},
-    "form-compile": {"unica.form.info", "unica.form.validate"},
+    "form-compile": {"unica.form.info", "unica.check"},
     "interface-edit": {"unica.interface.validate"},
-    "role-compile": {"unica.role.info", "unica.role.validate"},
-    "dcs-compile": {"unica.dcs.info", "unica.dcs.validate"},
-    "dcs-edit": {"unica.dcs.info", "unica.dcs.validate"},
+    "role-compile": {"unica.role.info", "unica.check"},
+    "dcs-compile": {"unica.dcs.info", "unica.check"},
+    "dcs-edit": {"unica.dcs.info", "unica.check"},
 }
 
 SCENARIO_PRESERVING_TOKENS = {
@@ -933,7 +913,7 @@ SCENARIO_PRESERVING_TOKENS = {
         "Режим совместимости (default: `Version8_3_27`)",
         '"CompatibilityMode": "Version8_3_27"',
         '"name": "unica.cf.info"',
-        '"name": "unica.cf.validate"',
+        '"name": "unica.check"',
     ],
     "cfe-borrow": [
         '"Object": "Catalog.Контрагенты"',
@@ -995,17 +975,9 @@ SCENARIO_PRESERVING_TOKENS = {
         '`force: true`, `confirm: true`, `dryRun: false`',
         '"dryRun": true',
     ],
-    "form-add": [
-        '"ObjectPath": "Documents/АвансовыйОтчет.xml"',
-        '"Purpose": "List"',
-        '"Purpose": "Record"',
-        '"Purpose": "Choice"',
-        '"Synonym": "Выбор номенклатуры"',
-        '"SetDefault": true',
-    ],
     "form-compile": [
         '"OutputPath": "<.../TypePlural/ObjectName/Forms/FormName/Ext/Form.xml>"',
-        '"name": "unica.form.validate"',
+        '"name": "unica.check"',
         '"name": "unica.form.info"',
     ],
     "interface-edit": [
@@ -1033,19 +1005,19 @@ SCENARIO_PRESERVING_TOKENS = {
         "`tree`",
     ],
     "role-compile": [
-        '"name": "unica.role.validate"',
+        '"name": "unica.check"',
         '"name": "unica.role.info"',
     ],
     "dcs-compile": [
         '"DefinitionFile": "<json>"',
         '"Value": "<json-string>"',
-        '"name": "unica.dcs.validate"',
+        '"name": "unica.check"',
         '"name": "unica.dcs.info"',
     ],
     "dcs-edit": [
         '"Operation": "add-field"',
         '"Value": "Цена: decimal(15,2) ;; Количество: decimal(15,3) ;; Сумма: decimal(15,2)"',
-        '"name": "unica.dcs.validate"',
+        '"name": "unica.check"',
         '"name": "unica.dcs.info"',
     ],
     # Eleven `Mode` values selected eleven reports. The typed answer carries
@@ -1318,16 +1290,12 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_read_only_skills_do_not_offer_outfile(self) -> None:
         read_only_skills = [
             "cf-info",
-            "cf-validate",
             "cfe-validate",
             "meta-info",
             "interface-validate",
             "subsystem-info",
-            "subsystem-validate",
             "dcs-info",
-            "dcs-validate",
             "role-info",
-            "role-validate",
         ]
 
         for skill in read_only_skills:
@@ -2536,9 +2504,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         )
         form_edit = (self.skill_root() / "form-edit" / "SKILL.md").read_text(encoding="utf-8")
         form_info = (self.skill_root() / "form-info" / "SKILL.md").read_text(encoding="utf-8")
-        form_validate = (self.skill_root() / "form-validate" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
         form_dsl = (self.reference_root() / "specs" / "form-dsl-spec.md").read_text(
             encoding="utf-8"
         )
@@ -2546,7 +2511,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for text in [form_compile, form_edit, form_info, form_validate]:
+        for text in [form_compile, form_edit, form_info]:
             self.assertIn("MCP `unica`", text)
             self.assertNotIn("CLAUDE_SKILL_DIR", text)
             self.assertNotIn("powershell.exe", text)
@@ -2578,7 +2543,8 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("choiceParameters", form_compile)
         self.assertIn("availableTypes", form_compile)
         self.assertIn("unica.form.info", form_edit)
-        self.assertIn("unica.form.validate", form_edit)
+        self.assertIn("`unica.check`", form_edit)
+        self.assertNotIn("unica.form.validate", form_edit)
 
     def test_form_patterns_ux_guidance_is_mirrored_and_uses_supported_dsl(self) -> None:
         heading = "## UX-правила для элементов и компоновки форм"
@@ -3353,17 +3319,11 @@ CONDITIONAL_MARKER = "один из двух"
 
 BRIDGED_SKILL_SELECTORS = {
     "cf-info": ("ConfigPath", False),
-    "cf-validate": ("ConfigPath", False),
     "subsystem-info": ("SubsystemPath", True),
-    "subsystem-validate": ("SubsystemPath", True),
     "role-info": ("RightsPath", True),
-    "role-validate": ("RightsPath", True),
     "form-info": ("FormPath", True),
-    "form-validate": ("FormPath", True),
     "dcs-info": ("TemplatePath", True),
-    "dcs-validate": ("TemplatePath", True),
     "mxl-info": ("TemplatePath", True),
-    "mxl-validate": ("TemplatePath", True),
     "mxl-decompile": ("TemplatePath", True),
 }
 

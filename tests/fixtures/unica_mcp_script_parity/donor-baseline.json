@@ -44,14 +44,14 @@
       "contentDigest": "9e80ab12f02af458183548f59065f142566d8a0ef45a3cb4dbdfbfd23337f790"
     },
     "dcs-validate": {
-      "ownerSkill": "dcs-validate",
+      "ownerSkill": "dcs-compile",
       "caseScopes": [],
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "reviewId": "2026-07-24-cc-1c-parity-refresh",
       "contentDigest": "cd8881e166e35c7de718319237dc4e2fda99f4e1c17bf957b52851254d4dc6b4"
     },
     "form-add": {
-      "ownerSkill": "form-add",
+      "ownerSkill": "form-compile",
       "caseScopes": [],
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "reviewId": "2026-07-24-cfe-portable-path-profile",
@@ -68,7 +68,7 @@
       "contentDigest": "80e542991d3f23a3cf3c19cf496311e68057b45770c8c3aef9e3671c325926f5"
     },
     "form-validate": {
-      "ownerSkill": "form-validate",
+      "ownerSkill": "form-compile",
       "caseScopes": [],
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "reviewId": "2026-07-24-cc-1c-parity-refresh",

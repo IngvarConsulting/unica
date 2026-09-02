@@ -370,10 +370,10 @@ Shorthand: `"Поле1 > Поле2 > details"`. `details`/`детали` — д�
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.dcs.validate",
+    "name": "unica.check",
     "arguments": {
-      "cwd": "<workspace>",
-      "TemplatePath": "<TemplatePath>"
+      "at": "<sourceSet>:<Kind>.<Name>.Template.<Template>",
+      "filter": {"validation": {"profile": "dcs"}}
     }
   }
 }
