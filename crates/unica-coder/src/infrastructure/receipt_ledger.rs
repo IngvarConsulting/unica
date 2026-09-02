@@ -10253,7 +10253,7 @@ mod tests {
             .expect("reserve cancellation before submit");
         let initial = match initial {
             crate::application::receipt_ledger::CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("first cancel must create CancelReserved, got {other:?}"),
+            _ => panic!("first cancel must create CancelReserved"),
         };
         assert_eq!(initial.key(), &key);
         assert_eq!(initial.record_version(), ReceiptVersion::initial());
@@ -10278,7 +10278,7 @@ mod tests {
             .expect("repeat the exact cancellation reservation");
         let duplicate = match duplicate {
             crate::application::receipt_ledger::CancelResolution::ExistingExact(receipt) => receipt,
-            other => panic!("duplicate cancel must reuse CancelReserved, got {other:?}"),
+            _ => panic!("duplicate cancel must reuse CancelReserved"),
         };
         assert_eq!(duplicate, initial);
         assert_eq!(store.generation().expect("stable generation"), 1);
@@ -10330,7 +10330,7 @@ mod tests {
             .expect("reserve cancellation before submit")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("first cancel must create CancelReserved, got {other:?}"),
+            _ => panic!("first cancel must create CancelReserved"),
         };
 
         let current = match store
@@ -10338,7 +10338,7 @@ mod tests {
             .expect("the boundary call reclaims stale state before admitting a new cancel")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("expired duplicate must become a new admission, got {other:?}"),
+            _ => panic!("expired duplicate must become a new admission"),
         };
 
         assert_eq!(current.key(), &key);
@@ -10373,7 +10373,7 @@ mod tests {
             .expect("reserve cancellation before submit")
         {
             crate::application::receipt_ledger::CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("first cancel must create CancelReserved, got {other:?}"),
+            _ => panic!("first cancel must create CancelReserved"),
         };
 
         assert_eq!(
@@ -10445,7 +10445,7 @@ mod tests {
             .expect("create old cancellation reservation")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("old cancellation must be newly reserved, got {other:?}"),
+            _ => panic!("old cancellation must be newly reserved"),
         };
         assert_eq!(
             store
@@ -10464,7 +10464,7 @@ mod tests {
             .expect("recreate the exact cancellation reservation")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("recreated cancellation must be newly reserved, got {other:?}"),
+            _ => panic!("recreated cancellation must be newly reserved"),
         };
         assert_eq!(current.record_version(), ReceiptVersion::initial());
         assert_eq!(current.mutation_sequence(), 3);
@@ -10514,7 +10514,7 @@ mod tests {
                 prior_record_version,
                 ..
             } => *prior_record_version = ReceiptVersion::new(2).expect("impossible predecessor"),
-            other => panic!("fixture must be an expiry witness, got {other:?}"),
+            _ => panic!("fixture must be an expiry witness"),
         }
         let encoded = serde_json::to_vec(&witness).expect("encode canonical impossible witness");
 
@@ -10573,7 +10573,7 @@ mod tests {
                 prior_expires_at_epoch_ms,
                 ..
             } => *prior_expires_at_epoch_ms = 9_000,
-            other => panic!("fixture must be an expiry witness, got {other:?}"),
+            _ => panic!("fixture must be an expiry witness"),
         }
         let encoded = serde_json::to_vec(&witness).expect("encode canonical impossible witness");
 
@@ -10659,7 +10659,7 @@ mod tests {
             .expect("create second cancellation reservation")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("second cancellation must be newly reserved, got {other:?}"),
+            _ => panic!("second cancellation must be newly reserved"),
         };
         set_after_receipt_row_rename_hook_for_test(|| {
             panic!("simulate process loss after the expiry witness rename")
@@ -10712,7 +10712,7 @@ mod tests {
             .expect("create cancellation reservation")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("cancellation must be newly reserved, got {other:?}"),
+            _ => panic!("cancellation must be newly reserved"),
         };
         set_after_receipt_row_rename_hook_for_test(|| {
             panic!("simulate process loss before expiry generation publication")
@@ -10748,7 +10748,7 @@ mod tests {
                 prior_mutation_sequence,
                 ..
             } => *prior_mutation_sequence = 2,
-            other => panic!("fixture must remain an expiry witness, got {other:?}"),
+            _ => panic!("fixture must remain an expiry witness"),
         }
         let (_, encoded) = serialize_reserved_record(witness, MAX_CANCEL_RESERVED_RECORD_BYTES)
             .expect("encode canonical skipped-generation witness");
@@ -10777,7 +10777,7 @@ mod tests {
             .expect("create cancellation reservation")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("cancellation must be newly reserved, got {other:?}"),
+            _ => panic!("cancellation must be newly reserved"),
         };
         set_after_expired_deletion_witness_remove_hook_for_test(|| {
             panic!("simulate process loss before syncing the witness unlink")
@@ -10829,7 +10829,7 @@ mod tests {
             .expect("create cancellation reservation")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("cancellation must be newly reserved, got {other:?}"),
+            _ => panic!("cancellation must be newly reserved"),
         };
         set_after_receipt_row_rename_hook_for_test(|| {
             panic!("simulate process loss at visible witness rename")
@@ -10888,14 +10888,14 @@ mod tests {
             .expect("create first cancellation reservation")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("first cancellation must be newly reserved, got {other:?}"),
+            _ => panic!("first cancellation must be newly reserved"),
         };
         let surviving = match store
             .request_cancel_or_reserve(surviving_key.clone(), 2_000, reserve_deadline())
             .expect("interleave a second receipt mutation")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("second cancellation must be newly reserved, got {other:?}"),
+            _ => panic!("second cancellation must be newly reserved"),
         };
         assert_eq!(expiring.mutation_sequence(), 1);
         assert_eq!(surviving.mutation_sequence(), 2);
@@ -10948,7 +10948,7 @@ mod tests {
             .expect("create cancellation reservation")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("cancellation must be newly reserved, got {other:?}"),
+            _ => panic!("cancellation must be newly reserved"),
         };
         set_after_generation_replace_hook_for_test(|| {
             panic!("simulate process loss before witness unlink")
@@ -11152,7 +11152,7 @@ mod tests {
             .expect("expired identity owner is reclaimable")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("reclaimed identity must admit a new receipt, got {other:?}"),
+            _ => panic!("reclaimed identity must admit a new receipt"),
         };
 
         assert_eq!(admitted.key(), &admitted_key);
@@ -11222,7 +11222,7 @@ mod tests {
             .expect("convert the exact cancellation into a submit reservation");
         let converted = match converted {
             ReserveOutcome::Created(receipt) => receipt,
-            other => panic!("cancel conversion is a durable mutation, got {other:?}"),
+            _ => panic!("cancel conversion is a durable mutation"),
         };
         assert_eq!(converted.key(), &key);
         assert_eq!(converted.record_version().get(), 2);
@@ -11266,7 +11266,7 @@ mod tests {
             .expect("reserve cancellation before submit")
         {
             CancelResolution::NewlyReserved(receipt) => receipt,
-            other => panic!("first cancellation must reserve, got {other:?}"),
+            _ => panic!("first cancellation must reserve"),
         };
         let cutoff = OriginalCutoffDescriptor::new(cancel.expires_at_epoch_ms(), 7_000)
             .expect("valid submit cutoff at the half-open expiry boundary");
@@ -11276,7 +11276,7 @@ mod tests {
             .expect("replace expired cancellation with exact submit")
         {
             ReserveOutcome::Created(receipt) => receipt,
-            other => panic!("expired exact conversion is a mutation, got {other:?}"),
+            _ => panic!("expired exact conversion is a mutation"),
         };
 
         assert!(!converted.cancel_requested());
