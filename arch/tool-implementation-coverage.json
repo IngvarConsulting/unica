@@ -82,7 +82,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed twelve-operation dictionary, pre-admission revision-fenced source.attach, and bounded syntax.check Task execution are implemented; the other ten run operations remain unsupported.",
+      "reason": "The closed directional twelve-operation dictionary and pre-admission revision-fenced workspace.initialize are implemented; the other eleven run operations remain unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -95,21 +95,21 @@
     }
   },
   "runOperations": {
+    "workspace.initialize": {
+      "status": "supported",
+      "reason": "Autodetected uniform-format source sets can be previewed without writes and initialized through create-only v8project.yaml publication guarded by the preview revision; infobase-only and mixed-format initialization remain refused.",
+      "evidence": [{
+        "file": "crates/unica-coder/tests/v13_workspace_bootstrap.rs",
+        "test": "canonical_stdio_previews_and_applies_workspace_initialization_before_admission"
+      }, {
+        "file": "crates/unica-coder/tests/v13_workspace_bootstrap.rs",
+        "test": "canonical_workspace_initialization_refuses_mixed_designer_and_edt_discovery"
+      }]
+    },
     "source.create": {
       "status": "unsupported",
       "reason": "Source creation execution has not been connected to the v0.13 run adapter.",
       "evidence": []
-    },
-    "source.attach": {
-      "status": "supported",
-      "reason": "Autodetected uniform-format source sets can be previewed without writes and attached through create-only v8project.yaml publication guarded by the preview revision; explicit declarations and mixed-format attachment remain refused.",
-      "evidence": [{
-        "file": "crates/unica-coder/tests/v13_workspace_bootstrap.rs",
-        "test": "canonical_stdio_previews_and_applies_autodetected_source_attachment_before_admission"
-      }, {
-        "file": "crates/unica-coder/tests/v13_workspace_bootstrap.rs",
-        "test": "canonical_source_attachment_refuses_mixed_designer_and_edt_discovery"
-      }]
     },
     "infobase.create": {
       "status": "unsupported",
@@ -131,46 +131,34 @@
       "reason": "Source conversion execution has not been connected to the v0.13 run adapter.",
       "evidence": []
     },
-    "artifact.make": {
+    "artifact.build": {
       "status": "unsupported",
       "reason": "Artifact build execution has not been connected to the v0.13 run adapter.",
       "evidence": []
     },
-    "artifact.load": {
+    "infobase.configuration.export": {
       "status": "unsupported",
-      "reason": "Artifact loading execution has not been connected to the v0.13 run adapter.",
+      "reason": "Configuration package export execution has not been connected to the v0.13 run adapter.",
       "evidence": []
     },
-    "syntax.check": {
-      "status": "supported",
-      "reason": "Closed syntax arguments execute as a durable cancellable Task through a five-minute process timeout and bounded capture; terminal provider failures publish no raw output, command or artifact paths.",
-      "evidence": [{
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_syntax_run.rs",
-        "test": "canonical_syntax_args_are_closed_and_map_without_raw_command_fields"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/internal_adapters.rs",
-        "test": "bounded_runtime_adapter_records_process_timeout_and_capture_limits"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_syntax_run.rs",
-        "test": "syntax_cancellation_and_provider_failure_publish_only_closed_results"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
-      }]
-    },
-    "test.run": {
+    "infobase.configuration.load": {
       "status": "unsupported",
-      "reason": "Test execution has not been connected to the v0.13 run adapter.",
+      "reason": "Configuration package loading has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "infobase.dump": {
+      "status": "unsupported",
+      "reason": "Full infobase DT export has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "infobase.restore": {
+      "status": "unsupported",
+      "reason": "Full infobase DT restore has not been connected to the v0.13 run adapter.",
       "evidence": []
     },
     "client.run": {
       "status": "unsupported",
       "reason": "Interactive client execution has not been connected to the v0.13 run adapter.",
-      "evidence": []
-    },
-    "extension.sync": {
-      "status": "unsupported",
-      "reason": "Extension synchronization has not been connected to the v0.13 run adapter.",
       "evidence": []
     }
   },

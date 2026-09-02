@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-08-31.V0-13-NO-QUERY-EXECUTE
-status: active
+status: superseded
 governs: product
 realized: crates/unica-coder/src/application/v13/tool_catalog.rs::v13_run_dictionary_has_twelve_operations_without_query_execution
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS
 establishes: [INV.APP.V13-RUN-DICTIONARY]
 design: docs/design/2026-08-31-v0-13-no-query-execute-design.md
 ---

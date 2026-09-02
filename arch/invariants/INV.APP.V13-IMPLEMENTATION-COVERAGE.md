@@ -2,7 +2,7 @@
 id: INV.APP.V13-IMPLEMENTATION-COVERAGE
 status: active
 governs: product
-decision: DEC.2026-08-31.V0-13-FIRST-IMPLEMENTATION-VERTICALS
+decision: DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS
 check: tests/ci/test_v013_implementation_coverage.py::test_record_covers_exactly_the_public_tools_and_run_dictionary
 scope: [app, product, wire]
 ---

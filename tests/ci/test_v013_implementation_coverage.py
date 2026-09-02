@@ -11,6 +11,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COVERAGE = REPO_ROOT / "arch/tool-implementation-coverage.json"
 CATALOG = REPO_ROOT / "crates/unica-coder/src/application/v13/tool_catalog.rs"
+RUN_DICTIONARY_INVARIANT = REPO_ROOT / "arch/invariants/INV.APP.V13-RUN-DICTIONARY.md"
 
 SUBJECT_TOOLS = {
     "unica.view",
@@ -94,6 +95,12 @@ class V013ImplementationCoverageTests(unittest.TestCase):
         self.assertEqual(len(self.coverage["runOperations"]), 12)
         self.assertNotIn("query.execute", self.coverage["runOperations"])
 
+    def test_no_query_dictionary_invariant_remains_active(self) -> None:
+        front_matter = RUN_DICTIONARY_INVARIANT.read_text(encoding="utf-8").split(
+            "---", 2
+        )[1]
+        self.assertRegex(front_matter, r"(?m)^status: active$")
+
     def test_every_entry_uses_a_closed_status_and_honest_evidence(self) -> None:
         for group_name in ("subjectTools", "runOperations", "compatibilityTools"):
             for name, entry in sorted(self.coverage[group_name].items()):
@@ -119,23 +126,21 @@ class V013ImplementationCoverageTests(unittest.TestCase):
                             f"{location} supported status requires executable evidence",
                         )
 
-    def test_runtime_truth_supports_only_the_two_proven_operations(self) -> None:
+    def test_runtime_truth_supports_only_workspace_initialization(self) -> None:
         for name, entry in self.coverage["runOperations"].items():
             with self.subTest(operation=name):
                 expected = (
                     "supported"
-                    if name in {"source.attach", "syntax.check"}
+                    if name == "workspace.initialize"
                     else "unsupported"
                 )
                 self.assertEqual(entry["status"], expected)
         self.assertEqual(
-            self.coverage["runOperations"]["syntax.check"]["status"],
+            self.coverage["runOperations"]["workspace.initialize"]["status"],
             "supported",
         )
-        self.assertEqual(
-            self.coverage["runOperations"]["source.attach"]["status"],
-            "supported",
-        )
+        self.assertNotIn("syntax.check", self.coverage["runOperations"])
+        self.assertNotIn("test.run", self.coverage["runOperations"])
         self.assertNotIn("query.execute", self.coverage["runOperations"])
 
     def test_initial_truth_marks_useful_subject_modes_partial_and_task_transport_supported(self) -> None:

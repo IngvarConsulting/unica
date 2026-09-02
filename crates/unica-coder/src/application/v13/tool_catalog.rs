@@ -38,18 +38,18 @@ pub(crate) struct CatalogSemantics {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunIntent {
+    WorkspaceInitialize,
     SourceCreate,
-    SourceAttach,
     InfobaseCreate,
     InfobaseBuild,
     SourceDump,
     SourceConvert,
-    ArtifactMake,
-    ArtifactLoad,
-    SyntaxCheck,
-    TestRun,
+    ArtifactBuild,
+    InfobaseConfigurationExport,
+    InfobaseConfigurationLoad,
+    InfobaseDump,
+    InfobaseRestore,
     ClientRun,
-    ExtensionSync,
 }
 
 #[derive(Debug)]
@@ -63,43 +63,54 @@ pub(crate) struct RunOperation {
 impl RunOperation {
     pub(crate) const fn name(&self) -> &'static str {
         match self.intent {
+            RunIntent::WorkspaceInitialize => "workspace.initialize",
             RunIntent::SourceCreate => "source.create",
-            RunIntent::SourceAttach => "source.attach",
             RunIntent::InfobaseCreate => "infobase.create",
             RunIntent::InfobaseBuild => "infobase.build",
             RunIntent::SourceDump => "source.dump",
             RunIntent::SourceConvert => "source.convert",
-            RunIntent::ArtifactMake => "artifact.make",
-            RunIntent::ArtifactLoad => "artifact.load",
-            RunIntent::SyntaxCheck => "syntax.check",
-            RunIntent::TestRun => "test.run",
+            RunIntent::ArtifactBuild => "artifact.build",
+            RunIntent::InfobaseConfigurationExport => "infobase.configuration.export",
+            RunIntent::InfobaseConfigurationLoad => "infobase.configuration.load",
+            RunIntent::InfobaseDump => "infobase.dump",
+            RunIntent::InfobaseRestore => "infobase.restore",
             RunIntent::ClientRun => "client.run",
-            RunIntent::ExtensionSync => "extension.sync",
         }
     }
 
     pub(crate) const fn description(&self) -> &'static str {
         match self.intent {
-            RunIntent::SourceCreate => "Create a new 1C XML source set in the workspace.",
-            RunIntent::SourceAttach => "Persist autodetected source sets in a new v8project.yaml.",
-            RunIntent::InfobaseCreate => "Create an empty 1C infobase on a selected backend.",
+            RunIntent::WorkspaceInitialize => {
+                "Create a missing v8project.yaml from autodetected 1C source sets."
+            }
+            RunIntent::SourceCreate => {
+                "Create a new 1C source set in a requested supported source format."
+            }
+            RunIntent::InfobaseCreate => "Create an empty target 1C infobase.",
             RunIntent::InfobaseBuild => "Build or update a 1C infobase from attached sources.",
             RunIntent::SourceDump => "Export a 1C infobase into a workspace source set.",
             RunIntent::SourceConvert => "Convert source sets between supported source formats.",
-            RunIntent::ArtifactMake => "Build a 1C distribution or external artifact from sources.",
-            RunIntent::ArtifactLoad => "Load a 1C artifact into a selected infobase.",
-            RunIntent::SyntaxCheck => "Validate source syntax without changing the workspace.",
-            RunIntent::TestRun => "Run a test suite against a selected 1C infobase.",
-            RunIntent::ClientRun => "Launch an interactive 1C client session.",
-            RunIntent::ExtensionSync => {
-                "Synchronize attached extensions with a selected 1C infobase."
+            RunIntent::ArtifactBuild => {
+                "Build a CF, CFE, EPF, or ERF artifact from attached sources."
             }
+            RunIntent::InfobaseConfigurationExport => {
+                "Export a working configuration, database configuration, or extension from an infobase to CF or CFE."
+            }
+            RunIntent::InfobaseConfigurationLoad => {
+                "Load a CF or CFE configuration artifact into a target infobase."
+            }
+            RunIntent::InfobaseDump => {
+                "Export the complete infobase to a DT transfer file; this is not a backup."
+            }
+            RunIntent::InfobaseRestore => {
+                "Create or replace an infobase from a DT transfer file."
+            }
+            RunIntent::ClientRun => "Launch an interactive 1C client session.",
         }
     }
 
     pub(crate) const fn execution(&self) -> &'static str {
         match self.intent {
-            RunIntent::SyntaxCheck | RunIntent::TestRun => "immediate",
             RunIntent::ClientRun => "terminal",
             _ => "previewApply",
         }
@@ -107,18 +118,30 @@ impl RunOperation {
 
     pub(crate) const fn effects(&self) -> &'static [&'static str] {
         match self.intent {
-            RunIntent::SourceCreate
-            | RunIntent::SourceAttach
+            RunIntent::WorkspaceInitialize
+            | RunIntent::SourceCreate
             | RunIntent::SourceConvert
-            | RunIntent::ArtifactMake => &["workspaceFiles"],
-            RunIntent::SourceDump => &["infobaseRead", "workspaceFiles"],
+            | RunIntent::ArtifactBuild => &["workspaceFiles"],
+            RunIntent::SourceDump
+            | RunIntent::InfobaseConfigurationExport
+            | RunIntent::InfobaseDump => &["infobaseRead", "workspaceFiles"],
             RunIntent::InfobaseCreate
             | RunIntent::InfobaseBuild
-            | RunIntent::ArtifactLoad
-            | RunIntent::ExtensionSync => &["infobase"],
-            RunIntent::SyntaxCheck => &["readOnly"],
-            RunIntent::TestRun => &["infobaseExecution"],
+            | RunIntent::InfobaseConfigurationLoad
+            | RunIntent::InfobaseRestore => &["infobase"],
             RunIntent::ClientRun => &["clientSession"],
+        }
+    }
+
+    pub(crate) fn args_schema(&self) -> Option<Value> {
+        match self.intent {
+            RunIntent::WorkspaceInitialize => Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
+            })),
+            _ => None,
         }
     }
 }
@@ -235,8 +258,8 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                         json!({
                             "op": {"type": "string", "description": "Canonical operation name; omit to list operation status."},
                             "args": data_object("Typed arguments for the selected operation."),
-                            "dryRun": {"type": "boolean", "description": "Required by workspace-mutating operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan."},
-                            "ifRev": {"type": "string", "description": "Revision returned by a prior dryRun of the same workspace-mutating operation; required when dryRun is false."},
+                            "dryRun": {"type": "boolean", "description": "Required by previewApply operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan."},
+                            "ifRev": {"type": "string", "description": "Revision returned by a prior preview of the same previewApply operation; required when dryRun is false."},
                         }),
                         json!([]),
                     ),
@@ -308,24 +331,24 @@ fn cursor(description: &'static str) -> Value {
 
 fn run_dictionary() -> Vec<RunOperation> {
     [
+        RunIntent::WorkspaceInitialize,
         RunIntent::SourceCreate,
-        RunIntent::SourceAttach,
         RunIntent::InfobaseCreate,
         RunIntent::InfobaseBuild,
         RunIntent::SourceDump,
         RunIntent::SourceConvert,
-        RunIntent::ArtifactMake,
-        RunIntent::ArtifactLoad,
-        RunIntent::SyntaxCheck,
-        RunIntent::TestRun,
+        RunIntent::ArtifactBuild,
+        RunIntent::InfobaseConfigurationExport,
+        RunIntent::InfobaseConfigurationLoad,
+        RunIntent::InfobaseDump,
+        RunIntent::InfobaseRestore,
         RunIntent::ClientRun,
-        RunIntent::ExtensionSync,
     ]
     .into_iter()
     .map(|intent| RunOperation {
         terminal: intent == RunIntent::ClientRun,
         rejects_sessions: intent == RunIntent::ClientRun,
-        implemented: matches!(intent, RunIntent::SourceAttach | RunIntent::SyntaxCheck),
+        implemented: intent == RunIntent::WorkspaceInitialize,
         intent,
     })
     .collect()
@@ -661,18 +684,18 @@ mod tests {
                 .map(|operation| operation.intent)
                 .collect::<Vec<_>>(),
             [
+                RunIntent::WorkspaceInitialize,
                 RunIntent::SourceCreate,
-                RunIntent::SourceAttach,
                 RunIntent::InfobaseCreate,
                 RunIntent::InfobaseBuild,
                 RunIntent::SourceDump,
                 RunIntent::SourceConvert,
-                RunIntent::ArtifactMake,
-                RunIntent::ArtifactLoad,
-                RunIntent::SyntaxCheck,
-                RunIntent::TestRun,
+                RunIntent::ArtifactBuild,
+                RunIntent::InfobaseConfigurationExport,
+                RunIntent::InfobaseConfigurationLoad,
+                RunIntent::InfobaseDump,
+                RunIntent::InfobaseRestore,
                 RunIntent::ClientRun,
-                RunIntent::ExtensionSync,
             ]
         );
         assert!(catalog
@@ -693,7 +716,7 @@ mod tests {
                 .filter(|operation| operation.implemented)
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
-            ["source.attach", "syntax.check"]
+            ["workspace.initialize"]
         );
 
         let output = &catalog.result_envelope_schema;
@@ -763,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn v13_run_dictionary_has_twelve_operations_without_query_execution() {
+    fn v13_run_dictionary_has_twelve_directional_runtime_intents() {
         let catalog =
             catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
         let names = catalog
@@ -772,10 +795,73 @@ mod tests {
             .map(|operation| operation.name())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 12, "v0.13 Run dictionary drifted: {names:?}");
-        assert!(
-            !names.contains(&"query.execute"),
-            "v0.13 must not publish query execution: {names:?}"
+        assert_eq!(
+            names,
+            [
+                "workspace.initialize",
+                "source.create",
+                "infobase.create",
+                "infobase.build",
+                "source.dump",
+                "source.convert",
+                "artifact.build",
+                "infobase.configuration.export",
+                "infobase.configuration.load",
+                "infobase.dump",
+                "infobase.restore",
+                "client.run",
+            ],
+            "v0.13 Run dictionary must distinguish source builds, configuration transfers, and full infobase transfers"
         );
+        for ambiguous_or_deferred in [
+            "source.attach",
+            "artifact.make",
+            "artifact.load",
+            "syntax.check",
+            "test.run",
+            "extension.sync",
+            "query.execute",
+        ] {
+            assert!(
+                !names.contains(&ambiguous_or_deferred),
+                "v0.13 must not publish `{ambiguous_or_deferred}`: {names:?}"
+            );
+        }
+        assert_eq!(
+            catalog
+                .run_dictionary
+                .iter()
+                .filter(|operation| operation.implemented)
+                .map(|operation| operation.name())
+                .collect::<Vec<_>>(),
+            ["workspace.initialize"],
+            "only the renamed initialization vertical is implemented in this contract slice"
+        );
+    }
+
+    #[test]
+    fn run_preview_apply_fields_describe_the_execution_protocol() {
+        let catalog =
+            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
+        for field in ["dryRun", "ifRev"] {
+            let description = input_field(&catalog.tools, "run", field)["description"]
+                .as_str()
+                .expect("run protocol field description");
+            assert!(
+                description.contains("previewApply"),
+                "unica.run.{field} must describe the previewApply execution protocol: {description}"
+            );
+            assert!(
+                !description.contains("workspace-mutating"),
+                "unica.run.{field} must also cover infobase and artifact effects: {description}"
+            );
+        }
+    }
+
+    #[test]
+    fn v13_run_dictionary_has_twelve_operations_without_query_execution() {
+        // The no-query guarantee remains independently active while the
+        // directional-intents test above owns the exact operation names.
+        v13_run_dictionary_has_twelve_directional_runtime_intents();
     }
 }

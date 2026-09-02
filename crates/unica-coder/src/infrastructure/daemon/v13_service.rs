@@ -2,9 +2,8 @@ use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocati
 use super::v13_read_modes::{
     filter_diff_data, project_view_sections, search_scope_prefix, validation_profile,
 };
-use super::v13_syntax_run::{canonical_syntax_invocation_args, execute_syntax_check};
 use crate::application::invocation_store::ToolIdentity;
-use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
+use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::ViewCursorStore;
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
@@ -48,21 +47,8 @@ impl Default for CanonicalV13ReadService {
 impl CanonicalInvocationService for CanonicalV13ReadService {
     fn prepare(
         &self,
-        invocation: &ActorBoundInvocation,
+        _invocation: &ActorBoundInvocation,
     ) -> Result<ExecutionClass, Box<DomainResult>> {
-        if invocation.tool() == ToolIdentity::Run
-            && invocation.arguments().get("op").and_then(Value::as_str) == Some("syntax.check")
-        {
-            let args = invocation
-                .arguments()
-                .get("args")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            if canonical_syntax_invocation_args(&args).is_ok() {
-                return Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess));
-            }
-        }
         Ok(ExecutionClass::InlineCandidate)
     }
 
@@ -701,12 +687,12 @@ impl CanonicalV13ReadService {
     fn execute_run(
         &self,
         invocation: &ActorBoundExecution,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> DomainResult {
         let arguments = invocation.arguments();
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
         let Some(op) = arguments.get("op") else {
-            return super::v13_source_attach::run_dictionary_result();
+            return super::v13_workspace_initialize::run_dictionary_result();
         };
         let Some(op) = op.as_str() else {
             return error_result(None, "bad_value", "run op must be a string");
@@ -724,21 +710,6 @@ impl CanonicalV13ReadService {
                 "unsupported_operation",
                 format!("unknown canonical run operation `{op}`"),
             );
-        }
-        if op == "syntax.check" {
-            if arguments.contains_key("dryRun") || arguments.contains_key("ifRev") {
-                return error_result(
-                    Some(op.to_string()),
-                    "bad_value",
-                    "syntax.check executes immediately and does not accept dryRun or ifRev",
-                );
-            }
-            let args = arguments
-                .get("args")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            return execute_syntax_check(&args, invocation.workspace_context(), cancellation);
         }
         error_result(
             Some(op.to_string()),

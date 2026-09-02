@@ -2,8 +2,8 @@
 id: CTR.WIRE.TOOL-SURFACE
 status: active
 governs: product
-version: 4
-decision: DEC.2026-09-02.RUN-INITIALIZATION-CONTRACT
+version: 5
+decision: DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS
 producer: scripts/ci/generate-tool-surface.py
 consumers: [review, docs]
 check: crates/unica-coder/src/interfaces/mcp.rs::production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility
@@ -24,6 +24,10 @@ scope: [wire]
 аргументы описаны; compatibility payload ограничен 16 KiB.
 
 `unica.run` без `op` доступен до source admission и возвращает закрытый словарь
-операций вместе с назначением, `effects`, режимом `execution` и требованиями
-preview/fence. Изменяющие операции принимают `dryRun`; applied-вызов
-связывается с preview через `ifRev`.
+из двенадцати направленных runtime-намерений вместе с назначением, `effects`,
+режимом `execution`, честным `implemented` и требованиями preview/fence.
+Имена отдельно выражают source build, CF/CFE configuration transfer и DT
+infobase transfer. Реализованная операция также сообщает точную `argsSchema`;
+для ещё не реализованных операций это поле равно `null`, чтобы модель не
+угадывала будущий контракт. Операции `previewApply` принимают `dryRun`;
+applied-вызов связывается с preview через `ifRev`.

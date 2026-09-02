@@ -1,8 +1,8 @@
 ---
 id: INV.SURFACE.SOURCE-ATTACH
-status: active
+status: superseded
 governs: product
-decision: DEC.2026-09-02.RUN-INITIALIZATION-CONTRACT
+decision: DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS
 check: crates/unica-coder/tests/v13_workspace_bootstrap.rs::canonical_stdio_previews_and_applies_autodetected_source_attachment_before_admission
 scope: [source, wire]
 ---
