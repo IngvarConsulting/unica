@@ -138,8 +138,7 @@ allowed-tools:
   "params": {
     "name": "unica.check",
     "arguments": {
-      "at": "<sourceSet>:Configuration",
-      "filter": {"validation": {"profile": "cf"}}
+      "at": "<sourceSet>:Configuration"
     }
   }
 }

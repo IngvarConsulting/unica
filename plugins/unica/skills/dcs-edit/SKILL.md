@@ -372,8 +372,7 @@ Shorthand: `"Поле1 > Поле2 > details"`. `details`/`детали` — д�
   "params": {
     "name": "unica.check",
     "arguments": {
-      "at": "<sourceSet>:<Kind>.<Name>.Template.<Template>",
-      "filter": {"validation": {"profile": "dcs"}}
+      "at": "<sourceSet>:<Kind>.<Name>.Template.<Template>"
     }
   }
 }

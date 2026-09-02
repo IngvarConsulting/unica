@@ -615,6 +615,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     }
    ],
@@ -2824,6 +2828,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     }
    ],
@@ -4784,22 +4792,20 @@
   },
   {
    "area": "Роли и права",
-   "task": "Проверить роль профилем валидации role",
+   "task": "Проверить роль",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Role.SalesReader",
-      "filter": {
-       "validation": {
-        "profile": "role"
-       }
-      }
+      "at": "main:Role.SalesReader"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "role"
+     ]
     }
    ],
    "id": "S175"
@@ -4891,6 +4897,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "role"
      ]
     }
    ],
@@ -5281,22 +5291,20 @@
   },
   {
    "area": "СКД",
-   "task": "Проверить схему компоновки профилем валидации dcs",
+   "task": "Проверить схему компоновки данных",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
-      "filter": {
-       "validation": {
-        "profile": "dcs"
-       }
-      }
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "dcs"
+     ]
     }
    ],
    "id": "S194"
@@ -5468,22 +5476,20 @@
   },
   {
    "area": "Макеты",
-   "task": "Проверить табличный макет профилем валидации mxl",
+   "task": "Проверить табличный макет",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.МакетОтчета",
-      "filter": {
-       "validation": {
-        "profile": "mxl"
-       }
-      }
+      "at": "main:Report.АнализВерсийОбъектов.Template.МакетОтчета"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "mxl"
+     ]
     }
    ],
    "id": "S201"
@@ -5708,22 +5714,20 @@
   },
   {
    "area": "Подсистемы и интерфейс",
-   "task": "Проверить подсистему профилем валидации subsystem",
+   "task": "Проверить подсистему",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Subsystem.Администрирование",
-      "filter": {
-       "validation": {
-        "profile": "subsystem"
-       }
-      }
+      "at": "main:Subsystem.Администрирование"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "subsystem"
+     ]
     }
    ],
    "id": "S210"
@@ -5760,6 +5764,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "subsystem"
      ]
     }
    ],
@@ -5982,6 +5990,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     },
     {
@@ -5991,6 +6003,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     },
     {
@@ -6000,6 +6016,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     }
    ],
@@ -6007,66 +6027,60 @@
   },
   {
    "area": "Проверки качества",
-   "task": "Прогнать проверку описания объекта профилем meta",
+   "task": "Прогнать проверку описания объекта",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "filter": {
-       "validation": {
-        "profile": "meta"
-       }
-      }
+      "at": "main:Catalog.Валюты"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "meta"
+     ]
     }
    ],
    "id": "S223"
   },
   {
    "area": "Проверки качества",
-   "task": "Прогнать проверку корня конфигурации профилем cf",
+   "task": "Прогнать проверку корня конфигурации",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Configuration",
-      "filter": {
-       "validation": {
-        "profile": "cf"
-       }
-      }
+      "at": "main:Configuration"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "cf"
+     ]
     }
    ],
    "id": "S224"
   },
   {
    "area": "Проверки качества",
-   "task": "Проверить форму списка профилем валидации form",
+   "task": "Проверить форму списка",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаСписка",
-      "filter": {
-       "validation": {
-        "profile": "form"
-       }
-      }
+      "at": "main:Catalog.Валюты.Form.ФормаСписка"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "form"
+     ]
     }
    ],
    "id": "S225"
@@ -6155,6 +6169,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     }
    ],
@@ -6179,7 +6197,7 @@
   },
   {
    "area": "Проверки качества",
-   "task": "Проверка неизвестным профилем — закрытый список профилей",
+   "task": "Передать check фильтр — аргумента нет, валидаторы выбирает Unica по виду узла",
    "wire": [
     {
      "tool": "unica.check",
@@ -6187,13 +6205,14 @@
       "at": "main:Catalog.Валюты",
       "filter": {
        "validation": {
-        "profile": "security"
+        "profile": "meta"
        }
       }
      },
      "expect": [
-      "unsupported"
-     ]
+      "refused"
+     ],
+     "refusal": "bad_value: canonical invocation has unknown argument `filter`"
     }
    ],
    "id": "S230"
@@ -6209,7 +6228,9 @@
      },
      "expect": [
       "ok"
-     ]
+     ],
+     "status": "readable",
+     "validators": []
     }
    ],
    "id": "S231"
@@ -6885,6 +6906,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     }
    ],
@@ -6910,45 +6935,41 @@
   {
    "id": "S266",
    "area": "Проверки качества",
-   "task": "Профиль form указан для справочника — поверхность отказывает по несовпадению вида узла",
+   "task": "Проверить командный интерфейс подсистемы — валидатор interface выбран по узлу Interface",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "filter": {
-       "validation": {
-        "profile": "form"
-       }
-      }
+      "at": "main:Subsystem.Администрирование.Interface"
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "bad_value: validation profile `form` does not validate Catalog nodes; pick the profile of `main:Catalog.Валюты` or omit the filter"
+     "status": "passed",
+     "validators": [
+      "interface"
+     ]
     }
    ]
   },
   {
    "id": "S267",
    "area": "Проверки качества",
-   "task": "Проверить корень конфигурации профилем cf в выгрузке формата 2.21 — проверка проходит и предупреждает о формате новее профиля",
+   "task": "Проверить корень конфигурации в выгрузке формата 2.21 — проверка проходит и предупреждает о формате новее профиля",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "newer:Configuration",
-      "filter": {
-       "validation": {
-        "profile": "cf"
-       }
-      }
+      "at": "newer:Configuration"
      },
      "expect": [
       "ok"
      ],
      "status": "passed",
-     "diagnostic": "platformVersionUnsupported"
+     "diagnostic": "platformVersionUnsupported",
+     "validators": [
+      "cf"
+     ]
     }
    ],
    "workspace": "tests/fixtures/acceptance/workspace-format"
@@ -6956,23 +6977,21 @@
   {
    "id": "S268",
    "area": "Проверки качества",
-   "task": "Проверить форму списка профилем form в выгрузке 2.21 — предупреждение о формате рядом с вердиктом",
+   "task": "Проверить форму списка в выгрузке 2.21 — предупреждение о формате рядом с вердиктом",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "newer:Catalog.Валюты.Form.ФормаСписка",
-      "filter": {
-       "validation": {
-        "profile": "form"
-       }
-      }
+      "at": "newer:Catalog.Валюты.Form.ФормаСписка"
      },
      "expect": [
       "ok"
      ],
      "status": "passed",
-     "diagnostic": "platformVersionUnsupported"
+     "diagnostic": "platformVersionUnsupported",
+     "validators": [
+      "form"
+     ]
     }
    ],
    "workspace": "tests/fixtures/acceptance/workspace-format"
@@ -6980,23 +6999,21 @@
   {
    "id": "S269",
    "area": "Проверки качества",
-   "task": "Проверить роль профилем role в выгрузке 2.21 — предупреждение о формате рядом с вердиктом",
+   "task": "Проверить роль в выгрузке 2.21 — предупреждение о формате рядом с вердиктом",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "newer:Role.SalesReader",
-      "filter": {
-       "validation": {
-        "profile": "role"
-       }
-      }
+      "at": "newer:Role.SalesReader"
      },
      "expect": [
       "ok"
      ],
      "status": "passed",
-     "diagnostic": "platformVersionUnsupported"
+     "diagnostic": "platformVersionUnsupported",
+     "validators": [
+      "role"
+     ]
     }
    ],
    "workspace": "tests/fixtures/acceptance/workspace-format"
@@ -7004,23 +7021,21 @@
   {
    "id": "S270",
    "area": "Проверки качества",
-   "task": "Проверить подсистему профилем subsystem в выгрузке 2.21 с командным интерфейсом 2.21 — предупреждение о формате",
+   "task": "Проверить подсистему в выгрузке 2.21 с командным интерфейсом 2.21 — предупреждение о формате",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "newer:Subsystem.Администрирование",
-      "filter": {
-       "validation": {
-        "profile": "subsystem"
-       }
-      }
+      "at": "newer:Subsystem.Администрирование"
      },
      "expect": [
       "ok"
      ],
      "status": "passed",
-     "diagnostic": "platformVersionUnsupported"
+     "diagnostic": "platformVersionUnsupported",
+     "validators": [
+      "subsystem"
+     ]
     }
    ],
    "workspace": "tests/fixtures/acceptance/workspace-format"
@@ -7028,23 +7043,21 @@
   {
    "id": "S271",
    "area": "Проверки качества",
-   "task": "Проверить корень конфигурации без атрибута версии профилем cf — формат считается 1.0 и проверка предупреждает о миграции",
+   "task": "Проверить корень конфигурации без атрибута версии — формат считается 1.0 и проверка предупреждает о миграции",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "unversioned:Configuration",
-      "filter": {
-       "validation": {
-        "profile": "cf"
-       }
-      }
+      "at": "unversioned:Configuration"
      },
      "expect": [
       "ok"
      ],
      "status": "passed",
-     "diagnostic": "formatMigrationAvailable"
+     "diagnostic": "formatMigrationAvailable",
+     "validators": [
+      "cf"
+     ]
     }
    ],
    "workspace": "tests/fixtures/acceptance/workspace-format"
@@ -7052,17 +7065,12 @@
   {
    "id": "S272",
    "area": "Проверки качества",
-   "task": "Проверить отсутствующую подсистему профилем subsystem — типизированный отказ, а не транспортная ошибка",
+   "task": "Проверить отсутствующую подсистему — типизированный отказ, а не транспортная ошибка",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Subsystem.Отсутствует",
-      "filter": {
-       "validation": {
-        "profile": "subsystem"
-       }
-      }
+      "at": "main:Subsystem.Отсутствует"
      },
      "expect": [
       "refused"

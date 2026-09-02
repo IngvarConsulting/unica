@@ -132,8 +132,7 @@ allowed-tools:
   "params": {
     "name": "unica.check",
     "arguments": {
-      "at": "<sourceSet>:Role.<Name>",
-      "filter": {"validation": {"profile": "role"}}
+      "at": "<sourceSet>:Role.<Name>"
     }
   }
 }

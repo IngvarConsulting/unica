@@ -160,8 +160,8 @@ write, and every effect is reported by `operationIndex`.
 
 Template registration and embedded help are `unica.apply` operations of the
 owning object: `template.add`, `template.set`, `template.remove` and
-`help.create`. Validation is one closed profile of `unica.check`
-(`filter.validation.profile`: `cf`, `cfe`, `form`, `dcs`, `mxl`, `role`,
+`help.create`. Validation is `unica.check` over a node: the node kind
+owns its validators (`cf`, `cfe`, `form`, `dcs`, `mxl`, `role`,
 `subsystem`, `interface`, `meta`); the verdict travels in `data.status` and a
 root outside the platform XML profile `2.20` is reported as a warning
 diagnostic next to it. The retired `unica.template.*`, `unica.help.add` and
