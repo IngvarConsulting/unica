@@ -83,6 +83,17 @@ pub(crate) fn evaluate_read_format_guard(
     evaluate_operation_format_guard(operation, false, operation, args, context)
 }
 
+/// Mutation-side guard by operation name, for tests that prove a writer
+/// refuses before its handler without a public v0.12 tool record.
+#[cfg(test)]
+pub(crate) fn evaluate_mutation_format_guard(
+    operation: &str,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<FormatGuardCheck, FormatGuardError> {
+    evaluate_operation_format_guard(operation, true, operation, args, context)
+}
+
 fn evaluate_operation_format_guard(
     tool_name: &str,
     mutating: bool,
@@ -1133,8 +1144,8 @@ fn absolutize(raw: &str, cwd: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_format_paths, evaluate_format_guard,
-        evaluate_prepared_subsystem_info_format_guard,
+        effective_format_paths, evaluate_format_guard, evaluate_mutation_format_guard,
+        evaluate_prepared_subsystem_info_format_guard, evaluate_read_format_guard,
     };
     use crate::application::operation_descriptors::native_operation_descriptor;
     use crate::application::ports::{ApplicationPorts, FormatGuardCheck, XdtoPublicErrorCode};
@@ -1562,8 +1573,7 @@ mod tests {
             ("Set".to_string(), Value::String("editable".to_string())),
         ]);
 
-        let check =
-            evaluate_format_guard(spec("unica.support.edit"), &args, &context(&root)).unwrap();
+        let check = evaluate_mutation_format_guard("support-edit", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Block {
             outcome,
             diagnostic,
@@ -1637,8 +1647,7 @@ mod tests {
             ("Set".to_string(), Value::String("editable".to_string())),
         ]);
 
-        let check =
-            evaluate_format_guard(spec("unica.support.edit"), &args, &context(&root)).unwrap();
+        let check = evaluate_mutation_format_guard("support-edit", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("every XML read used for UUID resolution must be format-authorized");
         };
@@ -1678,7 +1687,7 @@ mod tests {
         ]);
 
         assert!(matches!(
-            evaluate_format_guard(spec("unica.support.edit"), &args, &context(&root)).unwrap(),
+            evaluate_mutation_format_guard("support-edit", &args, &context(&root)).unwrap(),
             FormatGuardCheck::Allow
         ));
         let _ = std::fs::remove_dir_all(root);
@@ -1707,7 +1716,7 @@ mod tests {
         ]);
 
         assert!(matches!(
-            evaluate_format_guard(spec("unica.support.edit"), &args, &context(&root)).unwrap(),
+            evaluate_mutation_format_guard("support-edit", &args, &context(&root)).unwrap(),
             FormatGuardCheck::Allow
         ));
         let _ = std::fs::remove_dir_all(root);
@@ -1744,8 +1753,7 @@ mod tests {
             ("Set".to_string(), Value::String("editable".to_string())),
         ]);
 
-        let check =
-            evaluate_format_guard(spec("unica.support.edit"), &args, &context(&root)).unwrap();
+        let check = evaluate_mutation_format_guard("support-edit", &args, &context(&root)).unwrap();
 
         assert!(matches!(check, FormatGuardCheck::Allow));
         assert_eq!(std::fs::read(&bin).unwrap(), bin_before);
@@ -1828,12 +1836,16 @@ mod tests {
             assert_eq!(diagnostic["code"], "platformVersionUnsupported", "{tool}");
             assert_eq!(diagnostic["actualFormat"], "2.21", "{tool}");
         }
-        for tool in ["unica.role.info", "unica.role.validate"] {
+        for tool in ["unica.role.info", "role-validate"] {
             let args = Map::from_iter([(
                 "RightsPath".to_string(),
                 Value::String(rights_content.display().to_string()),
             )]);
-            let check = evaluate_format_guard(spec(tool), &args, &context(&root)).unwrap();
+            let check = if tool == "role-validate" {
+                evaluate_read_format_guard(tool, &args, &context(&root)).unwrap()
+            } else {
+                evaluate_format_guard(spec(tool), &args, &context(&root)).unwrap()
+            };
             let FormatGuardCheck::Warn { diagnostic, .. } = check else {
                 panic!("{tool} must warn on its newer exact role wrapper");
             };
@@ -1900,8 +1912,7 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Configuration/></MetaDataObject>"#,
         )
         .unwrap();
-        let check =
-            evaluate_format_guard(spec("unica.role.validate"), &args, &context(&root)).unwrap();
+        let check = evaluate_read_format_guard("role-validate", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("role.validate must warn on the newer detached Configuration.xml it reads");
         };
@@ -2582,7 +2593,7 @@ mod tests {
             Value::String(path.display().to_string()),
         );
         let check =
-            evaluate_format_guard(spec("unica.cf.validate"), &args, &context(&root)).unwrap();
+            evaluate_read_format_guard("cf-validate", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("missing root version must be old-format warning");
         };
@@ -2662,12 +2673,6 @@ mod tests {
                 "path",
                 src.to_path_buf(),
                 vec![config_path.clone()],
-            ),
-            (
-                "form-add",
-                "path",
-                object_dir,
-                vec![object_xml.canonicalize().unwrap()],
             ),
             (
                 "subsystem-edit",
@@ -3043,17 +3048,17 @@ mod tests {
         .unwrap();
 
         for (tool, argument, directory) in [
-            ("unica.form.info", "FormPath", form_dir.clone()),
-            ("unica.form.validate", "FormPath", form_dir),
-            ("unica.dcs.validate", "TemplatePath", dcs_dir),
-            ("unica.mxl.validate", "TemplatePath", mxl_dir),
-            ("unica.interface.validate", "CIPath", interface_dir),
+            ("form-info", "FormPath", form_dir.clone()),
+            ("form-validate", "FormPath", form_dir),
+            ("dcs-validate", "TemplatePath", dcs_dir),
+            ("mxl-validate", "TemplatePath", mxl_dir),
+            ("interface-validate", "CIPath", interface_dir),
         ] {
             let args = Map::from_iter([(
                 argument.to_string(),
                 Value::String(directory.display().to_string()),
             )]);
-            let check = evaluate_format_guard(spec(tool), &args, &context(&root)).unwrap();
+            let check = evaluate_read_format_guard(tool, &args, &context(&root)).unwrap();
             let FormatGuardCheck::Warn { diagnostic, .. } = check else {
                 panic!("{tool} must warn for the newer XML resolved from its directory input");
             };
@@ -3084,10 +3089,10 @@ mod tests {
             .unwrap();
         }
         for (tool, argument, exact) in [
-            ("unica.form.info", "FormPath", form_xml),
-            ("unica.dcs.validate", "TemplatePath", dcs_xml),
-            ("unica.mxl.validate", "TemplatePath", mxl_xml),
-            ("unica.interface.validate", "CIPath", interface_xml),
+            ("form-info", "FormPath", form_xml),
+            ("dcs-validate", "TemplatePath", dcs_xml),
+            ("mxl-validate", "TemplatePath", mxl_xml),
+            ("interface-validate", "CIPath", interface_xml),
         ] {
             let args = Map::from_iter([(
                 argument.to_string(),
@@ -3095,7 +3100,7 @@ mod tests {
             )]);
             assert!(
                 matches!(
-                    evaluate_format_guard(spec(tool), &args, &context(&root)).unwrap(),
+                    evaluate_read_format_guard(tool, &args, &context(&root)).unwrap(),
                     FormatGuardCheck::Allow
                 ),
                 "{tool} must allow an exact 2.20 root"
@@ -3195,8 +3200,7 @@ mod tests {
             Value::String(root.join("Template").display().to_string()),
         )]);
 
-        let check =
-            evaluate_format_guard(spec("unica.mxl.validate"), &args, &context(&root)).unwrap();
+        let check = evaluate_read_format_guard("mxl-validate", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn {
             warning,
             diagnostic,
@@ -3594,7 +3598,6 @@ mod tests {
             "unica.dcs.edit",
             "unica.epf.init",
             "unica.erf.init",
-            "unica.form.add",
             "unica.form.compile",
             "unica.form.edit",
             "unica.form.remove",
@@ -3607,7 +3610,6 @@ mod tests {
             "unica.role.edit",
             "unica.subsystem.compile",
             "unica.subsystem.edit",
-            "unica.support.edit",
             "unica.xdto.edit",
         ]);
         let actual = tools()
@@ -3757,8 +3759,8 @@ mod tests {
             Value::String(subsystem.display().to_string()),
         )]);
 
-        let check = evaluate_format_guard(spec("unica.subsystem.validate"), &args, &context(&root))
-            .unwrap();
+        let check =
+            evaluate_read_format_guard("subsystem-validate", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("newer direct command interface must produce a read-only warning");
         };

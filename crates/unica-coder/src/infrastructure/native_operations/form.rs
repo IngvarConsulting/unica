@@ -11857,65 +11857,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn public_form_add_prioritizes_newer_existing_target_over_older_object_owner() {
-        let context = temp_context("public-add-existing-newer-target");
-        fs::write(
-            context.cwd.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        let configuration_path = context.cwd.join("src/Configuration.xml");
-        write_file(
-            &configuration_path,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
-        );
-        let object_path = context.cwd.join("src/Catalogs/Goods.xml");
-        let older_owner = empty_catalog_xml("\n", true)
-            .replacen(r#"version="2.20""#, r#"version="2.19""#, 1)
-            .into_bytes();
-        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
-        fs::write(&object_path, &older_owner).unwrap();
-        let descriptor_path = context
-            .cwd
-            .join("src/Catalogs/Goods/Forms/ExistingForm.xml");
-        let newer_descriptor = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Form/></MetaDataObject>"#.to_vec();
-        fs::create_dir_all(descriptor_path.parent().unwrap()).unwrap();
-        fs::write(&descriptor_path, &newer_descriptor).unwrap();
-        let configuration_before = fs::read(&configuration_path).unwrap();
-        let mut args = add_list_form_args(&object_path, "ExistingForm");
-        args.insert("cwd".to_string(), json!(context.cwd.display().to_string()));
-        args.insert("dryRun".to_string(), json!(false));
-
-        let outcome = UnicaApplication::new()
-            .call_tool("unica.form.add", &args)
-            .unwrap();
-
-        assert!(!outcome.ok, "{outcome:?}");
-        let diagnostic = &outcome.diagnostics.as_ref().unwrap()["formatCompatibility"];
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        let warning = outcome.warnings.join("\n");
-        assert!(warning.contains("1С 8.5"), "{warning}");
-        assert!(!warning.contains("миграц"), "{warning}");
-        assert!(!warning.contains("повторно выгруз"), "{warning}");
-        assert!(!warning.contains("re-export"), "{warning}");
-        assert_eq!(fs::read(&configuration_path).unwrap(), configuration_before);
-        assert_eq!(fs::read(&object_path).unwrap(), older_owner);
-        assert_eq!(fs::read(&descriptor_path).unwrap(), newer_descriptor);
-        assert!(!context
-            .cwd
-            .join("src/Catalogs/Goods/Forms/ExistingForm/Ext/Form.xml")
-            .exists());
-        assert!(!context
-            .cwd
-            .join("src/Catalogs/Goods/Forms/ExistingForm/Ext/Form/Module.bsl")
-            .exists());
-        assert!(outcome.changes.is_empty(), "{outcome:?}");
-        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
     fn add_form_rejects_path_form_name_without_mutating_owner_or_escape_target() {
         let context = temp_context("add-path-form-name");
         let root_xml = context.cwd.join("src/Catalogs/Goods.xml");
