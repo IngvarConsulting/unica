@@ -185,6 +185,43 @@ fn fixture_with_engine() -> serde_json::Value {
     manifest
 }
 
+fn maintained_runner_target(target: &str) -> serde_json::Value {
+    let executable = if target == "win-x64" {
+        "v8-runner-win-x64.exe"
+    } else {
+        match target {
+            "darwin-arm64" => "v8-runner-darwin-arm64",
+            "linux-x64" => "v8-runner-linux-x64",
+            _ => unreachable!("closed target fixture"),
+        }
+    };
+    serde_json::json!({
+        "asset": {
+            "name": executable,
+            "url": format!(
+                "https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v0.5.2-ic.4/{executable}"
+            ),
+            "mediaType": "application/octet-stream",
+            "sha256": HASH
+        },
+        "files": [{"path": executable, "sha256": HASH, "executable": true}]
+    })
+}
+
+fn fixture_with_maintained_runner() -> serde_json::Value {
+    let mut manifest = fixture();
+    manifest["artifacts"]["v8-runner"] = serde_json::json!({
+        "version": "0.5.2-ic.4",
+        "role": "engine",
+        "targets": {
+            "darwin-arm64": maintained_runner_target("darwin-arm64"),
+            "linux-x64": maintained_runner_target("linux-x64"),
+            "win-x64": maintained_runner_target("win-x64")
+        }
+    });
+    manifest
+}
+
 #[test]
 fn an_engine_is_accepted_from_the_toolchain_release() {
     // Тулчейн уже публикует по архиву на инструмент, с суммами и
@@ -195,6 +232,23 @@ fn an_engine_is_accepted_from_the_toolchain_release() {
     manifest
         .validate("0.7.0")
         .expect("toolchain origin is approved");
+}
+
+#[test]
+fn a_maintained_engine_source_is_approved_without_opening_other_origins() {
+    parse(fixture_with_maintained_runner())
+        .validate("0.7.0")
+        .expect("maintained source release is approved");
+
+    let mut other = fixture_with_maintained_runner();
+    other["artifacts"]["v8-runner"]["targets"]["linux-x64"]["asset"]["url"] =
+        serde_json::json!(
+            "https://github.com/IngvarConsulting/another-project/releases/download/v0.5.2-ic.4/v8-runner-linux-x64"
+        );
+    let error = parse(other)
+        .validate("0.7.0")
+        .expect_err("an unrelated Ingvar Consulting release must stay refused");
+    assert!(error.to_string().contains("release origin"), "{error}");
 }
 
 #[test]
@@ -265,7 +319,7 @@ fn the_core_may_not_wander_off_to_the_toolchain() {
 
 #[test]
 fn an_engine_asset_name_is_not_forced_into_the_core_shape() {
-    // Имя ассета у движка — то, под которым он опубликован в тулчейне, а не
+    // Имя ассета у движка — то, под которым он опубликован в своём релизе, а не
     // выдуманное нами `<артефакт>-runtime-<цель>`.
     let manifest = parse(fixture_with_engine());
     let asset = &manifest
@@ -276,8 +330,8 @@ fn an_engine_asset_name_is_not_forced_into_the_core_shape() {
     assert_eq!(asset.name, "rlm-tools-bsl-linux-x64.tar.gz");
 }
 
-/// Артефакт, изданный одним файлом: `bsl-analyzer` и `v8-runner` в тулчейне
-/// лежат голыми бинарями, а расширения и обработки лягут так же.
+/// Артефакт, изданный одним файлом: `bsl-analyzer` и `v8-runner` лежат голыми
+/// бинарями, а расширения и обработки лягут так же.
 fn file_target(target: &str) -> serde_json::Value {
     let name = if target == "win-x64" {
         "bsl-analyzer-win-x64.exe".to_string()

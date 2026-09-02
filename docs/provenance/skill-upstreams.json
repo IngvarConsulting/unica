@@ -1581,7 +1581,7 @@
     },
     {
       "id": "v8-runner-rust",
-      "repository": "https://github.com/alkoleft/v8-runner-rust",
+      "repository": "https://github.com/IngvarConsulting/v8-runner-rust",
       "trackingRef": "master",
       "role": "runtime-tool-contract",
       "toolLockRef": "v8-runner",
