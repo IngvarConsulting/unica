@@ -39,17 +39,31 @@ detect_target() {
 # One prompt-visible skill of the packaged plugin. The prompt proof looks for
 # it instead of a skill name written into this script, so adding, renaming or
 # removing a skill changes the package and not the installer.
+#
+# The whole tree is scanned before a name is returned. `unica-bootstrap verify`
+# rejects a package carrying a skill directory without `SKILL.md`, so picking
+# the first complete directory and skipping the rest would install locally what
+# the release gate refuses.
 packaged_prompt_skill() {
   local skills_root="$1"
   local skill_dir
+  local selected=""
   for skill_dir in "$skills_root"/*/; do
-    if [ -f "$skill_dir/SKILL.md" ]; then
-      basename "$skill_dir"
-      return 0
+    # An unmatched glob stays literal, and a literal is not a directory.
+    [ -d "$skill_dir" ] || continue
+    if [ ! -f "$skill_dir/SKILL.md" ]; then
+      echo "Packaged prompt-visible skill is incomplete: ${skill_dir%/}" >&2
+      return 65
+    fi
+    if [ -z "$selected" ]; then
+      selected="$(basename "$skill_dir")"
     fi
   done
-  echo "Packaged plugin exposes no prompt-visible skills: $skills_root" >&2
-  return 65
+  if [ -z "$selected" ]; then
+    echo "Packaged plugin exposes no prompt-visible skills: $skills_root" >&2
+    return 65
+  fi
+  printf '%s\n' "$selected"
 }
 
 main() {

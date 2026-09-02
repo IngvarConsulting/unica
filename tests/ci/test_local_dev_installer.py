@@ -229,10 +229,8 @@ class LocalDevInstallerTests(unittest.TestCase):
     def test_packaged_prompt_skill_is_a_complete_skill_of_the_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             skills_root = Path(tmp) / "skills"
-            # A directory without SKILL.md is not a skill the host will show.
-            (skills_root / "alpha").mkdir(parents=True)
             for name in ("beta", "gamma"):
-                (skills_root / name).mkdir()
+                (skills_root / name).mkdir(parents=True)
                 (skills_root / name / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
 
             completed = self.packaged_prompt_skill(skills_root)
@@ -241,10 +239,29 @@ class LocalDevInstallerTests(unittest.TestCase):
         self.assertEqual(completed.stdout, "beta\n")
         self.assertEqual(completed.stderr, "")
 
+    def test_packaged_prompt_skill_refuses_an_incomplete_skill_directory(self) -> None:
+        # The bootstrap package check rejects a skills tree carrying a
+        # directory without SKILL.md. Skipping it here would let the local
+        # install pass a package the release gate refuses.
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = Path(tmp) / "skills"
+            (skills_root / "code-search").mkdir(parents=True)
+            (skills_root / "code-search" / "SKILL.md").write_text("# x\n", encoding="utf-8")
+            (skills_root / "broken").mkdir()
+
+            completed = self.packaged_prompt_skill(skills_root)
+
+        self.assertEqual(completed.returncode, 65)
+        self.assertEqual(completed.stdout, "")
+        self.assertEqual(
+            completed.stderr,
+            f"Packaged prompt-visible skill is incomplete: {skills_root / 'broken'}\n",
+        )
+
     def test_packaged_prompt_skill_refuses_a_package_without_skills(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             skills_root = Path(tmp) / "skills"
-            (skills_root / "not-a-skill").mkdir(parents=True)
+            skills_root.mkdir(parents=True)
 
             completed = self.packaged_prompt_skill(skills_root)
 
