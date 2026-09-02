@@ -85,6 +85,8 @@ pub(crate) struct ProviderReadAuthority {
     #[cfg(test)]
     module_source_reads: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
     #[cfg(test)]
+    metadata_descriptor_reads: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
+    #[cfg(test)]
     configuration_payload_reads: std::sync::atomic::AtomicUsize,
 }
 
@@ -110,6 +112,8 @@ impl ProviderReadAuthority {
             #[cfg(test)]
             module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             #[cfg(test)]
+            metadata_descriptor_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            #[cfg(test)]
             configuration_payload_reads: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -129,6 +133,8 @@ impl ProviderReadAuthority {
             revisions: ProviderRevisionAuthority::Operation(revision),
             #[cfg(test)]
             module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            #[cfg(test)]
+            metadata_descriptor_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             #[cfg(test)]
             configuration_payload_reads: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -448,7 +454,9 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
     ) -> Result<MetaLocalInfo, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
-        let support = metadata_support_status(self.object_support(target)?);
+        let support = metadata_support_status(
+            self.object_support_with_descriptor(target, Some(&descriptor))?,
+        );
         parse_typed_meta_local_info(&descriptor, target, support).map_err(|failure| {
             let message = serde_json::to_string(&failure.diagnostics)
                 .unwrap_or_else(|_| "metadata reader failed".to_string());
@@ -581,6 +589,15 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
     ) -> Result<Vec<u8>, ViewError> {
+        #[cfg(test)]
+        {
+            *self
+                .metadata_descriptor_reads
+                .lock()
+                .expect("metadata descriptor read counter is not poisoned")
+                .entry(target.as_str().to_string())
+                .or_default() += 1;
+        }
         let relative = self.metadata_descriptor_relative(target)?;
         self.read_optional_relative(&relative, MAX_CONFIGURATION_BYTES)?
             .ok_or_else(|| {
@@ -674,6 +691,16 @@ impl ProviderReadAuthority {
     }
 
     #[cfg(test)]
+    pub(crate) fn metadata_descriptor_read_count(&self, target: &str) -> usize {
+        self.metadata_descriptor_reads
+            .lock()
+            .expect("metadata descriptor read counter is not poisoned")
+            .get(target)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
     pub(crate) fn configuration_payload_read_count(&self) -> usize {
         self.configuration_payload_reads
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -682,6 +709,16 @@ impl ProviderReadAuthority {
     pub(crate) fn object_support(
         &self,
         target: &MetadataAddress,
+    ) -> Result<ObjectSupportData, ViewError> {
+        self.object_support_with_descriptor(target, None)
+    }
+
+    /// A caller that already holds the descriptor bytes passes them in so the
+    /// support lookup does not read the same file a second time.
+    fn object_support_with_descriptor(
+        &self,
+        target: &MetadataAddress,
+        descriptor: Option<&[u8]>,
     ) -> Result<ObjectSupportData, ViewError> {
         let Some(state) = self.support_state()? else {
             return Ok(unsupported_object());
@@ -696,8 +733,15 @@ impl ProviderReadAuthority {
         if !state.global_editing_enabled() {
             return Ok(data(ObjectSupportState::ConfigurationReadOnly, Some(false)));
         }
-        let descriptor = self.metadata_descriptor(target)?;
-        let uuid = support_root_uuid_from_bytes(&descriptor).ok_or_else(|| {
+        let owned;
+        let descriptor = match descriptor {
+            Some(bytes) => bytes,
+            None => {
+                owned = self.metadata_descriptor(target)?;
+                owned.as_slice()
+            }
+        };
+        let uuid = support_root_uuid_from_bytes(descriptor).ok_or_else(|| {
             ViewError::new(
                 "provider_unavailable",
                 "metadata descriptor has no support-state UUID evidence",

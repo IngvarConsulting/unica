@@ -2707,6 +2707,43 @@ pub(crate) fn one_find_reads_each_module_source_once_per_actor_revision() {
 }
 
 #[test]
+pub(crate) fn one_find_parses_each_metadata_descriptor_once_per_actor_revision() {
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    for expected in [
+        "main:Catalog.Items",
+        "main:Catalog.Items.TabularSection.Lines",
+        "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+    ] {
+        let found = index.find(FindRequest::new(expected).unwrap());
+        assert!(
+            !found.is_nearest()
+                && found
+                    .candidates()
+                    .iter()
+                    .any(|candidate| candidate.at() == expected),
+            "the descriptor-count proof did not traverse {expected}: {found:?}"
+        );
+    }
+    // Owner proof reads the descriptor once and the typed projection once
+    // more; every logical address projected from that owner shares the parse.
+    assert_eq!(
+        authority.metadata_descriptor_read_count("Catalog.Items"),
+        2,
+        "one actor-owned revision must parse each metadata descriptor once per authority",
+    );
+}
+
+#[test]
 fn ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work() {
     let payload = json!({
         "name": "SalesReader",

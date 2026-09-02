@@ -1,4 +1,4 @@
-use crate::domain::source_target::{metadata_address_kind_spellings, xml_ncname_is_valid};
+use crate::domain::source_target::{metadata_address_kind_matches, xml_ncname_is_valid};
 use serde::{Deserialize, Serialize, Serializer};
 use std::fmt;
 
@@ -198,12 +198,11 @@ impl NodeKind {
     }
 
     pub(crate) fn parse(raw: &str) -> Result<Self, AddressError> {
-        for kind in LEGACY_METADATA_KINDS {
-            let spellings = metadata_address_kind_spellings(kind.as_str())
-                .expect("the v0.13 metadata variants mirror the proven v0.12 registry");
-            if spellings.contains(&raw) {
-                return Ok(*kind);
-            }
+        if let Some(kind) = LEGACY_METADATA_KINDS
+            .iter()
+            .find(|kind| metadata_address_kind_matches(kind.as_str(), raw))
+        {
+            return Ok(*kind);
         }
         V13_KIND_SPELLINGS
             .iter()
