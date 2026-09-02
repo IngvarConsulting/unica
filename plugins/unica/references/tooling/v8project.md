@@ -14,10 +14,10 @@ file is not located at `./v8project.yaml`.
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
 
-For a new repository with no workspace, use the `v8-runner` skill first. It
-can preview creation of `v8project.yaml` through MCP `unica.runtime.execute`.
-It does not create the file, prepare the default `src` source-set, check
-database access, or inspect a live license in the current contract.
+For a new repository with no workspace, call `unica.view {}` first. In v0.13,
+discover the runtime contract through `unica.run {}` and use
+`workspace.initialize` only when its dictionary entry says `implemented: true`.
+Do not infer arguments for an operation whose `argsSchema` is `null`.
 
 Preview the config-init arguments through MCP `unica.runtime.execute`:
 
@@ -150,8 +150,9 @@ directory named `main` keeps it.
 
 ## Command Mapping
 
-Use the `v8-runner` skill and MCP `unica.runtime.execute` only for previews of
-runtime operation arguments.
+Use the package-selected MCP runtime surface directly. In v0.13,
+`unica.run {}` is the source of operation names, implementation status and
+argument schemas.
 
 | Operation | MCP arguments |
 | --- | --- |
