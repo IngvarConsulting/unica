@@ -205,7 +205,6 @@ fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
         "code-search",
         "platform-help",
         "release-support",
-        "v8-runner",
     ] {
         if !visible.contains(required) {
             return Err(unica_bootstrap::BootstrapError::new(format!(
