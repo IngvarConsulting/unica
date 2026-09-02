@@ -1,4 +1,5 @@
-use crate::application::v13::check::{CheckProfile, NativeCheckOutcome};
+use crate::application::ports::FormatGuardCheck;
+use crate::application::v13::check::{CheckDiagnostic, CheckProfile, NativeCheckOutcome};
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 
@@ -28,6 +29,25 @@ pub(crate) fn validate_with_availability(
     if availability == ValidatorAvailability::Unavailable {
         return unavailable_dependency();
     }
+    // The retired `*.validate` tools ran the export-format guard before their
+    // handler; a canonical profile keeps that read-only warning so a root
+    // outside the active profile is never reported as a silent pass.
+    let format_warning = match crate::infrastructure::format_guard::evaluate_read_format_guard(
+        profile.native_operation(),
+        args,
+        context,
+    ) {
+        Ok(FormatGuardCheck::Allow) | Err(_) => None,
+        Ok(FormatGuardCheck::Warn {
+            warning,
+            diagnostic,
+        }) => Some(format_diagnostic(&warning, &diagnostic)),
+        Ok(FormatGuardCheck::Block {
+            outcome,
+            diagnostic,
+            ..
+        }) => Some(format_diagnostic(&outcome.warnings.join(" "), &diagnostic)),
+    };
     let outcome = match profile {
         CheckProfile::Cf => super::cf::validate_cf(args, context),
         CheckProfile::Cfe => super::cfe::validate_cfe(args, context),
@@ -38,7 +58,24 @@ pub(crate) fn validate_with_availability(
         CheckProfile::Subsystem => super::subsystem::validate_subsystem(args, context),
         CheckProfile::Interface => super::interface::validate_interface(args, context),
     };
-    NativeCheckOutcome::from_adapter(&outcome)
+    let native = NativeCheckOutcome::from_adapter(&outcome);
+    match format_warning {
+        Some(diagnostic) => native.with_leading_diagnostic(diagnostic),
+        None => native,
+    }
+}
+
+fn format_diagnostic(warning: &str, diagnostic: &Value) -> CheckDiagnostic {
+    let code = diagnostic
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("formatVersionInvalid");
+    let actual = diagnostic
+        .get("actualFormat")
+        .and_then(Value::as_str)
+        .map(|actual| format!(" (export format {actual})"))
+        .unwrap_or_default();
+    CheckDiagnostic::warning(code, &format!("{warning}{actual}"))
 }
 
 /// A dependency that is not installed is not a validation failure and must be
@@ -50,7 +87,7 @@ pub(crate) fn unavailable_dependency() -> NativeCheckOutcome {
 #[cfg(test)]
 mod tests {
     use super::{validate, validate_with_availability, ValidatorAvailability};
-    use crate::application::v13::check::{normalize_native_outcome, CheckRequest};
+    use crate::application::v13::check::{normalize_native_outcome, CheckProfile, CheckRequest};
     use crate::domain::workspace::WorkspaceContext;
     use serde_json::{json, Map};
     use std::fs;
@@ -129,5 +166,41 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), "dependency_unavailable");
+    }
+
+    /// `check` with the `cf` profile over a 2.21 root keeps the validator
+    /// verdict and leads with the format warning of the retired guard: the
+    /// active profile is single and a newer export never passes silently.
+    #[test]
+    fn newer_configuration_root_leads_with_the_format_warning() {
+        let (context, root) = context();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let mut selector = Map::new();
+        selector.insert("sourceSet".to_string(), json!("main"));
+        let native = validate(CheckProfile::Cf, &selector, &context);
+        let request = CheckRequest::new(
+            "main:Configuration",
+            Some(&json!({"validation": {"profile": "cf"}})),
+        )
+        .unwrap();
+        let result = normalize_native_outcome(&request, "Configuration", native).unwrap();
+        let first = result
+            .diagnostics()
+            .first()
+            .expect("the format warning leads the diagnostics");
+        assert_eq!(first.severity(), "warning");
+        assert_eq!(first.code(), "platformVersionUnsupported");
+        assert!(first.message().contains("2.21"), "{}", first.message());
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -68,6 +68,22 @@ impl CheckProfile {
         }
     }
 
+    /// The native validator this profile runs, by its operation name. The
+    /// read-only format guard of the retired `*.validate` tools is keyed by
+    /// the same names, so the canonical profile inherits it unchanged.
+    pub(crate) const fn native_operation(self) -> &'static str {
+        match self {
+            Self::Cf => "cf-validate",
+            Self::Cfe => "cfe-validate",
+            Self::Form => "form-validate",
+            Self::Dcs => "dcs-validate",
+            Self::Mxl => "mxl-validate",
+            Self::Role => "role-validate",
+            Self::Subsystem => "subsystem-validate",
+            Self::Interface => "interface-validate",
+        }
+    }
+
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Cf => "cf",
@@ -210,6 +226,16 @@ pub(crate) struct CheckDiagnostic {
 }
 
 impl CheckDiagnostic {
+    /// A warning that keeps the validator verdict: the closed format codes of
+    /// the export-format guard travel through here.
+    pub(crate) fn warning(code: impl Into<String>, message: &str) -> Self {
+        Self {
+            severity: "warning".to_string(),
+            code: code.into(),
+            message: sanitize_message(message),
+        }
+    }
+
     pub(crate) fn severity(&self) -> &str {
         &self.severity
     }
@@ -254,6 +280,13 @@ impl NativeCheckOutcome {
                 .collect(),
             unavailable: false,
         }
+    }
+
+    /// Prepends one diagnostic without touching the verdict: a read-only
+    /// format warning is reported first, the validator findings follow.
+    pub(crate) fn with_leading_diagnostic(mut self, diagnostic: CheckDiagnostic) -> Self {
+        self.diagnostics.insert(0, diagnostic);
+        self
     }
 
     pub(crate) fn unavailable(_detail: &str) -> Self {

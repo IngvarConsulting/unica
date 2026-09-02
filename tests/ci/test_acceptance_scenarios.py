@@ -248,14 +248,14 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 266)
+        self.assertEqual(len(scenarios), 280)
         self.assertEqual(
             sum(len(scenario["wire"]) for scenario in scenarios),
-            295,
-            "a wire step went missing: the corpus freezes 295 steps",
+            309,
+            "a wire step went missing: the corpus freezes 309 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 267)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 281)])
 
     def test_the_run_half_of_the_surface_stays_out_of_this_corpus(self) -> None:
         for scenario in self.corpus["scenarios"]:
@@ -411,6 +411,22 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
                                 mismatches.append(
                                     f"{label}: expected validation status {step['status']!r}, "
                                     f"got {verdict!r}"
+                                )
+                        if "diagnostic" in step and actual == "ok":
+                            # A validation step may freeze one diagnostic code it
+                            # expects next to the verdict: the export-format guard
+                            # of a root outside the active profile.
+                            structured = response.get("result", {}).get("structuredContent") or {}
+                            codes = [
+                                diagnostic.get("code")
+                                for diagnostic in (
+                                    (structured.get("data") or {}).get("diagnostics") or []
+                                )
+                            ]
+                            if step["diagnostic"] not in codes:
+                                mismatches.append(
+                                    f"{label}: expected diagnostic {step['diagnostic']!r}, "
+                                    f"got {codes!r}"
                                 )
                     # A scenario that published changes leaves its mark on the
                     # workspace; the next one starts from the pristine fixture
