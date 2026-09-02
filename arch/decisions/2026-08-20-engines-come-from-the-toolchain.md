@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-08-20.ENGINES-COME-FROM-THE-TOOLCHAIN
-status: active
+status: superseded
 governs: product
 realized: crates/unica-bootstrap/tests/manifest_contract.rs::an_engine_is_accepted_from_the_toolchain_release
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-09-02.MAINTAINED-ENGINES-PUBLISH-AT-SOURCE
 establishes: []
 ---
 

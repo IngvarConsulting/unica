@@ -148,6 +148,22 @@ class AttributionTests(unittest.TestCase):
         ):
             self.assertIn(disclosure, notice)
 
+    def test_v8_runner_attribution_matches_current_tool_lock(self) -> None:
+        root = self.repo_root()
+        lock = json.loads(
+            (root / "plugins/unica/third-party/tools.lock.json").read_text(encoding="utf-8")
+        )
+        runner = next(tool for tool in lock["tools"] if tool["name"] == "v8-runner")
+        section = load_attribution_module().parse_sections(
+            (root / "plugins/unica/ATTRIBUTIONS.md").read_text(encoding="utf-8")
+        )[("tool", "v8-runner")]
+
+        self.assertIn(runner["repository"], section)
+        self.assertIn(f"`{runner['version']}`", section)
+        self.assertIn(runner["sourceTag"], section)
+        self.assertIn(runner["sourceCommit"], section)
+        self.assertIn(runner["assetTag"], section)
+
     def test_parse_sections_maps_grouped_markers_to_one_section(self) -> None:
         module = load_attribution_module()
 

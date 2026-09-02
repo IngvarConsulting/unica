@@ -172,7 +172,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "conflicting asset metadata for artifact shared"):
             module.register_artifact_asset(assets, "shared", second)
 
-    def assert_external_toolchain_contract(self, external_tools: list[dict]) -> None:
+    def assert_external_release_contract(self, external_tools: list[dict]) -> None:
         expected_names = {
             "bsl-analyzer",
             "v8-runner",
@@ -188,40 +188,48 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 tool["sourceTag"],
                 tool["sourceCommit"],
             )
-            release_tag, separator, build_revision = tool["assetTag"].rpartition("-build.")
-            self.assertEqual(separator, "-build.")
-            self.assertRegex(build_revision, r"^[1-9][0-9]*$")
-
-            source_tag = tool["sourceTag"]
-            source_label = (
-                source_tag
-                if source_tag.startswith("v")
-                else f"nightly-{re.sub(r'[^a-z0-9]+', '-', source_tag.lower()).strip('-')}"
-            )
-            source_suffix = f"-{source_label}"
-            self.assertTrue(release_tag.endswith(source_suffix))
-            release_name = release_tag[: -len(source_suffix)]
-            declared_release_name = tool.get("releaseName", tool["name"])
-            self.assertEqual(release_name, declared_release_name)
-            self.assertTrue(
-                any(
-                    candidate.get("releaseName", candidate["name"])
-                    == declared_release_name
-                    and (
-                        candidate["repository"],
-                        candidate["sourceTag"],
-                        candidate["sourceCommit"],
-                    )
-                    == source_identity
-                    for candidate in external_tools
+            if tool["name"] == "v8-runner":
+                self.assertEqual(
+                    tool["repository"], "https://github.com/IngvarConsulting/v8-runner-rust"
                 )
-            )
+                self.assertEqual(tool["assetRepository"], tool["repository"])
+                self.assertEqual(tool["assetTag"], tool["sourceTag"])
+                self.assertRegex(tool["sourceTag"], r"^v[0-9].+$")
+            else:
+                release_tag, separator, build_revision = tool["assetTag"].rpartition("-build.")
+                self.assertEqual(separator, "-build.")
+                self.assertRegex(build_revision, r"^[1-9][0-9]*$")
 
-            existing_tag = tags_by_source.setdefault(source_identity, tool["assetTag"])
-            self.assertEqual(tool["assetTag"], existing_tag)
-            self.assertEqual(
-                tool["assetRepository"], "https://github.com/IngvarConsulting/unica-toolchain"
-            )
+                source_tag = tool["sourceTag"]
+                source_label = (
+                    source_tag
+                    if source_tag.startswith("v")
+                    else f"nightly-{re.sub(r'[^a-z0-9]+', '-', source_tag.lower()).strip('-')}"
+                )
+                source_suffix = f"-{source_label}"
+                self.assertTrue(release_tag.endswith(source_suffix))
+                release_name = release_tag[: -len(source_suffix)]
+                declared_release_name = tool.get("releaseName", tool["name"])
+                self.assertEqual(release_name, declared_release_name)
+                self.assertTrue(
+                    any(
+                        candidate.get("releaseName", candidate["name"])
+                        == declared_release_name
+                        and (
+                            candidate["repository"],
+                            candidate["sourceTag"],
+                            candidate["sourceCommit"],
+                        )
+                        == source_identity
+                        for candidate in external_tools
+                    )
+                )
+
+                existing_tag = tags_by_source.setdefault(source_identity, tool["assetTag"])
+                self.assertEqual(tool["assetTag"], existing_tag)
+                self.assertEqual(
+                    tool["assetRepository"], "https://github.com/IngvarConsulting/unica-toolchain"
+                )
             for target, asset in tool["assets"].items():
                 exe = ".exe" if target == "win-x64" else ""
                 self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
@@ -255,7 +263,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
             "example-v1.2.3-build.7/example-linux-x64",
         )
 
-    def test_all_checked_in_external_tools_use_independent_toolchain_assets(self) -> None:
+    def test_all_checked_in_external_tools_use_approved_release_sources(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         lock = json.loads(
             (repo_root / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
@@ -263,10 +271,15 @@ class BuildUnicaToolsTests(unittest.TestCase):
             )
         )
         external_tools = [tool for tool in lock["tools"] if tool["name"] != "unica"]
-        self.assert_external_toolchain_contract(external_tools)
+        self.assert_external_release_contract(external_tools)
 
         updated_tools = json.loads(json.dumps(external_tools))
         for tool in updated_tools:
+            if tool["name"] == "v8-runner":
+                prefix, revision = tool["sourceTag"].rsplit(".", 1)
+                tool["sourceTag"] = f"{prefix}.{int(revision) + 1}"
+                tool["assetTag"] = tool["sourceTag"]
+                continue
             source_tag = tool["sourceTag"]
             current_source_label = (
                 source_tag
@@ -288,7 +301,25 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 )
             build_revision = int(current_revision) + 1
             tool["assetTag"] = f"{release_name}-{source_label}-build.{build_revision}"
-        self.assert_external_toolchain_contract(updated_tools)
+        self.assert_external_release_contract(updated_tools)
+
+    def test_maintained_v8_runner_release_is_published_at_source(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        lock = json.loads(
+            (repo_root / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        runner = next(tool for tool in lock["tools"] if tool["name"] == "v8-runner")
+
+        self.assertEqual(runner["repository"], "https://github.com/IngvarConsulting/v8-runner-rust")
+        self.assertEqual(runner["assetRepository"], runner["repository"])
+        self.assertEqual(runner["sourceTag"], "v0.5.2-ic.4")
+        self.assertEqual(runner["assetTag"], runner["sourceTag"])
+        self.assertEqual(
+            runner["sourceCommit"],
+            "37b8dee0e057db07dc94722b6aa155bdfcabb51a",
+        )
 
     def test_historical_build_2_release_provenance_is_immutable(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

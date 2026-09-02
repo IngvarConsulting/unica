@@ -2527,7 +2527,7 @@ fn test_only() { std::process::Command::new("git"); }
             (repo_root / "scripts/ci/verify-delivery-reachable.py").is_file()
         )
 
-    def test_both_sides_of_the_wire_approve_the_same_two_origins(self) -> None:
+    def test_both_sides_of_the_wire_approve_the_same_release_origins(self) -> None:
         """Адрес пишет упаковщик, а сверяет bootstrap.
 
         Разойдись эти списки — выпуск соберётся, а установка откажет уже у
@@ -2545,6 +2545,7 @@ fn test_only() { std::process::Command::new("git"); }
         approved = {
             "https://github.com/IngvarConsulting/unica",
             "https://github.com/IngvarConsulting/unica-toolchain",
+            "https://github.com/IngvarConsulting/v8-runner-rust",
         }
         for origin in approved:
             with self.subTest(origin=origin):
@@ -2553,14 +2554,23 @@ fn test_only() { std::process::Command::new("git"); }
 
         emitted_origins = set(
             re.findall(
-                r'^(?:SOURCE_REPOSITORY|TOOLCHAIN_REPOSITORY) = "([^"]+)"$',
+                r'^(?:SOURCE_REPOSITORY|TOOLCHAIN_REPOSITORY|V8_RUNNER_REPOSITORY) = "([^"]+)"$',
                 packager,
                 re.MULTILINE,
             )
         )
         self.assertEqual(emitted_origins, approved)
 
-        # Список закрыт с обеих сторон: третий адрес — новая запись реестра.
+        self.assertIn(
+            'V8_RUNNER_REPOSITORY if artifact == "v8-runner" else TOOLCHAIN_REPOSITORY',
+            packager,
+        )
+        self.assertIn(
+            '(ArtifactRole::Engine, "v8-runner") => V8_RUNNER_RELEASE_ORIGIN',
+            validator,
+        )
+
+        # Список закрыт с обеих сторон: следующий адрес — новая запись реестра.
         self.assertEqual(
             len(re.findall(r'"https://github\.com/IngvarConsulting/[\w-]+/releases/download/"', validator)),
             len(approved),

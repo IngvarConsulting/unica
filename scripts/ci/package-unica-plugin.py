@@ -14,10 +14,11 @@ from pathlib import Path
 
 PLUGIN_ID = "unica"
 
-# Ядро собирается здесь, поставки приезжают из тулчейна. Адресов ровно два, и
-# оба названы: третий — новая запись реестра, а не правка этого списка.
+# Ядро собирается здесь, внешние движки приезжают из тулчейна, а сопровождаемый
+# v8-runner — из собственного репозитория. Перечень закрыт по артефакту.
 SOURCE_REPOSITORY = "https://github.com/IngvarConsulting/unica"
 TOOLCHAIN_REPOSITORY = "https://github.com/IngvarConsulting/unica-toolchain"
+V8_RUNNER_REPOSITORY = "https://github.com/IngvarConsulting/v8-runner-rust"
 
 # Формы доставки: архив распаковывается, одиночный файл ложится под своим
 # именем. Форму объявляет издатель типом содержимого.
@@ -495,7 +496,7 @@ def load_runtime_metadata(
             if origin is not None:
                 raise SystemExit(f"core artifact {artifact} must not name a foreign origin")
         else:
-            # Поставку издал тулчейн: имя и тег назвал он, а не мы.
+            # Имя и тег назвал издатель поставки, а не упаковщик Unica.
             name = asset.get("name", "")
             if not isinstance(name, str) or not name or "/" in name or "\\" in name:
                 raise SystemExit(f"unsafe runtime asset name for {artifact} {target}: {name}")
@@ -506,7 +507,10 @@ def load_runtime_metadata(
                 )
             if not isinstance(origin, dict):
                 raise SystemExit(f"artifact {artifact} {target} does not name its origin")
-            if origin.get("repository") != TOOLCHAIN_REPOSITORY:
+            approved_repository = (
+                V8_RUNNER_REPOSITORY if artifact == "v8-runner" else TOOLCHAIN_REPOSITORY
+            )
+            if origin.get("repository") != approved_repository:
                 raise SystemExit(
                     f"artifact {artifact} {target} comes from an unapproved repository: "
                     f"{origin.get('repository')}"
