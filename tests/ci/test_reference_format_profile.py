@@ -23,10 +23,7 @@ DCS_COMPILE = UNICA_REFERENCE_MODELS / "dcs-compile/scripts/dcs-compile.py"
 VALIDATOR_SCRIPTS = tuple(
     UNICA_REFERENCE_MODELS / relative
     for relative in (
-        "cf-validate/scripts/cf-validate.py",
         "cfe-validate/scripts/cfe-validate.py",
-        "form-validate/scripts/form-validate.py",
-        "subsystem-validate/scripts/subsystem-validate.py",
     )
 )
 MD_NS = "http://v8.1c.ru/8.3/MDClasses"

@@ -3,7 +3,7 @@ id: INV.SOURCE.READER-OUTPUT-PARITY
 status: superseded
 governs: product
 decision: DEC.2026-09-02.V0-13-LEGACY-BATCH-1
-check: crates/unica-coder/src/infrastructure/native_operations/source_invariant_tests.rs::bridged_reader_outputs_are_identical_for_logical_and_physical_selectors
+check: tests/ci/test_v013_parity_inventory.py::test_each_referenced_case_exists_matches_successor_and_has_one_owner
 scope: [source]
 ---
 

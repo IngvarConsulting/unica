@@ -2592,8 +2592,7 @@ mod tests {
             "ConfigPath".into(),
             Value::String(path.display().to_string()),
         );
-        let check =
-            evaluate_read_format_guard("cf-validate", &args, &context(&root)).unwrap();
+        let check = evaluate_read_format_guard("cf-validate", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("missing root version must be old-format warning");
         };
