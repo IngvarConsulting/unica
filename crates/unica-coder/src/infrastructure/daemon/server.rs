@@ -335,9 +335,10 @@ impl DaemonInvocationRuntime {
                 ) {
                     return Ok(InvocationResponse::Direct(result));
                 }
-                if let Some(result) =
-                    super::v13_source_attach::execute_source_attach(&request, &response_deadline)
-                {
+                if let Some(result) = super::v13_workspace_initialize::execute_workspace_initialize(
+                    &request,
+                    &response_deadline,
+                ) {
                     return Ok(InvocationResponse::Direct(result));
                 }
                 match bind_workspace_invocation(
@@ -1382,10 +1383,9 @@ pub(crate) mod actor_capacity_tests {
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["config"]["state"], "autodetected");
         assert_eq!(data["setup"]["content"], serde_json::Value::Null, "{data}");
-        assert!(result
-            .next
-            .iter()
-            .all(|next| { next["tool"] != "unica.run" || next["args"]["op"] != "source.attach" }));
+        assert!(result.next.iter().all(|next| {
+            next["tool"] != "unica.run" || next["args"]["op"] != "workspace.initialize"
+        }));
     }
 
     #[test]
@@ -4111,15 +4111,16 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(
             operations
                 .iter()
-                .find(|operation| operation["op"] == "syntax.check")
+                .find(|operation| operation["op"] == "workspace.initialize")
                 .and_then(|operation| operation["implemented"].as_bool()),
             Some(true)
         );
         assert!(
-            operations
-                .iter()
-                .all(|operation| operation["op"] != "query.execute"),
-            "v0.13 Run discovery must omit query execution: {operations:?}"
+            operations.iter().all(|operation| !matches!(
+                operation["op"].as_str(),
+                Some("syntax.check" | "test.run" | "query.execute")
+            )),
+            "v0.13 Run discovery must omit deferred check/test/query execution: {operations:?}"
         );
         let object_search = call(
             ToolIdentity::Search,
@@ -4190,7 +4191,7 @@ struct ActorLogicalReadLease {"#,
             (
                 ToolIdentity::Run,
                 serde_json::json!({"op": "syntax.check", "args": {"mode": "shell"}}),
-                "bad_value",
+                "unsupported_operation",
             ),
             (
                 ToolIdentity::Run,
@@ -4285,32 +4286,6 @@ struct ActorLogicalReadLease {"#,
                 tool.catalog_name()
             );
         }
-        let syntax_request = InvocationRequest::new(
-            ToolIdentity::Run,
-            serde_json::json!({
-                "op": "syntax.check",
-                "args": {"mode": "designer-config"}
-            }),
-            workspace_hint.as_str(),
-            7_000,
-        )
-        .unwrap();
-        let InvocationResponse::Task(syntax_task) = runtime
-            .submit(syntax_request, runtime.capture_response_deadline())
-            .unwrap()
-        else {
-            panic!("valid syntax.check must hand off before external-process execution")
-        };
-        let terminal = runtime.wait(syntax_task.task_id, 7_000).unwrap();
-        assert_eq!(
-            terminal.status,
-            crate::domain::invocation::InvocationStatus::Completed
-        );
-        let result = terminal.result.expect("terminal syntax Task has a result");
-        assert!(!result.ok, "missing provider must be a typed result");
-        assert!(result.artifacts.is_empty());
-        let serialized = serde_json::to_string(&result).unwrap();
-        assert!(!serialized.contains(&workspace_hint), "{serialized}");
     }
 
     /// INV.WIRE.V13-REFUSAL-CHANNEL: every canonical refusal answers through
@@ -4416,7 +4391,7 @@ struct ActorLogicalReadLease {"#,
             (
                 ToolIdentity::Run,
                 serde_json::json!({"op": "syntax.check", "args": {}}),
-                "bad_value",
+                "unsupported_operation",
             ),
             (
                 ToolIdentity::View,
@@ -4498,17 +4473,6 @@ struct ActorLogicalReadLease {"#,
         assert!(
             stale_message.contains("expected") && stale_message.contains("admitted"),
             "the conflict names both revisions for recovery: {stale_message}"
-        );
-
-        let missing_mode = call(
-            ToolIdentity::Run,
-            serde_json::json!({"op": "syntax.check", "args": {}}),
-        );
-        assert!(
-            missing_mode.diagnostics[0]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("one of: designer-config")),
-            "a missing required argument names its value domain: {missing_mode:?}"
         );
 
         let bare_scope = call(

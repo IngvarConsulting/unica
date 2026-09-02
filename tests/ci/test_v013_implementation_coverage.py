@@ -119,23 +119,21 @@ class V013ImplementationCoverageTests(unittest.TestCase):
                             f"{location} supported status requires executable evidence",
                         )
 
-    def test_runtime_truth_supports_only_the_two_proven_operations(self) -> None:
+    def test_runtime_truth_supports_only_workspace_initialization(self) -> None:
         for name, entry in self.coverage["runOperations"].items():
             with self.subTest(operation=name):
                 expected = (
                     "supported"
-                    if name in {"source.attach", "syntax.check"}
+                    if name == "workspace.initialize"
                     else "unsupported"
                 )
                 self.assertEqual(entry["status"], expected)
         self.assertEqual(
-            self.coverage["runOperations"]["syntax.check"]["status"],
+            self.coverage["runOperations"]["workspace.initialize"]["status"],
             "supported",
         )
-        self.assertEqual(
-            self.coverage["runOperations"]["source.attach"]["status"],
-            "supported",
-        )
+        self.assertNotIn("syntax.check", self.coverage["runOperations"])
+        self.assertNotIn("test.run", self.coverage["runOperations"])
         self.assertNotIn("query.execute", self.coverage["runOperations"])
 
     def test_initial_truth_marks_useful_subject_modes_partial_and_task_transport_supported(self) -> None:

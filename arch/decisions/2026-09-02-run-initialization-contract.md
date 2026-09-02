@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-09-02.RUN-INITIALIZATION-CONTRACT
-status: active
+status: superseded
 governs: product
 realized: crates/unica-coder/tests/v13_workspace_bootstrap.rs::canonical_stdio_previews_and_applies_autodetected_source_attachment_before_admission
 supersedes: [DEC.2026-09-01.VIEW-WORKSPACE-BOOTSTRAP]
-superseded-by: null
+superseded-by: DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS
 establishes: [CTR.WIRE.TOOL-SURFACE, INV.SURFACE.ARGUMENTS-DESCRIBED, INV.SURFACE.PROJECT-READINESS, INV.SURFACE.WORKSPACE-BOOTSTRAP, INV.SURFACE.SOURCE-ATTACH]
 changes: [CTR.WIRE.TOOL-SURFACE]
 design: docs/design/2026-09-02-run-initialization-contract-design.md

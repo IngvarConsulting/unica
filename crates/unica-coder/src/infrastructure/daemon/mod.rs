@@ -10,9 +10,8 @@ pub(crate) mod terminal_codec_v5;
 mod v13_read_modes;
 #[allow(dead_code)]
 mod v13_service;
-mod v13_source_attach;
-mod v13_syntax_run;
 mod v13_workspace_bootstrap;
+mod v13_workspace_initialize;
 
 #[cfg(test)]
 mod tests {

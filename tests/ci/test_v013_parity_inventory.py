@@ -138,18 +138,18 @@ TOP_LEVEL_KEYS = {
 NATIVE_ENTRIES = {"view", "apply", "find", "search", "check", "diff", "run", "docs"}
 OPERATION_ENTRIES = {"apply", "run"}
 RUN_OPERATIONS = {
+    "workspace.initialize",
     "source.create",
-    "source.attach",
     "infobase.create",
     "infobase.build",
     "source.dump",
     "source.convert",
-    "artifact.make",
-    "artifact.load",
-    "syntax.check",
-    "test.run",
+    "artifact.build",
+    "infobase.configuration.export",
+    "infobase.configuration.load",
+    "infobase.dump",
+    "infobase.restore",
     "client.run",
-    "extension.sync",
 }
 DISPOSITIONS = {"mapped", "absorbed", "transport-replaced", "removed"}
 RUNTIME_JOB_NAMES = {
@@ -668,19 +668,43 @@ class V013ParityInventoryTest(unittest.TestCase):
         rows: list[dict[str, object]] = []
         cases: list[dict[str, object]] = []
         mappable_index = 0
-        legacy_run_variants = (
+        mapped_legacy_run_variants = (
             ("operation=config-init", "source.create"),
-            ("operation=config-init;sourceSet=external", "source.attach"),
+            ("operation=config-init;sourceSet=external", "workspace.initialize"),
             ("operation=init", "infobase.create"),
             ("operation=build", "infobase.build"),
             ("operation=dump", "source.dump"),
             ("operation=convert", "source.convert"),
-            ("operation=make", "artifact.make"),
-            ("operation=load", "artifact.load"),
-            ("operation=syntax", "syntax.check"),
-            ("operation=test", "test.run"),
+            ("operation=make", "artifact.build"),
             ("operation=launch", "client.run"),
-            ("operation=extensions", "extension.sync"),
+        )
+        removed_legacy_run_variants = (
+            (
+                "operation=load",
+                "generic legacy load does not identify configuration CF/CFE load "
+                "versus full infobase DT restore",
+            ),
+            (
+                "operation=syntax",
+                "v0.13 run dictionary rejects legacy syntax because no run successor "
+                "is published",
+            ),
+            (
+                "operation=test",
+                "v0.13 run dictionary rejects legacy test because no run successor "
+                "is published",
+            ),
+            (
+                "operation=extensions",
+                "v0.13 run dictionary rejects ambiguous legacy extension "
+                "synchronization because no successor is published",
+            ),
+        )
+        new_run_capabilities = (
+            "infobase.configuration.export",
+            "infobase.configuration.load",
+            "infobase.dump",
+            "infobase.restore",
         )
         non_run_entries = ("view", "apply", "find", "search", "check", "diff", "docs")
         for index, legacy_tool in enumerate(IMMUTABLE_BASELINE_NAMES):
@@ -706,7 +730,7 @@ class V013ParityInventoryTest(unittest.TestCase):
             elif legacy_tool == "unica.runtime.execute":
                 variants = []
                 for variant_index, (legacy_variant, operation) in enumerate(
-                    legacy_run_variants
+                    mapped_legacy_run_variants
                 ):
                     case_id = f"runtime-variant-{variant_index:02d}"
                     variants.append(
@@ -727,6 +751,14 @@ class V013ParityInventoryTest(unittest.TestCase):
                             "expected": {"outcome": "ok"},
                         }
                     )
+                variants.extend(
+                    {
+                        "legacyVariant": legacy_variant,
+                        "disposition": "removed",
+                        "rejectionEvidence": rejection_evidence,
+                    }
+                    for legacy_variant, rejection_evidence in removed_legacy_run_variants
+                )
                 variants.append(
                     {
                         "legacyVariant": "operation=tools-download",
@@ -771,9 +803,61 @@ class V013ParityInventoryTest(unittest.TestCase):
                     case["operation"] = operation
                 cases.append(case)
         documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = rows
+        new_capabilities = []
+        for capability_index, operation in enumerate(new_run_capabilities):
+            case_id = f"new-run-capability-{capability_index:02d}"
+            new_capabilities.append(
+                {
+                    "capabilityId": f"run.{operation}",
+                    "successor": {"entry": "run", "operation": operation},
+                    "caseIds": [case_id],
+                    "rationale": "Directional runtime operation has no unambiguous legacy predecessor.",
+                }
+            )
+            cases.append(
+                {
+                    "caseId": case_id,
+                    "entry": "run",
+                    "operation": operation,
+                    "mode": "direct",
+                    "fixture": self.fixture,
+                    "expected": {"outcome": "ok"},
+                }
+            )
         documents[EXPECTED_SHARDS[1]]["cases"] = cases
-        documents[EXPECTED_SHARDS[1]]["newCapabilities"] = []
+        documents[EXPECTED_SHARDS[1]]["newCapabilities"] = new_capabilities
         return documents
+
+    def test_complete_runtime_baseline_uses_only_unambiguous_successors(self) -> None:
+        documents = self._complete_documents()
+        runtime_row = next(
+            row
+            for row in documents[EXPECTED_SHARDS[0]]["baselineDispositions"]
+            if row["legacyTool"] == "unica.runtime.execute"
+        )
+        variants = {
+            variant["legacyVariant"]: variant for variant in runtime_row["variants"]
+        }
+
+        self.assertEqual(
+            variants["operation=config-init;sourceSet=external"]["successor"],
+            {"entry": "run", "operation": "workspace.initialize"},
+        )
+        self.assertEqual(
+            variants["operation=make"]["successor"],
+            {"entry": "run", "operation": "artifact.build"},
+        )
+        for legacy_variant in (
+            "operation=load",
+            "operation=syntax",
+            "operation=test",
+            "operation=extensions",
+        ):
+            with self.subTest(legacy_variant=legacy_variant):
+                variant = variants[legacy_variant]
+                self.assertEqual(variant["disposition"], "removed")
+                self.assertNotIn("successor", variant)
+                self.assertTrue(variant["rejectionEvidence"])
 
     def test_repository_inventory_is_valid_and_uses_exact_seven_shards(self) -> None:
         documents, baseline_names, tracked_paths = load_repository_inputs(REPO_ROOT)
@@ -830,41 +914,35 @@ class V013ParityInventoryTest(unittest.TestCase):
                 "legacyTool": "unica.runtime.execute",
                 "variants": [
                     {
-                        "legacyVariant": "operation=config-init",
+                        "legacyVariant": "operation=config-init;sourceSet=external",
                         "disposition": "mapped",
-                        "successor": {"entry": "run", "operation": "source.create"},
-                        "caseIds": ["runtime-config-init"],
+                        "successor": {
+                            "entry": "run",
+                            "operation": "workspace.initialize",
+                        },
+                        "caseIds": ["runtime-workspace-initialize"],
                     },
                     {
                         "legacyVariant": "operation=syntax",
-                        "disposition": "mapped",
-                        "successor": {"entry": "run", "operation": "syntax.check"},
-                        "caseIds": ["runtime-syntax"],
+                        "disposition": "removed",
+                        "rejectionEvidence": "v0.13 run dictionary has no syntax successor",
                     },
                 ],
             }
         ]
         documents[EXPECTED_SHARDS[0]]["cases"] = [
             {
-                "caseId": "runtime-config-init",
+                "caseId": "runtime-workspace-initialize",
                 "entry": "run",
-                "operation": "source.create",
+                "operation": "workspace.initialize",
                 "mode": "direct",
                 "fixture": self.fixture,
                 "expected": {"outcome": "ok"},
             },
             {
-                "caseId": "runtime-syntax",
+                "caseId": "run-artifact-build-new",
                 "entry": "run",
-                "operation": "syntax.check",
-                "mode": "direct",
-                "fixture": self.fixture,
-                "expected": {"outcome": "ok"},
-            },
-            {
-                "caseId": "run-artifact-make-new",
-                "entry": "run",
-                "operation": "artifact.make",
+                "operation": "artifact.build",
                 "mode": "direct",
                 "fixture": self.fixture,
                 "expected": {"outcome": "ok"},
@@ -872,9 +950,9 @@ class V013ParityInventoryTest(unittest.TestCase):
         ]
         documents[EXPECTED_SHARDS[0]]["newCapabilities"] = [
             {
-                "capabilityId": "run.artifact.make.new",
-                "successor": {"entry": "run", "operation": "artifact.make"},
-                "caseIds": ["run-artifact-make-new"],
+                "capabilityId": "run.artifact.build.new",
+                "successor": {"entry": "run", "operation": "artifact.build"},
+                "caseIds": ["run-artifact-build-new"],
                 "rationale": "Synthetic new capability without a legacy predecessor.",
             }
         ]
@@ -1191,18 +1269,18 @@ class V013ParityInventoryTest(unittest.TestCase):
 
     def test_all_twelve_run_operations_are_the_literal_test_oracle(self) -> None:
         expected = (
+            "workspace.initialize",
             "source.create",
-            "source.attach",
             "infobase.create",
             "infobase.build",
             "source.dump",
             "source.convert",
-            "artifact.make",
-            "artifact.load",
-            "syntax.check",
-            "test.run",
+            "artifact.build",
+            "infobase.configuration.export",
+            "infobase.configuration.load",
+            "infobase.dump",
+            "infobase.restore",
             "client.run",
-            "extension.sync",
         )
         self.assertEqual(RUN_OPERATIONS, set(expected))
         for operation in expected:
@@ -1218,6 +1296,27 @@ class V013ParityInventoryTest(unittest.TestCase):
             documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
             documents[EXPECTED_SHARDS[0]]["cases"] = [case]
             with self.subTest(operation=operation):
+                self._validate(documents)
+
+    def test_removed_run_operations_are_rejected_by_the_literal_oracle(self) -> None:
+        for operation in (
+            "source.attach",
+            "artifact.make",
+            "artifact.load",
+            "syntax.check",
+            "test.run",
+            "extension.sync",
+        ):
+            row = self._one_mapped_row()
+            self._first_variant(row)["successor"] = {
+                "entry": "run",
+                "operation": operation,
+            }
+            documents = copy.deepcopy(self.documents)
+            documents[EXPECTED_SHARDS[0]]["baselineDispositions"] = [row]
+            with self.subTest(operation=operation), self.assertRaisesRegex(
+                InventoryError, "exact run dictionary"
+            ):
                 self._validate(documents)
 
     def test_apply_and_run_cases_require_their_exact_operation_identity(self) -> None:
@@ -1508,7 +1607,7 @@ class V013ParityInventoryTest(unittest.TestCase):
         case = next(
             case
             for case in documents[EXPECTED_SHARDS[1]]["cases"]
-            if case.get("operation") == "extension.sync"
+            if case.get("operation") == "client.run"
         )
         case["operation"] = "source.create"
         owning_variant = next(

@@ -335,7 +335,7 @@ fn bootstrap_result(
         result.next.push(next_action(
             "unica.run",
             object([
-                ("op", Value::String("source.attach".to_string())),
+                ("op", Value::String("workspace.initialize".to_string())),
                 ("args", Value::Object(Map::new())),
                 ("dryRun", Value::Bool(true)),
             ]),

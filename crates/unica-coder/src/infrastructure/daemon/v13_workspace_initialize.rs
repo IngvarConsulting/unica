@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
-pub(super) fn execute_source_attach(
+pub(super) fn execute_workspace_initialize(
     request: &InvocationRequest,
     deadline: &InvocationResponseDeadline,
 ) -> Option<DomainResult> {
@@ -27,7 +27,7 @@ pub(super) fn execute_source_attach(
             "bad_value",
             "run without op lists the operation dictionary and accepts no other arguments",
         )),
-        Some(Value::String(op)) if op == "source.attach" => Some(execute(request, deadline)),
+        Some(Value::String(op)) if op == "workspace.initialize" => Some(execute(request, deadline)),
         Some(_) => None,
     }
 }
@@ -40,15 +40,17 @@ pub(super) fn run_dictionary_result() -> DomainResult {
         .map(|operation| {
             let preview_required = matches!(
                 operation.intent,
-                RunIntent::SourceCreate
-                    | RunIntent::SourceAttach
+                RunIntent::WorkspaceInitialize
+                    | RunIntent::SourceCreate
                     | RunIntent::InfobaseCreate
                     | RunIntent::InfobaseBuild
                     | RunIntent::SourceDump
                     | RunIntent::SourceConvert
-                    | RunIntent::ArtifactMake
-                    | RunIntent::ArtifactLoad
-                    | RunIntent::ExtensionSync
+                    | RunIntent::ArtifactBuild
+                    | RunIntent::InfobaseConfigurationExport
+                    | RunIntent::InfobaseConfigurationLoad
+                    | RunIntent::InfobaseDump
+                    | RunIntent::InfobaseRestore
             );
             json!({
                 "op": operation.name(),
@@ -73,37 +75,42 @@ fn execute(request: &InvocationRequest, deadline: &InvocationResponseDeadline) -
     let args = match arguments.get("args") {
         None => Map::new(),
         Some(Value::Object(args)) => args.clone(),
-        Some(_) => return reject("bad_value", "source.attach args must be an object"),
+        Some(_) => return reject("bad_value", "workspace.initialize args must be an object"),
     };
     if let Some(argument) = args.keys().next() {
         return reject(
             "bad_value",
-            format!("source.attach does not accept argument `{argument}`; it attaches the autodetected source sets"),
+            format!("workspace.initialize does not accept argument `{argument}` yet; it currently initializes from autodetected source sets"),
         );
     }
     let dry_run = match arguments.get("dryRun") {
         Some(Value::Bool(value)) => *value,
-        Some(_) => return reject("bad_value", "source.attach dryRun must be a boolean"),
+        Some(_) => return reject("bad_value", "workspace.initialize dryRun must be a boolean"),
         None => return reject(
             "bad_value",
-            "source.attach requires dryRun: true to preview or dryRun: false with ifRev to apply",
+            "workspace.initialize requires dryRun: true to preview or dryRun: false with ifRev to apply",
         ),
     };
     let if_rev = match arguments.get("ifRev") {
         None => None,
         Some(Value::String(value)) if !value.is_empty() => Some(value.as_str()),
-        Some(_) => return reject("bad_value", "source.attach ifRev must be non-empty text"),
+        Some(_) => {
+            return reject(
+                "bad_value",
+                "workspace.initialize ifRev must be non-empty text",
+            )
+        }
     };
     if dry_run && if_rev.is_some() {
         return reject(
             "bad_value",
-            "source.attach preview does not accept ifRev; use the returned rev when applying",
+            "workspace.initialize preview does not accept ifRev; use the returned rev when applying",
         );
     }
     if !dry_run && if_rev.is_none() {
         return reject(
             "bad_value",
-            "source.attach apply requires ifRev from a prior dryRun preview",
+            "workspace.initialize apply requires ifRev from a prior dryRun preview",
         );
     }
 
@@ -144,31 +151,31 @@ fn execute(request: &InvocationRequest, deadline: &InvocationResponseDeadline) -
     if source_map.config_path.is_some() {
         return reject(
             "invalid_state",
-            "source.attach creates only a missing v8project.yaml and never overwrites an existing project config",
+            "workspace.initialize creates only a missing v8project.yaml and never overwrites an existing project config",
         );
     }
     if source_map.source_sets.is_empty() {
         return reject(
             "not_found",
-            "source.attach found no 1C source roots; create or import sources first, then call unica.view {} again",
+            "workspace.initialize found no 1C source roots; declare an infobase or create/import sources first, then call unica.view {} again",
         );
     }
     let Some(recipe) = project_config_recipe(&source_map) else {
         return reject(
             "ambiguous_source_format",
-            "source.attach cannot choose one v8project.yaml format because the discovered source sets are mixed, unknown, or invalid",
+            "workspace.initialize cannot choose one v8project.yaml format because the discovered source sets are mixed, unknown, or invalid",
         );
     };
     let revision = attachment_revision(&source_map, &recipe);
     let source_sets = serde_json::to_value(&source_map.source_sets)
         .expect("project source sets always serialize");
     let mut result = DomainResult::success(if dry_run {
-        "source attachment planned; no files were changed"
+        "workspace initialization planned; no files were changed"
     } else {
-        "autodetected source sets attached"
+        "workspace initialized from autodetected source sets"
     });
     result.data = Some(json!({
-        "op": "source.attach",
+        "op": "workspace.initialize",
         "dryRun": dry_run,
         "target": "v8project.yaml",
         "sourceSets": source_sets,
@@ -181,19 +188,19 @@ fn execute(request: &InvocationRequest, deadline: &InvocationResponseDeadline) -
         result.next.push(json!({
             "tool": "unica.run",
             "args": {
-                "op": "source.attach",
+                "op": "workspace.initialize",
                 "args": {},
                 "dryRun": false,
                 "ifRev": revision,
             },
-            "reason": "apply exactly this source attachment plan",
+            "reason": "apply exactly this workspace initialization plan",
         }));
         return result;
     }
     if if_rev != Some(revision.as_str()) {
         return reject(
             "revision_mismatch",
-            "source.attach discovery changed after preview; call dryRun: true again",
+            "workspace.initialize discovery changed after preview; call dryRun: true again",
         );
     }
     if let Err(error) = deadline.checkpoint_handoff() {
@@ -231,7 +238,7 @@ fn execute(request: &InvocationRequest, deadline: &InvocationResponseDeadline) -
         }
         Err(error) => reject(
             "concurrent_change",
-            format!("source.attach did not publish v8project.yaml: {error}"),
+            format!("workspace.initialize did not publish v8project.yaml: {error}"),
         ),
     }
 }
@@ -241,15 +248,18 @@ fn attachment_revision(
     recipe: &str,
 ) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"unica-source-attach-v1\0");
+    hasher.update(b"unica-workspace-initialize-v1\0");
     hasher.update(
         serde_json::to_vec(source_map).expect("project source map always serializes for revision"),
     );
     hasher.update([0]);
     hasher.update(recipe.as_bytes());
-    format!("unica-source-attach-sha256-v1:{:x}", hasher.finalize())
+    format!(
+        "unica-workspace-initialize-sha256-v1:{:x}",
+        hasher.finalize()
+    )
 }
 
 fn reject(code: &'static str, message: impl Into<String>) -> DomainResult {
-    DomainResult::canonical_rejection(Some("source.attach".to_string()), code, message)
+    DomainResult::canonical_rejection(Some("workspace.initialize".to_string()), code, message)
 }

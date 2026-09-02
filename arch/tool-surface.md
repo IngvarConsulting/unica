@@ -137,15 +137,15 @@ List canonical runtime operations and their invocation contract, or preview/exec
 | `ifRev` | string | нет | Revision returned by a prior dryRun of the same workspace-mutating operation; required when dryRun is false. |
 | `op` | string | нет | Canonical operation name; omit to list operation status. |
 
-**Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь с preview/fence требованиями; `source.attach` revision-fenced и create-only публикует autodetected однородные source sets без платформы; `syntax.check` выполняется как durable cancellable Task с bounded terminal/provider результатом; остальные операции неподдержаны (отвечают типизированным `data`)
+**Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь двенадцати направленных runtime-намерений; `workspace.initialize` revision-fenced и create-only публикует autodetected однородные source sets без платформы; остальные одиннадцать операций честно неподдержаны (отвечают типизированным `data`)
 
-**Целевой контракт:** Добавить явные source declarations и подключать остальные операции через preview/apply, capability-specific admission и закрытые terminal/provider-контракты
+**Целевой контракт:** Добавить infobase-only и combined initialization, затем подключать остальные направленные операции через preview/apply, capability-specific admission и закрытые terminal/provider-контракты
 
 **Сценарии:**
 
 - Получить машинно-читаемый словарь допустимых runtime намерений
-- Предпросмотреть и атомарно присоединить autodetected source sets до admission
-- Запустить bounded проверку синтаксиса без публикации raw stdout, command или artifact path
+- Предпросмотреть и атомарно инициализировать workspace по autodetected source sets до admission
+- Различить сборку артефакта, экспорт конфигурации и полный снимок ИБ без выбора platform provider моделью
 
 ## search
 

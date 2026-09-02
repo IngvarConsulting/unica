@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-08-31.V0-13-FIRST-IMPLEMENTATION-VERTICALS
-status: active
+status: superseded
 governs: product
 realized: tests/ci/test_v013_implementation_coverage.py::test_record_covers_exactly_the_public_tools_and_run_dictionary
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS
 establishes: [INV.APP.V13-IMPLEMENTATION-COVERAGE]
 design: docs/design/2026-08-31-v0-13-first-implementation-verticals-design.md
 ---
