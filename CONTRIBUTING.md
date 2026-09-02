@@ -188,9 +188,10 @@ repository `muratcankoylan/Agent-Skills-for-Context-Engineering`, ref `main`,
 генерируется из корпуса и проверяется на расхождение тем же тестом.
 
 Идеи новых задач и операций, которых поверхность ещё не решает, — самый
-полезный вклад: откройте issue с меткой `area:surface` или добавьте сценарий
-в корпус по инструкции из реестра и обновите документ командой
-`python scripts/ci/render-acceptance-registry.py --write`.
+полезный вклад: откройте issue по форме
+[«Новая операция»](https://github.com/IngvarConsulting/unica/issues/new?template=new_operation.yml)
+или добавьте сценарий в корпус по инструкции из реестра и обновите документ
+командой `python scripts/ci/render-acceptance-registry.py --write`.
 
 ## Самопроверка
 
