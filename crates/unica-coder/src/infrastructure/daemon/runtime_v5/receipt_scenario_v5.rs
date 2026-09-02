@@ -2635,14 +2635,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     }
                 };
                 if corrupted_identity_snapshot.is_some() {
-                    snapshot["listener"] = Value::String(
-                        if startup_listener_override && !listener_published {
-                            "not_published"
-                        } else {
-                            "not_published"
-                        }
-                        .to_owned(),
-                    );
+                    snapshot["listener"] = Value::String("not_published".to_owned());
                     snapshot["restartRequested"] = Value::Bool(startup_failed);
                     snapshot["daemonRunning"] = Value::Bool(!startup_failed);
                 }
@@ -3215,7 +3208,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         live_task_projection = Some((task_projection, task_store_create_attempts));
                         live_daemon = Some(daemon);
                     }
-                    if !report.responses.contains_key(&label) {
+                    if let std::collections::btree_map::Entry::Vacant(entry) =
+                        report.responses.entry(label)
+                    {
                         let observation = if matches!(
                             &response,
                             V5ServerResponse::Invocation {
@@ -3250,7 +3245,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                 Some((accepted_epoch_ms, response_budget_ms)),
                             )?
                         };
-                        report.responses.insert(label, observation);
+                        entry.insert(observation);
                     }
                     for duplicate_label in pending_duplicate_labels.drain(..) {
                         let duplicate_response =
@@ -6852,6 +6847,17 @@ struct PendingSubmit {
     daemon: ScenarioDaemon,
 }
 
+type FinishedPendingSubmit = (
+    String,
+    u64,
+    u64,
+    V5ServerResponse,
+    ReceiptLedgerActor,
+    TaskProjectionObservation,
+    u64,
+    ScenarioDaemon,
+);
+
 impl PendingSubmit {
     fn submit_additional(
         &self,
@@ -6877,21 +6883,7 @@ impl PendingSubmit {
         cancel_on_live_daemon(state_root, identity, key)
     }
 
-    fn finish(
-        self,
-    ) -> Result<
-        (
-            String,
-            u64,
-            u64,
-            V5ServerResponse,
-            ReceiptLedgerActor,
-            TaskProjectionObservation,
-            u64,
-            ScenarioDaemon,
-        ),
-        String,
-    > {
+    fn finish(self) -> Result<FinishedPendingSubmit, String> {
         let Self {
             label,
             accepted_epoch_ms,
