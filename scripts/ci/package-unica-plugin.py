@@ -615,8 +615,8 @@ def write_release_runtime_manifest(
             item = by_target[target]
             asset = dict(item["asset"])
             origin = item.get("assetOrigin")
-            # Происхождение решает роль: ядро лежит в выпуске плагина, всё
-            # прочее — в выпуске тулчейна под тегом, который назвал замок.
+            # Ядро лежит в выпуске плагина, а движок — в своём проверенном
+            # release-источнике под тегом, который назвал lock-файл.
             if origin is None:
                 asset["url"] = (
                     f"{SOURCE_REPOSITORY}/releases/download/{release_tag}/{asset['name']}"
