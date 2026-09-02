@@ -30,7 +30,9 @@
 2. Старые тесты воспроизводятся сценариями корпуса приёмки на трёх производных
    наборах исходников фикстуры (`newer` 2.21, `nosupport` без
    `ParentConfigurations.bin`, `unversioned` без атрибута версии корня), а не
-   переносятся как есть.
+   переносятся как есть. Наборы живут в отдельном рабочем пространстве
+   `workspace-format/`, потому что `find` обходит все объявленные наборы на
+   каждом вызове и лишние наборы выталкивают его за бюджет актора.
 3. Снимаются `unica.cf/form/dcs/mxl/role/subsystem.validate`, `unica.form.add`,
    `unica.support.edit`, `unica.template.add`, `unica.template.remove`,
    `unica.help.add`, `unica.runtime.job.status`, `unica.runtime.job.cancel`:

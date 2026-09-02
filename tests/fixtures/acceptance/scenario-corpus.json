@@ -6950,7 +6950,8 @@
      "status": "passed",
      "diagnostic": "platformVersionUnsupported"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S268",
@@ -6973,7 +6974,8 @@
      "status": "passed",
      "diagnostic": "platformVersionUnsupported"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S269",
@@ -6996,7 +6998,8 @@
      "status": "passed",
      "diagnostic": "platformVersionUnsupported"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S270",
@@ -7019,7 +7022,8 @@
      "status": "passed",
      "diagnostic": "platformVersionUnsupported"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S271",
@@ -7042,7 +7046,8 @@
      "status": "passed",
      "diagnostic": "formatMigrationAvailable"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S272",
@@ -7095,7 +7100,8 @@
      ],
      "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S274",
@@ -7123,7 +7129,8 @@
      ],
      "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S275",
@@ -7151,7 +7158,8 @@
      ],
      "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S276",
@@ -7179,7 +7187,8 @@
      ],
      "refusal": "invalid_source: Configuration.xml: export format 1.0 is older than the writable profile 2.20 for 1C 8.3.27; re-export the sources with the platform before editing them"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S277",
@@ -7210,7 +7219,8 @@
      ],
      "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S278",
@@ -7236,7 +7246,8 @@
      ],
      "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S279",
@@ -7266,7 +7277,8 @@
      ],
      "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   },
   {
    "id": "S280",
@@ -7294,7 +7306,8 @@
      ],
      "refusal": "invalid_state: the configuration is not on vendor support (no Ext/ParentConfigurations.bin); there is no support state to switch"
     }
-   ]
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
   }
  ]
 }

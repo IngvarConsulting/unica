@@ -114,18 +114,23 @@ def classify(response, context):
 
 
 
-def derive_source_sets(workspace: Path) -> None:
-    """Derive the format-probe source sets the corpus addresses from `src`.
+FORMAT_WORKSPACE = "tests/fixtures/acceptance/workspace-format"
 
-    `v8project.yaml` of the fixture declares three sets next to `main`:
+
+def derive_source_sets(source: Path, workspace: Path) -> None:
+    """Derive the format-probe source sets of `workspace-format/` from `src`.
+
+    `v8project.yaml` of that fixture declares three sets and no `main`:
     `newer` is the same tree with every 2.20 root rewritten to 2.21 (and the
     Reports and XDTO packages dropped, because the strict read port cannot
-    open a 2.21 template wrapper and `find` walks every identity), `nosupport`
-    is `src` without `Ext/ParentConfigurations.bin`, and `unversioned` is
-    `src` whose Configuration root carries no version attribute. Deriving
-    them here keeps one copy of the platform XML in the repository.
+    open a 2.21 template wrapper), `nosupport` is `src` without
+    `Ext/ParentConfigurations.bin`, and `unversioned` is `src` whose
+    Configuration root carries no version attribute. Deriving them here keeps
+    one copy of the platform XML in the repository. The probes live in their
+    own workspace because `find` walks every identity of every declared set
+    on each call, and the scenarios of the default workspace freeze `find` as
+    an immediate result.
     """
-    source = workspace / "src"
 
     def copy(name: str, rewrite, drop_bin: bool = False, drop_dirs=()):
         target = workspace / name
@@ -313,6 +318,12 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
         for scenario in self.corpus["scenarios"]:
+            workspace = scenario.get("workspace", self.corpus["workspace"])
+            self.assertIn(
+                workspace,
+                {self.corpus["workspace"], FORMAT_WORKSPACE},
+                f"{scenario['id']}: a scenario runs on one of the two fixture workspaces",
+            )
             for index, step in enumerate(scenario["wire"]):
                 with self.subTest(scenario=scenario["id"], step=index):
                     self.assertTrue(step["tool"].startswith("unica."))
@@ -398,7 +409,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
 
     def test_every_wire_answers_its_frozen_classes(self) -> None:
         corpus = self.corpus
-        workspace_source = REPO_ROOT / corpus["workspace"]
+        default_workspace = corpus["workspace"]
         mismatches = []
         with tempfile.TemporaryDirectory(
             prefix="unica-acceptance-", ignore_cleanup_errors=True
@@ -406,20 +417,29 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
             root = Path(raw).resolve()
             generation = 0
 
-            def fresh_server() -> AcceptanceServer:
+            def fresh_server(workspace_relative: str) -> AcceptanceServer:
                 nonlocal generation
                 generation += 1
                 home = root / f"run-{generation}"
                 workspace = home / "workspace"
-                shutil.copytree(workspace_source, workspace)
-                derive_source_sets(workspace)
+                shutil.copytree(REPO_ROOT / workspace_relative, workspace)
+                if workspace_relative == FORMAT_WORKSPACE:
+                    derive_source_sets(REPO_ROOT / default_workspace / "src", workspace)
                 state = home / "state"
                 state.mkdir()
                 return AcceptanceServer(workspace, state, corpus["protocolVersion"])
 
-            server = fresh_server()
+            current_workspace = default_workspace
+            server = fresh_server(current_workspace)
             try:
                 for scenario in corpus["scenarios"]:
+                    wanted = scenario.get("workspace", default_workspace)
+                    if wanted != current_workspace:
+                        # A scenario may address another fixture workspace;
+                        # the session is bound to one, so it starts over.
+                        server.close()
+                        current_workspace = wanted
+                        server = fresh_server(current_workspace)
                     context = {}
                     broken = False
                     for index, step in enumerate(scenario["wire"]):
@@ -481,7 +501,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
                     # after the daemon's idle grace has passed.
                     if broken or scenario_publishes(scenario):
                         server.close()
-                        server = fresh_server()
+                        server = fresh_server(current_workspace)
             finally:
                 server.close()
         self.assertEqual(
