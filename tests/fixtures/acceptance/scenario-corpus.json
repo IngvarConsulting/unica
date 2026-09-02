@@ -2408,7 +2408,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "operation does not accept argument `props`; `props.set` expects `values`"
+     "refusal": "bad_value: operation does not accept argument `props`; `props.set` expects `values`"
     },
     {
      "tool": "unica.apply",
@@ -2523,7 +2523,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "apply operation `attribute.add` does not apply to Enum"
+     "refusal": "bad_value: apply operation `attribute.add` does not apply to Enum"
     }
    ],
    "id": "S094"
@@ -4520,12 +4520,12 @@
   },
   {
    "area": "Код BSL",
-   "task": "Найти все TODO в коде конфигурации",
+   "task": "Найти все экспортные функции в коде конфигурации",
    "wire": [
     {
      "tool": "unica.search",
      "args": {
-      "query": "TODO"
+      "query": "Экспорт"
      },
      "expect": [
       "ok"
@@ -4552,12 +4552,12 @@
   },
   {
    "area": "Код BSL",
-   "task": "Найти обращения к регистру из кода",
+   "task": "Найти вызовы функции перевода в коде",
    "wire": [
     {
      "tool": "unica.search",
      "args": {
-      "query": "АдминистративнаяИерархия"
+      "query": "ПеревестиТекст"
      },
      "expect": [
       "ok"
@@ -4798,7 +4798,8 @@
      },
      "expect": [
       "ok"
-     ]
+     ],
+     "status": "passed"
     }
    ],
    "id": "S175"
@@ -5294,7 +5295,8 @@
      },
      "expect": [
       "ok"
-     ]
+     ],
+     "status": "passed"
     }
    ],
    "id": "S194"
@@ -5480,7 +5482,8 @@
      },
      "expect": [
       "ok"
-     ]
+     ],
+     "status": "passed"
     }
    ],
    "id": "S201"
@@ -5719,7 +5722,8 @@
      },
      "expect": [
       "ok"
-     ]
+     ],
+     "status": "passed"
     }
    ],
    "id": "S210"
@@ -6017,7 +6021,8 @@
      },
      "expect": [
       "ok"
-     ]
+     ],
+     "status": "passed"
     }
    ],
    "id": "S223"
@@ -6038,7 +6043,8 @@
      },
      "expect": [
       "ok"
-     ]
+     ],
+     "status": "passed"
     }
    ],
    "id": "S224"
@@ -6059,7 +6065,8 @@
      },
      "expect": [
       "ok"
-     ]
+     ],
+     "status": "passed"
     }
    ],
    "id": "S225"
@@ -6918,7 +6925,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "validation profile `form` does not validate Catalog nodes; pick the profile of the node or omit the filter"
+     "refusal": "bad_value: validation profile `form` does not validate Catalog nodes; pick the profile of `main:Catalog.Валюты` or omit the filter"
     }
    ]
   }

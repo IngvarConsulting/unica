@@ -37,7 +37,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORPUS = REPO_ROOT / "tests/fixtures/acceptance/scenario-corpus.json"
-BINARY = REPO_ROOT / "target/debug/unica"
+BINARY = (
+    Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "target"))
+    / "debug"
+    / ("unica.exe" if os.name == "nt" else "unica")
+)
+REFUSAL_CODES = {"bad_value", "not_found", "invalid_state", "invalid_source", "stale_revision"}
 
 EXPECT_CLASSES = {
     "ok",
@@ -100,7 +105,7 @@ def classify(response, context):
         return "cancelled", message[:160]
     if code == "task_failed":
         return "failed", message[:160]
-    if code in {"bad_value", "not_found", "invalid_state", "invalid_source", "stale_revision"}:
+    if code in REFUSAL_CODES:
         # Typed refusals from the closed code set: the caller's request, not
         # the surface, is what has to change.
         return "refused", f"{code}: {message[:160]}"
@@ -136,11 +141,13 @@ class AcceptanceServer:
     def __init__(self, cwd: Path, state: Path, protocol: str):
         env = dict(os.environ)
         env["UNICA_PROVIDER_STATE_DIR"] = str(state)
+        self.stderr_path = state / "unica-stderr.log"
+        self.stderr_file = open(self.stderr_path, "wb")  # noqa: SIM115 - lives as long as the process
         self.process = subprocess.Popen(
             [str(BINARY)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=self.stderr_file,
             cwd=cwd,
             env=env,
         )
@@ -179,7 +186,14 @@ class AcceptanceServer:
             self.lines.put(line)
         self.lines.put(None)
 
-    def receive(self):
+    def stderr_tail(self, limit: int = 1200) -> str:
+        try:
+            self.stderr_file.flush()
+            return self.stderr_path.read_text(encoding="utf-8", errors="replace")[-limit:]
+        except OSError:
+            return ""
+
+    def receive(self, expected_id: int | None = None):
         while True:
             try:
                 line = self.lines.get(timeout=RESPONSE_TIMEOUT_SECONDS)
@@ -187,27 +201,28 @@ class AcceptanceServer:
                 self.close()
                 raise TimeoutError(
                     f"no response from unica within {RESPONSE_TIMEOUT_SECONDS:.0f}s "
-                    f"while running {self.label}"
+                    f"while running {self.label}; stderr tail: {self.stderr_tail()}"
                 ) from None
             if line is None:
                 return None
             line = line.strip()
             if line:
                 payload = json.loads(line)
-                if "id" in payload:
+                if "id" in payload and (expected_id is None or payload["id"] == expected_id):
                     return payload
 
     def call(self, tool: str, arguments, label: str | None = None):
         self.label = label or tool
+        request_id = self.request_id()
         self.send(
             {
                 "jsonrpc": "2.0",
-                "id": self.request_id(),
+                "id": request_id,
                 "method": "tools/call",
                 "params": {"name": tool, "arguments": arguments},
             }
         )
-        return self.receive()
+        return self.receive(request_id)
 
     def close(self) -> None:
         try:
@@ -220,6 +235,10 @@ class AcceptanceServer:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait()
+        try:
+            self.stderr_file.close()
+        except OSError:
+            pass
 
 
 class AcceptanceCorpusShapeTests(unittest.TestCase):
@@ -261,9 +280,24 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
                             "a documented gap names its reason",
                         )
                     if "refused" in expected:
-                        self.assertTrue(
-                            step.get("refusal"),
-                            "an intended refusal freezes its message",
+                        refusal = step.get("refusal") or ""
+                        self.assertTrue(refusal, "an intended refusal freezes its message")
+                        code = refusal.split(":", 1)[0]
+                        self.assertIn(
+                            code,
+                            REFUSAL_CODES,
+                            "a refusal is frozen as `code: message` with a code from the closed set",
+                        )
+                    profile = (
+                        ((step["args"].get("filter") or {}).get("validation") or {}).get("profile")
+                        if step["tool"] == "unica.check"
+                        else None
+                    )
+                    if profile and expected == ["ok"]:
+                        self.assertIn(
+                            step.get("status"),
+                            {"passed", "failed"},
+                            "a validation profile step freezes the verdict it expects",
                         )
 
     def test_gaps_stay_a_bounded_exception_not_a_habit(self) -> None:
@@ -321,7 +355,9 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
         corpus = self.corpus
         workspace_source = REPO_ROOT / corpus["workspace"]
         mismatches = []
-        with tempfile.TemporaryDirectory(prefix="unica-acceptance-") as raw:
+        with tempfile.TemporaryDirectory(
+            prefix="unica-acceptance-", ignore_cleanup_errors=True
+        ) as raw:
             root = Path(raw).resolve()
             generation = 0
 
@@ -339,23 +375,50 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
             try:
                 for scenario in corpus["scenarios"]:
                     context = {}
+                    broken = False
                     for index, step in enumerate(scenario["wire"]):
+                        label = f"{scenario['id']} step {index} {step['tool']}"
                         arguments = substitute(step["args"], context)
-                        response = server.call(
-                            step["tool"], arguments, f"{scenario['id']} step {index} {step['tool']}"
-                        )
+                        try:
+                            response = server.call(step["tool"], arguments, label)
+                        except (TimeoutError, OSError, ValueError) as error:
+                            # The session is gone: record the step with the
+                            # daemon's own words and continue on a fresh one.
+                            mismatches.append(
+                                f"{label}: session failed :: {error} :: "
+                                f"stderr tail: {server.stderr_tail(400)}"
+                            )
+                            broken = True
+                            break
                         actual, note = classify(response, context)
                         if not matches(step["expect"], actual):
                             mismatches.append(
-                                f"{scenario['id']} step {index} {step['tool']}: "
-                                f"expected {step['expect']}, got {actual} :: {note[:160]}"
+                                f"{label}: expected {step['expect']}, got {actual} :: {note[:160]}"
                             )
+                            continue
+                        # A refusal proves its exact answer, and a validation
+                        # profile proves the verdict it froze; without these two
+                        # checks a typo in an address or a failing validator
+                        # would pass as the intended outcome.
+                        if actual == "refused" and note != step.get("refusal"):
+                            mismatches.append(
+                                f"{label}: expected refusal {step.get('refusal')!r}, got {note!r}"
+                            )
+                        if "status" in step and actual == "ok":
+                            structured = response.get("result", {}).get("structuredContent") or {}
+                            verdict = (structured.get("data") or {}).get("status")
+                            if verdict != step["status"]:
+                                mismatches.append(
+                                    f"{label}: expected validation status {step['status']!r}, "
+                                    f"got {verdict!r}"
+                                )
                     # A scenario that published changes leaves its mark on the
                     # workspace; the next one starts from the pristine fixture
-                    # so results never depend on corpus order.
-                    if scenario_publishes(scenario):
+                    # so results never depend on corpus order. The old run
+                    # directory stays until the temporary directory is removed,
+                    # after the daemon's idle grace has passed.
+                    if broken or scenario_publishes(scenario):
                         server.close()
-                        shutil.rmtree(root / f"run-{generation}", ignore_errors=True)
                         server = fresh_server()
             finally:
                 server.close()

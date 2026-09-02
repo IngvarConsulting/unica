@@ -229,8 +229,8 @@
 			<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>
 			<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>
 			<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>
-			<DefaultObjectForm>Document.АктОбУничтоженииПерсональныхДанных.Form.ФормаДокумента</DefaultObjectForm>
-			<DefaultListForm>Document.АктОбУничтоженииПерсональныхДанных.Form.ФормаСписка</DefaultListForm>
+			<DefaultObjectForm/>
+			<DefaultListForm/>
 			<DefaultChoiceForm/>
 			<AuxiliaryObjectForm/>
 			<AuxiliaryListForm/>
