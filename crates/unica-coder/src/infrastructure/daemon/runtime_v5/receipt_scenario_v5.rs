@@ -5,7 +5,7 @@ use super::{
     publish_receipt_backed_task_terminal_for_scenario, run_daemon_configured_until,
     seed_receipt_backed_task_terminal_for_scenario, seed_receipt_tombstones_for_scenario,
     ScenarioTaskTiming, V5ReceiptRuntime, V5ReceiptRuntimeEvent, V5ReceiptRuntimeEventKind,
-    V5ReceiptRuntimeTelemetry, V5TaskProjection,
+    V5ReceiptRuntimeListenerState, V5ReceiptRuntimeTelemetry, V5TaskProjection,
 };
 use crate::application::invocation::normalized_arguments_hash;
 use crate::application::invocation_store::EpochMillisClock;
@@ -2085,9 +2085,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     live_daemon = Some(daemon);
                     report.responses.insert(
                         submit_label,
-                        response_observation(
+                        response_observation_with_exact_task(
                             &submit_response,
                             Some((accepted_epoch_ms, response_budget_ms)),
+                            &exact_key,
+                            state.path(),
+                            &identity,
+                            Some(None),
                         )?,
                     );
                     for duplicate_label in pending_duplicate_labels.drain(..) {
@@ -2095,9 +2099,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                             recover_from_live_daemon(state.path(), &identity, exact_key.clone())?;
                         report.responses.insert(
                             duplicate_label,
-                            response_observation(
+                            response_observation_with_exact_task(
                                 &duplicate_response,
                                 Some((accepted_epoch_ms, response_budget_ms)),
+                                &exact_key,
+                                state.path(),
+                                &identity,
+                                Some(None),
                             )?,
                         );
                     }
@@ -2222,9 +2230,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         } else {
                             report.responses.insert(
                                 label,
-                                response_observation(
+                                response_observation_with_exact_task(
                                     &response,
                                     Some((pending.accepted_epoch_ms, pending.response_budget_ms)),
+                                    &exact_key,
+                                    state.path(),
+                                    &identity,
+                                    Some(None),
                                 )?,
                             );
                         }
@@ -2840,13 +2852,16 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                 outcome: V5InvocationResponse::ReceiptPending { .. }
                             }
                         ) {
-                            report
-                                .responses
-                                .entry(label)
-                                .or_insert(response_observation(
+                            report.responses.entry(label).or_insert(
+                                response_observation_with_exact_task(
                                     &response,
                                     Some((accepted, budget)),
-                                )?);
+                                    &exact_key,
+                                    state.path(),
+                                    &identity,
+                                    Some(None),
+                                )?,
+                            );
                         }
                     }
                 }
@@ -2943,7 +2958,14 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     report
                         .responses
                         .entry(label)
-                        .or_insert(response_observation(&response, Some((accepted, budget)))?);
+                        .or_insert(response_observation_with_exact_task(
+                            &response,
+                            Some((accepted, budget)),
+                            &exact_key,
+                            state.path(),
+                            &identity,
+                            Some(None),
+                        )?);
                 } else if matches!(point, ScenarioCrashPoint::TaskPromisedUnbound) {
                     let pending = pending_submit.as_ref().ok_or_else(|| {
                         "protocol-v5 TaskPromisedUnbound crash has no live submit".to_owned()
@@ -3003,9 +3025,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     report
                         .responses
                         .entry(label)
-                        .or_insert(response_observation(
+                        .or_insert(response_observation_with_exact_task(
                             &response,
                             Some((accepted_epoch_ms, response_budget_ms)),
+                            &exact_key,
+                            state.path(),
+                            &identity,
+                            Some(None),
                         )?);
                 } else if pending_submit.is_some() {
                     return Ok(None);
@@ -3064,7 +3090,14 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     report
                         .responses
                         .entry(label)
-                        .or_insert(response_observation(&response, Some((accepted, budget)))?);
+                        .or_insert(response_observation_with_exact_task(
+                            &response,
+                            Some((accepted, budget)),
+                            &exact_key,
+                            state.path(),
+                            &identity,
+                            Some(None),
+                        )?);
                 }
                 if let Some(daemon) = live_daemon.take() {
                     live_actor = None;
@@ -3242,9 +3275,14 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     )?,
                 }
                 if startup_listener_override {
+                    let runtime_listener = telemetry.snapshot().listener;
                     snapshot["listener"] = Value::String(
                         if startup_failed {
-                            "closed"
+                            if runtime_listener == V5ReceiptRuntimeListenerState::Closed {
+                                "closed"
+                            } else {
+                                "not_published"
+                            }
                         } else if listener_published {
                             "listening"
                         } else {
@@ -8790,6 +8828,46 @@ fn response_observation(
             "receipt scenario received unsupported protocol-v5 response: {other:?}"
         )),
     }
+}
+
+fn response_observation_with_exact_task(
+    response: &V5ServerResponse,
+    submit_cutoff: Option<(u64, u64)>,
+    receipt_key: &ReceiptKey,
+    state_root: &Path,
+    identity: &CoreIdentity,
+    workspace_identity_override: Option<Option<String>>,
+) -> Result<Value, String> {
+    if matches!(
+        response,
+        V5ServerResponse::Task { .. }
+            | V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { .. }
+            }
+    ) {
+        let task = task_observation_from_response_with_workspace(
+            response.clone(),
+            receipt_key,
+            state_root,
+            identity,
+            workspace_identity_override,
+        )?;
+        let (cutoff_epoch_ms, original_budget_ms) = submit_cutoff
+            .map(|(accepted, budget)| (accepted.checked_add(budget), Some(budget)))
+            .unwrap_or((None, None));
+        return Ok(json!({
+            "kind": "task",
+            "error": null,
+            "terminal": task.get("terminal").cloned().unwrap_or(Value::Null),
+            "key": receipt_key_observation(receipt_key),
+            "task": task,
+            "acknowledgement": null,
+            "cutoffEpochMs": cutoff_epoch_ms,
+            "originalBudgetMs": original_budget_ms,
+            "latencyMs": original_budget_ms.unwrap_or(0),
+        }));
+    }
+    response_observation(response, submit_cutoff)
 }
 
 fn task_observation_from_response(
