@@ -228,11 +228,10 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "check",
-                    description: "Confirm workspace source-set admission, or validate one logical node's readability.",
+                    description: "Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns.",
                     input_schema: schema(
                         json!({
                             "at": logical_address(),
-                            "filter": data_object("Optional validation profile; requires at."),
                         }),
                         json!([]),
                     ),
@@ -504,7 +503,7 @@ mod tests {
             json!(["query"]),
             &["query", "scope", "regex", "limit"],
         );
-        assert_schema(&catalog.tools, "check", json!([]), &["at", "filter"]);
+        assert_schema(&catalog.tools, "check", json!([]), &["at"]);
         assert_schema(
             &catalog.tools,
             "diff",
@@ -546,7 +545,6 @@ mod tests {
         for (tool, field) in [
             ("view", "filter"),
             ("apply", "ops"),
-            ("check", "filter"),
             ("diff", "filter"),
             ("run", "args"),
         ] {
@@ -571,10 +569,6 @@ mod tests {
         assert_data_object(
             input_field(&catalog.tools, "view", "filter"),
             "unica.view.filter",
-        );
-        assert_data_object(
-            input_field(&catalog.tools, "check", "filter"),
-            "unica.check.filter",
         );
         assert_data_object(
             input_field(&catalog.tools, "diff", "filter"),

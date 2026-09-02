@@ -1,21 +1,22 @@
 use crate::domain::address::QualifiedAddress;
 use serde::Serialize;
-use serde_json::Value;
 use std::fmt;
 
-const SUPPORTED_PROFILES: &[CheckProfile] = &[
-    CheckProfile::Cf,
-    CheckProfile::Cfe,
-    CheckProfile::Form,
-    CheckProfile::Dcs,
-    CheckProfile::Mxl,
-    CheckProfile::Role,
-    CheckProfile::Subsystem,
-    CheckProfile::Interface,
+/// The native validators `unica.check` can run. The list is closed: a node
+/// kind owns its validators, and the caller never names one on the wire.
+pub(crate) const NATIVE_VALIDATORS: &[CheckValidator] = &[
+    CheckValidator::Cf,
+    CheckValidator::Cfe,
+    CheckValidator::Form,
+    CheckValidator::Dcs,
+    CheckValidator::Mxl,
+    CheckValidator::Role,
+    CheckValidator::Subsystem,
+    CheckValidator::Interface,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CheckProfile {
+pub(crate) enum CheckValidator {
     Cf,
     Cfe,
     Form,
@@ -26,51 +27,10 @@ pub(crate) enum CheckProfile {
     Interface,
 }
 
-impl CheckProfile {
-    pub(crate) fn parse(value: &str) -> Result<Self, CheckError> {
-        let profile = match value {
-            "cf" => Self::Cf,
-            "cfe" => Self::Cfe,
-            "form" => Self::Form,
-            "dcs" => Self::Dcs,
-            "mxl" => Self::Mxl,
-            "role" => Self::Role,
-            "subsystem" => Self::Subsystem,
-            "interface" => Self::Interface,
-            _ => {
-                return Err(CheckError::UnsupportedFilter {
-                    field: "validation.profile".to_string(),
-                    message: format!("unsupported validation profile `{value}`"),
-                })
-            }
-        };
-        Ok(profile)
-    }
-
-    fn for_address(at: &QualifiedAddress) -> Result<Self, CheckError> {
-        let kind = at
-            .segments()
-            .last()
-            .map(|segment| segment.kind().as_str())
-            .unwrap_or_default();
-        match kind {
-            "Configuration" => Ok(Self::Cf),
-            "Subsystem" => Ok(Self::Subsystem),
-            "Role" => Ok(Self::Role),
-            "Form" => Ok(Self::Form),
-            "Interface" => Ok(Self::Interface),
-            _ => Err(CheckError::UnsupportedFilter {
-                field: "filter".to_string(),
-                message: format!(
-                    "no default validator is registered for logical kind `{kind}`; provide validation.profile"
-                ),
-            }),
-        }
-    }
-
-    /// The native validator this profile runs, by its operation name. The
+impl CheckValidator {
+    /// The native validator this step runs, by its operation name. The
     /// read-only format guard of the retired `*.validate` tools is keyed by
-    /// the same names, so the canonical profile inherits it unchanged.
+    /// the same names, so the canonical check inherits it unchanged.
     pub(crate) const fn native_operation(self) -> &'static str {
         match self {
             Self::Cf => "cf-validate",
@@ -97,101 +57,93 @@ impl CheckProfile {
         }
     }
 
-    pub(crate) const fn operation(self) -> &'static str {
-        match self {
-            Self::Cf => "cf-validate",
-            Self::Cfe => "cfe-validate",
-            Self::Form => "form-validate",
-            Self::Dcs => "dcs-validate",
-            Self::Mxl => "mxl-validate",
-            Self::Role => "role-validate",
-            Self::Subsystem => "subsystem-validate",
-            Self::Interface => "interface-validate",
-        }
-    }
-
     pub(crate) fn supported() -> &'static [Self] {
-        SUPPORTED_PROFILES
+        NATIVE_VALIDATORS
     }
 
-    /// The logical node kinds a profile validates. An explicit profile that
-    /// names a node of another kind is a caller mistake, not a validator run.
-    pub(crate) fn accepts_kind(self, kind: &str) -> bool {
-        match self {
-            Self::Cf | Self::Cfe => kind == "Configuration",
-            Self::Form => kind == "Form",
-            Self::Dcs | Self::Mxl => kind == "Template",
-            Self::Role => kind == "Role",
-            Self::Subsystem => kind == "Subsystem",
-            Self::Interface => matches!(kind, "Interface" | "CommandInterface"),
+    /// The validator that owns an address before the node is read: the
+    /// export-format guard names it when the read port cannot open the target.
+    pub(crate) fn for_unread_address(at: &QualifiedAddress, extension: bool) -> Option<Self> {
+        let kind = at
+            .segments()
+            .last()
+            .map(|segment| segment.kind().as_str())
+            .unwrap_or_default();
+        match kind {
+            "Configuration" if extension => Some(Self::Cfe),
+            "Configuration" => Some(Self::Cf),
+            "Form" => Some(Self::Form),
+            "Role" => Some(Self::Role),
+            "Subsystem" => Some(Self::Subsystem),
+            "Interface" | "CommandInterface" => Some(Self::Interface),
+            _ => None,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CheckRequest {
-    at: QualifiedAddress,
-    profile: CheckProfile,
+/// What `check` knows about a readable node before choosing its validators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct NodeFacts {
+    /// The node lives in a source set of kind `EXTENSION`.
+    pub(crate) extension: bool,
+    /// A template node's flavour, when the projection states it.
+    pub(crate) template: Option<TemplateFlavour>,
 }
 
-impl CheckRequest {
-    pub(crate) fn new(at: &str, filter: Option<&Value>) -> Result<Self, CheckError> {
-        let at = QualifiedAddress::parse(at).map_err(|error| CheckError::BadValue {
-            field: "at".to_string(),
-            message: error.to_string(),
-        })?;
-        let profile = match filter {
-            Some(filter) => parse_filter(filter)?,
-            None => CheckProfile::for_address(&at)?,
-        };
-        Ok(Self { at, profile })
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TemplateFlavour {
+    DataCompositionSchema,
+    SpreadsheetDocument,
+}
 
-    pub(crate) fn at(&self) -> &QualifiedAddress {
-        &self.at
-    }
+/// One validation step of a check plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckStep {
+    Native(CheckValidator),
+    /// The typed metadata validator of one object descriptor.
+    Meta,
+}
 
-    pub(crate) const fn profile(&self) -> CheckProfile {
-        self.profile
+impl CheckStep {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Native(validator) => validator.name(),
+            Self::Meta => "meta",
+        }
     }
 }
 
-fn parse_filter(filter: &Value) -> Result<CheckProfile, CheckError> {
-    let filter = filter.as_object().ok_or_else(|| CheckError::BadValue {
-        field: "filter".to_string(),
-        message: "check filter must be an object".to_string(),
-    })?;
-    if filter.len() != 1 || !filter.contains_key("validation") {
-        return Err(CheckError::UnsupportedFilter {
-            field: "filter".to_string(),
-            message: "check filter supports only validation.profile".to_string(),
-        });
+/// The validators a readable node owns, in the order they run. An empty plan
+/// means the node has no validator and `check` reports readability only.
+pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
+    match kind {
+        "Configuration" if facts.extension => vec![CheckStep::Native(CheckValidator::Cfe)],
+        "Configuration" => vec![CheckStep::Native(CheckValidator::Cf)],
+        "Form" => vec![CheckStep::Native(CheckValidator::Form)],
+        "Template" => match facts.template {
+            Some(TemplateFlavour::DataCompositionSchema) => {
+                vec![CheckStep::Native(CheckValidator::Dcs)]
+            }
+            Some(TemplateFlavour::SpreadsheetDocument) => {
+                vec![CheckStep::Native(CheckValidator::Mxl)]
+            }
+            None => Vec::new(),
+        },
+        // The typed metadata validator reads object descriptors only; roles
+        // and subsystems keep their own validators.
+        "Role" => vec![CheckStep::Native(CheckValidator::Role)],
+        "Subsystem" => vec![CheckStep::Native(CheckValidator::Subsystem)],
+        "Interface" | "CommandInterface" => vec![CheckStep::Native(CheckValidator::Interface)],
+        other if crate::domain::metadata::MetadataKind::parse(other).is_ok() => {
+            vec![CheckStep::Meta]
+        }
+        _ => Vec::new(),
     }
-    let validation = filter["validation"]
-        .as_object()
-        .ok_or_else(|| CheckError::BadValue {
-            field: "validation".to_string(),
-            message: "check validation filter must be an object".to_string(),
-        })?;
-    if validation.len() != 1 || !validation.contains_key("profile") {
-        return Err(CheckError::UnsupportedFilter {
-            field: "validation".to_string(),
-            message: "check validation filter supports only profile".to_string(),
-        });
-    }
-    let profile = validation["profile"]
-        .as_str()
-        .ok_or_else(|| CheckError::BadValue {
-            field: "validation.profile".to_string(),
-            message: "validation profile must be a string".to_string(),
-        })?;
-    CheckProfile::parse(profile)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CheckError {
     BadValue { field: String, message: String },
-    UnsupportedFilter { field: String, message: String },
     DependencyUnavailable,
 }
 
@@ -199,7 +151,6 @@ impl CheckError {
     pub(crate) const fn code(&self) -> &'static str {
         match self {
             Self::BadValue { .. } => "bad_value",
-            Self::UnsupportedFilter { .. } => "unsupported_filter",
             Self::DependencyUnavailable => "dependency_unavailable",
         }
     }
@@ -208,7 +159,7 @@ impl CheckError {
 impl fmt::Display for CheckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BadValue { field, message } | Self::UnsupportedFilter { field, message } => {
+            Self::BadValue { field, message } => {
                 write!(formatter, "{field}: {message}")
             }
             Self::DependencyUnavailable => {
@@ -324,7 +275,7 @@ impl NativeCheckOutcome {
 pub(crate) struct CheckResult {
     at: String,
     kind: String,
-    profile: String,
+    validator: String,
     ok: bool,
     diagnostics: Vec<CheckDiagnostic>,
 }
@@ -338,23 +289,28 @@ impl CheckResult {
         &self.diagnostics
     }
 
+    pub(crate) fn validator(&self) -> &str {
+        &self.validator
+    }
+
     pub(crate) fn raw_stream(&self) -> Option<&str> {
         None
     }
 }
 
 pub(crate) fn normalize_native_outcome(
-    request: &CheckRequest,
+    at: &QualifiedAddress,
     kind: &str,
+    validator: CheckValidator,
     native: NativeCheckOutcome,
 ) -> Result<CheckResult, CheckError> {
     if native.unavailable {
         return Err(CheckError::DependencyUnavailable);
     }
     Ok(CheckResult {
-        at: request.at.to_string(),
+        at: at.to_string(),
         kind: kind.to_string(),
-        profile: request.profile.name().to_string(),
+        validator: validator.name().to_string(),
         ok: native.ok,
         diagnostics: native.diagnostics,
     })
@@ -371,66 +327,104 @@ fn sanitize_message(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_native_outcome, CheckError, CheckProfile, CheckRequest, NativeCheckOutcome,
+        normalize_native_outcome, plan_for_node, CheckStep, CheckValidator, NativeCheckOutcome,
+        NodeFacts, TemplateFlavour,
     };
-    use serde_json::json;
+    use crate::domain::address::QualifiedAddress;
 
     #[test]
-    fn explicit_profiles_accept_only_the_node_kinds_they_validate() {
-        assert!(CheckProfile::Form.accepts_kind("Form"));
-        assert!(!CheckProfile::Form.accepts_kind("Catalog"));
-        assert!(CheckProfile::Dcs.accepts_kind("Template"));
-        assert!(CheckProfile::Mxl.accepts_kind("Template"));
-        assert!(CheckProfile::Cf.accepts_kind("Configuration"));
-        assert!(!CheckProfile::Cf.accepts_kind("Subsystem"));
-        assert!(CheckProfile::Role.accepts_kind("Role"));
-        assert!(CheckProfile::Subsystem.accepts_kind("Subsystem"));
-        assert!(CheckProfile::Interface.accepts_kind("CommandInterface"));
-    }
-
-    #[test]
-    fn check_registry_accepts_only_proven_validator_profiles() {
+    fn every_node_kind_owns_its_validators_without_a_caller_choice() {
+        let plain = NodeFacts::default();
         assert_eq!(
-            CheckProfile::parse("cf").unwrap().operation(),
-            "cf-validate"
+            plan_for_node("Configuration", plain),
+            [CheckStep::Native(CheckValidator::Cf)]
         );
         assert_eq!(
-            CheckProfile::parse("form").unwrap().operation(),
-            "form-validate"
+            plan_for_node(
+                "Configuration",
+                NodeFacts {
+                    extension: true,
+                    ..plain
+                }
+            ),
+            [CheckStep::Native(CheckValidator::Cfe)]
         );
-        assert!(matches!(
-            CheckProfile::parse("meta"),
-            Err(CheckError::UnsupportedFilter { .. })
-        ));
-        assert!(matches!(
-            CheckProfile::parse("shell"),
-            Err(CheckError::UnsupportedFilter { .. })
-        ));
+        assert_eq!(
+            plan_for_node("Form", plain),
+            [CheckStep::Native(CheckValidator::Form)]
+        );
+        assert_eq!(
+            plan_for_node(
+                "Template",
+                NodeFacts {
+                    template: Some(TemplateFlavour::DataCompositionSchema),
+                    ..plain
+                }
+            ),
+            [CheckStep::Native(CheckValidator::Dcs)]
+        );
+        assert_eq!(
+            plan_for_node(
+                "Template",
+                NodeFacts {
+                    template: Some(TemplateFlavour::SpreadsheetDocument),
+                    ..plain
+                }
+            ),
+            [CheckStep::Native(CheckValidator::Mxl)]
+        );
+        assert!(plan_for_node("Template", plain).is_empty());
+        assert_eq!(
+            plan_for_node("Role", plain),
+            [CheckStep::Native(CheckValidator::Role)]
+        );
+        assert_eq!(
+            plan_for_node("Subsystem", plain),
+            [CheckStep::Native(CheckValidator::Subsystem)]
+        );
+        assert_eq!(
+            plan_for_node("Interface", plain),
+            [CheckStep::Native(CheckValidator::Interface)]
+        );
+        assert_eq!(plan_for_node("Catalog", plain), [CheckStep::Meta]);
+        assert!(plan_for_node("Module", plain).is_empty());
+        assert!(plan_for_node("Method", plain).is_empty());
     }
 
     #[test]
-    fn check_request_rejects_unknown_filter_shape_before_native_dispatch() {
-        let error = CheckRequest::new(
-            "main:Configuration",
-            Some(&json!({"validation": {"profile": "cf"}, "paths": []})),
-        )
-        .unwrap_err();
-        assert!(matches!(error, CheckError::UnsupportedFilter { .. }));
+    fn the_validator_registry_maps_every_step_to_its_native_operation() {
+        for validator in CheckValidator::supported() {
+            assert!(validator.native_operation().ends_with("-validate"));
+            assert!(!validator.name().is_empty());
+        }
+        assert_eq!(CheckValidator::Cf.native_operation(), "cf-validate");
+        assert_eq!(CheckValidator::Form.native_operation(), "form-validate");
+        assert_eq!(CheckStep::Meta.name(), "meta");
     }
 
     #[test]
-    fn check_request_selects_a_closed_default_for_unfiltered_configuration() {
-        let request = CheckRequest::new("main:Configuration", None).unwrap();
-        assert_eq!(request.profile(), CheckProfile::Cf);
+    fn an_unread_address_still_names_the_validator_that_guards_its_format() {
+        let root = QualifiedAddress::parse("main:Configuration").unwrap();
+        assert_eq!(
+            CheckValidator::for_unread_address(&root, false),
+            Some(CheckValidator::Cf)
+        );
+        assert_eq!(
+            CheckValidator::for_unread_address(&root, true),
+            Some(CheckValidator::Cfe)
+        );
+        let form = QualifiedAddress::parse("main:Catalog.Items.Form.List").unwrap();
+        assert_eq!(
+            CheckValidator::for_unread_address(&form, false),
+            Some(CheckValidator::Form)
+        );
+        let module = QualifiedAddress::parse("main:CommonModule.Common").unwrap();
+        assert_eq!(CheckValidator::for_unread_address(&module, false), None);
     }
 
     #[test]
     fn check_result_normalizes_diagnostics_without_native_stream_or_path() {
-        let request = CheckRequest::new(
-            "main:Configuration",
-            Some(&json!({"validation": {"profile": "cf"}})),
-        )
-        .unwrap();
+        let at = QualifiedAddress::parse("main:Configuration").unwrap();
         let native = NativeCheckOutcome::failed(vec![
             (
                 "error",
@@ -443,8 +437,10 @@ mod tests {
                 "provider /usr/local/bin/engine reported a warning",
             ),
         ]);
-        let result = normalize_native_outcome(&request, "Configuration", native).unwrap();
+        let result =
+            normalize_native_outcome(&at, "Configuration", CheckValidator::Cf, native).unwrap();
         assert!(!result.ok());
+        assert_eq!(result.validator(), "cf");
         assert_eq!(result.diagnostics().len(), 2);
         assert_eq!(result.diagnostics()[0].code(), "invalid_root");
         assert!(!result.diagnostics()[0].message().contains("/private/"));
@@ -454,14 +450,11 @@ mod tests {
 
     #[test]
     fn unavailable_validator_is_typed_dependency_failure() {
-        let request = CheckRequest::new(
-            "main:Configuration",
-            Some(&json!({"validation": {"profile": "cf"}})),
-        )
-        .unwrap();
+        let at = QualifiedAddress::parse("main:Configuration").unwrap();
         let error = normalize_native_outcome(
-            &request,
+            &at,
             "Configuration",
+            CheckValidator::Cf,
             NativeCheckOutcome::unavailable("validator engine is not installed"),
         )
         .unwrap_err();

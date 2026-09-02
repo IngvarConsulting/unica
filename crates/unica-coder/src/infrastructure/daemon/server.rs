@@ -4052,11 +4052,8 @@ struct ActorLogicalReadLease {"#,
             (ToolIdentity::Check, serde_json::json!({}), "sources"),
             (
                 ToolIdentity::Check,
-                serde_json::json!({
-                    "at": "main:Catalog.Items",
-                    "filter": {"validation": {"profile": "meta"}}
-                }),
-                "status",
+                serde_json::json!({"at": "main:Catalog.Items"}),
+                "validators",
             ),
             (
                 ToolIdentity::Diff,
@@ -4221,10 +4218,12 @@ struct ActorLogicalReadLease {"#,
                 }),
                 "unsupported_scope",
             ),
+            // `check` takes only `at`: the validators of a node follow from
+            // its kind, so any filter is an unknown argument.
             (
                 ToolIdentity::Check,
                 serde_json::json!({"filter": {"severity": "warning"}}),
-                "unsupported_filter",
+                "bad_value",
             ),
             (
                 ToolIdentity::Check,
@@ -4232,11 +4231,6 @@ struct ActorLogicalReadLease {"#,
                     "at": "main:Catalog.Items",
                     "filter": {"validation": {"profile": "form"}}
                 }),
-                "bad_value",
-            ),
-            (
-                ToolIdentity::Check,
-                serde_json::json!({"filter": "severity"}),
                 "bad_value",
             ),
             (

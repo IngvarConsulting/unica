@@ -198,50 +198,6 @@ pub(super) fn search_scope_prefix(
     Ok(Some(prefix))
 }
 
-pub(super) fn validation_profile(filter: &Value) -> Result<Option<String>, ReadModeError> {
-    let filter = filter
-        .as_object()
-        .ok_or_else(|| ReadModeError::bad_value("check filter must be an object"))?;
-    if filter.is_empty() {
-        return Ok(None);
-    }
-    if filter.keys().any(|key| key != "validation") {
-        return Err(ReadModeError::unsupported_filter(
-            "check filter supports only `validation`",
-        ));
-    }
-    let validation = filter
-        .get("validation")
-        .and_then(Value::as_object)
-        .ok_or_else(|| ReadModeError::bad_value("check validation filter must be an object"))?;
-    if validation.keys().any(|key| key != "profile") {
-        return Err(ReadModeError::unsupported_filter(
-            "check validation filter supports only `profile`",
-        ));
-    }
-    let profile = validation
-        .get("profile")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ReadModeError::bad_value("validation profile must be a string"))?;
-    const PROFILES: &[&str] = &[
-        "meta",
-        "cf",
-        "cfe",
-        "form",
-        "dcs",
-        "mxl",
-        "role",
-        "subsystem",
-        "interface",
-    ];
-    if !PROFILES.contains(&profile) {
-        return Err(ReadModeError::unsupported_filter(format!(
-            "unsupported validation profile `{profile}`"
-        )));
-    }
-    Ok(Some(profile.to_string()))
-}
-
 pub(super) fn filter_diff_data(data: &Value, filter: &Value) -> Result<Value, ReadModeError> {
     let filter = filter
         .as_object()
@@ -337,7 +293,7 @@ fn insert_pointer(
 
 #[cfg(test)]
 mod tests {
-    use super::{filter_diff_data, project_view_sections, search_scope_prefix, validation_profile};
+    use super::{filter_diff_data, project_view_sections, search_scope_prefix};
     use crate::domain::address::QualifiedAddress;
     use serde_json::json;
 
@@ -466,16 +422,6 @@ mod tests {
         );
         let attribute = QualifiedAddress::parse("main:Catalog.Items.Attribute.Code").unwrap();
         assert!(search_scope_prefix(&attribute).is_err());
-    }
-
-    #[test]
-    fn validation_profile_is_a_closed_union() {
-        assert_eq!(
-            validation_profile(&json!({"validation": {"profile": "meta"}})).unwrap(),
-            Some("meta".to_string())
-        );
-        assert!(validation_profile(&json!({"validation": {"profile": "shell"}})).is_err());
-        assert!(validation_profile(&json!({"validation": "meta"})).is_err());
     }
 
     #[test]

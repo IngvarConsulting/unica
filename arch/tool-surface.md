@@ -44,21 +44,21 @@ Preview or atomically apply typed edits to one logically addressed 1C node.
 
 ### `unica.check`
 
-Confirm workspace source-set admission, or validate one logical node's readability.
+Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
-| `filter` | object | нет | Optional validation profile; requires at. |
 
-**Результат сейчас:** Без фильтра доказывает admission source set или читаемость указанного `at`; filter validation и маршрутизация meta/cf существуют только provisional, реальное исполнение валидатора не доказано (отвечают типизированным `data`)
+**Результат сейчас:** Без `at` доказывает admission source set; с `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`), отдавая `status`, `validators` и диагностики; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
 
-**Целевой контракт:** Подключить реальные валидаторы и доказать их канонические diagnostics до объявления профилей поддержанными
+**Целевой контракт:** Держать таблицу вид → валидаторы закрытой и доказанной корпусом; на проводе у `check` нет аргумента выбора валидатора
 
 **Сценарии:**
 
 - Проверить, что рабочее пространство и его source set допущены
-- Проверить читаемость конкретного логического узла
+- Проверить один логический узел всеми валидаторами его вида
+- Проверить читаемость узла без валидаторов
 
 ## diff
 
