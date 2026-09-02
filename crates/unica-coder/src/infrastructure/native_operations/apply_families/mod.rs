@@ -181,9 +181,17 @@ fn batch_effects_as_provisional(
         .filter(|path| !before.contains(path))
         .collect::<Vec<_>>();
     effects
-        .into_events()
+        .into_events_with_paths()
         .into_iter()
-        .map(|event| ProvisionalApplyEffect::spanning(changed.clone(), event, op_index))
+        .map(|(event, paths)| {
+            // A planner that named the file behind its event keeps that
+            // association; only an anonymous event spans the whole batch.
+            if paths.is_empty() {
+                ProvisionalApplyEffect::spanning(changed.clone(), event, op_index)
+            } else {
+                ProvisionalApplyEffect::spanning(paths, event, op_index)
+            }
+        })
         .collect()
 }
 
@@ -518,6 +526,67 @@ mod tests {
                 )
                 .unwrap()
         }
+    }
+
+    #[test]
+    fn batch_effects_keep_each_event_with_its_own_file() {
+        use crate::domain::events::{DomainEvent, DomainEventKind};
+        use crate::infrastructure::native_operations::apply::PlannedApplyEffects;
+
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let mut staged = admission.staged_state().unwrap();
+        let first = std::path::Path::new("Documents/First.xml");
+        let second = std::path::Path::new("Documents/Second.xml");
+        let first_preimage = staged.read(first).unwrap().unwrap();
+        let second_preimage = staged.read(second).unwrap().unwrap();
+        let edited = |preimage: &[u8]| {
+            String::from_utf8(preimage.to_vec())
+                .unwrap()
+                .replace("<Comment></Comment>", "<Comment>batch</Comment>")
+                .into_bytes()
+        };
+        staged
+            .replace(first, &first_preimage, edited(&first_preimage))
+            .unwrap();
+        staged
+            .replace(second, &second_preimage, edited(&second_preimage))
+            .unwrap();
+
+        // The planner names the file behind each event, as the code, XDTO
+        // and event planners do.
+        let mut effects = PlannedApplyEffects::default();
+        effects.append_at(
+            DomainEvent::new(
+                DomainEventKind::ModuleChanged,
+                "main:Document.First.Module.Object",
+            ),
+            vec![first.to_path_buf()],
+        );
+        effects.append_at(
+            DomainEvent::new(
+                DomainEventKind::ModuleChanged,
+                "main:Document.Second.Module.Object",
+            ),
+            vec![second.to_path_buf()],
+        );
+        let provisional = super::batch_effects_as_provisional(&[], &staged, effects, 0);
+
+        // A later operation restores the first file; only the second event
+        // may survive request-level reconciliation.
+        let first_current = staged.read(first).unwrap().unwrap();
+        staged
+            .replace(first, &first_current, first_preimage.clone())
+            .unwrap();
+        let reconciled = reconcile_effects(&staged, provisional);
+        assert_eq!(
+            reconciled
+                .events()
+                .iter()
+                .map(|event| event.artifact.as_str())
+                .collect::<Vec<_>>(),
+            ["main:Document.Second.Module.Object"]
+        );
     }
 
     #[test]

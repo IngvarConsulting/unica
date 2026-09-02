@@ -451,7 +451,7 @@ pub(crate) fn plan_code_batch(
             .iter()
             .any(|change| change.relative_path == relative)
         {
-            effects.append(event);
+            effects.append_at(event, vec![relative]);
         }
     }
     Ok((staged, effects))
