@@ -228,7 +228,7 @@ if [ "$DO_INSTALL" -eq 1 ]; then
 
   if [ "$DO_VERIFY" -eq 1 ]; then
     codex debug prompt-input 'test' > "$PROMPT_PROOF"
-    for needle in "Unica" "v8-runner" "db-auth-check"; do
+    for needle in "Unica" "platform-help" "db-auth-check"; do
       if ! grep -q "$needle" "$PROMPT_PROOF"; then
         echo "Codex prompt verification did not contain '$needle'." >&2
         echo "Saved prompt proof: $PROMPT_PROOF" >&2
