@@ -1,0 +1,5 @@
+format: DESIGNER
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src

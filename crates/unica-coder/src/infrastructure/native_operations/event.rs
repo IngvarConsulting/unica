@@ -1040,10 +1040,10 @@ fn plan_one_event(
             module_before.as_deref(),
             module_after,
         )?;
-        effects.append(effect(
-            DomainEventKind::ModuleChanged,
-            source.module_at.to_string(),
-        ));
+        effects.append_at(
+            effect(DomainEventKind::ModuleChanged, source.module_at.to_string()),
+            vec![source.module_relative.clone()],
+        );
         return Ok(());
     }
 
@@ -1096,15 +1096,15 @@ fn plan_one_event(
         module_after,
     )?;
     if shape.projection.state == EventState::Available {
-        effects.append(effect(
-            DomainEventKind::FormChanged,
-            source.form_at.to_string(),
-        ));
+        effects.append_at(
+            effect(DomainEventKind::FormChanged, source.form_at.to_string()),
+            vec![source.form_xml_relative.clone()],
+        );
     }
-    effects.append(effect(
-        DomainEventKind::ModuleChanged,
-        source.module_at.to_string(),
-    ));
+    effects.append_at(
+        effect(DomainEventKind::ModuleChanged, source.module_at.to_string()),
+        vec![source.module_relative.clone()],
+    );
     Ok(())
 }
 

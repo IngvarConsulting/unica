@@ -1773,7 +1773,7 @@ pub(crate) mod actor_capacity_tests {
                 "read_bounded",
                 "remaining",
                 "is_cancelled",
-                "match_indices",
+                "match_starts",
             ] {
                 if !calls.names.contains(required) {
                     return Err(format!(
@@ -2534,7 +2534,7 @@ pub(crate) mod actor_capacity_tests {
                 "search_bsl_literal",
                 (
                     true,
-                    "fn search_bsl_literal(&self, query: &str, limit: usize, scope_prefix: Option<&str>, scope_at: &QualifiedAddress, cancellation: &CancellationToken,) -> Result<Vec<serde_json::Value>, String>",
+                    "fn search_bsl_literal(&self, matcher: &super::super::v13_read_modes::SearchMatcher, limit: usize, scope_prefix: Option<&str>, scope_at: &QualifiedAddress, cancellation: &CancellationToken,) -> Result<Vec<serde_json::Value>, String>",
                     "",
                 ),
             ),
@@ -4046,6 +4046,14 @@ struct ActorLogicalReadLease {"#,
             ),
             (ToolIdentity::Check, serde_json::json!({}), "sources"),
             (
+                ToolIdentity::Check,
+                serde_json::json!({
+                    "at": "main:Catalog.Items",
+                    "filter": {"validation": {"profile": "meta"}}
+                }),
+                "status",
+            ),
+            (
                 ToolIdentity::Diff,
                 serde_json::json!({
                     "left": "main:Catalog.Items",
@@ -4165,16 +4173,15 @@ struct ActorLogicalReadLease {"#,
                         "op": "props.set",
                         "args": {"values": {"Comment": "must not publish"}}
                     },
-                    {"op": "relation.replace", "args": {"items": []}}
+                    {"op": "object.create", "args": {"values": {"kind": "Catalog", "name": "Ghost"}}}
                 ],
                 "dryRun": false
             }),
         );
+        // `object.create` addresses the configuration root, so naming it on
+        // a catalog is a caller mistake; the batch must still publish nothing.
         assert!(!rejected_batch.ok);
-        assert_eq!(
-            rejected_batch.diagnostics[0]["code"],
-            "unsupported_operation"
-        );
+        assert_eq!(rejected_batch.diagnostics[0]["code"], "bad_value");
         let after_rejected_batch =
             std::fs::read_to_string(source.join("Catalogs/Items.xml")).unwrap();
         assert!(after_rejected_batch.contains("<Comment>Published through v0.13</Comment>"));
@@ -4193,11 +4200,6 @@ struct ActorLogicalReadLease {"#,
             (
                 ToolIdentity::Run,
                 serde_json::json!({"op": "query.execute", "args": {}}),
-                "unsupported_operation",
-            ),
-            (
-                ToolIdentity::Search,
-                serde_json::json!({"query": "needle", "regex": true}),
                 "unsupported_operation",
             ),
             (
@@ -4222,9 +4224,9 @@ struct ActorLogicalReadLease {"#,
                 ToolIdentity::Check,
                 serde_json::json!({
                     "at": "main:Catalog.Items",
-                    "filter": {"validation": {"profile": "meta"}}
+                    "filter": {"validation": {"profile": "form"}}
                 }),
-                "unsupported_operation",
+                "bad_value",
             ),
             (
                 ToolIdentity::Check,
@@ -4556,7 +4558,11 @@ struct ActorLogicalReadLease {"#,
         );
         assert_eq!(
             entry("object.create"),
-            serde_json::json!({"op": "object.create", "args": "values", "implemented": false})
+            serde_json::json!({"op": "object.create", "args": "values", "implemented": true})
+        );
+        assert_eq!(
+            entry("form.add"),
+            serde_json::json!({"op": "form.add", "args": "items", "implemented": true})
         );
         assert!(
             can.iter().all(|entry| entry["op"] != "enumValue.add"),
@@ -5107,12 +5113,12 @@ struct ActorLogicalReadLease {"#,
             "at": "main:Document.Order",
             "ops": [
                 {"op": "props.set", "args": {"values": {"Comment": "must not publish"}}},
-                {"op": "relation.replace", "args": {"items": []}}
+                {"op": "object.create", "args": {"values": {"kind": "Catalog", "name": "Ghost"}}}
             ],
             "dryRun": false,
         }));
         assert!(!rejected.ok);
-        assert_eq!(rejected.diagnostics[0]["code"], "unsupported_operation");
+        assert_eq!(rejected.diagnostics[0]["code"], "bad_value");
         assert_eq!(std::fs::read(&descriptor).unwrap(), before_rejected);
 
         let before_reverted = std::fs::read(&descriptor).unwrap();

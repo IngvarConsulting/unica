@@ -1,6 +1,5 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::{OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
-use crate::domain::metadata::MetadataKind;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use serde_json::{json, Map, Value};
 use std::fmt;
@@ -53,6 +52,30 @@ impl fmt::Display for ReadModeError {
 
 impl std::error::Error for ReadModeError {}
 
+/// How a canonical search matches one source line: a literal needle or a
+/// bounded, pre-compiled regular expression. Both report byte offsets of match
+/// starts so the caller projects the same logical location either way.
+pub(crate) enum SearchMatcher {
+    Literal(String),
+    Regex(regex::Regex),
+}
+
+impl SearchMatcher {
+    pub(super) fn match_starts(&self, line: &str) -> Vec<usize> {
+        match self {
+            Self::Literal(needle) => line
+                .match_indices(needle.as_str())
+                .map(|(start, _)| start)
+                .collect(),
+            Self::Regex(pattern) => pattern
+                .find_iter(line)
+                .filter(|found| !found.is_empty())
+                .map(|found| found.start())
+                .collect(),
+        }
+    }
+}
+
 const VIEW_IDENTITY_SLOTS: &[&str] = &["at", "kind", "title"];
 const VIEW_SECTION_SLOTS: &[&str] = &["props", "branches", "can", "limits", "items"];
 
@@ -62,10 +85,10 @@ const VIEW_SECTION_SLOTS: &[&str] = &["props", "branches", "can", "limits", "ite
 /// caller answers `unsupported_section`, never a valid-looking empty node.
 /// The first phase covers the Configuration root and the metadata kinds.
 fn computed_can_entries(kind: &str) -> Option<Vec<Value>> {
+    // Every parseable node kind carries its dictionary: the applicability
+    // model covers all kinds, so the only uncomputable case is a kind the
+    // address grammar does not know.
     let node_kind = NodeKind::parse(kind).ok()?;
-    if node_kind != NodeKind::Configuration && MetadataKind::parse(kind).is_err() {
-        return None;
-    }
     Some(
         OperationRegistry::closed()
             .descriptors()
@@ -357,15 +380,39 @@ mod tests {
         );
         assert_eq!(
             entry("object.create"),
-            json!({"op": "object.create", "args": "values", "implemented": false})
+            json!({"op": "object.create", "args": "values", "implemented": true})
+        );
+        assert_eq!(
+            entry("form.add"),
+            json!({"op": "form.add", "args": "items", "implemented": true})
+        );
+        // The honesty flag stays false for a registry name without a planner.
+        let data_set = project_view_sections(
+            &json!({
+                "at": "main:Report.Sales.Template.Layout.DataSet.Main",
+                "kind": "DataSet",
+                "title": "Main",
+                "props": {}
+            }),
+            &json!(["can"]),
+        )
+        .unwrap();
+        let data_set_can = data_set["can"].as_array().expect("computed can entries");
+        let dcs_set = data_set_can
+            .iter()
+            .find(|entry| entry["op"] == "dcs.set")
+            .unwrap_or_else(|| panic!("missing `dcs.set` in {data_set_can:?}"));
+        assert_eq!(
+            dcs_set,
+            &json!({"op": "dcs.set", "args": "values", "implemented": false})
         );
         assert_eq!(
             entry("object.remove"),
-            json!({"op": "object.remove", "args": "at", "implemented": false})
+            json!({"op": "object.remove", "args": "at", "implemented": true})
         );
         assert_eq!(
             entry("help.create"),
-            json!({"op": "help.create", "args": "text", "implemented": false})
+            json!({"op": "help.create", "args": "values", "implemented": true})
         );
         assert!(
             can.iter().all(|entry| entry["op"] != "enumValue.add"),
@@ -377,11 +424,23 @@ mod tests {
     #[test]
     fn uncomputed_sections_answer_typed_unsupported_section() {
         let module = json!({
-            "at": "main:CommonModule.Общий.Module.Manager",
+            "at": "main:CommonModule.Общий",
             "kind": "Module",
-            "title": "Manager"
+            "title": "Common module Общий"
         });
-        let refusal = project_view_sections(&module, &json!(["can"])).unwrap_err();
+        let projected = project_view_sections(&module, &json!(["can"])).unwrap();
+        let can = projected["can"].as_array().expect("module can entries");
+        assert!(
+            can.iter().any(|entry| entry["op"] == "code.insert"),
+            "a module node advertises the code family: {can:?}"
+        );
+        assert!(
+            can.iter().all(|entry| entry["op"] != "attribute.add"),
+            "a module node must not advertise metadata-only operations: {can:?}"
+        );
+
+        let unknown = json!({"at": "main:Mystery.X", "kind": "Mystery", "title": "X"});
+        let refusal = project_view_sections(&unknown, &json!(["can"])).unwrap_err();
         assert_eq!(refusal.code(), "unsupported_section");
         assert!(refusal.to_string().contains("`can`"), "{refusal}");
 

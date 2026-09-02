@@ -97,14 +97,14 @@ fn validate_meta_remove_object_name(name: &str) -> Result<(), String> {
     }
 }
 
-pub(super) struct MetaRemoveSubsystemReplacement {
-    path: PathBuf,
-    original: Vec<u8>,
-    replacement: Vec<u8>,
-    subsystem_name: String,
+pub(crate) struct MetaRemoveSubsystemReplacement {
+    pub(crate) path: PathBuf,
+    pub(crate) original: Vec<u8>,
+    pub(crate) replacement: Vec<u8>,
+    pub(crate) subsystem_name: String,
 }
 
-pub(super) struct MetaRemoveTextRead {
+pub(crate) struct MetaRemoveTextRead {
     path: PathBuf,
     raw: Vec<u8>,
     text: String,
@@ -121,8 +121,8 @@ struct MetaRemoveDirectoryRead {
     direct_entries: Vec<DirectoryTopologyEntry>,
 }
 
-pub(super) struct MetaRemoveTraversal {
-    files: Vec<PathBuf>,
+pub(crate) struct MetaRemoveTraversal {
+    pub(crate) files: Vec<PathBuf>,
     directories: Vec<MetaRemoveDirectoryRead>,
 }
 
@@ -338,7 +338,7 @@ fn inspect_meta_remove_directory(
         .map(Some)
 }
 
-pub(super) fn plan_meta_remove_subsystem_replacements(
+pub(crate) fn plan_meta_remove_subsystem_replacements(
     dir: &Path,
     qualified_object_name: &str,
     replacements: &mut Vec<MetaRemoveSubsystemReplacement>,
@@ -496,7 +496,7 @@ pub(super) struct TypedMetaRemovePlan {
     pub(super) expected_absent: Vec<PathBuf>,
 }
 
-pub(crate) fn plan_typed_remove(
+pub(super) fn plan_typed_remove(
     request: &MetaRemoveRequest,
     resolved: ResolvedMetadataObject,
     context: &WorkspaceContext,
@@ -1133,6 +1133,37 @@ pub(super) fn read_reference_scan_snapshot(
     })
 }
 
+/// Source files that still mention `Kind.Name`, for planners that stage a
+/// removal without the legacy transaction. Same scan, same patterns; only the
+/// file list travels back.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn typed_remove_reference_files(
+    config_dir: &Path,
+    obj_type: &str,
+    obj_name: &str,
+    type_plural: &str,
+    obj_xml: &Path,
+    obj_dir: &Path,
+    has_xml: bool,
+    has_dir: bool,
+) -> Result<Vec<String>, String> {
+    let scan = meta_remove_reference_scan(
+        config_dir,
+        obj_type,
+        obj_name,
+        type_plural,
+        obj_xml,
+        obj_dir,
+        has_xml,
+        has_dir,
+    )?;
+    Ok(scan
+        .references
+        .into_iter()
+        .map(|reference| reference.file)
+        .collect())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn meta_remove_reference_scan(
     config_dir: &Path,
@@ -1199,7 +1230,7 @@ fn meta_remove_reference_scan(
     })
 }
 
-fn metadata_files_recursive(root: &Path) -> Result<MetaRemoveTraversal, String> {
+pub(crate) fn metadata_files_recursive(root: &Path) -> Result<MetaRemoveTraversal, String> {
     metadata_files_recursive_with_limits(
         root,
         MetaRemoveTraversalLimits {

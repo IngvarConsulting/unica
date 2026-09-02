@@ -97,6 +97,19 @@ impl CheckProfile {
     pub(crate) fn supported() -> &'static [Self] {
         SUPPORTED_PROFILES
     }
+
+    /// The logical node kinds a profile validates. An explicit profile that
+    /// names a node of another kind is a caller mistake, not a validator run.
+    pub(crate) fn accepts_kind(self, kind: &str) -> bool {
+        match self {
+            Self::Cf | Self::Cfe => kind == "Configuration",
+            Self::Form => kind == "Form",
+            Self::Dcs | Self::Mxl => kind == "Template",
+            Self::Role => kind == "Role",
+            Self::Subsystem => kind == "Subsystem",
+            Self::Interface => matches!(kind, "Interface" | "CommandInterface"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,6 +341,19 @@ mod tests {
         normalize_native_outcome, CheckError, CheckProfile, CheckRequest, NativeCheckOutcome,
     };
     use serde_json::json;
+
+    #[test]
+    fn explicit_profiles_accept_only_the_node_kinds_they_validate() {
+        assert!(CheckProfile::Form.accepts_kind("Form"));
+        assert!(!CheckProfile::Form.accepts_kind("Catalog"));
+        assert!(CheckProfile::Dcs.accepts_kind("Template"));
+        assert!(CheckProfile::Mxl.accepts_kind("Template"));
+        assert!(CheckProfile::Cf.accepts_kind("Configuration"));
+        assert!(!CheckProfile::Cf.accepts_kind("Subsystem"));
+        assert!(CheckProfile::Role.accepts_kind("Role"));
+        assert!(CheckProfile::Subsystem.accepts_kind("Subsystem"));
+        assert!(CheckProfile::Interface.accepts_kind("CommandInterface"));
+    }
 
     #[test]
     fn check_registry_accepts_only_proven_validator_profiles() {

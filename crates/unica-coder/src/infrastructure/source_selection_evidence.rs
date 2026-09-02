@@ -1688,17 +1688,63 @@ fn checkpointed_bytes_equal(
 }
 
 impl RetainedSourceSelectionEvidence {
+    /// The retained workspace root every observation key is relative to.
+    pub(in crate::infrastructure) fn workspace_path(&self) -> &Path {
+        self.workspace.path()
+    }
+
     pub(in crate::infrastructure) fn validate(
         &self,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), SourceSelectionEvidenceError> {
-        self.validate_complete_pass(deadline, cancellation)?;
-        self.validate_complete_pass(deadline, cancellation)
+        self.validate_complete_pass(None, deadline, cancellation)?;
+        self.validate_complete_pass(None, deadline, cancellation)
+    }
+
+    /// Final validation after a retained apply published its files. A file the
+    /// apply itself replaced legitimately carries a new identity, so for those
+    /// paths (workspace-relative, with their planned post-images) the identity
+    /// check yields to a byte check, and the project source map is discovered
+    /// again to prove the admitted selection semantics did not move.
+    pub(in crate::infrastructure) fn validate_final_with_published(
+        &self,
+        published: &BTreeMap<PathBuf, Vec<u8>>,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<(), SourceSelectionEvidenceError> {
+        let touches_retained = published
+            .keys()
+            .any(|relative| self.paths.contains_key(relative));
+        if !touches_retained {
+            return self.validate(deadline, cancellation);
+        }
+        self.validate_complete_pass(Some(published), deadline, cancellation)?;
+        let mut checkpoint =
+            || selection_checkpoint(deadline, cancellation).map_err(|error| error.to_string());
+        let (map, _pass) =
+            crate::infrastructure::project_sources::discover_project_source_map_actor_pass(
+                self.workspace.clone(),
+                &mut checkpoint,
+            )
+            .map_err(SourceSelectionEvidenceError::provider)?;
+        let semantic = CompleteProjectSourceSelection::from_map(&map, self.workspace.path());
+        drop(map);
+        let unchanged = self
+            .admitted_semantic
+            .matches_checkpointed(&semantic, &mut checkpoint)
+            .map_err(SourceSelectionEvidenceError::provider)?;
+        if !unchanged {
+            return Err(SourceSelectionEvidenceError::changed(
+                "project source-map semantics changed with the published files",
+            ));
+        }
+        self.validate_complete_pass(Some(published), deadline, cancellation)
     }
 
     fn validate_complete_pass(
         &self,
+        published: Option<&BTreeMap<PathBuf, Vec<u8>>>,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), SourceSelectionEvidenceError> {
@@ -1718,8 +1764,9 @@ impl RetainedSourceSelectionEvidence {
                 .map_err(changed_identity)?;
             selection_checkpoint(deadline, cancellation)?;
         }
-        for observation in self.paths.values() {
+        for (relative, observation) in &self.paths {
             selection_checkpoint(deadline, cancellation)?;
+            let planned = published.and_then(|published| published.get(relative));
             match observation {
                 RetainedPathObservation::RegularFile {
                     parent,
@@ -1754,13 +1801,23 @@ impl RetainedSourceSelectionEvidence {
                             )));
                         }
                     };
-                    if file.identity() != *identity {
-                        return Err(SourceSelectionEvidenceError::changed(
-                            "project source-map retained file identity changed",
-                        ));
-                    }
-                    if let Some(bytes) = bytes {
-                        validate_regular_bytes(&file, bytes, deadline, cancellation)?;
+                    match planned {
+                        // The apply replaced this file itself, so its bytes
+                        // must be exactly the planned post-image whether or
+                        // not the admission retained the original bytes.
+                        Some(post_image) => {
+                            validate_regular_bytes(&file, post_image, deadline, cancellation)?;
+                        }
+                        None => {
+                            if file.identity() != *identity {
+                                return Err(SourceSelectionEvidenceError::changed(
+                                    "project source-map retained file identity changed",
+                                ));
+                            }
+                            if let Some(bytes) = bytes {
+                                validate_regular_bytes(&file, bytes, deadline, cancellation)?;
+                            }
+                        }
                     }
                     file.validate_named_identity_relative()
                         .map_err(changed_identity)?;
@@ -1800,20 +1857,26 @@ impl RetainedSourceSelectionEvidence {
                             )));
                         }
                     };
-                    if file.identity() != *identity {
-                        return Err(SourceSelectionEvidenceError::changed(
-                            "project source-map oversized terminal file identity changed",
-                        ));
-                    }
-                    let current_length = file
-                        .try_clone_file()
-                        .and_then(|file| file.metadata())
-                        .map_err(changed_identity)?
-                        .len();
-                    if current_length <= *maximum as u64 {
-                        return Err(SourceSelectionEvidenceError::changed(
-                            "project source-map oversized terminal classification changed",
-                        ));
+                    if let Some(post_image) = planned {
+                        // The apply replaced this terminal itself: the new
+                        // identity is legitimate, the bytes must be the plan.
+                        validate_regular_bytes(&file, post_image, deadline, cancellation)?;
+                    } else {
+                        if file.identity() != *identity {
+                            return Err(SourceSelectionEvidenceError::changed(
+                                "project source-map oversized terminal file identity changed",
+                            ));
+                        }
+                        let current_length = file
+                            .try_clone_file()
+                            .and_then(|file| file.metadata())
+                            .map_err(changed_identity)?
+                            .len();
+                        if current_length <= *maximum as u64 {
+                            return Err(SourceSelectionEvidenceError::changed(
+                                "project source-map oversized terminal classification changed",
+                            ));
+                        }
                     }
                     file.validate_named_identity_relative()
                         .map_err(changed_identity)?;
@@ -1861,14 +1924,6 @@ impl RetainedSourceSelectionEvidence {
     }
 
     pub(in crate::infrastructure) fn validate_dry_result(
-        &self,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<(), SourceSelectionEvidenceError> {
-        self.validate(deadline, cancellation)
-    }
-
-    pub(in crate::infrastructure) fn validate_final(
         &self,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
@@ -2221,6 +2276,50 @@ pub(crate) mod tests {
             b"<MetaDataObject><Configuration/></MetaDataObject>",
         );
         root
+    }
+
+    #[test]
+    fn published_replacement_of_a_retained_source_map_file_passes_the_final_gate() {
+        let root = configured_workspace("unica-source-selection-published-replacement");
+        let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets::generous());
+        let mut checkpoint = || Ok(());
+        let evidence = discover_project_source_admission(root.path(), &mut checkpoint)
+            .expect("admission over the configured workspace")
+            .evidence;
+        let deadline = ProviderDeadline::from_budget(std::time::Duration::from_secs(30));
+        let cancellation = CancellationToken::new();
+        evidence
+            .validate(deadline, &cancellation)
+            .expect("untouched workspace validates");
+
+        // The apply publishes a new Configuration.xml the way the transaction
+        // does: a fresh file renamed over the old name, so the identity moves.
+        let post_image: Vec<u8> =
+            b"<MetaDataObject><Configuration><ChildObjects/></Configuration></MetaDataObject>"
+                .to_vec();
+        let staged = root.path().join("src/Configuration.xml.staged");
+        std::fs::write(&staged, &post_image).unwrap();
+        std::fs::rename(&staged, root.path().join("src/Configuration.xml")).unwrap();
+
+        let strict = evidence
+            .validate(deadline, &cancellation)
+            .expect_err("a moved identity is a change without a publication plan");
+        assert!(strict.to_string().contains("identity changed"), "{strict}");
+
+        let mut published = BTreeMap::new();
+        published.insert(PathBuf::from("src/Configuration.xml"), post_image.clone());
+        evidence
+            .validate_final_with_published(&published, deadline, &cancellation)
+            .expect("the planned replacement passes the final gate");
+
+        let mut mismatched = BTreeMap::new();
+        mismatched.insert(
+            PathBuf::from("src/Configuration.xml"),
+            b"<MetaDataObject><Configuration/></MetaDataObject>".to_vec(),
+        );
+        evidence
+            .validate_final_with_published(&mismatched, deadline, &cancellation)
+            .expect_err("bytes that differ from the plan stay a change");
     }
 
     #[test]

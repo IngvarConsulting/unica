@@ -12,7 +12,7 @@
     },
     "unica.apply": {
       "status": "partial",
-      "reason": "Retained atomic publication is proven for props.set and attribute.add/set/remove; dry-run and real execution expose the same postimage/effect plan hash, while object, relation and other families remain unsupported.",
+      "reason": "Retained atomic publication is proven for props.set, the metadata member collections, predefined items and relations; the code planner (code.insert/code.replace) and the XDTO planner (valueType/objectType/property/type operations) plan through the same staged state; object.create, object.remove and help.create stage the template files, the owner registration and the embedded help facet through the same state; the DCS planner runs the schema text transforms (fields, parameters, filters, selection, queries, calculated fields, totals, variants, structure) over the staged template; roles (right.set with restrictions, role.create), subsystems (create, content, child subsystems) and vendor-support switches plan over the staged files too; forms (form.add/create/set/remove and the definition-driven element, attribute, command and event edits) plan through the form engine's shared definition core; mxl.set decompiles, edits and recompiles the spreadsheet through the shared cores; event.implement plans through the event planner with developer-style event addresses; templates are staged as their own descriptors with owner registration.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -22,6 +22,33 @@
       }, {
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "public_metadata_apply_keeps_dry_run_and_real_plans_identical_for_four_supported_ops"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/code.rs",
+        "test": "staged_code_dry_run_and_real_apply_share_postimages_and_effect_receipt"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
+        "test": "xdto_operations_apply_in_order_within_one_transaction"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
+        "test": "staged_xdto_dry_and_real_share_postimage_effects_and_revision"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs",
+        "test": "object_create_stages_the_template_files_and_registers_the_child"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs",
+        "test": "object_remove_stages_descriptor_removal_and_owner_deregistration"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl.rs",
+        "test": "dcs_operations_transform_the_staged_schema_and_keep_its_byte_order_mark"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs",
+        "test": "form_add_then_element_and_event_edits_compose_in_one_batch"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs",
+        "test": "right_set_grants_lists_and_restricts_rights_on_the_staged_document"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/source_selection_evidence.rs",
+        "test": "published_replacement_of_a_retained_source_map_file_passes_the_final_gate"
       }]
     },
     "unica.find": {
@@ -39,7 +66,7 @@
     },
     "unica.check": {
       "status": "partial",
-      "reason": "Workspace admission and logical readability are implemented; validation filter parsing and meta/cf kind routing are provisional because no real validator execution is proven.",
+      "reason": "Workspace admission and logical readability are implemented; the closed validation profiles (cf, cfe, form, dcs, mxl, role, subsystem, interface) run the native validators over the logical node and the meta profile runs the typed metadata validator, with the verdict returned in data.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"

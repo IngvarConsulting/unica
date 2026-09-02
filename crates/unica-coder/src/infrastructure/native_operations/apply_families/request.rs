@@ -45,6 +45,19 @@ impl ProvisionalApplyEffect {
         }
     }
 
+    /// An effect a family planner ties to every path its batch changed.
+    pub(crate) fn spanning(
+        paths: Vec<PathBuf>,
+        event: DomainEvent,
+        operation_index: usize,
+    ) -> Self {
+        Self {
+            paths,
+            event,
+            operation_index,
+        }
+    }
+
     pub(crate) fn event(&self) -> &DomainEvent {
         &self.event
     }
@@ -70,6 +83,9 @@ pub(crate) fn reconcile_effects(
     provisional.sort_by_key(ProvisionalApplyEffect::operation_index);
     for candidate in provisional {
         if !candidate.paths.is_empty()
+            // Every file the effect stands for must still differ; planners
+            // name the file behind each event, so restoring one module of a
+            // batch silences only that module's event.
             && candidate
                 .paths
                 .iter()

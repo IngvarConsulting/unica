@@ -183,6 +183,11 @@ pub(super) fn hidden_apply_family_unimplemented(op_index: usize) -> ApplyPlanErr
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct PlannedApplyEffects {
     events: Vec<DomainEvent>,
+    /// The staged files each event stands for, parallel to `events`. A
+    /// planner that knows which file its event describes records it here so
+    /// request-level reconciliation can drop exactly the events whose file
+    /// was restored; an empty list means "the whole batch".
+    paths: Vec<Vec<PathBuf>>,
 }
 
 impl PlannedApplyEffects {
@@ -194,14 +199,32 @@ impl PlannedApplyEffects {
         self.events
     }
 
+    /// Events paired with the files they describe (empty when unknown).
+    pub(crate) fn into_events_with_paths(self) -> Vec<(DomainEvent, Vec<PathBuf>)> {
+        self.events.into_iter().zip(self.paths).collect()
+    }
+
     pub(crate) fn append(&mut self, event: DomainEvent) {
-        if !self
+        self.append_at(event, Vec::new());
+    }
+
+    /// Appends one event that describes the given staged files. A repeated
+    /// event (same kind and artifact) merges its files into the first one.
+    pub(crate) fn append_at(&mut self, event: DomainEvent, paths: Vec<PathBuf>) {
+        if let Some(index) = self
             .events
             .iter()
-            .any(|current| current.kind == event.kind && current.artifact == event.artifact)
+            .position(|current| current.kind == event.kind && current.artifact == event.artifact)
         {
-            self.events.push(event);
+            for path in paths {
+                if !self.paths[index].contains(&path) {
+                    self.paths[index].push(path);
+                }
+            }
+            return;
         }
+        self.events.push(event);
+        self.paths.push(paths);
     }
 }
 

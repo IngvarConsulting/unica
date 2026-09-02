@@ -505,6 +505,20 @@ pub(super) fn meta_edit_insert_lines_into_child_objects(
         );
         return Ok(());
     }
+    // A self-closing `<ChildObjects/>` whose parsed range stops short of its
+    // terminator (fresh template descriptors): expand the tag in place.
+    if !section_text.contains("</ChildObjects>") {
+        if let Some(relative_end) = xml_text[range.start..].find("/>") {
+            let end = range.start + relative_end + 2;
+            if !xml_text[range.start + 1..end].contains('<') {
+                xml_text.replace_range(
+                    range.start..end,
+                    &format!("<ChildObjects>\n{content}\n{close_indent}</ChildObjects>"),
+                );
+                return Ok(());
+            }
+        }
+    }
     let Some(relative_pos) = section_text.rfind("</ChildObjects>") else {
         if section_text.trim_end().ends_with('>') {
             xml_text.insert_str(range.end, &format!("\n{content}\n{close_indent}"));
@@ -4367,6 +4381,10 @@ fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition)
         let _ =
             meta_edit_replace_or_insert_property(&mut text, "FillChecking", &replacement, &indent);
     }
+    if let Some(indexing) = &element.indexing {
+        let replacement = format!("{indent}<Indexing>{}</Indexing>", escape_xml(indexing));
+        let _ = meta_edit_replace_or_insert_property(&mut text, "Indexing", &replacement, &indent);
+    }
     xml.replace_range(range, &text);
 }
 
@@ -4582,6 +4600,22 @@ fn update_typed_element(
             )
         })?;
     }
+    if let Some(indexing) = &update.indexing {
+        let replacement = format!("{indent}<Indexing>{}</Indexing>", escape_xml(indexing));
+        meta_edit_replace_or_insert_property(
+            &mut properties_text,
+            "Indexing",
+            &replacement,
+            &indent,
+        )
+        .map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata indexing could not be updated",
+                Some("indexing"),
+            )
+        })?;
+    }
     let mut updated_node = node_xml;
     updated_node.replace_range(properties_range, &properties_text);
     xml_text.replace_range(range, &updated_node);
@@ -4741,18 +4775,45 @@ pub(super) fn parse_typed_fill_value_node(
             "existing date-time fill value is not canonical",
             Some("fillValue"),
         )),
-        (READABLE_NAMESPACE, "DesignTimeRef") => Ok(Some(MetaFillValue::Reference(
-            crate::domain::metadata::MetadataReference {
-                metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
-                    .map_err(|_| {
-                        typed_diagnostic(
-                            MetaDiagnosticCode::ValidationFailed,
-                            "existing reference fill value is not a metadata address",
-                            Some("fillValue"),
-                        )
-                    })?,
-            },
-        ))),
+        (READABLE_NAMESPACE, "DesignTimeRef") => {
+            // Real platform dumps carry item designators after the metadata
+            // address — `Catalog.Валюты.EmptyRef` or a predefined item name.
+            // The address prefix is validated; the designator round-trips
+            // verbatim so re-emission cannot corrupt the value.
+            if let Ok(metadata_path) =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
+            {
+                return Ok(Some(MetaFillValue::Reference(
+                    crate::domain::metadata::MetadataReference { metadata_path },
+                )));
+            }
+            let Some((prefix, item)) = value.rsplit_once('.') else {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "existing reference fill value is not a metadata address",
+                    Some("fillValue"),
+                ));
+            };
+            let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, prefix)
+                .map_err(|_| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ValidationFailed,
+                        "existing reference fill value is not a metadata address",
+                        Some("fillValue"),
+                    )
+                })?;
+            if item.is_empty() {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "existing reference fill value is not a metadata address",
+                    Some("fillValue"),
+                ));
+            }
+            Ok(Some(MetaFillValue::DesignTimeItemRef {
+                reference: crate::domain::metadata::MetadataReference { metadata_path },
+                item: item.to_string(),
+            }))
+        }
         _ => Err(typed_diagnostic(
             MetaDiagnosticCode::ValidationFailed,
             "existing fill value type is unsupported by typed metadata edit",

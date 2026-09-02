@@ -928,7 +928,17 @@ impl CompileTransaction {
             })?;
             #[cfg(test)]
             run_retained_apply_before_post_validation_hook();
-            final_gate.validate()?;
+            let published_replacements = self.retained_apply[..cache_start]
+                .iter()
+                .filter_map(|entry| match (&entry.original, &entry.current) {
+                    (Some(_), Some(current)) => Some((
+                        entry.root.path().join(&entry.relative_path),
+                        current.clone(),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            final_gate.validate_after_publication(&published_replacements)?;
             let revision = active_revision
                 .install()
                 .map_err(retained_revision_publication_error)?;
@@ -5639,7 +5649,7 @@ fn finalize_success(state: &mut PublishState) {
     state.cleanup_warnings.extend(recovery_warnings);
 }
 
-fn split_utf8_bom_prefix(bytes: &[u8]) -> (&[u8], &[u8]) {
+pub(crate) fn split_utf8_bom_prefix(bytes: &[u8]) -> (&[u8], &[u8]) {
     let mut offset = 0usize;
     while bytes[offset..].starts_with(UTF8_BOM) {
         offset += UTF8_BOM.len();
@@ -5647,7 +5657,7 @@ fn split_utf8_bom_prefix(bytes: &[u8]) -> (&[u8], &[u8]) {
     bytes.split_at(offset)
 }
 
-fn preserve_inserted_line_endings(source: &str, updated: &str) -> String {
+pub(crate) fn preserve_inserted_line_endings(source: &str, updated: &str) -> String {
     let line_ending = source_line_ending(source);
     if line_ending == "\n" {
         return updated.to_string();

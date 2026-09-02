@@ -1,0 +1,6933 @@
+{
+ "schemaVersion": 1,
+ "workspace": "tests/fixtures/acceptance/workspace",
+ "protocolVersion": "2025-06-18",
+ "scenarios": [
+  {
+   "area": "Навигация и чтение",
+   "task": "Найти справочник валют по имени и открыть его свойства",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "Валюты"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S001"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Найти объект по синониму «Важность проблемы учета»",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "Важность проблемы учета"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S002"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Найти все справочники, отфильтровав кандидатов по виду",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "Валюты",
+      "kind": "Catalog"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S003"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Разрешить неточное имя «Валюта» в точный адрес (ближайшие кандидаты)",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "Валюта"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S004"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Посмотреть состав конфигурации верхним уровнем",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Configuration"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S005"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Прочитать свойства документа акта об уничтожении персональных данных",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S006"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Перечислить реквизиты справочника Валюты",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Attribute"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S007"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Открыть один реквизит Наценка и посмотреть его свойства",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Attribute.Наценка"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S008"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Посмотреть табличную часть Представления справочника Валюты",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.TabularSection.Представления"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S009"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Перечислить реквизиты табличной части Представления",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S010"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Посмотреть стандартные реквизиты справочника",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.StandardAttribute"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S011"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Перечислить измерения регистра сведений Административная иерархия",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия.Dimension"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S012"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Перечислить ресурсы регистра сведений",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия.Resource"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S013"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Перечислить значения перечисления Важность проблемы учета",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета.EnumValue"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S014"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Посмотреть модули справочника Валюты",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Module"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S015"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Посмотреть табличные части документа",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S016"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Перечислить макеты отчёта Анализ версий объектов",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S017"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Прочитать только свойства справочника без веток",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "filter": {
+       "sections": [
+        "props"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S018"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Прочитать только ветки состава справочника",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "filter": {
+       "sections": [
+        "branches"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S019"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Пролистать реквизиты справочника страницей в три элемента",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Attribute",
+      "limit": 3
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S020"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Найти документ по подстроке имени «Уничтожении»",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "Уничтожении"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S021"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Найти регистры сведений по виду",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "Иерархия",
+      "kind": "InformationRegister"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S022"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Найти общий модуль Google-переводчика",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "GoogleПереводчик"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S023"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Найти роль продавца-читателя",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "SalesReader"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S024"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Найти подсистему администрирования",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "Администрирование"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S025"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Узнать, какие операции доступны на корне конфигурации",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Configuration",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S026"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Узнать словарь операций справочника перед правкой",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S027"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Узнать словарь операций перечисления",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S028"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Узнать словарь операций регистра сведений",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S029"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Убедиться, что объект не изменился после рефакторинга (diff с самим собой)",
+   "wire": [
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Catalog.Валюты",
+      "right": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S030"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Сравнить два перечисления одного вида между собой",
+   "wire": [
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Enum.LanguageAware",
+      "right": "main:Enum.ВажностьПроблемыУчета"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S031"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Сравнить только свойства двух перечислений",
+   "wire": [
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Enum.LanguageAware",
+      "right": "main:Enum.ВажностьПроблемыУчета",
+      "filter": {
+       "sections": [
+        "props"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S032"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Сравнить синонимы двух перечислений точечно по указателю",
+   "wire": [
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Enum.LanguageAware",
+      "right": "main:Enum.ВажностьПроблемыУчета",
+      "filter": {
+       "paths": [
+        "/props/synonym"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S033"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Сравнить два реквизита одного справочника",
+   "wire": [
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Catalog.Валюты.Attribute.Наценка",
+      "right": "main:Catalog.Валюты.Attribute.НаименованиеПолное"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S034"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Проверить читаемость узла справочника перед работой",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S035"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Проверить, что рабочее пространство допущено к работе",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {},
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S036"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить комментарий справочника Валюты (превью без записи)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Ведём по классификатору"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S037"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить комментарий справочника и записать по-настоящему",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Приёмочный прогон"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S038"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить синоним перечисления (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Synonym": "Важность проблемы"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S039"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить комментарий регистра сведений (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Иерархия подразделений"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S040"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить синоним документа (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Synonym": "Акт об уничтожении ПДн"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S041"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить комментарий общего модуля (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Интеграция с переводчиком"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S042"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить синоним отчёта (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Synonym": "Анализ версий"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S043"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Увеличить длину наименования справочника до 200 (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "DescriptionLength": 200
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S044"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить длину кода справочника (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "CodeLength": 12
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S045"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Поменять длину наименования документа (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "NumberLength": 12
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S046"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Проверить ревизию и записать комментарий с оптимистичной блокировкой",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "с ifRev"
+         }
+        }
+       }
+      ],
+      "ifRev": "$rev",
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S047"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить сразу два свойства одним вызовом (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "пакет",
+          "DescriptionLength": 150
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S048"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить свойства двух объектов последовательными вызовами",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "первый"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "второй"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S049"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить синоним реквизита документа (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.Организация",
+      "ops": [
+       {
+        "op": "attribute.set",
+        "args": {
+         "values": {
+          "synonym": "Организация-оператор"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S050"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить тип реквизита на строку подлиннее (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.НаименованиеИнформационнойСистемы",
+      "ops": [
+       {
+        "op": "attribute.set",
+        "args": {
+         "values": {
+          "type": {
+           "variants": [
+            {
+             "kind": "string",
+             "length": 250,
+             "allowedLength": "variable"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S051"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Сделать реквизит обязательным к заполнению (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.СпособУничтожения",
+      "ops": [
+       {
+        "op": "attribute.set",
+        "args": {
+         "values": {
+          "required": true
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S052"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Включить индексирование реквизита документа (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.Организация",
+      "ops": [
+       {
+        "op": "attribute.set",
+        "args": {
+         "values": {
+          "indexing": "Index"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S053"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Сначала посмотреть словарь операций, затем поменять свойство (полный маршрут)",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "по словарю"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S054"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Прочитать свойство перед правкой и сравнить после превью (диффом)",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Enum.LanguageAware"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "до записи"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Enum.LanguageAware",
+      "right": "main:Enum.LanguageAware"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S055"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить синоним табличной части (текущий ответ поверхности)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "tabularSection.set",
+        "args": {
+         "values": {
+          "name": "Представления",
+          "synonym": "Мультиязычные представления"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S056"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить комментарий роли (превью правки свойств роли)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Роль чтения продаж"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S057"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Изменить синоним подсистемы (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Synonym": "Администрирование системы"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S058"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить строковый реквизит в документ (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "КомментарийКонтролёра",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 150,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S059"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить строковый реквизит и сразу записать",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПризнакПриемки",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 10,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S060"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить числовой реквизит с точностью (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "КоэффициентОкругления",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 3,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S061"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить булев реквизит (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "НеИспользоватьВОбмене",
+           "type": {
+            "variants": [
+             {
+              "kind": "boolean"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S062"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить реквизит-дату (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ДатаАктуальности",
+           "type": {
+            "variants": [
+             {
+              "kind": "date",
+              "fractions": "date"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S063"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить ссылочный реквизит на справочник валют (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ВалютаУчёта",
+           "type": {
+            "variants": [
+             {
+              "kind": "reference",
+              "metadataPath": "Catalog.Валюты"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S064"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить реквизит с синонимом и позицией после существующего (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "КодКлассификатора",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 12,
+              "allowedLength": "variable"
+             }
+            ]
+           },
+           "synonym": "Код по классификатору",
+           "position": {
+            "after": "Организация"
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S065"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить сразу два реквизита одним вызовом (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Приоритет",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 2,
+              "fraction": 0,
+              "sign": "nonNegative"
+             }
+            ]
+           }
+          },
+          {
+           "name": "Примечание",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 100,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S066"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить реквизит документу (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ОснованиеУничтожения",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 200,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S067"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить обязательный реквизит с комментарием (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ВнешнийКод",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 20,
+              "allowedLength": "variable"
+             }
+            ]
+           },
+           "required": true,
+           "comment": "Код из внешней системы"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S068"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Поменять синоним и тип реквизита одним вызовом (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.ФИООтветственногоЗаОбработкуПДн",
+      "ops": [
+       {
+        "op": "attribute.set",
+        "args": {
+         "values": {
+          "synonym": "Ответственный",
+          "type": {
+           "variants": [
+            {
+             "kind": "string",
+             "length": 150,
+             "allowedLength": "variable"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S069"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Удалить реквизит документа (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.НаименованиеОрганизации",
+      "ops": [
+       {
+        "op": "attribute.remove"
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S070"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Удалить реквизит, сверившись со словарём операций",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.ЮридическийАдресОрганизации",
+      "ops": [
+       {
+        "op": "attribute.remove"
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S071"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить реквизит в существующую табличную часть документа через scope (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "scope": {
+          "tabularSection": "КатегорииДанных"
+         },
+         "items": [
+          {
+           "name": "Основание",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 100,
+              "allowedLength": "variable"
+             }
+            ]
+           },
+           "position": {
+            "after": "Категория"
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S072"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Создать пустую табличную часть документа (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "tabularSection.add",
+        "args": {
+         "items": [
+          {
+           "name": "ИсторияКурсов"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S073"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Изменить свойства табличной части (текущий ответ поверхности)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "tabularSection.set",
+        "args": {
+         "values": {
+          "name": "Представления",
+          "synonym": "Языковые представления"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S074"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Удалить табличную часть (текущий ответ поверхности)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "tabularSection.remove",
+        "args": {
+         "values": {
+          "name": "Представления"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S075"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить измерение в регистр сведений (текущий ответ поверхности)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "ops": [
+       {
+        "op": "dimension.add",
+        "args": {
+         "items": [
+          {
+           "name": "Регион",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 50,
+              "allowedLength": "variable"
+             }
+            ]
+           },
+           "position": {
+            "after": "КодСубъектаРФ"
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S076"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Изменить измерение регистра (текущий ответ поверхности)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "ops": [
+       {
+        "op": "dimension.set",
+        "args": {
+         "values": {
+          "name": "КодСубъектаРФ",
+          "synonym": "Код субъекта"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S077"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Удалить измерение регистра (текущий ответ поверхности)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "ops": [
+       {
+        "op": "dimension.remove",
+        "args": {
+         "values": {
+          "name": "РодительскийИдентификатор"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S078"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить ресурс в регистр сведений (текущий ответ поверхности)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "ops": [
+       {
+        "op": "resource.add",
+        "args": {
+         "items": [
+          {
+           "name": "Вес",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 2,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S079"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Изменить измерение регистра (в фикстуре нет ресурсов — правим измерение)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "ops": [
+       {
+        "op": "dimension.set",
+        "args": {
+         "values": {
+          "name": "Идентификатор",
+          "synonym": "Идентификатор узла"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S080"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Удалить измерение регистра (в фикстуре нет ресурсов — удаляем измерение)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "ops": [
+       {
+        "op": "dimension.remove",
+        "args": {
+         "values": {
+          "name": "РодительскийИдентификатор"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S081"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить значение перечисления (текущий ответ поверхности)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "ops": [
+       {
+        "op": "enumValue.add",
+        "args": {
+         "items": [
+          {
+           "name": "Критично",
+           "position": {
+            "after": "ПолезныйСовет"
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S082"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Изменить синоним значения перечисления (текущий ответ поверхности)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "ops": [
+       {
+        "op": "enumValue.set",
+        "args": {
+         "values": {
+          "name": "Ошибка",
+          "synonym": "Ошибка учёта"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S083"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Удалить значение перечисления (текущий ответ поверхности)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "ops": [
+       {
+        "op": "enumValue.remove",
+        "args": {
+         "values": {
+          "name": "ПолезныйСовет"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S084"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить колонку в журнал документов",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:DocumentJournal.ДокументыОрганизации",
+      "ops": [
+       {
+        "op": "column.add",
+        "args": {
+         "items": [
+          {
+           "name": "Контрагент"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S085"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Изменить колонку журнала",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:DocumentJournal.ДокументыОрганизации",
+      "ops": [
+       {
+        "op": "column.set",
+        "args": {
+         "values": {
+          "name": "Организация",
+          "synonym": "Организация документа"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S086"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Удалить колонку журнала",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:DocumentJournal.ДокументыОрганизации",
+      "ops": [
+       {
+        "op": "column.remove",
+        "args": {
+         "values": {
+          "name": "Организация"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S087"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить предопределённый элемент справочника (текущий ответ поверхности)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "predefinedItem.add",
+        "args": {
+         "items": [
+          {
+           "name": "Рубль",
+           "id": "a1b2c3d4-1111-4111-8111-111111111111"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S088"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить предопределённый элемент и уточнить его описание одним пакетом (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "predefinedItem.add",
+        "args": {
+         "items": [
+          {
+           "name": "Рубль",
+           "id": "a1b2c3d4-1111-4111-8111-111111111111"
+          }
+         ]
+        }
+       },
+       {
+        "op": "predefinedItem.set",
+        "args": {
+         "values": {
+          "id": "a1b2c3d4-1111-4111-8111-111111111111",
+          "description": "Российский рубль"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S089"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить и удалить предопределённый элемент одним пакетом (обратимость превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "predefinedItem.add",
+        "args": {
+         "items": [
+          {
+           "name": "Тестовый",
+           "id": "a1b2c3d4-2222-4222-8222-222222222222"
+          }
+         ]
+        }
+       },
+       {
+        "op": "predefinedItem.remove",
+        "args": {
+         "values": {
+          "id": "a1b2c3d4-2222-4222-8222-222222222222"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S090"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Ошибочный ключ аргументов ведёт к подсказке скелета (само-восстановление агента)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "props": {
+          "Comment": "не тот ключ"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: operation does not accept argument `props`; `props.set` expects `values`"
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "тот ключ"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S091"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Узнать словарь операций табличной части перед правкой",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.TabularSection.Представления",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S092"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Узнать словарь операций реквизита",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Attribute.Наценка",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S093"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить реквизит перечислению нельзя — применимость видна в словаре",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Лишний",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 10,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: apply operation `attribute.add` does not apply to Enum"
+    }
+   ],
+   "id": "S094"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Полный маршрут: найти объект, изучить состав, превью добавления, перечитать состав",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "АктОбУничтоженииПерсональныхДанных"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "МаршрутныйРеквизит",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 30,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S095"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Изменить свойство и вернуть обратно (обратимость реальной записи)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Обратимость"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": ""
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "right": "main:Document.АктОбУничтоженииПерсональныхДанных"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S096"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Превью повторяем: два одинаковых превью дают один план",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПлановаяПроверка",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 15,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПлановаяПроверка",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 15,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S097"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Создать пустую табличную часть документа (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "tabularSection.add",
+        "args": {
+         "items": [
+          {
+           "name": "ИсторияСогласований"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S098"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Пакет из добавления и правки свойств за один вызов (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПакетныйРеквизит",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 25,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       },
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "пакетная правка"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S099"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить стандартный реквизит нельзя — словарь этого не предлагает",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S100"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Проверить состав после серии правок",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S101"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Сравнить реквизит до и после превью (превью не меняет байты)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.ДатаУничтожения",
+      "ops": [
+       {
+        "op": "attribute.set",
+        "args": {
+         "values": {
+          "synonym": "Проверка диффа"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.ДатаУничтожения",
+      "right": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.ДатаУничтожения"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S102"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать новый справочник Номенклатура",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Catalog",
+          "name": "Номенклатура"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S103"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать документ Заказ клиента",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Document",
+          "name": "ЗаказКлиента"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S104"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать перечисление Статусы заказа",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Enum",
+          "name": "СтатусыЗаказа"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S105"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать регистр сведений Цены номенклатуры",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "InformationRegister",
+          "name": "ЦеныНоменклатуры"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S106"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать общий модуль РаботаСЗаказами",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "CommonModule",
+          "name": "РаботаСЗаказами"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S107"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать отчёт Продажи за период",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Report",
+          "name": "ПродажиЗаПериод"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S108"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать обработку Загрузка прайса",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "DataProcessor",
+          "name": "ЗагрузкаПрайса"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S109"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать справочник Контрагенты по-настоящему, добавить ему реквизит ИНН и прочитать результат",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Catalog",
+          "name": "Контрагенты"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Контрагенты",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ИНН",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 12,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Контрагенты.Attribute.ИНН"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S110"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Удалить устаревший объект конфигурации",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
+        "op": "object.remove"
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S111"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Удалить справочник, на который ссылаются права роли — поверхность отказывает и называет ссылающийся файл",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "object.remove"
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Catalog.Валюты` is still referenced by 1 source file(s): Roles/SalesReader/Ext/Rights.xml; remove the references first"
+    }
+   ],
+   "id": "S112"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Добавить документ в основания создания справочника (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "relation.add",
+        "args": {
+         "values": {
+          "relation": "basedOn",
+          "targets": [
+           {
+            "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+           }
+          ]
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S113"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Заменить состав оснований создания справочника (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "relation.replace",
+        "args": {
+         "values": {
+          "relation": "basedOn",
+          "targets": [
+           {
+            "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+           }
+          ]
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S114"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Добавить и убрать основание создания одним пакетом (обратимость связи, превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "relation.add",
+        "args": {
+         "values": {
+          "relation": "basedOn",
+          "targets": [
+           {
+            "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+           }
+          ]
+         }
+        }
+       },
+       {
+        "op": "relation.remove",
+        "args": {
+         "values": {
+          "relation": "basedOn",
+          "targets": [
+           {
+            "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+           }
+          ]
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S115"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Завести встроенную справку объекта на русском языке",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "help.create",
+        "args": {
+         "values": {
+          "lang": "ru"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S116"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Скопировать объект: прочитать состав и создать аналог (маршрут с текущим ответом)",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Enum",
+          "name": "ВажностьКопия"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S117"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Узнать из словаря корня, доступно ли создание объектов",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Configuration",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S118"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать вид характеристик",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "ChartOfCharacteristicTypes",
+          "name": "СвойстваОбъектов"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S119"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать план обмена",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "ExchangePlan",
+          "name": "ОбменССайтом"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S120"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать константу",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Constant",
+          "name": "ОсновнаяОрганизация"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S121"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать регистр накопления",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "ОстаткиТоваров"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S122"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать журнал документов",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "DocumentJournal",
+          "name": "ДокументыПродаж"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S123"
+  },
+  {
+   "area": "Создание и удаление объектов",
+   "task": "Создать определяемый тип",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "DefinedType",
+          "name": "ТипВладельца"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S124"
+  },
+  {
+   "area": "Формы",
+   "task": "Добавить форму списка справочнику",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаСпискаНовая",
+           "type": "ListForm"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S125"
+  },
+  {
+   "area": "Формы",
+   "task": "Добавить форму элемента",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаЭлементаНовая",
+           "type": "ObjectForm"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S126"
+  },
+  {
+   "area": "Формы",
+   "task": "Назначить основную форму списка",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "form.set",
+        "args": {
+         "values": {
+          "defaultListForm": "ФормаСписка"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S127"
+  },
+  {
+   "area": "Формы",
+   "task": "Удалить устаревшую форму",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаСписка",
+      "ops": [
+       {
+        "op": "form.remove"
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S128"
+  },
+  {
+   "area": "Формы",
+   "task": "Создать произвольную форму с нуля",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаПодбора",
+      "ops": [
+       {
+        "op": "form.create",
+        "args": {
+         "values": {
+          "name": "ФормаПодбора",
+          "type": "ChoiceForm"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S129"
+  },
+  {
+   "area": "Формы",
+   "task": "Добавить на форму элемента поле ввода реквизита",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеЗагружаетсяИзИнтернета",
+           "type": "InputField",
+           "path": "Объект.ЗагружаетсяИзИнтернета"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S130"
+  },
+  {
+   "area": "Формы",
+   "task": "Удалить служебную группу с формы элемента",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
+      "ops": [
+       {
+        "op": "element.remove"
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S131"
+  },
+  {
+   "area": "Формы",
+   "task": "Добавить реквизит формы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "formAttribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "РежимПросмотра",
+           "type": "Boolean"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S132"
+  },
+  {
+   "area": "Формы",
+   "task": "Добавить команду формы с кнопкой",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "formCommand.add",
+        "args": {
+         "items": [
+          {
+           "name": "ЗаполнитьПоКлассификатору"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S133"
+  },
+  {
+   "area": "Формы",
+   "task": "Назначить обработчик события ПриОткрытии",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "ПриОткрытии",
+          "handler": "ПриОткрытии"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S134"
+  },
+  {
+   "area": "Формы",
+   "task": "Полный маршрут доработки формы: найти форму, изучить, добавить команду",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "formCommand.add",
+        "args": {
+         "items": [
+          {
+           "name": "ОбновитьКурсы"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S135"
+  },
+  {
+   "area": "Формы",
+   "task": "Добавить форму документу",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаПодбораОснований",
+           "type": "ListForm"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S136"
+  },
+  {
+   "area": "Формы",
+   "task": "Добавить форму отчёту",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаНастроек",
+           "type": "SettingsForm"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S137"
+  },
+  {
+   "area": "Формы",
+   "task": "Добавить форму перечислению из словаря операций",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаВыбора",
+           "type": "ChoiceForm"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S138"
+  },
+  {
+   "area": "Формы",
+   "task": "Скрыть элемент формы по функциональной опции",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ГруппаДополнительно",
+           "type": "Group"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S139"
+  },
+  {
+   "area": "Формы",
+   "task": "Настроить условное оформление на форме",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаСписка",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "ПриСозданииНаСервере",
+          "handler": "ПриСозданииНаСервере"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S140"
+  },
+  {
+   "area": "Формы",
+   "task": "Добавить табличное поле списка на форму",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаСписка",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ТаблицаКурсов",
+           "type": "Table",
+           "path": "List",
+           "title": "Курсы"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S141"
+  },
+  {
+   "area": "Формы",
+   "task": "Переставить элементы формы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеКод",
+           "path": "Объект.Код",
+           "after": "ПолеНаименование"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S142"
+  },
+  {
+   "area": "Формы",
+   "task": "Привязать обработчик изменения к полю формы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "ПриИзменении",
+          "handler": "ПолеНаименованиеПриИзменении",
+          "element": "ПолеНаименование"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S143"
+  },
+  {
+   "area": "Формы",
+   "task": "Посмотреть формы объекта перед доработкой (в фикстуре их нет — пустой состав)",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S144"
+  },
+  {
+   "area": "Формы",
+   "task": "Добавить форму настроек регистру",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаНабораЗаписей",
+           "type": "RecordSetForm"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S145"
+  },
+  {
+   "area": "Формы",
+   "task": "Словарь операций узла языка",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Language.Русский",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S146"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Найти, где определена функция ПеревестиТекст",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Функция ПеревестиТекст"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S147"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Найти все вызовы функции по конфигурации",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "ПеревестиТекст("
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S148"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Найти использования строкового литерала (адрес сервиса)",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "translation.googleapis.com"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S149"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Поискать только в модуле переводчика",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "ДоступныеЯзыки",
+      "scope": "main:CommonModule.GoogleПереводчик"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S150"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Поискать в объекте без кода — пустой результат, не ошибка",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "ЧегоНетНигде",
+      "scope": "main:Enum.ВажностьПроблемыУчета"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S151"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Ограничить поиск корнем конфигурации",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "КонецФункции",
+      "scope": "main:Configuration"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S152"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Поиск с ограничением количества результатов",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Функция",
+      "limit": 5
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S153"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Поиск регулярным выражением",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Перевести.*Текст",
+      "regex": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S154"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Посмотреть методы общего модуля",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S155"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Вставить служебный код после метода модуля",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "// приёмочная вставка после ДоступныеЯзыки",
+         "selector": {
+          "method": "ДоступныеЯзыки"
+         },
+         "position": "after"
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S156"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Заменить реализацию функции модуля",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.replace",
+        "args": {
+         "text": "Функция МаксимальныйРазмерПорции()\n\tВозврат 100;\nКонецФункции",
+         "selector": {
+          "method": "МаксимальныйРазмерПорции"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S157"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Реализовать обработчик события объекта в модуле объекта",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "event.implement",
+        "args": {
+         "at": "main:Catalog.Валюты.Event.ПриЗаписи"
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S158"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Полный маршрут правки кода: найти вызов, изучить модуль, вставить код",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "НастройкиАвторизации"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "// приёмочная вставка",
+         "selector": {
+          "method": "НастройкиАвторизации"
+         },
+         "position": "after"
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S159"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Найти мёртвый код: поиск по имени функции, которую никто не зовёт",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "НастройкаВыполнена("
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S160"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Найти обработчики определения настроек",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "ПриОпределенииНастроек"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S161"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Поиск кириллического идентификатора со спецсимволами",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "ВыполнитьЗапрос("
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S162"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Изучить словарь операций модуля",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S163"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Найти все экспортные функции в коде конфигурации",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Экспорт"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S164"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Открыть конкретный метод модуля",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S165"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Найти вызовы функции перевода в коде",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "ПеревестиТекст"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S166"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Посмотреть, что за роль SalesReader",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "SalesReader"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Role.SalesReader"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S167"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Дать роли право чтения справочника Валюты",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "object": "Catalog.Валюты",
+          "right": "Read",
+          "value": true
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S168"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Забрать право удаления интерактивно",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "object": "Catalog.Валюты",
+          "right": "InteractiveDelete",
+          "value": false
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S169"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Создать новую роль МенеджерПродаж",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.МенеджерПродаж",
+      "ops": [
+       {
+        "op": "role.create",
+        "args": {
+         "values": {
+          "name": "МенеджерПродаж"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S170"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Настроить RLS на чтение по подразделению",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "object": "InformationRegister.АдминистративнаяИерархия",
+          "right": "Read",
+          "rls": "ГДЕ КодСубъектаРФ = &Код"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S171"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Дать право проведения документа",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "object": "Document.АктОбУничтоженииПерсональныхДанных",
+          "right": "Posting",
+          "value": true
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S172"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Право на запуск обработки для роли",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "object": "Report.АнализВерсийОбъектов",
+          "right": "Use",
+          "value": true
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S173"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Узнать по документации, как раздаются права на регистры",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "права доступа к регистру сведений",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S174"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Проверить роль профилем валидации role",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "filter": {
+       "validation": {
+        "profile": "role"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed"
+    }
+   ],
+   "id": "S175"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Словарь операций роли",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S176"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Полный маршрут: найти роль, изучить, выдать право",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "SalesReader"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "object": "Catalog.Валюты",
+          "right": "Update",
+          "value": true
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S177"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Сравнить права двух ролей (диффом одинаковых видов)",
+   "wire": [
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Role.SalesReader",
+      "right": "main:Role.SalesReader"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S178"
+  },
+  {
+   "area": "Роли и права",
+   "task": "Проверить читаемость узла роли",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Role.SalesReader"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S179"
+  },
+  {
+   "area": "СКД",
+   "task": "Открыть схему компоновки отчёта",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S180"
+  },
+  {
+   "area": "СКД",
+   "task": "Добавить поле в набор данных СКД",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "field.add",
+        "args": {
+         "items": [
+          {
+           "name": "Автор",
+           "dataPath": "Автор"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S181"
+  },
+  {
+   "area": "СКД",
+   "task": "Изменить заголовок поля СКД",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "field.set",
+        "args": {
+         "values": {
+          "field": "Количество",
+          "title": "Число версий"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S182"
+  },
+  {
+   "area": "СКД",
+   "task": "Удалить поле из схемы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.Версия",
+      "ops": [
+       {
+        "op": "field.remove"
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S183"
+  },
+  {
+   "area": "СКД",
+   "task": "Добавить параметр периода",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+      "ops": [
+       {
+        "op": "parameter.add",
+        "args": {
+         "items": [
+          {
+           "name": "Период",
+           "type": "StandardPeriod"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S184"
+  },
+  {
+   "area": "СКД",
+   "task": "Задать значение параметра по умолчанию",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+      "ops": [
+       {
+        "op": "parameter.set",
+        "args": {
+         "values": {
+          "name": "Период",
+          "value": "ЭтотМесяц"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S185"
+  },
+  {
+   "area": "СКД",
+   "task": "Добавить отбор по автору",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+      "ops": [
+       {
+        "op": "filter.add",
+        "args": {
+         "items": [
+          {
+           "field": "ТипОбъекта",
+           "comparison": "Equal",
+           "value": "Справочник"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S186"
+  },
+  {
+   "area": "СКД",
+   "task": "Очистить отборы схемы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+      "ops": [
+       {
+        "op": "filter.clear"
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S187"
+  },
+  {
+   "area": "СКД",
+   "task": "Поменять текст запроса набора данных",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Query.НаборДанных1",
+      "ops": [
+       {
+        "op": "query.set",
+        "args": {
+         "values": {
+          "dataSet": "НаборДанных1",
+          "query": "ВЫБРАТЬ 1 КАК Поле1"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S188"
+  },
+  {
+   "area": "СКД",
+   "task": "Точечно поправить запрос",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Query.НаборДанных1",
+      "ops": [
+       {
+        "op": "query.patch",
+        "args": {
+         "values": {
+          "dataSet": "НаборДанных1",
+          "find": "1",
+          "replace": "2"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S189"
+  },
+  {
+   "area": "СКД",
+   "task": "Добавить вычисляемое поле",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "calculatedField.add",
+        "args": {
+         "items": [
+          {
+           "name": "РазмерКБ",
+           "expression": "РазмерДанных / 1024"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S190"
+  },
+  {
+   "area": "СКД",
+   "task": "Добавить итог по количеству версий",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+      "ops": [
+       {
+        "op": "total.add",
+        "args": {
+         "items": [
+          {
+           "field": "Количество",
+           "expression": "Сумма(Количество)"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S191"
+  },
+  {
+   "area": "СКД",
+   "task": "Добавить вариант отчёта",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+      "ops": [
+       {
+        "op": "variant.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПоАвторам"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S192"
+  },
+  {
+   "area": "СКД",
+   "task": "Настроить структуру группировок варианта",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+      "ops": [
+       {
+        "op": "structure.set",
+        "args": {
+         "values": {
+          "variant": "Основной",
+          "groupBy": [
+           "ТипОбъекта"
+          ]
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S193"
+  },
+  {
+   "area": "СКД",
+   "task": "Проверить схему компоновки профилем валидации dcs",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
+      "filter": {
+       "validation": {
+        "profile": "dcs"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed"
+    }
+   ],
+   "id": "S194"
+  },
+  {
+   "area": "СКД",
+   "task": "Изучить словарь операций схемы",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S195"
+  },
+  {
+   "area": "Макеты",
+   "task": "Добавить печатный макет справочнику",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "template.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПФ_MXL_СписокВалют",
+           "templateType": "SpreadsheetDocument"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S196"
+  },
+  {
+   "area": "Макеты",
+   "task": "Поменять синоним макета",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов",
+      "ops": [
+       {
+        "op": "template.set",
+        "args": {
+         "values": {
+          "name": "ОсновнаяСхемаКомпоновкиДанных",
+          "synonym": "Основная схема"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S197"
+  },
+  {
+   "area": "Макеты",
+   "task": "Удалить устаревший макет",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов",
+      "ops": [
+       {
+        "op": "template.remove",
+        "args": {
+         "values": {
+          "name": "ОсновнаяСхемаКомпоновкиДанных"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S198"
+  },
+  {
+   "area": "Макеты",
+   "task": "Добавить табличный макет справочнику и заполнить шапку одним пакетом",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "template.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПФ_MXL_СписокВалют",
+           "templateType": "SpreadsheetDocument"
+          }
+         ]
+        }
+       },
+       {
+        "op": "mxl.set",
+        "args": {
+         "at": "main:Catalog.Валюты.Template.ПФ_MXL_СписокВалют",
+         "values": {
+          "area": "Шапка",
+          "cells": {
+           "R1C1": "Валюта",
+           "R1C2": "Курс"
+          }
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S199"
+  },
+  {
+   "area": "Макеты",
+   "task": "Посмотреть макеты отчёта перед правкой",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S200"
+  },
+  {
+   "area": "Макеты",
+   "task": "Проверить табличный макет профилем валидации mxl",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.МакетОтчета",
+      "filter": {
+       "validation": {
+        "profile": "mxl"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed"
+    }
+   ],
+   "id": "S201"
+  },
+  {
+   "area": "Макеты",
+   "task": "Узнать по стандартам, как оформлять печатные формы",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "печатная форма макет требования",
+      "source": "development-standard"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S202"
+  },
+  {
+   "area": "Макеты",
+   "task": "Добавить печатный макет документу",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "template.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПФ_MXL_Акт",
+           "templateType": "SpreadsheetDocument"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S203"
+  },
+  {
+   "area": "Подсистемы и интерфейс",
+   "task": "Посмотреть подсистему администрирования",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Subsystem.Администрирование"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S204"
+  },
+  {
+   "area": "Подсистемы и интерфейс",
+   "task": "Создать подсистему Продажи",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "subsystem.create",
+        "args": {
+         "values": {
+          "name": "Продажи"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S205"
+  },
+  {
+   "area": "Подсистемы и интерфейс",
+   "task": "Включить справочник в состав подсистемы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование",
+      "ops": [
+       {
+        "op": "content.add",
+        "args": {
+         "items": [
+          {
+           "object": "Catalog.Валюты"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S206"
+  },
+  {
+   "area": "Подсистемы и интерфейс",
+   "task": "Добавить объект в состав подсистемы и тут же исключить его одним пакетом",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование",
+      "ops": [
+       {
+        "op": "content.add",
+        "args": {
+         "items": [
+          {
+           "object": "Catalog.Валюты"
+          }
+         ]
+        }
+       },
+       {
+        "op": "content.remove",
+        "args": {
+         "items": [
+          {
+           "object": "Catalog.Валюты"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S207"
+  },
+  {
+   "area": "Подсистемы и интерфейс",
+   "task": "Добавить дочернюю подсистему",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование",
+      "ops": [
+       {
+        "op": "childSubsystem.add",
+        "args": {
+         "items": [
+          {
+           "name": "НастройкиПользователей"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S208"
+  },
+  {
+   "area": "Подсистемы и интерфейс",
+   "task": "Исключить дочернюю подсистему из состава родительской",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование",
+      "ops": [
+       {
+        "op": "childSubsystem.remove",
+        "args": {
+         "items": [
+          {
+           "name": "КонтрольРаботыПользователей"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S209"
+  },
+  {
+   "area": "Подсистемы и интерфейс",
+   "task": "Проверить подсистему профилем валидации subsystem",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Subsystem.Администрирование",
+      "filter": {
+       "validation": {
+        "profile": "subsystem"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed"
+    }
+   ],
+   "id": "S210"
+  },
+  {
+   "area": "Подсистемы и интерфейс",
+   "task": "Словарь операций подсистемы",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Subsystem.Администрирование",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S211"
+  },
+  {
+   "area": "Подсистемы и интерфейс",
+   "task": "Проверить читаемость узла подсистемы",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Subsystem.Администрирование"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S212"
+  },
+  {
+   "area": "Подсистемы и интерфейс",
+   "task": "Узнать по стандартам, как строить командный интерфейс раздела",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "командный интерфейс подсистемы",
+      "source": "development-standard"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S213"
+  },
+  {
+   "area": "XDTO и обмены",
+   "task": "Добавить тип-значение в XDTO-пакет",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3",
+      "ops": [
+       {
+        "op": "valueType.add",
+        "args": {
+         "values": {
+          "name": "КодВалюты",
+          "base": "xs:string"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S214"
+  },
+  {
+   "area": "XDTO и обмены",
+   "task": "Добавить объектный тип в пакет",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3",
+      "ops": [
+       {
+        "op": "objectType.add",
+        "args": {
+         "values": {
+          "name": "Валюта"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S215"
+  },
+  {
+   "area": "XDTO и обмены",
+   "task": "Добавить свойство в объектный тип",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+      "ops": [
+       {
+        "op": "property.add",
+        "args": {
+         "values": {
+          "property": {
+           "name": "КодСклада",
+           "type": "xs:string",
+           "minOccurs": 0
+          }
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S216"
+  },
+  {
+   "area": "XDTO и обмены",
+   "task": "Удалить неиспользуемый тип из пакета",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+      "ops": [
+       {
+        "op": "type.remove"
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S217"
+  },
+  {
+   "area": "XDTO и обмены",
+   "task": "Удалить свойство типа",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+      "ops": [
+       {
+        "op": "property.remove",
+        "args": {
+         "values": {
+          "name": "Версия"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S218"
+  },
+  {
+   "area": "XDTO и обмены",
+   "task": "Узнать по документации, как устроены XDTO-пакеты",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "XDTO пакет фабрика",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S219"
+  },
+  {
+   "area": "Сборка, ИБ и выгрузка",
+   "task": "Проверить готовность рабочего пространства перед сборкой",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {},
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S220"
+  },
+  {
+   "area": "Сборка, ИБ и выгрузка",
+   "task": "Узнать по документации, как выгружать конфигурацию в файлы",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "выгрузка конфигурации в файлы",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S221"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Проверить читаемость каждого ключевого объекта",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S222"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Прогнать проверку описания объекта профилем meta",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "filter": {
+       "validation": {
+        "profile": "meta"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed"
+    }
+   ],
+   "id": "S223"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Прогнать проверку корня конфигурации профилем cf",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Configuration",
+      "filter": {
+       "validation": {
+        "profile": "cf"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed"
+    }
+   ],
+   "id": "S224"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Проверить форму списка профилем валидации form",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаСписка",
+      "filter": {
+       "validation": {
+        "profile": "form"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed"
+    }
+   ],
+   "id": "S225"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Убедиться, что превью не тронуло исходники (дифф равенства)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "только превью"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Catalog.Валюты",
+      "right": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S226"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Сравнить перечисления после правки одного из них",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "для сравнения"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Enum.LanguageAware",
+      "right": "main:Enum.ВажностьПроблемыУчета"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S227"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Проверить регистр после правки измерений (читаемость)",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S228"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Точечный дифф стандартных реквизитов",
+   "wire": [
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Catalog.Валюты.StandardAttribute",
+      "right": "main:Document.АктОбУничтоженииПерсональныхДанных.StandardAttribute"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S229"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Проверка неизвестным профилем — закрытый список профилей",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "filter": {
+       "validation": {
+        "profile": "security"
+       }
+      }
+     },
+     "expect": [
+      "unsupported"
+     ]
+    }
+   ],
+   "id": "S230"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Проверить модуль на читаемость",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S231"
+  },
+  {
+   "area": "Тесты и запуск",
+   "task": "Узнать по документации, как подключить YaXUnit",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "YaXUnit юнит-тесты 1С"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S232"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Как работает срез последних регистра сведений",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "РегистрыСведений СрезПоследних",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S233"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Что такое ХранилищеЗначения и как с ним работать",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "ХранилищеЗначения",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S234"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Синтаксис директив компиляции модулей",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "директивы компиляции НаКлиенте НаСервере",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S235"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Как правильно назвать общий модуль по стандартам",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "имена общих модулей",
+      "source": "development-standard"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S236"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Стандарт оформления процедур и функций",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "оформление процедур и функций",
+      "source": "development-standard"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S237"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Правила использования привилегированного режима",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "привилегированный режим",
+      "source": "development-standard"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S238"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Поиск по обоим источникам сразу (без фильтра источника)",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "табличная часть"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S239"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Документация конфигурации пока не подключена (честная граница)",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "как ведётся справочник валют",
+      "source": "configuration-documentation"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task",
+      "unsupported"
+     ]
+    }
+   ],
+   "id": "S240"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Неизвестный источник документации — закрытый список источников",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "что угодно",
+      "source": "wikipedia"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task",
+      "unsupported"
+     ]
+    }
+   ],
+   "id": "S241"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Как объявить табличную часть в структуре метаданных",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "табличная часть документа",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S242"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Стандарт про обработку ошибок и Попытку",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "обработка исключений Попытка",
+      "source": "development-standard"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S243"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Как работает механизм функциональных опций",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "функциональные опции",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S244"
+  },
+  {
+   "area": "Поддержка поставщика",
+   "task": "Посмотреть состояние поддержки объекта",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "filter": {
+       "sections": [
+        "props"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S245"
+  },
+  {
+   "area": "Поддержка поставщика",
+   "task": "Выключить возможность изменения конфигурации на поддержке",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "supportCapability.set",
+        "args": {
+         "values": {
+          "enabled": false
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S246"
+  },
+  {
+   "area": "Поддержка поставщика",
+   "task": "Разрешить редактирование объекта поставщика с сохранением поддержки",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "editable"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S247"
+  },
+  {
+   "area": "Поддержка поставщика",
+   "task": "Снять объект с поддержки по стандарту — сначала документация",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "снятие с поддержки объекта",
+      "source": "development-standard"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S248"
+  },
+  {
+   "area": "Поддержка поставщика",
+   "task": "Проверить поддержку всего проекта",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {},
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S249"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Посмотреть языки конфигурации",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Language"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S250"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Открыть язык Русский и его свойства",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Language.Русский"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S251"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Посмотреть одно значение перечисления",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета.EnumValue.Ошибка"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S252"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Найти табличную часть по имени",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "Представления"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S253"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Пролистать состав конфигурации небольшой страницей",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Configuration",
+      "limit": 2
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S254"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Открыть измерение регистра и его свойства",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия.Dimension.КодСубъектаРФ"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S255"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Записать комментарий отчёта по-настоящему",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Отчёт проверен приёмкой"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S256"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Записать синоним общего модуля по-настоящему",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Модуль внешнего перевода"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S257"
+  },
+  {
+   "area": "Свойства объектов",
+   "task": "Записать комментарий документа по-настоящему",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Документ под наблюдением"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S258"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Добавить реквизит регистру сведений (превью)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Основание",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 100,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S259"
+  },
+  {
+   "area": "Реквизиты и состав",
+   "task": "Реальный объект БСП не проходит постусловие правки — граница ридера постобраза",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ГраницаПостусловия",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 5,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S260"
+  },
+  {
+   "area": "Код BSL",
+   "task": "Найти все внешние адреса, зашитые в код",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "https://"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S261"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Как пользоваться длительными операциями на сервере",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "длительные операции фоновое задание",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S262"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Стандарт по именованию реквизитов объектов",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "имена реквизитов",
+      "source": "development-standard"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ],
+   "id": "S263"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Проверить читаемость отчёта",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S264"
+  },
+  {
+   "area": "Проверки качества",
+   "task": "Сравнить наборы измерений регистра (равенство коллекций)",
+   "wire": [
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:InformationRegister.АдминистративнаяИерархия.Dimension",
+      "right": "main:InformationRegister.АдминистративнаяИерархия.Dimension"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S265"
+  },
+  {
+   "id": "S266",
+   "area": "Проверки качества",
+   "task": "Профиль form указан для справочника — поверхность отказывает по несовпадению вида узла",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "filter": {
+       "validation": {
+        "profile": "form"
+       }
+      }
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: validation profile `form` does not validate Catalog nodes; pick the profile of `main:Catalog.Валюты` or omit the filter"
+    }
+   ]
+  }
+ ]
+}
