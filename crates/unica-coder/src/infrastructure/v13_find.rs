@@ -1449,6 +1449,7 @@ mod tests {
         crate::infrastructure::v13_read::tests::production_authorities_reach_all_profile_module_capabilities_from_real_parent_inventories();
         crate::infrastructure::v13_read::tests::one_find_reads_each_module_source_once_per_actor_revision();
         crate::infrastructure::v13_read::tests::one_find_parses_each_metadata_descriptor_once_per_actor_revision();
+        crate::infrastructure::v13_read::tests::typed_reads_parse_the_support_marker_once_per_actor_revision();
         unchanged_workspace_reuses_the_retained_find_index_without_rereading_identities();
         changed_source_revision_rebuilds_the_find_index();
         crate::infrastructure::v13_read::tests::operation_lease_find_traversal_scans_once_then_confirms_once();

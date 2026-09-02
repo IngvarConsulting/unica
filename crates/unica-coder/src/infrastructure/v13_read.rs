@@ -232,6 +232,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
     }
 
     #[cfg(test)]
+    pub(crate) fn support_state_read_count(&self) -> usize {
+        self.read.support_state_read_count()
+    }
+
+    #[cfg(test)]
     pub(crate) const fn source_set_kind_for_test(&self) -> SourceSetKind {
         self.read.source_set_kind()
     }
