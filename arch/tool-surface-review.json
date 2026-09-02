@@ -75,11 +75,12 @@
   "unica.run": {
     "result": {
       "contract": "typed",
-      "now": "Вызов без `op` возвращает закрытый словарь; `syntax.check` выполняется как durable cancellable Task с пятиминутным process timeout, bounded capture и закрытым terminal/provider результатом; остальные операции неподдержаны",
-      "target": "Подключать следующие операции только через такие же bounded Task и закрытые terminal/provider-контракты"
+      "now": "Вызов без `op` до source admission возвращает закрытый словарь с preview/fence требованиями; `source.attach` revision-fenced и create-only публикует autodetected однородные source sets без платформы; `syntax.check` выполняется как durable cancellable Task с bounded terminal/provider результатом; остальные операции неподдержаны",
+      "target": "Добавить явные source declarations и подключать остальные операции через preview/apply, capability-specific admission и закрытые terminal/provider-контракты"
     },
     "scenarios": [
       "Получить машинно-читаемый словарь допустимых runtime намерений",
+      "Предпросмотреть и атомарно присоединить autodetected source sets до admission",
       "Запустить bounded проверку синтаксиса без публикации raw stdout, command или artifact path"
     ],
     "scope": "in"

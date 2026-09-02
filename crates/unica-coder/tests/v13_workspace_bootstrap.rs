@@ -170,15 +170,273 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
     }));
     let result = &response["result"]["structuredContent"];
     assert_eq!(result["ok"], true, "{response:#}");
+    assert_eq!(
+        result["summary"],
+        "workspace has no 1C source roots; create or import sources before attaching them"
+    );
     assert_eq!(result["data"]["config"]["state"], "missing");
     assert_eq!(result["data"]["setup"]["path"], "v8project.yaml");
-    assert!(result["data"]["setup"]["content"]
-        .as_str()
-        .unwrap()
-        .contains("source-set:"));
+    assert_eq!(result["data"]["setup"]["content"], Value::Null);
+    assert_eq!(result["data"]["checks"], json!([]));
+    assert_eq!(result["data"]["diagnostics"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        result["data"]["diagnostics"][0]["code"],
+        "source_roots_missing"
+    );
     assert!(!serde_json::to_string(result)
         .unwrap()
         .contains("unica.project."));
+
+    let dictionary = mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {"name": "unica.run", "arguments": {}}
+    }));
+    let source_attach = dictionary["result"]["structuredContent"]["data"]["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["op"] == "source.attach")
+        .unwrap();
+    assert_eq!(source_attach["implemented"], true);
+    assert_eq!(source_attach["execution"], "previewApply");
+    assert_eq!(source_attach["effects"], json!(["workspaceFiles"]));
+    assert!(source_attach["description"]
+        .as_str()
+        .is_some_and(|description| description.contains("v8project.yaml")));
+    assert_eq!(source_attach["previewRequired"], true);
+    assert_eq!(source_attach["ifRevRequiredOnApply"], true);
+
+    let invalid_dictionary = mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {"name": "unica.run", "arguments": {"dryRun": true}}
+    }));
+    assert_eq!(
+        invalid_dictionary["result"]["structuredContent"]["diagnostics"][0]["code"],
+        "bad_value"
+    );
+
+    mcp.finish();
+}
+
+#[test]
+fn canonical_stdio_previews_and_applies_autodetected_source_attachment_before_admission() {
+    let root = tempfile::tempdir().expect("source attach integration root");
+    let workspace = root.path().join("workspace");
+    let state = root.path().join("state");
+    std::fs::create_dir_all(workspace.join("src/cf")).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    std::fs::write(
+        workspace.join("src/cf/Configuration.xml"),
+        "<MetaDataObject/>",
+    )
+    .unwrap();
+    let mut mcp = McpProcess::start(&workspace, &state);
+
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "v13-source-attach-ci", "version": "1"}
+        }
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {}
+    }));
+
+    let bootstrap = mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "unica.view", "arguments": {}}
+    }));
+    let bootstrap_result = &bootstrap["result"]["structuredContent"];
+    assert_eq!(bootstrap_result["data"]["config"]["state"], "autodetected");
+    assert!(bootstrap_result["next"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|next| {
+            next["tool"] == "unica.run"
+                && next["args"]["op"] == "source.attach"
+                && next["args"]["dryRun"] == true
+        }));
+
+    let missing_mode = mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "tools/call",
+        "params": {
+            "name": "unica.run",
+            "arguments": {"op": "source.attach", "args": {}}
+        }
+    }));
+    assert_eq!(missing_mode["result"]["structuredContent"]["ok"], false);
+    assert_eq!(
+        missing_mode["result"]["structuredContent"]["diagnostics"][0]["code"],
+        "bad_value"
+    );
+
+    let preview = mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "unica.run",
+            "arguments": {"op": "source.attach", "args": {}, "dryRun": true}
+        }
+    }));
+    let preview_result = &preview["result"]["structuredContent"];
+    assert_eq!(preview_result["ok"], true, "{preview:#}");
+    assert_eq!(preview_result["data"]["op"], "source.attach");
+    assert_eq!(preview_result["data"]["dryRun"], true);
+    assert_eq!(preview_result["data"]["target"], "v8project.yaml");
+    assert!(!workspace.join("v8project.yaml").exists());
+    let rev = preview_result["rev"]
+        .as_str()
+        .expect("source attachment preview revision")
+        .to_string();
+
+    std::fs::create_dir_all(workspace.join("src/cfe/Late")).unwrap();
+    std::fs::write(
+        workspace.join("src/cfe/Late/Configuration.xml"),
+        "<MetaDataObject/>",
+    )
+    .unwrap();
+
+    let stale = mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "unica.run",
+            "arguments": {
+                "op": "source.attach",
+                "args": {},
+                "dryRun": false,
+                "ifRev": rev
+            }
+        }
+    }));
+    let stale_result = &stale["result"]["structuredContent"];
+    assert_eq!(stale_result["ok"], false, "{stale:#}");
+    assert_eq!(stale_result["diagnostics"][0]["code"], "revision_mismatch");
+    assert!(!workspace.join("v8project.yaml").exists());
+
+    let refreshed = mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {
+            "name": "unica.run",
+            "arguments": {"op": "source.attach", "args": {}, "dryRun": true}
+        }
+    }));
+    let rev = refreshed["result"]["structuredContent"]["rev"]
+        .as_str()
+        .expect("refreshed source attachment revision")
+        .to_string();
+
+    let applied = mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {
+            "name": "unica.run",
+            "arguments": {
+                "op": "source.attach",
+                "args": {},
+                "dryRun": false,
+                "ifRev": rev
+            }
+        }
+    }));
+    let applied_result = &applied["result"]["structuredContent"];
+    assert_eq!(applied_result["ok"], true, "{applied:#}");
+    assert_eq!(applied_result["data"]["dryRun"], false);
+    assert_eq!(applied_result["changed"][0]["path"], "v8project.yaml");
+    assert_eq!(applied_result["changed"][0]["kind"], "created");
+    let config = std::fs::read_to_string(workspace.join("v8project.yaml")).unwrap();
+    assert!(config.contains("format: DESIGNER"), "{config}");
+    assert!(config.contains("path: src/cf"), "{config}");
+    assert!(config.contains("path: src/cfe/Late"), "{config}");
+
+    let overwrite = mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {
+            "name": "unica.run",
+            "arguments": {"op": "source.attach", "args": {}, "dryRun": true}
+        }
+    }));
+    assert_eq!(overwrite["result"]["structuredContent"]["ok"], false);
+    assert_eq!(
+        overwrite["result"]["structuredContent"]["diagnostics"][0]["code"],
+        "invalid_state"
+    );
+
+    mcp.finish();
+}
+
+#[test]
+fn canonical_source_attachment_refuses_mixed_designer_and_edt_discovery() {
+    let root = tempfile::tempdir().expect("mixed source attach integration root");
+    let workspace = root.path().join("workspace");
+    let state = root.path().join("state");
+    std::fs::create_dir_all(workspace.join("src/cf")).unwrap();
+    std::fs::create_dir_all(workspace.join("src/cfe/Edt/Configuration")).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    std::fs::write(
+        workspace.join("src/cf/Configuration.xml"),
+        "<MetaDataObject/>",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("src/cfe/Edt/Configuration/Configuration.mdo"),
+        "",
+    )
+    .unwrap();
+    let mut mcp = McpProcess::start(&workspace, &state);
+
+    mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "v13-mixed-attach-ci", "version": "1"}
+        }
+    }));
+    mcp.notify(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {}
+    }));
+
+    let preview = mcp.exchange(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "unica.run",
+            "arguments": {"op": "source.attach", "args": {}, "dryRun": true}
+        }
+    }));
+    let result = &preview["result"]["structuredContent"];
+    assert_eq!(result["ok"], false, "{preview:#}");
+    assert_eq!(result["diagnostics"][0]["code"], "ambiguous_source_format");
+    assert!(!workspace.join("v8project.yaml").exists());
 
     mcp.finish();
 }

@@ -679,21 +679,7 @@ impl CanonicalV13ReadService {
         let arguments = invocation.arguments();
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
         let Some(op) = arguments.get("op") else {
-            let operations = catalog
-                .run_dictionary
-                .iter()
-                .map(|operation| {
-                    serde_json::json!({
-                        "op": operation.name(),
-                        "terminal": operation.terminal,
-                        "rejectsSessions": operation.rejects_sessions,
-                        "implemented": operation.implemented,
-                    })
-                })
-                .collect::<Vec<_>>();
-            let mut result = DomainResult::success("canonical run operation dictionary returned");
-            result.data = Some(serde_json::json!({"operations": operations}));
-            return result;
+            return super::v13_source_attach::run_dictionary_result();
         };
         let Some(op) = op.as_str() else {
             return error_result(None, "bad_value", "run op must be a string");
@@ -713,6 +699,13 @@ impl CanonicalV13ReadService {
             );
         }
         if op == "syntax.check" {
+            if arguments.contains_key("dryRun") || arguments.contains_key("ifRev") {
+                return error_result(
+                    Some(op.to_string()),
+                    "bad_value",
+                    "syntax.check executes immediately and does not accept dryRun or ifRev",
+                );
+            }
             let args = arguments
                 .get("args")
                 .and_then(Value::as_object)
