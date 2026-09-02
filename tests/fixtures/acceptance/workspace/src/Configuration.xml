@@ -43,6 +43,6 @@
 			<Language>Русский</Language>
 			<Language>English</Language>
 			<Enum>LanguageAware</Enum>
-		<Catalog>Валюты</Catalog><Document>АктОбУничтоженииПерсональныхДанных</Document><Enum>ВажностьПроблемыУчета</Enum><InformationRegister>АдминистративнаяИерархия</InformationRegister><CommonModule>GoogleПереводчик</CommonModule><Report>АнализВерсийОбъектов</Report><Role>SalesReader</Role><Subsystem>Администрирование</Subsystem><DocumentJournal>ДокументыОрганизации</DocumentJournal><XDTOPackage>EnterpriseData_1_17_3</XDTOPackage></ChildObjects>
+		<Catalog>Валюты</Catalog><Document>АктОбУничтоженииПерсональныхДанных</Document><Enum>ВажностьПроблемыУчета</Enum><Enum>СпособыУстановкиКурсаВалюты</Enum><InformationRegister>АдминистративнаяИерархия</InformationRegister><CommonModule>GoogleПереводчик</CommonModule><Report>АнализВерсийОбъектов</Report><Role>SalesReader</Role><Subsystem>Администрирование</Subsystem><DocumentJournal>ДокументыОрганизации</DocumentJournal><XDTOPackage>EnterpriseData_1_17_3</XDTOPackage></ChildObjects>
 	</Configuration>
 </MetaDataObject>

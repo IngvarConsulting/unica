@@ -83,10 +83,14 @@ pub(crate) fn reconcile_effects(
     provisional.sort_by_key(ProvisionalApplyEffect::operation_index);
     for candidate in provisional {
         if !candidate.paths.is_empty()
+            // A single-path effect needs its file changed; a spanning effect
+            // describes one batch over several files and survives as long as
+            // any of them still differs, so restoring one module of a batch
+            // does not silence the events of the others.
             && candidate
                 .paths
                 .iter()
-                .all(|path| changed_paths.contains(path))
+                .any(|path| changed_paths.contains(path))
         {
             effects.append(candidate.event);
         }

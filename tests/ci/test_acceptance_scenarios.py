@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import queue
+import threading
 import os
 import shutil
 import subprocess
@@ -96,6 +98,14 @@ def classify(response, context):
     return "gap-candidate", f"{code}: {message[:200]}"
 
 
+def scenario_publishes(scenario) -> bool:
+    """True when a step can change the workspace: an apply that is not a preview."""
+    return any(
+        step["tool"] == "unica.apply" and not step["args"].get("dryRun", False)
+        for step in scenario["wire"]
+    )
+
+
 def matches(expected: list[str], actual: str) -> bool:
     if actual in expected:
         return True
@@ -106,7 +116,14 @@ def matches(expected: list[str], actual: str) -> bool:
     return False
 
 
+RESPONSE_TIMEOUT_SECONDS = 120.0
+
+
 class AcceptanceServer:
+    """One JSON-RPC session with the daemon over stdio. Responses are read by
+    a helper thread so a silent server fails the step instead of hanging the
+    job until an external timeout."""
+
     def __init__(self, cwd: Path, state: Path, protocol: str):
         env = dict(os.environ)
         env["UNICA_PROVIDER_STATE_DIR"] = str(state)
@@ -119,6 +136,10 @@ class AcceptanceServer:
             env=env,
         )
         self.next_id = 0
+        self.lines: "queue.Queue[bytes | None]" = queue.Queue()
+        self.reader = threading.Thread(target=self._pump, daemon=True)
+        self.reader.start()
+        self.label = "initialize"
         self.send(
             {
                 "jsonrpc": "2.0",
@@ -142,10 +163,24 @@ class AcceptanceServer:
         self.process.stdin.write((json.dumps(payload) + "\n").encode())
         self.process.stdin.flush()
 
+    def _pump(self) -> None:
+        stream = self.process.stdout
+        assert stream is not None
+        for line in iter(stream.readline, b""):
+            self.lines.put(line)
+        self.lines.put(None)
+
     def receive(self):
         while True:
-            line = self.process.stdout.readline()
-            if not line:
+            try:
+                line = self.lines.get(timeout=RESPONSE_TIMEOUT_SECONDS)
+            except queue.Empty:
+                self.close()
+                raise TimeoutError(
+                    f"no response from unica within {RESPONSE_TIMEOUT_SECONDS:.0f}s "
+                    f"while running {self.label}"
+                ) from None
+            if line is None:
                 return None
             line = line.strip()
             if line:
@@ -153,7 +188,8 @@ class AcceptanceServer:
                 if "id" in payload:
                     return payload
 
-    def call(self, tool: str, arguments):
+    def call(self, tool: str, arguments, label: str | None = None):
+        self.label = label or tool
         self.send(
             {
                 "jsonrpc": "2.0",
@@ -170,6 +206,11 @@ class AcceptanceServer:
         except OSError:
             pass
         self.process.terminate()
+        try:
+            self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
 
 
 class AcceptanceCorpusShapeTests(unittest.TestCase):
@@ -180,6 +221,11 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
     def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
         self.assertEqual(len(scenarios), 266)
+        self.assertEqual(
+            sum(len(scenario["wire"]) for scenario in scenarios),
+            295,
+            "a wire step went missing: the corpus freezes 295 steps",
+        )
         identifiers = [scenario["id"] for scenario in scenarios]
         self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 267)])
 
@@ -218,15 +264,12 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             for step in scenario["wire"]
             if "gap" in step["expect"]
         ]
-        # Each gap names a distinct, reproduced surface defect (see the gap
-        # text): typed contracts that cannot express indexing, the missing
-        # role/subsystem property writers, the DocumentJournal column emitter,
-        # the template reader/writer mismatch, and the DefinedType post-image
-        # projection. The ceiling is a ratchet against silent growth, not a
-        # target; lower it as each defect is fixed.
+        # Every documented gap names a reproduced surface defect in its text.
+        # The corpus carries none today; the ceiling from the fixture README
+        # (eight) is a ratchet against silent growth, not a target.
         self.assertLessEqual(
             len(gap_steps),
-            9,
+            8,
             "documented gaps grew: either fix the surface or re-approve the corpus",
         )
 
@@ -271,23 +314,40 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
         mismatches = []
         with tempfile.TemporaryDirectory(prefix="unica-acceptance-") as raw:
             root = Path(raw).resolve()
-            workspace = root / "workspace"
-            shutil.copytree(workspace_source, workspace)
-            state = root / "state"
-            state.mkdir()
-            server = AcceptanceServer(workspace, state, corpus["protocolVersion"])
+            generation = 0
+
+            def fresh_server() -> AcceptanceServer:
+                nonlocal generation
+                generation += 1
+                home = root / f"run-{generation}"
+                workspace = home / "workspace"
+                shutil.copytree(workspace_source, workspace)
+                state = home / "state"
+                state.mkdir()
+                return AcceptanceServer(workspace, state, corpus["protocolVersion"])
+
+            server = fresh_server()
             try:
                 for scenario in corpus["scenarios"]:
                     context = {}
                     for index, step in enumerate(scenario["wire"]):
                         arguments = substitute(step["args"], context)
-                        response = server.call(step["tool"], arguments)
+                        response = server.call(
+                            step["tool"], arguments, f"{scenario['id']} step {index} {step['tool']}"
+                        )
                         actual, note = classify(response, context)
                         if not matches(step["expect"], actual):
                             mismatches.append(
                                 f"{scenario['id']} step {index} {step['tool']}: "
                                 f"expected {step['expect']}, got {actual} :: {note[:160]}"
                             )
+                    # A scenario that published changes leaves its mark on the
+                    # workspace; the next one starts from the pristine fixture
+                    # so results never depend on corpus order.
+                    if scenario_publishes(scenario):
+                        server.close()
+                        shutil.rmtree(root / f"run-{generation}", ignore_errors=True)
+                        server = fresh_server()
             finally:
                 server.close()
         self.assertEqual(

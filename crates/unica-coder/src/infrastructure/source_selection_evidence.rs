@@ -1857,7 +1857,11 @@ impl RetainedSourceSelectionEvidence {
                             )));
                         }
                     };
-                    if planned.is_none() {
+                    if let Some(post_image) = planned {
+                        // The apply replaced this terminal itself: the new
+                        // identity is legitimate, the bytes must be the plan.
+                        validate_regular_bytes(&file, post_image, deadline, cancellation)?;
+                    } else {
                         if file.identity() != *identity {
                             return Err(SourceSelectionEvidenceError::changed(
                                 "project source-map oversized terminal file identity changed",

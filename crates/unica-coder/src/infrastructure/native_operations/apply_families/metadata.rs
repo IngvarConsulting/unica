@@ -876,13 +876,14 @@ fn parse_predefined(
         kind,
         legacy,
         |field| {
-            format!(
-                "ops[{op_index}].args.{}",
-                field
-                    .replacen("elements[0]", "values", 1)
-                    .replacen("elements", "items", 1)
-                    .replacen("ids[0]", "values.id", 1)
-            )
+            // `add` carries `items[i]`; `set` carries one object in `values`;
+            // `remove` names the item through `values.id`.
+            let rewritten = match mode {
+                "add" => field.replacen("elements", "items", 1),
+                "update" => field.replacen("elements[0]", "values", 1),
+                _ => field.replacen("ids[0]", "values.id", 1),
+            };
+            format!("ops[{op_index}].args.{rewritten}")
         },
         op_index,
     )
@@ -1384,6 +1385,7 @@ fn stage_object_remove(
         typed_remove_reference_files,
     };
     let at_path = format!("ops[{op_index}].args.at");
+    require_untouched_staged_state(staged, "object.remove", &at_path)?;
     let root = authority.source_root();
     let layout = metadata_layout(kind);
     let descriptor_relative = PathBuf::from(layout.directory).join(format!("{name}.xml"));
@@ -2057,6 +2059,7 @@ fn stage_template_remove(
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     let at_path = format!("ops[{op_index}].args.at");
+    require_untouched_staged_state(staged, "template.remove", &at_path)?;
     let (owner_relative, owner_preimage, owner_source) =
         owner_descriptor_and_text(staged, authority, owner, op_index)?;
     let (deregistered, removed) =
@@ -2126,6 +2129,28 @@ fn stage_template_remove(
         op_index,
     ));
     Ok(())
+}
+
+/// Removal planners list payload files and scan references on the physical
+/// source root, so they only see the truth when nothing was staged before
+/// them. A batch that edited files first must run the removal in its own
+/// apply call; refusing here keeps a stale scan from committing dangling
+/// references or leaving staged payload behind.
+pub(super) fn require_untouched_staged_state(
+    staged: &ApplyStagedState,
+    operation: &str,
+    at_path: &str,
+) -> Result<(), ApplyPlanError> {
+    if staged.planned_changes().is_empty() {
+        return Ok(());
+    }
+    Err(ApplyPlanError::new(
+        ApplyPlanErrorKind::InvalidState,
+        format!(
+            "`{operation}` inspects the source root and must run in its own apply call before other changes"
+        ),
+    )
+    .at_path(at_path.to_string()))
 }
 
 fn stage_help_create(

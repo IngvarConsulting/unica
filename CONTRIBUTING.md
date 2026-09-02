@@ -134,6 +134,49 @@ MCP Apps и интерактивных виджетов, `build-mcpb` — для
 поставки. Если нужны оба контура, применяйте навыки в порядке
 `build-mcp-server` → `build-mcp-app` → `build-mcpb`.
 
+## Навыки контекстной инженерии
+
+Рекомендуем установить набор навыков
+[Agent Skills for Context Engineering](https://github.com/muratcankoylan/agent-skills-for-context-engineering)
+Муратджана Кёйлана. Набор не обязателен для сборки и проверок, но полезен при
+работе над поверхностью инструментов Unica: описаниями `unica.*`, схемами,
+текстами ошибок, `SKILL.md` плагина и бюджетом токенов `tools/list`. Ключевые
+навыки для проекта:
+
+- `tool-design` — критерии оценки описаний инструментов, чек-лист и границы
+  консолидации поверхности;
+- `context-optimization` — стабильность префикса кеша и экономия токенов;
+- `evaluation` и `advanced-evaluation` — петля улучшения описаний по
+  наблюдаемым провалам маршрутизации.
+
+Остальные навыки набора (`context-fundamentals`, `context-degradation`,
+`context-compression`, `multi-agent-patterns`, `memory-systems` и другие)
+подключаются по контексту задачи и не мешают основной работе.
+
+### Claude Code
+
+Подключите репозиторий как marketplace и установите единый плагин со всеми
+навыками:
+
+```text
+/plugin marketplace add muratcankoylan/Agent-Skills-for-Context-Engineering
+/plugin install context-engineering@context-engineering-marketplace
+/reload-plugins
+```
+
+Навыки вызываются с префиксом плагина, например `/context-engineering:tool-design`.
+
+### Codex
+
+Навыки лежат в каталоге `skills/` репозитория, каждый — отдельный каталог с
+`SKILL.md` и `references/`. Установите нужные через `$skill-installer` из
+repository `muratcankoylan/Agent-Skills-for-Context-Engineering`, ref `main`,
+передав пути вида `skills/tool-design`, либо скопируйте каталоги целиком в
+`$CODEX_HOME/skills/` (по умолчанию `~/.codex/skills/`). Не сводите навык к
+одному файлу `SKILL.md`: относительные ссылки на `references/` перестанут
+работать. После установки завершите ход и на следующем проверьте, что навыки
+доступны для явного вызова.
+
 ## Приёмочные сценарии поверхности
 
 Поверхность v0.13 принимается корпусом задач разработчика:

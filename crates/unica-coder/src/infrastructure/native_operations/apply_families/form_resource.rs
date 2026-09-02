@@ -1310,6 +1310,7 @@ fn stage_form_remove(
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     let at_path = format!("ops[{op_index}].args.at");
+    super::metadata::require_untouched_staged_state(staged, "form.remove", &at_path)?;
     let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
     let owner_preimage = read_required(
         staged,

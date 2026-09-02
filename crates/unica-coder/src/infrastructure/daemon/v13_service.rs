@@ -397,10 +397,11 @@ impl CanonicalV13ReadService {
         if query.trim().is_empty() {
             return error_result(None, "bad_value", "search query must not be blank");
         }
-        let matcher = match arguments.get("regex") {
-            None | Some(Value::Bool(false)) => {
-                super::v13_read_modes::SearchMatcher::Literal(query.to_string())
-            }
+        let (matcher, mode) = match arguments.get("regex") {
+            None | Some(Value::Bool(false)) => (
+                super::v13_read_modes::SearchMatcher::Literal(query.to_string()),
+                "literal",
+            ),
             Some(Value::Bool(true)) => {
                 // Bounded compile: a pattern that cannot be compiled within
                 // the size budget is a caller error, not a provider failure.
@@ -409,7 +410,10 @@ impl CanonicalV13ReadService {
                     .dfa_size_limit(1 << 20)
                     .build()
                 {
-                    Ok(compiled) => super::v13_read_modes::SearchMatcher::Regex(compiled),
+                    Ok(compiled) => (
+                        super::v13_read_modes::SearchMatcher::Regex(compiled),
+                        "regex",
+                    ),
                     Err(error) => {
                         return error_result(
                             None,
@@ -508,9 +512,9 @@ impl CanonicalV13ReadService {
                 break;
             }
         }
-        let mut result = DomainResult::success("literal BSL search completed");
+        let mut result = DomainResult::success(format!("{mode} BSL search completed"));
         result.data = Some(serde_json::json!({
-            "mode": "literal",
+            "mode": mode,
             "matches": matches,
         }));
         result.rev = combined_revision(&revisions);
@@ -969,10 +973,15 @@ fn run_validation_profile(
 
     let verdict: Result<(bool, Vec<Value>), DomainResult> = if profile == "meta" {
         let Some(path) = metadata_path.as_deref() else {
+            let reason = if address.segments().len() == 1 {
+                "the root has no descriptor"
+            } else {
+                "this address names a branch without a metadata descriptor"
+            };
             return error_result(
                 Some(at.to_string()),
                 "bad_value",
-                "the meta profile validates one metadata object; the root has no descriptor",
+                format!("the meta profile validates one metadata object; {reason}"),
             );
         };
         let target = match crate::domain::source_target::MetadataAddress::parse(
