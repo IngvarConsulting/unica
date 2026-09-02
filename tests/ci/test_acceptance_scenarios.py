@@ -24,6 +24,7 @@ the environment legitimately selects from.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -228,6 +229,28 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             9,
             "documented gaps grew: either fix the surface or re-approve the corpus",
         )
+
+
+class AcceptanceRegistryDocumentTests(unittest.TestCase):
+    """`docs/acceptance-scenarios.md` is the rendered view of the corpus for
+    contributors; it must never drift from the JSON it is generated from."""
+
+    def test_registry_document_is_rendered_from_the_corpus(self) -> None:
+        module_path = REPO_ROOT / "scripts" / "ci" / "render-acceptance-registry.py"
+        spec = importlib.util.spec_from_file_location("render_acceptance_registry", module_path)
+        self.assertIsNotNone(spec)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        rendered = module.render_document()
+        document = REPO_ROOT / "docs" / "acceptance-scenarios.md"
+        self.assertEqual(
+            document.read_text(encoding="utf-8"),
+            rendered,
+            "docs/acceptance-scenarios.md is stale; run "
+            "`python scripts/ci/render-acceptance-registry.py --write`",
+        )
+        self.assertIn("## Покрытие реестра `apply`", rendered)
 
 
 class AcceptanceCorpusRunTests(unittest.TestCase):
