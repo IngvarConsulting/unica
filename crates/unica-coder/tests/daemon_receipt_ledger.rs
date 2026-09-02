@@ -8726,11 +8726,15 @@ fn validation_rejection_after_promise_recovers_receipt_backed_terminal() {
             EventKind::BoundHandoffTerminalStaged,
             EventKind::TaskLinkCapacityReserved,
             EventKind::TaskStoreCreated,
+            EventKind::TaskLinkReservationConverted,
             EventKind::TaskStoreTerminalCommitted,
             EventKind::TaskStoreTerminalReadback,
-            EventKind::TaskLinkReservationConverted,
             EventKind::TaskTerminalBoundCommitted,
         ],
+    );
+    assert_eq!(
+        count_event(&staged_handoff, EventKind::TaskLinkReservationConverted),
+        1
     );
     assert_eq!(
         count_event(&staged_handoff, EventKind::TaskBoundCommitted),
