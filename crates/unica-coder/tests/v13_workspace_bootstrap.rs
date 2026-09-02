@@ -172,7 +172,7 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
     assert_eq!(result["ok"], true, "{response:#}");
     assert_eq!(
         result["summary"],
-        "workspace has no 1C source roots; create or import sources before attaching them"
+        "workspace is uninitialized; no v8project.yaml or 1C source roots were found"
     );
     assert_eq!(result["data"]["config"]["state"], "missing");
     assert_eq!(result["data"]["setup"]["path"], "v8project.yaml");
@@ -182,6 +182,14 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
     assert_eq!(
         result["data"]["diagnostics"][0]["code"],
         "source_roots_missing"
+    );
+    assert_eq!(
+        result["next"],
+        json!([{
+            "tool": "unica.run",
+            "args": {},
+            "reason": "inspect the implemented and planned workspace initialization routes"
+        }])
     );
     assert!(!serde_json::to_string(result)
         .unwrap()
@@ -207,6 +215,46 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
         .is_some_and(|description| description.contains("v8project.yaml")));
     assert_eq!(source_attach["previewRequired"], true);
     assert_eq!(source_attach["ifRevRequiredOnApply"], true);
+    assert_eq!(
+        source_attach["argsSchema"],
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {},
+            "required": []
+        })
+    );
+    assert!(
+        dictionary["result"]["structuredContent"]["data"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|operation| operation["implemented"] == false)
+            .all(|operation| operation["argsSchema"].is_null())
+    );
+
+    for (id, op, expected_summary) in [
+        (
+            41,
+            "source.create",
+            "canonical run operation `source.create` is not implemented yet",
+        ),
+        (42, "test.run", "unknown canonical run operation `test.run`"),
+    ] {
+        let unsupported = mcp.exchange(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": {"op": op, "args": {}}}
+        }));
+        let unsupported = &unsupported["result"]["structuredContent"];
+        assert_eq!(unsupported["ok"], false, "{unsupported:#}");
+        assert_eq!(unsupported["summary"], expected_summary);
+        assert_eq!(
+            unsupported["diagnostics"],
+            json!([{"code": "unsupported_operation", "message": expected_summary}])
+        );
+    }
 
     let invalid_dictionary = mcp.exchange(json!({
         "jsonrpc": "2.0",

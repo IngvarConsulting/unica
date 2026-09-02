@@ -2945,7 +2945,7 @@ mod tests {
                 "jsonrpc":"2.0", "id":1, "method":"tools/call",
                 "params":{
                     "name":"unica.run",
-                    "arguments":{"op":"test.run", "args":{}},
+                    "arguments":{"op":"infobase.build", "args":{}},
                     "_meta":modern_meta()
                 }
             }))

@@ -28,7 +28,57 @@ pub(super) fn execute_workspace_initialize(
             "run without op lists the operation dictionary and accepts no other arguments",
         )),
         Some(Value::String(op)) if op == "workspace.initialize" => Some(execute(request, deadline)),
+        Some(Value::String(op)) => {
+            let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
+            if catalog
+                .run_dictionary
+                .iter()
+                .any(|operation| operation.name() == op)
+            {
+                None
+            } else {
+                Some(reject_run_operation(
+                    op,
+                    format!("unknown canonical run operation `{op}`"),
+                ))
+            }
+        }
         Some(_) => None,
+    }
+}
+
+pub(super) fn reject_unavailable_run_before_admission(
+    request: &InvocationRequest,
+) -> Option<DomainResult> {
+    if request.tool() != ToolIdentity::Run {
+        return None;
+    }
+    let op = match request.arguments().get("op") {
+        Some(Value::String(op)) => op,
+        Some(_) => {
+            return Some(DomainResult::canonical_rejection(
+                None,
+                "bad_value",
+                "run op must be a string",
+            ))
+        }
+        None => return None,
+    };
+    let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
+    match catalog
+        .run_dictionary
+        .iter()
+        .find(|operation| operation.name() == op)
+    {
+        Some(operation) if operation.implemented => None,
+        Some(_) => Some(reject_run_operation(
+            op,
+            format!("canonical run operation `{op}` is not implemented yet"),
+        )),
+        None => Some(reject_run_operation(
+            op,
+            format!("unknown canonical run operation `{op}`"),
+        )),
     }
 }
 
@@ -55,6 +105,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
             json!({
                 "op": operation.name(),
                 "description": operation.description(),
+                "argsSchema": operation.args_schema(),
                 "execution": operation.execution(),
                 "effects": operation.effects(),
                 "implemented": operation.implemented,
@@ -262,4 +313,8 @@ fn attachment_revision(
 
 fn reject(code: &'static str, message: impl Into<String>) -> DomainResult {
     DomainResult::canonical_rejection(Some("workspace.initialize".to_string()), code, message)
+}
+
+fn reject_run_operation(op: &str, message: impl Into<String>) -> DomainResult {
+    DomainResult::canonical_rejection(Some(op.to_string()), "unsupported_operation", message)
 }

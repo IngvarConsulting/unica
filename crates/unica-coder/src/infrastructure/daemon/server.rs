@@ -358,7 +358,12 @@ impl DaemonInvocationRuntime {
                         return Err(DaemonInvocationError::WorkspaceRegistryFailed)
                     }
                     Err(WorkspaceAdmissionError::Invalid) => {
-                        Err(failed_domain_result("workspace actor admission failed"))
+                        match super::v13_workspace_initialize::reject_unavailable_run_before_admission(
+                            &request,
+                        ) {
+                            Some(result) => return Ok(InvocationResponse::Direct(result)),
+                            None => Err(failed_domain_result("workspace actor admission failed")),
+                        }
                     }
                 }
             }
@@ -6162,7 +6167,7 @@ struct ActorLogicalReadLease {"#,
                 &runtime,
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     std::fs::canonicalize(workspace.path())
                         .unwrap()
                         .to_string_lossy(),
@@ -6293,7 +6298,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "test.run", "args": {}}),
+                serde_json::json!({"op": "infobase.build", "args": {}}),
                 root.to_string_lossy(),
                 0,
             )
@@ -6413,7 +6418,7 @@ struct ActorLogicalReadLease {"#,
             let request = |root: &std::path::Path| {
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     root.to_string_lossy(),
                     0,
                 )
@@ -6492,7 +6497,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "test.run", "args": {}}),
+                serde_json::json!({"op": "infobase.build", "args": {}}),
                 root.to_string_lossy(),
                 0,
             )
@@ -6597,7 +6602,7 @@ struct ActorLogicalReadLease {"#,
         let request = || {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "test.run", "args": {}}),
+                serde_json::json!({"op": "infobase.build", "args": {}}),
                 root.to_string_lossy(),
                 0,
             )
@@ -6702,7 +6707,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "test.run", "args": {}}),
+                serde_json::json!({"op": "infobase.build", "args": {}}),
                 root.to_string_lossy(),
                 0,
             )
@@ -6784,7 +6789,7 @@ struct ActorLogicalReadLease {"#,
             &runtime,
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "test.run", "args": {}}),
+                serde_json::json!({"op": "infobase.build", "args": {}}),
                 std::fs::canonicalize(workspace.path())
                     .unwrap()
                     .to_string_lossy(),
@@ -6817,7 +6822,7 @@ struct ActorLogicalReadLease {"#,
                 &runtime,
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     std::fs::canonicalize(&workspace).unwrap().to_string_lossy(),
                     0,
                 )
@@ -6855,7 +6860,7 @@ struct ActorLogicalReadLease {"#,
         );
         let request = InvocationRequest::new(
             ToolIdentity::Run,
-            serde_json::json!({"op": "test.run", "args": {}}),
+            serde_json::json!({"op": "infobase.build", "args": {}}),
             std::fs::canonicalize(workspace.path())
                 .unwrap()
                 .to_string_lossy(),

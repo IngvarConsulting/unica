@@ -12,3 +12,5 @@ scope: [wire]
 Словарь `unica.run {}` отдельно называет source build/dump, artifact build,
 CF/CFE configuration export/load и DT infobase dump/restore. Он не публикует
 `syntax.check`, `test.run`, `extension.sync` и generic artifact load/make.
+Реализованная операция публикует закрытую `argsSchema`; нереализованная не
+выдаёт предположение о ещё не принятом контракте аргументов.

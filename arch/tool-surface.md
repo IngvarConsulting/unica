@@ -133,8 +133,8 @@ List canonical runtime operations and their invocation contract, or preview/exec
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `args` | object | нет | Typed arguments for the selected operation. |
-| `dryRun` | boolean | нет | Required by workspace-mutating operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan. |
-| `ifRev` | string | нет | Revision returned by a prior dryRun of the same workspace-mutating operation; required when dryRun is false. |
+| `dryRun` | boolean | нет | Required by previewApply operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan. |
+| `ifRev` | string | нет | Revision returned by a prior preview of the same previewApply operation; required when dryRun is false. |
 | `op` | string | нет | Canonical operation name; omit to list operation status. |
 
 **Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь двенадцати направленных runtime-намерений; `workspace.initialize` revision-fenced и create-only публикует autodetected однородные source sets без платформы; остальные одиннадцать операций честно неподдержаны (отвечают типизированным `data`)

@@ -587,7 +587,7 @@ mod tests {
             assert_eq!(invocation.tool(), ToolIdentity::Run);
             assert_eq!(
                 invocation.arguments(),
-                &serde_json::json!({"op": "test.run", "args": {}})
+                &serde_json::json!({"op": "infobase.build", "args": {}})
                     .as_object()
                     .unwrap()
                     .clone()
@@ -603,7 +603,7 @@ mod tests {
             assert_eq!(invocation.tool(), ToolIdentity::Run);
             assert_eq!(
                 invocation.arguments(),
-                &serde_json::json!({"op": "test.run", "args": {}})
+                &serde_json::json!({"op": "infobase.build", "args": {}})
                     .as_object()
                     .unwrap()
                     .clone()
@@ -864,7 +864,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     physical.to_string_lossy(),
                     7_000,
                 )
@@ -905,7 +905,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     task_physical.to_string_lossy(),
                     7_000,
                 )
@@ -955,7 +955,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     physical.to_string_lossy(),
                     7_000,
                 )
@@ -993,7 +993,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     task_physical.to_string_lossy(),
                     7_000,
                 )
@@ -1153,7 +1153,7 @@ mod tests {
             let submission = owner.submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     physical.to_string_lossy(),
                     100,
                 )
@@ -1328,7 +1328,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     workspace_hint,
                     7_000,
                 )
@@ -1439,7 +1439,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     workspace_hint,
                     7_000,
                 )
@@ -1497,7 +1497,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     physical_root(workspace.path()).to_string_lossy(),
                     0,
                 )
@@ -1555,7 +1555,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "test.run", "args": {}}),
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
                     workspace.to_string_lossy(),
                     // This fixture exercises process-owned fail-stop and durable recovery. The
                     // zero-budget response cutoff is covered independently at the wire boundary.
@@ -2105,7 +2105,7 @@ mod tests {
                 .submit_invocation(
                     InvocationRequest::new(
                         ToolIdentity::Run,
-                        serde_json::json!({"op": "test.run", "args": {}}),
+                        serde_json::json!({"op": "infobase.build", "args": {}}),
                         physical_root(workspace).to_string_lossy(),
                         0,
                     )
@@ -2164,7 +2164,7 @@ mod tests {
                 InvocationRequest::new(
                     ToolIdentity::Run,
                     serde_json::json!({
-                        "op": "test.run",
+                        "op": "infobase.build",
                         "args": {"ambientRoot": "/tmp/foreign"}
                     }),
                     physical_root(&workspace).to_string_lossy(),
@@ -2540,7 +2540,7 @@ mod tests {
                 InvocationRequest::new(
                     ToolIdentity::Run,
                     serde_json::json!({
-                        "op": "test.run",
+                        "op": "infobase.build",
                         "args": {"secret": secret, "path": raw_path}
                     }),
                     workspace_hint.clone(),

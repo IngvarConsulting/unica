@@ -132,6 +132,18 @@ impl RunOperation {
             RunIntent::ClientRun => &["clientSession"],
         }
     }
+
+    pub(crate) fn args_schema(&self) -> Option<Value> {
+        match self.intent {
+            RunIntent::WorkspaceInitialize => Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
+            })),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -246,8 +258,8 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                         json!({
                             "op": {"type": "string", "description": "Canonical operation name; omit to list operation status."},
                             "args": data_object("Typed arguments for the selected operation."),
-                            "dryRun": {"type": "boolean", "description": "Required by workspace-mutating operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan."},
-                            "ifRev": {"type": "string", "description": "Revision returned by a prior dryRun of the same workspace-mutating operation; required when dryRun is false."},
+                            "dryRun": {"type": "boolean", "description": "Required by previewApply operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan."},
+                            "ifRev": {"type": "string", "description": "Revision returned by a prior preview of the same previewApply operation; required when dryRun is false."},
                         }),
                         json!([]),
                     ),
@@ -828,9 +840,28 @@ mod tests {
     }
 
     #[test]
+    fn run_preview_apply_fields_describe_the_execution_protocol() {
+        let catalog =
+            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
+        for field in ["dryRun", "ifRev"] {
+            let description = input_field(&catalog.tools, "run", field)["description"]
+                .as_str()
+                .expect("run protocol field description");
+            assert!(
+                description.contains("previewApply"),
+                "unica.run.{field} must describe the previewApply execution protocol: {description}"
+            );
+            assert!(
+                !description.contains("workspace-mutating"),
+                "unica.run.{field} must also cover infobase and artifact effects: {description}"
+            );
+        }
+    }
+
+    #[test]
     fn v13_run_dictionary_has_twelve_operations_without_query_execution() {
-        // Historical evidence retained for the superseded decision/invariant.
-        // The successor test above owns the current exact operation names.
+        // The no-query guarantee remains independently active while the
+        // directional-intents test above owns the exact operation names.
         v13_run_dictionary_has_twelve_directional_runtime_intents();
     }
 }

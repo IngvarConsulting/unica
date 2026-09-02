@@ -127,7 +127,7 @@ fn bootstrap_result(
                 (
                     "message",
                     Value::String(
-                        "No 1C source roots were found; choose whether to create sources or import them before creating v8project.yaml"
+                        "No v8project.yaml or 1C source roots were found. Call unica.run with an empty object to inspect source, CF/DT, and existing-infobase initialization routes."
                             .to_string(),
                     ),
                 ),
@@ -272,7 +272,7 @@ fn bootstrap_result(
                 (
                     "reason",
                     Value::String(
-                        "No source root can be attached yet; create or import the intended configuration, extension, external processor, or external report first."
+                        "No initialization input is selected yet; inspect source, CF/DT, and existing-infobase routes before creating v8project.yaml."
                             .to_string(),
                     ),
                 ),
@@ -299,7 +299,7 @@ fn bootstrap_result(
     let mut result = DomainResult::success(match config_state {
         "configured" => "workspace configuration and source sets discovered",
         "autodetected" => "source sets autodetected; v8project.yaml is not present",
-        _ => "workspace has no 1C source roots; create or import sources before attaching them",
+        _ => "workspace is uninitialized; no v8project.yaml or 1C source roots were found",
     });
     result.data = Some(object([
         ("workspaceRoot", value(&context.workspace_root)),
@@ -331,7 +331,13 @@ fn bootstrap_result(
         ("diagnostics", diagnostics),
         ("setup", setup.unwrap_or(Value::Null)),
     ]));
-    if config_state == "autodetected" && project_config_recipe(&source_map).is_some() {
+    if config_state == "missing" {
+        result.next.push(next_action(
+            "unica.run",
+            Value::Object(Map::new()),
+            "inspect the implemented and planned workspace initialization routes",
+        ));
+    } else if config_state == "autodetected" && project_config_recipe(&source_map).is_some() {
         result.next.push(next_action(
             "unica.run",
             object([
