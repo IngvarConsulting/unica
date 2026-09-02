@@ -9996,6 +9996,9 @@ fn task_bound_false_masks_working_as_queued_until_receipt_begun() {
         Action::InstallBarrier {
             point: BarrierPoint::BeforeReceiptBegun,
         },
+        Action::InstallBarrier {
+            point: BarrierPoint::BeforeTaskTerminalReceipt,
+        },
         submit("submit"),
         Action::WaitForEvent {
             event: EventKind::AdmissionEntered,
@@ -10025,6 +10028,9 @@ fn task_bound_false_masks_working_as_queued_until_receipt_begun() {
         Action::ReadTask {
             api: TaskApi::NativeGet,
             label: "after-begun".to_string(),
+        },
+        Action::ReleaseBarrier {
+            point: BarrierPoint::BeforeTaskTerminalReceipt,
         },
     ]));
 
@@ -11612,6 +11618,9 @@ fn promised_and_handoff_states_hold_worst_case_result_quota() {
         Action::Reset,
         direct_provider(),
         Action::InstallBarrier {
+            point: BarrierPoint::BeforeTaskStoreCreate,
+        },
+        Action::InstallBarrier {
             point: BarrierPoint::PrepareEntered,
         },
         submit("handoff-begun-submit"),
@@ -11625,6 +11634,9 @@ fn promised_and_handoff_states_hold_worst_case_result_quota() {
         checkpoint_action("quota-handoff-begun"),
         Action::ReleaseBarrier {
             point: BarrierPoint::PrepareEntered,
+        },
+        Action::ReleaseBarrier {
+            point: BarrierPoint::BeforeTaskStoreCreate,
         },
         Action::WaitForEvent {
             event: EventKind::TaskBoundCommitted,

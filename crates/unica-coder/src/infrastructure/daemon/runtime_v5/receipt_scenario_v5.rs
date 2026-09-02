@@ -3330,6 +3330,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     &label,
                     Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                 )?;
+                control.record_operation_event(&label, "spawned");
+                control.record_operation_event(&label, "completed");
+                operations.insert(
+                    label.clone(),
+                    ScenarioOperation {
+                        completed: Arc::new(AtomicBool::new(true)),
+                        handle: thread::spawn(|| Ok(())),
+                    },
+                );
                 report.responses.insert(label, response);
                 report.task_publication_capacity.push(capacity);
             }
