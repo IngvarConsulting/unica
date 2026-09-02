@@ -972,6 +972,15 @@ fn run_validation_profile(
     }
 
     let verdict: Result<(bool, Vec<Value>), DomainResult> = if profile == "meta" {
+        if kind != "Configuration" && crate::domain::metadata::MetadataKind::parse(kind).is_err() {
+            return error_result(
+                Some(at.to_string()),
+                "bad_value",
+                format!(
+                    "validation profile `meta` does not validate {kind} nodes; pick the profile of `{at}` or omit the filter"
+                ),
+            );
+        }
         let Some(path) = metadata_path.as_deref() else {
             let reason = if address.segments().len() == 1 {
                 "the root has no descriptor"

@@ -1520,6 +1520,72 @@ fn stage_object_remove(
     Ok(())
 }
 
+/// The descriptor image after a text edit: the observed byte-order mark and
+/// the source's line-ending profile are kept, as the typed engine does.
+pub(super) fn preserve_descriptor_image(preimage: &[u8], source: &str, updated: &str) -> Vec<u8> {
+    use crate::infrastructure::native_operations::compile_transaction::{
+        preserve_inserted_line_endings, split_utf8_bom_prefix,
+    };
+    let (bom, _) = split_utf8_bom_prefix(preimage);
+    let updated = preserve_inserted_line_endings(source, updated);
+    let mut image = Vec::with_capacity(bom.len() + updated.len());
+    image.extend_from_slice(bom);
+    image.extend_from_slice(updated.as_bytes());
+    image
+}
+
+/// Sets the `lang` item of a multilingual property inside `<Properties>`,
+/// keeping the other languages; an empty element becomes a one-item block.
+pub(super) fn set_ml_property(
+    text: &str,
+    tag: &str,
+    indent: &str,
+    lang: &str,
+    value: &str,
+) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let empty = format!("<{tag}/>");
+    let properties_start = text.find("<Properties>")?;
+    let properties_end = text[properties_start..].find("</Properties>")? + properties_start;
+    let scope = &text[properties_start..properties_end];
+    if let Some(index) = scope.find(&empty) {
+        let mut updated = text.to_string();
+        let at = properties_start + index;
+        updated.replace_range(
+            at..at + empty.len(),
+            ml_text_block(indent, tag, value).trim_start(),
+        );
+        return Some(updated);
+    }
+    let block_start = scope.find(&open)? + properties_start;
+    let block_end = text[block_start..].find(&close)? + block_start;
+    let block = &text[block_start..block_end];
+    let escaped = value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    let lang_marker = format!("<v8:lang>{lang}</v8:lang>");
+    let mut updated = text.to_string();
+    if let Some(lang_at) = block.find(&lang_marker) {
+        let content_start = block[lang_at..].find("<v8:content>")? + lang_at + "<v8:content>".len();
+        let content_end = block[content_start..].find("</v8:content>")? + content_start;
+        updated.replace_range(
+            block_start + content_start..block_start + content_end,
+            &escaped,
+        );
+        return Some(updated);
+    }
+    let item = format!(
+        "{indent}\t<v8:item>\n{indent}\t\t<v8:lang>{lang}</v8:lang>\n{indent}\t\t<v8:content>{escaped}</v8:content>\n{indent}\t</v8:item>\n"
+    );
+    let line_start = text[..block_end]
+        .rfind('\n')
+        .map_or(block_end, |index| index + 1);
+    updated.insert_str(line_start, &item);
+    Some(updated)
+}
+
 /// `<Tag>` as a multilingual text block (ru), or the empty element.
 fn ml_text_block(indent: &str, tag: &str, text: &str) -> String {
     if text.is_empty() {
@@ -1577,7 +1643,7 @@ fn stage_simple_props(
             )
             .at_path(at_path.clone())
         })?;
-    let (bom, body) = match preimage.strip_prefix(b"\xef\xbb\xbf") {
+    let (_, body) = match preimage.strip_prefix(b"\xef\xbb\xbf") {
         Some(body) => (&b"\xef\xbb\xbf"[..], body),
         None => (&b""[..], preimage.as_slice()),
     };
@@ -1618,18 +1684,14 @@ fn stage_simple_props(
             let mut text = source.clone();
             let indent = "\t\t\t";
             if let Some(synonym) = text_value("synonym")?.or(text_value("Synonym")?) {
-                text = replace_property_block(
-                    &text,
-                    "Synonym",
-                    &ml_text_block(indent, "Synonym", &synonym),
-                )
-                .ok_or_else(|| {
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::InvalidSource,
-                        "the role descriptor has no Synonym property",
-                    )
-                    .at_path(at_path.clone())
-                })?;
+                text =
+                    set_ml_property(&text, "Synonym", indent, "ru", &synonym).ok_or_else(|| {
+                        ApplyPlanError::new(
+                            ApplyPlanErrorKind::InvalidSource,
+                            "the role descriptor has no Synonym property",
+                        )
+                        .at_path(at_path.clone())
+                    })?;
             }
             if let Some(comment) = text_value("comment")?.or(text_value("Comment")?) {
                 let block = if comment.is_empty() {
@@ -1705,9 +1767,7 @@ fn stage_simple_props(
         }
         _ => unreachable!("simple props are parsed for roles and subsystems only"),
     };
-    let mut postimage = Vec::with_capacity(bom.len() + postimage_text.len());
-    postimage.extend_from_slice(bom);
-    postimage.extend_from_slice(postimage_text.as_bytes());
+    let postimage = preserve_descriptor_image(&preimage, &source, &postimage_text);
     if postimage == preimage {
         return Ok(());
     }
@@ -1909,7 +1969,7 @@ fn stage_template_add(
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
     }
-    let owner_postimage = bom_bytes(&owner_text);
+    let owner_postimage = preserve_descriptor_image(&owner_preimage, &owner_source, &owner_text);
     staged
         .replace(&owner_relative, &owner_preimage, owner_postimage)
         .map_err(|error| ApplyPlanError::staging(error, format!("ops[{op_index}].args.at")))?;
@@ -1955,7 +2015,7 @@ fn stage_template_set(
             )
             .at_path(at_path.clone())
         })?;
-    let (bom, body) = match preimage.strip_prefix(b"\xef\xbb\xbf") {
+    let (_, body) = match preimage.strip_prefix(b"\xef\xbb\xbf") {
         Some(body) => (&b"\xef\xbb\xbf"[..], body),
         None => (&b""[..], preimage.as_slice()),
     };
@@ -1966,6 +2026,7 @@ fn stage_template_set(
         )
         .at_path(at_path.clone())
     })?;
+    let source_text = text.clone();
     let string_value = |key: &str| -> Result<Option<String>, ApplyPlanError> {
         match values.get(key) {
             None => Ok(None),
@@ -1979,12 +2040,7 @@ fn stage_template_set(
     };
     let indent = "\t\t\t";
     if let Some(synonym) = string_value("synonym")? {
-        text = replace_property_block(
-            &text,
-            "Synonym",
-            &ml_text_block(indent, "Synonym", &synonym),
-        )
-        .ok_or_else(|| {
+        text = set_ml_property(&text, "Synonym", indent, "ru", &synonym).ok_or_else(|| {
             ApplyPlanError::new(
                 ApplyPlanErrorKind::InvalidSource,
                 "the template descriptor has no Synonym property",
@@ -2031,8 +2087,7 @@ fn stage_template_set(
             .at_path(at_path.clone())
         })?;
     }
-    let mut postimage = bom.to_vec();
-    postimage.extend_from_slice(text.as_bytes());
+    let postimage = preserve_descriptor_image(&preimage, &source_text, &text);
     if postimage == preimage {
         return Ok(());
     }
@@ -2120,7 +2175,11 @@ fn stage_template_remove(
         }
     }
     staged
-        .replace(&owner_relative, &owner_preimage, bom_bytes(&owner_text))
+        .replace(
+            &owner_relative,
+            &owner_preimage,
+            preserve_descriptor_image(&owner_preimage, &owner_source, &owner_text),
+        )
         .map_err(|error| ApplyPlanError::staging(error, at_path))?;
     touched.push(owner_relative);
     provisional.push(ProvisionalApplyEffect::spanning(
@@ -2163,6 +2222,8 @@ fn stage_help_create(
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     let at_path = format!("ops[{op_index}].args.at");
+    // The help facet planner inspects the owner's forms on the physical root.
+    require_untouched_staged_state(staged, "help.create", &at_path)?;
     let root = authority.source_root();
     let descriptor_relative = metadata_descriptor_relative(target, authority.source_kind())
         .map_err(|message| {
@@ -2216,7 +2277,10 @@ fn stage_help_create(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_metadata_plan_operation, plan_metadata_batch};
+    use super::{
+        parse_metadata_plan_operation, plan_metadata_batch, preserve_descriptor_image,
+        set_ml_property,
+    };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
@@ -2678,5 +2742,44 @@ mod tests {
         assert_eq!(fixture.disk_bytes(), disk_preimage);
         assert_eq!(effects.len(), 3);
         assert_eq!(effects[0].event().artifact, "Document.Order");
+    }
+
+    #[test]
+    fn multilingual_property_edits_keep_the_other_languages() {
+        let text = "<Properties>\n\t\t\t<Name>SalesReader</Name>\n\t\t\t<Synonym>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>en</v8:lang>\n\t\t\t\t\t<v8:content>Sales reader</v8:content>\n\t\t\t\t</v8:item>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>ru</v8:lang>\n\t\t\t\t\t<v8:content>Старое</v8:content>\n\t\t\t\t</v8:item>\n\t\t\t</Synonym>\n\t\t\t<Comment/>\n\t\t</Properties>";
+        let updated = set_ml_property(text, "Synonym", "\t\t\t", "ru", "Новое & лучшее").unwrap();
+        assert!(updated.contains("<v8:content>Sales reader</v8:content>"));
+        assert!(updated.contains("<v8:content>Новое &amp; лучшее</v8:content>"));
+        assert!(!updated.contains("Старое"));
+        assert_eq!(updated.matches("<v8:item>").count(), 2);
+
+        let english_only = text.replace(
+            "\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>ru</v8:lang>\n\t\t\t\t\t<v8:content>Старое</v8:content>\n\t\t\t\t</v8:item>\n",
+            "",
+        );
+        let updated = set_ml_property(&english_only, "Synonym", "\t\t\t", "ru", "Русское").unwrap();
+        assert!(updated.contains("<v8:content>Sales reader</v8:content>"));
+        assert!(
+            updated.contains("<v8:lang>ru</v8:lang>\n\t\t\t\t\t<v8:content>Русское</v8:content>")
+        );
+        assert_eq!(updated.matches("<v8:item>").count(), 2);
+
+        let empty = "<Properties>\n\t\t\t<Name>X</Name>\n\t\t\t<Synonym/>\n\t\t</Properties>";
+        let updated = set_ml_property(empty, "Synonym", "\t\t\t", "ru", "Икс").unwrap();
+        assert!(updated.contains("<Synonym>\n\t\t\t\t<v8:item>"));
+        assert!(updated.contains("<v8:content>Икс</v8:content>"));
+        assert!(!updated.contains("<Synonym/>"));
+    }
+
+    #[test]
+    fn descriptor_images_keep_the_observed_bom_and_line_endings() {
+        let source = "<a>\r\n\t<b/>\r\n</a>\r\n";
+        let preimage = [b"\xef\xbb\xbf".as_slice(), source.as_bytes()].concat();
+        let image =
+            preserve_descriptor_image(&preimage, source, "<a>\r\n\t<b/>\n\t<c/>\r\n</a>\r\n");
+        assert!(image.starts_with(b"\xef\xbb\xbf"));
+        assert_eq!(&image[3..], b"<a>\r\n\t<b/>\r\n\t<c/>\r\n</a>\r\n");
+        let plain = preserve_descriptor_image(source.as_bytes(), source, "<a>\n</a>\n");
+        assert!(!plain.starts_with(b"\xef\xbb\xbf"));
     }
 }

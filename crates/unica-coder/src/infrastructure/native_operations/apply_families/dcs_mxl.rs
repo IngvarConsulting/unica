@@ -290,11 +290,12 @@ fn parse_dcs_operation(
                     )
                     .at_path(format!("{location}.dataPath"))
                 })?;
-                values.push(typed_head(
+                values.push(checked_head(
                     name,
                     text_field(item, &["type"]),
                     text_field(item, &["title"]),
-                ));
+                    &location,
+                )?);
             }
             ("add-field", values)
         }
@@ -303,11 +304,12 @@ fn parse_dcs_operation(
             let field = required_text(values, &["field", "dataPath", "name"], &values_path)?;
             (
                 "modify-field",
-                vec![typed_head(
+                vec![checked_head(
                     field,
                     text_field(values, &["type"]),
                     text_field(values, &["title"]),
-                )],
+                    &values_path,
+                )?],
             )
         }
         "field.remove" => (
@@ -318,6 +320,8 @@ fn parse_dcs_operation(
             let values = required_values(args, op_index)?;
             let field = required_text(values, &["field", "dataPath", "name"], &values_path)?;
             let role = required_text(values, &["role"], &values_path)?;
+            reject_tokens(field, HEAD_TOKENS, &format!("{values_path}.field"))?;
+            reject_tokens(role, HEAD_TOKENS, &format!("{values_path}.role"))?;
             ("set-field-role", vec![format!("{field} {role}")])
         }
         "parameter.add" => {
@@ -326,12 +330,14 @@ fn parse_dcs_operation(
                 let location = format!("{items_path}[{index}]");
                 let item = item_object(item, &location)?;
                 let name = required_text(item, &["name"], &location)?;
-                let mut value = typed_head(
+                let mut value = checked_head(
                     name,
                     text_field(item, &["type"]),
                     text_field(item, &["title"]),
-                );
+                    &location,
+                )?;
                 if let Some(default) = text_field(item, &["value"]) {
+                    reject_tokens(default, PARAMETER_TOKENS, &format!("{location}.value"))?;
                     value.push('=');
                     value.push_str(default);
                 }
@@ -342,14 +348,18 @@ fn parse_dcs_operation(
         "parameter.set" => {
             let values = required_values(args, op_index)?;
             let name = required_text(values, &["name"], &values_path)?;
+            reject_tokens(name, PARAMETER_TOKENS, &format!("{values_path}.name"))?;
             let mut value = name.to_string();
             if let Some(default) = text_field(values, &["value"]) {
+                reject_tokens(default, PARAMETER_TOKENS, &format!("{values_path}.value"))?;
                 value.push_str(&format!(" value={default}"));
             }
             if let Some(title) = text_field(values, &["title"]) {
+                reject_tokens(title, PARAMETER_TOKENS, &format!("{values_path}.title"))?;
                 value.push_str(&format!(" [{title}]"));
             }
             if let Some(type_name) = text_field(values, &["type"]) {
+                reject_tokens(type_name, PARAMETER_TOKENS, &format!("{values_path}.type"))?;
                 value.push_str(&format!(" type={type_name}"));
             }
             ("modify-parameter", vec![value])
@@ -384,6 +394,8 @@ fn parse_dcs_operation(
                         other => other.to_string(),
                     })
                     .unwrap_or_default();
+                reject_tokens(field, FILTER_TOKENS, &format!("{location}.field"))?;
+                reject_tokens(&value, FILTER_TOKENS, &format!("{location}.value"))?;
                 values.push(format!("{field} {token} {value}").trim_end().to_string());
             }
             ("add-filter", values)
@@ -394,7 +406,9 @@ fn parse_dcs_operation(
             for (index, item) in required_items(args, op_index)?.iter().enumerate() {
                 let location = format!("{items_path}[{index}]");
                 let item = item_object(item, &location)?;
-                values.push(required_text(item, &["field", "dataPath"], &location)?.to_string());
+                let field = required_text(item, &["field", "dataPath"], &location)?;
+                reject_tokens(field, HEAD_TOKENS, &format!("{location}.field"))?;
+                values.push(field.to_string());
             }
             ("add-selection", values)
         }
@@ -407,6 +421,15 @@ fn parse_dcs_operation(
                 data_set = named.to_string();
             }
             let query = required_text(values, &["query", "text"], &values_path)?;
+            if query.trim_start().starts_with('@') {
+                // The legacy editor reads `@path` as a file to load; the
+                // typed surface takes the query text itself.
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::BadValue,
+                    "`query` is the query text itself; file references (`@path`) are not accepted",
+                )
+                .at_path(format!("{values_path}.query")));
+            }
             ("set-query", vec![query.to_string()])
         }
         "query.patch" => {
@@ -420,6 +443,9 @@ fn parse_dcs_operation(
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let once = values.get("once").and_then(Value::as_bool).unwrap_or(false);
+            for (text, field) in [(find, "find"), (replace, "replace")] {
+                reject_tokens(text, &[" => ", "@once"], &format!("{values_path}.{field}"))?;
+            }
             let mut value = format!("{find} => {replace}");
             if once {
                 value.push_str(" @once");
@@ -433,13 +459,15 @@ fn parse_dcs_operation(
                 let item = item_object(item, &location)?;
                 let name = required_text(item, &["name", "dataPath"], &location)?;
                 let expression = required_text(item, &["expression"], &location)?;
+                reject_tokens(expression, &["@"], &format!("{location}.expression"))?;
                 values.push(format!(
                     "{}={expression}",
-                    typed_head(
+                    checked_head(
                         name,
                         text_field(item, &["type"]),
-                        text_field(item, &["title"])
-                    )
+                        text_field(item, &["title"]),
+                        &location,
+                    )?
                 ));
             }
             ("add-calculated-field", values)
@@ -450,6 +478,10 @@ fn parse_dcs_operation(
                 let location = format!("{items_path}[{index}]");
                 let item = item_object(item, &location)?;
                 let field = required_text(item, &["field", "dataPath"], &location)?;
+                reject_tokens(field, &["@", ":"], &format!("{location}.field"))?;
+                if let Some(expression) = text_field(item, &["expression"]) {
+                    reject_tokens(expression, &["@"], &format!("{location}.expression"))?;
+                }
                 values.push(match text_field(item, &["expression"]) {
                     Some(expression) => format!("{field}:{expression}"),
                     None => field.to_string(),
@@ -463,6 +495,10 @@ fn parse_dcs_operation(
                 let location = format!("{items_path}[{index}]");
                 let item = item_object(item, &location)?;
                 let name = required_text(item, &["name"], &location)?;
+                reject_tokens(name, HEAD_TOKENS, &format!("{location}.name"))?;
+                if let Some(title) = text_field(item, &["title", "presentation"]) {
+                    reject_tokens(title, HEAD_TOKENS, &format!("{location}.title"))?;
+                }
                 values.push(match text_field(item, &["title", "presentation"]) {
                     Some(title) => format!("{name} [{title}]"),
                     None => name.to_string(),
@@ -523,12 +559,133 @@ fn parse_dcs_operation(
     }))
 }
 
+/// The largest area the cell editor addresses in one call; a spreadsheet
+/// template is a print form, not a data grid, and an unbounded row number
+/// would otherwise make the planner allocate that many rows.
+const MXL_MAX_ROW: i64 = 10_000;
+const MXL_MAX_COLUMN: i64 = 1_000;
+
 fn parse_cell_address(key: &str) -> Option<(i64, i64)> {
     let rest = key.strip_prefix('R')?;
     let (row, col) = rest.split_once('C')?;
     let row = row.parse::<i64>().ok()?;
     let col = col.parse::<i64>().ok()?;
-    (row >= 1 && col >= 1).then_some((row, col))
+    ((1..=MXL_MAX_ROW).contains(&row) && (1..=MXL_MAX_COLUMN).contains(&col)).then_some((row, col))
+}
+
+/// The legacy schema editor reads its values as a small text language with
+/// reserved tokens (`@on`, `@user`, `[title]`, `name:type`, ` => `). Typed
+/// arguments must not carry them, or the intent changes silently.
+fn reject_tokens(value: &str, tokens: &[&str], location: &str) -> Result<(), ApplyPlanError> {
+    if let Some(token) = tokens.iter().find(|token| value.contains(**token)) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!(
+                "the value contains `{}`, a token reserved by the schema editor",
+                token.trim()
+            ),
+        )
+        .at_path(location.to_string()));
+    }
+    Ok(())
+}
+
+/// Tokens the field shorthand `name:type [title]` reads specially.
+const HEAD_TOKENS: &[&str] = &["@", "#", "[", "]"];
+/// Operator markers of the filter expression grammar.
+const FILTER_TOKENS: &[&str] = &[
+    "@",
+    " notBeginsWith",
+    " beginsWith",
+    " inListByHierarchy",
+    " inHierarchy",
+    " notContains",
+    " contains",
+    " notFilled",
+    " filled",
+    " notIn",
+    " in",
+    " <>",
+    " >=",
+    " <=",
+    " =",
+    " >",
+    " <",
+];
+/// Tokens of the parameter edit grammar.
+const PARAMETER_TOKENS: &[&str] = &["@", "[", "]", " value=", " type=", " title="];
+
+fn checked_head(
+    name: &str,
+    type_name: Option<&str>,
+    title: Option<&str>,
+    location: &str,
+) -> Result<String, ApplyPlanError> {
+    for (value, field) in [(Some(name), "name"), (type_name, "type"), (title, "title")] {
+        let Some(value) = value else {
+            continue;
+        };
+        reject_tokens(value, HEAD_TOKENS, &format!("{location}.{field}"))?;
+        if field != "title" && (value.contains(':') || value.contains(char::is_whitespace)) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("`{field}` must not contain `:` or whitespace"),
+            )
+            .at_path(format!("{location}.{field}")));
+        }
+    }
+    Ok(typed_head(name, type_name, title))
+}
+
+/// A spreadsheet the cell editor can rewrite without losing content: only the
+/// constructs the decompile/compile cores model may be present.
+fn require_editable_spreadsheet(xml_text: &str, at_path: &str) -> Result<(), ApplyPlanError> {
+    const MODELED: &[&str] = &[
+        "languageSettings",
+        "columns",
+        "rowsItem",
+        "templateMode",
+        "defaultFormatIndex",
+        "height",
+        "vgRows",
+        "merge",
+        "namedItem",
+        "line",
+        "font",
+        "format",
+        "columnsID",
+    ];
+    let document = roxmltree::Document::parse(xml_text).map_err(|error| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            format!("the spreadsheet template is not well-formed XML: {error}"),
+        )
+        .at_path(at_path.to_string())
+    })?;
+    for child in document
+        .root_element()
+        .children()
+        .filter(|node| node.is_element())
+    {
+        let name = child.tag_name().name();
+        let area_kind_supported = name != "namedItem"
+            || child
+                .descendants()
+                .find(|node| node.is_element() && node.tag_name().name() == "type")
+                .and_then(|node| node.text())
+                .map(str::trim)
+                == Some("Rows");
+        if !MODELED.contains(&name) || !area_kind_supported {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                format!(
+                    "the spreadsheet holds `{name}` content the cell editor cannot preserve; edit this template in the Designer"
+                ),
+            )
+            .at_path(at_path.to_string()));
+        }
+    }
+    Ok(())
 }
 
 fn parse_mxl_set(
@@ -588,7 +745,7 @@ fn parse_mxl_set(
             ApplyPlanError::new(
                 ApplyPlanErrorKind::BadValue,
                 format!(
-                    "`{key}` is not a cell address; use `R<row>C<column>` with 1-based numbers"
+                    "`{key}` is not a cell address; use `R<row>C<column>` with 1-based numbers up to R{MXL_MAX_ROW}C{MXL_MAX_COLUMN}"
                 ),
             )
             .at_path(format!("{values_path}.cells.{key}"))
@@ -877,6 +1034,7 @@ fn stage_mxl_edit(
         )
         .at_path(at_path.clone())
     })?;
+    require_editable_spreadsheet(&text, &at_path)?;
     let decompiled = crate::infrastructure::native_operations::mxl::mxl_decompile_document(
         &text,
         &relative.display().to_string(),
@@ -919,7 +1077,10 @@ fn stage_mxl_edit(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_dcs_mxl_plan_operation, plan_dcs_mxl_batch};
+    use super::{
+        checked_head, parse_cell_address, parse_dcs_mxl_plan_operation, plan_dcs_mxl_batch,
+        reject_tokens, require_editable_spreadsheet, typed_head, FILTER_TOKENS,
+    };
     use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
     use crate::infrastructure::native_operations::apply_families::request::IndexedPlanOperation;
     use crate::infrastructure::native_operations::apply_families::tests::ApplySeamFixture;
@@ -1042,5 +1203,52 @@ mod tests {
             error.to_string(),
             "hidden v0.13 apply family is not implemented"
         );
+    }
+
+    #[test]
+    fn cell_addresses_are_bounded_and_one_based() {
+        assert_eq!(parse_cell_address("R1C1"), Some((1, 1)));
+        assert_eq!(parse_cell_address("R10000C1000"), Some((10_000, 1_000)));
+        assert_eq!(parse_cell_address("R0C1"), None);
+        assert_eq!(parse_cell_address("R10001C1"), None);
+        assert_eq!(parse_cell_address("R1C1001"), None);
+        assert_eq!(parse_cell_address("R99999999999C1"), None);
+    }
+
+    #[test]
+    fn spreadsheets_with_unmodeled_content_are_refused_as_invalid_source() {
+        let editable = "<?xml version=\"1.0\"?><document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\"><languageSettings/><columns/><rowsItem/><namedItem><type>Rows</type></namedItem></document>";
+        assert!(require_editable_spreadsheet(editable, "ops[0].args.at").is_ok());
+        let with_drawing = "<?xml version=\"1.0\"?><document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\"><columns/><drawing/></document>";
+        let error = require_editable_spreadsheet(with_drawing, "ops[0].args.at").unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+        assert!(error.to_string().contains("`drawing`"), "{error}");
+        let column_area = "<?xml version=\"1.0\"?><document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\"><namedItem><type>Columns</type></namedItem></document>";
+        let error = require_editable_spreadsheet(column_area, "ops[0].args.at").unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+    }
+
+    #[test]
+    fn typed_dcs_arguments_reject_editor_tokens() {
+        let error =
+            checked_head("Sum", None, Some("Итого [шт]"), "ops[0].args.items[0]").unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.path(), Some("ops[0].args.items[0].title"));
+        let error = checked_head("Sum:Number", None, None, "ops[0].args.items[0]").unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.path(), Some("ops[0].args.items[0].name"));
+        assert_eq!(
+            checked_head("Sum", Some("Number"), Some("Итого"), "ops[0].args.items[0]").unwrap(),
+            typed_head("Sum", Some("Number"), Some("Итого"))
+        );
+        let error = reject_tokens(
+            "work in progress",
+            FILTER_TOKENS,
+            "ops[0].args.items[0].value",
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert!(reject_tokens("in progress", FILTER_TOKENS, "x").is_ok());
+        assert!(reject_tokens("@user", FILTER_TOKENS, "x").is_err());
     }
 }

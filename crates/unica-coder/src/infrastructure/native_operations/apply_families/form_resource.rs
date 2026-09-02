@@ -239,6 +239,13 @@ fn creation_name(
     op_index: usize,
 ) -> Result<String, ApplyPlanError> {
     let name = required_string(values, "name", op_index, "values")?.to_string();
+    if !crate::infrastructure::native_operations::common::is_1c_identifier(&name) {
+        return Err(bad(
+            op_index,
+            "values.name",
+            format!("`{name}` is not a valid 1C identifier"),
+        ));
+    }
     match target.segments() {
         [root] if root.kind() == NodeKind::Configuration => {}
         [only] if only.kind() == kind && only.name() == Some(name.as_str()) => {}
@@ -1367,7 +1374,8 @@ fn stage_form_remove(
     }
     let owner_text =
         clear_default_form_slots(&deregistered, &format!("{}.Form.{form}", owner.as_str()));
-    let owner_postimage = with_bom(&owner_text);
+    let owner_postimage =
+        super::metadata::preserve_descriptor_image(&owner_preimage, &owner_source, &owner_text);
     staged
         .replace(&owner_relative, &owner_preimage, owner_postimage)
         .map_err(|error| ApplyPlanError::staging(error, at_path))?;
