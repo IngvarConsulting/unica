@@ -6004,19 +6004,19 @@
   },
   {
    "area": "Сборка, ИБ и выгрузка",
-   "task": "Подключить существующие исходники к проекту (текущий ответ поверхности)",
+   "task": "Подключить существующие исходники к проекту (дефект: операция невызываема)",
    "wire": [
     {
      "tool": "unica.run",
      "args": {
       "op": "source.attach",
-      "args": {
-       "sourceSet": "main"
-      }
+      "args": {}
      },
      "expect": [
-      "unsupported"
-     ]
+      "gap"
+     ],
+     "gap": "source.attach из #657 невызываем: без аргументов требует dryRun/ifRev, но и dryRun, и ifRev отвергает как неизвестные — взаимоисключающие отказы",
+     "observed": "bad_value: source.attach requires dryRun: true to preview or dryRun: false with ifRev to apply"
     }
    ],
    "id": "S230"
