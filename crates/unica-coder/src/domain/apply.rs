@@ -250,6 +250,7 @@ enum OperationApplicability {
     MetadataPredefinedItems,
     Form,
     Role,
+    RoleOrRoot,
     Dcs,
     Mxl,
     Xdto,
@@ -290,6 +291,8 @@ impl OperationApplicability {
             }
             Self::Form => form_kind(kind),
             Self::Role => matches!(kind, NodeKind::Role | NodeKind::Right | NodeKind::Rls),
+            // Creation names the new role at the root or at its own address.
+            Self::RoleOrRoot => matches!(kind, NodeKind::Configuration | NodeKind::Role),
             Self::Dcs => matches!(
                 kind,
                 NodeKind::DataSet
@@ -383,6 +386,15 @@ impl OperationSkeleton {
 /// The `can` dictionary prints this as `implemented`, mirroring the honesty
 /// rule of the Run dictionary: a name in the registry is not support.
 pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
+    "right.set",
+    "role.create",
+    "subsystem.create",
+    "content.add",
+    "content.remove",
+    "childSubsystem.add",
+    "childSubsystem.remove",
+    "supportCapability.set",
+    "supportRule.set",
     "field.add",
     "field.set",
     "field.remove",
@@ -578,7 +590,7 @@ operation_descriptors!(
     ("formAttribute.add", Form, Form, Items),
     ("formCommand.add", Form, Form, Items),
     ("event.bind", Form, Form, Values),
-    ("role.create", Role, Role, Values),
+    ("role.create", Role, RoleOrRoot, Values),
     ("right.set", Role, Role, Values),
     ("dcs.set", Dcs, Dcs, Values),
     ("field.add", Dcs, Dcs, Items),

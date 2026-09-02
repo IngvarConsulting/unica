@@ -483,8 +483,17 @@ pub(crate) fn resolve_subsystem_edit_xml(mut path: PathBuf) -> Result<PathBuf, S
 pub(crate) fn load_subsystem_edit_model(path: &Path) -> Result<SubsystemEditModel, String> {
     let text = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    parse_subsystem_edit_model(&text, &path.display().to_string())
+}
+
+/// Parses a subsystem descriptor already in memory; `label` names the source
+/// in error messages.
+pub(crate) fn parse_subsystem_edit_model(
+    text: &str,
+    label: &str,
+) -> Result<SubsystemEditModel, String> {
     let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|err| format!("XML parse error in {}: {err}", path.display()))?;
+        .map_err(|err| format!("XML parse error in {label}: {err}"))?;
     let root = doc.root_element();
     if root.tag_name().name() != "MetaDataObject" {
         return Err(format!(

@@ -88,7 +88,9 @@ def classify(response, context):
         return "cancelled", message[:160]
     if code == "task_failed":
         return "failed", message[:160]
-    if code == "bad_value":
+    if code in {"bad_value", "not_found", "invalid_state", "invalid_source", "stale_revision"}:
+        # Typed refusals from the closed code set: the caller's request, not
+        # the surface, is what has to change.
         return "refused", f"{code}: {message[:160]}"
     return "gap-candidate", f"{code}: {message[:200]}"
 

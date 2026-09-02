@@ -750,7 +750,9 @@ pub(crate) fn plan_metadata_batch(
             MetadataPlanKind::Create { kind, name } => {
                 stage_object_create(
                     &mut staged,
-                    &authority,
+                    authority.workspace_context(),
+                    authority.source_set_name(),
+                    authority.source_root(),
                     *kind,
                     name,
                     op_index,
@@ -892,7 +894,7 @@ pub(crate) fn plan_metadata_batch(
     Ok((staged, provisional))
 }
 
-fn meta_failure_to_plan_error(
+pub(super) fn meta_failure_to_plan_error(
     failure: crate::application::metadata::MetaFailure,
     op_index: usize,
 ) -> ApplyPlanError {
@@ -924,7 +926,7 @@ fn meta_failure_to_plan_error(
     ApplyPlanError::new(kind, diagnostic.message).at_path(path)
 }
 
-fn staged_relative(
+pub(super) fn staged_relative(
     root: &std::path::Path,
     absolute: &std::path::Path,
     op_index: usize,
@@ -944,9 +946,9 @@ fn staged_relative(
 /// The owner descriptor (`Configuration.xml`) with `<Kind>Name</Kind>` added
 /// to or removed from `ChildObjects`, keeping the byte-order mark and the
 /// line endings of the original image.
-fn owner_registration_image(
+pub(super) fn owner_registration_image(
     owner: &[u8],
-    kind: MetadataKind,
+    kind: &str,
     name: &str,
     register: bool,
     op_index: usize,
@@ -966,7 +968,7 @@ fn owner_registration_image(
         let mut updated = source.to_string();
         let changed = crate::infrastructure::native_operations::cf::cf_edit_add_child_object_text(
             &mut updated,
-            kind.as_str(),
+            kind,
             name,
         )
         .map_err(|error| {
@@ -976,9 +978,7 @@ fn owner_registration_image(
         (updated, changed)
     } else {
         crate::infrastructure::native_operations::meta::remove::remove_metadata_child_text_with_flag(
-            source,
-            kind.as_str(),
-            name,
+            source, kind, name,
         )
     };
     if !changed {
@@ -991,9 +991,17 @@ fn owner_registration_image(
     Ok(Some(image))
 }
 
-fn stage_object_create(
+/// Stages a new top-level object from the platform template catalog: its
+/// descriptor, modules and auxiliary files plus the owner registration.
+/// Shared by the metadata family (`object.create`) and the families whose
+/// creation operations are the same template (`role.create`,
+/// `subsystem.create`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stage_object_create(
     staged: &mut ApplyStagedState,
-    authority: &MetadataApplyAuthority<'_>,
+    context: &crate::domain::workspace::WorkspaceContext,
+    source_set_name: &str,
+    root: &std::path::Path,
     kind: MetadataKind,
     name: &str,
     op_index: usize,
@@ -1003,10 +1011,9 @@ fn stage_object_create(
         MetadataTemplateCatalog, MetadataTemplateFileMode, MetadataTemplateOperationOverrides,
         PlatformMetadataTemplateCatalog,
     };
-    let context = authority.workspace_context();
     let source = crate::infrastructure::platform_xml_source_targets::resolve_metadata_add_source(
         context,
-        authority.source_set_name(),
+        source_set_name,
     )
     .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
     let post_image = PlatformMetadataTemplateCatalog
@@ -1018,11 +1025,10 @@ fn stage_object_create(
                 source: false,
                 handler: false,
             },
-            authority.source_set_name(),
+            source_set_name,
             context,
         )
         .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
-    let root = authority.source_root();
     let owner_relative = staged_relative(root, &source.owner_path, op_index)?;
     let descriptor_relative =
         PathBuf::from(metadata_layout(kind).directory).join(format!("{name}.xml"));
@@ -1083,7 +1089,7 @@ fn stage_object_create(
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
     let Some(owner_postimage) =
-        owner_registration_image(&owner_preimage, kind, name, true, op_index)?
+        owner_registration_image(&owner_preimage, kind.as_str(), name, true, op_index)?
     else {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
@@ -1230,7 +1236,7 @@ fn stage_object_remove(
             .at_path(at_path.clone())
         })?;
     let Some(owner_postimage) =
-        owner_registration_image(&owner_preimage, kind, name, false, op_index)?
+        owner_registration_image(&owner_preimage, kind.as_str(), name, false, op_index)?
     else {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidSource,

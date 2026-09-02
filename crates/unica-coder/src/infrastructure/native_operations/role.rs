@@ -2580,7 +2580,7 @@ fn validate_role_edit_descriptor(raw: &[u8], role_name: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn decode_role_xml(raw: &[u8]) -> Result<(bool, String), String> {
+pub(crate) fn decode_role_xml(raw: &[u8]) -> Result<(bool, String), String> {
     let (bom, body) = if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
         (true, &raw[3..])
     } else {
@@ -2591,7 +2591,7 @@ fn decode_role_xml(raw: &[u8]) -> Result<(bool, String), String> {
     Ok((bom, text.to_string()))
 }
 
-fn encode_role_xml(bom: bool, body: &str) -> Vec<u8> {
+pub(crate) fn encode_role_xml(bom: bool, body: &str) -> Vec<u8> {
     let mut output = Vec::with_capacity(body.len() + usize::from(bom) * 3);
     if bom {
         output.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
@@ -2639,7 +2639,7 @@ fn role_direct_boolean(node: roxmltree::Node<'_, '_>) -> Option<bool> {
 /// дефект мутации, и запрещать им правку другого права нельзя. Пост-образ
 /// строго проверяется ровно там, где писатель менял байты.
 #[derive(Clone, Copy)]
-enum RoleValueScope<'a> {
+pub(crate) enum RoleValueScope<'a> {
     SourceImage,
     WrittenRights(&'a [(String, String)]),
 }
@@ -2655,7 +2655,10 @@ impl RoleValueScope<'_> {
     }
 }
 
-fn validate_role_rights_document(text: &str, values: RoleValueScope<'_>) -> Result<(), String> {
+pub(crate) fn validate_role_rights_document(
+    text: &str,
+    values: RoleValueScope<'_>,
+) -> Result<(), String> {
     let document =
         Document::parse(text).map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
     let root = document.root_element();
@@ -2743,7 +2746,7 @@ enum RoleTextEdit {
     None,
 }
 
-fn apply_role_edit_operation(
+pub(crate) fn apply_role_edit_operation(
     text: &str,
     operation: &crate::domain::role::RoleEditOperation,
     operation_index: usize,
