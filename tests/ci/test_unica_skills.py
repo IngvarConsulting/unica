@@ -10,7 +10,10 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIN_RUNTIME_GUIDANCE_DOCS = 31
-MIN_RUNTIME_EXECUTE_EXAMPLES = 21
+# The retired v8-runner skill carried eleven duplicate examples. Remaining
+# examples belong to subject skills and shared references until their v0.13
+# operation is implemented and migrated to unica.run.
+MIN_RUNTIME_EXECUTE_EXAMPLES = 10
 
 
 # Both ways a document points at another one: a backticked path, where the
@@ -1910,9 +1913,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 with self.subTest(path=doc.relative_to(self.repo_root()), token=token):
                     self.assertNotIn(token, text)
 
-    def test_v8_runner_replaces_runtime_and_external_skills_with_single_mcp_skill(self) -> None:
+    def test_runtime_is_tool_native_and_v8_runner_skill_is_not_shipped(self) -> None:
         skill_dir = self.skill_root() / "v8-runner"
-        self.assertTrue((skill_dir / "SKILL.md").is_file())
+        self.assertFalse((skill_dir / "SKILL.md").exists())
+        self.assertFalse(any(path.is_file() for path in skill_dir.rglob("*")))
         for skill in REPLACED_RUNTIME_SKILLS:
             with self.subTest(skill=skill):
                 self.assertFalse((self.skill_root() / skill).exists())
@@ -1929,138 +1933,14 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         ]
         for doc in scanned_docs:
             text = doc.read_text(encoding="utf-8")
+            self.assertNotIn("`v8-runner` skill", text)
+            self.assertNotIn("Use the `v8-runner` skill", text)
             for skill in REPLACED_RUNTIME_SKILLS:
                 with self.subTest(path=doc.relative_to(self.repo_root()), skill=skill):
                     self.assertNotIn(f"/{skill}", text)
                     self.assertNotIn(f"`{skill}`", text)
 
-        for doc in skill_dir.glob("**/*.md"):
-            with self.subTest(path=doc.relative_to(skill_dir)):
-                text = doc.read_text(encoding="utf-8")
-                self.assertNotIn("run-v8-runner.sh", text)
-                self.assertNotIn("unica-v8-runner", text)
-                self.assertNotIn('"args"', text)
-        self.assertIn(
-            "unica.runtime.execute",
-            (skill_dir / "SKILL.md").read_text(encoding="utf-8"),
-        )
 
-    def test_v8_runner_documents_support_independent_partial_fallback_contract(
-        self,
-    ) -> None:
-        skill_dir = self.skill_root() / "v8-runner"
-        skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-        workflows = (skill_dir / "references" / "project-workflows.md").read_text(
-            encoding="utf-8"
-        )
-        troubleshooting = (
-            skill_dir / "references" / "troubleshooting.md"
-        ).read_text(encoding="utf-8")
-        skill_contract = " ".join(skill.split())
-        workflow_contract = " ".join(workflows.split())
-        troubleshooting_contract = " ".join(troubleshooting.split())
-        all_text = " ".join(
-            [skill_contract, workflow_contract, troubleshooting_contract]
-        )
-
-        self.assertIn("сначала запускает обычную сборку", skill_contract)
-        self.assertIn("не читает состояние поддержки", skill_contract)
-        self.assertIn("корректный структурированный", skill_contract)
-        self.assertIn("внешнего кода `4`", skill_contract)
-        self.assertIn("завершившийся ошибкой шаг partial load", skill_contract)
-        # ADR-0066 refused the applied synchronous entry point, so the shipped
-        # guidance must scope the retry to the durable job instead of promising
-        # it for a call that never starts a process.
-        self.assertIn("Политика повтора живёт только в долговременном задании", skill_contract)
-        self.assertIn("Only a durable build carries the one full retry", workflow_contract)
-        self.assertIn(
-            "synchronous entry point owns exactly one process and never repeats it",
-            troubleshooting_contract,
-        )
-        self.assertIn("Ровно одну полную повторную попытку", skill_contract)
-        self.assertIn("не определяет причину ошибки", skill_contract)
-        self.assertIn("Явный `fullRebuild: true`", skill_contract)
-        self.assertIn("одну полную сборку без fallback", skill_contract)
-        self.assertIn(
-            "тайм-аут внешнего процесса, зафиксированный Unica", skill_contract
-        )
-        self.assertIn("отложенного внутреннего тайм-аута", skill_contract)
-        self.assertIn("третьей попытки нет", skill_contract)
-
-        self.assertIn("normal build first", workflow_contract)
-        self.assertIn("does not inspect support state", workflow_contract)
-        self.assertIn("External exit code `4`", workflow_contract)
-        self.assertIn("completed partial load", workflow_contract)
-        self.assertIn("the only result", workflow_contract)
-        self.assertIn("one full retry", workflow_contract)
-        self.assertIn("does not identify the cause", workflow_contract)
-        self.assertIn("Explicit `fullRebuild=true`", workflow_contract)
-        self.assertIn("is never retried", workflow_contract)
-        self.assertIn("process timeout observed by Unica", workflow_contract)
-        self.assertIn("deferred internal timeout", workflow_contract)
-
-        self.assertIn("Do not retry", troubleshooting_contract)
-        self.assertIn("external exit code `4`", troubleshooting_contract)
-        self.assertIn("cancellation", troubleshooting_contract)
-        self.assertIn("process timeout observed by Unica", troubleshooting_contract)
-        self.assertIn("deferred internal timeout", troubleshooting_contract)
-        self.assertIn("malformed", troubleshooting_contract)
-
-        self.assertIn("v14", all_text)
-        self.assertIn("temporary", all_text.lower())
-        for stale_claim in [
-            "точное изменение не доказано безопасным для partial load",
-            "активная поддержка поставщика",
-            "разрешающий ответ о поддержке",
-            "support-state preflight",
-            "supported Designer configuration",
-        ]:
-            with self.subTest(stale_claim=stale_claim):
-                self.assertNotIn(stale_claim, all_text)
-
-    def test_v8_runner_examples_are_parameterized_mcp_calls(self) -> None:
-        skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
-        text = skill_doc.read_text(encoding="utf-8")
-        examples = [
-            block
-            for block in re.findall(r"```json\n(.*?)\n```", text, flags=re.S)
-            if '"method": "tools/call"' in block
-        ]
-        self.assertGreaterEqual(len(examples), 20)
-        operations = set()
-        for block in examples:
-            payload = json.loads(block)
-            tool_name = payload["params"]["name"]
-            self.assertIn(
-                tool_name,
-                {"unica.runtime.execute", "unica.runtime.job.start"},
-            )
-            arguments = payload["params"]["arguments"]
-            self.assertIn("operation", arguments)
-            self.assertNotEqual(set(arguments.keys()), {"cwd"})
-            self.assertNotIn("args", arguments)
-            if tool_name == "unica.runtime.job.start":
-                self.assertIs(arguments.get("dryRun"), False)
-            operations.add(arguments["operation"])
-
-        self.assertTrue(
-            {
-                "config-init",
-                "init",
-                "build",
-                "dump",
-                "convert",
-                "make",
-                "load",
-                "syntax",
-                "test",
-                "launch",
-                "extensions",
-            }.issubset(operations)
-        )
-        self.assertIn('"sourceSet": "external-processors"', text)
-        self.assertIn('"sourceSet": "external-reports"', text)
-        self.assertIn('"output": "build/external"', text)
 
     def test_db_auth_check_numbers_only_the_two_credential_candidates(self) -> None:
         text = (
@@ -2394,44 +2274,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 for claim in forbidden_applied_claims:
                     self.assertNotRegex(text, claim)
 
-    def test_v8_runner_routes_unwaitable_work_to_a_durable_job(self) -> None:
-        """The durable route is a first-class choice, not a way around a refusal.
-
-        ADR-0074 admits the applied call, so the shipped guidance has to say when
-        a durable job is still the right tool: work whose result the call must
-        not lose. Adapted from PR #555, which proposed the positive route while
-        the applied call was still refused.
-        """
-        skill_text = (self.skill_root() / "v8-runner" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
-        reference_text = (
-            self.reference_root() / "use-cases" / "workspace-runtime.md"
-        ).read_text(encoding="utf-8")
-
-        durable_calls = [
-            payload["params"]["arguments"]
-            for payload in (
-                json.loads(block)
-                for block in re.findall(
-                    r"```json\n(.*?)\n```", skill_text, flags=re.DOTALL
-                )
-            )
-            if payload.get("method") == "tools/call"
-            and payload.get("params", {}).get("name") == "unica.runtime.job.start"
-        ]
-        self.assertTrue(durable_calls, "the skill shows no durable job call")
-        for arguments in durable_calls:
-            self.assertIs(arguments.get("dryRun"), False)
-            self.assertIn("operation", arguments)
-
-        for text in (skill_text, reference_text):
-            for observation in (
-                "unica.runtime.job.status",
-                "unica.runtime.job.wait",
-                "unica.runtime.job.logs",
-            ):
-                self.assertIn(observation, text)
 
     def test_shipped_guidance_never_routes_runtime_refusal_through_fallbacks(
         self,
@@ -2532,27 +2374,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 ]
                 self.assertEqual(violating, [])
 
-    def test_runtime_reference_tables_do_not_hide_alternatives_as_separators(
-        self,
-    ) -> None:
-        docs = (
-            self.reference_root() / "tooling" / "v8project.md",
-            self.skill_root()
-            / "v8-runner"
-            / "references"
-            / "command-selection.md",
-        )
-        for doc in docs:
-            for line_number, line in enumerate(
-                doc.read_text(encoding="utf-8").splitlines(), 1
-            ):
-                if not line.lstrip().startswith("|"):
-                    continue
-                with self.subTest(
-                    path=doc.relative_to(self.repo_root()), line=line_number
-                ):
-                    for code_span in re.findall(r"`([^`]*)`", line):
-                        self.assertNotIn("|", code_span)
 
     def test_code_quality_runtime_preview_preserves_test_first_order(self) -> None:
         doc = self.reference_root() / "use-cases" / "code-quality-review.md"
@@ -2565,183 +2386,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIsNotNone(test_first)
         self.assertLess(test_first.start(), text.index("preview intended syntax/test"))
 
-    def test_vanessa_preview_never_claims_to_create_the_epf(self) -> None:
-        skill = self.skill_root() / "v8-runner" / "SKILL.md"
-        text = skill.read_text(encoding="utf-8")
-        self.assertIsNotNone(
-            re.search(r"Vanessa EPF.{0,100}уже существовать", text, flags=re.DOTALL)
-        )
-        self.assertIsNotNone(
-            re.search(
-                r"`tools-download`.{0,160}`dryRun: true`.{0,160}не (?:создаёт|сохраняет)",
-                text,
-                flags=re.DOTALL,
-            )
-        )
 
-        workflows = (
-            self.skill_root()
-            / "v8-runner"
-            / "references"
-            / "project-workflows.md"
-        ).read_text(encoding="utf-8")
-        self.assertIn("the preview does not prepare the extension", workflows)
-        self.assertIsNotNone(
-            re.search(
-                r"`tools-download`.{0,240}preview, but not publish, that artifact",
-                workflows,
-                flags=re.DOTALL,
-            )
-        )
 
-    def test_v8_runner_examples_respect_single_call_runtime_admission(self) -> None:
-        skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
-        text = skill_doc.read_text(encoding="utf-8")
-        try:
-            calls = runtime_execute_json_examples(text)
-        except ValueError as error:
-            self.fail(str(error))
-        arguments = [
-            call["params"]["arguments"]
-            for call in calls
-            if call.get("method") == "tools/call"
-            and call.get("params", {}).get("name") == "unica.runtime.execute"
-        ]
 
-        for example in arguments:
-            operation = example["operation"]
-            with self.subTest(operation=operation, example=example):
-                self.assertIs(example.get("dryRun"), True)
 
-        for required in (
-            r"одному `tools/call`",
-            r"не увеличивает крайний срок",
-            r"терминальн\w* результат",
-            r"runtime_risk_",
-            r"`unica\.runtime\.job\.start`",
-        ):
-            with self.subTest(required=required):
-                self.assertRegex(text, required)
-
-        self.assertNotIn("Для долгих операций меняй `execution_timeout`", text)
-
-    def test_v8_runner_documents_bounded_vanessa_launch_contract(self) -> None:
-        skill_dir = self.skill_root() / "v8-runner"
-        skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-        reference_text = "\n".join(
-            (skill_dir / relative_path).read_text(encoding="utf-8")
-            for relative_path in [
-                "references/command-selection.md",
-                "references/project-workflows.md",
-            ]
-        )
-        all_text = f"{skill_text}\n{reference_text}"
-
-        self.assertIn('"waitForExit": true', skill_text)
-        self.assertIn('"waitTimeoutMs": 30000', skill_text)
-        self.assertIn('"c": "StartFeaturePlayer;', skill_text)
-        self.assertIn("типизированное поле `c`", skill_text)
-        self.assertIn("не через `rawKeys`", skill_text)
-        self.assertIn('"operation": "tools-download"', skill_text)
-        self.assertIn('"tool": "vanessa"', skill_text)
-        self.assertIn(
-            '"execute": "build/tools/vanessa-automation-single.epf"',
-            skill_text,
-        )
-        self.assertIn('"output": "build/va.platform-out.log"', skill_text)
-        self.assertIn(
-            '"stderrOutput": "build/va.client.stderr.log"',
-            skill_text,
-        )
-        self.assertIn("`tools.va.epf_path`", skill_text)
-        self.assertRegex(
-            skill_text,
-            r'(?s)"waitForExit": true.{0,400}"dryRun": true',
-        )
-        self.assertIn("Любой применённый launch отказывает", skill_text)
-        self.assertIn("платформенный `/Out`", all_text)
-        self.assertIn("stderr клиентского процесса 1\u0421", all_text)
-        self.assertIn("Не обходи отказ через `unica.runtime.job.start`", skill_text)
-        self.assertNotIn("`data.external_epf_wait`", skill_text)
-        self.assertNotIn("`diagnostics.external_epf_wait`", skill_text)
-
-    def test_v8_runner_leads_client_mcp_download_with_the_prebuilt_artifact(
-        self,
-    ) -> None:
-        """#346. The prebuilt client MCP artifact remains the default route.
-
-        Current runtime.execute guidance is preview-only, but it still has to
-        keep the ready `build/tools/client_mcp.cfe` artifact distinct from the
-        `sources: true` EDT tree that needs `1cedtcli` and produces no `.cfe`.
-        """
-        skill_dir = self.skill_root() / "v8-runner"
-        skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-        command_selection = (
-            skill_dir / "references" / "command-selection.md"
-        ).read_text(encoding="utf-8")
-
-        client_mcp_calls = [
-            payload["params"]["arguments"]
-            for payload in (
-                json.loads(block)
-                for block in re.findall(
-                    r"```json\n(.*?)\n```", skill_text, flags=re.S
-                )
-                if '"method": "tools/call"' in block
-            )
-            if payload["params"]["arguments"].get("operation") == "tools-download"
-            and payload["params"]["arguments"].get("tool") == "client-mcp"
-        ]
-        self.assertTrue(
-            client_mcp_calls, "the skill has to show how to prepare client MCP"
-        )
-
-        # `dryRun: true` is part of the current runtime contract. The oracle is
-        # that the prebuilt artifact route is still documented separately from
-        # the sources route, without advertising applied tools-download.
-        artifact_calls = [
-            call
-            for call in client_mcp_calls
-            if not call.get("sources") and call.get("dryRun") is True
-        ]
-        self.assertTrue(
-            artifact_calls,
-            "the default preview call must name the prebuilt client_mcp.cfe "
-            f"route: {client_mcp_calls}",
-        )
-        self.assertIn("build/tools/client_mcp.cfe", skill_text)
-        self.assertIn("готовый артефакт должен уже существовать", skill_text)
-
-        # The EDT route may stay, but never unlabelled: it replaces the
-        # artifact and needs a toolchain the workspace may not have.
-        if any(call.get("sources") for call in client_mcp_calls):
-            self.assertIn("1cedtcli", skill_text)
-
-        self.assertIn("1cedtcli", command_selection)
-
-    def test_v8_runner_metadata_describes_runtime_trigger_surface(self) -> None:
-        skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
-        text = skill_doc.read_text(encoding="utf-8")
-        fields = prompt_frontmatter(text)
-        self.assertIn(
-            "description",
-            fields,
-            msg=f"invalid prompt frontmatter:\n{prompt_frontmatter_body(text)}",
-        )
-        description_text = fields["description"]
-        for token in [
-            "информационная база",
-            "v8project.yaml",
-            "workspace",
-            "source-set",
-            "EPF/ERF",
-            "CF/CFE",
-            "syntax/tests/launch",
-        ]:
-            with self.subTest(token=token):
-                self.assertIn(token, description_text)
-        self.assertIn("Не используй", description_text)
-        self.assertIn("XML", description_text)
 
     def test_references_are_structured_by_unica_use_cases(self) -> None:
         reference_root = self.reference_root()
@@ -3142,13 +2790,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn("source_format=mixed", joined)
 
     def test_workspace_runtime_routes_project_health_without_granting_mutation(self) -> None:
-        reference = (
+        joined = (
             self.reference_root() / "use-cases" / "workspace-runtime.md"
         ).read_text(encoding="utf-8")
-        skill = (self.skill_root() / "v8-runner" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
-        joined = reference + "\n" + skill
+        normalized = " ".join(joined.split())
 
         for token in (
             "unica.view {}",
@@ -3158,9 +2803,9 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "sourceSet.path: .",
         ):
             self.assertIn(token, joined)
-        self.assertIn("does not mean Unica is unusable without Git", joined)
-        self.assertIn("never execute them automatically", joined)
-        self.assertIn("call `unica.view {}` again", joined)
+        self.assertIn("does not mean Unica is unusable without Git", normalized)
+        self.assertIn("never execute them automatically", normalized)
+        self.assertIn("call `unica.view {}` again", normalized)
         self.assertNotIn("it does not inspect repository health", joined)
 
     def test_references_do_not_contain_stale_upstream_instructions(self) -> None:
@@ -3213,70 +2858,9 @@ Use `.claude/commands/xdto.md` as the execution route.
 
         self.assertIn(".claude", guarded)
 
-    def test_v8_runner_docs_track_current_v8project_contract(self) -> None:
-        v8project = (self.reference_root() / "tooling" / "v8project.md").read_text(
-            encoding="utf-8"
-        )
-        config_and_backends = (
-            self.skill_root()
-            / "v8-runner"
-            / "references"
-            / "config-and-backends.md"
-        ).read_text(encoding="utf-8")
-        runtime_build = (
-            self.reference_root() / "tooling" / "runtime-build.md"
-        ).read_text(encoding="utf-8")
-        v8_runner_docs = "\n".join(
-            [
-                (self.skill_root() / "v8-runner" / "SKILL.md").read_text(
-                    encoding="utf-8"
-                ),
-                config_and_backends,
-                (
-                    self.skill_root()
-                    / "v8-runner"
-                    / "references"
-                    / "command-selection.md"
-                ).read_text(encoding="utf-8"),
-                (
-                    self.skill_root() / "v8-runner" / "references" / "testing.md"
-                ).read_text(encoding="utf-8"),
-                v8project,
-            ]
-        )
-
-        self.assertIn("execution_timeout", v8project)
-        self.assertIn("infobase:", v8project)
-        self.assertIn("infobase.connection", v8_runner_docs)
-        self.assertIn("tools-download", v8_runner_docs)
-        self.assertIn("fullOutput", v8_runner_docs)
-        self.assertIn("features", v8_runner_docs)
-        for document, content in {
-            "plugins/unica/references/tooling/v8project.md": v8project,
-            (
-                "plugins/unica/skills/v8-runner/references/"
-                "config-and-backends.md"
-            ): config_and_backends,
-        }.items():
-            with self.subTest(document=document):
-                self.assertIn("tools.platform.strict", content)
-                self.assertIn("strict: true", content)
-                self.assertIn("fail-closed", content)
-        self.assertNotRegex(v8project, r"(?m)^connection:")
-        self.assertNotIn("mode=load|merge|update", v8project)
-        self.assertIn("tools.platform.version", runtime_build)
-        self.assertIn("tools.platform.path", runtime_build)
-        self.assertIn("v8project.local.yaml", runtime_build)
-        self.assertNotIn("V8_PATH", runtime_build)
-        self.assertNotIn("V8_BASE", runtime_build)
 
     def test_verified_full_dump_documents_its_publication_risk_contract(self) -> None:
         docs = [
-            self.skill_root() / "v8-runner" / "SKILL.md",
-            self.skill_root()
-            / "v8-runner"
-            / "references"
-            / "file-and-artifact-workflows.md",
             self.reference_root() / "tooling" / "runtime-build.md",
             self.reference_root() / "tooling" / "v8project.md",
         ]
@@ -3502,60 +3086,6 @@ Use `.claude/commands/xdto.md` as the execution route.
         )
         self.assertIn("legacy_target_removed", text)
 
-    def test_v8_runner_dump_references_keep_incomplete_and_external_routes_guarded(
-        self,
-    ) -> None:
-        v8_runner_root = self.skill_root() / "v8-runner"
-        safety_context = re.compile(
-            r"dryRun.{0,8}(?:true|`true`)|preview|read-only|fail-closed|block|"
-            r"receipt|сверк\w*|довер\w*|verify",
-            re.IGNORECASE | re.DOTALL,
-        )
-        paths = sorted(
-            [*v8_runner_root.rglob("*.md"), *self.reference_root().rglob("*.md")]
-        )
-
-        for path in paths:
-            text = path.read_text(encoding="utf-8")
-            for match in re.finditer(r"mode=(?:incremental|partial)", text):
-                context = text[max(0, match.start() - 240) : match.end() + 240]
-                with self.subTest(
-                    path=path.relative_to(self.repo_root()), mode=match.group(0)
-                ):
-                    self.assertRegex(context, safety_context)
-
-        for path in paths:
-            text = path.read_text(encoding="utf-8")
-            for block in re.findall(r"```json\s*(.*?)```", text, re.DOTALL):
-                try:
-                    payload = json.loads(block)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                params = payload.get("params", {})
-                if not isinstance(params, dict):
-                    continue
-                arguments = params.get("arguments", {})
-                if not isinstance(arguments, dict):
-                    continue
-                source_set = arguments.get("sourceSet")
-                if (
-                    arguments.get("operation") == "dump"
-                    and (
-                        arguments.get("mode") in {"incremental", "partial"}
-                        or (
-                            isinstance(source_set, str)
-                            and "external" in source_set.lower()
-                        )
-                    )
-                ):
-                    with self.subTest(
-                        path=path.relative_to(self.repo_root()),
-                        mode=arguments.get("mode"),
-                        source_set=source_set,
-                    ):
-                        self.assertIs(arguments.get("dryRun"), True)
 
     def test_config_dump_info_version_is_documented_as_opaque_platform_state(self) -> None:
         configuration_spec = (
@@ -3567,7 +3097,6 @@ Use `.claude/commands/xdto.md` as the execution route.
 
     def test_config_dump_info_docs_preserve_same_named_metadata_source(self) -> None:
         docs = [
-            self.skill_root() / "v8-runner" / "SKILL.md",
             self.reference_root() / "tooling" / "v8project.md",
             self.reference_root() / "use-cases" / "metadata-modeling.md",
         ]

@@ -12,9 +12,10 @@ subsystems, interfaces, and templates.
 
 ## Primary path
 
-Use the `v8-runner` skill and MCP `unica.runtime.execute` both to preview typed
-runtime arguments and to run them: `dryRun: false` executes the operation and
-returns its terminal result in the same call.
+Use the package-selected MCP runtime surface directly. In v0.13, call
+`unica.run {}` first and select only an operation whose dictionary entry says
+`implemented: true`; do not infer arguments for planned operations whose
+`argsSchema` is `null`.
 
 По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`

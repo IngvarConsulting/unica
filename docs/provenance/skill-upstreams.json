@@ -1627,27 +1627,6 @@
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_smoke.py"
           ]
-        },
-        {
-          "skill": "v8-runner",
-          "status": "superseded-by-unica-mcp",
-          "decision": "ported",
-          "notes": "Runtime workflow and contract depend on v8-runner-rust, but Unica exposes it through typed MCP unica.runtime.execute instead of direct runner CLI guidance.",
-          "upstreamPaths": [
-            "README.md",
-            "docs/**",
-            "src/**",
-            "crates/**"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/v8-runner"
-          ],
-          "contractPaths": [
-            "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/infrastructure/internal_adapters.rs",
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_smoke.py"
-          ]
         }
       ],
       "lastAdaptedLocalCommit": "db254e42af00c248ec33346ba64076bbf5d37b71",
