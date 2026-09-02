@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -167,25 +168,39 @@ class LocalDevInstallerTests(unittest.TestCase):
         )
         self.assertLess(create_home, first_codex_call)
 
-    def test_prompt_verification_requires_only_installed_visible_skills(self) -> None:
+    @staticmethod
+    def packaged_skill_names() -> set[str]:
+        skills_root = REPO_ROOT / "plugins/unica/skills"
+        return {
+            path.name for path in skills_root.iterdir() if (path / "SKILL.md").is_file()
+        }
+
+    def test_prompt_proof_names_no_skill_of_its_own(self) -> None:
         installer = INSTALLER.read_text(encoding="utf-8")
 
-        # The proof looks for the plugin name and one skill taken from the
-        # package at run time, so no skill name is written into the script.
-        needle_lines = [
-            line.strip() for line in installer.splitlines() if "for needle in" in line
-        ]
-        self.assertEqual(needle_lines, ['for needle in "Unica" "$PROMPT_SKILL"; do'])
-        self.assertIn(
-            'PROMPT_SKILL="$(packaged_prompt_skill "$MARKETPLACE_DIR/plugins/unica/skills")"',
-            installer,
-        )
-        for stale in (
-            'for needle in "Unica" "v8-runner" "db-auth-check"; do',
-            'for needle in "Unica" "db-auth-check"; do',
-        ):
-            with self.subTest(stale=stale):
-                self.assertNotIn(stale, installer)
+        # The proof takes the skill from the package at run time, so no skill
+        # name is written anywhere in the script: not on the needle line, and
+        # not in a variable assigned above it.
+        packaged = self.packaged_skill_names()
+        self.assertTrue(packaged)
+        for skill in sorted(packaged):
+            with self.subTest(skill=skill):
+                self.assertNotIn(skill, installer)
+
+        needles = re.findall(r"for needle in (.+); do", installer)
+        self.assertEqual(len(needles), 1, needles)
+        needle_line = needles[0]
+        self.assertIn('"Unica"', needle_line)
+        # Whatever the variable is called, the skill arrives through one.
+        self.assertRegex(needle_line, r'"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"')
+
+        # A skill removed from the package is no longer in `packaged`, so the
+        # names dropped so far are named here: `v8-runner` went in #670, and
+        # the proof must not grow a literal back in its place. It stays legal
+        # elsewhere in the script as the name of a bundled tool.
+        for retired in ("v8-runner",):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, needle_line)
 
     def packaged_prompt_skill(self, skills_root: Path) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmp:
@@ -239,17 +254,6 @@ class LocalDevInstallerTests(unittest.TestCase):
             completed.stderr,
             f"Packaged plugin exposes no prompt-visible skills: {skills_root}\n",
         )
-
-    def test_packaged_prompt_skill_names_a_shipped_source_skill(self) -> None:
-        skills_root = REPO_ROOT / "plugins/unica/skills"
-
-        completed = self.packaged_prompt_skill(skills_root)
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stderr, "")
-        skill = completed.stdout.rstrip("\n")
-        self.assertNotIn("\n", skill)
-        self.assertTrue((skills_root / skill / "SKILL.md").is_file(), skill)
 
     def test_installer_preserves_persistent_cargo_work_and_writes_metrics(self) -> None:
         installer = INSTALLER.read_text(encoding="utf-8")

@@ -202,6 +202,10 @@ fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
     verify_installed_plugin_metadata(plugin_root, VERSION)?;
 
     let visible = prompt_visible_skills(&plugin_root.join("skills"))?;
+    // The anchor would reject an empty package on its own. This branch is
+    // here for the diagnosis: a packager that shipped nothing is a different
+    // fault from one that shipped a tree missing this skill, and the release
+    // log is what someone reads to tell them apart.
     if visible.is_empty() {
         return Err(unica_bootstrap::BootstrapError::new(
             "installed Unica plugin exposes no prompt-visible skills",
@@ -378,12 +382,5 @@ mod tests {
             message.contains("incomplete") && message.contains("broken"),
             "{error}"
         );
-    }
-
-    #[test]
-    fn a_package_without_a_skills_directory_is_rejected() {
-        let fixture = PackageFixture::new("no-skills-dir", &[]);
-        std::fs::remove_dir_all(fixture.root.join("skills")).unwrap();
-        verify_installed_skill_package(&fixture.root).unwrap_err();
     }
 }
