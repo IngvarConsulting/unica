@@ -40,6 +40,8 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path};
+#[cfg(feature = "receipt-ledger-test-support")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -56,11 +58,18 @@ const MAX_GENERATION_STAGING_ENTRIES: usize = MAX_RETAINED_RECEIPT_ROWS;
 const MAX_RECEIPT_ROOT_DIRECTORY_ENTRIES: usize = MAX_GENERATION_STAGING_ENTRIES + 3;
 const DEFAULT_RECEIPT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "receipt-ledger-test-support")))]
 thread_local! {
     static TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+static TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
     static TEST_AFTER_GENERATION_REPLACE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
         std::cell::RefCell::new(None)
     };
@@ -81,9 +90,14 @@ thread_local! {
     };
 }
 
-#[cfg(test)]
-fn inject_receipt_row_directory_sync_failure_for_test() {
+#[cfg(all(test, not(feature = "receipt-ledger-test-support")))]
+pub(crate) fn inject_receipt_row_directory_sync_failure_for_test() {
     TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.with(|slot| slot.set(true));
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+pub(crate) fn inject_receipt_row_directory_sync_failure_for_test() {
+    TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.store(true, Ordering::Release);
 }
 
 #[cfg(test)]
@@ -216,6 +230,14 @@ enum StoredActiveLifecycleV1 {
         prior_record_version: ReceiptVersion,
         prior_mutation_sequence: u64,
         prior_terminal_epoch_ms: u64,
+        prior_terminal_digest: TerminalDigest,
+    },
+    ExpiredTaskReceiptDeletion {
+        observed_at_epoch_ms: u64,
+        prior_record_version: ReceiptVersion,
+        prior_mutation_sequence: u64,
+        prior_terminal_epoch_ms: u64,
+        prior_ttl_ms: u64,
         prior_terminal_digest: TerminalDigest,
     },
     CompletedTaskHandoffDeletion {
@@ -496,6 +518,7 @@ impl CatalogEntry {
             | StoredActiveLifecycleV1::ExpiredDeletion { .. }
             | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
             | StoredActiveLifecycleV1::ExpiredDirectDeletion { .. }
+            | StoredActiveLifecycleV1::ExpiredTaskReceiptDeletion { .. }
             | StoredActiveLifecycleV1::CompletedTaskHandoffDeletion { .. }
             | StoredActiveLifecycleV1::AcknowledgementCommit { .. }
             | StoredActiveLifecycleV1::AcknowledgedTombstone { .. } => 0,
@@ -563,6 +586,7 @@ impl CatalogEntry {
             StoredActiveLifecycleV1::ExpiredDeletion { .. }
             | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
             | StoredActiveLifecycleV1::ExpiredDirectDeletion { .. }
+            | StoredActiveLifecycleV1::ExpiredTaskReceiptDeletion { .. }
             | StoredActiveLifecycleV1::CompletedTaskHandoffDeletion { .. } => Err(
                 ReceiptLedgerError::Corrupt("expired deletion witness is not a live receipt state"),
             ),
@@ -3247,8 +3271,7 @@ impl ReceiptLedgerStore {
             key_digest: key_digest.clone(),
             lifecycle,
         };
-        let (record, encoded) =
-            serialize_reserved_record(record, MAX_TASK_RECORD_ENVELOPE_BYTES as u64)?;
+        let (record, encoded) = serialize_reserved_record(record, MAX_RECEIPT_ENTITLEMENT_BYTES)?;
         let replacement = CatalogEntry {
             record: record.clone(),
             encoded_bytes: u64::try_from(encoded.len())
@@ -4815,6 +4838,7 @@ impl ReceiptLedgerStore {
             .filter(|(_, entry)| {
                 entry_is_expired_tombstone(entry, observed_at_epoch_ms)
                     || entry_is_expired_direct_terminal(entry, observed_at_epoch_ms)
+                    || entry_is_expired_task_receipt_terminal(entry, observed_at_epoch_ms)
             })
             .map(|(digest, _)| digest.clone())
             .collect::<Vec<_>>();
@@ -4835,6 +4859,14 @@ impl ReceiptLedgerStore {
                 }
                 Some(StoredActiveLifecycleV1::DirectTerminalUnacked { .. }) => {
                     self.reclaim_expired_direct_terminal_under_writer_lock(
+                        catalog,
+                        digest,
+                        observed_at_epoch_ms,
+                        deadline,
+                    )?;
+                }
+                Some(StoredActiveLifecycleV1::TaskTerminalReceiptBacked { .. }) => {
+                    self.reclaim_expired_task_receipt_terminal_under_writer_lock(
                         catalog,
                         digest,
                         observed_at_epoch_ms,
@@ -5040,6 +5072,97 @@ impl ReceiptLedgerStore {
                 "receipt generation exhausted u64",
             ))?;
         let record = build_expired_direct_deletion_record(
+            &persisted,
+            observed_at_epoch_ms,
+            mutation_sequence,
+        )?;
+        let (record, encoded) =
+            serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES)?;
+        if let Err(error) = validate_catalog_remove(catalog, &persisted) {
+            return latch_catalog_error(catalog, error);
+        }
+        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
+            commit_catalog_remove(catalog, &persisted);
+        }) {
+            if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
+                catalog.unavailable = true;
+            }
+            return Err(error);
+        }
+        if let Err(error) =
+            self.publish_generation(mutation_sequence, Some(key_digest), Some(deadline))
+        {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        if let Err(error) = self.remove_expired_deletion_witness(key_digest, &encoded, deadline) {
+            catalog.unavailable = true;
+            return Err(error);
+        }
+        if check_deadline(deadline).is_err() || self.verify_named_authority().is_err() {
+            catalog.unavailable = true;
+            return Err(ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: key_digest.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    fn reclaim_expired_task_receipt_terminal_under_writer_lock(
+        &self,
+        catalog: &mut ReceiptCatalog,
+        key_digest: &ReceiptKeyDigest,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<(), ReceiptLedgerError> {
+        check_deadline(deadline)?;
+        let expected =
+            catalog
+                .records
+                .get(key_digest)
+                .cloned()
+                .ok_or(ReceiptLedgerError::Corrupt(
+                    "expired receipt-backed Task disappeared while the writer lock was held",
+                ))?;
+        let persisted = self
+            .read_entry_under_writer_lock(catalog, key_digest, Some(deadline))?
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "catalogued expired receipt-backed Task row is missing",
+            ))?;
+        if persisted != expected {
+            return latch_catalog_error(
+                catalog,
+                ReceiptLedgerError::Corrupt(
+                    "catalogued expired receipt-backed Task changed on disk",
+                ),
+            );
+        }
+        let expires_at_epoch_ms = match persisted.state() {
+            Ok(ReceiptState::TaskTerminalReceiptBacked(receipt)) => receipt.expires_at_epoch_ms(),
+            Ok(_) => {
+                return latch_catalog_error(
+                    catalog,
+                    ReceiptLedgerError::Corrupt(
+                        "expired receipt-backed Task candidate changed lifecycle under writer lock",
+                    ),
+                )
+            }
+            Err(error) => return latch_catalog_error(catalog, error),
+        };
+        if observed_at_epoch_ms < expires_at_epoch_ms {
+            return latch_catalog_error(
+                catalog,
+                ReceiptLedgerError::Corrupt("selected receipt-backed Task terminal is not expired"),
+            );
+        }
+
+        let generation = latch_catalog_result(catalog, self.generation_under_writer_lock())?;
+        let mutation_sequence = generation
+            .checked_add(1)
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt generation exhausted u64",
+            ))?;
+        let record = build_expired_task_receipt_deletion_record(
             &persisted,
             observed_at_epoch_ms,
             mutation_sequence,
@@ -6907,6 +7030,48 @@ fn build_expired_direct_deletion_record(
     })
 }
 
+fn build_expired_task_receipt_deletion_record(
+    expected: &CatalogEntry,
+    observed_at_epoch_ms: u64,
+    mutation_sequence: u64,
+) -> Result<StoredActiveReceiptV1, ReceiptLedgerError> {
+    let (prior_terminal_epoch_ms, prior_ttl_ms, prior_terminal_digest) =
+        match &expected.record.lifecycle {
+            StoredActiveLifecycleV1::TaskTerminalReceiptBacked {
+                terminal_epoch_ms,
+                ttl_ms,
+                terminal_digest,
+                ..
+            } => (*terminal_epoch_ms, *ttl_ms, terminal_digest.clone()),
+            _ => return Err(ReceiptLedgerError::Corrupt(
+                "expired receipt-backed Task deletion witness requires a Task terminal predecessor",
+            )),
+        };
+    let record_version =
+        expected
+            .record
+            .record_version
+            .checked_next()
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt record version exhausted u64",
+            ))?;
+    Ok(StoredActiveReceiptV1 {
+        schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+        mutation_sequence,
+        record_version,
+        key: expected.record.key.clone(),
+        key_digest: expected.record.key_digest.clone(),
+        lifecycle: StoredActiveLifecycleV1::ExpiredTaskReceiptDeletion {
+            observed_at_epoch_ms,
+            prior_record_version: expected.record.record_version,
+            prior_mutation_sequence: expected.record.mutation_sequence,
+            prior_terminal_epoch_ms,
+            prior_ttl_ms,
+            prior_terminal_digest,
+        },
+    })
+}
+
 fn build_completed_task_handoff_deletion_record(
     expected: &CatalogEntry,
     confirmed_task_bound: &TaskBoundReceipt,
@@ -7157,14 +7322,22 @@ fn validate_persisted_reserved_record_bytes(
         | StoredActiveLifecycleV1::ExpiredDeletion { .. }
         | StoredActiveLifecycleV1::ExpiredTombstoneDeletion { .. }
         | StoredActiveLifecycleV1::ExpiredDirectDeletion { .. }
+        | StoredActiveLifecycleV1::ExpiredTaskReceiptDeletion { .. }
         | StoredActiveLifecycleV1::CompletedTaskHandoffDeletion { .. }
         | StoredActiveLifecycleV1::AcknowledgementCommit { .. } => MAX_CANCEL_RESERVED_RECORD_BYTES,
+        StoredActiveLifecycleV1::TaskHandoffActorBound {
+            terminal_stage: StoredHandoffTerminalStageV1::Staged { .. },
+            ..
+        } => MAX_RECEIPT_ENTITLEMENT_BYTES,
         StoredActiveLifecycleV1::ReservedUnbound { .. }
         | StoredActiveLifecycleV1::ReservedActorBound { .. }
         | StoredActiveLifecycleV1::ReservedBegun { .. }
         | StoredActiveLifecycleV1::TaskPromisedUnbound { .. }
         | StoredActiveLifecycleV1::TaskPromisedActorBound { .. }
-        | StoredActiveLifecycleV1::TaskHandoffActorBound { .. }
+        | StoredActiveLifecycleV1::TaskHandoffActorBound {
+            terminal_stage: StoredHandoffTerminalStageV1::NoTerminal,
+            ..
+        }
         | StoredActiveLifecycleV1::TaskReceiptOwnedActorBound { .. } => {
             MAX_TASK_RECORD_ENVELOPE_BYTES as u64
         }
@@ -7402,6 +7575,39 @@ fn validate_active_record(
             }
             MAX_CANCEL_RESERVED_RECORD_BYTES
         }
+        StoredActiveLifecycleV1::ExpiredTaskReceiptDeletion {
+            observed_at_epoch_ms,
+            prior_record_version,
+            prior_mutation_sequence,
+            prior_terminal_epoch_ms,
+            prior_ttl_ms,
+            ..
+        } => {
+            if *prior_record_version == ReceiptVersion::initial()
+                || prior_record_version.checked_next() != Some(record.record_version)
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired receipt-backed Task deletion witness does not advance a terminal predecessor",
+                ));
+            }
+            if *prior_mutation_sequence == 0 || *prior_mutation_sequence >= record.mutation_sequence
+            {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired receipt-backed Task deletion witness does not follow its predecessor mutation",
+                ));
+            }
+            let expires_at_epoch_ms = prior_terminal_epoch_ms.checked_add(*prior_ttl_ms).ok_or(
+                ReceiptLedgerError::Corrupt(
+                    "expired receipt-backed Task deletion witness expiry exceeds u64",
+                ),
+            )?;
+            if *prior_ttl_ms == 0 || *observed_at_epoch_ms < expires_at_epoch_ms {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "expired receipt-backed Task deletion witness predates the absolute expiry boundary",
+                ));
+            }
+            MAX_CANCEL_RESERVED_RECORD_BYTES
+        }
         StoredActiveLifecycleV1::CompletedTaskHandoffDeletion {
             prior_record_version,
             prior_mutation_sequence,
@@ -7542,6 +7748,7 @@ fn validate_active_record(
             workspace_identity_hash,
             task_link_digest,
             phase,
+            terminal_stage,
             ..
         } => {
             let expected_link = TaskLinkReference::new(
@@ -7568,7 +7775,22 @@ fn validate_active_record(
                     "Task handoff row contradicts its receipt, attempt, or link identity",
                 ));
             }
-            MAX_TASK_RECORD_ENVELOPE_BYTES as u64
+            match terminal_stage {
+                StoredHandoffTerminalStageV1::NoTerminal => MAX_TASK_RECORD_ENVELOPE_BYTES as u64,
+                StoredHandoffTerminalStageV1::Staged {
+                    terminal_epoch_ms,
+                    terminal_digest,
+                    terminal,
+                } => {
+                    if terminal_epoch_ms < updated_at_epoch_ms {
+                        return Err(ReceiptLedgerError::Corrupt(
+                            "staged Task handoff terminal predates its Task projection",
+                        ));
+                    }
+                    restore_canonical_terminal(Arc::clone(terminal), terminal_digest)?;
+                    MAX_RECEIPT_ENTITLEMENT_BYTES
+                }
+            }
         }
         StoredActiveLifecycleV1::TaskReceiptOwnedActorBound {
             original_cutoff,
@@ -7899,6 +8121,19 @@ fn entry_is_expired_direct_terminal(entry: &CatalogEntry, observed_at_epoch_ms: 
     )
 }
 
+fn entry_is_expired_task_receipt_terminal(entry: &CatalogEntry, observed_at_epoch_ms: u64) -> bool {
+    matches!(
+        &entry.record.lifecycle,
+        StoredActiveLifecycleV1::TaskTerminalReceiptBacked {
+            terminal_epoch_ms,
+            ttl_ms,
+            ..
+        } if terminal_epoch_ms
+            .checked_add(*ttl_ms)
+            .is_some_and(|expires_at_epoch_ms| observed_at_epoch_ms >= expires_at_epoch_ms)
+    )
+}
+
 fn ack_tombstone_has_capacity(catalog: &ReceiptCatalog, replacement: &CatalogEntry) -> bool {
     catalog
         .tombstone_count()
@@ -8092,8 +8327,14 @@ fn cleanup_staged_file(
 }
 
 fn sync_receipt_row_directory(directory: &File) -> io::Result<()> {
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "receipt-ledger-test-support")))]
     if TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.with(|slot| slot.replace(false)) {
+        return Err(io::Error::other(
+            "injected receipt row directory sync failure",
+        ));
+    }
+    #[cfg(feature = "receipt-ledger-test-support")]
+    if TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.swap(false, Ordering::AcqRel) {
         return Err(io::Error::other(
             "injected receipt row directory sync failure",
         ));
@@ -10011,6 +10252,79 @@ mod tests {
                 .recover_exact(&key, reserve_deadline())
                 .expect("recover receipt-backed Task terminal"),
             ReceiptState::TaskTerminalReceiptBacked(committed)
+        );
+    }
+
+    #[test]
+    fn receipt_backed_task_terminal_is_physically_reclaimed_at_its_absolute_expiry() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let reserved = store
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                reserve_deadline(),
+            )
+            .expect("reserve exact receipt")
+            .into_reservation()
+            .expect("receipt remains reserved");
+        let promised = store
+            .promise_task_unbound(
+                &key,
+                reserved.record_version(),
+                1_007,
+                3_600_000,
+                250,
+                reserve_deadline(),
+            )
+            .expect("promise exact Task");
+        let committed = store
+            .publish_receipt_backed_task_terminal(
+                &key,
+                TaskCancellationReceipt::PromisedUnbound(promised),
+                2_000,
+                canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::Interrupted,
+                })
+                .expect("canonical terminal"),
+                reserve_deadline(),
+            )
+            .expect("publish receipt-backed Task terminal");
+
+        assert_eq!(
+            store
+                .reclaim_expired_tombstones(
+                    committed.expires_at_epoch_ms() - 1,
+                    reserve_deadline(),
+                )
+                .expect("retain one millisecond before expiry"),
+            0
+        );
+        assert!(matches!(
+            store
+                .recover_exact(&key, reserve_deadline())
+                .expect("terminal remains before expiry"),
+            ReceiptState::TaskTerminalReceiptBacked(_)
+        ));
+        assert_eq!(
+            store
+                .reclaim_expired_tombstones(committed.expires_at_epoch_ms(), reserve_deadline(),)
+                .expect("reclaim at absolute expiry"),
+            1
+        );
+        assert_eq!(
+            store.recover_exact(&key, reserve_deadline()),
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        );
+        drop(store);
+        let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen reclaimed ledger");
+        assert_eq!(
+            reopened.recover_exact(&key, reserve_deadline()),
+            Err(ReceiptLedgerError::ReceiptNotFound)
         );
     }
 
@@ -13158,6 +13472,9 @@ mod tests {
             }
             StoredActiveLifecycleV1::ExpiredDirectDeletion { .. } => {
                 panic!("reserved fixture decoded as a Direct deletion witness")
+            }
+            StoredActiveLifecycleV1::ExpiredTaskReceiptDeletion { .. } => {
+                panic!("reserved fixture decoded as a receipt-backed Task deletion witness")
             }
             StoredActiveLifecycleV1::CompletedTaskHandoffDeletion { .. } => {
                 panic!("reserved fixture decoded as a completed handoff deletion witness")

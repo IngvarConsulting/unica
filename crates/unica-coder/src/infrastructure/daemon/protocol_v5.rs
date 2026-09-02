@@ -453,10 +453,11 @@ pub(crate) enum V5DaemonErrorCode {
     TaskExpired,
     StoreFailed,
     DurabilityUncertain,
+    StoreCommitUncertain,
 }
 
 impl V5DaemonErrorCode {
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 18] = [
         Self::InvalidRequest,
         Self::HandshakeRequired,
         Self::ProtocolMismatch,
@@ -474,6 +475,7 @@ impl V5DaemonErrorCode {
         Self::TaskExpired,
         Self::StoreFailed,
         Self::DurabilityUncertain,
+        Self::StoreCommitUncertain,
     ];
 }
 
@@ -497,6 +499,7 @@ impl fmt::Display for V5DaemonErrorCode {
             Self::TaskExpired => "task_expired",
             Self::StoreFailed => "store_failed",
             Self::DurabilityUncertain => "durability_uncertain",
+            Self::StoreCommitUncertain => "store_commit_uncertain",
         };
         formatter.write_str(code)
     }

@@ -52,9 +52,9 @@ struct StoreCatalog {
     records: HashMap<TaskId, V5StoredInvocationRecord>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "receipt-ledger-test-support"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PublicationFailure {
+pub(crate) enum PublicationFailure {
     AfterRenameBeforeSync,
     AfterDeleteBeforeSync,
 }
@@ -68,7 +68,7 @@ pub(crate) struct FileInvocationStoreV5 {
     clock: Arc<dyn EpochMillisClock>,
     writer: Mutex<StoreCatalog>,
     limits: StoreLimits,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     next_publication_failure: Mutex<Option<PublicationFailure>>,
 }
 
@@ -225,7 +225,7 @@ impl FileInvocationStoreV5 {
             clock,
             writer: Mutex::new(StoreCatalog::default()),
             limits,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
             next_publication_failure: Mutex::new(None),
         };
         let catalog = store.inspect_only(deadline)?;
@@ -505,7 +505,7 @@ impl FileInvocationStoreV5 {
         }
 
         catalog.records.insert(record.task_id, record.clone());
-        #[cfg(test)]
+        #[cfg(any(test, feature = "receipt-ledger-test-support"))]
         if self.take_publication_failure()? == Some(PublicationFailure::AfterRenameBeforeSync) {
             return Err(V5TaskStoreError::CommitUncertain {
                 task_id: record.task_id,
@@ -556,7 +556,7 @@ impl FileInvocationStoreV5 {
         .map_err(|error| storage_error("delete protocol-v5 terminal task record", error))?;
         catalog.records.remove(&task_id);
 
-        #[cfg(test)]
+        #[cfg(any(test, feature = "receipt-ledger-test-support"))]
         if self.take_publication_failure()? == Some(PublicationFailure::AfterDeleteBeforeSync) {
             return Err(V5TaskStoreError::CommitUncertain {
                 task_id,
@@ -608,15 +608,15 @@ impl FileInvocationStoreV5 {
             .ok_or(V5TaskStoreError::Corrupt("task record version overflow"))
     }
 
-    #[cfg(test)]
-    fn inject_next_publication_failure(&self, failure: PublicationFailure) {
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+    pub(crate) fn inject_next_publication_failure(&self, failure: PublicationFailure) {
         *self
             .next_publication_failure
             .lock()
             .expect("publication failure lock") = Some(failure);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     fn take_publication_failure(&self) -> Result<Option<PublicationFailure>, V5TaskStoreError> {
         self.next_publication_failure
             .lock()

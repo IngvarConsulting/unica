@@ -371,6 +371,22 @@ impl V5DaemonProcessOwner {
         )
     }
 
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn submit_invocation_with_timeout_for_test(
+        &mut self,
+        invocation: V5InvocationRequest,
+        timeout: Duration,
+    ) -> Result<V5ServerResponse, String> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| "protocol-v5 scenario submit deadline overflow".to_owned())?;
+        self.exchange_before(
+            V5ClientRequest::SubmitInvocation { invocation },
+            "scenario submit invocation",
+            deadline,
+        )
+    }
+
     #[allow(dead_code)]
     pub(crate) fn cancel_invocation(
         &mut self,
@@ -436,9 +452,6 @@ impl V5DaemonProcessOwner {
         request: V5ClientRequest,
         stage: &'static str,
     ) -> Result<V5ServerResponse, String> {
-        if self.poisoned {
-            return Err("protocol-v5 owner session is poisoned".to_string());
-        }
         let response_timeout = match &request {
             V5ClientRequest::SubmitInvocation { invocation } => {
                 Duration::from_millis(invocation.response_budget_ms())
@@ -450,6 +463,18 @@ impl V5DaemonProcessOwner {
         let deadline = Instant::now()
             .checked_add(response_timeout)
             .ok_or_else(|| format!("protocol-v5 {stage} deadline overflow"))?;
+        self.exchange_before(request, stage, deadline)
+    }
+
+    fn exchange_before(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, String> {
+        if self.poisoned {
+            return Err("protocol-v5 owner session is poisoned".to_string());
+        }
         if let Err(error) = self.write_before(&request, deadline, stage) {
             self.poison();
             return Err(error);

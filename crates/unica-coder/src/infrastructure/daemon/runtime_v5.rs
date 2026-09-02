@@ -26,12 +26,13 @@ use crate::application::invocation_v5::{
 };
 use crate::application::ports::Clock;
 use crate::application::receipt_ledger::{
-    canonical_v5_terminal, AttemptPhase, ClosedTerminalStatus, HandoffTerminalStage,
-    OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError,
-    ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome, ReserveOutcome, ReservedPhase,
-    TaskBoundReceipt, TaskCancellationReceipt, TaskHandoffActorBoundReceipt,
-    TaskPromisedActorBoundReceipt, TaskRetirementPendingReceipt, TaskTerminalBoundReceipt,
-    TerminalDigest, DIRECT_TERMINAL_RETENTION_MS,
+    canonical_v5_terminal, AttemptPhase, CanonicalTerminalError, ClosedTerminalStatus,
+    HandoffTerminalStage, OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey,
+    ReceiptKeyDigest, ReceiptLedgerError, ReceiptState, ReceiptTaskProjection,
+    ReceiptTerminalOutcome, ReserveOutcome, ReservedPhase, TaskBoundReceipt,
+    TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
+    TaskRetirementPendingReceipt, TaskTerminalBoundReceipt, TerminalDigest,
+    DIRECT_TERMINAL_RETENTION_MS,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
@@ -44,7 +45,8 @@ use crate::infrastructure::receipt_ledger::canonical_staged_transfer_certificate
 use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::infrastructure::receipt_ledger::{
-    ReceiptBackedTaskTerminalSeed, StableReceiptLedgerObservation,
+    inject_receipt_row_directory_sync_failure_for_test, ReceiptBackedTaskTerminalSeed,
+    StableReceiptLedgerObservation,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
@@ -54,6 +56,8 @@ use crate::infrastructure::task_lifecycle_link_store_v5::{
 };
 use crate::infrastructure::task_store::SystemEpochMillisClock;
 use crate::infrastructure::task_store_v5::FileInvocationStoreV5;
+#[cfg(feature = "receipt-ledger-test-support")]
+use crate::infrastructure::task_store_v5::PublicationFailure;
 use serde::Serialize;
 #[cfg(feature = "receipt-ledger-test-support")]
 use serde_json::json;
@@ -173,6 +177,7 @@ struct V5ReceiptRuntimeTelemetryState {
     terminal_publications: Vec<Value>,
     next_preflight_sequence: u64,
     task_store_create_attempts: u64,
+    store_fault: Option<receipt_scenario_v5::ScenarioStoreFaultPoint>,
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -213,6 +218,7 @@ impl V5ReceiptRuntimeTelemetry {
                 terminal_publications: Vec::new(),
                 next_preflight_sequence: 1,
                 task_store_create_attempts: 0,
+                store_fault: None,
             }),
             changed: Condvar::new(),
         }
@@ -280,6 +286,12 @@ impl V5ReceiptRuntimeTelemetry {
 
     fn record_forced_process_exit(&self) {
         let mut state = self.lock_state();
+        if state.restart_requested
+            && state.listener == V5ReceiptRuntimeListenerState::Closed
+            && !state.daemon_running
+        {
+            return;
+        }
         let epoch_ms = state.events.last().map_or(1, |event| event.epoch_ms.max(1));
         state.restart_requested = true;
         state.listener = V5ReceiptRuntimeListenerState::Closed;
@@ -300,7 +312,22 @@ impl V5ReceiptRuntimeTelemetry {
         state.actor_leases = 0;
         state.terminal_publications.clear();
         state.task_store_create_attempts = 0;
+        state.store_fault = None;
         self.changed.notify_all();
+    }
+
+    fn arm_store_fault(&self, point: receipt_scenario_v5::ScenarioStoreFaultPoint) {
+        self.lock_state().store_fault = Some(point);
+    }
+
+    fn take_store_fault(&self, point: receipt_scenario_v5::ScenarioStoreFaultPoint) -> bool {
+        let mut state = self.lock_state();
+        if state.store_fault == Some(point) {
+            state.store_fault = None;
+            true
+        } else {
+            false
+        }
     }
 
     fn snapshot(&self) -> V5ReceiptRuntimeTelemetrySnapshot {
@@ -326,6 +353,7 @@ impl V5ReceiptRuntimeTelemetry {
         publication: &CommittedDirectPublication,
         response_kind: &'static str,
         origin: &'static str,
+        candidate_result_override: Option<Value>,
     ) {
         let mut state = self.lock_state();
         let receipt_key = receipt_key_observation_value(publication.receipt().key());
@@ -395,7 +423,8 @@ impl V5ReceiptRuntimeTelemetry {
                         record.encoded_bytes(),
                         record.sha256(),
                     ),
-                    "candidateResult": candidate_result_value(record.terminal()),
+                    "candidateResult": candidate_result_override
+                        .or_else(|| candidate_result_value(record.terminal())),
                     "terminalPayloadPreparedSequence": terminal_payload_sequence,
                     "receiptRecordPreparedSequence": receipt_record_sequence,
                     "receiptCommitSequence": receipt_commit_sequence,
@@ -494,6 +523,81 @@ impl V5ReceiptRuntimeTelemetry {
                     .join(", ");
                 return Err(format!(
                     "protocol-v5 runtime event {event:?} was not observed; observed: [{observed}]"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn wait_for_event_count(
+        &self,
+        event: V5ReceiptRuntimeEventKind,
+        count: usize,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let mut state = self.lock_state();
+        let observed_count = |state: &V5ReceiptRuntimeTelemetryState| {
+            state
+                .events
+                .iter()
+                .filter(|record| {
+                    record.sequence >= state.wait_floor_sequence && record.event == event
+                })
+                .count()
+        };
+        while observed_count(&state) < count {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    format!(
+                    "protocol-v5 runtime event {event:?} was observed {} times, expected {count}",
+                    observed_count(&state)
+                )
+                })?;
+            let (next, timeout) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next;
+            if timeout.timed_out() && observed_count(&state) < count {
+                return Err(format!(
+                    "protocol-v5 runtime event {event:?} was observed {} times, expected {count}",
+                    observed_count(&state)
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn wait_for_either_event(
+        &self,
+        first: V5ReceiptRuntimeEventKind,
+        second: V5ReceiptRuntimeEventKind,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let mut state = self.lock_state();
+        let observed = |state: &V5ReceiptRuntimeTelemetryState| {
+            state.events.iter().any(|record| {
+                record.sequence >= state.wait_floor_sequence
+                    && (record.event == first || record.event == second)
+            })
+        };
+        while !observed(&state) {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    format!(
+                        "neither protocol-v5 runtime event {first:?} nor {second:?} was observed"
+                    )
+                })?;
+            let (next, timeout) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next;
+            if timeout.timed_out() && !observed(&state) {
+                return Err(format!(
+                    "neither protocol-v5 runtime event {first:?} nor {second:?} was observed"
                 ));
             }
         }
@@ -630,7 +734,7 @@ impl Drop for V5ReceiptRuntimeListenerLease {
             .active_listeners
             .checked_sub(1)
             .expect("protocol-v5 runtime listener telemetry lease released only once");
-        if state.active_listeners == 0 {
+        if state.active_listeners == 0 && state.restart_requested {
             state.listener = V5ReceiptRuntimeListenerState::Closed;
             state.daemon_running = false;
         }
@@ -827,6 +931,40 @@ fn publish_receipt_backed_task_terminal_for_scenario(
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
+fn stage_bound_handoff_terminal_for_scenario(
+    actor: &ReceiptLedgerActor,
+    handoff: TaskHandoffActorBoundReceipt,
+    epoch_ms: u64,
+    terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
+    deadline: Instant,
+    telemetry: &V5ReceiptRuntimeTelemetry,
+) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+    telemetry.record_execute();
+    telemetry.record_event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
+    telemetry.record_event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
+    let certificate = canonical_staged_transfer_certificate(
+        handoff.key(),
+        handoff.key_digest(),
+        handoff.link(),
+        epoch_ms,
+        &terminal,
+    )?;
+    let staged = actor.stage_bound_task_handoff_terminal(
+        handoff.key().clone(),
+        handoff.record_version(),
+        epoch_ms,
+        terminal,
+        certificate,
+        deadline,
+    )?;
+    telemetry.record_event(
+        V5ReceiptRuntimeEventKind::BoundHandoffTerminalStaged,
+        epoch_ms,
+    );
+    Ok(staged)
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
 fn acknowledge_direct_for_scenario(
     actor: &ReceiptLedgerActor,
     key: ReceiptKey,
@@ -871,7 +1009,7 @@ struct V5TaskProjection {
     #[cfg_attr(not(feature = "receipt-ledger-test-support"), allow(dead_code))]
     task_store_root: RetainedDirectoryCapability,
     #[allow(dead_code)]
-    task_store: Arc<dyn InvocationStoreV5>,
+    task_store: Arc<FileInvocationStoreV5>,
     #[allow(dead_code)]
     lifecycle_link_root: RetainedDirectoryCapability,
     lifecycle_links: TaskLifecycleLinkStoreV5,
@@ -881,7 +1019,7 @@ struct V5TaskProjection {
 struct StartupTaskTerminalizationPlan {
     expected: TaskBoundReceipt,
     record: V5StoredInvocationRecord,
-    reason: RecoveryTerminalReason,
+    reason: Option<RecoveryTerminalReason>,
 }
 
 impl V5TaskProjection {
@@ -1019,7 +1157,19 @@ impl V5TaskProjection {
         }
 
         for plan in plans {
-            self.terminalize_recovered_bound(&plan.expected, plan.record, plan.reason, deadline)?;
+            match plan.reason {
+                Some(reason) => {
+                    self.terminalize_recovered_bound(
+                        &plan.expected,
+                        plan.record,
+                        reason,
+                        deadline,
+                    )?;
+                }
+                None => {
+                    self.complete_recovered_terminal_bound(&plan.expected, plan.record, deadline)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1045,6 +1195,18 @@ impl V5TaskProjection {
                 "TaskBound does not authorize the exact active Task",
             ));
         }
+        if matches!(
+            record.task,
+            V5StoredTask::Completed { .. }
+                | V5StoredTask::Failed { .. }
+                | V5StoredTask::Cancelled { .. }
+        ) {
+            return Ok(StartupTaskTerminalizationPlan {
+                expected: expected.clone(),
+                record,
+                reason: None,
+            });
+        }
         let reason = match expected.phase() {
             AttemptPhase::NotBegun if record.cancel_requested => RecoveryTerminalReason::Cancelled,
             AttemptPhase::NotBegun => RecoveryTerminalReason::InterruptedBeforeExecution,
@@ -1060,7 +1222,7 @@ impl V5TaskProjection {
         Ok(StartupTaskTerminalizationPlan {
             expected: expected.clone(),
             record,
-            reason,
+            reason: Some(reason),
         })
     }
 
@@ -1068,12 +1230,13 @@ impl V5TaskProjection {
         V5TaskProjectionFailure::fail_stop(ReceiptLedgerError::Corrupt(message))
     }
 
+    #[cfg(feature = "receipt-ledger-test-support")]
     fn materialize_bound_handoff(
         &self,
         handoff: &TaskHandoffActorBoundReceipt,
         bind_epoch_ms: u64,
         deadline: Instant,
-        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+        telemetry: &V5ReceiptRuntimeTelemetry,
     ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
         self.materialize_actor_bound_task(
             handoff.key(),
@@ -1085,7 +1248,6 @@ impl V5TaskProjection {
             handoff.phase() == AttemptPhase::Begun,
             bind_epoch_ms,
             deadline,
-            #[cfg(feature = "receipt-ledger-test-support")]
             telemetry,
         )
     }
@@ -1131,7 +1293,7 @@ impl V5TaskProjection {
             reservation,
             bind_epoch_ms,
             deadline,
-            false,
+            true,
             #[cfg(feature = "receipt-ledger-test-support")]
             telemetry,
         )
@@ -1257,7 +1419,19 @@ impl V5TaskProjection {
             new_record
         };
         #[cfg(feature = "receipt-ledger-test-support")]
-        telemetry.record_task_store_create_attempt();
+        {
+            telemetry.record_task_store_create_attempt();
+            telemetry.record_event(
+                V5ReceiptRuntimeEventKind::TaskStoreCreateAttempted,
+                bind_epoch_ms,
+            );
+            if telemetry.take_store_fault(
+                receipt_scenario_v5::ScenarioStoreFaultPoint::AfterTaskCreateRenameBeforeDirectorySync,
+            ) {
+                self.task_store
+                    .inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
+            }
+        }
         let created = self
             .task_store
             .create_exact(new_record, provider_deadline)
@@ -1319,6 +1493,59 @@ impl V5TaskProjection {
             );
         }
         Ok((readback, bound))
+    }
+
+    fn complete_recovered_terminal_bound(
+        &self,
+        expected: &TaskBoundReceipt,
+        terminal: V5StoredInvocationRecord,
+        deadline: Instant,
+    ) -> Result<TaskTerminalBoundReceipt, V5TaskProjectionFailure> {
+        let (terminal_status, terminal_digest, terminal_epoch_ms) = match &terminal.task {
+            V5StoredTask::Completed {
+                terminal_epoch_ms,
+                terminal_digest,
+                ..
+            } => (
+                ClosedTerminalStatus::Completed,
+                terminal_digest.clone(),
+                *terminal_epoch_ms,
+            ),
+            V5StoredTask::Failed {
+                terminal_epoch_ms,
+                terminal_digest,
+                ..
+            } => (
+                ClosedTerminalStatus::Failed,
+                terminal_digest.clone(),
+                *terminal_epoch_ms,
+            ),
+            V5StoredTask::Cancelled {
+                terminal_epoch_ms,
+                terminal_digest,
+            } => (
+                ClosedTerminalStatus::Cancelled,
+                terminal_digest.clone(),
+                *terminal_epoch_ms,
+            ),
+            V5StoredTask::Queued | V5StoredTask::Working => {
+                return Err(Self::startup_fail_stop(
+                    "terminal Task reconciliation received an active Task",
+                ))
+            }
+        };
+        let terminal_task = receipt_task_projection_from_store(&terminal)?;
+        self.lifecycle_links
+            .publish_task_terminal_bound(
+                expected,
+                terminal_task,
+                terminal.version,
+                terminal_status,
+                terminal_digest,
+                terminal_epoch_ms,
+                crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+            )
+            .map_err(V5TaskProjectionFailure::from_link_store)
     }
 
     fn terminalize_recovered_bound(
@@ -1499,6 +1726,10 @@ impl V5TaskProjection {
         terminal: &crate::application::receipt_ledger::V5CanonicalTerminal,
         terminal_epoch_ms: u64,
         deadline: Instant,
+        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+        #[cfg(feature = "receipt-ledger-test-support")] scenario_control: Option<
+            &Arc<receipt_scenario_v5::ReceiptScenarioControl>,
+        >,
     ) -> Result<(V5StoredInvocationRecord, TaskTerminalBoundReceipt), V5TaskProjectionFailure> {
         let terminal_digest = terminal.digest().clone();
         let (publication, terminal_status) = match terminal.outcome() {
@@ -1535,6 +1766,26 @@ impl V5TaskProjection {
             .map_err(|error| {
                 V5TaskProjectionFailure::from_task_store(error, receipt_key_digest, true)
             })?;
+        #[cfg(feature = "receipt-ledger-test-support")]
+        if let Some(control) = scenario_control.filter(|control| {
+            control.is_barrier_installed(
+                receipt_scenario_v5::ScenarioBarrierPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
+            )
+        }) {
+            telemetry.record_event(
+                V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+                terminal_epoch_ms,
+            );
+            control.pause(
+                receipt_scenario_v5::ScenarioBarrierPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
+                Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT,
+            ).map_err(V5TaskProjectionFailure::fail_stop)?;
+            if control.process_exited() {
+                return Err(V5TaskProjectionFailure::fail_stop(
+                    ReceiptLedgerError::StoreUnavailable,
+                ));
+            }
+        }
         let terminal_task = receipt_task_projection_from_store(&terminal_record)?;
         let terminal_link = self
             .lifecycle_links
@@ -1716,7 +1967,13 @@ fn task_bound_matches_record(
         && expected.task().updated_at_epoch_ms() <= record.updated_at_epoch_ms
         && (record.cancel_requested
             || (expected.phase() == AttemptPhase::NotBegun
-                && record.task == V5StoredTask::Working));
+                && record.task == V5StoredTask::Working)
+            || matches!(
+                record.task,
+                V5StoredTask::Completed { .. }
+                    | V5StoredTask::Failed { .. }
+                    | V5StoredTask::Cancelled { .. }
+            ));
     Ok(exact_projection || one_step_successor)
 }
 
@@ -3538,16 +3795,9 @@ impl V5ReceiptRuntime {
             #[cfg(feature = "receipt-ledger-test-support")]
             self.telemetry
                 .record_event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                control.pause(
-                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskStoreCreate,
-                    deadline,
-                )?;
-            }
-            let (task_record, bound) = self
+            let link_reservation = self
                 .task_projection
-                .materialize_bound_handoff(
+                .reserve_bound_handoff_link(
                     &handoff,
                     epoch_ms,
                     deadline,
@@ -3557,7 +3807,105 @@ impl V5ReceiptRuntime {
                 .map_err(|failure| self.project_task_failure(failure))?;
             #[cfg(feature = "receipt-ledger-test-support")]
             if let Some(control) = &self.scenario_control {
+                control.pause(
+                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskStoreCreate,
+                    Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT,
+                )?;
+            }
+            #[cfg(feature = "receipt-ledger-test-support")]
+            let deadline = if self.scenario_control.as_ref().is_some_and(|control| {
+                control.is_barrier_installed(
+                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskStoreCreate,
+                )
+            }) {
+                Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT
+            } else {
+                deadline
+            };
+            #[cfg(feature = "receipt-ledger-test-support")]
+            let handoff = self
+                .scenario_control
+                .as_ref()
+                .and_then(|control| control.staged_handoff())
+                .unwrap_or(handoff);
+            let (task_record, bound) = self
+                .task_projection
+                .materialize_staged_bound_handoff(
+                    &handoff,
+                    &link_reservation,
+                    epoch_ms,
+                    deadline,
+                    #[cfg(feature = "receipt-ledger-test-support")]
+                    &self.telemetry,
+                )
+                .map_err(|failure| self.project_task_failure(failure))?;
+            #[cfg(feature = "receipt-ledger-test-support")]
+            if let Some(control) = &self.scenario_control {
                 control.record_promised_actor_binding(&promised, &actor_promised, &bound);
+            }
+            if let HandoffTerminalStage::Staged { terminal, .. } = handoff.terminal_stage() {
+                #[cfg(feature = "receipt-ledger-test-support")]
+                let provisional_record = task_record.clone();
+                let (terminal_record, terminal_link) = self
+                    .task_projection
+                    .publish_bound_task_terminal(
+                        &bound,
+                        task_record,
+                        terminal,
+                        epoch_ms,
+                        deadline,
+                        #[cfg(feature = "receipt-ledger-test-support")]
+                        &self.telemetry,
+                        #[cfg(feature = "receipt-ledger-test-support")]
+                        self.scenario_control.as_ref(),
+                    )
+                    .map_err(|failure| self.project_task_failure(failure))?;
+                #[cfg(feature = "receipt-ledger-test-support")]
+                {
+                    self.telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+                        epoch_ms,
+                    );
+                    self.telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+                        epoch_ms,
+                    );
+                    self.telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::TaskLinkReservationConverted,
+                        epoch_ms,
+                    );
+                }
+                let _terminal_link = self.receipt_ledger.complete_staged_task_handoff(
+                    handoff.key().clone(),
+                    handoff.record_version(),
+                    terminal_link,
+                    deadline,
+                )?;
+                #[cfg(feature = "receipt-ledger-test-support")]
+                {
+                    if let Some(control) = &self.scenario_control {
+                        control
+                            .record_staged_terminal_publication(
+                                &handoff,
+                                &provisional_record,
+                                &terminal_record,
+                                &_terminal_link,
+                            )
+                            .map_err(|_| {
+                                ReceiptLedgerError::Corrupt("record staged terminal publication")
+                            })?;
+                        control.record_terminal_bound_task(terminal_record.clone(), _terminal_link);
+                    }
+                    self.telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+                        epoch_ms,
+                    );
+                }
+                return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task {
+                        snapshot: task_store_snapshot(&terminal_record),
+                    },
+                }));
             }
             self.receipt_ledger.complete_bound_task_handoff(
                 handoff.key().clone(),
@@ -3689,7 +4037,17 @@ impl V5ReceiptRuntime {
                     .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
                 let (terminal_record, _terminal_link) = self
                     .task_projection
-                    .publish_bound_task_terminal(&bound, task_record, &terminal, epoch_ms, deadline)
+                    .publish_bound_task_terminal(
+                        &bound,
+                        task_record,
+                        &terminal,
+                        epoch_ms,
+                        deadline,
+                        #[cfg(feature = "receipt-ledger-test-support")]
+                        &self.telemetry,
+                        #[cfg(feature = "receipt-ledger-test-support")]
+                        self.scenario_control.as_ref(),
+                    )
                     .map_err(|failure| self.project_task_failure(failure))?;
                 #[cfg(feature = "receipt-ledger-test-support")]
                 {
@@ -4057,9 +4415,9 @@ impl V5ReceiptRuntime {
             #[cfg(feature = "receipt-ledger-test-support")]
             self.telemetry
                 .record_event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
-            let (task_record, bound) = self
+            let link_reservation = self
                 .task_projection
-                .materialize_bound_handoff(
+                .reserve_bound_handoff_link(
                     &handoff,
                     epoch_ms,
                     deadline,
@@ -4067,6 +4425,104 @@ impl V5ReceiptRuntime {
                     &self.telemetry,
                 )
                 .map_err(|failure| self.project_task_failure(failure))?;
+            #[cfg(feature = "receipt-ledger-test-support")]
+            if let Some(control) = &self.scenario_control {
+                control.pause(
+                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskStoreCreate,
+                    Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT,
+                )?;
+            }
+            #[cfg(feature = "receipt-ledger-test-support")]
+            let deadline = if self.scenario_control.as_ref().is_some_and(|control| {
+                control.is_barrier_installed(
+                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskStoreCreate,
+                )
+            }) {
+                Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT
+            } else {
+                deadline
+            };
+            #[cfg(feature = "receipt-ledger-test-support")]
+            let handoff = self
+                .scenario_control
+                .as_ref()
+                .and_then(|control| control.staged_handoff())
+                .unwrap_or(handoff);
+            let (task_record, bound) = self
+                .task_projection
+                .materialize_staged_bound_handoff(
+                    &handoff,
+                    &link_reservation,
+                    epoch_ms,
+                    deadline,
+                    #[cfg(feature = "receipt-ledger-test-support")]
+                    &self.telemetry,
+                )
+                .map_err(|failure| self.project_task_failure(failure))?;
+            if let HandoffTerminalStage::Staged { terminal, .. } = handoff.terminal_stage() {
+                #[cfg(feature = "receipt-ledger-test-support")]
+                let provisional_record = task_record.clone();
+                let (terminal_record, terminal_link) = self
+                    .task_projection
+                    .publish_bound_task_terminal(
+                        &bound,
+                        task_record,
+                        terminal,
+                        epoch_ms,
+                        deadline,
+                        #[cfg(feature = "receipt-ledger-test-support")]
+                        &self.telemetry,
+                        #[cfg(feature = "receipt-ledger-test-support")]
+                        self.scenario_control.as_ref(),
+                    )
+                    .map_err(|failure| self.project_task_failure(failure))?;
+                #[cfg(feature = "receipt-ledger-test-support")]
+                {
+                    self.telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+                        epoch_ms,
+                    );
+                    self.telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+                        epoch_ms,
+                    );
+                    self.telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::TaskLinkReservationConverted,
+                        epoch_ms,
+                    );
+                }
+                let _terminal_link = self.receipt_ledger.complete_staged_task_handoff(
+                    handoff.key().clone(),
+                    handoff.record_version(),
+                    terminal_link,
+                    deadline,
+                )?;
+                #[cfg(feature = "receipt-ledger-test-support")]
+                {
+                    if let Some(control) = &self.scenario_control {
+                        control
+                            .record_staged_terminal_publication(
+                                &handoff,
+                                &provisional_record,
+                                &terminal_record,
+                                &_terminal_link,
+                            )
+                            .map_err(|_| {
+                                ReceiptLedgerError::Corrupt("record staged terminal publication")
+                            })?;
+                        control.record_terminal_bound_task(terminal_record.clone(), _terminal_link);
+                    }
+                    self.telemetry.record_event(
+                        V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+                        epoch_ms,
+                    );
+                }
+                return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task {
+                        snapshot: task_store_snapshot(&terminal_record),
+                    },
+                }));
+            }
             self.receipt_ledger.complete_bound_task_handoff(
                 handoff.key().clone(),
                 handoff.record_version(),
@@ -4088,6 +4544,8 @@ impl V5ReceiptRuntime {
             if let Some(control) = &self.scenario_control {
                 if control.is_barrier_installed(
                     receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskTerminalReceipt,
+                ) || control.is_barrier_installed(
+                    receipt_scenario_v5::ScenarioBarrierPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
                 ) {
                     control.pause(
                         receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskTerminalReceipt,
@@ -4145,11 +4603,53 @@ impl V5ReceiptRuntime {
         {
             return Err(ReceiptLedgerError::StoreUnavailable);
         }
-        let terminal = crate::application::receipt_ledger::canonical_v5_terminal(&outcome)
-            .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+        let (terminal, _oversized_result) = match canonical_v5_terminal(&outcome) {
+            Ok(terminal) => (terminal, false),
+            Err(CanonicalTerminalError::ResultTooLarge) => (
+                canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::ResultTooLarge,
+                })
+                .map_err(|_| {
+                    ReceiptLedgerError::Corrupt("canonical result-too-large terminal failed")
+                })?,
+                true,
+            ),
+            Err(CanonicalTerminalError::Serialization) => {
+                return Err(ReceiptLedgerError::Corrupt(
+                    "canonical v5 terminal serialization failed",
+                ))
+            }
+        };
         #[cfg(feature = "receipt-ledger-test-support")]
         self.telemetry
             .record_event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
+        #[cfg(feature = "receipt-ledger-test-support")]
+        {
+            let candidate_result_override = if _oversized_result {
+                match &outcome {
+                    ReceiptTerminalOutcome::Completed { result } => Some(artifact_from_bytes(
+                        &serde_json::to_vec(result).map_err(|_| {
+                            ReceiptLedgerError::Corrupt(
+                                "serialize oversized candidate result evidence",
+                            )
+                        })?,
+                    )),
+                    ReceiptTerminalOutcome::Failed { .. } | ReceiptTerminalOutcome::Cancelled => {
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            return self.publish_direct_terminal_with_candidate(
+                begun,
+                epoch_ms,
+                terminal,
+                deadline,
+                candidate_result_override,
+            );
+        }
+        #[cfg(not(feature = "receipt-ledger-test-support"))]
         self.publish_direct_terminal(begun, epoch_ms, terminal, deadline)
     }
 
@@ -4160,6 +4660,30 @@ impl V5ReceiptRuntime {
         terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        self.publish_direct_terminal_with_candidate(
+            reservation,
+            epoch_ms,
+            terminal,
+            deadline,
+            #[cfg(feature = "receipt-ledger-test-support")]
+            None,
+        )
+    }
+
+    fn publish_direct_terminal_with_candidate(
+        &self,
+        reservation: crate::application::receipt_ledger::ReservedReceipt,
+        epoch_ms: u64,
+        terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
+        deadline: Instant,
+        #[cfg(feature = "receipt-ledger-test-support")] candidate_result_override: Option<Value>,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        #[cfg(feature = "receipt-ledger-test-support")]
+        if self.telemetry.take_store_fault(
+            receipt_scenario_v5::ScenarioStoreFaultPoint::AfterTerminalPayloadRenameBeforeDirectorySync,
+        ) {
+            inject_receipt_row_directory_sync_failure_for_test();
+        }
         let publication = self.receipt_ledger.publish_direct_terminal(
             reservation.key().clone(),
             reservation.record_version(),
@@ -4176,8 +4700,12 @@ impl V5ReceiptRuntime {
         self.telemetry
             .record_event(V5ReceiptRuntimeEventKind::FinalResultProjected, epoch_ms);
         #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry
-            .record_direct_publication(&publication, "direct", "immediate_publication");
+        self.telemetry.record_direct_publication(
+            &publication,
+            "direct",
+            "immediate_publication",
+            candidate_result_override,
+        );
         Ok(V5RuntimeReply::Prepared(publication.into_parts().1))
     }
 
@@ -4193,7 +4721,17 @@ impl V5ReceiptRuntime {
         let provisional_record = task_record.clone();
         let (terminal_record, _terminal_link) = self
             .task_projection
-            .publish_bound_task_terminal(bound, task_record, terminal, epoch_ms, deadline)
+            .publish_bound_task_terminal(
+                bound,
+                task_record,
+                terminal,
+                epoch_ms,
+                deadline,
+                #[cfg(feature = "receipt-ledger-test-support")]
+                &self.telemetry,
+                #[cfg(feature = "receipt-ledger-test-support")]
+                self.scenario_control.as_ref(),
+            )
             .map_err(|failure| self.project_task_failure(failure))?;
         #[cfg(feature = "receipt-ledger-test-support")]
         {
@@ -4279,7 +4817,7 @@ impl V5ReceiptRuntime {
         if let Some(control) = &self.scenario_control {
             control.pause(
                 receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskStoreCreate,
-                deadline,
+                Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT,
             )?;
         }
         let (task_record, task_bound) = self
@@ -4297,7 +4835,17 @@ impl V5ReceiptRuntime {
         let provisional_record = task_record.clone();
         let (terminal_record, terminal_link) = self
             .task_projection
-            .publish_bound_task_terminal(&task_bound, task_record, &terminal, epoch_ms, deadline)
+            .publish_bound_task_terminal(
+                &task_bound,
+                task_record,
+                &terminal,
+                epoch_ms,
+                deadline,
+                #[cfg(feature = "receipt-ledger-test-support")]
+                &self.telemetry,
+                #[cfg(feature = "receipt-ledger-test-support")]
+                self.scenario_control.as_ref(),
+            )
             .map_err(|failure| self.project_task_failure(failure))?;
         #[cfg(feature = "receipt-ledger-test-support")]
         {
@@ -4436,6 +4984,7 @@ impl V5ReceiptRuntime {
                     &publication,
                     "cancelled",
                     "immediate_publication",
+                    None,
                 );
                 Ok(V5RuntimeReply::Prepared(publication.into_parts().1))
             }
@@ -4720,6 +5269,10 @@ impl V5ReceiptRuntime {
                             &terminal,
                             self.epoch_ms(),
                             deadline,
+                            #[cfg(feature = "receipt-ledger-test-support")]
+                            &self.telemetry,
+                            #[cfg(feature = "receipt-ledger-test-support")]
+                            self.scenario_control.as_ref(),
                         )
                         .map_err(|failure| self.project_task_failure(failure))?;
                     #[cfg(feature = "receipt-ledger-test-support")]
@@ -4850,7 +5403,7 @@ impl V5ReceiptRuntime {
                 )?;
                 #[cfg(feature = "receipt-ledger-test-support")]
                 self.telemetry
-                    .record_direct_publication(&publication, response_kind, origin);
+                    .record_direct_publication(&publication, response_kind, origin, None);
                 Ok(V5RuntimeReply::Prepared(publication.into_parts().1))
             }
             ReceiptState::AcknowledgedTombstone(receipt) => {
@@ -5302,6 +5855,8 @@ fn run_daemon_configured_until(
         if let Err(error) = runtime.ensure_named_authority() {
             if runtime.restart_required() {
                 restart_requested = true;
+                #[cfg(feature = "receipt-ledger-test-support")]
+                runtime.telemetry.record_forced_process_exit();
                 break;
             }
             let _ = state.remove_v5_endpoint_if_owned(&published);
@@ -5313,6 +5868,8 @@ fn run_daemon_configured_until(
                     drop(stream);
                     if runtime.restart_required() {
                         restart_requested = true;
+                        #[cfg(feature = "receipt-ledger-test-support")]
+                        runtime.telemetry.record_forced_process_exit();
                         break;
                     }
                     let _ = state.remove_v5_endpoint_if_owned(&published);
@@ -5464,6 +6021,20 @@ fn handle_probe_connection(
             Err(V5RequestFrameError::Read(_)) => return Ok(()),
         };
     let deadlines = v5_request_deadlines(&decoded, request_received_at)?;
+    #[cfg(feature = "receipt-ledger-test-support")]
+    let mut deadlines = deadlines;
+    #[cfg(feature = "receipt-ledger-test-support")]
+    if runtime
+        .scenario_control
+        .as_ref()
+        .is_some_and(|control| control.has_precomputed_terminal())
+    {
+        let bulk_deadline = Instant::now()
+            .checked_add(receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT)
+            .ok_or_else(|| "protocol-v5 scenario bulk deadline overflow".to_owned())?;
+        deadlines.operation = bulk_deadline;
+        deadlines.response = bulk_deadline;
+    }
     #[cfg(feature = "receipt-ledger-test-support")]
     runtime.telemetry.record_event(
         V5ReceiptRuntimeEventKind::StrictEnvelopeParsed,
@@ -5756,6 +6327,8 @@ fn write_runtime_ledger_error_before(
         code: daemon_error_code(error),
     };
     if error.requires_reopen() {
+        #[cfg(feature = "receipt-ledger-test-support")]
+        runtime.telemetry.record_forced_process_exit();
         // The actor has already latched fail-stop, so asking it for another
         // generation check would turn the required closed response into EOF.
         // The runtime still owns the authenticated stream, PID endpoint,
@@ -5863,7 +6436,7 @@ fn daemon_error_code(error: &ReceiptLedgerError) -> V5DaemonErrorCode {
         ReceiptLedgerError::ReceiptNotFound => V5DaemonErrorCode::ReceiptNotFound,
         ReceiptLedgerError::CapacityExceeded => V5DaemonErrorCode::ReceiptCapacity,
         ReceiptLedgerError::TombstoneCapacityExceeded => V5DaemonErrorCode::TombstoneCapacity,
-        ReceiptLedgerError::CommitUncertain { .. } => V5DaemonErrorCode::DurabilityUncertain,
+        ReceiptLedgerError::CommitUncertain { .. } => V5DaemonErrorCode::StoreCommitUncertain,
         ReceiptLedgerError::DeadlineExceeded => V5DaemonErrorCode::Overloaded,
         ReceiptLedgerError::AlreadyOwned => V5DaemonErrorCode::DuplicateLease,
         ReceiptLedgerError::TerminalMismatch | ReceiptLedgerError::ReceiptRowPresentUnsupported => {

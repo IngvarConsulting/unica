@@ -11742,6 +11742,7 @@ fn task_bind_direct_ack_and_receipt_terminal_expiry_release_exact_quota() {
         Action::JoinOperation {
             label: "bind-two".to_string(),
         },
+        checkpoint_action("task-bind-terminal"),
         Action::Restart,
         checkpoint_action("task-bind-reopened"),
     ]));
@@ -11761,12 +11762,13 @@ fn task_bind_direct_ack_and_receipt_terminal_expiry_release_exact_quota() {
     assert_eq!(bind_after.receipt_reserved_bytes, 0);
     assert_eq!(bind_after.task_link_count, 2);
     assert_eq!(bind_after.task_links.len(), 2);
+    let bind_terminal = checkpoint(&task_bind, "task-bind-terminal");
     let bind_reopened = checkpoint(&task_bind, "task-bind-reopened");
     assert_eq!(bind_reopened.task_link_count, 2);
     assert_eq!(bind_reopened.receipt_actual_bytes, 0);
     assert_eq!(bind_reopened.receipt_reserved_bytes, 0);
-    assert_eq!(bind_reopened.task_links, bind_after.task_links);
-    assert_eq!(bind_reopened.task_link_bytes, bind_after.task_link_bytes);
+    assert_eq!(bind_reopened.task_links, bind_terminal.task_links);
+    assert_eq!(bind_reopened.task_link_bytes, bind_terminal.task_link_bytes);
 
     let direct_ack = execute(Scenario::fake(vec![
         direct_provider(),

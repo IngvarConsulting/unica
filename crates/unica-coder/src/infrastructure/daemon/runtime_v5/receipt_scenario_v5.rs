@@ -4,8 +4,9 @@ use super::{
     promise_task_unbound_for_scenario, publish_direct_terminal_for_scenario,
     publish_receipt_backed_task_terminal_for_scenario, run_daemon_configured_until,
     seed_receipt_backed_task_terminal_for_scenario, seed_receipt_tombstones_for_scenario,
-    ScenarioTaskTiming, V5ReceiptRuntime, V5ReceiptRuntimeEvent, V5ReceiptRuntimeEventKind,
-    V5ReceiptRuntimeListenerState, V5ReceiptRuntimeTelemetry, V5TaskProjection,
+    stage_bound_handoff_terminal_for_scenario, ScenarioTaskTiming, V5ReceiptRuntime,
+    V5ReceiptRuntimeEvent, V5ReceiptRuntimeEventKind, V5ReceiptRuntimeListenerState,
+    V5ReceiptRuntimeTelemetry, V5TaskProjection,
 };
 use crate::application::invocation::normalized_arguments_hash;
 use crate::application::invocation_store::EpochMillisClock;
@@ -23,7 +24,8 @@ use crate::application::receipt_ledger::{
     ReceiptLedgerError, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
     RequestIdentity, ReservedPhase, TaskBoundReceipt, TaskCancellationReceipt,
     TaskHandoffActorBoundReceipt, TaskLinkIdentity, TaskLinkReference, TaskTerminalBoundReceipt,
-    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5ToolIdentity, DIRECT_TERMINAL_RETENTION_MS,
+    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal, V5ToolIdentity,
+    DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::cancellation::CancellationToken;
@@ -56,7 +58,7 @@ use flate2::{write::GzEncoder, Compression};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write as _;
 use std::path::Path;
 use std::str::FromStr;
@@ -70,7 +72,8 @@ use uuid::Uuid;
 const SCENARIO_INITIAL_EPOCH_MS: u64 = 1;
 const SCENARIO_IDLE_GRACE: Duration = Duration::from_secs(2);
 const SCENARIO_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
-const SCENARIO_BULK_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const SCENARIO_BULK_OPERATION_TIMEOUT: Duration = Duration::from_secs(40);
+const SCENARIO_BULK_SNAPSHOT_TIMEOUT: Duration = SCENARIO_BULK_OPERATION_TIMEOUT;
 const SCENARIO_ENDPOINT_STARTUP_TIMEOUT: Duration = Duration::from_secs(35);
 const SCENARIO_TASK_TTL_MS: u64 = 3_600_000;
 const SCENARIO_TASK_POLL_INTERVAL_MS: u64 = 100;
@@ -94,8 +97,8 @@ pub(super) struct ReceiptScenarioControl {
     operation_label: Mutex<Option<String>>,
     actor_bindings: Mutex<Vec<Value>>,
     actor_authorizations: Mutex<Vec<Value>>,
-    bound_task: Mutex<Option<ScenarioBoundTask>>,
-    terminal_bound_task: Mutex<Option<ScenarioTerminalBoundTask>>,
+    bound_tasks: Mutex<Vec<ScenarioBoundTask>>,
+    terminal_bound_tasks: Mutex<Vec<ScenarioTerminalBoundTask>>,
     state_root: Mutex<Option<std::path::PathBuf>>,
     receipt_backed_terminals: Mutex<Vec<(TaskTerminalReceiptBackedReceipt, Vec<u8>)>>,
     provider: Mutex<Option<ScenarioProviderFixture>>,
@@ -106,6 +109,7 @@ pub(super) struct ReceiptScenarioControl {
     trace_sequence: AtomicU64,
     gate_events: Mutex<Vec<Value>>,
     operation_events: Mutex<Vec<Value>>,
+    staged_handoff: Mutex<Option<TaskHandoffActorBoundReceipt>>,
     staged_terminal_preparations: Mutex<Vec<Value>>,
     staged_terminal_publications: Mutex<Vec<Value>>,
     runtime: Mutex<Option<Weak<V5ReceiptRuntime>>>,
@@ -115,6 +119,7 @@ pub(super) struct ReceiptScenarioControl {
 struct ScenarioProviderFixture {
     execution_class: ScenarioExecutionClass,
     terminal: ScenarioTerminalFixture,
+    precomputed_terminal: Option<V5CanonicalTerminal>,
     cooperative_cancel: bool,
     side_effect_marker: bool,
 }
@@ -157,8 +162,8 @@ impl ReceiptScenarioControl {
             operation_label: Mutex::new(None),
             actor_bindings: Mutex::new(Vec::new()),
             actor_authorizations: Mutex::new(Vec::new()),
-            bound_task: Mutex::new(None),
-            terminal_bound_task: Mutex::new(None),
+            bound_tasks: Mutex::new(Vec::new()),
+            terminal_bound_tasks: Mutex::new(Vec::new()),
             state_root: Mutex::new(None),
             receipt_backed_terminals: Mutex::new(Vec::new()),
             provider: Mutex::new(None),
@@ -169,6 +174,7 @@ impl ReceiptScenarioControl {
             trace_sequence: AtomicU64::new(1),
             gate_events: Mutex::new(Vec::new()),
             operation_events: Mutex::new(Vec::new()),
+            staged_handoff: Mutex::new(None),
             staged_terminal_preparations: Mutex::new(Vec::new()),
             staged_terminal_publications: Mutex::new(Vec::new()),
             runtime: Mutex::new(None),
@@ -239,6 +245,11 @@ impl ReceiptScenarioControl {
         else {
             return Err("staged terminal preparation requires an exact staged receipt".to_owned());
         };
+        *self
+            .staged_handoff
+            .lock()
+            .map_err(|_| "scenario staged handoff mutex poisoned".to_owned())? =
+            Some(staged.clone());
         let receipt_key = receipt_key_observation(staged.key());
         if self
             .staged_terminal_preparations
@@ -385,6 +396,13 @@ impl ReceiptScenarioControl {
             .map_err(|_| "scenario staged terminal preparation mutex poisoned".to_owned())?
             .push(preparation);
         Ok(())
+    }
+
+    pub(super) fn staged_handoff(&self) -> Option<TaskHandoffActorBoundReceipt> {
+        self.staged_handoff
+            .lock()
+            .expect("scenario staged handoff mutex poisoned")
+            .clone()
     }
 
     pub(super) fn record_staged_terminal_publication(
@@ -1171,19 +1189,28 @@ impl ReceiptScenarioControl {
         record: V5StoredInvocationRecord,
         bound: TaskBoundReceipt,
     ) {
-        *self
-            .bound_task
+        let mut tasks = self
+            .bound_tasks
             .lock()
-            .expect("scenario bound Task mutex poisoned") =
-            Some(ScenarioBoundTask { record, bound });
+            .expect("scenario bound Task mutex poisoned");
+        tasks.retain(|task| task.record.task_id != record.task_id);
+        tasks.push(ScenarioBoundTask { record, bound });
         *self
-            .terminal_bound_task
+            .staged_handoff
             .lock()
-            .expect("scenario terminal Task mutex poisoned") = None;
+            .expect("scenario staged handoff mutex poisoned") = None;
     }
 
     pub(super) fn bound_task(&self) -> Option<ScenarioBoundTask> {
-        self.bound_task
+        self.bound_tasks
+            .lock()
+            .expect("scenario bound Task mutex poisoned")
+            .last()
+            .cloned()
+    }
+
+    fn bound_tasks(&self) -> Vec<ScenarioBoundTask> {
+        self.bound_tasks
             .lock()
             .expect("scenario bound Task mutex poisoned")
             .clone()
@@ -1194,18 +1221,43 @@ impl ReceiptScenarioControl {
         record: V5StoredInvocationRecord,
         bound: TaskTerminalBoundReceipt,
     ) {
-        *self
-            .terminal_bound_task
+        let task_id = record.task_id;
+        let mut tasks = self
+            .terminal_bound_tasks
             .lock()
-            .expect("scenario terminal Task mutex poisoned") =
-            Some(ScenarioTerminalBoundTask { record, bound });
+            .expect("scenario terminal Task mutex poisoned");
+        tasks.retain(|task| task.record.task_id != task_id);
+        tasks.push(ScenarioTerminalBoundTask { record, bound });
+        self.bound_tasks
+            .lock()
+            .expect("scenario bound Task mutex poisoned")
+            .retain(|task| task.record.task_id != task_id);
     }
 
     fn terminal_bound_task(&self) -> Option<ScenarioTerminalBoundTask> {
-        self.terminal_bound_task
+        self.terminal_bound_tasks
+            .lock()
+            .expect("scenario terminal Task mutex poisoned")
+            .last()
+            .cloned()
+    }
+
+    fn terminal_bound_tasks(&self) -> Vec<ScenarioTerminalBoundTask> {
+        self.terminal_bound_tasks
             .lock()
             .expect("scenario terminal Task mutex poisoned")
             .clone()
+    }
+
+    fn clear_task_projections(&self) {
+        self.bound_tasks
+            .lock()
+            .expect("scenario bound Task mutex poisoned")
+            .clear();
+        self.terminal_bound_tasks
+            .lock()
+            .expect("scenario terminal Task mutex poisoned")
+            .clear();
     }
 
     fn set_state_root(&self, root: &Path) {
@@ -1451,6 +1503,20 @@ impl ReceiptScenarioControl {
         self.release(ScenarioBarrierPoint::AdmissionEntered);
     }
 
+    pub(super) fn configured_precomputed_terminal(&self) -> Result<V5CanonicalTerminal, String> {
+        let provider = self
+            .provider()
+            .ok_or_else(|| "scenario provider is not configured".to_owned())?;
+        provider
+            .precomputed_terminal
+            .ok_or_else(|| "scenario provider has no precomputed cutoff terminal".to_owned())
+    }
+
+    pub(super) fn has_precomputed_terminal(&self) -> bool {
+        self.provider()
+            .is_some_and(|provider| provider.precomputed_terminal.is_some())
+    }
+
     fn release_all_barriers(&self) {
         let mut barriers = self
             .barriers
@@ -1479,14 +1545,14 @@ impl ReceiptScenarioControl {
             .actor_workspace_identity
             .lock()
             .expect("scenario actor identity mutex poisoned") = None;
-        *self
-            .bound_task
+        self.bound_tasks
             .lock()
-            .expect("scenario bound Task mutex poisoned") = None;
-        *self
-            .terminal_bound_task
+            .expect("scenario bound Task mutex poisoned")
+            .clear();
+        self.terminal_bound_tasks
             .lock()
-            .expect("scenario terminal Task mutex poisoned") = None;
+            .expect("scenario terminal Task mutex poisoned")
+            .clear();
         self.actor_bindings
             .lock()
             .expect("scenario actor binding mutex poisoned")
@@ -1581,14 +1647,26 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
         if let ReceiptScenarioAction::InvalidateActorProof { point, .. } = action {
             control.install(*point);
         }
+        if matches!(
+            action,
+            ReceiptScenarioAction::Crash {
+                point: ScenarioCrashPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal
+            }
+        ) {
+            control
+                .install(ScenarioBarrierPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal);
+        }
     }
     let initial_daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
     let initial_receipts = initial_daemon_state.create_private_retained_subdirectory("receipts")?;
     control.set_state_root(initial_receipts.path());
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
     let mut known_keys = Vec::new();
+    let mut submit_keys: HashMap<String, ReceiptKey> = HashMap::new();
     let mut original_submit_cutoff: Option<(u64, u64)> = None;
     let mut pending_submit: Option<PendingSubmit> = None;
+    let mut spawned_submit_clients: HashMap<String, SpawnedSubmitClient> = HashMap::new();
+    let mut spawn_submit_labels: HashSet<String> = HashSet::new();
     let mut live_daemon: Option<ScenarioDaemon> = None;
     let mut live_actor: Option<ReceiptLedgerActor> = None;
     let mut live_task_projection: Option<(TaskProjectionObservation, u64)> = None;
@@ -1598,7 +1676,6 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
     let mut listener_published = false;
     let mut startup_listener_override = false;
     let mut seeded_task_versions = HashMap::new();
-    let mut recovering_handoff_crash = false;
     let mut corrupted_identity_snapshot: Option<Value> = None;
     let mut bulk_task_projection: Option<TaskProjectionObservation> = None;
     let mut bulk_receipt_snapshot: Option<Value> = None;
@@ -1617,9 +1694,22 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 cooperative_cancel,
                 side_effect_marker,
             } => {
+                let precomputed_terminal = matches!(
+                    terminal,
+                    ScenarioTerminalFixture::NearLimitWithMaximumMetadata { .. }
+                )
+                .then(|| {
+                    let result = domain_result_for_fixture(&terminal)?;
+                    canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+                        result: Box::new(result),
+                    })
+                    .map_err(|error| format!("precompute scenario cutoff terminal: {error}"))
+                })
+                .transpose()?;
                 control.set_provider(ScenarioProviderFixture {
                     execution_class,
                     terminal: terminal.clone(),
+                    precomputed_terminal,
                     cooperative_cancel,
                     side_effect_marker,
                 });
@@ -1695,6 +1785,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             ReceiptScenarioAction::SeedTaskLinkReservation { relation } => {
                 seed_task_link_reservation(state.path(), &identity, &exact_key, relation)?;
                 push_known_key(&mut known_keys, exact_key.clone());
+            }
+            ReceiptScenarioAction::InjectStoreFault { point } => {
+                telemetry.arm_store_fault(point);
             }
             ReceiptScenarioAction::OpenTaskStoreInspectOnly => {
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
@@ -2109,6 +2202,27 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                             )?,
                         );
                     }
+                    for (spawned_label, spawned) in spawned_submit_clients.drain() {
+                        let response = spawned.client.join().map_err(|_| {
+                            format!("spawned submit {spawned_label} client panicked")
+                        })??;
+                        let workspace = control.actor_workspace_identity().and_then(|identity| {
+                            serde_json::to_value(identity)
+                                .ok()
+                                .and_then(|value| value.as_str().map(str::to_owned))
+                        });
+                        report.responses.insert(
+                            spawned_label,
+                            response_observation_with_exact_task(
+                                &response,
+                                Some((spawned.accepted_epoch_ms, spawned.response_budget_ms)),
+                                &spawned.key,
+                                state.path(),
+                                &identity,
+                                Some(workspace),
+                            )?,
+                        );
+                    }
                 }
             }
             ReceiptScenarioAction::CancelTask {
@@ -2170,6 +2284,85 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 };
                 report.responses.insert(label, observation);
             }
+            ReceiptScenarioAction::SpawnSubmit {
+                request,
+                response_budget_ms,
+                disconnect,
+                label,
+            } => {
+                if !matches!(disconnect, ScenarioDisconnect::Never)
+                    || spawned_submit_clients.contains_key(&label)
+                    || spawn_submit_labels.contains(&label)
+                {
+                    return Ok(None);
+                }
+                let submit_key = match request {
+                    ScenarioRequest::Fresh(sequence) => {
+                        let _ = sequence;
+                        fresh_key_for_workspace(&identity, &arguments, &workspace_hint)?
+                    }
+                    ScenarioRequest::Canonical | ScenarioRequest::SameIdentity => exact_key.clone(),
+                    ScenarioRequest::Mismatch(_) => return Ok(None),
+                };
+                if pending_submit.is_none() && known_keys.is_empty() {
+                    invocation_id = submit_key.invocation_id();
+                    reserved_task_id = submit_key.reserved_task_id();
+                    exact_key = submit_key.clone();
+                    mismatched_arguments_key = ReceiptKey::new(
+                        invocation_id,
+                        reserved_task_id,
+                        RequestIdentity::new(
+                            identity.digest().clone(),
+                            V5ToolIdentity::View,
+                            normalized_arguments_hash(&Map::from_iter([(
+                                "mismatch".to_owned(),
+                                Value::Bool(true),
+                            )])),
+                            request_scope_hash(&workspace_hint).map_err(|error| {
+                                format!(
+                                    "construct mismatched receipt scenario request scope: {error}"
+                                )
+                            })?,
+                        ),
+                    );
+                }
+                let invocation = V5InvocationRequest::new(
+                    submit_key.invocation_id(),
+                    submit_key.reserved_task_id(),
+                    V5ToolIdentity::View,
+                    arguments.clone(),
+                    workspace_hint.clone(),
+                    response_budget_ms,
+                )
+                .map_err(|error| format!("construct spawned receipt scenario submit: {error}"))?;
+                push_known_key(&mut known_keys, submit_key.clone());
+                submit_keys.insert(label.clone(), submit_key.clone());
+                spawn_submit_labels.insert(label.clone());
+                if pending_submit.is_none() {
+                    original_submit_cutoff = Some((clock.now_epoch_millis(), response_budget_ms));
+                    pending_submit = Some(start_blocked_submit(
+                        state.path(),
+                        &identity,
+                        Arc::clone(&clock),
+                        Arc::clone(&control),
+                        Arc::clone(&telemetry),
+                        invocation,
+                        label,
+                        clock.now_epoch_millis(),
+                        response_budget_ms,
+                    )?);
+                } else {
+                    let client = spawn_additional_submit_client(
+                        state.path(),
+                        &identity,
+                        invocation,
+                        submit_key,
+                        clock.now_epoch_millis(),
+                        response_budget_ms,
+                    );
+                    spawned_submit_clients.insert(label, client);
+                }
+            }
             ReceiptScenarioAction::Submit {
                 request,
                 response_budget_ms,
@@ -2206,16 +2399,25 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     );
                     continue;
                 }
+                let submit_key = match request {
+                    ScenarioRequest::Fresh(sequence) => {
+                        let _ = sequence;
+                        fresh_key_for_workspace(&identity, &arguments, &workspace_hint)?
+                    }
+                    ScenarioRequest::Canonical | ScenarioRequest::SameIdentity => exact_key.clone(),
+                    ScenarioRequest::Mismatch(_) => unreachable!("mismatch handled above"),
+                };
                 let invocation = V5InvocationRequest::new(
-                    invocation_id,
-                    reserved_task_id,
+                    submit_key.invocation_id(),
+                    submit_key.reserved_task_id(),
                     V5ToolIdentity::View,
                     arguments.clone(),
                     workspace_hint.clone(),
                     response_budget_ms,
                 )
                 .map_err(|error| format!("construct receipt scenario submit: {error}"))?;
-                push_known_key(&mut known_keys, exact_key.clone());
+                push_known_key(&mut known_keys, submit_key.clone());
+                submit_keys.insert(label.clone(), submit_key.clone());
                 if control.is_installed() {
                     if let Some(pending) = &pending_submit {
                         let response =
@@ -2233,7 +2435,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                 response_observation_with_exact_task(
                                     &response,
                                     Some((pending.accepted_epoch_ms, pending.response_budget_ms)),
-                                    &exact_key,
+                                    &submit_key,
                                     state.path(),
                                     &identity,
                                     Some(None),
@@ -2317,12 +2519,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                 "kind": "task",
                                 "error": null,
                                 "terminal": null,
-                                "key": receipt_key_observation(&exact_key),
+                                "key": receipt_key_observation(&submit_key),
                                 "task": task_observation_from_response(
                                     V5ServerResponse::Task {
                                         snapshot: snapshot.clone(),
                                     },
-                                    &exact_key,
+                                    &submit_key,
                                     state.path(),
                                     &identity,
                                 )?,
@@ -2441,8 +2643,14 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 disconnect,
                 label,
             } => {
-                let ScenarioKey::Exact = key else {
-                    return Ok(None);
+                let acknowledge_key = match key {
+                    ScenarioKey::Exact => exact_key.clone(),
+                    ScenarioKey::ForSubmitLabel(submit_label) => {
+                        submit_keys.get(&submit_label).cloned().ok_or_else(|| {
+                            format!("acknowledgement references unknown submit {submit_label}")
+                        })?
+                    }
+                    ScenarioKey::Unknown | ScenarioKey::Mismatch(_) => return Ok(None),
                 };
                 let terminal_digest = match digest {
                     ScenarioDigest::ExactTerminal => exact_terminal_digest(
@@ -2450,7 +2658,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         &identity,
                         Arc::clone(&clock),
                         Arc::clone(&telemetry),
-                        &exact_key,
+                        &acknowledge_key,
                     )?,
                     ScenarioDigest::Mismatched => TerminalDigest::from_str(&"a5".repeat(32))
                         .expect("fixed mismatch digest is normalized"),
@@ -2459,7 +2667,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                             .expect("fixed candidate digest is normalized")
                     }
                     ScenarioDigest::TaskTerminal => {
-                        task_terminal_digest_from_store(state.path(), &identity, &exact_key)?
+                        task_terminal_digest_from_store(state.path(), &identity, &acknowledge_key)?
                     }
                 };
                 match disconnect {
@@ -2469,7 +2677,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                             &identity,
                             Arc::clone(&clock),
                             Arc::clone(&telemetry),
-                            exact_key.clone(),
+                            acknowledge_key.clone(),
                             terminal_digest,
                         )?;
                         report
@@ -2484,7 +2692,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                             Arc::clone(&clock),
                             Arc::clone(&control),
                             Arc::clone(&telemetry),
-                            exact_key.clone(),
+                            acknowledge_key,
                             terminal_digest,
                         )?;
                     }
@@ -2647,6 +2855,19 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                 .accepted_monotonic_ms
                                 .saturating_add(pending.response_budget_ms)
                     {
+                        telemetry.wait_for_event(
+                            V5ReceiptRuntimeEventKind::ReceiptReserved,
+                            Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                        )?;
+                        if control.has_precomputed_terminal()
+                            && control
+                                .is_barrier_installed(ScenarioBarrierPoint::BeforeTaskStoreCreate)
+                        {
+                            telemetry.wait_for_event(
+                                V5ReceiptRuntimeEventKind::BoundHandoffCommitted,
+                                Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                            )?;
+                        }
                         let receipt_state = pending
                             .actor
                             .recover(
@@ -2829,6 +3050,53 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                         )?;
                                 }
                             }
+                        } else if let ReceiptState::TaskHandoffActorBound(handoff) = receipt_state {
+                            let response = V5ServerResponse::Invocation {
+                                outcome: V5InvocationResponse::Task {
+                                    snapshot: super::queued_receipt_task_snapshot(
+                                        handoff.task(),
+                                        handoff.key_digest().clone(),
+                                        handoff.cancel_requested(),
+                                    ),
+                                },
+                            };
+                            report.responses.insert(
+                                pending.label.clone(),
+                                json!({
+                                    "kind": "task",
+                                    "error": null,
+                                    "terminal": null,
+                                    "key": receipt_key_observation(&exact_key),
+                                    "task": task_observation_from_response_with_workspace(
+                                        response,
+                                        &exact_key,
+                                        state.path(),
+                                        &identity,
+                                        control.actor_workspace_identity().map(|identity| {
+                                            serde_json::to_value(identity).ok().and_then(
+                                                |value| value.as_str().map(str::to_owned),
+                                            )
+                                        }),
+                                    )?,
+                                    "acknowledgement": null,
+                                    "cutoffEpochMs": pending.accepted_epoch_ms
+                                        .checked_add(pending.response_budget_ms),
+                                    "originalBudgetMs": pending.response_budget_ms,
+                                    "latencyMs": pending.response_budget_ms,
+                                }),
+                            );
+                            pending.response_projected = true;
+                            let configured_terminal = control.configured_precomputed_terminal()?;
+                            let staged = stage_bound_handoff_terminal_for_scenario(
+                                &pending.actor,
+                                handoff,
+                                clock.now_epoch_millis(),
+                                configured_terminal,
+                                Instant::now() + SCENARIO_BULK_SNAPSHOT_TIMEOUT,
+                                &telemetry,
+                            )
+                            .map_err(|error| format!("stage cutoff Task terminal: {error}"))?;
+                            control.record_staged_terminal_preparation(&staged)?;
                         }
                     }
                 }
@@ -2867,6 +3135,34 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 }
             }
             ReceiptScenarioAction::Crash { point } => {
+                if matches!(
+                    point,
+                    ScenarioCrashPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal
+                ) {
+                    control.wait_until_reached(
+                        ScenarioBarrierPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
+                    telemetry.record_forced_process_exit();
+                    control.record_process_exit(1);
+                    control.release_all_barriers();
+                    let pending = pending_submit
+                        .take()
+                        .ok_or_else(|| "Task terminal crash has no live submit".to_owned())?;
+                    let PendingSubmit {
+                        actor,
+                        client,
+                        daemon,
+                        ..
+                    } = pending;
+                    let _ = client.join();
+                    drop(actor);
+                    daemon.stop_and_join(
+                        "protocol-v5 receipt scenario daemon panicked during Task terminal crash",
+                    )?;
+                    control.clear_task_projections();
+                    continue;
+                }
                 if matches!(point, ScenarioCrashPoint::AfterSideEffectBeforeTerminal)
                     && pending_submit.is_none()
                 {
@@ -2905,7 +3201,6 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     daemon.stop_and_join(
                         "protocol-v5 receipt scenario daemon panicked during pre-create crash",
                     )?;
-                    recovering_handoff_crash = true;
                     continue;
                 }
                 if matches!(point, ScenarioCrashPoint::ReservedBegun) {
@@ -3138,10 +3433,6 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                             )?;
                         }
                         drop(runtime);
-                        if recovering_handoff_crash {
-                            telemetry.record_task_store_create_attempt();
-                            recovering_handoff_crash = false;
-                        }
                         startup_failed = false;
                         listener_published = true;
                     }
@@ -3233,7 +3524,17 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 }
                 match live_task_projection {
                     Some((projection, expected_create_attempts)) => {
-                        if let Some(terminal_task) = control.terminal_bound_task() {
+                        if known_keys.len() > 1 {
+                            let current = controlled_task_projection_observation(
+                                &control,
+                                state.path(),
+                                &identity,
+                            )?;
+                            apply_task_projection(
+                                &mut snapshot,
+                                current.as_ref().unwrap_or(projection),
+                            )?;
+                        } else if let Some(terminal_task) = control.terminal_bound_task() {
                             if let Some(bulk_projection) = &bulk_task_projection {
                                 apply_task_projection(&mut snapshot, bulk_projection)?;
                             } else {
@@ -3273,6 +3574,21 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         &known_keys,
                         &seeded_task_versions,
                     )?,
+                }
+                if telemetry.snapshot().restart_requested {
+                    let linked_task_ids = snapshot
+                        .get("taskLinks")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|link| link.get("taskId").cloned())
+                        .collect::<Vec<_>>();
+                    if let Some(tasks) = snapshot.get_mut("tasks").and_then(Value::as_array_mut) {
+                        tasks.retain(|task| {
+                            task.get("taskId")
+                                .is_some_and(|task_id| linked_task_ids.contains(task_id))
+                        });
+                    }
                 }
                 if startup_listener_override {
                     let runtime_listener = telemetry.snapshot().listener;
@@ -3328,8 +3644,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     })
                     .map(|event| event.sequence);
                 if staged_sequence.is_some()
-                    && link_reserved_sequence
-                        .is_some_and(|reserved| staged_sequence < Some(reserved))
+                    && link_reserved_sequence.is_some()
                     && created_sequence.is_none_or(|created| staged_sequence > Some(created))
                     && link_capacity_rejected_sequence
                         .is_none_or(|rejected| staged_sequence > Some(rejected))
@@ -3604,6 +3919,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 )?);
             }
             ReceiptScenarioAction::JoinOperation { label } => {
+                if spawn_submit_labels.remove(&label) {
+                    if !report.responses.contains_key(&label) {
+                        return Err(format!(
+                            "spawned submit {label} was joined before its response was projected"
+                        ));
+                    }
+                    control.record_operation_event(&label, "joined");
+                    continue;
+                }
                 let operation = operations
                     .remove(&label)
                     .ok_or_else(|| format!("unknown scenario operation {label}"))?;
@@ -3616,6 +3940,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             }
             ReceiptScenarioAction::InstallBarrier { point } => {
                 control.install(point);
+            }
+            ReceiptScenarioAction::WaitForEventCount { event, count } => {
+                let count = usize::try_from(count)
+                    .map_err(|_| "scenario event count exceeds usize".to_owned())?;
+                telemetry.wait_for_event_count(
+                    scenario_runtime_event_kind(event),
+                    count,
+                    Instant::now() + SCENARIO_BULK_OPERATION_TIMEOUT,
+                )?;
             }
             ReceiptScenarioAction::WaitForEvent { event } => match event {
                 ScenarioEvent::V5ReceiptRuntimeEntered => {
@@ -3730,6 +4063,11 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         V5ReceiptRuntimeEventKind::BoundHandoffTerminalStaged,
                         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                     )?;
+                    telemetry.wait_for_either_event(
+                        V5ReceiptRuntimeEventKind::TaskLinkCapacityReserved,
+                        V5ReceiptRuntimeEventKind::TaskLinkCapacityRejected,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )?;
                 }
                 ScenarioEvent::TaskBoundCommitted => {
                     telemetry.wait_for_event(
@@ -3762,9 +4100,14 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     )?;
                 }
                 ScenarioEvent::TaskTerminalBoundCommitted => {
+                    let timeout = if control.has_precomputed_terminal() {
+                        SCENARIO_BULK_SNAPSHOT_TIMEOUT
+                    } else {
+                        SCENARIO_OPERATION_TIMEOUT
+                    };
                     telemetry.wait_for_event(
                         V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                        Instant::now() + timeout,
                     )?;
                 }
                 ScenarioEvent::TokenSignalled => {
@@ -3905,6 +4248,27 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                             )?,
                         );
                     }
+                    for (spawned_label, spawned) in spawned_submit_clients.drain() {
+                        let response = spawned.client.join().map_err(|_| {
+                            format!("spawned submit {spawned_label} client panicked")
+                        })??;
+                        let workspace = control.actor_workspace_identity().and_then(|identity| {
+                            serde_json::to_value(identity)
+                                .ok()
+                                .and_then(|value| value.as_str().map(str::to_owned))
+                        });
+                        report.responses.insert(
+                            spawned_label,
+                            response_observation_with_exact_task(
+                                &response,
+                                Some((spawned.accepted_epoch_ms, spawned.response_budget_ms)),
+                                &spawned.key,
+                                state.path(),
+                                &identity,
+                                Some(workspace),
+                            )?,
+                        );
+                    }
                 }
             }
             ReceiptScenarioAction::CompareClientServerIdentity => {
@@ -3913,7 +4277,11 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
         }
     }
 
-    if pending_submit.is_some() || !operations.is_empty() {
+    if pending_submit.is_some()
+        || !operations.is_empty()
+        || !spawned_submit_clients.is_empty()
+        || !spawn_submit_labels.is_empty()
+    {
         return Err("protocol-v5 receipt scenario ended with a blocked operation".to_owned());
     }
     for (receipt, record_bytes) in control.receipt_backed_terminals() {
@@ -5119,7 +5487,9 @@ fn has_supported_shape(request: &str) -> Result<bool, String> {
                         | "spawn_task_store_create_and_bind_under_gate"
                         | "spawn_stage_bound_handoff_terminal"
                         | "wait_for_operation"
+                        | "wait_for_event_count"
                         | "submit"
+                        | "spawn_submit"
                         | "send_outer_envelope"
                         | "probe_protocol"
                         | "recover"
@@ -5128,6 +5498,7 @@ fn has_supported_shape(request: &str) -> Result<bool, String> {
                         | "seed_task"
                         | "seed_task_link_reservation"
                         | "inject_persisted_identity_collision"
+                        | "inject_store_fault"
                         | "open_task_store_inspect_only"
                         | "reconcile_startup"
                         | "publish_listener"
@@ -5196,19 +5567,27 @@ impl CanonicalInvocationService for ScenarioInvocationService {
 }
 
 fn domain_result_for_fixture(fixture: &ScenarioTerminalFixture) -> Result<DomainResult, String> {
-    let payload = match fixture {
-        ScenarioTerminalFixture::Success { payload } => payload.clone(),
-        ScenarioTerminalFixture::Bytes { count } => "x".repeat(
-            usize::try_from(*count)
-                .map_err(|_| "scenario provider byte count does not fit usize".to_owned())?,
-        ),
+    let exact_canonical_bytes = |target: u64| -> Result<DomainResult, String> {
+        let empty = DomainResult::success("");
+        let envelope_bytes = serde_json::to_vec(&empty)
+            .map_err(|error| format!("encode empty scenario result: {error}"))?
+            .len();
+        let target = usize::try_from(target)
+            .map_err(|_| "scenario canonical result size does not fit usize".to_owned())?;
+        let payload_bytes = target.checked_sub(envelope_bytes).ok_or_else(|| {
+            format!(
+                "scenario canonical result target {target} is below envelope size {envelope_bytes}"
+            )
+        })?;
+        Ok(DomainResult::success("x".repeat(payload_bytes)))
+    };
+    match fixture {
+        ScenarioTerminalFixture::Success { payload } => Ok(DomainResult::success(payload.clone())),
+        ScenarioTerminalFixture::Bytes { count } => exact_canonical_bytes(*count),
         ScenarioTerminalFixture::NearLimitWithMaximumMetadata {
             canonical_result_bytes,
-        } => "x".repeat(usize::try_from(*canonical_result_bytes).map_err(|_| {
-            "scenario provider canonical result size does not fit usize".to_owned()
-        })?),
-    };
-    Ok(DomainResult::success(payload))
+        } => exact_canonical_bytes(*canonical_result_bytes),
+    }
 }
 
 fn scenario_server_config(
@@ -7556,6 +7935,13 @@ struct PendingSubmit {
     daemon: ScenarioDaemon,
 }
 
+struct SpawnedSubmitClient {
+    key: ReceiptKey,
+    accepted_epoch_ms: u64,
+    response_budget_ms: u64,
+    client: thread::JoinHandle<Result<V5ServerResponse, String>>,
+}
+
 type FinishedPendingSubmit = (
     String,
     u64,
@@ -7632,6 +8018,33 @@ impl PendingSubmit {
     }
 }
 
+fn spawn_additional_submit_client(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    invocation: V5InvocationRequest,
+    key: ReceiptKey,
+    accepted_epoch_ms: u64,
+    response_budget_ms: u64,
+) -> SpawnedSubmitClient {
+    let client_state_root = state_root.to_path_buf();
+    let client_identity = identity.clone();
+    let client = thread::spawn(move || {
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+            &client_state_root,
+            client_identity,
+            std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
+            SCENARIO_IDLE_GRACE,
+        )?;
+        owner.submit_invocation_with_timeout_for_test(invocation, SCENARIO_BULK_SNAPSHOT_TIMEOUT)
+    });
+    SpawnedSubmitClient {
+        key,
+        accepted_epoch_ms,
+        response_budget_ms,
+        client,
+    }
+}
+
 fn cancel_on_live_daemon(
     state_root: &Path,
     identity: &CoreIdentity,
@@ -7700,7 +8113,8 @@ fn start_blocked_submit(
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
             SCENARIO_IDLE_GRACE,
         )?;
-        let response = owner.submit_invocation(invocation)?;
+        let response = owner
+            .submit_invocation_with_timeout_for_test(invocation, SCENARIO_BULK_SNAPSHOT_TIMEOUT)?;
         drop(owner);
         Ok(response)
     });
@@ -8043,6 +8457,69 @@ fn terminal_bound_task_projection_observation(
     })
 }
 
+fn controlled_task_projection_observation(
+    control: &ReceiptScenarioControl,
+    state_root: &Path,
+    identity: &CoreIdentity,
+) -> Result<Option<TaskProjectionObservation>, String> {
+    let mut projections = Vec::new();
+    for task in control.bound_tasks() {
+        projections.push(bound_task_projection_observation(
+            task, state_root, identity,
+        )?);
+    }
+    for task in control.terminal_bound_tasks() {
+        projections.push(terminal_bound_task_projection_observation(
+            task, state_root, identity,
+        )?);
+    }
+    if projections.is_empty() {
+        return Ok(None);
+    }
+    let mut combined = TaskProjectionObservation {
+        tasks: Vec::new(),
+        task_links: Vec::new(),
+        task_link_count: 0,
+        task_link_bytes: 0,
+        task_link_reserved_count: 0,
+        task_link_reserved_bytes: 0,
+        task_store_mutations: 0,
+        generation: 0,
+    };
+    for projection in projections {
+        combined.tasks.extend(projection.tasks);
+        combined.task_links.extend(projection.task_links);
+        combined.task_link_count = combined
+            .task_link_count
+            .saturating_add(projection.task_link_count);
+        combined.task_link_bytes = combined
+            .task_link_bytes
+            .saturating_add(projection.task_link_bytes);
+        combined.task_link_reserved_count = combined
+            .task_link_reserved_count
+            .saturating_add(projection.task_link_reserved_count);
+        combined.task_link_reserved_bytes = combined
+            .task_link_reserved_bytes
+            .saturating_add(projection.task_link_reserved_bytes);
+        combined.task_store_mutations = combined
+            .task_store_mutations
+            .saturating_add(projection.task_store_mutations);
+        combined.generation = combined.generation.max(projection.generation);
+    }
+    let owner_key = |value: &Value| {
+        value
+            .get("key")
+            .or_else(|| value.get("receiptKey"))
+            .and_then(|key| key.get("keyDigest"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    combined.tasks.sort_by_key(&owner_key);
+    combined.task_links.sort_by_key(owner_key);
+    Ok(Some(combined))
+}
+
 fn merge_exact_runtime_task_projection(
     projection: &mut TaskProjectionObservation,
     runtime: &V5ReceiptRuntime,
@@ -8053,11 +8530,20 @@ fn merge_exact_runtime_task_projection(
     let deadline = crate::domain::code_intelligence::ProviderDeadline::new(
         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
     );
-    let record = runtime
+    let record = match runtime
         .task_projection
         .task_store
         .get(key.reserved_task_id(), deadline)
-        .map_err(|error| format!("read reconciled exact Task projection: {error}"))?;
+    {
+        Ok(record) => record,
+        Err(V5TaskStoreError::NotFound { .. }) => {
+            // A capacity fallback deliberately leaves the exact terminal
+            // receipt-owned. The bulk Task projection already contains every
+            // materialized lifecycle owner, so there is nothing to merge.
+            return Ok(());
+        }
+        Err(error) => return Err(format!("read reconciled exact Task projection: {error}")),
+    };
     let catalog = runtime
         .task_projection
         .lifecycle_links
@@ -8750,18 +9236,18 @@ fn response_observation(
         V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::Direct { receipt },
         } => {
-            let recovery_error = if submit_cutoff.is_none() {
-                match receipt.terminal() {
-                    ReceiptTerminalOutcome::Failed { reason } => {
-                        Some(serde_json::to_value(reason).map_err(|error| {
-                            format!("encode protocol-v5 recovery failure reason: {error}")
-                        })?)
-                    }
-                    ReceiptTerminalOutcome::Completed { .. }
-                    | ReceiptTerminalOutcome::Cancelled => None,
+            let recovery_error = match receipt.terminal() {
+                ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::ResultTooLarge,
+                } => {
+                    let reason = V5SafeFailureReason::ResultTooLarge;
+                    Some(serde_json::to_value(reason).map_err(|error| {
+                        format!("encode protocol-v5 recovery failure reason: {error}")
+                    })?)
                 }
-            } else {
-                None
+                ReceiptTerminalOutcome::Completed { .. }
+                | ReceiptTerminalOutcome::Failed { .. }
+                | ReceiptTerminalOutcome::Cancelled => None,
             };
             let (accepted_epoch_ms, original_budget_ms) = submit_cutoff
                 .map(|(accepted, budget)| (Some(accepted), Some(budget)))
@@ -9506,7 +9992,17 @@ enum ReceiptScenarioAction {
         label: String,
         state: ScenarioOperationState,
     },
+    WaitForEventCount {
+        event: ScenarioEvent,
+        count: u32,
+    },
     Submit {
+        request: ScenarioRequest,
+        response_budget_ms: u64,
+        disconnect: ScenarioDisconnect,
+        label: String,
+    },
+    SpawnSubmit {
         request: ScenarioRequest,
         response_budget_ms: u64,
         disconnect: ScenarioDisconnect,
@@ -9549,6 +10045,9 @@ enum ReceiptScenarioAction {
     },
     InjectPersistedIdentityCollision {
         index: ScenarioIdentityIndex,
+    },
+    InjectStoreFault {
+        point: ScenarioStoreFaultPoint,
     },
     OpenTaskStoreInspectOnly,
     ReconcileStartup,
@@ -9621,13 +10120,13 @@ impl ReceiptScenarioAction {
             | Self::ConfigurePrepare { .. } => true,
             Self::ConfigureProvider {
                 execution_class,
-                terminal,
+                terminal: _,
                 ..
             } => {
                 matches!(
                     execution_class,
                     ScenarioExecutionClass::Direct | ScenarioExecutionClass::KnownLong
-                ) && matches!(terminal, ScenarioTerminalFixture::Success { .. })
+                )
             }
             Self::Cancel {
                 key, lazy_session, ..
@@ -9656,9 +10155,9 @@ impl ReceiptScenarioAction {
             Self::SpawnMarkReservedBegun { proof, .. } => {
                 matches!(proof, ScenarioActorProof::Exact)
             }
-            Self::SpawnTaskStoreCreateAndBindUnderGate { .. } | Self::WaitForOperation { .. } => {
-                true
-            }
+            Self::SpawnTaskStoreCreateAndBindUnderGate { .. }
+            | Self::WaitForOperation { .. }
+            | Self::WaitForEventCount { .. } => true,
             Self::SpawnStageBoundHandoffTerminal { terminal, .. } => {
                 matches!(terminal, ScenarioTerminalFixture::Success { .. })
             }
@@ -9666,10 +10165,16 @@ impl ReceiptScenarioAction {
                 request,
                 disconnect,
                 ..
+            }
+            | Self::SpawnSubmit {
+                request,
+                disconnect,
+                ..
             } => {
                 matches!(
                     request,
                     ScenarioRequest::Canonical
+                        | ScenarioRequest::Fresh(_)
                         | ScenarioRequest::SameIdentity
                         | ScenarioRequest::Mismatch(_)
                 ) && matches!(
@@ -9690,7 +10195,7 @@ impl ReceiptScenarioAction {
             Self::Acknowledge {
                 key, disconnect, ..
             } => {
-                matches!(key, ScenarioKey::Exact)
+                matches!(key, ScenarioKey::Exact | ScenarioKey::ForSubmitLabel(_))
                     && matches!(
                         disconnect,
                         ScenarioAckDisconnect::Never | ScenarioAckDisconnect::AfterTombstoneCommit
@@ -9751,6 +10256,7 @@ impl ReceiptScenarioAction {
             Self::SeedTask { version, .. } => *version > 0,
             Self::SeedTaskLinkReservation { .. }
             | Self::InjectPersistedIdentityCollision { .. }
+            | Self::InjectStoreFault { .. }
             | Self::OpenTaskStoreInspectOnly
             | Self::ReconcileStartup
             | Self::PublishListener => true,
@@ -9781,6 +10287,7 @@ impl ReceiptScenarioAction {
                     | ScenarioCrashPoint::AfterCancelFlagBeforeTaskCreate
                     | ScenarioCrashPoint::AfterWorkingReadbackBeforeReceiptBegun
                     | ScenarioCrashPoint::AfterReceiptBegunBeforePrepare
+                    | ScenarioCrashPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal
             ),
             Self::FillReceiptPool { state, .. } => matches!(
                 state,
@@ -9830,6 +10337,7 @@ enum ScenarioTerminalFixture {
 #[serde(rename_all = "snake_case")]
 enum ScenarioRequest {
     Canonical,
+    Fresh(u32),
     SameIdentity,
     Mismatch(ScenarioIdentityField),
 }
@@ -10033,6 +10541,7 @@ enum ScenarioDigest {
 #[serde(rename_all = "snake_case")]
 enum ScenarioKey {
     Exact,
+    ForSubmitLabel(String),
     Unknown,
     Mismatch(ScenarioIdentityField),
 }
@@ -10106,6 +10615,7 @@ pub(super) enum ScenarioBarrierPoint {
     AfterTaskStoreReadbackBeforeTaskBound,
     BeforeMarkReservedBegunGateAcquire,
     BeforeCancelGateAcquire,
+    AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -10139,6 +10649,13 @@ enum ScenarioCrashPoint {
     AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
 }
 
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ScenarioStoreFaultPoint {
+    AfterTerminalPayloadRenameBeforeDirectorySync,
+    AfterTaskCreateRenameBeforeDirectorySync,
+}
+
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ScenarioEntryPath {
@@ -10158,6 +10675,7 @@ struct ScenarioCrashWorkload {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy)]
 enum ScenarioEvent {
     V5ReceiptRuntimeEntered,
     CanonicalV13ServiceEntered,
@@ -10189,6 +10707,67 @@ enum ScenarioEvent {
     OperationCompleted,
     LeaseReleased,
     ListenerClosed,
+}
+
+fn scenario_runtime_event_kind(event: ScenarioEvent) -> V5ReceiptRuntimeEventKind {
+    match event {
+        ScenarioEvent::V5ReceiptRuntimeEntered => {
+            V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered
+        }
+        ScenarioEvent::CanonicalV13ServiceEntered => {
+            V5ReceiptRuntimeEventKind::CanonicalV13ServiceEntered
+        }
+        ScenarioEvent::ReceiptReserved => V5ReceiptRuntimeEventKind::ReceiptReserved,
+        ScenarioEvent::ValidationEntered => V5ReceiptRuntimeEventKind::ValidationEntered,
+        ScenarioEvent::AdmissionEntered => V5ReceiptRuntimeEventKind::AdmissionEntered,
+        ScenarioEvent::ActorBoundCommitted => V5ReceiptRuntimeEventKind::ActorBoundCommitted,
+        ScenarioEvent::ReceiptBegunCommitted => V5ReceiptRuntimeEventKind::ReceiptBegunCommitted,
+        ScenarioEvent::PrepareEntered => V5ReceiptRuntimeEventKind::PrepareEntered,
+        ScenarioEvent::ExecuteEntered => V5ReceiptRuntimeEventKind::ExecuteEntered,
+        ScenarioEvent::CancelReservationConverted => {
+            V5ReceiptRuntimeEventKind::CancelReservationConverted
+        }
+        ScenarioEvent::ResultSerialized => V5ReceiptRuntimeEventKind::ResultSerialized,
+        ScenarioEvent::ReceiptTerminalCommitted => {
+            V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted
+        }
+        ScenarioEvent::FinalResultProjected => V5ReceiptRuntimeEventKind::FinalResultProjected,
+        ScenarioEvent::AcknowledgementCommitted => {
+            V5ReceiptRuntimeEventKind::AcknowledgementCommitted
+        }
+        ScenarioEvent::BoundHandoffCommitted => V5ReceiptRuntimeEventKind::BoundHandoffCommitted,
+        ScenarioEvent::BoundHandoffTerminalStaged => {
+            V5ReceiptRuntimeEventKind::BoundHandoffTerminalStaged
+        }
+        ScenarioEvent::TaskBoundCommitted => V5ReceiptRuntimeEventKind::TaskBoundCommitted,
+        ScenarioEvent::TaskStoreWorkingReadback => {
+            V5ReceiptRuntimeEventKind::TaskStoreWorkingReadback
+        }
+        ScenarioEvent::FalseCancelObservationReached => {
+            V5ReceiptRuntimeEventKind::FalseCancelObservationReached
+        }
+        ScenarioEvent::TaskStoreTerminalCommitted => {
+            V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted
+        }
+        ScenarioEvent::TaskStoreTerminalReadback => {
+            V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback
+        }
+        ScenarioEvent::TaskTerminalBoundCommitted => {
+            V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted
+        }
+        ScenarioEvent::TokenSignalled => V5ReceiptRuntimeEventKind::TokenSignalled,
+        ScenarioEvent::MarkReservedBegunBlocked => {
+            V5ReceiptRuntimeEventKind::MarkReservedBegunBlocked
+        }
+        ScenarioEvent::CancelCommitBlocked => V5ReceiptRuntimeEventKind::CancelCommitBlocked,
+        ScenarioEvent::TaskStoreReadbackBeforeBind => {
+            V5ReceiptRuntimeEventKind::TaskStoreReadbackBeforeBind
+        }
+        ScenarioEvent::CancelCommitted => V5ReceiptRuntimeEventKind::CancelCommitted,
+        ScenarioEvent::OperationCompleted => V5ReceiptRuntimeEventKind::OperationCompleted,
+        ScenarioEvent::LeaseReleased => V5ReceiptRuntimeEventKind::LeaseReleased,
+        ScenarioEvent::ListenerClosed => V5ReceiptRuntimeEventKind::ListenerClosed,
+    }
 }
 
 #[derive(Deserialize)]
