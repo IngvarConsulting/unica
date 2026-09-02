@@ -12,6 +12,16 @@ use unica_bootstrap::{
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The one prompt-visible skill this check names.
+///
+/// The expected skill set is whatever the package ships, so adding or removing
+/// a skill never touches this crate. The anchor is what tells a Unica skill
+/// tree from any directory that happens to hold `SKILL.md` files: `code-search`
+/// fronts `unica.search`, the entry point of the public surface, and dropping
+/// it is a product decision, not a routine surface change, so it is the one
+/// name a release is allowed to fail on by design.
+const ANCHOR_SKILL: &str = "code-search";
+
 fn main() -> ExitCode {
     unica_bootstrap::run_platform_main(run_main)
 }
@@ -182,12 +192,33 @@ fn install_and_verify_runtime(plugin_root: &Path, provider_state_root: &Path) ->
     Ok(())
 }
 
+/// The installed package exposes the prompt-visible skills it was built from.
+///
+/// The expected set is derived from the package itself rather than written
+/// here: every directory under `skills/` is a skill the hosts will show, so
+/// each has to be complete, the set has to be non-empty, and it has to carry
+/// the [`ANCHOR_SKILL`].
 fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
     verify_installed_plugin_metadata(plugin_root, VERSION)?;
 
-    let skills_root = plugin_root.join("skills");
+    let visible = prompt_visible_skills(&plugin_root.join("skills"))?;
+    if visible.is_empty() {
+        return Err(unica_bootstrap::BootstrapError::new(
+            "installed Unica plugin exposes no prompt-visible skills",
+        ));
+    }
+    if !visible.contains(ANCHOR_SKILL) {
+        return Err(unica_bootstrap::BootstrapError::new(format!(
+            "installed prompt-visible skill is missing: {ANCHOR_SKILL}"
+        )));
+    }
+    Ok(())
+}
+
+/// Every skill directory of the package, each proven complete by its `SKILL.md`.
+fn prompt_visible_skills(skills_root: &Path) -> Result<std::collections::BTreeSet<String>> {
     let mut visible = std::collections::BTreeSet::new();
-    for entry in std::fs::read_dir(&skills_root)? {
+    for entry in std::fs::read_dir(skills_root)? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
             continue;
@@ -201,19 +232,7 @@ fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
         }
         visible.insert(entry.file_name().to_string_lossy().into_owned());
     }
-    for required in ["code-search", "platform-help", "release-support"] {
-        if !visible.contains(required) {
-            return Err(unica_bootstrap::BootstrapError::new(format!(
-                "installed prompt-visible skill is missing: {required}"
-            )));
-        }
-    }
-    if visible.is_empty() {
-        return Err(unica_bootstrap::BootstrapError::new(
-            "installed Unica plugin exposes no prompt-visible skills",
-        ));
-    }
-    Ok(())
+    Ok(visible)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -254,9 +273,117 @@ fn normalize_exit_code(code: i32) -> u8 {
 mod tests {
     use super::*;
 
+    use std::path::PathBuf;
+
+    /// A packaged plugin root: both host manifests of this release and the
+    /// named prompt-visible skills.
+    struct PackageFixture {
+        root: PathBuf,
+    }
+
+    impl PackageFixture {
+        fn new(name: &str, skills: &[&str]) -> Self {
+            let root = std::env::temp_dir()
+                .join(format!("unica-skill-package-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let manifests = [
+                (
+                    ".codex-plugin",
+                    serde_json::json!({
+                        "name": "unica",
+                        "version": VERSION,
+                        "skills": "./skills/",
+                        "mcpServers": "./.mcp.json",
+                    }),
+                ),
+                (
+                    ".claude-plugin",
+                    serde_json::json!({"name": "unica", "version": VERSION}),
+                ),
+            ];
+            for (dir, body) in manifests {
+                let manifest_dir = root.join(dir);
+                std::fs::create_dir_all(&manifest_dir).unwrap();
+                std::fs::write(
+                    manifest_dir.join("plugin.json"),
+                    serde_json::to_vec(&body).unwrap(),
+                )
+                .unwrap();
+            }
+            std::fs::create_dir_all(root.join("skills")).unwrap();
+            let fixture = Self { root };
+            for skill in skills {
+                fixture.add_skill(skill);
+            }
+            fixture
+        }
+
+        fn add_skill(&self, name: &str) {
+            let skill_dir = self.skill_dir(name);
+            std::fs::write(skill_dir.join("SKILL.md"), format!("# {name}\n")).unwrap();
+        }
+
+        /// A directory under `skills/` that carries no `SKILL.md`.
+        fn skill_dir(&self, name: &str) -> PathBuf {
+            let skill_dir = self.root.join("skills").join(name);
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            skill_dir
+        }
+    }
+
+    impl Drop for PackageFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
     #[test]
-    fn source_plugin_exposes_required_prompt_visible_skills() {
+    fn source_plugin_passes_the_installed_skill_package_check() {
         let plugin_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica");
         verify_installed_skill_package(&plugin_root).unwrap();
+    }
+
+    #[test]
+    fn a_package_is_accepted_whatever_skills_it_ships_beside_the_anchor() {
+        // Removing a skill changes the package, not this check: the expected
+        // set is whatever the package ships, and only the anchor is named.
+        let fixture = PackageFixture::new("any-skills", &[ANCHOR_SKILL, "api-design"]);
+        verify_installed_skill_package(&fixture.root).unwrap();
+    }
+
+    #[test]
+    fn a_package_without_the_anchor_skill_is_rejected() {
+        let fixture = PackageFixture::new("no-anchor", &["api-design", "platform-help"]);
+        let error = verify_installed_skill_package(&fixture.root).unwrap_err();
+        assert!(error.to_string().contains(ANCHOR_SKILL), "{error}");
+    }
+
+    #[test]
+    fn a_package_without_any_prompt_visible_skill_is_rejected() {
+        let fixture = PackageFixture::new("no-skills", &[]);
+        let error = verify_installed_skill_package(&fixture.root).unwrap_err();
+        assert!(
+            error.to_string().contains("no prompt-visible skills"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_skill_directory_without_skill_md_is_rejected() {
+        let fixture = PackageFixture::new("incomplete-skill", &[ANCHOR_SKILL]);
+        fixture.skill_dir("broken");
+        let error = verify_installed_skill_package(&fixture.root).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("incomplete") && message.contains("broken"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_package_without_a_skills_directory_is_rejected() {
+        let fixture = PackageFixture::new("no-skills-dir", &[]);
+        std::fs::remove_dir_all(fixture.root.join("skills")).unwrap();
+        verify_installed_skill_package(&fixture.root).unwrap_err();
     }
 }

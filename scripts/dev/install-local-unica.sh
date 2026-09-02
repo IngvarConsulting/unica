@@ -36,6 +36,22 @@ detect_target() {
   target_for_host "$(uname -s)" "$(uname -m)"
 }
 
+# One prompt-visible skill of the packaged plugin. The prompt proof looks for
+# it instead of a skill name written into this script, so adding, renaming or
+# removing a skill changes the package and not the installer.
+packaged_prompt_skill() {
+  local skills_root="$1"
+  local skill_dir
+  for skill_dir in "$skills_root"/*/; do
+    if [ -f "$skill_dir/SKILL.md" ]; then
+      basename "$skill_dir"
+      return 0
+    fi
+  done
+  echo "Packaged plugin exposes no prompt-visible skills: $skills_root" >&2
+  return 65
+}
+
 main() {
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MARKETPLACE_NAME="${UNICA_CODEX_MARKETPLACE_NAME:-unica-dev}"
@@ -207,6 +223,7 @@ rm -rf "$PACKAGE_OUT"
 "$(tool_binary unica)" --help >/dev/null
 PLUGIN_VERSION="$("$PYTHON_BIN" -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$MARKETPLACE_DIR/plugins/unica/.codex-plugin/plugin.json")"
 CODEX_PLUGIN_CACHE_VERSION_DIR="$CODEX_PLUGIN_CACHE_DIR/$PLUGIN_VERSION"
+PROMPT_SKILL="$(packaged_prompt_skill "$MARKETPLACE_DIR/plugins/unica/skills")"
 
 if [ "$DO_INSTALL" -eq 1 ]; then
   if ! command -v codex >/dev/null 2>&1; then
@@ -228,7 +245,7 @@ if [ "$DO_INSTALL" -eq 1 ]; then
 
   if [ "$DO_VERIFY" -eq 1 ]; then
     codex debug prompt-input 'test' > "$PROMPT_PROOF"
-    for needle in "Unica" "db-auth-check"; do
+    for needle in "Unica" "$PROMPT_SKILL"; do
       if ! grep -q "$needle" "$PROMPT_PROOF"; then
         echo "Codex prompt verification did not contain '$needle'." >&2
         echo "Saved prompt proof: $PROMPT_PROOF" >&2

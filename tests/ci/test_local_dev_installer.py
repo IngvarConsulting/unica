@@ -170,10 +170,86 @@ class LocalDevInstallerTests(unittest.TestCase):
     def test_prompt_verification_requires_only_installed_visible_skills(self) -> None:
         installer = INSTALLER.read_text(encoding="utf-8")
 
-        self.assertIn('for needle in "Unica" "db-auth-check"; do', installer)
-        self.assertNotIn(
-            'for needle in "Unica" "v8-runner" "db-auth-check"; do', installer
+        # The proof looks for the plugin name and one skill taken from the
+        # package at run time, so no skill name is written into the script.
+        needle_lines = [
+            line.strip() for line in installer.splitlines() if "for needle in" in line
+        ]
+        self.assertEqual(needle_lines, ['for needle in "Unica" "$PROMPT_SKILL"; do'])
+        self.assertIn(
+            'PROMPT_SKILL="$(packaged_prompt_skill "$MARKETPLACE_DIR/plugins/unica/skills")"',
+            installer,
         )
+        for stale in (
+            'for needle in "Unica" "v8-runner" "db-auth-check"; do',
+            'for needle in "Unica" "db-auth-check"; do',
+        ):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, installer)
+
+    def packaged_prompt_skill(self, skills_root: Path) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    (
+                        'installer="$1"; skills_root="$2"; tmp="$3"; '
+                        'set -- --build-dir "$tmp" --skip-build --skip-install '
+                        '--skip-verify; source "$installer"; '
+                        'packaged_prompt_skill "$skills_root"'
+                    ),
+                    "bash",
+                    str(INSTALLER),
+                    str(skills_root),
+                    tmp,
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+    def test_packaged_prompt_skill_is_a_complete_skill_of_the_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = Path(tmp) / "skills"
+            # A directory without SKILL.md is not a skill the host will show.
+            (skills_root / "alpha").mkdir(parents=True)
+            for name in ("beta", "gamma"):
+                (skills_root / name).mkdir()
+                (skills_root / name / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+
+            completed = self.packaged_prompt_skill(skills_root)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, "beta\n")
+        self.assertEqual(completed.stderr, "")
+
+    def test_packaged_prompt_skill_refuses_a_package_without_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = Path(tmp) / "skills"
+            (skills_root / "not-a-skill").mkdir(parents=True)
+
+            completed = self.packaged_prompt_skill(skills_root)
+
+        self.assertEqual(completed.returncode, 65)
+        self.assertEqual(completed.stdout, "")
+        self.assertEqual(
+            completed.stderr,
+            f"Packaged plugin exposes no prompt-visible skills: {skills_root}\n",
+        )
+
+    def test_packaged_prompt_skill_names_a_shipped_source_skill(self) -> None:
+        skills_root = REPO_ROOT / "plugins/unica/skills"
+
+        completed = self.packaged_prompt_skill(skills_root)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stderr, "")
+        skill = completed.stdout.rstrip("\n")
+        self.assertNotIn("\n", skill)
+        self.assertTrue((skills_root / skill / "SKILL.md").is_file(), skill)
 
     def test_installer_preserves_persistent_cargo_work_and_writes_metrics(self) -> None:
         installer = INSTALLER.read_text(encoding="utf-8")
