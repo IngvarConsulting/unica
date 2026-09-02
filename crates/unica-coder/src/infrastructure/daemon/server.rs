@@ -335,6 +335,11 @@ impl DaemonInvocationRuntime {
                 ) {
                     return Ok(InvocationResponse::Direct(result));
                 }
+                if let Some(result) =
+                    super::v13_source_attach::execute_source_attach(&request, &response_deadline)
+                {
+                    return Ok(InvocationResponse::Direct(result));
+                }
                 match bind_workspace_invocation(
                     &request,
                     &self.workspace_actors,
@@ -1210,13 +1215,10 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(data["ready"], false);
         assert_eq!(data["sourceSets"], serde_json::json!([]));
         assert_eq!(data["setup"]["path"], "v8project.yaml");
-        assert!(
-            data["setup"]["content"]
-                .as_str()
-                .unwrap()
-                .contains("source-set:"),
-            "{data}"
-        );
+        assert_eq!(data["setup"]["content"], serde_json::Value::Null);
+        assert_eq!(data["checks"], serde_json::json!([]));
+        assert_eq!(data["diagnostics"].as_array().unwrap().len(), 1);
+        assert_eq!(data["diagnostics"][0]["code"], "source_roots_missing");
         let wire = serde_json::to_string(data).unwrap();
         assert!(
             !wire.contains("unica.project."),
@@ -1379,14 +1381,11 @@ pub(crate) mod actor_capacity_tests {
         assert!(result.ok, "{result:?}");
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["config"]["state"], "autodetected");
-        let recipe: serde_yaml::Value =
-            serde_yaml::from_str(data["setup"]["content"].as_str().unwrap()).unwrap();
-        assert_eq!(recipe["format"], "EDT", "{data}");
-        assert_eq!(
-            recipe["source-set"].as_sequence().unwrap().len(),
-            2,
-            "{data}"
-        );
+        assert_eq!(data["setup"]["content"], serde_json::Value::Null, "{data}");
+        assert!(result
+            .next
+            .iter()
+            .all(|next| { next["tool"] != "unica.run" || next["args"]["op"] != "source.attach" }));
     }
 
     #[test]
@@ -6193,7 +6192,7 @@ struct ActorLogicalReadLease {"#,
                 &runtime,
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     std::fs::canonicalize(workspace.path())
                         .unwrap()
                         .to_string_lossy(),
@@ -6324,7 +6323,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({}),
+                serde_json::json!({"op": "test.run", "args": {}}),
                 root.to_string_lossy(),
                 0,
             )
@@ -6444,7 +6443,7 @@ struct ActorLogicalReadLease {"#,
             let request = |root: &std::path::Path| {
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     root.to_string_lossy(),
                     0,
                 )
@@ -6523,7 +6522,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({}),
+                serde_json::json!({"op": "test.run", "args": {}}),
                 root.to_string_lossy(),
                 0,
             )
@@ -6628,7 +6627,7 @@ struct ActorLogicalReadLease {"#,
         let request = || {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({}),
+                serde_json::json!({"op": "test.run", "args": {}}),
                 root.to_string_lossy(),
                 0,
             )
@@ -6733,7 +6732,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({}),
+                serde_json::json!({"op": "test.run", "args": {}}),
                 root.to_string_lossy(),
                 0,
             )
@@ -6815,7 +6814,7 @@ struct ActorLogicalReadLease {"#,
             &runtime,
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({}),
+                serde_json::json!({"op": "test.run", "args": {}}),
                 std::fs::canonicalize(workspace.path())
                     .unwrap()
                     .to_string_lossy(),
@@ -6848,7 +6847,7 @@ struct ActorLogicalReadLease {"#,
                 &runtime,
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     std::fs::canonicalize(&workspace).unwrap().to_string_lossy(),
                     0,
                 )
@@ -6886,7 +6885,7 @@ struct ActorLogicalReadLease {"#,
         );
         let request = InvocationRequest::new(
             ToolIdentity::Run,
-            serde_json::json!({}),
+            serde_json::json!({"op": "test.run", "args": {}}),
             std::fs::canonicalize(workspace.path())
                 .unwrap()
                 .to_string_lossy(),

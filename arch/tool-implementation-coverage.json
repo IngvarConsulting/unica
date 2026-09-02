@@ -55,7 +55,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed twelve-operation dictionary and bounded syntax.check Task execution are implemented; the other eleven run operations remain unsupported.",
+      "reason": "The closed twelve-operation dictionary, pre-admission revision-fenced source.attach, and bounded syntax.check Task execution are implemented; the other ten run operations remain unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -74,9 +74,15 @@
       "evidence": []
     },
     "source.attach": {
-      "status": "unsupported",
-      "reason": "Source attachment execution has not been connected to the v0.13 run adapter.",
-      "evidence": []
+      "status": "supported",
+      "reason": "Autodetected uniform-format source sets can be previewed without writes and attached through create-only v8project.yaml publication guarded by the preview revision; explicit declarations and mixed-format attachment remain refused.",
+      "evidence": [{
+        "file": "crates/unica-coder/tests/v13_workspace_bootstrap.rs",
+        "test": "canonical_stdio_previews_and_applies_autodetected_source_attachment_before_admission"
+      }, {
+        "file": "crates/unica-coder/tests/v13_workspace_bootstrap.rs",
+        "test": "canonical_source_attachment_refuses_mixed_designer_and_edt_discovery"
+      }]
     },
     "infobase.create": {
       "status": "unsupported",

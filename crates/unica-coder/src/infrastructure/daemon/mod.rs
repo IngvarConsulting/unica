@@ -10,6 +10,7 @@ pub(crate) mod terminal_codec_v5;
 mod v13_read_modes;
 #[allow(dead_code)]
 mod v13_service;
+mod v13_source_attach;
 mod v13_syntax_run;
 mod v13_workspace_bootstrap;
 
@@ -585,7 +586,13 @@ mod tests {
             invocation: &ActorBoundInvocation,
         ) -> Result<ExecutionClass, Box<DomainResult>> {
             assert_eq!(invocation.tool(), ToolIdentity::Run);
-            assert!(invocation.arguments().is_empty());
+            assert_eq!(
+                invocation.arguments(),
+                &serde_json::json!({"op": "test.run", "args": {}})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            );
             Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
         }
 
@@ -595,7 +602,13 @@ mod tests {
             _cancellation: CancellationToken,
         ) -> Result<DomainResult, InvocationFailure> {
             assert_eq!(invocation.tool(), ToolIdentity::Run);
-            assert!(invocation.arguments().is_empty());
+            assert_eq!(
+                invocation.arguments(),
+                &serde_json::json!({"op": "test.run", "args": {}})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            );
             let bytes = invocation
                 .read_relative_file(std::path::Path::new("Module.bsl"), 1_024)
                 .map_err(|_| InvocationFailure::new("workspace_changed", "bound read failed"))?;
@@ -852,7 +865,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     physical.to_string_lossy(),
                     7_000,
                 )
@@ -893,7 +906,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     task_physical.to_string_lossy(),
                     7_000,
                 )
@@ -943,7 +956,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     physical.to_string_lossy(),
                     7_000,
                 )
@@ -981,7 +994,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     task_physical.to_string_lossy(),
                     7_000,
                 )
@@ -1141,7 +1154,7 @@ mod tests {
             let submission = owner.submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     physical.to_string_lossy(),
                     100,
                 )
@@ -1316,7 +1329,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     workspace_hint,
                     7_000,
                 )
@@ -1427,7 +1440,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     workspace_hint,
                     7_000,
                 )
@@ -1485,7 +1498,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     physical_root(workspace.path()).to_string_lossy(),
                     0,
                 )
@@ -1543,7 +1556,7 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({}),
+                    serde_json::json!({"op": "test.run", "args": {}}),
                     workspace.to_string_lossy(),
                     // This fixture exercises process-owned fail-stop and durable recovery. The
                     // zero-budget response cutoff is covered independently at the wire boundary.
@@ -2093,7 +2106,7 @@ mod tests {
                 .submit_invocation(
                     InvocationRequest::new(
                         ToolIdentity::Run,
-                        serde_json::json!({}),
+                        serde_json::json!({"op": "test.run", "args": {}}),
                         physical_root(workspace).to_string_lossy(),
                         0,
                     )
@@ -2151,7 +2164,10 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"args": {"ambientRoot": "/tmp/foreign"}}),
+                    serde_json::json!({
+                        "op": "test.run",
+                        "args": {"ambientRoot": "/tmp/foreign"}
+                    }),
                     physical_root(&workspace).to_string_lossy(),
                     0,
                 )
@@ -2524,7 +2540,10 @@ mod tests {
             .submit_invocation(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"args": {"secret": secret, "path": raw_path}}),
+                    serde_json::json!({
+                        "op": "test.run",
+                        "args": {"secret": secret, "path": raw_path}
+                    }),
                     workspace_hint.clone(),
                     7_000,
                 )

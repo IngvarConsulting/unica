@@ -193,7 +193,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             "unica.search": {"query", "scope", "regex", "limit"},
             "unica.check": {"at", "filter"},
             "unica.diff": {"left", "right", "filter", "limit", "cursor"},
-            "unica.run": {"op", "args"},
+            "unica.run": {"op", "args", "dryRun", "ifRev"},
             "unica.docs": {"query", "source"},
         }
         for name, properties in expected_properties.items():

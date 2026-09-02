@@ -128,20 +128,23 @@ Resolve a human query to canonical logical address candidates.
 
 ### `unica.run`
 
-List canonical runtime operations, or execute one implemented operation.
+List canonical runtime operations and their invocation contract, or preview/execute one implemented operation.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `args` | object | нет | Typed arguments for the selected operation. |
+| `dryRun` | boolean | нет | Required by workspace-mutating operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan. |
+| `ifRev` | string | нет | Revision returned by a prior dryRun of the same workspace-mutating operation; required when dryRun is false. |
 | `op` | string | нет | Canonical operation name; omit to list operation status. |
 
-**Результат сейчас:** Вызов без `op` возвращает закрытый словарь; `syntax.check` выполняется как durable cancellable Task с пятиминутным process timeout, bounded capture и закрытым terminal/provider результатом; остальные операции неподдержаны (отвечают типизированным `data`)
+**Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь с preview/fence требованиями; `source.attach` revision-fenced и create-only публикует autodetected однородные source sets без платформы; `syntax.check` выполняется как durable cancellable Task с bounded terminal/provider результатом; остальные операции неподдержаны (отвечают типизированным `data`)
 
-**Целевой контракт:** Подключать следующие операции только через такие же bounded Task и закрытые terminal/provider-контракты
+**Целевой контракт:** Добавить явные source declarations и подключать остальные операции через preview/apply, capability-specific admission и закрытые terminal/provider-контракты
 
 **Сценарии:**
 
 - Получить машинно-читаемый словарь допустимых runtime намерений
+- Предпросмотреть и атомарно присоединить autodetected source sets до admission
 - Запустить bounded проверку синтаксиса без публикации raw stdout, command или artifact path
 
 ## search

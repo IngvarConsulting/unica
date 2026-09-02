@@ -34,7 +34,10 @@ RUN_VARIANT = re.compile(r"RunIntent::([A-Za-z0-9_]+)")
 
 def catalog_run_operations() -> set[str]:
     source = CATALOG.read_text(encoding="utf-8")
-    names_by_variant = dict(RUN_NAME_ARM.findall(source))
+    name_method = source.split("pub(crate) const fn name", 1)[1].split(
+        "pub(crate) const fn description", 1
+    )[0]
+    names_by_variant = dict(RUN_NAME_ARM.findall(name_method))
     dictionary = source.split("fn run_dictionary()", 1)[1].split(
         "fn result_envelope_schema()", 1
     )[0]
@@ -116,13 +119,21 @@ class V013ImplementationCoverageTests(unittest.TestCase):
                             f"{location} supported status requires executable evidence",
                         )
 
-    def test_runtime_truth_supports_only_the_proven_bounded_syntax_operation(self) -> None:
+    def test_runtime_truth_supports_only_the_two_proven_operations(self) -> None:
         for name, entry in self.coverage["runOperations"].items():
             with self.subTest(operation=name):
-                expected = "supported" if name == "syntax.check" else "unsupported"
+                expected = (
+                    "supported"
+                    if name in {"source.attach", "syntax.check"}
+                    else "unsupported"
+                )
                 self.assertEqual(entry["status"], expected)
         self.assertEqual(
             self.coverage["runOperations"]["syntax.check"]["status"],
+            "supported",
+        )
+        self.assertEqual(
+            self.coverage["runOperations"]["source.attach"]["status"],
             "supported",
         )
         self.assertNotIn("query.execute", self.coverage["runOperations"])

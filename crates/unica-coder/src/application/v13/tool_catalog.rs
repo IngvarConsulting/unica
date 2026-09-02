@@ -77,6 +77,50 @@ impl RunOperation {
             RunIntent::ExtensionSync => "extension.sync",
         }
     }
+
+    pub(crate) const fn description(&self) -> &'static str {
+        match self.intent {
+            RunIntent::SourceCreate => "Create a new 1C XML source set in the workspace.",
+            RunIntent::SourceAttach => "Persist autodetected source sets in a new v8project.yaml.",
+            RunIntent::InfobaseCreate => "Create an empty 1C infobase on a selected backend.",
+            RunIntent::InfobaseBuild => "Build or update a 1C infobase from attached sources.",
+            RunIntent::SourceDump => "Export a 1C infobase into a workspace source set.",
+            RunIntent::SourceConvert => "Convert source sets between supported source formats.",
+            RunIntent::ArtifactMake => "Build a 1C distribution or external artifact from sources.",
+            RunIntent::ArtifactLoad => "Load a 1C artifact into a selected infobase.",
+            RunIntent::SyntaxCheck => "Validate source syntax without changing the workspace.",
+            RunIntent::TestRun => "Run a test suite against a selected 1C infobase.",
+            RunIntent::ClientRun => "Launch an interactive 1C client session.",
+            RunIntent::ExtensionSync => {
+                "Synchronize attached extensions with a selected 1C infobase."
+            }
+        }
+    }
+
+    pub(crate) const fn execution(&self) -> &'static str {
+        match self.intent {
+            RunIntent::SyntaxCheck | RunIntent::TestRun => "immediate",
+            RunIntent::ClientRun => "terminal",
+            _ => "previewApply",
+        }
+    }
+
+    pub(crate) const fn effects(&self) -> &'static [&'static str] {
+        match self.intent {
+            RunIntent::SourceCreate
+            | RunIntent::SourceAttach
+            | RunIntent::SourceConvert
+            | RunIntent::ArtifactMake => &["workspaceFiles"],
+            RunIntent::SourceDump => &["infobaseRead", "workspaceFiles"],
+            RunIntent::InfobaseCreate
+            | RunIntent::InfobaseBuild
+            | RunIntent::ArtifactLoad
+            | RunIntent::ExtensionSync => &["infobase"],
+            RunIntent::SyntaxCheck => &["readOnly"],
+            RunIntent::TestRun => &["infobaseExecution"],
+            RunIntent::ClientRun => &["clientSession"],
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -186,11 +230,13 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "run",
-                    description: "List canonical runtime operations, or execute one implemented operation.",
+                    description: "List canonical runtime operations and their invocation contract, or preview/execute one implemented operation.",
                     input_schema: schema(
                         json!({
                             "op": {"type": "string", "description": "Canonical operation name; omit to list operation status."},
                             "args": data_object("Typed arguments for the selected operation."),
+                            "dryRun": {"type": "boolean", "description": "Required by workspace-mutating operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan."},
+                            "ifRev": {"type": "string", "description": "Revision returned by a prior dryRun of the same workspace-mutating operation; required when dryRun is false."},
                         }),
                         json!([]),
                     ),
@@ -279,7 +325,7 @@ fn run_dictionary() -> Vec<RunOperation> {
     .map(|intent| RunOperation {
         terminal: intent == RunIntent::ClientRun,
         rejects_sessions: intent == RunIntent::ClientRun,
-        implemented: intent == RunIntent::SyntaxCheck,
+        implemented: matches!(intent, RunIntent::SourceAttach | RunIntent::SyntaxCheck),
         intent,
     })
     .collect()
@@ -442,7 +488,12 @@ mod tests {
             json!(["left", "right"]),
             &["left", "right", "filter", "limit", "cursor"],
         );
-        assert_schema(&catalog.tools, "run", json!([]), &["op", "args"]);
+        assert_schema(
+            &catalog.tools,
+            "run",
+            json!([]),
+            &["op", "args", "dryRun", "ifRev"],
+        );
         assert_schema(
             &catalog.tools,
             "docs",
@@ -463,6 +514,7 @@ mod tests {
             ("diff", "right"),
             ("diff", "cursor"),
             ("run", "op"),
+            ("run", "ifRev"),
             ("docs", "query"),
             ("docs", "source"),
         ] {
@@ -506,6 +558,10 @@ mod tests {
             "unica.diff.filter",
         );
         assert_data_object(input_field(&catalog.tools, "run", "args"), "unica.run.args");
+        assert_eq!(
+            input_field(&catalog.tools, "run", "dryRun")["type"],
+            "boolean"
+        );
         assert_eq!(
             input_field(&catalog.tools, "apply", "dryRun")["type"],
             "boolean"
@@ -637,7 +693,7 @@ mod tests {
                 .filter(|operation| operation.implemented)
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
-            ["syntax.check"]
+            ["source.attach", "syntax.check"]
         );
 
         let output = &catalog.result_envelope_schema;
