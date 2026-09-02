@@ -5,6 +5,7 @@ use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{MetaDiagnosticCode, MetaEditOperation, MetadataKind};
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
+use crate::infrastructure::metadata_kinds::metadata_layout;
 use crate::infrastructure::native_operations::apply::{
     empty_apply_family_batch, hidden_apply_family_unimplemented, ApplyPlanError,
     ApplyPlanErrorKind, ApplyStagedState,
@@ -18,6 +19,7 @@ use crate::infrastructure::native_operations::meta::{
 use crate::infrastructure::workspace_actor::{MetadataApplyAuthority, ProviderRootBinding};
 use serde_json::{json, Map, Value};
 use sha2::Digest;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 enum MetadataPlanKind {
@@ -25,7 +27,20 @@ enum MetadataPlanKind {
         target: MetadataAddress,
         operation: MetaEditOperation,
     },
-    Unsupported,
+    Create {
+        kind: MetadataKind,
+        name: String,
+    },
+    Remove {
+        target: MetadataAddress,
+        kind: MetadataKind,
+        name: String,
+    },
+    HelpCreate {
+        target: MetadataAddress,
+        name: String,
+        lang: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -95,14 +110,9 @@ pub(crate) fn parse_metadata_plan_operation(
         "relation.add" => parse_relation(operation, "add", object, op_index, binding)?,
         "relation.replace" => parse_relation(operation, "replace", object, op_index, binding)?,
         "relation.remove" => parse_relation(operation, "remove", object, op_index, binding)?,
-        // These names are part of the closed public registry, but their v0.13
-        // argument union or retained staging primitive is not yet proved.
-        // Keeping them explicit prevents an unknown name from accidentally
-        // entering the metadata writer while preserving exact typed
-        // unsupported behavior at the operation slot.
-        // `help.create` builds the Ext/Help file facet, which the pure
-        // descriptor-image transform cannot stage yet.
-        "object.create" | "object.remove" | "help.create" => MetadataPlanKind::Unsupported,
+        "object.create" => parse_object_create(object, op_index, binding)?,
+        "object.remove" => parse_object_remove(object, op_index, binding)?,
+        "help.create" => parse_help_create(object, op_index, binding)?,
         _ => return Err(hidden_apply_family_unimplemented(op_index)),
     };
     Ok(MetadataPlanOperation { kind })
@@ -159,6 +169,116 @@ fn required_array<'a>(
             )
             .at_path(format!("ops[{op_index}].args.{name}"))
         })
+}
+
+fn parse_object_create(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    reject_unknown_args("object.create", args, &["at", "values"], op_index)?;
+    let target = qualified_target(args, op_index, binding)?;
+    if !matches!(target.segments(), [root] if root.kind() == NodeKind::Configuration) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "object.create targets the configuration root; name the new object in `values`",
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    }
+    let values = required_object(args, "values", op_index)?;
+    if let Some(field) = values
+        .keys()
+        .find(|field| !["kind", "name"].contains(&field.as_str()))
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("object.create values accept only `kind` and `name`, not `{field}`"),
+        )
+        .at_path(format!("ops[{op_index}].args.values.{field}")));
+    }
+    let kind_text = values.get("kind").and_then(Value::as_str).ok_or_else(|| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "object.create requires `values.kind`, a top-level metadata kind",
+        )
+        .at_path(format!("ops[{op_index}].args.values.kind"))
+    })?;
+    let kind = MetadataKind::parse(kind_text).map_err(|diagnostic| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
+            .at_path(format!("ops[{op_index}].args.values.kind"))
+    })?;
+    let name = values
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "object.create requires `values.name`, a 1C identifier",
+            )
+            .at_path(format!("ops[{op_index}].args.values.name"))
+        })?;
+    Ok(MetadataPlanKind::Create {
+        kind,
+        name: name.to_string(),
+    })
+}
+
+fn parse_object_remove(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    reject_unknown_args("object.remove", args, &["at"], op_index)?;
+    let target = qualified_target(args, op_index, binding)?;
+    let (address, kind) = metadata_owner(&target, op_index)?;
+    let name = target.segments()[0]
+        .name()
+        .expect("metadata_owner proved the segment is named")
+        .to_string();
+    Ok(MetadataPlanKind::Remove {
+        target: address,
+        kind,
+        name,
+    })
+}
+
+fn parse_help_create(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    reject_unknown_args("help.create", args, &["at", "values"], op_index)?;
+    let target = qualified_target(args, op_index, binding)?;
+    let (address, _) = metadata_owner(&target, op_index)?;
+    let name = target.segments()[0]
+        .name()
+        .expect("metadata_owner proved the segment is named")
+        .to_string();
+    let values = required_object(args, "values", op_index)?;
+    if let Some(field) = values.keys().find(|field| field.as_str() != "lang") {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("help.create values accept only `lang`, not `{field}`"),
+        )
+        .at_path(format!("ops[{op_index}].args.values.{field}")));
+    }
+    let lang = values
+        .get("lang")
+        .and_then(Value::as_str)
+        .filter(|lang| !lang.is_empty() && lang.chars().all(|ch| ch.is_ascii_alphanumeric()))
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "help.create requires `values.lang`, a language code such as `ru`",
+            )
+            .at_path(format!("ops[{op_index}].args.values.lang"))
+        })?;
+    Ok(MetadataPlanKind::HelpCreate {
+        target: address,
+        name,
+        lang: lang.to_string(),
+    })
 }
 
 fn qualified_target(
@@ -622,12 +742,46 @@ pub(crate) fn plan_metadata_batch(
     let mut provisional = Vec::new();
     for operation in operations {
         let op_index = operation.index();
-        let MetadataPlanKind::Edit {
-            target,
-            operation: edit,
-        } = &operation.operation().kind
-        else {
-            return Err(hidden_apply_family_unimplemented(op_index));
+        let (target, edit) = match &operation.operation().kind {
+            MetadataPlanKind::Edit {
+                target,
+                operation: edit,
+            } => (target, edit),
+            MetadataPlanKind::Create { kind, name } => {
+                stage_object_create(
+                    &mut staged,
+                    &authority,
+                    *kind,
+                    name,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
+            MetadataPlanKind::Remove { target, kind, name } => {
+                stage_object_remove(
+                    &mut staged,
+                    &authority,
+                    target,
+                    *kind,
+                    name,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
+            MetadataPlanKind::HelpCreate { target, name, lang } => {
+                stage_help_create(
+                    &mut staged,
+                    &authority,
+                    target,
+                    name,
+                    lang,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
         };
         let relative =
             metadata_descriptor_relative(target, authority.source_kind()).map_err(|message| {
@@ -644,7 +798,14 @@ pub(crate) fn plan_metadata_batch(
                 )
                 .at_path(format!("ops[{op_index}].args.at"))
             })?;
-        let mut postimage = String::from_utf8(preimage.clone()).map_err(|_| {
+        // The typed image transform addresses byte offsets of the parsed
+        // document, so the byte-order mark stays outside the text it edits
+        // and is restored on the way out.
+        let (bom, body) = match preimage.strip_prefix(b"\xef\xbb\xbf") {
+            Some(body) => (&b"\xef\xbb\xbf"[..], body),
+            None => (&b""[..], preimage.as_slice()),
+        };
+        let mut postimage = String::from_utf8(body.to_vec()).map_err(|_| {
             ApplyPlanError::new(
                 ApplyPlanErrorKind::InvalidSource,
                 "metadata descriptor is not UTF-8",
@@ -705,7 +866,13 @@ pub(crate) fn plan_metadata_batch(
             );
             ApplyPlanError::new(kind, diagnostic.message).at_path(path)
         })?;
-        let postimage = postimage.into_bytes();
+        let mut postimage = {
+            let mut bytes = Vec::with_capacity(bom.len() + postimage.len());
+            bytes.extend_from_slice(bom);
+            bytes.extend_from_slice(postimage.as_bytes());
+            bytes
+        };
+        postimage.shrink_to_fit();
         if postimage != preimage {
             staged
                 .replace(&relative, &preimage, postimage)
@@ -723,6 +890,432 @@ pub(crate) fn plan_metadata_batch(
         }
     }
     Ok((staged, provisional))
+}
+
+fn meta_failure_to_plan_error(
+    failure: crate::application::metadata::MetaFailure,
+    op_index: usize,
+) -> ApplyPlanError {
+    let diagnostic = failure
+        .diagnostics
+        .into_iter()
+        .next()
+        .expect("typed metadata failures contain a diagnostic");
+    let kind = match diagnostic.code {
+        MetaDiagnosticCode::InvalidArguments
+        | MetaDiagnosticCode::UnsupportedKind
+        | MetaDiagnosticCode::CapabilityUnavailable => ApplyPlanErrorKind::BadValue,
+        MetaDiagnosticCode::TargetNotFound => ApplyPlanErrorKind::NotFound,
+        MetaDiagnosticCode::ValidationFailed => ApplyPlanErrorKind::Postcondition,
+        MetaDiagnosticCode::AlreadyExists
+        | MetaDiagnosticCode::ReferenceConflict
+        | MetaDiagnosticCode::SupportLocked => ApplyPlanErrorKind::InvalidState,
+        MetaDiagnosticCode::RedundantListPresentation
+        | MetaDiagnosticCode::CommandTextRecommendedLimit
+        | MetaDiagnosticCode::CommandTextUpperLimit
+        | MetaDiagnosticCode::ConcurrentModification
+        | MetaDiagnosticCode::ProviderUnavailable
+        | MetaDiagnosticCode::RollbackFailed => ApplyPlanErrorKind::ProviderUnavailable,
+    };
+    let path = diagnostic.field.map_or_else(
+        || format!("ops[{op_index}].args"),
+        |field| format!("ops[{op_index}].args.values.{field}"),
+    );
+    ApplyPlanError::new(kind, diagnostic.message).at_path(path)
+}
+
+fn staged_relative(
+    root: &std::path::Path,
+    absolute: &std::path::Path,
+    op_index: usize,
+) -> Result<PathBuf, ApplyPlanError> {
+    absolute
+        .strip_prefix(root)
+        .map(std::path::Path::to_path_buf)
+        .map_err(|_| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::ProviderUnavailable,
+                "planned metadata file lies outside the admitted source root",
+            )
+            .at_path(format!("ops[{op_index}].args.at"))
+        })
+}
+
+/// The owner descriptor (`Configuration.xml`) with `<Kind>Name</Kind>` added
+/// to or removed from `ChildObjects`, keeping the byte-order mark and the
+/// line endings of the original image.
+fn owner_registration_image(
+    owner: &[u8],
+    kind: MetadataKind,
+    name: &str,
+    register: bool,
+    op_index: usize,
+) -> Result<Option<Vec<u8>>, ApplyPlanError> {
+    use crate::infrastructure::native_operations::compile_transaction::{
+        preserve_inserted_line_endings, split_utf8_bom_prefix,
+    };
+    let (bom, payload) = split_utf8_bom_prefix(owner);
+    let source = std::str::from_utf8(payload).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "the configuration descriptor is not UTF-8",
+        )
+        .at_path(format!("ops[{op_index}].args.at"))
+    })?;
+    let (updated, changed) = if register {
+        let mut updated = source.to_string();
+        let changed = crate::infrastructure::native_operations::cf::cf_edit_add_child_object_text(
+            &mut updated,
+            kind.as_str(),
+            name,
+        )
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error)
+                .at_path(format!("ops[{op_index}].args.at"))
+        })?;
+        (updated, changed)
+    } else {
+        crate::infrastructure::native_operations::meta::remove::remove_metadata_child_text_with_flag(
+            source,
+            kind.as_str(),
+            name,
+        )
+    };
+    if !changed {
+        return Ok(None);
+    }
+    let updated = preserve_inserted_line_endings(source, &updated);
+    let mut image = Vec::with_capacity(bom.len() + updated.len());
+    image.extend_from_slice(bom);
+    image.extend_from_slice(updated.as_bytes());
+    Ok(Some(image))
+}
+
+fn stage_object_create(
+    staged: &mut ApplyStagedState,
+    authority: &MetadataApplyAuthority<'_>,
+    kind: MetadataKind,
+    name: &str,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    use crate::infrastructure::native_operations::meta::template_catalog::{
+        MetadataTemplateCatalog, MetadataTemplateFileMode, MetadataTemplateOperationOverrides,
+        PlatformMetadataTemplateCatalog,
+    };
+    let context = authority.workspace_context();
+    let source = crate::infrastructure::platform_xml_source_targets::resolve_metadata_add_source(
+        context,
+        authority.source_set_name(),
+    )
+    .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
+    let post_image = PlatformMetadataTemplateCatalog
+        .minimal_object(
+            &source,
+            kind,
+            name,
+            MetadataTemplateOperationOverrides {
+                source: false,
+                handler: false,
+            },
+            authority.source_set_name(),
+            context,
+        )
+        .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
+    let root = authority.source_root();
+    let owner_relative = staged_relative(root, &source.owner_path, op_index)?;
+    let descriptor_relative =
+        PathBuf::from(metadata_layout(kind).directory).join(format!("{name}.xml"));
+    let existing = staged.read(&descriptor_relative).map_err(|error| {
+        ApplyPlanError::staging(error, format!("ops[{op_index}].args.values.name"))
+    })?;
+    if existing.is_some() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            format!("metadata object `{}.{name}` already exists", kind.as_str()),
+        )
+        .at_path(format!("ops[{op_index}].args.values.name")));
+    }
+    let mut touched = Vec::new();
+    for file in &post_image.files {
+        let relative = file.relative_path.clone();
+        let at_path = format!("ops[{op_index}].args.values.name");
+        match file.mode {
+            MetadataTemplateFileMode::Create => {
+                staged
+                    .create(&relative, file.bytes.clone())
+                    .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+                touched.push(relative);
+            }
+            MetadataTemplateFileMode::Guard => {
+                let current = staged
+                    .read(&relative)
+                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+                let expected = file.preimage.as_deref().unwrap_or(&file.bytes);
+                if current.as_deref() != Some(expected) {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::InvalidState,
+                        format!(
+                            "prerequisite `{}` changed while planning the new object",
+                            relative.display()
+                        ),
+                    )
+                    .at_path(at_path));
+                }
+            }
+            MetadataTemplateFileMode::Replace => {
+                let expected = file.preimage.as_deref().unwrap_or(&file.bytes).to_vec();
+                staged
+                    .replace(&relative, &expected, file.bytes.clone())
+                    .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+                touched.push(relative);
+            }
+        }
+    }
+    let owner_preimage = staged
+        .read(&owner_relative)
+        .map_err(|error| ApplyPlanError::staging(error, format!("ops[{op_index}].args.at")))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "the configuration descriptor was not found",
+            )
+            .at_path(format!("ops[{op_index}].args.at"))
+        })?;
+    let Some(owner_postimage) =
+        owner_registration_image(&owner_preimage, kind, name, true, op_index)?
+    else {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            format!(
+                "the configuration already registers `{}.{name}`",
+                kind.as_str()
+            ),
+        )
+        .at_path(format!("ops[{op_index}].args.values.name")));
+    };
+    staged
+        .replace(&owner_relative, &owner_preimage, owner_postimage)
+        .map_err(|error| ApplyPlanError::staging(error, format!("ops[{op_index}].args.at")))?;
+    touched.push(owner_relative);
+    provisional.push(ProvisionalApplyEffect::spanning(
+        touched,
+        DomainEvent::new(
+            DomainEventKind::MetadataChanged,
+            post_image.metadata_path.as_str().to_string(),
+        ),
+        op_index,
+    ));
+    Ok(())
+}
+
+fn stage_object_remove(
+    staged: &mut ApplyStagedState,
+    authority: &MetadataApplyAuthority<'_>,
+    target: &MetadataAddress,
+    kind: MetadataKind,
+    name: &str,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    use crate::infrastructure::native_operations::meta::remove::{
+        metadata_files_recursive, plan_meta_remove_subsystem_replacements,
+        typed_remove_reference_files,
+    };
+    let at_path = format!("ops[{op_index}].args.at");
+    let root = authority.source_root();
+    let layout = metadata_layout(kind);
+    let descriptor_relative = PathBuf::from(layout.directory).join(format!("{name}.xml"));
+    let descriptor_preimage = staged
+        .read(&descriptor_relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "metadata descriptor was not found",
+            )
+            .at_path(at_path.clone())
+        })?;
+    let descriptor_absolute = root.join(&descriptor_relative);
+    let object_dir = root.join(layout.directory).join(name);
+    let has_dir = object_dir.is_dir();
+    let references = typed_remove_reference_files(
+        root,
+        kind.as_str(),
+        name,
+        layout.directory,
+        &descriptor_absolute,
+        &object_dir,
+        true,
+        has_dir,
+    )
+    .map_err(|error| {
+        ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error).at_path(at_path.clone())
+    })?;
+    if !references.is_empty() {
+        let shown = references
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            format!(
+                "`{}` is still referenced by {} source file(s): {shown}; remove the references first",
+                target.as_str(),
+                references.len()
+            ),
+        )
+        .at_path(at_path));
+    }
+    let mut touched = Vec::new();
+    if has_dir {
+        let traversal = metadata_files_recursive(&object_dir).map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error)
+                .at_path(at_path.clone())
+        })?;
+        for file in &traversal.files {
+            let relative = staged_relative(root, file, op_index)?;
+            let preimage = staged
+                .read(&relative)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::ProviderUnavailable,
+                        format!(
+                            "payload file vanished while planning: {}",
+                            relative.display()
+                        ),
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            staged
+                .remove(&relative, &preimage)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            touched.push(relative);
+        }
+    }
+    let subsystems_dir = root.join("Subsystems");
+    if subsystems_dir.is_dir() {
+        let mut replacements = Vec::new();
+        let mut reads = Vec::new();
+        plan_meta_remove_subsystem_replacements(
+            &subsystems_dir,
+            target.as_str(),
+            &mut replacements,
+            &mut reads,
+        )
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error)
+                .at_path(at_path.clone())
+        })?;
+        for replacement in replacements {
+            let relative = staged_relative(root, &replacement.path, op_index)?;
+            staged
+                .replace(&relative, &replacement.original, replacement.replacement)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            touched.push(relative);
+        }
+    }
+    let owner_relative = PathBuf::from("Configuration.xml");
+    let owner_preimage = staged
+        .read(&owner_relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "the configuration descriptor was not found",
+            )
+            .at_path(at_path.clone())
+        })?;
+    let Some(owner_postimage) =
+        owner_registration_image(&owner_preimage, kind, name, false, op_index)?
+    else {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "metadata object is not registered by its owner",
+        )
+        .at_path(at_path));
+    };
+    staged
+        .replace(&owner_relative, &owner_preimage, owner_postimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    touched.push(owner_relative);
+    staged
+        .remove(&descriptor_relative, &descriptor_preimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    touched.push(descriptor_relative);
+    provisional.push(ProvisionalApplyEffect::spanning(
+        touched,
+        DomainEvent::new(
+            DomainEventKind::MetadataChanged,
+            target.as_str().to_string(),
+        ),
+        op_index,
+    ));
+    Ok(())
+}
+
+fn stage_help_create(
+    staged: &mut ApplyStagedState,
+    authority: &MetadataApplyAuthority<'_>,
+    target: &MetadataAddress,
+    name: &str,
+    lang: &str,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let root = authority.source_root();
+    let descriptor_relative = metadata_descriptor_relative(target, authority.source_kind())
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
+        })?;
+    if staged
+        .read(&descriptor_relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .is_none()
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::NotFound,
+            "metadata descriptor was not found",
+        )
+        .at_path(at_path));
+    }
+    let changes = crate::infrastructure::native_operations::meta::plan_help_facet_files(
+        &root.join(&descriptor_relative),
+        target,
+        name,
+        lang,
+    )
+    .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
+    let mut touched = Vec::new();
+    for (path, preimage, postimage) in changes {
+        let relative = staged_relative(root, &path, op_index)?;
+        match (preimage, postimage) {
+            (None, Some(bytes)) => staged
+                .create(&relative, bytes)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?,
+            (Some(expected), Some(bytes)) => staged
+                .replace(&relative, &expected, bytes)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?,
+            (Some(expected), None) => staged
+                .remove(&relative, &expected)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?,
+            (None, None) => continue,
+        }
+        touched.push(relative);
+    }
+    provisional.push(ProvisionalApplyEffect::spanning(
+        touched,
+        DomainEvent::new(
+            DomainEventKind::MetadataChanged,
+            target.as_str().to_string(),
+        ),
+        op_index,
+    ));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -773,7 +1366,7 @@ mod tests {
             .unwrap();
             std::fs::write(
                 source.join("Configuration.xml"),
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#,
             )
             .unwrap();
             let descriptor = source.join("Documents/Order.xml");
@@ -869,27 +1462,177 @@ mod tests {
     }
 
     #[test]
-    fn metadata_operations_without_a_proved_retained_schema_stay_typed_unsupported() {
+    fn object_create_stages_the_template_files_and_registers_the_child() {
         let fixture = MetadataFixture::new();
-        for (index, name) in ["object.create", "object.remove"].into_iter().enumerate() {
-            let admission = fixture.admission();
-            let staged = admission.staged_state().unwrap();
-            let authority = admission
-                .metadata_planning_authority(&fixture.binding)
-                .unwrap();
-            let parsed = fixture.parse(name, json!({"at": "main:Document.Order"}), index);
-            let error = plan_metadata_batch(staged, authority, &[parsed]).unwrap_err();
-            assert_eq!(
-                error.kind(),
-                ApplyPlanErrorKind::ProviderUnavailable,
-                "{name}"
-            );
-            assert_eq!(
-                error.path(),
-                Some(format!("ops[{index}].op").as_str()),
-                "{name}"
-            );
-        }
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let parsed = fixture.parse(
+            "object.create",
+            json!({"at": "main:Configuration", "values": {"kind": "Catalog", "name": "Товары"}}),
+            0,
+        );
+        let (staged, effects) = plan_metadata_batch(staged, authority, &[parsed])
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        assert_eq!(effects.len(), 1);
+        let changes = staged.planned_changes();
+        let descriptor = changes
+            .iter()
+            .find(|change| change.relative_path == Path::new("Catalogs/Товары.xml"))
+            .expect("the new descriptor is staged");
+        assert_eq!(descriptor.kind, StagedChangeKind::Create);
+        let owner = changes
+            .iter()
+            .find(|change| change.relative_path == Path::new("Configuration.xml"))
+            .expect("the owner registration is staged");
+        assert_eq!(owner.kind, StagedChangeKind::Replace);
+        let StagedFileState::Bytes(owner_bytes) = &owner.current else {
+            panic!("owner keeps bytes");
+        };
+        let owner_text = String::from_utf8(owner_bytes.clone()).unwrap();
+        assert!(
+            owner_text.contains("<Catalog>Товары</Catalog>"),
+            "{owner_text}"
+        );
+        assert!(
+            owner_text.contains("<Document>Order</Document>"),
+            "{owner_text}"
+        );
+    }
+
+    #[test]
+    fn object_create_then_attribute_add_compose_in_one_batch() {
+        let fixture = MetadataFixture::new();
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let create = fixture.parse(
+            "object.create",
+            json!({"at": "main:Configuration", "values": {"kind": "Catalog", "name": "Товары"}}),
+            0,
+        );
+        let add = fixture.parse(
+            "attribute.add",
+            json!({
+                "at": "main:Catalog.Товары",
+                "items": [{
+                    "name": "Артикул",
+                    "type": {"variants": [{"kind": "string", "length": 25, "allowedLength": "variable"}]}
+                }]
+            }),
+            1,
+        );
+        let (staged, effects) = plan_metadata_batch(staged, authority, &[create, add])
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        assert_eq!(effects.len(), 2);
+        let descriptor = staged
+            .planned_changes()
+            .into_iter()
+            .find(|change| change.relative_path == Path::new("Catalogs/Товары.xml"))
+            .expect("the new descriptor is staged");
+        let StagedFileState::Bytes(bytes) = descriptor.current else {
+            panic!("descriptor keeps bytes");
+        };
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("<Name>Артикул</Name>"), "{text}");
+    }
+
+    #[test]
+    fn object_create_refuses_an_existing_object_and_a_non_root_target() {
+        let fixture = MetadataFixture::new();
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let parsed = fixture.parse(
+            "object.create",
+            json!({"at": "main:Configuration", "values": {"kind": "Document", "name": "Order"}}),
+            0,
+        );
+        let error = plan_metadata_batch(staged, authority, &[parsed]).unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+        assert_eq!(error.path(), Some("ops[0].args.values.name"));
+
+        let misplaced = parse_metadata_plan_operation(
+            "object.create",
+            &json!({"at": "main:Document.Order", "values": {"kind": "Catalog", "name": "X"}}),
+            1,
+            &fixture.binding,
+        )
+        .unwrap_err();
+        assert_eq!(misplaced.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(misplaced.path(), Some("ops[1].args.at"));
+    }
+
+    #[test]
+    fn object_remove_stages_descriptor_removal_and_owner_deregistration() {
+        let fixture = MetadataFixture::new();
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let parsed = fixture.parse("object.remove", json!({"at": "main:Document.Order"}), 0);
+        let (staged, effects) = plan_metadata_batch(staged, authority, &[parsed])
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        assert_eq!(effects.len(), 1);
+        let changes = staged.planned_changes();
+        let descriptor = changes
+            .iter()
+            .find(|change| change.relative_path == Path::new("Documents/Order.xml"))
+            .expect("the descriptor removal is staged");
+        assert_eq!(descriptor.kind, StagedChangeKind::Remove);
+        let owner = changes
+            .iter()
+            .find(|change| change.relative_path == Path::new("Configuration.xml"))
+            .expect("the owner deregistration is staged");
+        let StagedFileState::Bytes(owner_bytes) = &owner.current else {
+            panic!("owner keeps bytes");
+        };
+        let owner_text = String::from_utf8(owner_bytes.clone()).unwrap();
+        assert!(
+            !owner_text.contains("<Document>Order</Document>"),
+            "{owner_text}"
+        );
+    }
+
+    #[test]
+    fn help_create_stages_the_embedded_help_facet() {
+        let fixture = MetadataFixture::new();
+        std::fs::create_dir_all(fixture.descriptor.with_extension("").join("Ext")).unwrap();
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let parsed = fixture.parse(
+            "help.create",
+            json!({"at": "main:Document.Order", "values": {"lang": "ru"}}),
+            0,
+        );
+        let (staged, effects) = plan_metadata_batch(staged, authority, &[parsed])
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        assert_eq!(effects.len(), 1);
+        let mut created = staged
+            .planned_changes()
+            .into_iter()
+            .filter(|change| change.kind == StagedChangeKind::Create)
+            .map(|change| change.relative_path)
+            .collect::<Vec<_>>();
+        created.sort();
+        // Component order: the `Help` directory sorts before `Help.xml`.
+        assert_eq!(
+            created,
+            vec![
+                PathBuf::from("Documents/Order/Ext/Help/ru.html"),
+                PathBuf::from("Documents/Order/Ext/Help.xml"),
+            ]
+        );
     }
 
     #[test]

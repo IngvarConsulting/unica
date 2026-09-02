@@ -380,15 +380,19 @@ mod tests {
         );
         assert_eq!(
             entry("object.create"),
-            json!({"op": "object.create", "args": "values", "implemented": false})
+            json!({"op": "object.create", "args": "values", "implemented": true})
+        );
+        assert_eq!(
+            entry("form.add"),
+            json!({"op": "form.add", "args": "items", "implemented": false})
         );
         assert_eq!(
             entry("object.remove"),
-            json!({"op": "object.remove", "args": "at", "implemented": false})
+            json!({"op": "object.remove", "args": "at", "implemented": true})
         );
         assert_eq!(
             entry("help.create"),
-            json!({"op": "help.create", "args": "text", "implemented": false})
+            json!({"op": "help.create", "args": "values", "implemented": true})
         );
         assert!(
             can.iter().all(|entry| entry["op"] != "enumValue.add"),

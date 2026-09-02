@@ -90,8 +90,8 @@ pub(crate) fn typed_resource_noop_and_identity_contract_is_complete() {
 pub(crate) fn typed_resource_preimage_contract_is_complete() {
     publisher::typed_add_publication_tests::meta_add_detects_concurrent_owner_change_without_overwriting_it();
 }
-mod remove;
-mod template_catalog;
+pub(crate) mod remove;
+pub(crate) mod template_catalog;
 mod usage_scan;
 mod validation;
 mod validation_context;
@@ -196,3 +196,32 @@ mod remove_tests;
 mod template_catalog_tests;
 #[cfg(test)]
 mod usage_scan_tests;
+
+/// One staged file change of the embedded help facet: `(path, preimage,
+/// postimage)` with absolute paths under the source root.
+pub(crate) type HelpFacetFileChange = (std::path::PathBuf, Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// Plans the create-only embedded help facet for one owner without a
+/// transaction: `Ext/Help.xml`, `Ext/Help/<lang>.html` and the owner's forms
+/// gaining `IncludeHelpInContents`.
+pub(crate) fn plan_help_facet_files(
+    descriptor_path: &std::path::Path,
+    owner: &crate::domain::source_target::MetadataAddress,
+    object_name: &str,
+    lang: &str,
+) -> Result<Vec<HelpFacetFileChange>, crate::application::metadata::MetaFailure> {
+    let operations = [crate::domain::metadata::MetaEditOperation::AddHelp {
+        lang: lang.to_string(),
+    }];
+    let plan = help_facet::plan_help_resource_after_descriptor_edit(
+        descriptor_path,
+        owner,
+        object_name,
+        &operations,
+    )?;
+    Ok(plan
+        .file_mutations
+        .into_iter()
+        .map(|mutation| (mutation.path, mutation.pre_image, mutation.post_image))
+        .collect())
+}

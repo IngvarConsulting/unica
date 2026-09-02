@@ -505,6 +505,20 @@ pub(super) fn meta_edit_insert_lines_into_child_objects(
         );
         return Ok(());
     }
+    // A self-closing `<ChildObjects/>` whose parsed range stops short of its
+    // terminator (fresh template descriptors): expand the tag in place.
+    if !section_text.contains("</ChildObjects>") {
+        if let Some(relative_end) = xml_text[range.start..].find("/>") {
+            let end = range.start + relative_end + 2;
+            if !xml_text[range.start + 1..end].contains('<') {
+                xml_text.replace_range(
+                    range.start..end,
+                    &format!("<ChildObjects>\n{content}\n{close_indent}</ChildObjects>"),
+                );
+                return Ok(());
+            }
+        }
+    }
     let Some(relative_pos) = section_text.rfind("</ChildObjects>") else {
         if section_text.trim_end().ends_with('>') {
             xml_text.insert_str(range.end, &format!("\n{content}\n{close_indent}"));

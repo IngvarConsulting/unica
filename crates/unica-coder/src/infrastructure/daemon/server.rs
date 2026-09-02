@@ -4178,11 +4178,10 @@ struct ActorLogicalReadLease {"#,
                 "dryRun": false
             }),
         );
+        // `object.create` addresses the configuration root, so naming it on
+        // a catalog is a caller mistake; the batch must still publish nothing.
         assert!(!rejected_batch.ok);
-        assert_eq!(
-            rejected_batch.diagnostics[0]["code"],
-            "unsupported_operation"
-        );
+        assert_eq!(rejected_batch.diagnostics[0]["code"], "bad_value");
         let after_rejected_batch =
             std::fs::read_to_string(source.join("Catalogs/Items.xml")).unwrap();
         assert!(after_rejected_batch.contains("<Comment>Published through v0.13</Comment>"));
@@ -4559,7 +4558,11 @@ struct ActorLogicalReadLease {"#,
         );
         assert_eq!(
             entry("object.create"),
-            serde_json::json!({"op": "object.create", "args": "values", "implemented": false})
+            serde_json::json!({"op": "object.create", "args": "values", "implemented": true})
+        );
+        assert_eq!(
+            entry("form.add"),
+            serde_json::json!({"op": "form.add", "args": "items", "implemented": false})
         );
         assert!(
             can.iter().all(|entry| entry["op"] != "enumValue.add"),
@@ -5115,7 +5118,7 @@ struct ActorLogicalReadLease {"#,
             "dryRun": false,
         }));
         assert!(!rejected.ok);
-        assert_eq!(rejected.diagnostics[0]["code"], "unsupported_operation");
+        assert_eq!(rejected.diagnostics[0]["code"], "bad_value");
         assert_eq!(std::fs::read(&descriptor).unwrap(), before_rejected);
 
         let before_reverted = std::fs::read(&descriptor).unwrap();

@@ -563,6 +563,7 @@ struct PlatformXmlApplyAuthority<'a> {
     profile: crate::domain::platform_profile::PlatformProfile,
     expected_format: &'static str,
     support_policy: SupportPolicyMode,
+    context: &'a WorkspaceContext,
 }
 
 /// Admission-sealed authority for dormant metadata/property planning.
@@ -606,6 +607,17 @@ macro_rules! impl_platform_xml_apply_authority {
 
             pub(crate) fn owns_staged_state(&self, staged: &ApplyStagedState) -> bool {
                 self.0.owns_staged_state(staged)
+            }
+
+            /// The admitted workspace, for planners that consult the source
+            /// root beyond the staged files (templates, reference scans).
+            pub(crate) fn workspace_context(&self) -> &WorkspaceContext {
+                self.0.context
+            }
+
+            /// The physical root of the admitted source set.
+            pub(crate) fn source_root(&self) -> &Path {
+                self.0.binding.source_root()
             }
         }
     };
@@ -883,6 +895,7 @@ impl ApplyAdmission {
             profile,
             expected_format,
             support_policy: self.support_policy.mode(),
+            context: &self.context,
         })
     }
 
@@ -1098,6 +1111,17 @@ impl<R> RetainedApplyFinalGate<'_, R> {
     }
 
     pub(in crate::infrastructure) fn validate(&self) -> Result<(), ApplyPublicationError> {
+        self.validate_after_publication(&[])
+    }
+
+    /// Final gate after the transaction published its source files. Each
+    /// published replacement travels as `(absolute path, post-image)`; the
+    /// source-map evidence accepts a new identity for exactly those files
+    /// when their bytes match and the selection semantics stay unchanged.
+    pub(in crate::infrastructure) fn validate_after_publication(
+        &self,
+        published: &[(PathBuf, Vec<u8>)],
+    ) -> Result<(), ApplyPublicationError> {
         self.actor
             .validate_binding(&self.binding)
             .map_err(|error| {
@@ -1107,8 +1131,18 @@ impl<R> RetainedApplyFinalGate<'_, R> {
         self.support_policy
             .validate(self.deadline, &self.cancellation)
             .map_err(support_policy_publication_error)?;
+        let workspace = self.source_selection.workspace_path();
+        let published = published
+            .iter()
+            .filter_map(|(absolute, bytes)| {
+                absolute
+                    .strip_prefix(workspace)
+                    .ok()
+                    .map(|relative| (relative.to_path_buf(), bytes.clone()))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         self.source_selection
-            .validate_final(self.deadline, &self.cancellation)
+            .validate_final_with_published(&published, self.deadline, &self.cancellation)
             .map_err(source_selection_publication_error)
     }
 }

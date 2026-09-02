@@ -12,7 +12,7 @@
     },
     "unica.apply": {
       "status": "partial",
-      "reason": "Retained atomic publication is proven for props.set, the metadata member collections, predefined items and relations; the code planner (code.insert/code.replace) and the XDTO planner (valueType/objectType/property/type operations) plan through the same staged state; object creation and removal, forms, roles, DCS, MXL, subsystems and support rules remain unsupported.",
+      "reason": "Retained atomic publication is proven for props.set, the metadata member collections, predefined items and relations; the code planner (code.insert/code.replace) and the XDTO planner (valueType/objectType/property/type operations) plan through the same staged state; object.create, object.remove and help.create stage the template files, the owner registration and the embedded help facet through the same state; forms, roles, DCS, MXL, subsystems and support rules remain unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"

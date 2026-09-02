@@ -383,6 +383,9 @@ impl OperationSkeleton {
 /// The `can` dictionary prints this as `implemented`, mirroring the honesty
 /// rule of the Run dictionary: a name in the registry is not support.
 pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
+    "object.create",
+    "object.remove",
+    "help.create",
     "props.set",
     "attribute.add",
     "attribute.set",
@@ -488,7 +491,7 @@ operation_descriptors!(
     ("relation.add", Metadata, Metadata, Values),
     ("relation.remove", Metadata, Metadata, Values),
     ("relation.replace", Metadata, Metadata, Values),
-    ("help.create", Metadata, Metadata, Text),
+    ("help.create", Metadata, Metadata, Values),
     ("attribute.add", Metadata, MetadataAttributes, Items),
     ("attribute.set", Metadata, MetadataAttributes, Values),
     ("attribute.remove", Metadata, MetadataAttributes, Target),
