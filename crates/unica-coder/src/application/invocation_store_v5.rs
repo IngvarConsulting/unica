@@ -1,11 +1,14 @@
 use crate::application::invocation_store::SafeFailureReason;
 use crate::application::receipt_ledger::{ReceiptKeyDigest, TerminalDigest, V5ToolIdentity};
+use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{
     DomainResult, InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
 
 pub(crate) const V5_INVOCATION_RECORD_SCHEMA_VERSION: u32 = 1;
+pub(crate) const MAX_V5_TASK_RECORDS: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -111,6 +114,49 @@ pub(crate) enum V5StoredTask {
         terminal_epoch_ms: u64,
         terminal_digest: TerminalDigest,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V5TaskStatus {
+    Queued,
+    Working,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl V5StoredTask {
+    pub(crate) const fn status(&self) -> V5TaskStatus {
+        match self {
+            Self::Queued => V5TaskStatus::Queued,
+            Self::Working => V5TaskStatus::Working,
+            Self::Completed { .. } => V5TaskStatus::Completed,
+            Self::Failed { .. } => V5TaskStatus::Failed,
+            Self::Cancelled { .. } => V5TaskStatus::Cancelled,
+        }
+    }
+
+    pub(crate) const fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Completed { .. } | Self::Failed { .. } | Self::Cancelled { .. }
+        )
+    }
+
+    pub(crate) fn terminal_digest(&self) -> Option<&TerminalDigest> {
+        match self {
+            Self::Completed {
+                terminal_digest, ..
+            }
+            | Self::Failed {
+                terminal_digest, ..
+            }
+            | Self::Cancelled {
+                terminal_digest, ..
+            } => Some(terminal_digest),
+            Self::Queued | Self::Working => None,
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for V5StoredTask {
@@ -263,6 +309,515 @@ pub(crate) struct V5StoredInvocationRecord {
     pub(crate) version: u64,
     pub(crate) cancel_requested: bool,
     pub(crate) task: V5StoredTask,
+}
+
+impl V5StoredInvocationRecord {
+    pub(crate) fn identity(&self) -> V5TaskIdentity {
+        V5TaskIdentity::from_record(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V5TaskIdentity {
+    task_id: TaskId,
+    invocation_id: InvocationId,
+    receipt_key_digest: ReceiptKeyDigest,
+}
+
+impl V5TaskIdentity {
+    pub(crate) fn new(
+        task_id: TaskId,
+        invocation_id: InvocationId,
+        receipt_key_digest: ReceiptKeyDigest,
+    ) -> Self {
+        Self {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+        }
+    }
+
+    pub(crate) fn from_record(record: &V5StoredInvocationRecord) -> Self {
+        Self::new(
+            record.task_id,
+            record.invocation_id,
+            record.receipt_key_digest.clone(),
+        )
+    }
+
+    pub(crate) const fn task_id(&self) -> TaskId {
+        self.task_id
+    }
+
+    pub(crate) const fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
+    }
+
+    pub(crate) fn receipt_key_digest(&self) -> &ReceiptKeyDigest {
+        &self.receipt_key_digest
+    }
+
+    pub(crate) fn matches_record(&self, record: &V5StoredInvocationRecord) -> bool {
+        self.task_id == record.task_id
+            && self.invocation_id == record.invocation_id
+            && self.receipt_key_digest == record.receipt_key_digest
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NewV5InvocationRecord {
+    identity: V5TaskIdentity,
+    tool: V5ToolIdentity,
+    normalized_arguments_hash: NormalizedArgumentsHash,
+    workspace_identity_hash: SafeIdentityHash,
+    poll_interval_ms: u64,
+    ttl_ms: u64,
+    initial_epoch_ms: Option<u64>,
+    recovered_begun_cancel_requested: Option<bool>,
+}
+
+impl NewV5InvocationRecord {
+    pub(crate) fn new(
+        identity: V5TaskIdentity,
+        tool: V5ToolIdentity,
+        normalized_arguments_hash: NormalizedArgumentsHash,
+        workspace_identity_hash: SafeIdentityHash,
+        poll_interval_ms: u64,
+        ttl_ms: u64,
+    ) -> Self {
+        Self {
+            identity,
+            tool,
+            normalized_arguments_hash,
+            workspace_identity_hash,
+            poll_interval_ms,
+            ttl_ms,
+            initial_epoch_ms: None,
+            recovered_begun_cancel_requested: None,
+        }
+    }
+
+    pub(crate) fn with_initial_epoch_ms(mut self, initial_epoch_ms: u64) -> Self {
+        self.initial_epoch_ms = Some(initial_epoch_ms);
+        self
+    }
+
+    pub(crate) fn for_recovered_begun(mut self, cancel_requested: bool) -> Self {
+        self.recovered_begun_cancel_requested = Some(cancel_requested);
+        self
+    }
+
+    pub(crate) const fn task_id(&self) -> TaskId {
+        self.identity.task_id
+    }
+
+    pub(crate) fn matches_record(&self, record: &V5StoredInvocationRecord) -> bool {
+        self.identity.matches_record(record)
+            && self.tool == record.tool
+            && self.normalized_arguments_hash == record.normalized_arguments_hash
+            && self.workspace_identity_hash == record.workspace_identity_hash
+            && self.poll_interval_ms == record.poll_interval_ms
+            && self.ttl_ms == record.ttl_ms
+            && self.initial_epoch_ms.is_none_or(|initial| {
+                record.created_at_epoch_ms == initial && record.updated_at_epoch_ms >= initial
+            })
+            && self.recovered_begun_cancel_requested.is_none_or(|cancel| {
+                record.task == V5StoredTask::Working && record.cancel_requested == cancel
+            })
+    }
+
+    pub(crate) fn into_stored(self, now_epoch_ms: u64) -> V5StoredInvocationRecord {
+        let initial_epoch_ms = self.initial_epoch_ms.unwrap_or(now_epoch_ms);
+        let cancel_requested = self.recovered_begun_cancel_requested.unwrap_or(false);
+        let task = if self.recovered_begun_cancel_requested.is_some() {
+            V5StoredTask::Working
+        } else {
+            V5StoredTask::Queued
+        };
+        V5StoredInvocationRecord {
+            schema_version: V5StoredInvocationSchemaVersion,
+            task_id: self.identity.task_id,
+            invocation_id: self.identity.invocation_id,
+            receipt_key_digest: self.identity.receipt_key_digest,
+            tool: self.tool,
+            normalized_arguments_hash: self.normalized_arguments_hash,
+            workspace_identity_hash: self.workspace_identity_hash,
+            created_at_epoch_ms: initial_epoch_ms,
+            updated_at_epoch_ms: initial_epoch_ms,
+            ttl_ms: self.ttl_ms,
+            poll_interval_ms: self.poll_interval_ms,
+            version: 1,
+            cancel_requested,
+            task,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V5CommitOperation {
+    Create,
+    RequestCancel,
+    StartWorking,
+    PublishTerminal,
+    DeleteTerminal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum V5TaskMismatch {
+    Identity,
+    Version { expected: u64, actual: u64 },
+    ExistingRecord,
+    State,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum V5TaskStoreError {
+    NotFound {
+        task_id: TaskId,
+    },
+    Capacity {
+        max_records: usize,
+    },
+    CommitUncertain {
+        task_id: TaskId,
+        operation: V5CommitOperation,
+    },
+    Mismatch {
+        task_id: TaskId,
+        reason: V5TaskMismatch,
+    },
+    AlreadyOwned,
+    DeadlineExceeded,
+    RecordTooLarge {
+        max_bytes: usize,
+    },
+    Corrupt(&'static str),
+    Storage {
+        operation: &'static str,
+        message: String,
+    },
+}
+
+impl fmt::Display for V5TaskStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound { task_id } => write!(formatter, "v5 task record not found: {task_id}"),
+            Self::Capacity { max_records } => {
+                write!(formatter, "v5 task store capacity reached ({max_records})")
+            }
+            Self::CommitUncertain { task_id, operation } => write!(
+                formatter,
+                "v5 task store {operation:?} commit is uncertain for {task_id}"
+            ),
+            Self::Mismatch { task_id, reason } => {
+                write!(
+                    formatter,
+                    "v5 task proof mismatch for {task_id}: {reason:?}"
+                )
+            }
+            Self::AlreadyOwned => formatter.write_str("v5 task store is already owned"),
+            Self::DeadlineExceeded => formatter.write_str("v5 task store deadline exceeded"),
+            Self::RecordTooLarge { max_bytes } => {
+                write!(
+                    formatter,
+                    "v5 task record exceeds the {max_bytes}-byte limit"
+                )
+            }
+            Self::Corrupt(message) => write!(formatter, "corrupt v5 task store: {message}"),
+            Self::Storage { operation, message } => write!(formatter, "{operation}: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for V5TaskStoreError {}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum V5StartWorkingOutcome {
+    Started(V5StoredInvocationRecord),
+    CancelOrTerminalWinner(V5StoredInvocationRecord),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum V5TerminalPublication {
+    Completed {
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+        result: Box<DomainResult>,
+    },
+    Failed {
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+        reason: V5SafeFailureReason,
+    },
+    Cancelled {
+        terminal_epoch_ms: u64,
+        terminal_digest: TerminalDigest,
+    },
+}
+
+impl V5TerminalPublication {
+    pub(crate) fn into_stored_task(self) -> V5StoredTask {
+        match self {
+            Self::Completed {
+                terminal_epoch_ms,
+                terminal_digest,
+                result,
+            } => V5StoredTask::Completed {
+                terminal_epoch_ms,
+                terminal_digest,
+                result,
+            },
+            Self::Failed {
+                terminal_epoch_ms,
+                terminal_digest,
+                reason,
+            } => V5StoredTask::Failed {
+                terminal_epoch_ms,
+                terminal_digest,
+                reason,
+            },
+            Self::Cancelled {
+                terminal_epoch_ms,
+                terminal_digest,
+            } => V5StoredTask::Cancelled {
+                terminal_epoch_ms,
+                terminal_digest,
+            },
+        }
+    }
+
+    pub(crate) fn matches_task(&self, task: &V5StoredTask) -> bool {
+        match (self, task) {
+            (
+                Self::Completed {
+                    terminal_epoch_ms: publication_epoch,
+                    terminal_digest: publication_digest,
+                    result: publication_result,
+                },
+                V5StoredTask::Completed {
+                    terminal_epoch_ms: task_epoch,
+                    terminal_digest: task_digest,
+                    result: task_result,
+                },
+            ) => {
+                publication_epoch == task_epoch
+                    && publication_digest == task_digest
+                    && publication_result == task_result
+            }
+            (
+                Self::Failed {
+                    terminal_epoch_ms: publication_epoch,
+                    terminal_digest: publication_digest,
+                    reason: publication_reason,
+                },
+                V5StoredTask::Failed {
+                    terminal_epoch_ms: task_epoch,
+                    terminal_digest: task_digest,
+                    reason: task_reason,
+                },
+            ) => {
+                publication_epoch == task_epoch
+                    && publication_digest == task_digest
+                    && publication_reason == task_reason
+            }
+            (
+                Self::Cancelled {
+                    terminal_epoch_ms: publication_epoch,
+                    terminal_digest: publication_digest,
+                },
+                V5StoredTask::Cancelled {
+                    terminal_epoch_ms: task_epoch,
+                    terminal_digest: task_digest,
+                },
+            ) => publication_epoch == task_epoch && publication_digest == task_digest,
+            _ => false,
+        }
+    }
+
+    pub(crate) const fn status(&self) -> V5TaskStatus {
+        match self {
+            Self::Completed { .. } => V5TaskStatus::Completed,
+            Self::Failed { .. } => V5TaskStatus::Failed,
+            Self::Cancelled { .. } => V5TaskStatus::Cancelled,
+        }
+    }
+
+    pub(crate) const fn terminal_epoch_ms(&self) -> u64 {
+        match self {
+            Self::Completed {
+                terminal_epoch_ms, ..
+            }
+            | Self::Failed {
+                terminal_epoch_ms, ..
+            }
+            | Self::Cancelled {
+                terminal_epoch_ms, ..
+            } => *terminal_epoch_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V5TaskRetirement {
+    identity: V5TaskIdentity,
+    expected_terminal_version: u64,
+    terminal_status: V5TaskStatus,
+    terminal_digest: TerminalDigest,
+}
+
+impl V5TaskRetirement {
+    pub(crate) fn from_terminal_record(record: &V5StoredInvocationRecord) -> Option<Self> {
+        let terminal_digest = record.task.terminal_digest()?.clone();
+        Some(Self {
+            identity: record.identity(),
+            expected_terminal_version: record.version,
+            terminal_status: record.task.status(),
+            terminal_digest,
+        })
+    }
+
+    pub(crate) fn identity(&self) -> &V5TaskIdentity {
+        &self.identity
+    }
+
+    pub(crate) const fn expected_terminal_version(&self) -> u64 {
+        self.expected_terminal_version
+    }
+
+    pub(crate) fn matches_terminal_record(&self, record: &V5StoredInvocationRecord) -> bool {
+        self.identity.matches_record(record)
+            && self.expected_terminal_version == record.version
+            && self.terminal_status == record.task.status()
+            && record.task.terminal_digest() == Some(&self.terminal_digest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum V5DeleteTerminalOutcome {
+    Deleted(V5TaskRetirement),
+    AlreadyAbsent(V5TaskRetirement),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V5TaskRecoveryEntry {
+    identity: V5TaskIdentity,
+    version: u64,
+    status: V5TaskStatus,
+    cancel_requested: bool,
+}
+
+impl V5TaskRecoveryEntry {
+    pub(crate) fn from_record(record: &V5StoredInvocationRecord) -> Self {
+        Self {
+            identity: record.identity(),
+            version: record.version,
+            status: record.task.status(),
+            cancel_requested: record.cancel_requested,
+        }
+    }
+
+    pub(crate) fn identity(&self) -> &V5TaskIdentity {
+        &self.identity
+    }
+
+    pub(crate) const fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub(crate) const fn status(&self) -> V5TaskStatus {
+        self.status
+    }
+
+    pub(crate) const fn cancel_requested(&self) -> bool {
+        self.cancel_requested
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct TaskStoreRecoveryCatalog {
+    entries: Vec<V5TaskRecoveryEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecoveryTerminalReason {
+    Cancelled,
+    InterruptedBeforeExecution,
+    OutcomeUncertain,
+}
+
+impl TaskStoreRecoveryCatalog {
+    pub(crate) fn new(mut entries: Vec<V5TaskRecoveryEntry>) -> Self {
+        entries.sort_by_key(|entry| entry.identity.task_id.to_string());
+        Self { entries }
+    }
+
+    pub(crate) fn entries(&self) -> &[V5TaskRecoveryEntry] {
+        &self.entries
+    }
+
+    pub(crate) fn entry(&self, task_id: TaskId) -> Option<&V5TaskRecoveryEntry> {
+        self.entries
+            .iter()
+            .find(|entry| entry.identity.task_id == task_id)
+    }
+}
+
+pub(crate) trait InvocationStoreV5: Send + Sync {
+    fn create_exact(
+        &self,
+        new_record: NewV5InvocationRecord,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError>;
+
+    fn get(
+        &self,
+        task_id: TaskId,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError>;
+
+    fn request_cancel_exact(
+        &self,
+        identity: &V5TaskIdentity,
+        expected_version: u64,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError>;
+
+    fn start_working_if_not_cancel_requested(
+        &self,
+        identity: &V5TaskIdentity,
+        expected_version: u64,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StartWorkingOutcome, V5TaskStoreError>;
+
+    fn publish_terminal_exact(
+        &self,
+        identity: &V5TaskIdentity,
+        expected_version: u64,
+        publication: V5TerminalPublication,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError>;
+
+    fn publish_staged_terminal_against_exact_provisional(
+        &self,
+        expected: &V5StoredInvocationRecord,
+        publication: V5TerminalPublication,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError>;
+
+    fn terminalize_recovered_exact(
+        &self,
+        identity: &V5TaskIdentity,
+        expected_version: u64,
+        reason: RecoveryTerminalReason,
+        deadline: ProviderDeadline,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError>;
+
+    fn delete_terminal_if_expired(
+        &self,
+        retirement: &V5TaskRetirement,
+        observed_at_epoch_ms: u64,
+        deadline: ProviderDeadline,
+    ) -> Result<V5DeleteTerminalOutcome, V5TaskStoreError>;
 }
 
 #[cfg(test)]

@@ -418,15 +418,36 @@ mod tests {
                 .expect("raw owner handshake retry deadline expired");
             match try_connect_raw_owner(record, identity, remaining.min(Duration::from_secs(2))) {
                 Ok(owner) => return owner,
-                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                Err(error) if raw_owner_handshake_error_is_retryable(&error) => {
                     // A saturated test process can let the server-side handshake deadline
-                    // expire before its handler is scheduled. Retry only that silent close;
-                    // every protocol response is returned to the capacity assertions.
+                    // expire before its handler is scheduled. Keep silent closes and local
+                    // read-timeout spellings inside the outer deadline; every protocol
+                    // response is still returned to the capacity assertions.
                     thread::yield_now();
                 }
                 Err(error) => panic!("raw owner handshake failed before capacity result: {error}"),
             }
         }
+    }
+
+    fn raw_owner_handshake_error_is_retryable(error: &io::Error) -> bool {
+        matches!(
+            error.kind(),
+            io::ErrorKind::UnexpectedEof | io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        )
+    }
+
+    #[test]
+    fn raw_owner_handshake_timeout_remains_inside_the_outer_retry_budget() {
+        assert!(raw_owner_handshake_error_is_retryable(&io::Error::from(
+            io::ErrorKind::TimedOut
+        )));
+        assert!(raw_owner_handshake_error_is_retryable(&io::Error::from(
+            io::ErrorKind::WouldBlock
+        )));
+        assert!(!raw_owner_handshake_error_is_retryable(&io::Error::from(
+            io::ErrorKind::InvalidData
+        )));
     }
 
     struct BlockingCanonicalService {

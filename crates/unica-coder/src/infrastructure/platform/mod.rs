@@ -24,6 +24,11 @@ pub(crate) use process::{
 };
 pub(crate) use target::current_target_id;
 
+#[cfg(feature = "receipt-ledger-test-support")]
+pub(crate) const fn receipt_writer_wall_load_supported_for_test() -> bool {
+    cfg!(unix)
+}
+
 #[cfg(test)]
 pub(crate) fn unix_runtime_authority_tests_supported() -> bool {
     cfg!(unix)

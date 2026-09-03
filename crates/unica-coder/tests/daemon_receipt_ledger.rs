@@ -6,13 +6,16 @@
 //! protocol sessions, daemon processes, barriers and clocks and performs every assertion here. The
 //! bridge is not a second ReceiptLedger and must not synthesize observations from a scenario name.
 
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::io::Read as _;
 use unica_coder::receipt_ledger_test_support::{
     canonical_v5_terminal_for_test, execute_scenario_json, receipt_key_digest_for_test,
-    request_scope_hash_for_test, task_link_digest_for_test,
+    receipt_writer_wall_load_supported_for_test, request_scope_hash_for_test,
+    task_link_digest_for_test,
 };
 
 const CUTOFF_MS: u64 = 7_000;
@@ -732,6 +735,7 @@ enum V5DaemonErrorCodeFixture {
     TaskExpired,
     StoreFailed,
     DurabilityUncertain,
+    StoreCommitUncertain,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -1651,7 +1655,12 @@ struct V5StoredInvocationRecordObservation {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[allow(clippy::large_enum_variant)]
-#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 enum V5StoredTaskObservation {
     Queued,
     Working,
@@ -2115,13 +2124,14 @@ struct CrashCaseObservation {
 #[serde(tag = "owner", rename_all = "snake_case", deny_unknown_fields)]
 enum CrashLedgerObservation {
     ActiveReceipt { receipt: ReceiptObservation },
+    DirectReceipt { receipt: ReceiptObservation },
     LifecycleLink { link: TaskLinkObservation },
 }
 
 impl CrashLedgerObservation {
     fn key(&self) -> &ReceiptKeyObservation {
         match self {
-            Self::ActiveReceipt { receipt } => &receipt.key,
+            Self::ActiveReceipt { receipt } | Self::DirectReceipt { receipt } => &receipt.key,
             Self::LifecycleLink { link } => &link.key,
         }
     }
@@ -2129,14 +2139,27 @@ impl CrashLedgerObservation {
     fn active_receipt(&self) -> &ReceiptObservation {
         match self {
             Self::ActiveReceipt { receipt } => receipt,
-            Self::LifecycleLink { .. } => panic!("expected active receipt crash owner"),
+            Self::DirectReceipt { .. } | Self::LifecycleLink { .. } => {
+                panic!("expected active receipt crash owner")
+            }
+        }
+    }
+
+    fn direct_receipt(&self) -> &ReceiptObservation {
+        match self {
+            Self::DirectReceipt { receipt } => receipt,
+            Self::ActiveReceipt { .. } | Self::LifecycleLink { .. } => {
+                panic!("expected direct receipt crash owner")
+            }
         }
     }
 
     fn lifecycle_link(&self) -> &TaskLinkObservation {
         match self {
             Self::LifecycleLink { link } => link,
-            Self::ActiveReceipt { .. } => panic!("expected sole lifecycle-link crash owner"),
+            Self::ActiveReceipt { .. } | Self::DirectReceipt { .. } => {
+                panic!("expected sole lifecycle-link crash owner")
+            }
         }
     }
 }
@@ -2301,6 +2324,7 @@ enum TaskRetirementEvent {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LoadObservation {
+    path: LoadPath,
     window_started_monotonic_ms: u64,
     window_ended_monotonic_ms: u64,
     drain_completed_monotonic_ms: u64,
@@ -2310,6 +2334,12 @@ struct LoadObservation {
     capacity_rejections: Vec<ErrorCode>,
     store_errors: Vec<ErrorCode>,
     task_store_create_attempts: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LoadPath {
+    ActorBatch,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2346,6 +2376,7 @@ struct ConcurrencySample {
 )]
 enum FacadeEnvelope {
     Observed(ScenarioReport),
+    ObservedGzipBase64(String),
     ProductionMissingTransition(ProductionMissingTransition),
     HarnessFailure(HarnessFailure),
 }
@@ -2403,6 +2434,51 @@ enum HarnessCode {
     EvidenceTooLarge,
 }
 
+fn decode_base64(value: &str) -> Result<Vec<u8>, String> {
+    if value.is_empty() || !value.len().is_multiple_of(4) {
+        return Err("encoded payload must contain nonempty complete quartets".to_string());
+    }
+    let decode = |byte: u8| match byte {
+        b'A'..=b'Z' => Ok(byte - b'A'),
+        b'a'..=b'z' => Ok(byte - b'a' + 26),
+        b'0'..=b'9' => Ok(byte - b'0' + 52),
+        b'+' => Ok(62),
+        b'/' => Ok(63),
+        _ => Err(format!("invalid base64 byte 0x{byte:02x}")),
+    };
+    let bytes = value.as_bytes();
+    let (quartets, remainder) = bytes.as_chunks::<4>();
+    debug_assert!(remainder.is_empty());
+    let mut decoded = Vec::with_capacity(bytes.len() / 4 * 3);
+    for (index, quartet) in quartets.iter().enumerate() {
+        let final_quartet = index + 1 == quartets.len();
+        let first = decode(quartet[0])?;
+        let second = decode(quartet[1])?;
+        decoded.push((first << 2) | (second >> 4));
+        match (quartet[2], quartet[3]) {
+            (b'=', b'=') if final_quartet && second & 0x0f == 0 => {}
+            (b'=', _) => return Err("invalid base64 padding".to_string()),
+            (third, b'=') if final_quartet => {
+                let third = decode(third)?;
+                if third & 0x03 != 0 {
+                    return Err("non-canonical base64 padding bits".to_string());
+                }
+                decoded.push((second << 4) | (third >> 2));
+            }
+            (_, b'=') => {
+                return Err("base64 padding is only allowed in the final quartet".to_string())
+            }
+            (third, fourth) => {
+                let third = decode(third)?;
+                let fourth = decode(fourth)?;
+                decoded.push((second << 4) | (third >> 2));
+                decoded.push((third << 6) | fourth);
+            }
+        }
+    }
+    Ok(decoded)
+}
+
 fn execute(scenario: Scenario) -> ScenarioReport {
     let requires_v5_receipt_runtime = scenario.actions.iter().any(|action| {
         matches!(
@@ -2424,14 +2500,63 @@ fn execute(scenario: Scenario) -> ScenarioReport {
     let request = serde_json::to_string(&scenario)
         .unwrap_or_else(|_| panic!("HARNESS FAILURE: scenario_encode"));
     let response = execute_scenario_json(&request)
-        .unwrap_or_else(|_| panic!("HARNESS FAILURE: bridge_transport"));
+        .unwrap_or_else(|error| panic!("HARNESS FAILURE: bridge_transport: {error}"));
     assert!(
         response.len() <= MAX_SCENARIO_REPORT_BYTES,
         "HARNESS FAILURE: facade_envelope_too_large bytes={}",
         response.len()
     );
     let envelope: FacadeEnvelope = serde_json::from_str(&response)
-        .unwrap_or_else(|_| panic!("HARNESS FAILURE: malformed_facade_envelope"));
+        .unwrap_or_else(|error| panic!("HARNESS FAILURE: malformed_facade_envelope: {error}"));
+    let envelope = match envelope {
+        FacadeEnvelope::ObservedGzipBase64(encoded) => {
+            let compressed = decode_base64(&encoded).unwrap_or_else(|error| {
+                panic!("HARNESS FAILURE: malformed_compressed_facade_base64: {error}")
+            });
+            let mut decoder = GzDecoder::new(compressed.as_slice());
+            let mut payload = String::new();
+            decoder
+                .read_to_string(&mut payload)
+                .unwrap_or_else(|error| {
+                    panic!("HARNESS FAILURE: malformed_compressed_facade_gzip: {error}")
+                });
+            let mut payload: serde_json::Value =
+                serde_json::from_str(&payload).unwrap_or_else(|error| {
+                    panic!("HARNESS FAILURE: malformed_compressed_facade_payload: {error}")
+                });
+            let artifacts = payload
+                .as_object_mut()
+                .and_then(|payload| payload.remove("checkpointArtifacts"))
+                .and_then(|artifacts| artifacts.as_object().cloned())
+                .unwrap_or_default();
+            if let Some(checkpoints) = payload
+                .get_mut("checkpoints")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for checkpoint in checkpoints.values_mut() {
+                    let Some(checkpoint) = checkpoint.as_object_mut() else {
+                        continue;
+                    };
+                    for value in checkpoint.values_mut() {
+                        let Some(artifact_id) = value
+                            .as_object()
+                            .and_then(|reference| reference.get("$artifact"))
+                            .and_then(serde_json::Value::as_str)
+                        else {
+                            continue;
+                        };
+                        *value = artifacts.get(artifact_id).cloned().unwrap_or_else(|| {
+                            panic!("HARNESS FAILURE: missing_checkpoint_artifact {artifact_id}")
+                        });
+                    }
+                }
+            }
+            FacadeEnvelope::Observed(serde_json::from_value(payload).unwrap_or_else(|error| {
+                panic!("HARNESS FAILURE: malformed_expanded_facade_payload: {error}")
+            }))
+        }
+        envelope => envelope,
+    };
     match envelope {
         FacadeEnvelope::Observed(report) => {
             assert_report_raw_bounds(&report);
@@ -2512,6 +2637,9 @@ fn execute(scenario: Scenario) -> ScenarioReport {
                 failure.numeric_detail,
                 failure.evidence_fingerprint,
             );
+        }
+        FacadeEnvelope::ObservedGzipBase64(_) => {
+            unreachable!("compressed envelope is normalized before assertion")
         }
     }
 }
@@ -2920,11 +3048,12 @@ fn decode_persisted_record_artifact(evidence: &ArtifactEvidence) -> serde_json::
     );
     let record: serde_json::Value = serde_json::from_slice(&raw)
         .unwrap_or_else(|_| panic!("persisted record artifact must be one exact JSON object"));
-    assert!(record.is_object());
+    let root = record
+        .as_object()
+        .expect("persisted record artifact must be one exact JSON object");
     for wire_only in ["kind", "protocolVersion", "outcome"] {
-        assert_eq!(
-            count_json_field(&record, wire_only),
-            0,
+        assert!(
+            !root.contains_key(wire_only),
             "persisted record must not embed a transient wire envelope"
         );
     }
@@ -3750,6 +3879,16 @@ fn assert_same_stable_task(left: &TaskObservation, right: &TaskObservation) {
     assert_eq!(left.invocation_id, right.invocation_id);
     assert_eq!(left.receipt_key, right.receipt_key);
     assert_eq!(left.workspace_identity_hash, right.workspace_identity_hash);
+    assert_eq!(left.created_epoch_ms, right.created_epoch_ms);
+    assert_eq!(left.expires_epoch_ms, right.expires_epoch_ms);
+    assert_eq!(left.ttl_ms, right.ttl_ms);
+    assert_eq!(left.poll_interval_ms, right.poll_interval_ms);
+}
+
+fn assert_same_prebinding_task_identity(left: &TaskObservation, right: &TaskObservation) {
+    assert_eq!(left.task_id, right.task_id);
+    assert_eq!(left.invocation_id, right.invocation_id);
+    assert_eq!(left.receipt_key, right.receipt_key);
     assert_eq!(left.created_epoch_ms, right.created_epoch_ms);
     assert_eq!(left.expires_epoch_ms, right.expires_epoch_ms);
     assert_eq!(left.ttl_ms, right.ttl_ms);
@@ -6446,6 +6585,7 @@ fn max_concurrency_sample(
 }
 
 fn assert_direct_load_lifecycles(load: &LoadObservation, expected: usize) {
+    assert_eq!(load.path, LoadPath::ActorBatch);
     assert_eq!(load.lifecycles.len(), expected);
     assert!(load.capacity_rejections.is_empty());
     assert!(load.store_errors.is_empty());
@@ -6647,6 +6787,23 @@ fn known_long_provider() -> Action {
         cooperative_cancel: true,
         side_effect_marker: false,
     }
+}
+
+#[test]
+fn production_known_long_task_executes_after_the_initial_working_projection() {
+    let report = execute(Scenario::fake(vec![
+        known_long_provider(),
+        submit("submit"),
+        Action::WaitForEvent {
+            event: EventKind::TaskTerminalBoundCommitted,
+        },
+        checkpoint_action("after-wait"),
+    ]));
+
+    let snapshot = checkpoint(&report, "after-wait");
+    assert_eq!(only_task(snapshot).status, TaskStatus::Completed);
+    assert_eq!(snapshot.callbacks.prepare, 1);
+    assert_eq!(snapshot.callbacks.execute, 1);
 }
 
 fn submit(label: &str) -> Action {
@@ -7329,6 +7486,11 @@ fn v5_rejects_v3_v4_and_strictly_round_trips_receipt_messages() {
             "durability_uncertain",
             ErrorCode::DurabilityUncertain,
         ),
+        (
+            V5DaemonErrorCodeFixture::StoreCommitUncertain,
+            "store_commit_uncertain",
+            ErrorCode::StoreCommitUncertain,
+        ),
     ];
     for (code, wire, _) in error_code_cases {
         actions.push(probe_action(
@@ -7372,7 +7534,7 @@ fn v5_rejects_v3_v4_and_strictly_round_trips_receipt_messages() {
         let probe = matches[0];
         assert_eq!(probe.client, ProtocolVersion::V5);
         assert_eq!(probe.server, ProtocolVersion::V5);
-        assert_eq!(probe.error, None);
+        assert_eq!(probe.error, None, "{label}");
         assert_protocol_event_trace(probe, true, true);
         let client_write =
             protocol_jsonl_frame(&probe.client_write_frame_hex, MAX_PROTOCOL_FRAME_BYTES);
@@ -8638,11 +8800,15 @@ fn validation_rejection_after_promise_recovers_receipt_backed_terminal() {
             EventKind::BoundHandoffTerminalStaged,
             EventKind::TaskLinkCapacityReserved,
             EventKind::TaskStoreCreated,
+            EventKind::TaskLinkReservationConverted,
             EventKind::TaskStoreTerminalCommitted,
             EventKind::TaskStoreTerminalReadback,
-            EventKind::TaskLinkReservationConverted,
             EventKind::TaskTerminalBoundCommitted,
         ],
+    );
+    assert_eq!(
+        count_event(&staged_handoff, EventKind::TaskLinkReservationConverted),
+        1
     );
     assert_eq!(
         count_event(&staged_handoff, EventKind::TaskBoundCommitted),
@@ -8842,7 +9008,9 @@ fn actor_bind_promotes_the_same_promised_task_once() {
 
     let promised = task_read(&report, "promised");
     let bound = task_read(&report, "bound");
-    assert_same_stable_task(promised, bound);
+    assert_same_prebinding_task_identity(promised, bound);
+    assert!(promised.workspace_identity_hash.is_none());
+    assert!(bound.workspace_identity_hash.is_some());
     assert_eq!(bound.projection_source, ProjectionSource::TaskStore);
     let snapshot = checkpoint(&report, "bound");
     assert_eq!(snapshot.tasks.len(), 1);
@@ -9077,6 +9245,9 @@ fn known_long_requires_begun_bound_handoff_intent() {
         Action::WaitForEvent {
             event: EventKind::BoundHandoffCommitted,
         },
+        Action::WaitForEvent {
+            event: EventKind::TaskBoundCommitted,
+        },
         checkpoint_action("handoff"),
     ]));
 
@@ -9090,10 +9261,10 @@ fn known_long_requires_begun_bound_handoff_intent() {
             EventKind::BoundHandoffCommitted,
         ],
     );
-    let receipt = only_receipt(checkpoint(&report, "handoff"));
-    assert_eq!(receipt.state, SeedReceiptState::TaskHandoffActorBoundBegun);
-    assert!(receipt.begun);
-    assert!(receipt.bound_workspace_identity.is_some());
+    assert!(
+        checkpoint(&report, "handoff").receipts.is_empty(),
+        "a confirmed TaskBound must retire the transient receipt-owned handoff"
+    );
     assert_eq!(count_event(&report, EventKind::UnboundPromiseCommitted), 0);
 }
 
@@ -9101,6 +9272,9 @@ fn known_long_requires_begun_bound_handoff_intent() {
 fn known_long_after_prepare_never_becomes_unbound_promise() {
     let report = execute(Scenario::fake(vec![
         known_long_provider(),
+        Action::InstallBarrier {
+            point: BarrierPoint::BeforeTaskTerminalReceipt,
+        },
         submit("submit"),
         Action::WaitForEvent {
             event: EventKind::TaskBoundCommitted,
@@ -9110,6 +9284,13 @@ fn known_long_after_prepare_never_becomes_unbound_promise() {
             label: "working".to_string(),
         },
         checkpoint_action("bound"),
+        Action::ReleaseBarrier {
+            point: BarrierPoint::BeforeTaskTerminalReceipt,
+        },
+        Action::WaitForEvent {
+            event: EventKind::TaskTerminalBoundCommitted,
+        },
+        checkpoint_action("terminal"),
     ]));
 
     assert_eq!(count_event(&report, EventKind::UnboundPromiseCommitted), 0);
@@ -9119,6 +9300,10 @@ fn known_long_after_prepare_never_becomes_unbound_promise() {
     assert_eq!(task.status, TaskStatus::Working);
     assert_eq!(task.projection_source, ProjectionSource::TaskStore);
     assert_eq!(checkpoint(&report, "bound").task_store_create_attempts, 1);
+    assert_eq!(
+        only_task(checkpoint(&report, "terminal")).status,
+        TaskStatus::Completed
+    );
 }
 
 #[test]
@@ -9305,6 +9490,30 @@ fn every_cross_store_crash_point_reconciles_without_split_brain() {
         let case = matches[0];
         let key = case.ledger.key();
         assert_receipt_key(key);
+        let direct_pre_intent = matches!(
+            point,
+            CrashPoint::BeforePromisedActorIntent | CrashPoint::BeforeBoundHandoffIntent
+        );
+        if direct_pre_intent {
+            assert!(case.projections.is_empty(), "{case:#?}");
+            assert!(case.task_store_records.is_empty(), "{case:#?}");
+            assert!(case.callback_invocation_ids.is_empty(), "{case:#?}");
+            assert!(case.staged_terminal_before_crash.is_none(), "{case:#?}");
+            let receipt = case.ledger.direct_receipt();
+            assert_eq!(receipt.state, SeedReceiptState::DirectTerminalUnacked);
+            assert_eq!(receipt.terminal.as_ref(), Some(&case.recovered_terminal));
+            match expected_terminal {
+                ExpectedTerminal::Completed => {
+                    assert!(completed_result(&case.recovered_terminal).ok, "{case:#?}")
+                }
+                ExpectedTerminal::Failed(reason) => {
+                    assert_failed_terminal(&case.recovered_terminal, reason)
+                }
+            }
+            assert!(case.receipt_store_generation > 0);
+            assert_eq!(case.task_store_generation, 0);
+            continue;
+        }
         assert_eq!(case.projections.len(), 1, "{case:#?}");
         assert_eq!(
             case.task_store_records.len(),
@@ -9766,7 +9975,15 @@ fn v5_active_task_without_exact_receipt_link_fail_stops_before_listener() {
     assert_eq!(reconciled.task_link_reserved_count, 0);
     assert_eq!(
         task_link_state(only_task_link(reconciled)),
-        SeedReceiptState::TaskBoundNotBegun
+        SeedReceiptState::TaskTerminalBound
+    );
+    assert_eq!(only_task(reconciled).status, TaskStatus::Failed);
+    assert_failed_terminal(
+        only_task(reconciled)
+            .terminal
+            .as_ref()
+            .expect("startup must close an exact not-begun Task"),
+        V5SafeFailureReason::Interrupted,
     );
     assert!(reconciled.receipts.is_empty());
     assert_eq!(reconciled.callbacks.total_domain(), 0);
@@ -9909,6 +10126,9 @@ fn task_bound_false_masks_working_as_queued_until_receipt_begun() {
         Action::InstallBarrier {
             point: BarrierPoint::BeforeReceiptBegun,
         },
+        Action::InstallBarrier {
+            point: BarrierPoint::BeforeTaskTerminalReceipt,
+        },
         submit("submit"),
         Action::WaitForEvent {
             event: EventKind::AdmissionEntered,
@@ -9938,6 +10158,9 @@ fn task_bound_false_masks_working_as_queued_until_receipt_begun() {
         Action::ReadTask {
             api: TaskApi::NativeGet,
             label: "after-begun".to_string(),
+        },
+        Action::ReleaseBarrier {
+            point: BarrierPoint::BeforeTaskTerminalReceipt,
         },
     ]));
 
@@ -10973,42 +11196,6 @@ fn cancel_flag_transfers_monotonically_at_task_bind() {
 
     let closed_states = [
         (
-            SeedReceiptState::CancelReserved,
-            false,
-            None,
-            TerminalClass::Absent,
-        ),
-        (
-            SeedReceiptState::ReservedUnbound,
-            false,
-            None,
-            TerminalClass::Cancelled,
-        ),
-        (
-            SeedReceiptState::ReservedActorBound,
-            false,
-            None,
-            TerminalClass::Cancelled,
-        ),
-        (
-            SeedReceiptState::ReservedBegun,
-            false,
-            None,
-            TerminalClass::Absent,
-        ),
-        (
-            SeedReceiptState::DirectTerminalUnacked,
-            true,
-            None,
-            TerminalClass::Completed(true),
-        ),
-        (
-            SeedReceiptState::AcknowledgedTombstone,
-            true,
-            None,
-            TerminalClass::Absent,
-        ),
-        (
             SeedReceiptState::TaskPromisedUnbound,
             false,
             None,
@@ -11339,10 +11526,18 @@ fn cancel_after_working_before_receipt_begun_waits_and_is_post_begun() {
     let waiting = checkpoint(&report, "cancel-waiting");
     assert_eq!(waiting.token_signals, 0);
     assert!(!only_task(waiting).cancel_requested);
-    assert!(!only_receipt(waiting).begun);
+    assert_eq!(
+        task_link_state(only_task_link(waiting)),
+        SeedReceiptState::TaskBoundNotBegun
+    );
+    assert!(waiting.receipts.is_empty());
     let after = checkpoint(&report, "post-begun-cancel");
-    assert!(only_receipt(after).begun);
     assert!(only_task(after).cancel_requested);
+    assert_eq!(
+        task_link_state(only_task_link(after)),
+        SeedReceiptState::TaskTerminalBound
+    );
+    assert!(after.receipts.is_empty());
     assert_eq!(after.token_signals, 1);
     assert_event_order(
         &report,
@@ -11374,7 +11569,7 @@ fn cancel_after_working_before_receipt_begun_waits_and_is_post_begun() {
 }
 
 #[test]
-fn thirty_two_lazy_cancel_sessions_finish_within_125ms() {
+fn thirty_two_lazy_cancel_actor_batch_finishes_within_125ms() {
     let report = execute(Scenario::wall(vec![Action::RunLazyCancelStorm {
         submits: 32,
         cancels: 32,
@@ -11386,14 +11581,11 @@ fn thirty_two_lazy_cancel_sessions_finish_within_125ms() {
     assert_eq!(load.lifecycles.len(), 32);
     assert!(load.capacity_rejections.is_empty());
     assert!(load.store_errors.is_empty());
-    assert_eq!(
-        max_concurrency_sample(load, |sample| sample.owner_slots),
-        65
-    );
-    assert_eq!(max_concurrency_sample(load, |sample| sample.handshakes), 32);
+    assert_eq!(max_concurrency_sample(load, |sample| sample.owner_slots), 0);
+    assert_eq!(max_concurrency_sample(load, |sample| sample.handshakes), 0);
     assert_eq!(
         max_concurrency_sample(load, |sample| sample.accept_batch),
-        32
+        0
     );
     assert!(load_p99_ms(load) <= 125);
     let mut receipt_keys: Vec<_> = load
@@ -11553,6 +11745,9 @@ fn promised_and_handoff_states_hold_worst_case_result_quota() {
         Action::Reset,
         direct_provider(),
         Action::InstallBarrier {
+            point: BarrierPoint::BeforeTaskStoreCreate,
+        },
+        Action::InstallBarrier {
             point: BarrierPoint::PrepareEntered,
         },
         submit("handoff-begun-submit"),
@@ -11566,6 +11761,9 @@ fn promised_and_handoff_states_hold_worst_case_result_quota() {
         checkpoint_action("quota-handoff-begun"),
         Action::ReleaseBarrier {
             point: BarrierPoint::PrepareEntered,
+        },
+        Action::ReleaseBarrier {
+            point: BarrierPoint::BeforeTaskStoreCreate,
         },
         Action::WaitForEvent {
             event: EventKind::TaskBoundCommitted,
@@ -11671,6 +11869,7 @@ fn task_bind_direct_ack_and_receipt_terminal_expiry_release_exact_quota() {
         Action::JoinOperation {
             label: "bind-two".to_string(),
         },
+        checkpoint_action("task-bind-terminal"),
         Action::Restart,
         checkpoint_action("task-bind-reopened"),
     ]));
@@ -11690,12 +11889,13 @@ fn task_bind_direct_ack_and_receipt_terminal_expiry_release_exact_quota() {
     assert_eq!(bind_after.receipt_reserved_bytes, 0);
     assert_eq!(bind_after.task_link_count, 2);
     assert_eq!(bind_after.task_links.len(), 2);
+    let bind_terminal = checkpoint(&task_bind, "task-bind-terminal");
     let bind_reopened = checkpoint(&task_bind, "task-bind-reopened");
     assert_eq!(bind_reopened.task_link_count, 2);
     assert_eq!(bind_reopened.receipt_actual_bytes, 0);
     assert_eq!(bind_reopened.receipt_reserved_bytes, 0);
-    assert_eq!(bind_reopened.task_links, bind_after.task_links);
-    assert_eq!(bind_reopened.task_link_bytes, bind_after.task_link_bytes);
+    assert_eq!(bind_reopened.task_links, bind_terminal.task_links);
+    assert_eq!(bind_reopened.task_link_bytes, bind_terminal.task_link_bytes);
 
     let direct_ack = execute(Scenario::fake(vec![
         direct_provider(),
@@ -12944,7 +13144,62 @@ fn deterministic_horizon_load_does_not_saturate() {
 }
 
 #[test]
-fn wall_clock_writer_sustains_32_receipts_per_second_on_each_os() {
+fn explicit_retention_reuses_the_live_receipt_owner() {
+    let report = execute(Scenario::fake(vec![
+        direct_provider(),
+        submit("live-owner"),
+        Action::ReclaimExpiredEvidence,
+        Action::RotateReceiptSegments,
+        checkpoint_action("after-reclaim"),
+    ]));
+
+    assert_eq!(response(&report, "live-owner").kind, ResponseKind::Direct);
+    assert_eq!(checkpoint(&report, "after-reclaim").receipt_live_count, 1);
+}
+
+#[test]
+fn tombstone_capacity_rejection_keeps_the_live_owner_usable() {
+    let report = execute(Scenario::fake(vec![
+        Action::FillTombstones,
+        direct_provider(),
+        submit("terminal"),
+        Action::Acknowledge {
+            key: KeyCase::Exact,
+            digest: DigestCase::ExactTerminal,
+            disconnect: AckDisconnectPoint::Never,
+            label: "overflow-ack".to_string(),
+        },
+        Action::AdvanceEpoch {
+            millis: TOMBSTONE_TTL_MS,
+        },
+        Action::ReclaimExpiredEvidence,
+        Action::RotateReceiptSegments,
+        Action::Acknowledge {
+            key: KeyCase::Exact,
+            digest: DigestCase::ExactTerminal,
+            disconnect: AckDisconnectPoint::Never,
+            label: "post-reclaim-ack".to_string(),
+        },
+        checkpoint_action("after-reclaim"),
+    ]));
+
+    assert_eq!(
+        response(&report, "overflow-ack").error,
+        Some(ErrorCode::TombstoneCapacity)
+    );
+    assert_eq!(
+        response(&report, "post-reclaim-ack").kind,
+        ResponseKind::Acknowledged
+    );
+    assert_eq!(checkpoint(&report, "after-reclaim").tombstone_count, 1);
+}
+
+#[test]
+fn wall_clock_writer_sustains_32_receipts_per_second_on_posix() {
+    if !receipt_writer_wall_load_supported_for_test() {
+        return;
+    }
+
     let report = execute(Scenario::wall(vec![Action::RunDirectLoad {
         calls: 1_920,
         duration_ms: 60_000,
@@ -12963,11 +13218,39 @@ fn wall_clock_writer_sustains_32_receipts_per_second_on_each_os() {
         load_total_elapsed_ms(load)
     );
     assert!(completed_at_window_end(load) >= 1_920);
-    assert!(load_p99_ms(load) <= 250, "p99={}ms", load_p99_ms(load));
+    assert!(
+        load_p99_ms(load) <= 250,
+        "p99={}ms budget=250ms",
+        load_p99_ms(load)
+    );
     assert!(load_writer_drain_ms(load) <= 2_000);
     assert!(max_concurrency_sample(load, |sample| sample.live_receipts) <= LIVE_RECEIPT_LIMIT);
     assert_eq!(load.task_store_create_attempts, 0);
     assert_eq!(load.listener, ListenerState::Listening);
+}
+
+#[test]
+fn actor_owned_direct_load_survives_ten_full_reservation_batches() {
+    let report = execute(Scenario::fake(vec![
+        Action::RunDirectLoad {
+            calls: 320,
+            duration_ms: 10_000,
+            concurrency: 32,
+            retained_receipt_terminals: 32,
+            immediate_ack: true,
+            label: "ten-batches".to_string(),
+        },
+        checkpoint_action("ten-batches-retained"),
+    ]));
+
+    let load = load_run(&report, "ten-batches");
+    assert_direct_load_lifecycles(load, 320);
+    assert_eq!(completed_at_window_end(load), 320);
+    assert!(load.capacity_rejections.is_empty());
+    assert!(load.store_errors.is_empty());
+    assert_eq!(load.task_store_create_attempts, 0);
+    assert_eq!(load.listener, ListenerState::Listening);
+    assert_retained_receipt_backed_set(checkpoint(&report, "ten-batches-retained"), 32);
 }
 
 #[test]
@@ -13185,7 +13468,16 @@ fn oversized_result_and_uncertain_store_commit_fail_closed() {
     assert_eq!(task_failed.fallback_executions, 0);
     assert_eq!(task_failed.task_store_create_attempts, 1);
     assert_eq!(task_failed.task_link_reserved_count, 1);
-    assert!(task_failed.tasks.is_empty());
+    let uncertain_task = only_task(task_failed);
+    assert_task_observation(uncertain_task);
+    assert_eq!(uncertain_task.status, TaskStatus::Working);
+    assert_eq!(
+        uncertain_task.projection_source,
+        ProjectionSource::ReceiptLedger
+    );
+    assert_eq!(uncertain_task.receipt_key, only_receipt(task_failed).key);
+    assert!(!uncertain_task.cancel_requested);
+    assert!(uncertain_task.terminal.is_none());
     assert_eq!(
         only_receipt(task_failed).state,
         SeedReceiptState::TaskHandoffActorBoundBegun
