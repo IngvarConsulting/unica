@@ -9,7 +9,6 @@ use crate::infrastructure::platform::ManagedStartupChild;
 use std::io::{self, BufReader, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -255,18 +254,12 @@ impl DaemonClient {
             .as_ref()
             .ok_or_else(|| "daemon spawning is disabled for this client".to_string())?;
         deadline.checkpoint("child spawn")?;
-        let mut command = Command::new(executable);
-        command
-            .arg("--daemon")
-            .arg("--state-root")
-            .arg(&self.config.state_root)
-            .arg("--core-identity")
-            .arg(self.config.core_identity.as_str())
-            .arg("--idle-grace-ms")
-            .arg(self.config.idle_grace.as_millis().to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        let command = super::daemon_process_command(
+            executable,
+            &self.config.state_root,
+            &self.config.core_identity,
+            self.config.idle_grace,
+        );
         let mut child = ManagedStartupChild::spawn_configured(command)
             .map_err(|error| format!("failed to spawn daemon: {error}"))?;
         if let Err(error) = deadline.checkpoint("child spawn") {
