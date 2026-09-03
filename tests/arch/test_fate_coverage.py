@@ -731,8 +731,8 @@ class FateCoverageTests(unittest.TestCase):
                 "public_preview_strategies_are_real_and_recursively_write_free"
             ),
             "INV.TOKEN.CACHE-IMPACT-IN-RESULT": (
-                "crates/unica-coder/src/application/meta_remove_surface_tests.rs::"
-                "real_public_meta_remove_reports_typed_cache_impact_in_the_same_result"
+                "crates/unica-coder/src/infrastructure/daemon/server.rs::"
+                "canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication"
             ),
             "INV.SAFETY.SUPPORT-GUARD-COVERAGE": (
                 "crates/unica-coder/src/infrastructure/support_guard.rs::"
@@ -897,8 +897,8 @@ class FateCoverageTests(unittest.TestCase):
                 "mutating_tools_have_typed_cache_event_or_explicit_non_cache_effect"
             ),
             "INV.CACHE.REPORTED-EFFECTS": (
-                "crates/unica-coder/src/application/meta_remove_surface_tests.rs::"
-                "real_public_meta_remove_reports_typed_cache_impact_in_the_same_result"
+                "crates/unica-coder/src/infrastructure/daemon/server.rs::"
+                "canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication"
             ),
             "INV.CACHE.EVENT-IMPACT-CLOSED": (
                 "crates/unica-coder/src/domain/cache.rs::"
@@ -929,8 +929,8 @@ class FateCoverageTests(unittest.TestCase):
                 "test_publication_is_one_linear_pass_ordered_by_needs"
             ),
             "INV.TOKEN.CACHE-IMPACT-IN-RESULT": (
-                "crates/unica-coder/src/application/meta_remove_surface_tests.rs::"
-                "real_public_meta_remove_reports_typed_cache_impact_in_the_same_result"
+                "crates/unica-coder/src/infrastructure/daemon/server.rs::"
+                "canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication"
             ),
             "INV.SURFACE.CHANGESET-COHERENCE": (
                 "tests/arch/test_product_immutability.py::"
@@ -968,8 +968,12 @@ class FateCoverageTests(unittest.TestCase):
             records.get(narrowing, {}).get("establishes"),
             "[INV.PKG.PACKAGED-PUBLIC-SURFACE, INV.TOKEN.CACHE-IMPACT-IN-RESULT]",
         )
+        # DEC.2026-09-03.V0-13-LEGACY-BATCH-2 re-established the rule when
+        # `unica.meta.remove` left the registry; the narrowing decision still
+        # lists it among what it once established.
         self.assertEqual(
-            records["INV.TOKEN.CACHE-IMPACT-IN-RESULT"].get("decision"), narrowing
+            records["INV.TOKEN.CACHE-IMPACT-IN-RESULT"].get("decision"),
+            "DEC.2026-09-03.V0-13-LEGACY-BATCH-2",
         )
         self.assertEqual(
             records["INV.TOKEN.CACHE-IMPACT-IN-RESULT"].get("governs"), "product"

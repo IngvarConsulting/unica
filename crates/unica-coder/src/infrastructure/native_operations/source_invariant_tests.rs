@@ -19,17 +19,14 @@ fn public_platform_xml_mutator_inventory() -> BTreeMap<&'static str, &'static st
         ("unica.erf.init", "external"),
         ("unica.form.compile", "form"),
         ("unica.form.edit", "form"),
-        ("unica.form.remove", "form"),
         ("unica.interface.edit", "interface"),
         ("unica.meta.add", "metadata"),
         ("unica.meta.edit", "metadata"),
-        ("unica.meta.remove", "metadata"),
         ("unica.mxl.compile", "mxl"),
         ("unica.role.compile", "role"),
         ("unica.role.edit", "role"),
         ("unica.subsystem.compile", "subsystem"),
         ("unica.subsystem.edit", "subsystem"),
-        ("unica.xdto.edit", "xdto"),
     ]);
     let actual = tools()
         .into_iter()
@@ -56,7 +53,7 @@ fn public_platform_xml_mutator_inventory() -> BTreeMap<&'static str, &'static st
 
 #[test]
 fn verified_public_mutator_idempotence_cases_are_exact() {
-    let cases: [(&str, fn()); 11] = [
+    let cases: [(&str, fn()); 10] = [
         ("unica.cf.edit", crate::application::tests::cf_edit_equal_serialized_result_is_a_public_noop_and_preserves_identity),
         ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_preserves_object_and_file_identity_on_repeated_borrow),
         ("unica.code.patch", super::code::tests::applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_stable_identity),
@@ -67,7 +64,6 @@ fn verified_public_mutator_idempotence_cases_are_exact() {
         ("unica.mxl.compile", super::mxl::tests::repeated_mxl_compile_preserves_identity_but_reports_attempted_update),
         ("unica.role.edit", super::role::role_edit_contract_tests::role_edit_without_vendor_support_is_logically_addressed_and_preserves_identity),
         ("unica.subsystem.compile", super::subsystem::tests::repeated_subsystem_compile_preserves_file_identities_and_reports_no_changes),
-        ("unica.xdto.edit", super::xdto::tests::xdto_events_and_file_identity_follow_changed_plan_and_exact_noop),
     ];
     let registered = public_platform_xml_mutator_inventory();
     for (tool, evidence) in cases {
@@ -83,12 +79,12 @@ fn verified_public_mutator_idempotence_cases_are_exact() {
 fn typed_platform_resource_noop_emits_no_effects() {
     super::meta::typed_resource_noop_and_identity_contract_is_complete();
     super::role::role_edit_contract_tests::role_edit_without_vendor_support_is_logically_addressed_and_preserves_identity();
-    super::xdto::tests::xdto_events_and_file_identity_follow_changed_plan_and_exact_noop();
+    super::xdto::tests::staged_xdto_v12_parity_preserves_exact_bytes_errors_and_noop();
 }
 
 #[test]
 fn public_platform_xml_mutator_preimage_contract_is_complete() {
-    let cases: [(&str, fn()); 23] = [
+    let cases: [(&str, fn()); 20] = [
         ("unica.cf.edit", super::cf::cf_edit_transaction_tests::cf_edit_external_only_change_rejects_concurrent_format_owner_change),
         ("unica.cf.init", super::cf::cf_init_transaction_tests::cf_init_reauthorizes_containing_owner_immediately_before_publication),
         ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_rejects_concurrent_base_format_owner_change),
@@ -101,17 +97,14 @@ fn public_platform_xml_mutator_preimage_contract_is_complete() {
         ("unica.erf.init", super::external::tests::external_init_reauthorizes_containing_owner_immediately_before_publication),
         ("unica.form.compile", super::form::tests::form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication),
         ("unica.form.edit", super::form::tests::edit_form_rejects_stale_preimage_without_overwriting_concurrent_change),
-        ("unica.form.remove", super::form::tests::remove_form_rejects_payload_directory_that_appears_after_absent_probe),
         ("unica.interface.edit", super::interface::tests::interface_edit_rolls_back_if_unchanged_metadata_owner_changes_during_publication),
         ("unica.meta.add", super::meta::typed_resource_preimage_contract_is_complete),
         ("unica.meta.edit", crate::infrastructure::metadata_operations::tests::typed_edit_concurrency_and_rollback_preserve_exact_external_or_preimage_bytes),
-        ("unica.meta.remove", crate::infrastructure::metadata_operations::tests::meta_remove_publish_honors_cancellation_and_owner_exact_preimages),
         ("unica.mxl.compile", super::mxl::tests::mxl_compile_rolls_back_if_format_owner_changes_during_publication),
         ("unica.role.compile", super::role::role_compile_contract_tests::role_compile_rolls_back_if_supported_format_owner_appears_during_publication),
         ("unica.role.edit", super::role::role_edit_contract_tests::rights_drift_in_the_staging_window_is_classified_as_concurrent),
         ("unica.subsystem.compile", super::subsystem::tests::subsystem_compile_exact_binds_a_reused_existing_child),
         ("unica.subsystem.edit", super::subsystem::tests::subsystem_edit_exact_binds_a_reused_existing_child),
-        ("unica.xdto.edit", super::xdto::tests::xdto_guard_rejects_descriptor_identity_drift_before_commit),
     ];
     let inventory = public_platform_xml_mutator_inventory();
     let actual = cases
@@ -151,8 +144,7 @@ fn bridged_reader_outputs_are_identical_for_logical_and_physical_selectors() {
     };
     use std::collections::BTreeSet;
 
-    let cases: [(&str, fn()); 7] = [
-        ("unica.cf.info", super::cf::cf_read_selector_bridge_tests::cf_info_answers_identically_for_a_source_set_and_a_config_path),
+    let cases: [(&str, fn()); 6] = [
         ("unica.form.info", super::form::form_read_selector_bridge_tests::form_info_answers_identically_for_a_logical_and_a_physical_selector),
         ("unica.role.info", super::role::role_info_typed_result_tests::role_info_answers_identically_for_a_logical_and_a_physical_selector),
         ("unica.mxl.info", super::mxl::mxl_read_selector_bridge_tests::mxl_info_answers_identically_for_a_logical_and_a_physical_selector),

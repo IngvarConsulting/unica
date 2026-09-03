@@ -1,10 +1,9 @@
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
-use unica_coder::application::UnicaApplication;
 
 #[test]
 fn project_health_parent_repository_reports_repository_relative_remediation() {
@@ -907,14 +906,17 @@ fn project_health_workspace_root_rejection_suppresses_source_derived_git_facts()
         &root,
         &["add", "v8project.yaml", "Configuration.xml", ".gitignore"],
     );
+    let before = snapshot_files(&root);
 
     let result = status(&root);
 
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.unwrap();
+    assert_eq!(data["ready"], false, "{data}");
     assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
         diagnostic["code"] == "source_set.root_is_workspace"
     }), "{data}");
+    assert_eq!(snapshot_files(&root), before);
     assert!(!data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
         diagnostic["sourceSet"] == "main"
             && matches!(
@@ -1589,12 +1591,139 @@ fn project_health_linked_source_route_is_reported_without_following_it() {
     let _ = fs::remove_dir_all(root);
 }
 
-fn status(workspace: &Path) -> unica_coder::application::OperationResult {
-    let mut args = Map::new();
-    args.insert("cwd".into(), Value::String(workspace.display().to_string()));
-    UnicaApplication::new()
-        .call_tool("unica.project.status", &args)
-        .unwrap()
+static STATE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The canonical readiness answer of `unica.view {}` over the stdio surface,
+/// in the shape the assertions below read: `ok`, `errors` and `data`.
+struct StatusResult {
+    ok: bool,
+    errors: Vec<String>,
+    data: Option<Value>,
+}
+
+fn status(workspace: &Path) -> StatusResult {
+    use std::io::{BufRead, BufReader};
+    use std::process::{ChildStdout, Stdio};
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+    use std::time::{Duration, Instant};
+
+    /// A silent server must fail this test, not hold the job until an external
+    /// timeout stops it: every response is awaited on a reader thread with a
+    /// deadline, and a stalled child is killed and reaped.
+    const RESPONSE_DEADLINE: Duration = Duration::from_secs(15);
+
+    fn read_stdout_lines(stdout: ChildStdout, sender: mpsc::Sender<String>) {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match stdout.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) if sender.send(line).is_err() => return,
+                Ok(_) => {}
+            }
+        }
+    }
+
+    fn receive(child: &mut std::process::Child, lines: &Receiver<String>, id: &Value) -> Value {
+        let deadline = Instant::now() + RESPONSE_DEADLINE;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let line = match lines.recv_timeout(remaining) {
+                Ok(line) => line,
+                Err(RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("MCP response deadline elapsed");
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    let _ = child.wait();
+                    panic!("MCP exited before response");
+                }
+            };
+            let response: Value = serde_json::from_str(&line).expect("decode MCP response");
+            if response.get("id") == Some(id) {
+                return response;
+            }
+        }
+    }
+
+    fn send(stdin: &mut std::process::ChildStdin, message: &Value) {
+        serde_json::to_writer(&mut *stdin, message).expect("encode MCP message");
+        stdin.write_all(b"\n").expect("terminate MCP message");
+        stdin.flush().expect("flush MCP message");
+    }
+
+    // The provider state lives outside the workspace: the readiness assertions
+    // below compare the whole workspace tree before and after the call.
+    let state = std::env::temp_dir().join(format!(
+        "unica-project-health-state-{}-{}",
+        std::process::id(),
+        STATE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&state).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
+        .arg("mcp")
+        .current_dir(workspace)
+        .env("UNICA_PROVIDER_STATE_DIR", fs::canonicalize(&state).unwrap())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("start canonical Unica MCP");
+    let mut stdin = child.stdin.take().expect("MCP stdin");
+    let stdout = child.stdout.take().expect("MCP stdout");
+    let (line_sender, lines) = mpsc::channel();
+    let stdout_reader = std::thread::spawn(move || read_stdout_lines(stdout, line_sender));
+
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "project-health-test", "version": "1"}}
+    });
+    send(&mut stdin, &initialize);
+    receive(&mut child, &lines, &initialize["id"]);
+    send(
+        &mut stdin,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
+    );
+    let view = serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "unica.view", "arguments": {}}
+    });
+    send(&mut stdin, &view);
+    let response = receive(&mut child, &lines, &view["id"]);
+
+    drop(stdin);
+    let deadline = Instant::now() + RESPONSE_DEADLINE;
+    loop {
+        if child.try_wait().expect("poll MCP exit").is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    stdout_reader.join().expect("join MCP stdout reader");
+
+    let structured = response["result"]["structuredContent"].clone();
+    let ok = structured["ok"] == Value::Bool(true);
+    let errors = structured["diagnostics"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("message").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    StatusResult {
+        ok,
+        errors,
+        data: Some(structured["data"].clone()),
+    }
 }
 
 fn assert_repository_check_status(

@@ -45,12 +45,9 @@ impl SurfaceRelease {
 }
 /// How much of a logical address a bridged reader can actually use. Publishing
 /// `metadataPath` on a tool that never reads one would be a lie in the schema,
-/// so the three cases are distinguished rather than collapsed into a flag.
+/// so the two cases are distinguished rather than collapsed into a flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LogicalAddress {
-    /// The target is the source root itself: `unica.cf.*` reads
-    /// `Configuration.xml`, which has no address.
-    Absent,
     /// The address narrows the read, and its absence selects the whole set:
     /// `unica.subsystem.info` answers with the entire registered tree.
     Optional,
@@ -62,13 +59,9 @@ impl LogicalAddress {
     /// The arguments the logical branch requires.
     const fn required_args(self) -> &'static [&'static str] {
         match self {
-            Self::Absent | Self::Optional => &["sourceSet"],
+            Self::Optional => &["sourceSet"],
             Self::Required => &["sourceSet", "metadataPath"],
         }
-    }
-
-    const fn publishes_address(self) -> bool {
-        !matches!(self, Self::Absent)
     }
 }
 
@@ -76,7 +69,6 @@ impl LogicalAddress {
 /// argument, and how much address the tool takes. Removing the legacy column is
 /// the separate per-tool slice ADR-0021 §13 requires.
 const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
-    ("unica.cf.info", "ConfigPath", LogicalAddress::Absent),
     (
         "unica.subsystem.info",
         "SubsystemPath",
@@ -102,7 +94,6 @@ pub(crate) enum ReaderMigrationMode {
 /// Production-owned migration inventory. Schema routing and parity evidence
 /// consume this exact owner rather than maintaining independent reader lists.
 const READER_MIGRATION_INVENTORY: &[(&str, ReaderMigrationMode)] = &[
-    ("unica.cf.info", ReaderMigrationMode::Bridge),
     ("unica.subsystem.info", ReaderMigrationMode::Bridge),
     ("unica.role.info", ReaderMigrationMode::Bridge),
     ("unica.form.info", ReaderMigrationMode::Bridge),
@@ -128,7 +119,6 @@ pub(crate) fn authoritative_reader_migration_inventory(
 /// case, with different semantics, in one schema.
 fn unpublished_bridge_args(name: &str) -> &'static [&'static str] {
     match bridged_selector(name) {
-        Some((_, address)) if !address.publishes_address() => &["metadataPath", "MetadataPath"],
         Some(_) => &["MetadataPath"],
         None => &[],
     }
@@ -198,16 +188,6 @@ const XDTO_EDIT_OPS: &[&str] = &[
     "addProperty",
     "removeType",
     "removeProperty",
-];
-/// ADR-0071: the retired flat form of `unica.xdto.edit`. Any of these at the
-/// top level fails closed with `legacy_arguments_removed` before dispatch.
-const XDTO_EDIT_LEGACY_ARGS: &[&str] = &[
-    "operation",
-    "name",
-    "base",
-    "typeName",
-    "propertyPath",
-    "property",
 ];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
@@ -1163,7 +1143,6 @@ pub fn validate_tool_argument_shape(
         );
     }
     validate_removed_target_arguments(tool, args)?;
-    validate_removed_xdto_edit_arguments(tool, args)?;
     let allowed = allowed_args(&tool).into_iter().collect::<BTreeSet<_>>();
     for key in args.keys() {
         if !allowed.contains(key.as_str()) {
@@ -1253,7 +1232,7 @@ fn validate_tool_arguments(
 }
 
 fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
-    if !matches!(tool.name, "unica.xdto.info" | "unica.xdto.edit") {
+    if tool.name != "unica.xdto.info" {
         return Ok(());
     }
     let source_set = xdto_required_string(tool.name, args, "sourceSet")?;
@@ -1660,28 +1639,6 @@ fn validate_removed_target_arguments(
     {
         return Err(
             "legacy_target_removed: unica.code.diagnostics no longer accepts `mode`, `sourceDir`, or `path`; use `action + sourceSet` and `metadataPath` for findings"
-                .to_string(),
-        );
-    }
-    Ok(())
-}
-
-/// ADR-0071: the flat single-operation form of `unica.xdto.edit` is retired.
-/// The check precedes unknown-argument validation so the caller of the old
-/// contract gets the stable migration code, not a spelling suggestion.
-fn validate_removed_xdto_edit_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    if tool.name != "unica.xdto.edit" {
-        return Ok(());
-    }
-    if XDTO_EDIT_LEGACY_ARGS
-        .iter()
-        .any(|field| args.contains_key(*field))
-    {
-        return Err(
-            "legacy_arguments_removed: unica.xdto.edit no longer accepts `operation`, `name`, `base`, `typeName`, `propertyPath`, or `property` at the top level; pass one element of the typed `operations` array instead"
                 .to_string(),
         );
     }
@@ -2674,7 +2631,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::Documentation { operation: "get" } => names.extend(DOCUMENTATION_GET_ARGS),
         ToolHandler::Documentation { .. } => names.extend(DOCUMENTATION_SEARCH_ARGS),
-        ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
+        ToolHandler::ProjectMap => {}
     }
     if tool.name == "unica.mxl.decompile" {
         names.retain(|name| *name != "OutputPath" && *name != "outputPath");
@@ -2683,16 +2640,9 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     // readers, so the narrow reader lists and the shared validator list cannot
     // drift apart. Narrowing the validator lists themselves is a separate
     // contract question and stays out of this bridge.
-    if let Some((_, address)) = bridged_selector(tool.name) {
+    if bridged_selector(tool.name).is_some() {
         names.push("sourceSet");
-        if address.publishes_address() {
-            names.push("metadataPath");
-        }
-        // A tool whose branches cannot honour an address does not gain one
-        // here, but it does not lose one either: the shared catch-all already
-        // handed `metadataPath` to every native tool, and this bridge removes
-        // nothing. It stays accepted and is filtered out of the published
-        // schema by `unpublished_bridge_args`.
+        names.push("metadataPath");
     }
     names.sort_unstable();
     names.dedup();
@@ -2763,7 +2713,6 @@ fn code_args_for(tool_name: &str) -> &'static [&'static str] {
     match tool_name {
         "unica.code.search" => CODE_SEARCH_ARGS,
         "unica.code.definition" => CODE_DEFINITION_ARGS,
-        "unica.code.outline" => CODE_OUTLINE_ARGS,
         "unica.code.graph" => CODE_GRAPH_ARGS,
         _ => CODE_ARGS,
     }
@@ -2875,7 +2824,6 @@ fn property_schema(name: &str) -> Value {
             | "usePrivilegedMode"
             | "waitForExit"
             | "webClient"
-            | "includeMethods"
     ) {
         "boolean"
     } else if matches!(name, "definition" | "property") {
@@ -3183,10 +3131,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "ignoreTags",
         "Array of Vanessa Automation tags to exclude for operation test with testRunner va; each entry becomes one --ignore-tag",
-    ),
-    (
-        "includeMethods",
-        "Boolean for unica.code.outline controlling whether method entries appear in the outline; defaults to true",
     ),
     (
         "incorrectReferences",
@@ -3694,7 +3638,7 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             _ => property_schema(name),
         };
     }
-    if matches!(tool.name, "unica.xdto.info" | "unica.xdto.edit") {
+    if tool.name == "unica.xdto.info" {
         return match name {
             "sourceSet" => json!({
                 "type": "string",
@@ -4046,7 +3990,6 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "usePrivilegedMode"
             | "waitForExit"
             | "webClient"
-            | "includeMethods"
     ) {
         Some("boolean")
     } else if key == "query" {
@@ -4153,7 +4096,6 @@ pub(crate) mod tests {
                 MetadataOperation::Info => "unica.meta.info",
                 MetadataOperation::Add => "unica.meta.add",
                 MetadataOperation::Edit => "unica.meta.edit",
-                MetadataOperation::Remove => "unica.meta.remove",
             },
             description: "direct metadata contract test",
             execution: if matches!(operation, MetadataOperation::Info) {
@@ -4249,18 +4191,6 @@ pub(crate) mod tests {
                 vec!["cwd", "dryRun", "metadataPath", "operations", "sourceSet"],
                 json!(["sourceSet", "metadataPath", "operations"]),
             ),
-            (
-                MetadataOperation::Remove,
-                vec![
-                    "confirm",
-                    "cwd",
-                    "dryRun",
-                    "force",
-                    "metadataPath",
-                    "sourceSet",
-                ],
-                json!(["sourceSet", "metadataPath"]),
-            ),
         ];
 
         for (operation, properties, required) in cases {
@@ -4285,11 +4215,7 @@ pub(crate) mod tests {
             ])
         );
 
-        for operation in [
-            MetadataOperation::Add,
-            MetadataOperation::Edit,
-            MetadataOperation::Remove,
-        ] {
+        for operation in [MetadataOperation::Add, MetadataOperation::Edit] {
             let schema = input_schema_for_tool(&metadata_tool(operation));
             assert_eq!(schema["properties"]["dryRun"]["default"], true);
         }
@@ -4525,12 +4451,7 @@ pub(crate) mod tests {
             .as_str()
             .is_some_and(|description| description.contains("replace-only")));
 
-        let schemas = [
-            info,
-            add,
-            edit,
-            input_schema_for_tool(&metadata_tool(MetadataOperation::Remove)),
-        ];
+        let schemas = [info, add, edit];
         let mut published_property_names = Vec::new();
         for schema in &schemas {
             collect_schema_property_names(schema, &mut published_property_names);
@@ -4563,12 +4484,7 @@ pub(crate) mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             published,
-            vec![
-                "unica.meta.info",
-                "unica.meta.add",
-                "unica.meta.edit",
-                "unica.meta.remove",
-            ]
+            vec!["unica.meta.info", "unica.meta.add", "unica.meta.edit",]
         );
     }
 
@@ -4901,7 +4817,6 @@ pub(crate) mod tests {
                 "dcs-edit",
                 "epf-init",
                 "erf-init",
-                "form-remove",
                 "interface-edit",
                 "subsystem-edit",
             ],
@@ -4974,10 +4889,10 @@ pub(crate) mod tests {
     fn native_contracts_reject_unknown_args() {
         let tool = tools()
             .into_iter()
-            .find(|tool| tool.name == "unica.cf.info")
+            .find(|tool| tool.name == "unica.role.info")
             .unwrap();
         let mut args = Map::new();
-        args.insert("ConfigPath".to_string(), json!("Configuration.xml"));
+        args.insert("RightsPath".to_string(), json!("src/Rights.xml"));
         args.insert("unknown".to_string(), json!("value"));
 
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
@@ -5107,19 +5022,13 @@ pub(crate) mod tests {
     #[test]
     fn read_only_native_tools_reject_out_file_arguments() {
         let required_path = |name: &str| match name {
-            "unica.cf.info" => ("ConfigPath", "src"),
             "unica.subsystem.info" => ("SubsystemPath", "src/Subsystems/Main.xml"),
             "unica.dcs.info" => ("TemplatePath", "src/Template.xml"),
             "unica.role.info" => ("RightsPath", "src/Rights.xml"),
             _ => unreachable!("unexpected read-only tool"),
         };
 
-        for name in [
-            "unica.cf.info",
-            "unica.subsystem.info",
-            "unica.dcs.info",
-            "unica.role.info",
-        ] {
+        for name in ["unica.subsystem.info", "unica.dcs.info", "unica.role.info"] {
             let tool = tools()
                 .into_iter()
                 .find(|tool| tool.name == name)
@@ -5181,575 +5090,6 @@ pub(crate) mod tests {
         let mut selector_without_position = tail;
         selector_without_position.insert("selector".to_string(), json!({"method": "Run"}));
         assert!(validate_tool_arguments(tool, &selector_without_position, false).is_err());
-    }
-
-    #[test]
-    fn xdto_contract_publishes_and_enforces_typed_arguments() {
-        let info = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.info")
-            .unwrap();
-        let edit = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.edit")
-            .unwrap();
-        let info_schema = input_schema_for_tool(&info);
-        let edit_schema = input_schema_for_tool(&edit);
-        let info_validator = jsonschema::validator_for(&info_schema).unwrap();
-        let edit_validator = jsonschema::validator_for(&edit_schema).unwrap();
-
-        assert!(info_validator.is_valid(&json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3"
-        })));
-        assert!(!info_validator.is_valid(&json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"
-        })));
-        assert!(!info_validator.is_valid(&json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-            "typeName": "Document",
-            "limit": 1
-        })));
-        assert_eq!(info_schema["properties"]["limit"]["maximum"], 50);
-
-        let valid_calls = [
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [
-                    {"op": "addValueType", "name": "Document", "base": "xs:string"}
-                ]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addObjectType", "name": "Document"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "propertyPath": "ObjectRef.Nested",
-                    "property": {"name": "Document", "type": "tns:Document", "minOccurs": 0}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "removeType", "name": "Document"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "removeProperty",
-                    "typeName": "AnyRef",
-                    "propertyPath": "ObjectRef.Nested",
-                    "name": "Document"
-                }]
-            }),
-            // ADR-0071: one call carries an ordered batch in one transaction.
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [
-                    {"op": "addObjectType", "name": "Order"},
-                    {"op": "addProperty", "typeName": "Order",
-                     "property": {"name": "Ref", "type": "tns:Document"}}
-                ]
-            }),
-        ];
-        // ADR-0025 §4: the union lives directly in properties.operations.items;
-        // the tool publishes no top-level conditional composition.
-        assert!(edit_schema.get("oneOf").is_none());
-        assert!(edit_schema.get("allOf").is_none());
-        assert!(edit_schema.get("not").is_none());
-        assert_eq!(
-            edit_schema["required"],
-            json!(["sourceSet", "metadataPath", "operations"])
-        );
-        assert_eq!(edit_schema["properties"]["dryRun"]["default"], true);
-        assert_eq!(edit_schema["properties"]["operations"]["minItems"], 1);
-        let variants = edit_schema["properties"]["operations"]["items"]["oneOf"]
-            .as_array()
-            .expect("closed operation union");
-        assert_eq!(variants.len(), XDTO_EDIT_OPS.len());
-        for (variant, op) in variants.iter().zip(XDTO_EDIT_OPS) {
-            assert_eq!(variant["properties"]["op"]["enum"], json!([op]));
-            assert_eq!(variant["additionalProperties"], false);
-            assert_eq!(
-                variant["required"]
-                    .as_array()
-                    .and_then(|required| required.first()),
-                Some(&json!("op")),
-                "variant `{op}` must require its tag first"
-            );
-        }
-        for call in &valid_calls {
-            assert!(edit_validator.is_valid(call), "schema rejected {call}");
-            for dry_run in [true, false] {
-                validate_tool_arguments(edit, call.as_object().unwrap(), dry_run)
-                    .unwrap_or_else(|error| panic!("dryRun={dry_run} rejected {call}: {error}"));
-            }
-        }
-        let unicode_ncname = json!({
-            "sourceSet": "configuration",
-            "metadataPath": "ПакетXDTO.Обмен",
-            "operations": [{"op": "addObjectType", "name": "A·B́"}]
-        });
-        assert!(edit_validator.is_valid(&unicode_ncname));
-        validate_tool_arguments(edit, unicode_ncname.as_object().unwrap(), true).unwrap();
-
-        // The retired flat form fails closed with a stable code naming the
-        // typed replacement (ADR-0071).
-        let legacy = json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-            "operation": "add-object-type",
-            "name": "Document"
-        });
-        assert!(
-            !edit_validator.is_valid(&legacy),
-            "schema accepted {legacy}"
-        );
-        for dry_run in [true, false] {
-            let error = validate_tool_arguments(edit, legacy.as_object().unwrap(), dry_run)
-                .expect_err("legacy flat form must fail before dispatch");
-            assert!(
-                error.contains("legacy_arguments_removed") && error.contains("operations"),
-                "unexpected legacy rejection: {error}"
-            );
-        }
-
-        // An element failure names the exact operations[<index>] element.
-        let second_element_broken = json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-            "operations": [
-                {"op": "addObjectType", "name": "Document"},
-                {"op": "addValueType", "name": "Document"}
-            ]
-        });
-        assert!(!edit_validator.is_valid(&second_element_broken));
-        let error = validate_tool_arguments(edit, second_element_broken.as_object().unwrap(), true)
-            .expect_err("missing base must fail");
-        assert!(error.contains("operations[1]"), "{error}");
-
-        let element_required: &[(&str, &[&str], &str)] = &[
-            ("addValueType", &["name", "base"], "typeName"),
-            ("addObjectType", &["name"], "base"),
-            ("addProperty", &["typeName", "property"], "name"),
-            ("removeType", &["name"], "base"),
-            ("removeProperty", &["typeName", "name"], "base"),
-        ];
-        for (call, (op, required, extra)) in valid_calls.iter().zip(element_required) {
-            let element = call["operations"][0].as_object().unwrap().clone();
-            assert_eq!(&element["op"], &json!(op));
-            for field in *required {
-                let mut missing_element = element.clone();
-                missing_element.remove(*field);
-                let mut missing = call.as_object().unwrap().clone();
-                missing.insert("operations".to_string(), json!([missing_element]));
-                let missing = Value::Object(missing);
-                assert!(
-                    !edit_validator.is_valid(&missing),
-                    "schema accepted {missing}"
-                );
-                for dry_run in [true, false] {
-                    assert!(
-                        validate_tool_arguments(edit, missing.as_object().unwrap(), dry_run)
-                            .is_err(),
-                        "runtime accepted dryRun={dry_run}: {missing}"
-                    );
-                }
-            }
-            let mut extra_element = element.clone();
-            extra_element.insert(
-                (*extra).to_string(),
-                if *extra == "base" {
-                    json!("xs:string")
-                } else {
-                    json!("Value")
-                },
-            );
-            let mut incompatible = call.as_object().unwrap().clone();
-            incompatible.insert("operations".to_string(), json!([extra_element]));
-            let incompatible = Value::Object(incompatible);
-            assert!(
-                !edit_validator.is_valid(&incompatible),
-                "schema accepted {incompatible}"
-            );
-            for dry_run in [true, false] {
-                assert!(
-                    validate_tool_arguments(edit, incompatible.as_object().unwrap(), dry_run)
-                        .is_err(),
-                    "runtime accepted dryRun={dry_run}: {incompatible}"
-                );
-            }
-        }
-        for field in ["sourceSet", "metadataPath", "operations"] {
-            let mut missing = valid_calls[0].as_object().unwrap().clone();
-            missing.remove(field);
-            for dry_run in [true, false] {
-                assert!(
-                    validate_tool_arguments(edit, &missing, dry_run).is_err(),
-                    "runtime accepted missing {field} with dryRun={dry_run}"
-                );
-            }
-        }
-
-        let invalid_calls = [
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": []
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": {"op": "addObjectType", "name": "Document"}
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addObjectType"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addObjectType", "name": "Document", "base": "xs:string"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document"}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "propertyPath": "ObjectRef..Nested",
-                    "property": {"name": "Document", "type": "tns:Document"}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document", "type": "tns:Document", "minOccurs": 2}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addValueType", "name": "bad:name", "base": "xs:string"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addValueType", "name": "Document", "base": "xs::string"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addObjectType", "name": 1}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addValueType", "name": "Document", "base": 1}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": 1,
-                    "property": {"name": "Document", "type": "tns:Document"}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "removeProperty",
-                    "typeName": "AnyRef",
-                    "name": "Document",
-                    "propertyPath": 1
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document", "type": "tns:Document", "minOccurs": -1}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document", "type": "tns:Document", "minOccurs": "0"}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document", "type": "tns:Document", "extra": true}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "renameType", "name": "Document"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": " addObjectType", "name": "Document"}]
-            }),
-            json!({
-                "sourceSet": " configuration ",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addObjectType", "name": "Document"}]
-            }),
-        ];
-        for call in &invalid_calls {
-            assert!(!edit_validator.is_valid(call), "schema accepted {call}");
-            for dry_run in [true, false] {
-                assert!(
-                    validate_tool_arguments(edit, call.as_object().unwrap(), dry_run).is_err(),
-                    "runtime accepted dryRun={dry_run}: {call}"
-                );
-            }
-        }
-
-        for dry_run in [true, false] {
-            assert!(validate_tool_arguments(edit, &Map::new(), dry_run).is_err());
-            assert!(validate_tool_arguments(info, &Map::new(), dry_run).is_err());
-        }
-
-        for invalid in [
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "typeName": "bad:name"
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "typeName": 1
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "limit": 51
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "typeName": "Document",
-                "cursor": "nav1-token"
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.Enterprise.Data"
-            }),
-        ] {
-            assert!(
-                !info_validator.is_valid(&invalid),
-                "schema accepted {invalid}"
-            );
-            assert!(
-                validate_tool_arguments(info, invalid.as_object().unwrap(), false).is_err(),
-                "runtime accepted {invalid}"
-            );
-        }
-
-        let invalid_path = json!({
-            "sourceSet": "configuration",
-            "metadataPath": "Package.bin"
-        });
-        assert!(validate_tool_arguments(info, invalid_path.as_object().unwrap(), false).is_err());
-        let invalid_property = json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-            "operations": [{
-                "op": "addProperty",
-                "typeName": "AnyRef",
-                "property": {"name": "Document", "type": "Document", "upperBound": 1}
-            }]
-        });
-        assert!(
-            validate_tool_arguments(edit, invalid_property.as_object().unwrap(), false).is_err()
-        );
-    }
-
-    #[test]
-    fn xdto_qname_schema_and_runtime_require_an_unpadded_prefix() {
-        let edit = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.edit")
-            .unwrap();
-        let schema = input_schema_for_tool(&edit);
-        let validator = jsonschema::validator_for(&schema).unwrap();
-        let value_type = |base: &str| {
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addValueType", "name": "Document", "base": base}]
-            })
-        };
-        let property = |type_ref: &str| {
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document", "type": type_ref}
-                }]
-            })
-        };
-
-        for call in [value_type("xs:string"), property("tns:Document")] {
-            assert!(validator.is_valid(&call), "schema rejected {call}");
-            validate_tool_arguments(edit, call.as_object().unwrap(), true)
-                .unwrap_or_else(|error| panic!("runtime rejected {call}: {error}"));
-        }
-
-        for call in [
-            value_type("string"),
-            value_type(" xs:string"),
-            value_type("xs:string "),
-            property("Document"),
-            property(" tns:Document"),
-            property("tns:Document "),
-        ] {
-            assert!(!validator.is_valid(&call), "schema accepted {call}");
-            assert!(
-                validate_tool_arguments(edit, call.as_object().unwrap(), true).is_err(),
-                "runtime accepted {call}"
-            );
-        }
-    }
-
-    #[test]
-    fn xdto_published_patterns_do_not_embed_astral_code_points() {
-        let info = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.info")
-            .unwrap();
-        let edit = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.edit")
-            .unwrap();
-        let info_schema = input_schema_for_tool(&info);
-        let edit_schema = input_schema_for_tool(&edit);
-        let union = &edit_schema["properties"]["operations"]["items"]["oneOf"];
-        let patterns = [
-            &info_schema["properties"]["metadataPath"]["pattern"],
-            &info_schema["properties"]["typeName"]["pattern"],
-            &edit_schema["properties"]["metadataPath"]["pattern"],
-            &union[0]["properties"]["name"]["pattern"],
-            &union[0]["properties"]["base"]["pattern"],
-            &union[2]["properties"]["typeName"]["pattern"],
-            &union[2]["properties"]["propertyPath"]["pattern"],
-            &union[2]["properties"]["property"]["properties"]["name"]["pattern"],
-            &union[2]["properties"]["property"]["properties"]["type"]["pattern"],
-        ];
-
-        for pattern in patterns {
-            let pattern = pattern.as_str().expect("XDTO pattern must be a string");
-            assert!(
-                pattern.chars().all(|character| character <= '\u{ffff}'),
-                "published ECMAScript pattern embeds an astral code point: {pattern}"
-            );
-        }
-    }
-
-    #[test]
-    fn xdto_runtime_keeps_the_full_xml_ncname_range() {
-        let edit = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.edit")
-            .unwrap();
-        let astral_name = "\u{10000}";
-        let call = json!({
-            "sourceSet": "configuration",
-            "metadataPath": format!("XDTOPackage.{astral_name}"),
-            "operations": [{
-                "op": "addProperty",
-                "typeName": astral_name,
-                "propertyPath": format!("{astral_name}.{astral_name}"),
-                "property": {
-                    "name": astral_name,
-                    "type": format!("{astral_name}:{astral_name}")
-                }
-            }]
-        });
-
-        validate_tool_arguments(edit, call.as_object().unwrap(), true)
-            .unwrap_or_else(|error| panic!("runtime rejected XML astral NCNames: {error}"));
-    }
-
-    #[test]
-    fn xdto_property_path_schema_and_runtime_share_the_escape_grammar() {
-        let edit = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.edit")
-            .unwrap();
-        let schema = input_schema_for_tool(&edit);
-        let validator = jsonschema::validator_for(&schema).unwrap();
-        let call = |property_path: &str| {
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "propertyPath": property_path,
-                    "property": {"name": "Document", "type": "tns:Document"}
-                }]
-            })
-        };
-
-        for property_path in [r"A\.B", r"A\.B.Child", "A.Child"] {
-            let call = call(property_path);
-            assert!(validator.is_valid(&call), "schema rejected {call}");
-            validate_tool_arguments(edit, call.as_object().unwrap(), true)
-                .unwrap_or_else(|error| panic!("runtime rejected {call}: {error}"));
-        }
-
-        for property_path in [
-            "", ".A", "A.", "A..B", r"\A", r"A\B", "A\\", r"A\\.B", r"A\.B\C",
-        ] {
-            let call = call(property_path);
-            assert!(!validator.is_valid(&call), "schema accepted {call}");
-            assert!(
-                validate_tool_arguments(edit, call.as_object().unwrap(), true).is_err(),
-                "runtime accepted {call}"
-            );
-        }
     }
 
     #[test]
@@ -5879,10 +5219,9 @@ pub(crate) mod tests {
                 properties.contains_key(*legacy),
                 "{name} must keep `{legacy}` until its own removal slice"
             );
-            assert_eq!(
+            assert!(
                 properties.contains_key("metadataPath"),
-                address.publishes_address(),
-                "{name} publishes `metadataPath` only when it can use one"
+                "{name} publishes `metadataPath`"
             );
 
             let mut forbidden_in_legacy = address
@@ -5913,23 +5252,6 @@ pub(crate) mod tests {
                 "{name} has no unconditionally required selector"
             );
         }
-    }
-
-    #[test]
-    fn bridged_readers_that_have_no_address_do_not_publish_one() {
-        // `unica.cf.*` reads `Configuration.xml` at the root of a source set,
-        // so no branch of its schema can honour an address. Publishing one
-        // would advertise a selector the tool cannot use.
-        let name = "unica.cf.info";
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == name)
-            .expect("tool is registered");
-        let schema = input_schema_for_tool(&tool);
-        assert!(
-            schema["properties"].get("metadataPath").is_none(),
-            "{name} publishes an address it cannot use: {schema}"
-        );
     }
 
     /// The bridged tools whose arguments come from `NATIVE_XML_DSL_ARGS`. The
@@ -5963,11 +5285,7 @@ pub(crate) mod tests {
                 properties.get("MetadataPath").is_none(),
                 "{name} publishes `MetadataPath` beside a selector it does not drive: {schema}"
             );
-            assert_eq!(
-                properties.contains_key("metadataPath"),
-                address.publishes_address(),
-                "{name}"
-            );
+            assert!(properties.contains_key("metadataPath"), "{name}");
 
             // Only the tools that drew from the shared catch-all ever accepted
             // it. The six `*.info` readers have carried narrow lists since
@@ -6050,7 +5368,6 @@ pub(crate) mod tests {
     #[test]
     fn bridged_reader_selector_schema_contract_is_complete() {
         bridged_readers_publish_two_mutually_exclusive_selector_branches();
-        bridged_readers_that_have_no_address_do_not_publish_one();
         bridged_readers_refuse_two_selectors_at_once();
         bridged_readers_still_refuse_a_call_with_no_selector();
         bridged_readers_accept_either_selector_on_its_own();
@@ -6062,7 +5379,6 @@ pub(crate) mod tests {
         assert_eq!(
             inventory,
             vec![
-                ("unica.cf.info", ReaderMigrationMode::Bridge),
                 ("unica.subsystem.info", ReaderMigrationMode::Bridge),
                 ("unica.role.info", ReaderMigrationMode::Bridge),
                 ("unica.form.info", ReaderMigrationMode::Bridge),
@@ -6240,10 +5556,6 @@ pub(crate) mod tests {
                 entry("form-edit", "32016:c091f5e4c8fe6835"),
             ),
             (
-                "unica.form.remove",
-                entry("form-remove", "32225:41144b8a4d71de9c"),
-            ),
-            (
                 "unica.interface.edit",
                 entry("interface-edit", "31248:b6f1a20a2f4a1dde"),
             ),
@@ -6254,10 +5566,6 @@ pub(crate) mod tests {
             (
                 "unica.meta.edit",
                 entry("metadata:Edit", "28145:c93c0b516cc77cf1"),
-            ),
-            (
-                "unica.meta.remove",
-                entry("metadata:Remove", "1025:b8843dc27d6b5b7e"),
             ),
             (
                 "unica.mxl.compile",
@@ -6278,10 +5586,6 @@ pub(crate) mod tests {
             (
                 "unica.subsystem.edit",
                 entry("subsystem-edit", "31164:52fff7efa16e1c71"),
-            ),
-            (
-                "unica.xdto.edit",
-                entry("xdto-edit", "6126:3957bd36139d3b35"),
             ),
         ]);
         assert_eq!(actual, expected);
@@ -6357,17 +5661,6 @@ pub(crate) mod tests {
                 fields(&["cwd", "limit", "metadataPath", "sections", "sourceSet"]),
             ),
             (
-                "unica.meta.remove",
-                fields(&[
-                    "confirm",
-                    "cwd",
-                    "dryRun",
-                    "force",
-                    "metadataPath",
-                    "sourceSet",
-                ]),
-            ),
-            (
                 "unica.role.edit",
                 fields(&["dryRun", "metadataPath", "operations", "sourceSet"]),
             ),
@@ -6392,17 +5685,6 @@ pub(crate) mod tests {
                     "metadataPath",
                     "scope",
                     "snapshotId",
-                    "sourceSet",
-                ]),
-            ),
-            (
-                "unica.xdto.edit",
-                fields(&[
-                    "confirm",
-                    "cwd",
-                    "dryRun",
-                    "metadataPath",
-                    "operations",
                     "sourceSet",
                 ]),
             ),
@@ -6546,44 +5828,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn meta_remove_does_not_publish_keep_files() {
-        let remove = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.meta.remove")
-            .expect("unica.meta.remove must be registered");
-        let schema = input_schema_for_tool(&remove);
-
-        assert!(schema["properties"]["KeepFiles"].is_null());
-        assert!(schema["properties"]["keepFiles"].is_null());
-        for spelling in ["KeepFiles", "keepFiles"] {
-            let error = validate_tool_arguments(
-                remove,
-                json!({
-                    "sourceSet": "main",
-                    "metadataPath": "Catalog.Legacy",
-                    spelling: true,
-                })
-                .as_object()
-                .expect("test arguments must be an object"),
-                false,
-            )
-            .expect_err("meta.remove must reject the retired keep-files flag");
-            assert!(error.contains(&format!("does not accept argument `{spelling}`")));
-        }
-    }
-
-    #[test]
     fn native_required_paths_publish_canonical_json_schema_only() {
         let cases = [
-            (
-                "unica.cf.info",
-                json!({"ConfigPath": "src"}),
-                vec![
-                    json!({"configPath": "src"}),
-                    json!({"Path": "src"}),
-                    json!({"path": "src"}),
-                ],
-            ),
             (
                 "unica.form.edit",
                 json!({"FormPath": "Ext/Form.xml", "definition": {}}),
@@ -7440,10 +6686,6 @@ pub(crate) mod tests {
             .into_iter()
             .find(|tool| tool.name == "unica.code.definition")
             .expect("unica.code.definition must be registered");
-        let outline = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.code.outline")
-            .expect("unica.code.outline must be registered");
         let search = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.code.search")
@@ -7456,15 +6698,6 @@ pub(crate) mod tests {
         assert!(definition_schema["properties"].get("args").is_none());
         assert_eq!(definition_schema["properties"]["limit"]["type"], "integer");
         assert_eq!(definition_schema["required"], json!(["name"]));
-
-        let outline_schema = input_schema_for_tool(&outline);
-        assert_eq!(outline_schema["additionalProperties"], false);
-        assert!(outline_schema["properties"].get("path").is_some());
-        assert_eq!(
-            outline_schema["properties"]["includeMethods"]["type"],
-            "boolean"
-        );
-        assert_eq!(outline_schema["required"], json!(["path"]));
 
         let search_schema = input_schema_for_tool(&search);
         assert_eq!(search_schema["additionalProperties"], false);
@@ -7642,20 +6875,7 @@ pub(crate) mod tests {
     /// to the pinned set: losing it would be as invisible as losing the path.
     #[test]
     fn every_narrowed_reader_publishes_its_exact_argument_set() {
-        let cases: [(&str, &[&str], &[&str]); 8] = [
-            (
-                "unica.cf.info",
-                &["ConfigPath", "confirm", "cwd", "sourceSet"],
-                &[
-                    "ConfigPath",
-                    "Path",
-                    "configPath",
-                    "confirm",
-                    "cwd",
-                    "path",
-                    "sourceSet",
-                ],
-            ),
+        let cases: [(&str, &[&str], &[&str]); 7] = [
             (
                 "unica.role.info",
                 &[
@@ -7849,7 +7069,6 @@ pub(crate) mod tests {
     #[test]
     fn no_narrowed_reader_falls_back_to_the_native_catch_all() {
         for name in [
-            "unica.cf.info",
             "unica.role.info",
             "unica.subsystem.info",
             "unica.dcs.info",

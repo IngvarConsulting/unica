@@ -414,12 +414,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             ungated,
-            [
-                "unica.role.edit",
-                "unica.code.patch",
-                "unica.xdto.info",
-                "unica.xdto.edit",
-            ],
+            ["unica.role.edit", "unica.code.patch", "unica.xdto.info",],
             "logical target handlers have no physical path at the common context gate",
         );
 

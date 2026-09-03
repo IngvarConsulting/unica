@@ -7,7 +7,7 @@ description: "Поиск и исследование BSL-кода и точек 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.meta.info`, and `unica.view {}`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.meta.info`, and `unica.view {}`.
 - Use object-specific `unica.*.info` tools when code behavior depends on metadata, forms, DCS, roles, or HTTP service structure.
 - Do not call internal code-index, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 - `sourceSet` — это имя набора исходников из `v8project.yaml`, а не
@@ -21,7 +21,7 @@ description: "Поиск и исследование BSL-кода и точек 
   `unica.code.*` / `unica.meta.*` attempts did not close the context gap, and
   report what was tried when that fallback matters to the answer.
 - Use `unica.code.definition` for an exact procedure/function definition by name, especially exported methods.
-- Use `unica.code.outline` before reading a large module; it gives regions, header context, and method ranges.
+- Use `unica.view` on the module node (its `Method` branch lists the methods) before reading a large module; it gives regions, header context, and method ranges.
 - Use `unica.code.search` for arbitrary text, XML, query fragments, string literals, captions, and non-method tokens. Read its role sections independently: `semantic`, `symbol`, then `lexical`; `provider` only reports the replaceable implementation that produced a section.
 - `unica.code.search.limit` is the per-provider result cap: `1..50`, default `20`.
 - Prefer the logical selector `sourceSet` from `unica.view {}`; add
@@ -51,7 +51,7 @@ description: "Поиск и исследование BSL-кода и точек 
 
 1. Map the workspace with `unica.view {}` when the active source-set or source format is unclear.
 2. For an exact metadata object name, call `unica.meta.info` before broad search to identify related modules, rights, subscriptions, and functional options.
-3. Resolve exact method names with `unica.code.definition`; inspect large candidate modules with `unica.code.outline`.
+3. Resolve exact method names with `unica.code.definition`; inspect large candidate modules with `unica.view` on the module node (its `Method` branch lists the methods).
 4. For flow questions, resolve the node and ask `unica.code.graph` for callers, callees, or neighbors before treating lexical hits as execution flow.
 5. Search exact identifiers next: object names, module names, event handlers, exported procedures, command names, URL templates.
 6. Use `unica.code.search` for raw text fragments that are not BSL method names and inspect its role-local sections independently, including incomplete or unavailable roles.

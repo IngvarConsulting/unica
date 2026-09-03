@@ -131,14 +131,12 @@ pub(crate) use info::{
     with_subsystem_evidence_processing_hook, RegistrarProcessingPhase,
     SubsystemEvidenceProcessingPhase,
 };
-pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add, prepare_meta_remove};
+pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add};
 #[cfg(test)]
 pub(crate) use publisher::{
     with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
 };
 pub(crate) use remove::remove_metadata_child_text_with_flag;
-#[cfg(test)]
-pub(crate) use remove::with_meta_remove_before_reauthorization_hook;
 #[cfg(test)]
 pub(crate) use template_catalog::emit_meta_internal_info;
 pub(crate) use template_catalog::metadata_generated_types_8_3_27;

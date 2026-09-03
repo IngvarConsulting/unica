@@ -1231,7 +1231,7 @@ def sample_bsl_search(bsp_root: Path) -> tuple[str, str] | None:
 
 def project_probe_scenarios() -> list[tuple[str, str, str, dict[str, Any], bool, bool]]:
     return [
-        ("project-status", "Workspace status", "unica.project.status", {}, True, True),
+        ("project-status", "Workspace status", "unica.view", {}, True, True),
         ("project-map", "Workspace source-set map", "unica.project.map", {}, True, True),
     ]
 
@@ -1249,7 +1249,7 @@ def base_tool_scenarios(
         code_search_args = {"sourceSet": source_set, "query": query, "limit": 20}
 
     scenarios: list[tuple[str, str, str, dict[str, Any], bool, bool]] = [
-        ("cf-info", "BSP Configuration.xml overview", "unica.cf.info", {"ConfigPath": SOURCE_DIR}, True, True),
+        ("cf-info", "BSP Configuration.xml overview", "unica.view", {"at": f"{source_set}:Configuration"}, True, True),
         (
             "code-diagnostics-analyze",
             "BSL diagnostics source-set analysis",
@@ -1267,18 +1267,6 @@ def base_tool_scenarios(
             True,
         ),
     ]
-    bsl_path = sample_bsl_path(bsp_root)
-    if bsl_path:
-        scenarios.append(
-            (
-                "code-outline-sample",
-                "Sample BSL module outline",
-                "unica.code.outline",
-                {"sourceDir": SOURCE_DIR, "path": bsl_path, "includeMethods": True},
-                False,
-                True,
-            )
-        )
     return scenarios
 
 

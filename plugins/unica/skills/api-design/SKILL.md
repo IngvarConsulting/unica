@@ -9,7 +9,7 @@ description: "Проектирование и ревью API 1С: публичн
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.diagnostics`, `unica.view {}`, `unica.subsystem.info`, `unica.meta.info`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.diagnostics`, `unica.view {}`, `unica.subsystem.info`, `unica.meta.info`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -39,7 +39,7 @@ Classify every exported method before changing or calling it:
 
 1. Map source-sets with `unica.view {}` and inspect subsystem/object boundaries with `unica.subsystem.info` or `unica.meta.info`.
 2. When the API belongs to a concrete metadata object, inspect `unica.meta.info` for related modules, roles, subscriptions, and functional options before classifying the boundary.
-3. Find the candidate API with `unica.code.definition`; inspect the module with `unica.code.outline` before reading broad code.
+3. Find the candidate API with `unica.code.definition`; inspect the module with `unica.view` on the module node (its `Method` branch lists the methods) before reading broad code.
 4. Use `unica.code.graph` for callers, callees, and impact analysis of exported methods. Use `unica.code.search` for export area comments, module suffixes, deprecated sections, literal contract mentions, and call sites not represented in graph edges.
 5. Check standards through `unica.standards.explain` / `unica.standards.search`: functional subsystems, libraries, overridable modules, version numbering, and backward compatibility.
 6. Classify the change: new method, optional parameter, mandatory parameter, removed/renamed method, changed parameter type, behavior change, deprecated method, or direct data access across a boundary.

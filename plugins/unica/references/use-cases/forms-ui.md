@@ -18,7 +18,7 @@ Use native MCP tools through `unica`:
 - `unica.form.edit` applies point changes to an existing form.
 - `unica.form.info` gives compact structure before editing.
 - `unica.check` on the form node (validator `form`) checks XML and structural constraints.
-- `unica.form.remove` removes form metadata and files.
+- `unica.apply` with `form.remove` removes form metadata and files.
 
 For form modules, combine this with platform form-module standards and targeted
 source edits.

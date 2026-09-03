@@ -138,8 +138,9 @@ addressable, that body does not.
 ## XDTO operations migration
 
 The release containing [issue #374](https://github.com/IngvarConsulting/unica/issues/374)
-replaces the flat single-operation form of `unica.xdto.edit` with a typed
-ordered `operations` array (ADR-0071). There is no compatibility alias: a call
+replaced the flat single-operation form of the retired `unica.xdto.edit`
+with a typed ordered `operations` array (ADR-0071); on the canonical surface
+the same operations are `unica.apply` ops of the XDTO family. There is no compatibility alias: a call
 that still passes any retired top-level field fails with
 `legacy_arguments_removed` and names the replacement.
 

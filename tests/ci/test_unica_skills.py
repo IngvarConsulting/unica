@@ -348,7 +348,6 @@ def prompt_frontmatter(document: str) -> dict[str, str]:
 
 IN_SCOPE_TOOLS = {
     "cf-edit": "unica.cf.edit",
-    "cf-info": "unica.cf.info",
     "cf-init": "unica.cf.init",
     "cfe-borrow": "unica.cfe.borrow",
     "cfe-diff": "unica.cfe.diff",
@@ -359,11 +358,9 @@ IN_SCOPE_TOOLS = {
     "meta-add": "unica.meta.add",
     "meta-edit": "unica.meta.edit",
     "meta-info": "unica.meta.info",
-    "meta-remove": "unica.meta.remove",
     "form-compile": "unica.form.compile",
     "form-edit": "unica.form.edit",
     "form-info": "unica.form.info",
-    "form-remove": "unica.form.remove",
     "interface-edit": "unica.interface.edit",
     "subsystem-compile": "unica.subsystem.compile",
     "subsystem-edit": "unica.subsystem.edit",
@@ -394,7 +391,6 @@ SCENARIO_SKILLS = {
     "code-search": [
         "unica.code.search",
         "unica.code.definition",
-        "unica.code.outline",
         "unica.meta.info",
         "unica.view",
     ],
@@ -408,7 +404,6 @@ SCENARIO_SKILLS = {
     "code-review": [
         "unica.code.search",
         "unica.code.definition",
-        "unica.code.outline",
         "unica.code.diagnostics",
         "unica.meta.info",
         "unica.standards.explain",
@@ -418,7 +413,7 @@ SCENARIO_SKILLS = {
     ],
     "query-optimize": [
         "unica.code.search",
-        "unica.code.outline",
+        "unica.view",
         "unica.dcs.info",
         "unica.meta.info",
         "unica.standards.search",
@@ -490,7 +485,6 @@ SCENARIO_SKILLS = {
     "db-performance": [
         "unica.view",
         "unica.code.search",
-        "unica.code.outline",
         "unica.meta.info",
         "unica.dcs.info",
         "unica.code.diagnostics",
@@ -521,7 +515,6 @@ SCENARIO_SKILLS = {
     "release-support": [
         "unica.view",
         "unica.code.search",
-        "unica.cf.info",
         "unica.cfe.diff",
         "unica.meta.info",
         "unica.code.diagnostics",
@@ -541,7 +534,6 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.meta.edit",
         "unica.code.definition",
-        "unica.code.outline",
         "unica.code.patch",
         "unica.code.diagnostics",
         "unica.runtime.execute",
@@ -561,7 +553,6 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.code.search",
         "unica.code.definition",
-        "unica.code.outline",
         "unica.code.graph",
         "unica.code.patch",
         "unica.code.diagnostics",
@@ -572,7 +563,6 @@ SCENARIO_SKILLS = {
         "unica.form.info",
         "unica.form.edit",
         "unica.meta.info",
-        "unica.code.outline",
         "unica.code.patch",
         "unica.code.diagnostics",
         "unica.runtime.execute",
@@ -589,7 +579,6 @@ SCENARIO_SKILLS = {
     ],
     "metadata-modeling": [
         "unica.view",
-        "unica.cf.info",
         "unica.meta.info",
         "unica.meta.add",
         "unica.meta.edit",
@@ -600,7 +589,6 @@ SCENARIO_SKILLS = {
     "transactions-locks": [
         "unica.view",
         "unica.code.search",
-        "unica.code.outline",
         "unica.code.graph",
         "unica.code.patch",
         "unica.code.diagnostics",
@@ -813,7 +801,6 @@ REPLACED_RUNTIME_SKILLS = {
 
 TASK_EXAMPLE_ARGUMENT_KEYS = {
     "cf-edit": ["ConfigPath", "Operation", "Value"],
-    "cf-info": ["ConfigPath"],
     "cf-init": ["Name", "OutputDir"],
     "cfe-borrow": ["ExtensionPath", "ConfigPath", "Object"],
     "cfe-diff": ["ExtensionPath", "ConfigPath"],
@@ -824,7 +811,6 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "meta-add": ["sourceSet", "kind", "name"],
     "meta-edit": ["sourceSet", "metadataPath", "operations"],
     "meta-info": ["sourceSet", "metadataPath"],
-    "meta-remove": ["sourceSet", "metadataPath", "dryRun"],
     "form-compile": ["JsonPath", "OutputPath"],
     "form-edit": ["FormPath", "JsonPath"],
     "form-info": ["FormPath"],
@@ -846,7 +832,6 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
 
 SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cf-edit": 6,
-    "cf-info": 6,
     "cf-init": 6,
     "cfe-borrow": 7,
     "cfe-diff": 3,
@@ -855,7 +840,6 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "meta-add": 2,
     "meta-edit": 3,
     "meta-info": 6,
-    "meta-remove": 1,
     "form-compile": 4,
     "interface-edit": 8,
     "subsystem-compile": 4,
@@ -871,7 +855,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
 }
 
 ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
-    "cf-init": {"unica.cf.info", "unica.check"},
+    "cf-init": {"unica.view", "unica.check"},
     "cfe-borrow": {"unica.check"},
     "cfe-init": {"unica.check"},
     "epf-init": {"unica.runtime.execute"},
@@ -892,21 +876,13 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Operation": "add-defaultRole"',
         '"Operation": "set-defaultRoles"',
     ],
-    # ADR-0023: cf.info answers with typed data, so the prose-size levers are
-    # gone from the skill and the documented fields take their place.
-    "cf-info": [
-        '"ConfigPath": "src"',
-        "`support`",
-        "`childObjects`",
-        "`homePage`",
-    ],
     "cf-init": [
         '"Name": "МояКонфигурация"',
         '"Version": "1.0.0.1"',
         '"Vendor": "Фирма 1С"',
         "Режим совместимости (default: `Version8_3_27`)",
         '"CompatibilityMode": "Version8_3_27"',
-        '"name": "unica.cf.info"',
+        '"name": "unica.view"',
         '"name": "unica.check"',
     ],
     "cfe-borrow": [
@@ -963,11 +939,6 @@ SCENARIO_PRESERVING_TOKENS = {
         '"metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"',
         '"metadataPath": "DefinedType.GLN"',
         '"metadataPath": "EventSubscription.ОбработкаИзменений"',
-    ],
-    "meta-remove": [
-        '"metadataPath": "Catalog.Устаревший"',
-        '`force: true`, `confirm: true`, `dryRun: false`',
-        '"dryRun": true',
     ],
     "form-compile": [
         '"OutputPath": "<.../TypePlural/ObjectName/Forms/FormName/Ext/Form.xml>"',
@@ -1040,8 +1011,6 @@ SCENARIO_PRESERVING_TOKENS = {
 SCENARIO_RETIRED_TOKENS = {
     "meta-add": ['"JsonPath"', '"OutputDir"', '"DefinitionFile"'],
     "meta-edit": ['"ObjectPath"', '"Operation"', '"Value"', '"DefinitionFile"'],
-    "meta-remove": ['"ConfigDir"', '"Object"', '"Force"', '"KeepFiles"', '"keepFiles"'],
-    "cf-info": ['"Mode"', '"Section"', '"Limit"', '"Offset"'],
     "role-info": ['"ShowDenied"', '"Limit"', '"Offset"'],
     "subsystem-info": ['"Mode"', '"Name"', '"Limit"', '"Offset"'],
     "mxl-info": ['"Format"', '"MaxParams"', '"Limit"', '"Offset"'],
@@ -1283,7 +1252,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
     def test_read_only_skills_do_not_offer_outfile(self) -> None:
         read_only_skills = [
-            "cf-info",
             "meta-info",
             "subsystem-info",
             "dcs-info",
@@ -1307,12 +1275,11 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             / "unica_reference_models"
         )
 
-    def test_meta_skill_surface_is_exactly_four_typed_operations(self) -> None:
+    def test_meta_skill_surface_is_exactly_three_typed_operations(self) -> None:
         expected = {
             "meta-info": "unica.meta.info",
             "meta-add": "unica.meta.add",
             "meta-edit": "unica.meta.edit",
-            "meta-remove": "unica.meta.remove",
         }
         actual = {
             path.name
@@ -1335,7 +1302,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             skill: (self.skill_root() / skill / "SKILL.md").read_text(
                 encoding="utf-8"
             )
-            for skill in ("meta-info", "meta-add", "meta-edit", "meta-remove")
+            for skill in ("meta-info", "meta-add", "meta-edit")
         }
         calls = {
             skill: [
@@ -1517,7 +1484,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             )
         )
 
-        for skill in ("meta-add", "meta-edit", "meta-info", "meta-remove"):
+        for skill in ("meta-add", "meta-edit", "meta-info"):
             with self.subTest(skill=skill, contract="structured result"):
                 text = documents[skill]
                 self.assertIn("structuredContent", text)
@@ -1528,15 +1495,11 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
         self.assertNotIn("upsert-predefined", documents["meta-edit"])
 
-        for skill in ("meta-add", "meta-edit", "meta-remove"):
+        for skill in ("meta-add", "meta-edit"):
             with self.subTest(skill=skill, contract="preview effects"):
                 text = documents[skill]
                 self.assertIn("data.effects", text)
                 self.assertIn("полный XML", text)
-
-        remove = documents["meta-remove"]
-        self.assertIn("`sourceSet + metadataPath`", remove)
-        self.assertIn("`force: true`, `confirm: true`, `dryRun: false`", remove)
 
     def test_role_edit_skill_uses_only_the_logical_typed_contract(self) -> None:
         text = (self.skill_root() / "role-edit" / "SKILL.md").read_text(
@@ -2687,7 +2650,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
     def test_support_state_reporting_is_documented_for_info_skills(self) -> None:
         for skill in (
-            "cf-info",
             "meta-info",
             "form-info",
             "dcs-info",
@@ -2707,7 +2669,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("support-state", release_support)
-        self.assertIn("unica.cf.info", release_support)
+        self.assertIn("unica.view", release_support)
         self.assertIn("unica.meta.info", release_support)
 
     def test_source_set_format_detection_contract_is_documented(self) -> None:
@@ -2966,11 +2928,11 @@ Use `.claude/commands/xdto.md` as the execution route.
         params = [call["params"] for call in calls]
         self.assertEqual(
             [item["name"] for item in params],
-            ["unica.xdto.info", "unica.xdto.edit", "unica.xdto.edit"],
+            ["unica.xdto.info", "unica.apply", "unica.apply"],
         )
         self.assertEqual(
             {item["name"] for item in params},
-            {"unica.xdto.info", "unica.xdto.edit"},
+            {"unica.xdto.info", "unica.apply"},
         )
 
         preview = dict(params[1]["arguments"])
@@ -2981,26 +2943,37 @@ Use `.claude/commands/xdto.md` as the execution route.
         confirmation_text = text[blocks[1].end() : blocks[2].start()].casefold()
         self.assertIn("явного подтверждения", confirmation_text)
 
+        # The reader still addresses the package by source set and logical
+        # path; the canonical writer addresses the typed node with `at`.
+        reader_arguments = params[0]["arguments"]
+        self.assertEqual(reader_arguments.get("sourceSet"), "main")
+        self.assertEqual(
+            reader_arguments.get("metadataPath"),
+            "XDTOPackage.EnterpriseData_1_17_3",
+        )
         for item in params:
             with self.subTest(tool=item["name"]):
                 arguments = item["arguments"]
-                self.assertEqual(arguments.get("sourceSet"), "main")
-                self.assertEqual(
-                    arguments.get("metadataPath"),
-                    "XDTOPackage.EnterpriseData_1_17_3",
-                )
                 self.assertNotIn("path", arguments)
                 self.assertNotIn("Package.bin", json.dumps(arguments, ensure_ascii=False))
-        self.assertEqual(len(preview["operations"]), 1)
-        self.assertEqual(preview["operations"][0]["op"], "addProperty")
+        for item in params[1:]:
+            with self.subTest(tool=item["name"], role="writer"):
+                self.assertTrue(
+                    item["arguments"]["at"].startswith(
+                        "main:XDTOPackage.EnterpriseData_1_17_3."
+                    ),
+                    item["arguments"]["at"],
+                )
+        self.assertEqual(len(preview["ops"]), 1)
+        self.assertEqual(preview["ops"][0]["op"], "property.add")
         self.assertEqual(
-            preview["operations"][0]["property"]["type"],
+            preview["ops"][0]["args"]["values"]["property"]["type"],
             "tns:Документ_ЗаказКлиента",
         )
-        # ADR-0071: a coherent change travels as one ordered transactional
-        # operations array, and effects are reported by operationIndex.
+        # A coherent change travels as one ordered transactional `ops` array,
+        # and a rejected element is named by its position in it.
         self.assertIn("одним вызовом", text)
-        self.assertIn("operationIndex", text)
+        self.assertIn("`ops[<индекс>]`", text)
         for forbidden in (
             "unica.xdto.validate",
             "xdto-compile",
@@ -3310,7 +3283,6 @@ class PlatformHelpRoutingTests(unittest.TestCase):
 CONDITIONAL_MARKER = "один из двух"
 
 BRIDGED_SKILL_SELECTORS = {
-    "cf-info": ("ConfigPath", False),
     "subsystem-info": ("SubsystemPath", True),
     "role-info": ("RightsPath", True),
     "form-info": ("FormPath", True),

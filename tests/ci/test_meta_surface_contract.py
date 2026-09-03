@@ -574,14 +574,15 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "tracked executable Meta DSL bridges remain:\n" + "\n".join(violations),
         )
 
-    def test_registry_is_exactly_the_four_typed_metadata_handlers(self) -> None:
+    def test_registry_is_exactly_the_three_typed_metadata_handlers(self) -> None:
+        # `unica.meta.remove` left with DEC.2026-09-03.V0-13-LEGACY-BATCH-2:
+        # removal is `unica.apply object.remove` on the canonical surface.
         blocks = registered_tool_blocks()
         meta = {name: block for name, block in blocks.items() if name.startswith("unica.meta.")}
         expected = {
             "unica.meta.info": ("Read", "Info"),
             "unica.meta.add": ("Mutation", "Add"),
             "unica.meta.edit": ("Mutation", "Edit"),
-            "unica.meta.remove": ("Mutation", "Remove"),
         }
 
         self.assertEqual(set(meta), set(expected))
@@ -642,7 +643,6 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "Info": '["sourceSet", "metadataPath"]',
             "Add": '["sourceSet", "kind", "name"]',
             "Edit": '["sourceSet", "metadataPath", "operations"]',
-            "Remove": '["sourceSet", "metadataPath"]',
         }
         # `cwd` адресует рабочее пространство и обязателен на всей поверхности:
         # упакованный сервер стартует в каталоге плагина (ADR-0006 §4), а
@@ -651,7 +651,6 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "Info": {"cwd", "sourceSet", "metadataPath", "sections", "limit"},
             "Add": {"cwd", "sourceSet", "kind", "name", "operations", "dryRun"},
             "Edit": {"cwd", "sourceSet", "metadataPath", "operations", "dryRun"},
-            "Remove": {"cwd", "sourceSet", "metadataPath", "dryRun", "force", "confirm"},
         }
 
         for operation, required in expected_required.items():
@@ -723,7 +722,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
                     re.DOTALL,
                 )
             ),
-            3,
+            2,
         )
         success = rust_function(metadata, "fn metadata_success")
         self.assertIn("adapter: AdapterOutcome::ok(summary)", success)

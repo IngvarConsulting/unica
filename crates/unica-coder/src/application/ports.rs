@@ -25,7 +25,6 @@ use crate::domain::metadata::{
 };
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::progress::ProgressSink;
-use crate::domain::project_health::{ProjectHealthInspectionError, ProjectHealthSnapshot};
 use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
 };
@@ -524,17 +523,6 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _context: &WorkspaceContext,
     ) -> Result<OperationalConfig, OperationalConfigDiagnostic> {
         Ok(OperationalConfig::compiled_defaults())
-    }
-
-    fn inspect_project_health(
-        &self,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-        _deadline: ProviderDeadline,
-    ) -> Result<ProjectHealthSnapshot, ProjectHealthInspectionError> {
-        Err(ProjectHealthInspectionError::Fatal(
-            "project health inspector is not configured".into(),
-        ))
     }
 
     fn prepare_tool_invocation(

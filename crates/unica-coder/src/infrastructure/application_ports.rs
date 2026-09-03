@@ -85,7 +85,6 @@ pub(crate) fn engine_for(spec: ToolSpec) -> Option<&'static str> {
         ToolHandler::CodeAdapter { .. } => Some("bsl-analyzer"),
         ToolHandler::Metadata { .. }
         | ToolHandler::NativeOperation { .. }
-        | ToolHandler::ProjectStatus
         | ToolHandler::ProjectMap
         | ToolHandler::CodeIntelligence { .. }
         | ToolHandler::SourceNavigation { .. }
@@ -151,22 +150,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
     ) -> Result<OperationalConfig, OperationalConfigDiagnostic> {
         crate::infrastructure::operational_config::load_operational_config(&context.workspace_root)
-    }
-
-    fn inspect_project_health(
-        &self,
-        context: &WorkspaceContext,
-        cancellation: &CancellationToken,
-        deadline: ProviderDeadline,
-    ) -> Result<
-        crate::domain::project_health::ProjectHealthSnapshot,
-        crate::domain::project_health::ProjectHealthInspectionError,
-    > {
-        crate::infrastructure::project_health::inspect_project_health(
-            context,
-            cancellation,
-            deadline,
-        )
     }
 
     fn read_metadata_local(
@@ -652,10 +635,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     handler
                 })
             }
-            ToolHandler::ProjectStatus => Err(
-                "unica.project.status must be dispatched through the project health coordinator"
-                    .into(),
-            ),
             ToolHandler::ProjectMap => {
                 let source_map =
                     crate::infrastructure::project_sources::discover_project_source_map(
@@ -1648,17 +1627,14 @@ mod tests {
             "unica.erf.init",
             "unica.form.compile",
             "unica.form.edit",
-            "unica.form.remove",
             "unica.interface.edit",
             "unica.meta.add",
             "unica.meta.edit",
-            "unica.meta.remove",
             "unica.mxl.compile",
             "unica.role.compile",
             "unica.role.edit",
             "unica.subsystem.compile",
             "unica.subsystem.edit",
-            "unica.xdto.edit",
         ];
         let expected_planned_command = [
             "unica.build.dump",
@@ -2084,11 +2060,6 @@ mod tests {
         ));
         let cases = [
             (
-                "unica.cf.info",
-                Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
-                "removed",
-            ),
-            (
                 "unica.role.info",
                 Map::from_iter([(
                     "RightsPath".to_string(),
@@ -2146,14 +2117,6 @@ mod tests {
         assert_eq!(
             *calls.lock().unwrap(),
             vec![
-                (
-                    "configuration",
-                    ResolvedTarget {
-                        source_set: "main".to_string(),
-                        metadata_path: None,
-                        target_kind: TargetKind::SourceRoot,
-                    },
-                ),
                 (
                     "object",
                     ResolvedTarget {
@@ -2662,7 +2625,7 @@ mod tests {
         };
         for mode in [InvocationMode::Preview, InvocationMode::Apply] {
             let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-                spec("unica.project.status", ToolHandler::ProjectStatus),
+                spec("unica.project.map", ToolHandler::ProjectMap),
                 &Map::new(),
                 &context,
                 mode,
@@ -2671,7 +2634,7 @@ mod tests {
                 Ok(_) => panic!("reader unexpectedly accepted {mode:?}"),
                 Err(error) => error,
             };
-            assert_eq!(error, "invalid invocation mode for unica.project.status");
+            assert_eq!(error, "invalid invocation mode for unica.project.map");
         }
     }
 
@@ -2687,7 +2650,7 @@ mod tests {
             workspace_epoch: 1,
         };
         let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-            spec("unica.cf.edit", ToolHandler::ProjectStatus),
+            spec("unica.cf.edit", ToolHandler::ProjectMap),
             &Map::new(),
             &context,
             InvocationMode::Read,
@@ -4345,7 +4308,7 @@ mod engine_map_tests {
 
     #[test]
     fn a_tool_that_runs_no_engine_asks_for_nothing() {
-        for name in ["unica.project.status", "unica.meta.info"] {
+        for name in ["unica.project.map", "unica.meta.info"] {
             assert_eq!(engine_for(spec(name)), None, "{name}");
         }
     }

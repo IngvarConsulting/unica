@@ -5290,6 +5290,89 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(std::fs::read_to_string(descriptor).unwrap(), preimage);
     }
 
+    /// The canonical removal reports its cache impact in the same result:
+    /// preview and publication both carry the cache mode, the event and the
+    /// invalidation lists, so no second call is needed to learn what moved.
+    #[test]
+    fn canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Documents")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let descriptor = source.join("Documents/Order.xml");
+        std::fs::write(
+            &descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Document uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Order</Name><Synonym/><Comment/></Properties><ChildObjects/></Document></MetaDataObject>"#,
+        )
+        .unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
+        let call = |dry_run: bool| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Apply,
+                serde_json::json!({
+                    "at": "main:Document.Order",
+                    "ops": [{"op": "object.remove", "args": {}}],
+                    "dryRun": dry_run,
+                }),
+                workspace_hint.to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let response = runtime
+                .submit(request, runtime.capture_response_deadline())
+                .unwrap();
+            let InvocationResponse::Direct(result) = response else {
+                panic!("bounded object removal must complete directly")
+            };
+            assert!(result.ok, "object.remove failed: {result:?}");
+            result
+        };
+        let assert_cache_impact = |result: &DomainResult, mode: &str| {
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["mode"], mode);
+            assert!(data["effects"].as_u64().unwrap() >= 1);
+            let cache = &data["cache"];
+            assert!(cache["mode"].is_string(), "{cache}");
+            assert!(cache["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event == "MetadataChanged"));
+            assert!(!cache["invalidated"].as_array().unwrap().is_empty());
+            assert!(result.changed.iter().any(|change| {
+                change.get("at").and_then(serde_json::Value::as_str) == Some("main:Document.Order")
+            }));
+        };
+        let preview = call(true);
+        assert!(
+            descriptor.is_file(),
+            "preview must not remove the descriptor"
+        );
+        assert_cache_impact(&preview, "preview");
+        let published = call(false);
+        assert!(!descriptor.exists(), "publication removes the descriptor");
+        assert_cache_impact(&published, "published");
+    }
+
     #[test]
     fn public_metadata_apply_keeps_dry_run_and_real_plans_identical_for_four_supported_ops() {
         let task_root = tempfile::tempdir().unwrap();

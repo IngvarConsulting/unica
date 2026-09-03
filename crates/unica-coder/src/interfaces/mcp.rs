@@ -1868,7 +1868,7 @@ mod tests {
         assert_eq!(listed[0]["name"], "unica.cf.edit");
         assert!(listed
             .iter()
-            .any(|tool| tool["name"] == "unica.project.status"));
+            .any(|tool| tool["name"] == "unica.project.map"));
         // This is the actual SDK projection hosts place in model context, not
         // just the two largest source schemas measured in isolation.
         let compact_result_bytes = serde_json::to_vec(&response["result"]).unwrap().len();
@@ -4974,7 +4974,7 @@ mod tests {
                     .expect("every Meta tool must publish outputSchema")
             })
             .collect::<Vec<_>>();
-        assert_eq!(meta_schemas.len(), 4);
+        assert_eq!(meta_schemas.len(), 3);
         assert!(meta_schemas.windows(2).all(|pair| pair[0] == pair[1]));
         let output_schema = meta_schemas[0];
         assert_eq!(output_schema["type"], "object");
@@ -4996,7 +4996,7 @@ mod tests {
         }
         let non_meta = tools
             .iter()
-            .find(|tool| tool["name"] == "unica.project.status")
+            .find(|tool| tool["name"] == "unica.project.map")
             .unwrap();
         assert!(non_meta.get("outputSchema").is_none());
 
@@ -5123,7 +5123,6 @@ mod tests {
         let listed = tool_definitions(&crate::application::tools());
         assert_eq!(listed[0].name, "unica.cf.edit");
         for name in [
-            "unica.project.status",
             "unica.project.map",
             "unica.standards.explain",
             "unica.runtime.job.start",
@@ -5393,14 +5392,14 @@ mod tests {
     #[test]
     fn native_reader_schema_is_typed_and_has_no_invocation_switch() {
         let listed = tool_definitions(&crate::application::tools());
-        let cf_info = listed
+        let role_info = listed
             .iter()
-            .find(|tool| tool.name == "unica.cf.info")
-            .expect("unica.cf.info must be listed");
+            .find(|tool| tool.name == "unica.role.info")
+            .expect("unica.role.info must be listed");
 
-        let schema = cf_info.input_schema.as_ref();
+        let schema = role_info.input_schema.as_ref();
         assert_eq!(schema["additionalProperties"], false);
-        assert!(schema["properties"].get("ConfigPath").is_some());
+        assert!(schema["properties"].get("RightsPath").is_some());
         assert!(schema["properties"].get("cwd").is_some());
         assert!(schema["properties"].get("dryRun").is_none());
         assert!(schema["properties"].get("args").is_none());
@@ -5731,7 +5730,7 @@ mod tests {
                 "id": 2,
                 "method": "tools/call",
                 "params": {
-                    "name": "unica.project.status",
+                    "name": "unica.project.map",
                     "arguments": {"cwd": "/missing/workspace", "dryRun": true}
                 }
             }))
@@ -5747,7 +5746,7 @@ mod tests {
         let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _, _| {
             Err((
                 TOOL_EXECUTION_ERROR,
-                "typed_result_missing: unica.project.status returned ok without OperationResult.data"
+                "typed_result_missing: unica.project.map returned ok without OperationResult.data"
                     .to_string(),
             ))
         });
@@ -5758,7 +5757,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "tools/call",
-                "params": {"name": "unica.project.status", "arguments": {}}
+                "params": {"name": "unica.project.map", "arguments": {}}
             }))
             .await;
         let response = client.receive().await;
