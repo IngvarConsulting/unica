@@ -445,7 +445,15 @@ fn read_descriptor_head(root: &RetainedDirectoryCapability, relative: &Path) -> 
 /// Whether a descriptor head declares the expected owner element and name.
 fn declares_owner(head: &[u8], kind: &str, name: &str) -> bool {
     let text = String::from_utf8_lossy(head);
-    let opens = text.contains(&format!("<{kind} ")) || text.contains(&format!("<{kind}>"));
+    // XML allows any whitespace between the element name and its attributes,
+    // and a pretty-printed descriptor may put the uuid on the next line.
+    let open = format!("<{kind}");
+    let opens = text.match_indices(&open).any(|(offset, _)| {
+        matches!(
+            text.as_bytes().get(offset + open.len()),
+            Some(b'>' | b' ' | b'\t' | b'\r' | b'\n')
+        )
+    });
     opens && between(&text, "<Name>", "</Name>").is_some_and(|declared| declared == name)
 }
 
@@ -843,6 +851,34 @@ mod tests {
     }
 
     #[test]
+    fn a_descriptor_whose_attributes_start_on_a_new_line_is_still_an_object() {
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("Catalogs/Склады.xml"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" version=\"2.20\">\n  <Catalog\n    uuid=\"10000000-0000-4000-8000-000000000002\">\n    <Properties><Name>Склады</Name></Properties>\n    <ChildObjects/>\n  </Catalog>\n</MetaDataObject>",
+        );
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let index = WorkspaceFindDirectoryBuilder::default()
+            .build(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            single(&index, "Склады"),
+            (
+                "main:Catalog.Склады".to_string(),
+                "Catalogs/Склады.xml".to_string()
+            )
+        );
+    }
+
+    #[test]
     fn find_address_path_directory_contract_is_complete() {
         a_name_resolves_to_the_address_and_the_file_that_carries_it();
         a_file_path_resolves_back_to_its_object_address();
@@ -853,5 +889,6 @@ mod tests {
         the_directory_observes_its_operation_deadline();
         an_external_root_publishes_its_owner_and_never_the_dump_sidecar();
         a_file_that_is_not_an_owner_descriptor_never_becomes_an_object();
+        a_descriptor_whose_attributes_start_on_a_new_line_is_still_an_object();
     }
 }
