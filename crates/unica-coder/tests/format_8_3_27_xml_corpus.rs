@@ -1511,6 +1511,10 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     ))
 }
 
+fn remove_temp_tree(root: &Path) {
+    platform_support::remove_temp_tree(root);
+}
+
 fn write_designer_project(
     workspace: &Path,
     source_sets: &[(&str, &str, &str)],
@@ -4182,7 +4186,7 @@ fn meta_edit_structural_resource_insertions_build_exact_platform_cases() {
             "{case_id}: {descriptor}"
         );
 
-        fs::remove_dir_all(root).unwrap();
+        remove_temp_tree(&root);
     }
 }
 
@@ -4334,7 +4338,7 @@ fn source_resource_reads_preserve_every_corpus_byte() {
         capture_workspace_payloads_for_source_test(&workspace),
         before
     );
-    fs::remove_dir_all(&root).unwrap();
+    remove_temp_tree(&root);
 }
 
 fn capture_workspace_payloads_for_source_test(root: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -4416,7 +4420,7 @@ fn cf_init_public_case_creates_real_xml() {
     let delta = enforce_xml_impact(entry.impact, &before, &after).unwrap();
     assert!(delta.created.contains(&"src/Configuration.xml".to_string()));
     assert_eq!(gate.completed_target_calls, 1);
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -4470,7 +4474,7 @@ fn managed_form_corpus_cases_mutate_content_without_overwriting_metadata_wrapper
     }
 
     assert_eq!(gate.completed_target_calls, 2);
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -4513,7 +4517,7 @@ fn pre_snapshot_materializes_only_immutable_pre_call_bytes() {
         require_xml_payloads_unchanged(&workspace, &captured_post, "post-workspace").unwrap_err();
     assert!(error.contains("changed after"), "{error}");
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -4596,7 +4600,7 @@ fn non_xml_manifest_inventory_binds_bsl_tampering_for_none_impact_case() {
         require_non_xml_payloads_unchanged(case, &workspace, &post_payloads, "tampered workspace")
             .unwrap_err();
     assert!(error.contains("changed after"), "{error}");
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 fn assert_platform_canonical_bsl(bytes: &[u8]) {
@@ -4655,7 +4659,7 @@ fn meta_reference_cases_seed_platform_canonical_event_handlers_bsl() {
             fs::read(workspace.join("src/CommonModules/EventHandlers/Ext/Module.bsl")).unwrap();
         assert_platform_canonical_bsl(&module);
         assert_eq!(module, expected, "{case_id}");
-        fs::remove_dir_all(root).unwrap();
+        remove_temp_tree(&root);
     }
 }
 
@@ -4690,7 +4694,7 @@ fn code_patch_case_seeds_and_preserves_platform_canonical_bsl_bytes() {
         "inserted code must use the surrounding platform CRLF convention"
     );
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -4757,7 +4761,7 @@ fn cfe_patch_method_case_seeds_a_registered_adopted_common_module() {
         "the borrowed interceptor target must exist in the base CommonModule"
     );
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -4822,7 +4826,7 @@ fn non_xml_inventory_covers_every_xml_none_impact_case() {
                 .unwrap(),
             );
         }
-        fs::remove_dir_all(root).unwrap();
+        remove_temp_tree(&root);
     }
 }
 
@@ -4867,7 +4871,7 @@ fn managed_form_cases_address_logform_content_and_spare_the_descriptor() {
             "{case_id} did not change exactly the managed form content"
         );
 
-        fs::remove_dir_all(root).unwrap();
+        remove_temp_tree(&root);
     }
 }
 
@@ -5044,7 +5048,7 @@ fn cfe_patch_method_inventory_covers_atomic_xml_and_bsl_change() {
         assert_platform_canonical_bsl(&fs::read(workspace.join(extension_module)).unwrap());
         assert_platform_canonical_bsl(&fs::read(workspace.join(base_module)).unwrap());
         assert_exact_extended_property_state(&workspace.join(descriptor), property);
-        fs::remove_dir_all(root).unwrap();
+        remove_temp_tree(&root);
     }
 }
 
@@ -5162,7 +5166,7 @@ fn meta_edit_event_source_case_executes_public_writer_and_binds_exact_delta() {
         "two isolated generations must have byte-identical auxiliary artifacts"
     );
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -5199,7 +5203,7 @@ fn html_template_case_inventories_the_platform_page_set_layout() {
     assert_eq!(page["seed"], false);
     assert_eq!(page["delta"], "created");
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -5229,7 +5233,7 @@ fn corpus_case_inventories_stable_files_outside_platform_boundaries() {
     );
     assert!(paths.iter().all(|path| !path.contains("/workspace/src/")));
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -5401,7 +5405,7 @@ fn tracked_xdto_package_fixture_executes_public_corpus_preview_apply_and_noop() 
         Some("cases/xdto-add-nested-property/workspace/src/Configuration.xml")
     );
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -5454,7 +5458,7 @@ fn output_directory_refusal_rules_are_fail_closed() {
         root.canonicalize().unwrap().join("explicit-absent-target")
     );
     assert!(!absent.exists());
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -5473,7 +5477,7 @@ fn empty_directory_inventory_detects_added_and_removed_paths() {
 
     assert_eq!(after, vec!["added-empty"]);
     assert_ne!(before, after);
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]

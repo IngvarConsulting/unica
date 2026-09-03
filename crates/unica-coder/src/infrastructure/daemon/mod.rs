@@ -13,6 +13,33 @@ mod v13_service;
 mod v13_workspace_bootstrap;
 mod v13_workspace_initialize;
 
+use identity::CoreIdentity;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+fn daemon_process_command(
+    executable: &Path,
+    state_root: &Path,
+    core_identity: &CoreIdentity,
+    idle_grace: Duration,
+) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .arg("--daemon")
+        .arg("--state-root")
+        .arg(state_root)
+        .arg("--core-identity")
+        .arg(core_identity.as_str())
+        .arg("--idle-grace-ms")
+        .arg(idle_grace.as_millis().to_string())
+        .current_dir(state_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use super::client::{
@@ -65,6 +92,19 @@ mod tests {
     const INTEGRATION_COORDINATION_TIMEOUT: Duration = Duration::from_secs(10);
     const INTEGRATION_TASK_WAIT_MS: u64 = 7_000;
     const FAIL_STOP_PROCESS_FIXTURE: &str = "UNICA_FAIL_STOP_PROCESS_FIXTURE";
+
+    #[test]
+    fn daemon_process_is_anchored_outside_the_caller_workspace() {
+        let state_root = std::env::temp_dir().join("unica-daemon-command-state");
+        let command = super::daemon_process_command(
+            PathBuf::from("unica").as_path(),
+            &state_root,
+            &CoreIdentity::production(),
+            Duration::from_secs(30),
+        );
+
+        assert_eq!(command.get_current_dir(), Some(state_root.as_path()));
+    }
 
     struct FailStopFixtureChild {
         child: Child,

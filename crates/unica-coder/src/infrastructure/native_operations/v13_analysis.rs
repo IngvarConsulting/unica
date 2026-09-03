@@ -409,9 +409,12 @@ mod tests {
         fs::create_dir_all(root.join("src-ext")).unwrap();
         let root_address = QualifiedAddress::parse("ext:Configuration").unwrap();
         let selector = validator_selector(CheckValidator::Cfe, &root_address, &context).unwrap();
+        let extension_path =
+            crate::infrastructure::source_roots::normalize_path_identity(&root.join("src-ext"))
+                .unwrap();
         assert_eq!(
             selector["ExtensionPath"],
-            json!(root.join("src-ext").display().to_string())
+            json!(extension_path.display().to_string())
         );
         assert!(super::source_set_is_extension(&root_address, &context));
         let main_root = QualifiedAddress::parse("main:Configuration").unwrap();
@@ -420,12 +423,13 @@ mod tests {
         let interface = QualifiedAddress::parse("main:Subsystem.Sales.Interface").unwrap();
         let selector = validator_selector(CheckValidator::Interface, &interface, &context).unwrap();
         assert_eq!(selector["metadataPath"], "Subsystem.Sales");
+        let interface_path = crate::infrastructure::source_roots::normalize_path_identity(
+            &root.join("src/Subsystems/Sales/Ext/CommandInterface.xml"),
+        )
+        .unwrap();
         assert_eq!(
             selector["CIPath"],
-            json!(root
-                .join("src/Subsystems/Sales/Ext/CommandInterface.xml")
-                .display()
-                .to_string())
+            json!(interface_path.display().to_string())
         );
         let catalog = QualifiedAddress::parse("main:Catalog.Items").unwrap();
         assert!(validator_selector(CheckValidator::Interface, &catalog, &context).is_err());
