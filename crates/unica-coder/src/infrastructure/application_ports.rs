@@ -4,9 +4,7 @@ use crate::application::ports::{
     MetaRelatedData, MetadataRead, MetadataValidationResult, MetadataValidationSubject,
     PreparedMetadataMutation, PreparedToolInvocation, SupportGuardCheck,
 };
-use crate::application::{
-    AdapterOutcome, InvocationMode, ToolExecution, ToolHandler, ToolSpec,
-};
+use crate::application::{AdapterOutcome, InvocationMode, ToolExecution, ToolHandler, ToolSpec};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -1277,9 +1275,7 @@ mod tests {
         ToolSpec, UnicaApplication,
     };
     use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::{
-        CodeIntelligenceContext, CodeIntelligenceReadRequest, ProviderDeadline,
-    };
+    use crate::domain::code_intelligence::{CodeIntelligenceContext, CodeIntelligenceReadRequest};
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::source_target::{
         MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -1289,18 +1285,14 @@ mod tests {
         ResolvedSubsystemTarget, SupportReadError, SupportStateReader,
     };
     use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::native_operations::typed_result::NativeInvocationContext;
-    use crate::infrastructure::native_operations::NativeOperationAdapter;
+
     use crate::infrastructure::platform::full_dump_publication::FullDumpInvocation;
-    use crate::infrastructure::platform::secure_read::{
-        with_secure_tree_test_hook, SecureTreePhase,
-    };
+
     use crate::infrastructure::support_state::SupportStateReaderFactory;
     use serde_json::{json, Map};
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
 
     #[derive(Debug, PartialEq, Eq)]
     struct RecursiveStorageEntry {
@@ -2076,88 +2068,6 @@ mod tests {
         assert!(!domain_port.contains("std::path"));
         assert!(!domain_port.contains("&Path"));
         assert!(!domain_port.contains("PathBuf"));
-    }
-
-    fn prepared_subsystem_fixture() -> (
-        tempfile::TempDir,
-        WorkspaceContext,
-        Map<String, serde_json::Value>,
-        Map<String, serde_json::Value>,
-    ) {
-        let root = tempfile::Builder::new()
-            .prefix("unica-prepared-subsystem-support")
-            .tempdir()
-            .unwrap();
-        let workspace = root.path().canonicalize().unwrap();
-        let source = workspace.join("src");
-        std::fs::create_dir_all(source.join("Subsystems")).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Subsystems/Sales.xml"),
-            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                "Sales", "2.20",
-            ),
-        )
-        .unwrap();
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        (
-            root,
-            context,
-            Map::from_iter([(
-                "SubsystemPath".to_string(),
-                json!("src/Subsystems/Sales.xml"),
-            )]),
-            Map::from_iter([("SubsystemPath".to_string(), json!("src/Subsystems"))]),
-        )
-    }
-
-    fn subsystem_info_fixture(
-        label: &str,
-    ) -> (
-        tempfile::TempDir,
-        WorkspaceContext,
-        Map<String, serde_json::Value>,
-    ) {
-        let root = tempfile::Builder::new().prefix(label).tempdir().unwrap();
-        let physical_root = root.path().canonicalize().unwrap();
-        std::fs::create_dir_all(physical_root.join("Subsystems")).unwrap();
-        std::fs::write(
-            physical_root.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            physical_root.join("Subsystems/Sales.xml"),
-            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                "Sales", "2.20",
-            ),
-        )
-        .unwrap();
-        let context = WorkspaceContext {
-            cwd: physical_root.clone(),
-            workspace_root: physical_root.clone(),
-            cache_root: physical_root.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        let args = Map::from_iter([(
-            "SubsystemPath".to_string(),
-            serde_json::Value::String("Subsystems".to_string()),
-        )]);
-        (root, context, args)
     }
 
     #[test]
@@ -2985,7 +2895,6 @@ mod tests {
             "семейство, которому пин не принадлежит, — отказ, а не перебор корней"
         );
     }
-
 }
 
 #[cfg(test)]

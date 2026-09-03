@@ -84,10 +84,6 @@ impl MetadataAddressPrefix {
     pub(crate) fn parse(profile: &str, raw: &str) -> Result<Self, SourceTargetError> {
         AddressProfile::new(profile)?.parse_prefix(raw)
     }
-
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 impl fmt::Display for MetadataAddress {
@@ -691,16 +687,6 @@ pub(crate) fn is_module_terminal(value: &str) -> bool {
     MODULE_TERMINALS.contains(&value)
 }
 
-/// Every module role of the profile, so a provider can probe an owner's roles
-/// instead of enumerating the source set to discover which ones exist.
-pub(crate) fn module_terminals() -> &'static [&'static str] {
-    MODULE_TERMINALS
-}
-
-pub(crate) fn root_module_terminals() -> &'static [&'static str] {
-    ROOT_MODULE_TERMINALS
-}
-
 fn is_root_module_terminal(value: &str) -> bool {
     ROOT_MODULE_TERMINALS.contains(&value)
 }
@@ -710,7 +696,6 @@ mod tests {
     use super::{
         xml_ncname_is_valid, AddressProfile, MetadataAddress, MetadataAddressPrefix,
         SourceTargetErrorCode, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-        RECALCULATION_KIND_SPELLINGS,
     };
 
     #[test]
@@ -757,38 +742,6 @@ mod tests {
     }
 
     #[test]
-    fn source_target_profile_addresses_calculation_register_recalculations_only() {
-        for spelling in RECALCULATION_KIND_SPELLINGS {
-            let address = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("CalculationRegister.Payroll.{spelling}.Main"),
-            )
-            .unwrap();
-            assert_eq!(
-                address.as_str(),
-                "CalculationRegister.Payroll.Recalculation.Main"
-            );
-            assert_eq!(address.target_kind(), TargetKind::MetadataObject);
-
-            let prefix = MetadataAddressPrefix::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("CalculationRegister.Payroll.{spelling}"),
-            )
-            .unwrap();
-            assert_eq!(prefix.as_str(), "CalculationRegister.Payroll.Recalculation");
-        }
-
-        for invalid in [
-            "Catalog.Items.Recalculation.Main",
-            "CalculationRegister.Payroll.Recalculation.Main.RecordSetModule",
-        ] {
-            let error =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, invalid).unwrap_err();
-            assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressInvalid);
-        }
-    }
-
-    #[test]
     fn source_target_profile_rejects_unsupported_terminal() {
         let error = MetadataAddress::parse(
             PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -822,29 +775,6 @@ mod tests {
 
         assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressInvalid);
         assert!(error.message.contains("kind"));
-    }
-
-    #[test]
-    fn source_target_prefix_profile_canonicalizes_aliases_and_keeps_partial_final_segments() {
-        for (raw, expected) in [
-            ("Catalog", "Catalog"),
-            ("Catalog.Items.Man", "Catalog.Items.Man"),
-            ("Catalogs.Items.Man", "Catalog.Items.Man"),
-            ("Справочники.Items.Man", "Catalog.Items.Man"),
-            ("Catalog.Items.Forms.Ord", "Catalog.Items.Form.Ord"),
-            (
-                "Catalog.Items.Templates.Print",
-                "Catalog.Items.Template.Print",
-            ),
-            (
-                "Catalog.Items.Form.Order.FormM",
-                "Catalog.Items.Form.Order.FormM",
-            ),
-        ] {
-            let prefix =
-                MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap();
-            assert_eq!(prefix.as_str(), expected, "{raw}");
-        }
     }
 
     #[test]
@@ -892,25 +822,6 @@ mod tests {
         ] {
             let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap();
             assert_eq!(address.target_kind(), TargetKind::Module, "{raw}");
-        }
-    }
-
-    #[test]
-    fn source_target_prefix_profile_matches_partial_roots_uniformly() {
-        for (raw, expected) in [
-            ("S", "S"),
-            ("Su", "Su"),
-            ("Subsystem", "Subsystem"),
-            ("Doc", "Doc"),
-            ("Document", "Document"),
-            ("Документ", "Document"),
-            ("M", "M"),
-            ("Man", "Man"),
-            ("ManagedApplicationModule", "ManagedApplicationModule"),
-        ] {
-            let prefix =
-                MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap();
-            assert_eq!(prefix.as_str(), expected, "{raw}");
         }
     }
 

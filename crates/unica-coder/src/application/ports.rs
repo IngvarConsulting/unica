@@ -96,7 +96,6 @@ impl HandlerOutcome {
             diagnostics: None,
         }
     }
-
 }
 
 pub(crate) struct PreparedToolInvocation {

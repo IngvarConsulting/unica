@@ -5137,69 +5137,6 @@ mod tests {
         );
     }
 
-    fn assert_no_private_source_resource_keys(value: &Value) {
-        match value {
-            Value::Object(object) => {
-                for key in object.keys() {
-                    assert!(
-                        !matches!(
-                            key.as_str(),
-                            "path"
-                                | "sourceDir"
-                                | "provider"
-                                | "providerId"
-                                | "providerRevision"
-                                | "handle"
-                                | "private"
-                                | "workspaceRoot"
-                        ),
-                        "private source-resource key leaked: {key}"
-                    );
-                }
-                for child in object.values() {
-                    assert_no_private_source_resource_keys(child);
-                }
-            }
-            Value::Array(items) => {
-                for item in items {
-                    assert_no_private_source_resource_keys(item);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn assert_no_private_source_navigation_keys(value: &Value) {
-        match value {
-            Value::Object(object) => {
-                for key in object.keys() {
-                    assert!(
-                        !matches!(
-                            key.as_str(),
-                            "path"
-                                | "sourceDir"
-                                | "provider"
-                                | "providerId"
-                                | "providerRevision"
-                                | "handle"
-                                | "private"
-                        ),
-                        "private source-navigation key leaked: {key}"
-                    );
-                }
-                for child in object.values() {
-                    assert_no_private_source_navigation_keys(child);
-                }
-            }
-            Value::Array(items) => {
-                for item in items {
-                    assert_no_private_source_navigation_keys(item);
-                }
-            }
-            _ => {}
-        }
-    }
-
     #[tokio::test]
     async fn ping_stays_responsive_and_cancellation_reaches_the_tool() {
         let cancellation_seen = Arc::new(AtomicBool::new(false));

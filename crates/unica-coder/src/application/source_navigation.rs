@@ -8,105 +8,6 @@ pub(crate) const SOURCE_NAVIGATION_LIMIT_DEFAULT: usize = 20;
 pub(crate) const SOURCE_NAVIGATION_LIMIT_MAX: usize = 50;
 const CURSOR_MASK: u64 = 0xa93f_4761_c2d8_5be7;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SourceNavigationMode {
-    Exact,
-    Prefix,
-}
-
-impl SourceNavigationMode {
-    fn parse(raw: Option<&str>) -> Result<Self, String> {
-        match raw.unwrap_or("exact") {
-            "exact" => Ok(Self::Exact),
-            "prefix" => Ok(Self::Prefix),
-            value => Err(format!(
-                "source navigation mode must be `exact` or `prefix`, got `{value}`"
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum SourceMatchKind {
-    Exact,
-    Prefix,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum NavigationCompleteness {
-    Complete,
-    Partial,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum SourceNodeKind {
-    Collection,
-    Item,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum SourceNodeAddressability {
-    Addressable,
-    Unaddressable,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SourceResolveCandidate {
-    pub(crate) metadata_path: MetadataAddress,
-    pub(crate) target_kind: TargetKind,
-    pub(crate) display_name: String,
-    pub(crate) match_kind: SourceMatchKind,
-    pub(crate) location: SourceLocation,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SourceResolveResult {
-    pub(crate) candidates: Vec<SourceResolveCandidate>,
-    pub(crate) completeness: NavigationCompleteness,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) next_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SourceNode {
-    pub(crate) display_name: String,
-    pub(crate) node_kind: SourceNodeKind,
-    pub(crate) addressability: SourceNodeAddressability,
-    pub(crate) completeness: NavigationCompleteness,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) metadata_path: Option<MetadataAddress>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) target_kind: Option<TargetKind>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) location: Option<SourceLocation>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SourceChildrenResult {
-    pub(crate) children: Vec<SourceNode>,
-    pub(crate) completeness: NavigationCompleteness,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) next_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SourceResolveRequest {
-    pub(crate) source_set: String,
-    pub(crate) query: String,
-    pub(crate) mode: SourceNavigationMode,
-    pub(crate) target_kind: Option<TargetKind>,
-    pub(crate) limit: usize,
-    pub(crate) cursor: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLocateResult {
@@ -129,24 +30,6 @@ pub(crate) struct SourceLocateResult {
 pub(crate) struct SourceLocateRequest {
     pub(crate) source_set: String,
     pub(crate) path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SourceChildrenRequest {
-    pub(crate) source_set: String,
-    pub(crate) metadata_path: Option<MetadataAddress>,
-    pub(crate) limit: usize,
-    pub(crate) cursor: Option<String>,
-}
-
-pub(crate) fn page_bounds(
-    cursor: Option<&str>,
-    cursor_key: &str,
-    limit: usize,
-    total: usize,
-) -> Result<(usize, usize, Option<String>), String> {
-    let offset = authenticate_cursor(cursor, cursor_key)?;
-    page_bounds_from_offset(offset, cursor_key, limit, total)
 }
 
 pub(crate) fn authenticate_cursor(cursor: Option<&str>, cursor_key: &str) -> Result<usize, String> {
@@ -226,23 +109,4 @@ fn cursor_checksum(offset: u64, cursor_key: &str) -> u64 {
             .try_into()
             .expect("a sha256 digest is always 32 bytes"),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::page_bounds;
-
-    #[test]
-    fn source_navigation_cursor_is_opaque_and_bound_to_the_exact_request() {
-        let (_, _, cursor) = page_bounds(None, "children:main:<root>", 2, 5).unwrap();
-        let cursor = cursor.expect("truncated page must issue a cursor");
-
-        assert!(cursor.starts_with("nav1-"));
-        assert!(!cursor.contains("main"));
-        let (start, end, next) = page_bounds(Some(&cursor), "children:main:<root>", 2, 5).unwrap();
-        assert_eq!((start, end), (2, 4));
-        assert!(next.is_some());
-        let error = page_bounds(Some(&cursor), "children:addOn:<root>", 2, 5).unwrap_err();
-        assert!(error.contains("does not belong"), "{error}");
-    }
 }

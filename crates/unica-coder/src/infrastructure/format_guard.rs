@@ -1145,22 +1145,21 @@ fn absolutize(raw: &str, cwd: &Path) -> PathBuf {
 mod tests {
     use super::{
         effective_format_paths, evaluate_format_guard, evaluate_mutation_format_guard,
-        evaluate_prepared_subsystem_info_format_guard, evaluate_read_format_guard,
+        evaluate_read_format_guard,
     };
     use crate::application::operation_descriptors::native_operation_descriptor;
-    use crate::application::ports::{ApplicationPorts, FormatGuardCheck, XdtoPublicErrorCode};
+    use crate::application::ports::{ApplicationPorts, FormatGuardCheck};
     use crate::application::{tools, InvocationMode, ToolHandler};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
     use crate::infrastructure::native_operations::cfe::cfe_borrow_format_dependency_inspection;
-    use crate::infrastructure::native_operations::dcs::analyze_dcs_info;
-    use crate::infrastructure::native_operations::subsystem::prepare_subsystem_info;
+
     use crate::infrastructure::source_roots::normalize_path_identity;
     use serde_json::{Map, Value};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     static TEST_ROOT_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -1201,11 +1200,7 @@ mod tests {
 
     struct CfeReadGraph {
         extension: std::path::PathBuf,
-        object: std::path::PathBuf,
-        language: std::path::PathBuf,
         form_wrapper: std::path::PathBuf,
-        form_xml: std::path::PathBuf,
-        unregistered: std::path::PathBuf,
     }
 
     fn cfe_read_graph(
@@ -1282,11 +1277,7 @@ mod tests {
         .unwrap();
         CfeReadGraph {
             extension,
-            object,
-            language,
             form_wrapper,
-            form_xml,
-            unregistered,
         }
     }
 
@@ -3028,7 +3019,6 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(root);
     }
-
 }
 
 #[cfg(test)]

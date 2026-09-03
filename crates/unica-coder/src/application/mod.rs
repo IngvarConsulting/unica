@@ -208,7 +208,6 @@ pub enum ToolHandler {
     },
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeJobAction {
     Start,
@@ -599,17 +598,6 @@ impl UnicaApplication {
         Self {
             ports,
             deferred: Arc::new(deferred_delivery::DeferredDelivery::default()),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_ports_and_deferred(
-        ports: Arc<dyn ApplicationPorts + Send + Sync>,
-        deferred: deferred_delivery::DeferredDelivery,
-    ) -> Self {
-        Self {
-            ports,
-            deferred: Arc::new(deferred),
         }
     }
 
@@ -2642,6 +2630,23 @@ fn configuration_tools() -> Vec<ToolSpec> {
                 event: Some(DomainEventKind::ModuleChanged),
             },
         },
+        // `meta.info` остаётся до отдельного среза: 61 тест его набора
+        // доказывает движок типизированного чтения, который зовёт и
+        // канонический `view`. Снятие имени требует переноса этих тестов на
+        // движок напрямую, и это отдельная работа.
+        ToolSpec {
+            name: "unica.meta.info",
+            description: "Inspect one metadata object with validation, proven subsystem memberships, and source-tree usage.",
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph", "metadata_graph"],
+                writes: &[],
+            },
+            handler: ToolHandler::Metadata {
+                operation: metadata::MetadataOperation::Info,
+            },
+        },
         ToolSpec {
             name: "unica.meta.add",
             description: "Create one metadata object from a typed internal template and optionally configure it atomically with ordered operations.",
@@ -2843,165 +2848,13 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
 pub(crate) mod tests {
     use super::*;
     use crate::composition::testing::{
-        child_subsystem_stub_xml, create_file_link_fixture_for_test, file_identity_for_test,
-        prepare_file_for_removal, set_unix_mode_for_test, unix_mode_for_test,
-        with_publication_lock_contention_signal, with_publication_lock_pause,
-        with_secure_tree_test_hook, CompileTransaction, FileLinkFixtureOutcome, SecureTreePhase,
+        create_file_link_fixture_for_test, file_identity_for_test, prepare_file_for_removal,
+        set_unix_mode_for_test, unix_mode_for_test, with_publication_lock_contention_signal,
+        with_publication_lock_pause, CompileTransaction, FileLinkFixtureOutcome,
     };
 
-    mod deferred_delivery_call_path {
-        use super::super::*;
-        use crate::application::result_store::ResultStore;
-        use serde_json::{json, Map, Value};
-        use std::path::PathBuf;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-        use std::time::Duration;
-
-        struct BigTypedReadPorts {
-            handler_calls: AtomicUsize,
-            workspace_discoveries: AtomicUsize,
-            payload: Value,
-        }
-
-        impl BigTypedReadPorts {
-            fn new(payload: Value) -> Self {
-                Self {
-                    handler_calls: AtomicUsize::new(0),
-                    workspace_discoveries: AtomicUsize::new(0),
-                    payload,
-                }
-            }
-        }
-
-        impl ports::ApplicationPorts for BigTypedReadPorts {
-            fn discover_workspace(
-                &self,
-                requested_cwd: Option<PathBuf>,
-            ) -> Result<WorkspaceContext, String> {
-                self.workspace_discoveries.fetch_add(1, Ordering::SeqCst);
-                let cwd = requested_cwd.unwrap_or_default();
-                Ok(WorkspaceContext {
-                    cwd: cwd.clone(),
-                    workspace_root: cwd.clone(),
-                    cache_root: cwd.join(".build").join("unica"),
-                    workspace_epoch: 7,
-                })
-            }
-
-            fn validate_tool_context(
-                &self,
-                _spec: ToolSpec,
-                _args: &Map<String, Value>,
-                _mode: InvocationMode,
-                _context: &WorkspaceContext,
-            ) -> Result<(), String> {
-                Ok(())
-            }
-
-            fn evaluate_format_guard(
-                &self,
-                _spec: ToolSpec,
-                _args: &Map<String, Value>,
-                _context: &WorkspaceContext,
-            ) -> Result<FormatGuardCheck, FormatGuardError> {
-                Ok(FormatGuardCheck::Allow)
-            }
-
-            fn evaluate_support_guard(
-                &self,
-                _spec: ToolSpec,
-                _args: &Map<String, Value>,
-                _context: &WorkspaceContext,
-            ) -> Result<SupportGuardCheck, String> {
-                Ok(SupportGuardCheck::Allow)
-            }
-
-            fn invoke_handler(
-                &self,
-                _spec: ToolSpec,
-                _args: &Map<String, Value>,
-                _context: &WorkspaceContext,
-                _mode: InvocationMode,
-                _cancellation: &CancellationToken,
-            ) -> Result<ports::HandlerOutcome, String> {
-                self.handler_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(ports::HandlerOutcome::with_data(
-                    AdapterOutcome::ok("big role read"),
-                    self.payload.clone(),
-                ))
-            }
-
-            fn cache_report(
-                &self,
-                context: &WorkspaceContext,
-                _events: &[DomainEvent],
-                mode: InvocationMode,
-                _cache_access: CacheAccess,
-            ) -> Result<CacheReport, String> {
-                Ok(CacheReport {
-                    mode: match mode {
-                        InvocationMode::Read => "read",
-                        InvocationMode::Preview => "preview",
-                        InvocationMode::Apply => "apply",
-                    }
-                    .to_string(),
-                    root: context.cache_root.display().to_string(),
-                    workspace_epoch: context.workspace_epoch,
-                    events: Vec::new(),
-                    invalidated: Vec::new(),
-                    refreshed: Vec::new(),
-                    lazy_rebuilt: Vec::new(),
-                    stale: Vec::new(),
-                    fresh: Vec::new(),
-                    publication_warnings: Vec::new(),
-                })
-            }
-
-            fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
-        }
-
-        fn big_role_payload() -> Value {
-            let rights: Vec<Value> = (0..200)
-                .map(|index| {
-                    json!({
-                        "name": format!("Catalog.Item{index:03}"),
-                        "read": true,
-                        "insert": index % 2 == 0,
-                    })
-                })
-                .collect();
-            json!({ "role": "Role.Big", "rights": rights })
-        }
-
-        fn read_args() -> Map<String, Value> {
-            let mut args = Map::new();
-            args.insert("cwd".to_string(), json!("/ws"));
-            args.insert("sourceSet".to_string(), json!("main"));
-            args.insert("metadataPath".to_string(), json!("Role.Big"));
-            args
-        }
-
-        fn app_with_threshold(
-            payload: Value,
-            threshold_bytes: usize,
-            store: ResultStore,
-        ) -> (UnicaApplication, Arc<BigTypedReadPorts>) {
-            let fake = Arc::new(BigTypedReadPorts::new(payload));
-            let app = UnicaApplication::with_ports_and_deferred(
-                fake.clone(),
-                deferred_delivery::DeferredDelivery {
-                    store: Arc::new(store),
-                    threshold_bytes,
-                },
-            );
-            (app, fake)
-        }
-
-    }
     use serde_json::Map;
-    use std::cell::Cell;
-    use std::rc::Rc;
+
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use std::sync::{mpsc, Arc, Barrier};
@@ -5085,33 +4938,18 @@ pub(crate) mod tests {
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
-                context: &WorkspaceContext,
+                _context: &WorkspaceContext,
                 _mode: InvocationMode,
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
-                let event = DomainEvent::new(DomainEventKind::ModuleChanged, "src/Module.bsl");
-                let mut adapter = AdapterOutcome::ok("source and cache state committed");
-                adapter.changes = vec!["updated src/Module.bsl".to_string()];
-                let mut outcome = ports::HandlerOutcome::with_data_and_events(
-                    adapter,
-                    serde_json::json!({"postHash": "sha256:after"}),
-                    vec![event],
-                );
-                outcome.recorded_cache = Some(CacheReport {
-                    mode: "applied".to_string(),
-                    root: context.cache_root.display().to_string(),
-                    workspace_epoch: context.workspace_epoch,
-                    events: vec!["ModuleChanged".to_string()],
-                    invalidated: vec!["bsl_diagnostics".to_string(), "bsl_index".to_string()],
-                    refreshed: Vec::new(),
-                    lazy_rebuilt: Vec::new(),
-                    stale: vec!["bsl_diagnostics".to_string(), "bsl_index".to_string()],
-                    fresh: Vec::new(),
-                    publication_warnings: vec![
-                        "transaction committed with one cleanup warning".to_string()
-                    ],
-                });
-                Ok(outcome)
+                Ok(ports::HandlerOutcome::with_data_and_events(
+                    AdapterOutcome::ok("legacy preview with an explicit event"),
+                    json!({"preview": true}),
+                    vec![DomainEvent::new(
+                        DomainEventKind::ModuleChanged,
+                        "src/CommonModules/Preview/Ext/Module.bsl",
+                    )],
+                ))
             }
 
             fn cache_report(
@@ -6196,35 +6034,6 @@ pub(crate) mod tests {
         args.insert("Value".to_string(), Value::String(value.to_string()));
         args.insert("NoValidate".to_string(), Value::Bool(true));
         args
-    }
-
-    /// The root format literal is proven on a reader that is still public:
-    /// `unica.role.info` takes its format evidence from the owning
-    /// `Configuration.xml`, so the raw `version` spelling reaches the read.
-    fn register_format_probe_role(workspace: &std::path::Path) -> Map<String, Value> {
-        let src = workspace.join("src");
-        let role_dir = src.join("Roles/Reader");
-        std::fs::create_dir_all(role_dir.join("Ext")).unwrap();
-        std::fs::write(
-            src.join("Roles/Reader.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role><Properties><Name>Reader</Name></Properties></Role></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            role_dir.join("Ext/Rights.xml"),
-            r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"/>"#,
-        )
-        .unwrap();
-        Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            (
-                "path".to_string(),
-                Value::String(role_dir.display().to_string()),
-            ),
-        ])
     }
 
     fn cf_edit_mutation_workspace(
@@ -7845,90 +7654,6 @@ pub(crate) mod tests {
                 std::fs::remove_dir_all(root).unwrap();
             }
         }
-    }
-
-    fn subsystem_format_guard_workspace(
-        prefix: &str,
-    ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
-        let root = test_workspace_root(prefix);
-        let workspace = root.join("workspace");
-        let source = workspace.join("src");
-        let child = source.join("Subsystems/Parent/Subsystems/Child.xml");
-        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Parent</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Subsystems/Parent.xml"),
-            child_subsystem_stub_xml("Parent", "2.20").replacen(
-                "<ChildObjects/>",
-                "<ChildObjects><Subsystem>Child</Subsystem></ChildObjects>",
-                1,
-            ),
-        )
-        .unwrap();
-        std::fs::write(&child, child_subsystem_stub_xml("Child", "2.21")).unwrap();
-        let physical_workspace = workspace.canonicalize().unwrap();
-        (root, physical_workspace, child)
-    }
-
-    fn assert_public_subsystem_format_warning(
-        workspace: &std::path::Path,
-        subsystem_path: &str,
-        child: &std::path::Path,
-    ) {
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.canonicalize().unwrap().display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String(subsystem_path.to_string()),
-            ),
-        ]);
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.subsystem.info", &args)
-            .unwrap();
-
-        assert!(result.ok, "{result:?}");
-        assert!(!result.warnings.is_empty(), "{result:?}");
-        let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
-        assert_eq!(diagnostic["actualFormat"], "2.21", "{result:?}");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(child)
-        );
-    }
-
-    #[test]
-    fn public_subsystem_format_guard_covers_registered_descendants_for_a_directory_without_mode() {
-        let (root, workspace, child) =
-            subsystem_format_guard_workspace("unica-subsystem-format-directory");
-
-        assert_public_subsystem_format_warning(&workspace, "src/Subsystems", &child);
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn public_subsystem_format_guard_covers_registered_descendants_for_a_file_without_mode() {
-        let (root, workspace, child) =
-            subsystem_format_guard_workspace("unica-subsystem-format-file");
-
-        assert_public_subsystem_format_warning(&workspace, "src/Subsystems/Parent.xml", &child);
-
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -9802,148 +9527,6 @@ pub(crate) mod tests {
         root
     }
 
-    fn xdto_public_guard_workspace(
-        prefix: &str,
-        source_format_version: &str,
-        support_mode: Option<&str>,
-    ) -> (std::path::PathBuf, std::path::PathBuf) {
-        let root = test_workspace_root(prefix);
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let package = src.join("XDTOPackages/Sample/Ext/Package.bin");
-        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(src.join("Ext")).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        if let Some(mode) = support_mode {
-            std::fs::write(
-                workspace.join(".v8-project.json"),
-                format!(r#"{{"editingAllowedCheck":"{mode}"}}"#),
-            )
-            .unwrap();
-        }
-        std::fs::write(
-            src.join("Configuration.xml"),
-            format!(
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{source_format_version}"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><XDTOPackage>Sample</XDTOPackage></ChildObjects></Configuration></MetaDataObject>"#
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("XDTOPackages/Sample.xml"),
-            format!(
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{source_format_version}"><XDTOPackage uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Sample</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            package,
-            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:test" targetNamespace="urn:test">
-	<objectType name="Existing"/>
-</package>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Ext/ParentConfigurations.bin"),
-            support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        )
-        .unwrap();
-        (root, workspace)
-    }
-
-    fn xdto_public_info_args(
-        workspace: &std::path::Path,
-        source_set: &str,
-        metadata_path: &str,
-    ) -> Map<String, Value> {
-        Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            ("sourceSet".to_string(), json!(source_set)),
-            ("metadataPath".to_string(), json!(metadata_path)),
-        ])
-    }
-
-    fn assert_xdto_public_error_is_logical(
-        error: &str,
-        expected_code: &str,
-        expected_target: &str,
-        workspace: &std::path::Path,
-    ) {
-        assert!(error.starts_with(expected_code), "{error}");
-        assert!(error.contains(expected_target), "{error}");
-        let serialized = serde_json::to_string(error).unwrap();
-        for forbidden in [
-            workspace.display().to_string(),
-            workspace.join("src").display().to_string(),
-            "XDTOPackages/Sample/Ext/Package.bin".to_string(),
-            "XDTOPackages\\Sample\\Ext\\Package.bin".to_string(),
-            "XDTOPackages/Sample.xml".to_string(),
-            "XDTOPackages\\Sample.xml".to_string(),
-            "Package.bin".to_string(),
-            "Configuration.xml".to_string(),
-            "provider".to_string(),
-        ] {
-            assert!(
-                !serialized.contains(&forbidden),
-                "leaked {forbidden:?}: {serialized}"
-            );
-        }
-    }
-
-    fn source_tree_snapshot(
-        root: &std::path::Path,
-    ) -> Vec<(std::path::PathBuf, &'static str, Vec<u8>, Option<String>)> {
-        fn visit(
-            root: &std::path::Path,
-            current: &std::path::Path,
-            snapshot: &mut Vec<(std::path::PathBuf, &'static str, Vec<u8>, Option<String>)>,
-        ) {
-            let mut entries = std::fs::read_dir(current)
-                .unwrap()
-                .map(Result::unwrap)
-                .collect::<Vec<_>>();
-            entries.sort_by_key(std::fs::DirEntry::file_name);
-            for entry in entries {
-                let path = entry.path();
-                let relative = path.strip_prefix(root).unwrap().to_path_buf();
-                let metadata = std::fs::symlink_metadata(&path).unwrap();
-                if metadata.file_type().is_symlink() {
-                    snapshot.push((
-                        relative,
-                        "symlink",
-                        std::fs::read_link(&path)
-                            .unwrap()
-                            .as_os_str()
-                            .to_string_lossy()
-                            .as_bytes()
-                            .to_vec(),
-                        None,
-                    ));
-                } else if metadata.is_dir() {
-                    snapshot.push((relative, "directory", Vec::new(), None));
-                    visit(root, &path, snapshot);
-                } else {
-                    let identity = file_identity_for_test(&path).unwrap();
-                    snapshot.push((relative, "file", std::fs::read(&path).unwrap(), identity));
-                }
-            }
-        }
-
-        let mut snapshot = Vec::new();
-        visit(root, root, &mut snapshot);
-        snapshot
-    }
-
     fn temp_meta_compile_workspace(prefix: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -10202,8 +9785,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn native_xml_metadata_tools_require_platform_xml_source_sets() {
-    }
+    fn native_xml_metadata_tools_require_platform_xml_source_sets() {}
 
     #[test]
     fn cfe_borrow_rejects_edt_config_source_set_target() {

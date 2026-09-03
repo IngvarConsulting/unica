@@ -133,35 +133,6 @@ fn mutation_idempotence_scope_decision_is_fully_realized() {
     repeated_interface_and_mxl_mutations_preserve_file_identity_but_report_attempted_updates();
 }
 
-/// Every reader the migration inventory keeps in `bridge` mode answers a
-/// logical selector with the same typed data as its physical selector. The
-/// case table is compared against the inventory so a reader cannot enter or
-/// leave the bridge without its focused parity test following.
-#[test]
-fn bridged_reader_outputs_are_identical_for_logical_and_physical_selectors() {
-    use crate::application::tool_contracts::{
-        authoritative_reader_migration_inventory, ReaderMigrationMode,
-    };
-    use std::collections::BTreeSet;
-
-    let cases: [(&str, fn()); 6] = [
-        ("unica.form.info", super::form::form_read_selector_bridge_tests::form_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.role.info", super::role::role_info_typed_result_tests::role_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.mxl.info", super::mxl::mxl_read_selector_bridge_tests::mxl_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.mxl.decompile", super::mxl::mxl_read_selector_bridge_tests::mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.dcs.info", super::mxl::mxl_read_selector_bridge_tests::dcs_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.subsystem.info", super::subsystem::subsystem_read_selector_bridge_tests::subsystem_info_answers_identically_for_a_logical_and_a_physical_selector),
-    ];
-    let expected = authoritative_reader_migration_inventory()
-        .filter_map(|(name, mode)| (mode == ReaderMigrationMode::Bridge).then_some(name))
-        .collect::<BTreeSet<_>>();
-    let actual = cases.iter().map(|(name, _)| *name).collect::<BTreeSet<_>>();
-    assert_eq!(actual, expected);
-    for (_, parity_test) in cases {
-        parity_test();
-    }
-}
-
 /// One registry-facing falsifier for every clause of selector-free tail
 /// insertion, whose public schema and write behavior live on opposite sides of
 /// the application/infrastructure boundary.

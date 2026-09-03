@@ -508,55 +508,6 @@ mod tests {
         );
     }
 
-    /// Стаб для `get`: владеет локатором или нет, отвечает документом или
-    /// отказом. `search` не участвует — у `get` свой путь.
-    struct GetStub {
-        id: &'static str,
-        answer: Option<Result<DocumentationDocument, String>>,
-    }
-
-    impl DocumentationProvider for GetStub {
-        fn id(&self) -> DocumentationProviderId {
-            DocumentationProviderId::new(self.id)
-        }
-        fn corpora(&self) -> Vec<DocumentationCorpus> {
-            Vec::new()
-        }
-        fn needs_network(&self) -> bool {
-            false
-        }
-        fn search(
-            &self,
-            _: &DocumentationSearchRequest,
-            _: &DocumentationContext,
-        ) -> Vec<DocumentationSection> {
-            Vec::new()
-        }
-        fn get(
-            &self,
-            _document_id: &str,
-            _language: &str,
-            _context: &DocumentationContext,
-        ) -> Option<Result<DocumentationDocument, String>> {
-            self.answer.clone()
-        }
-    }
-
-    fn document(id: &str) -> DocumentationDocument {
-        DocumentationDocument {
-            provider: DocumentationProviderId::new(id),
-            corpus: "syntax-context".to_string(),
-            source_kind: SourceKind::PlatformHelp,
-            authority: Authority::Vendor,
-            language: "ru".to_string(),
-            document_id: "platform-syntax-help:syntax-context:page.html".to_string(),
-            title: "Заголовок".to_string(),
-            signature: Some("Имя()".to_string()),
-            applicable_version: "8.3.27.2074".to_string(),
-            text: "Полный текст открытой страницы.".to_string(),
-        }
-    }
-
     #[test]
     fn all_providers_failed_is_an_error() {
         let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
