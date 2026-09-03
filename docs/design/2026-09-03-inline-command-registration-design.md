@@ -1,6 +1,10 @@
+- Date: `2026-09-03`
+- Status: `approved`
+- Decision: `DEC.2026-09-03.INLINE-COMMAND-REGISTRATION`
+
 # Команды объектов регистрируются инлайном, без файла-дескриптора
 
-Дата: 2026-09-03. Контекст: `unica.view main:Catalog.Номенклатура` и любой
+Контекст: `unica.view main:Catalog.Номенклатура` и любой
 `unica.find` на дампе УТ 11 (платформа 8.3.27.2074) падали закрытым отказом
 `not_found: metadata owner … does not register Command.НовыйЭлемент`.
 
