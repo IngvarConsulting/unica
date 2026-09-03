@@ -2085,6 +2085,8 @@ fn logical_reader_parity_contract_is_complete() {
     crate::infrastructure::source_revision::tests::retained_revision_authority_contract_is_complete(
     );
     object_commands_are_registered_inline_without_descriptor_files();
+    template_bodies_are_read_only_when_the_template_node_is_addressed();
+    add_in_templates_stop_addressing_at_the_template_without_reading_the_payload();
     configuration_level_rights_are_readable_role_objects();
     actor_owned_reader_never_follows_a_source_set_remap_after_admission();
     actor_owned_configuration_support_and_home_page_sidecars_are_retained();
@@ -3562,6 +3564,109 @@ pub(crate) fn object_commands_are_registered_inline_without_descriptor_files() {
             "inline command identity is missing from find: {expected}: {found:?}"
         );
     }
+}
+
+#[test]
+pub(crate) fn template_bodies_are_read_only_when_the_template_node_is_addressed() {
+    let fixture = RealReaderFixture::new();
+    let body = fixture
+        .source
+        .join("Reports/ParityReport/Templates/Print/Ext/Template.xml");
+    let readable = fs::read(&body).unwrap();
+    // An unreadable spreadsheet body must not take the owner or the template
+    // collection down with it: only the template node opens the body.
+    fs::write(
+        &body,
+        "<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\"><unclosed>",
+    )
+    .unwrap();
+    let service = fixture.view_service();
+    for at in [
+        "main:Report.ParityReport",
+        "main:Report.ParityReport.Template",
+    ] {
+        let result = service.view(ViewRequest::new(at).unwrap());
+        assert!(result.ok, "{at}: {:?}", result.diagnostics);
+    }
+    let node = service.view(ViewRequest::new("main:Report.ParityReport.Template.Print").unwrap());
+    assert!(
+        !node.ok,
+        "an unreadable template body escaped through its own node"
+    );
+    assert_eq!(node.diagnostics[0]["code"], "provider_unavailable");
+
+    // A readable body still publishes its interior on the template node.
+    fs::write(&body, readable).unwrap();
+    let service = fixture.view_service();
+    let node = service.view(ViewRequest::new("main:Report.ParityReport.Template.Print").unwrap());
+    assert!(node.ok, "{:?}", node.diagnostics);
+    let branches = node.data.as_ref().unwrap()["branches"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        branches
+            .iter()
+            .any(|branch| branch["at"] == "main:Report.ParityReport.Template.Print.Area"),
+        "{branches:?}"
+    );
+}
+
+#[test]
+pub(crate) fn add_in_templates_stop_addressing_at_the_template_without_reading_the_payload() {
+    let fixture = RealReaderFixture::new();
+    let descriptor = fixture.source.join("Catalogs/Items.xml");
+    let owner = fs::read_to_string(&descriptor).unwrap();
+    let close = owner.rfind("</ChildObjects>").unwrap();
+    let owner = format!(
+        "{}<Template>Driver</Template>{}",
+        &owner[..close],
+        &owner[close..]
+    );
+    fs::write(&descriptor, owner).unwrap();
+    write(
+        &fixture.source.join("Catalogs/Items/Templates/Driver.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template uuid="10000000-0000-4000-8000-000000000081"><Properties><Name>Driver</Name><TemplateType>AddIn</TemplateType></Properties></Template></MetaDataObject>"#,
+    );
+    // The payload is an opaque archive; make it something no XML reader could parse.
+    fs::create_dir_all(fixture.source.join("Catalogs/Items/Templates/Driver/Ext")).unwrap();
+    fs::write(
+        fixture
+            .source
+            .join("Catalogs/Items/Templates/Driver/Ext/Template.bin"),
+        [0x50, 0x4b, 0x03, 0x04, 0xff, 0x00, 0x80],
+    )
+    .unwrap();
+    let service = fixture.view_service();
+    let node = service.view(ViewRequest::new("main:Catalog.Items.Template.Driver").unwrap());
+    assert!(node.ok, "{:?}", node.diagnostics);
+    let data = node.data.as_ref().unwrap();
+    assert_eq!(data["kind"], "Template");
+    assert!(
+        data.get("branches").is_none(),
+        "an add-in template has no addressable interior: {data}"
+    );
+
+    let authority = fixture.read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    let expected = "main:Catalog.Items.Template.Driver";
+    let found = index.find(FindRequest::new(expected).unwrap());
+    assert!(
+        !found.is_nearest()
+            && found
+                .candidates()
+                .iter()
+                .any(|candidate| candidate.at() == expected),
+        "add-in template identity is missing from find: {found:?}"
+    );
 }
 
 #[test]
