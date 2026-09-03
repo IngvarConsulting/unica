@@ -2,7 +2,7 @@
 id: INV.SOURCE.LOGICAL-READER-PARITY
 status: active
 governs: product
-decision: DEC.2026-09-03.ROLE-CONFIGURATION-RIGHTS
+decision: DEC.2026-09-03.FIND-ADDRESS-PATH-DIRECTORY
 check: crates/unica-coder/src/infrastructure/v13_read/tests.rs::logical_reader_parity_contract_is_complete
 scope: [app, platform, product, source]
 ---
@@ -20,9 +20,9 @@ branches/items, неизвестные поля provider-а дают typed failu
 filter — `bad_value`.
 
 Exact revision строится тем же retained capability, что и bytes. Один
-operation-scoped lease захватывает выбранный source set для qualified `view` и
-все admitted source sets для aggregate `find`; unrelated sibling не сканируется
-и не инвалидирует `view`. Retained manifest помечен physical identity и только
+operation-scoped lease захватывает выбранный source set для qualified `view`;
+unrelated sibling не сканируется и не инвалидирует `view`. `find` lease не
+берёт: он словарь раскладки по `INV.SOURCE.FIND-IDENTITY-ONLY`. Retained manifest помечен physical identity и только
 matching retained provenance может удовлетворить retained fast path; ambient и
 retained provenance симметрично не взаимозаменяемы. При unsupported fence
 initial capture и final confirmation состоят из двух descriptor-relative passes
@@ -48,13 +48,13 @@ top-level `(kind,name)` присутствует в inventory и имеет matc
 инлайн-определением `<Command uuid><Properties><Name>` в parent `ChildObjects`,
 файла дескриптора не имеет и вложенных физических пар не открывает. Orphan
 physical content, registered missing descriptor и wrong kind/name fail closed
-одинаково в direct view, parent navigation и find; evidence и edges кешируются
+одинаково в direct view и parent navigation; evidence и edges кешируются
 только внутри actor/revision.
 
 Зарегистрированный owner имеет ровно одну profile-derived `Module` branch:
 branch count равен числу уникальных допустимых ролей, а все 25 положительных
 `moduleCapabilities` профиля покрыты production retained authorities для
-configuration, EPF и ERF через parent navigation и find, включая
+configuration, EPF и ERF через parent navigation, включая
 зарегистрированный owner без Module.bsl. Отсутствующий в inventory owner не
 получает Module branch. Внешние source sets доказывают каждый top-level artifact
 строгим descriptor-ом, не публикуют configuration runtime modules и имеют
@@ -67,7 +67,7 @@ canonical `kind_name` инъективен; произвольный type prefix
 `provider_unavailable`, не duplicate `at`.
 Отсутствующий HomePage sidecar допустим, present malformed/wrong-root evidence
 даёт `provider_unavailable`; V12 legacy wrapper сохраняет старую трактовку.
-Общий абсолютный 120-секундный operation budget view/find без replenishment
+Общий абсолютный 120-секундный operation budget `view` без replenishment
 отделён от 7-секундного Task handoff и использует cancellation на admission,
 reader и final confirmation. Terminal actor publication и rejected-address
 classification принадлежат `INV.SOURCE.RETAINED-LOGICAL-PUBLICATION`.

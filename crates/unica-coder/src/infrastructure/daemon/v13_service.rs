@@ -16,7 +16,7 @@ use crate::infrastructure::native_operations::apply::{
     ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects, StagedChangeKind, StagedFileState,
 };
 use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
-use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder};
+use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
 use crate::infrastructure::workspace_actor::{
     ApplyAdmissionError, ApplyEffectDisposition, ApplyPublicationErrorKind,
 };
@@ -30,14 +30,14 @@ use std::sync::Arc;
 /// typed `unsupported_*` result rather than pretending an engine is missing.
 pub(crate) struct CanonicalV13ReadService {
     cursors: Arc<ViewCursorStore>,
-    find_builder: WorkspaceFindIndexBuilder,
+    find_builder: WorkspaceFindDirectoryBuilder,
 }
 
 impl Default for CanonicalV13ReadService {
     fn default() -> Self {
         Self {
             cursors: Arc::new(ViewCursorStore::default()),
-            find_builder: WorkspaceFindIndexBuilder::default(),
+            find_builder: WorkspaceFindDirectoryBuilder::default(),
         }
     }
 }
@@ -726,7 +726,7 @@ impl CanonicalV13ReadService {
                 Err(error) => return error_result(None, error.code(), error.to_string()),
             };
         }
-        let sources = match invocation.read_sources() {
+        let sources = match invocation.layout_sources() {
             Ok(sources) => sources,
             Err(error) => return error_result(None, "provider_unavailable", error),
         };
@@ -734,41 +734,26 @@ impl CanonicalV13ReadService {
             return error_result(
                 None,
                 "provider_unavailable",
-                "find has no admitted logical source sets",
+                "find has no admitted source sets",
             );
         };
-        let authorities = sources
-            .into_iter()
-            .map(|source| {
-                let name = source.source_set_name().to_string();
-                source
-                    .logical_view_read_authority(cancellation)
-                    .map(|authority| (name, authority))
-            })
-            .collect::<Result<Vec<_>, _>>();
-        let authorities = match authorities {
-            Ok(authorities) => authorities,
-            Err(error) => return error_result(None, "provider_unavailable", error),
-        };
-        let find_sources = authorities
+        let layout = sources
             .iter()
-            .map(|(name, authority)| ActorFindSource::new(name, authority))
+            .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
             .collect::<Vec<_>>();
-        let built =
-            match self
-                .find_builder
-                .build_with_revision(&find_sources, deadline, cancellation)
-            {
-                Ok(built) => built,
-                Err(error) => return error_result(None, error.code(), error.to_string()),
-            };
-        let found = built.index.find(request);
+        let directory = match self.find_builder.build(&layout, deadline, cancellation) {
+            Ok(directory) => directory,
+            Err(error) => return error_result(None, error.code(), error.to_string()),
+        };
+        let found = directory.find(request);
         let mut result = DomainResult::success("logical address candidates resolved");
         result.data = Some(
             serde_json::to_value(found)
                 .expect("the closed FindResult model always serializes to JSON"),
         );
-        result.rev = Some(built.revision);
+        // A directory of addresses and paths is not a revision snapshot, so
+        // `find` publishes no `rev`.
+        let _ = cancellation;
         result
     }
 }

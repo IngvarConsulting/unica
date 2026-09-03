@@ -32,6 +32,11 @@ impl FindRequest {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn query(&self) -> &str {
+        &self.query
+    }
+
     pub(crate) fn with_kind(mut self, kind: &str) -> Result<Self, FindError> {
         let kind = NodeKind::parse(kind)
             .map_err(|_| FindError::new("bad_value", format!("unknown node kind `{kind}`")))?;
@@ -91,6 +96,8 @@ pub(crate) struct FindDocument {
     at: String,
     kind: String,
     title: String,
+    /// The file that carries this object, relative to the source-set root.
+    path: Option<String>,
     facts: Vec<FindFact>,
 }
 
@@ -109,8 +116,14 @@ impl FindDocument {
             at,
             kind,
             title: title.into(),
+            path: None,
             facts,
         }
+    }
+
+    pub(crate) fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
     }
 
     pub(crate) fn estimated_identity_bytes(&self) -> usize {
@@ -135,6 +148,10 @@ pub(crate) struct FindCandidate {
     at: String,
     kind: String,
     title: String,
+    /// The file to open when the caller wants to read or repair the object
+    /// outside Unica. Absent only for an entry the layout cannot place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
     reason: String,
 }
 
@@ -149,6 +166,11 @@ impl FindCandidate {
 
     pub(crate) fn reason(&self) -> &str {
         &self.reason
+    }
+
+    #[cfg(test)]
+    pub(crate) fn path(&self) -> Option<&str> {
+        self.path.as_deref()
     }
 }
 
@@ -165,6 +187,25 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl FindResult {
+    /// Test-only probe result: `find` no longer traverses the logical tree, so
+    /// reader-coverage tests answer through the typed reader itself.
+    #[cfg(test)]
+    pub(crate) fn reader_probe(at: &str, reached: bool) -> Self {
+        Self {
+            candidates: reached
+                .then(|| FindCandidate {
+                    at: at.to_string(),
+                    kind: String::new(),
+                    title: String::new(),
+                    path: None,
+                    reason: "reader".to_string(),
+                })
+                .into_iter()
+                .collect(),
+            nearest: !reached,
+        }
+    }
+
     pub(crate) fn candidates(&self) -> &[FindCandidate] {
         &self.candidates
     }
@@ -287,6 +328,7 @@ impl ScoredCandidate<'_> {
             at: self.document.at.clone(),
             kind: self.document.kind.clone(),
             title: self.document.title.clone(),
+            path: self.document.path.clone(),
             reason: self.reason,
         }
     }
@@ -306,6 +348,10 @@ fn best_direct_match<'a>(document: &'a FindDocument, query: &str) -> Option<Scor
             let value = normalize(&fact.value);
             let score = if value == query {
                 0
+            } else if fact.kind == FindFactKind::ExportPath && query.ends_with(&value) {
+                // The caller pasted an absolute or workspace-relative path;
+                // the stored path is its tail.
+                5
             } else if value.starts_with(query) {
                 10 + value.len().saturating_sub(query.len())
             } else if value.contains(query) {

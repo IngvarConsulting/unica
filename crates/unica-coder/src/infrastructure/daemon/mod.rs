@@ -1751,7 +1751,8 @@ mod tests {
             find.data.as_ref().unwrap()["candidates"][0]["at"],
             "main:Catalog.Items"
         );
-        assert!(find.rev.is_some());
+        // A directory of addresses and paths is not a revision snapshot.
+        assert!(find.rev.is_none());
 
         let unknown = owner
             .submit_invocation(

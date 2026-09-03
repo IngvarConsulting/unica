@@ -11,6 +11,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
 use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
 use crate::infrastructure::workspace::discover_workspace;
@@ -329,6 +330,36 @@ struct ActorLogicalReadLease {
     route: ActorLogicalReadRoute,
 }
 
+pub(in crate::infrastructure::daemon) struct ActorLayoutSource {
+    name: String,
+    kind: SourceSetKind,
+    root: Arc<RetainedDirectoryCapability>,
+    deadline: ProviderDeadline,
+}
+
+impl ActorLayoutSource {
+    pub(in crate::infrastructure::daemon) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(in crate::infrastructure::daemon) const fn kind(&self) -> SourceSetKind {
+        self.kind
+    }
+
+    pub(in crate::infrastructure::daemon) fn root(&self) -> &RetainedDirectoryCapability {
+        &self.root
+    }
+
+    pub(in crate::infrastructure::daemon) const fn deadline(&self) -> ProviderDeadline {
+        self.deadline
+    }
+}
+
+struct ActorLayoutReadLease {
+    deadline: ProviderDeadline,
+    bindings: Vec<ProviderRootBinding>,
+}
+
 enum ActorLogicalReadRoute {
     Admitted,
     Rejected(Box<DomainResult>),
@@ -400,8 +431,17 @@ impl ActorBoundInvocation {
             crate::application::invocation_store::ToolIdentity::Apply => {
                 ActorExecutionRevision::UnpublishedApply(std::sync::atomic::AtomicBool::new(false))
             }
+            crate::application::invocation_store::ToolIdentity::Find => {
+                ActorExecutionRevision::LayoutRead(ActorLayoutReadLease {
+                    deadline: logical_deadline,
+                    bindings: self
+                        .read_sources
+                        .iter()
+                        .map(|source| source.binding.clone())
+                        .collect(),
+                })
+            }
             crate::application::invocation_store::ToolIdentity::View
-            | crate::application::invocation_store::ToolIdentity::Find
             | crate::application::invocation_store::ToolIdentity::Search
             | crate::application::invocation_store::ToolIdentity::Check
             | crate::application::invocation_store::ToolIdentity::Diff
@@ -526,6 +566,11 @@ pub(crate) struct ActorBoundExecution {
 enum ActorExecutionRevision {
     Legacy(WorkspaceRevisionFence),
     LogicalRead(ActorLogicalReadLease),
+    /// `find` reads the physical layout of the admitted roots and answers a
+    /// directory of addresses and paths. A directory is not a snapshot, so it
+    /// takes no revision lease: any drift is caught by the `view` or `apply`
+    /// fence that follows it.
+    LayoutRead(ActorLayoutReadLease),
     UnpublishedApply(std::sync::atomic::AtomicBool),
 }
 
@@ -634,6 +679,30 @@ impl ActorBoundExecution {
                         source.binding.source_set_name()
                     ),
                     fence: source.fence.clone(),
+                    deadline: lease.deadline,
+                })
+            })
+            .collect()
+    }
+
+    /// Admitted roots for the `find` directory: the retained no-follow root of
+    /// every admitted source set with its name and kind, without a revision
+    /// lease.
+    pub(in crate::infrastructure::daemon) fn layout_sources(
+        &self,
+    ) -> Result<Vec<ActorLayoutSource>, String> {
+        let ActorExecutionRevision::LayoutRead(lease) = &self.revision else {
+            return Err("layout sources are unavailable to this invocation".to_string());
+        };
+        lease
+            .bindings
+            .iter()
+            .map(|binding| {
+                self.invocation.actor.validate_binding(binding)?;
+                Ok(ActorLayoutSource {
+                    name: binding.source_set_name().to_string(),
+                    kind: binding.source_kind(),
+                    root: binding.retained_root(),
                     deadline: lease.deadline,
                 })
             })
@@ -753,6 +822,9 @@ impl ActorBoundExecution {
                     ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
                     cancellation,
                 ),
+            // A layout directory publishes no revision state: `find` neither
+            // captures a lease nor confirms one, so its result stands as read.
+            ActorExecutionRevision::LayoutRead(_) => Ok(staged),
             ActorExecutionRevision::LogicalRead(lease) => {
                 if let ActorLogicalReadRoute::Rejected(expected) = lease.route {
                     let is_closed_typed_rejection = staged.as_ref() == Ok(expected.as_ref());
