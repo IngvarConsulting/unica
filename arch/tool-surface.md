@@ -107,7 +107,7 @@ Search bundled Unica and safe 1C documentation by topic.
 
 ### `unica.find`
 
-Map between object names, logical addresses and the files that carry them, in both directions.
+Map between object names, logical addresses and where objects live in the source layout, in both directions.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |

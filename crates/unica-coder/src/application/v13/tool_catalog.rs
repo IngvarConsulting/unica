@@ -203,7 +203,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "find",
-                    description: "Map between object names, logical addresses and the files that carry them, in both directions.",
+                    description: "Map between object names, logical addresses and where objects live in the source layout, in both directions.",
                     input_schema: schema(
                         json!({
                             "query": {"type": "string", "description": "Object name, synonym, logical address, or a path to a source file or object directory."},

@@ -67,8 +67,8 @@ impl std::fmt::Display for FindBuildError {
     }
 }
 
-/// Builds the two-way directory between qualified logical addresses and the
-/// files that carry them. It reads the physical layout only: no typed
+/// Builds the two-way directory between qualified logical addresses and where
+/// objects live in the source layout. It reads that layout only: no typed
 /// projection, no module source, no revision lease.
 #[derive(Debug)]
 pub(crate) struct WorkspaceFindDirectoryBuilder {
