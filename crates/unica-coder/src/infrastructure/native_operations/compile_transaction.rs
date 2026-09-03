@@ -7789,7 +7789,7 @@ pub(crate) mod tests {
             .into_iter()
             .next()
             .expect("cleanup failpoint must retain one identity-bound warning");
-        let warned_path = warning.path.clone();
+        let warned_path = warning.artifact.path().to_path_buf();
         let displaced = root.join("displaced-stage.bin");
         fs::rename(&warned_path, &displaced).expect("warned artifact must be displaced");
         fs::write(&warned_path, b"same-name retry decoy").expect("retry decoy must be written");
@@ -7862,7 +7862,8 @@ pub(crate) mod tests {
             .next()
             .expect("cleanup failpoint must retain one identity-bound warning");
         let stage_name = warning
-            .path
+            .artifact
+            .path()
             .file_name()
             .expect("warned stage must have a child name")
             .to_os_string();
