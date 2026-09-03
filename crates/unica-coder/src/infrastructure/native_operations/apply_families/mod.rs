@@ -839,6 +839,70 @@ mod tests {
             .expect("a source without the support marker is editable");
     }
 
+    /// `object.remove` refuses an object other files still refer to; with
+    /// `force` the plan executes and carries a typed warning naming them.
+    #[test]
+    fn forced_object_removal_keeps_the_referrers_and_says_so() {
+        let fixture = ApplySeamFixture::new();
+        let rights_dir = fixture.source_dir().join("Roles/Reader/Ext");
+        std::fs::create_dir_all(&rights_dir).unwrap();
+        std::fs::write(
+            rights_dir.join("Rights.xml"),
+            r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Document.First</name></object></Rights>"#,
+        )
+        .unwrap();
+        let admission = fixture.admission();
+        let refused = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &admission,
+        )
+        .unwrap_err();
+        assert_eq!(refused.kind(), ApplyPlanErrorKind::InvalidState);
+        assert!(
+            refused.to_string().contains("still referenced"),
+            "{refused}"
+        );
+
+        let admission = fixture.admission();
+        let (staged, effects) = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({"force": true}),
+            ),
+            &fixture.binding,
+            &admission,
+        )
+        .expect("a forced removal plans");
+        assert!(!staged.planned_changes().is_empty());
+        assert_eq!(effects.warnings().len(), 1, "{:?}", effects.warnings());
+        let warning = &effects.warnings()[0];
+        assert_eq!(warning["code"], "references_kept");
+        assert_eq!(warning["count"], 1);
+        assert!(warning["files"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("Roles/Reader/Ext/Rights.xml"));
+
+        let admission = fixture.admission();
+        let error = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({"force": "yes"}),
+            ),
+            &fixture.binding,
+            &admission,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+    }
+
     #[test]
     fn batch_effects_keep_each_event_with_its_own_file() {
         use crate::domain::events::{DomainEvent, DomainEventKind};

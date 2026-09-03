@@ -1,7 +1,34 @@
 {
   "schemaVersion": 2,
   "complete": false,
-  "baselineDispositions": [],
-  "cases": [],
+  "baselineDispositions": [
+    {
+      "legacyTool": "unica.cf.info",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "view"
+          },
+          "caseIds": [
+            "batch2-view-root-facts"
+          ]
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "batch2-view-root-facts",
+      "entry": "view",
+      "mode": "root;props=cf.info facts",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S254",
+        "class": "ok"
+      }
+    }
+  ],
   "newCapabilities": []
 }

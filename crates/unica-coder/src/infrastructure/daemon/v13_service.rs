@@ -200,6 +200,7 @@ impl CanonicalV13ReadService {
         if !has_changes {
             effects = Default::default();
         }
+        let plan_warnings = effects.warnings().to_vec();
         let plan_hash = apply_plan_hash(&staged, &effects);
         let changed = effects
             .events()
@@ -257,6 +258,7 @@ impl CanonicalV13ReadService {
         if has_changes {
             result.changed = changed;
         }
+        result.warnings.extend(plan_warnings);
         if !publication.cleanup_diagnostics().is_empty() {
             result.warnings.push(serde_json::json!({
                 "code": "retained_cleanup_incomplete",
