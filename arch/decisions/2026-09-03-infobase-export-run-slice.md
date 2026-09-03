@@ -15,7 +15,7 @@ design: docs/design/2026-09-03-infobase-export-run-slice-design.md
 **Решение.** `infobase.configuration.export` и `infobase.dump` становятся
 первыми исполняемыми runtime-намерениями после `workspace.initialize`. MCP
 принимает только предметные параметры; provider, fallback и платформенный
-таймаут выбирает сопровождаемый `v8-runner` версии 0.7.0.
+таймаут выбирает сопровождаемый `v8-runner` версии 0.7.1.
 
 Обе операции являются долгими Task. Preview обязательно запускает тот же
 provider resolver через `--dry-run`, но не provider. Revision связывает точные
