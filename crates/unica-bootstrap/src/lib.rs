@@ -17,6 +17,7 @@ pub use download::{DownloadObserver, Downloader, HttpDownloader, SilentDownload}
 pub use error::{BootstrapError, Failure, Result};
 pub use host::{
     host_tool_deadline, provider_state_root, runtime_cache_root, verify_installed_plugin_metadata,
+    verify_installed_skill_package,
 };
 pub use manifest::{
     Artifact, ArtifactRole, DeliveryForm, ReleaseIdentity, RuntimeAsset, RuntimeFile,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -167,12 +168,108 @@ class LocalDevInstallerTests(unittest.TestCase):
         )
         self.assertLess(create_home, first_codex_call)
 
-    def test_prompt_verification_requires_only_installed_visible_skills(self) -> None:
+    @staticmethod
+    def packaged_skill_names() -> set[str]:
+        skills_root = REPO_ROOT / "plugins/unica/skills"
+        return {
+            path.name for path in skills_root.iterdir() if (path / "SKILL.md").is_file()
+        }
+
+    def test_prompt_proof_names_no_skill_of_its_own(self) -> None:
         installer = INSTALLER.read_text(encoding="utf-8")
 
-        self.assertIn('for needle in "Unica" "db-auth-check"; do', installer)
-        self.assertNotIn(
-            'for needle in "Unica" "v8-runner" "db-auth-check"; do', installer
+        # The proof takes the skill from the package at run time, so no skill
+        # name is written anywhere in the script: not on the needle line, and
+        # not in a variable assigned above it.
+        packaged = self.packaged_skill_names()
+        self.assertTrue(packaged)
+        for skill in sorted(packaged):
+            with self.subTest(skill=skill):
+                self.assertNotIn(skill, installer)
+
+        needles = re.findall(r"for needle in (.+); do", installer)
+        self.assertEqual(len(needles), 1, needles)
+        needle_line = needles[0]
+        self.assertIn('"Unica"', needle_line)
+        # Whatever the variable is called, the skill arrives through one.
+        self.assertRegex(needle_line, r'"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"')
+
+        # A skill removed from the package is no longer in `packaged`, so the
+        # names dropped so far are named here: `v8-runner` went in #670, and
+        # the proof must not grow a literal back in its place. It stays legal
+        # elsewhere in the script as the name of a bundled tool.
+        for retired in ("v8-runner",):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, needle_line)
+
+    def packaged_prompt_skill(self, skills_root: Path) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    (
+                        'installer="$1"; skills_root="$2"; tmp="$3"; '
+                        'set -- --build-dir "$tmp" --skip-build --skip-install '
+                        '--skip-verify; source "$installer"; '
+                        'packaged_prompt_skill "$skills_root"'
+                    ),
+                    "bash",
+                    str(INSTALLER),
+                    str(skills_root),
+                    tmp,
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+    def test_packaged_prompt_skill_is_a_complete_skill_of_the_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = Path(tmp) / "skills"
+            for name in ("beta", "gamma"):
+                (skills_root / name).mkdir(parents=True)
+                (skills_root / name / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+
+            completed = self.packaged_prompt_skill(skills_root)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, "beta\n")
+        self.assertEqual(completed.stderr, "")
+
+    def test_packaged_prompt_skill_refuses_an_incomplete_skill_directory(self) -> None:
+        # The bootstrap package check rejects a skills tree carrying a
+        # directory without SKILL.md. Skipping it here would let the local
+        # install pass a package the release gate refuses.
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = Path(tmp) / "skills"
+            (skills_root / "code-search").mkdir(parents=True)
+            (skills_root / "code-search" / "SKILL.md").write_text("# x\n", encoding="utf-8")
+            (skills_root / "broken").mkdir()
+
+            completed = self.packaged_prompt_skill(skills_root)
+
+        self.assertEqual(completed.returncode, 65)
+        self.assertEqual(completed.stdout, "")
+        self.assertEqual(
+            completed.stderr,
+            f"Packaged prompt-visible skill is incomplete: {skills_root / 'broken'}\n",
+        )
+
+    def test_packaged_prompt_skill_refuses_a_package_without_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = Path(tmp) / "skills"
+            skills_root.mkdir(parents=True)
+
+            completed = self.packaged_prompt_skill(skills_root)
+
+        self.assertEqual(completed.returncode, 65)
+        self.assertEqual(completed.stdout, "")
+        self.assertEqual(
+            completed.stderr,
+            f"Packaged plugin exposes no prompt-visible skills: {skills_root}\n",
         )
 
     def test_installer_preserves_persistent_cargo_work_and_writes_metrics(self) -> None:

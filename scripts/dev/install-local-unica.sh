@@ -36,6 +36,36 @@ detect_target() {
   target_for_host "$(uname -s)" "$(uname -m)"
 }
 
+# One prompt-visible skill of the packaged plugin. The prompt proof looks for
+# it instead of a skill name written into this script, so adding, renaming or
+# removing a skill changes the package and not the installer.
+#
+# The whole tree is scanned before a name is returned. `unica-bootstrap verify`
+# rejects a package carrying a skill directory without `SKILL.md`, so picking
+# the first complete directory and skipping the rest would install locally what
+# the release gate refuses.
+packaged_prompt_skill() {
+  local skills_root="$1"
+  local skill_dir
+  local selected=""
+  for skill_dir in "$skills_root"/*/; do
+    # An unmatched glob stays literal, and a literal is not a directory.
+    [ -d "$skill_dir" ] || continue
+    if [ ! -f "$skill_dir/SKILL.md" ]; then
+      echo "Packaged prompt-visible skill is incomplete: ${skill_dir%/}" >&2
+      return 65
+    fi
+    if [ -z "$selected" ]; then
+      selected="$(basename "$skill_dir")"
+    fi
+  done
+  if [ -z "$selected" ]; then
+    echo "Packaged plugin exposes no prompt-visible skills: $skills_root" >&2
+    return 65
+  fi
+  printf '%s\n' "$selected"
+}
+
 main() {
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MARKETPLACE_NAME="${UNICA_CODEX_MARKETPLACE_NAME:-unica-dev}"
@@ -207,6 +237,7 @@ rm -rf "$PACKAGE_OUT"
 "$(tool_binary unica)" --help >/dev/null
 PLUGIN_VERSION="$("$PYTHON_BIN" -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$MARKETPLACE_DIR/plugins/unica/.codex-plugin/plugin.json")"
 CODEX_PLUGIN_CACHE_VERSION_DIR="$CODEX_PLUGIN_CACHE_DIR/$PLUGIN_VERSION"
+PROMPT_SKILL="$(packaged_prompt_skill "$MARKETPLACE_DIR/plugins/unica/skills")"
 
 if [ "$DO_INSTALL" -eq 1 ]; then
   if ! command -v codex >/dev/null 2>&1; then
@@ -228,7 +259,7 @@ if [ "$DO_INSTALL" -eq 1 ]; then
 
   if [ "$DO_VERIFY" -eq 1 ]; then
     codex debug prompt-input 'test' > "$PROMPT_PROOF"
-    for needle in "Unica" "db-auth-check"; do
+    for needle in "Unica" "$PROMPT_SKILL"; do
       if ! grep -q "$needle" "$PROMPT_PROOF"; then
         echo "Codex prompt verification did not contain '$needle'." >&2
         echo "Saved prompt proof: $PROMPT_PROOF" >&2
