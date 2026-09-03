@@ -2199,9 +2199,6 @@ pub(crate) mod subsystem_info_typed_result_tests {
 
     #[test]
     pub(crate) fn public_subsystem_projection_and_mode_absence_contract_is_complete() {
-        crate::application::tests::public_subsystem_info_registration_address_and_schema_contract_is_complete();
-        crate::application::tests::public_subsystem_info_projects_registered_dependency_errors_as_typed_failures();
-        crate::application::tests::public_subsystem_info_deadline_returns_no_data();
         subsystem_projection_contract_is_complete();
     }
 }
