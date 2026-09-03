@@ -2017,8 +2017,12 @@ fn extension_platform_event_does_not_advertise_unproved_interception() {
 }
 
 #[test]
-fn extension_root_platform_module_remains_provider_unavailable() {
+fn extension_root_platform_modules_are_owned_by_the_extension_root() {
     let fixture = RealReaderFixture::new();
+    write(
+        &fixture.source.join("Ext/ManagedApplicationModule.bsl"),
+        "Procedure ПередНачаломРаботыСистемы(Отказ)\nEndProcedure\n\nProcedure РасширениеПриСтарте()\nEndProcedure\n",
+    );
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
     let revisions = Arc::new(
@@ -2034,11 +2038,46 @@ fn extension_root_platform_module_remains_provider_unavailable() {
         PlatformProfile::v8_3_27(),
     );
 
-    let result = ViewService::new(authority, ViewCursorStore::default())
-        .view(ViewRequest::new("main:Module.ManagedApplication.Event.BeforeStart").unwrap());
+    let module = ViewService::new(authority, ViewCursorStore::default())
+        .view(ViewRequest::new("main:Module.ManagedApplication").unwrap());
+    assert!(module.ok, "{module:?}");
 
-    assert!(!result.ok, "{result:?}");
-    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
+    );
+    let authority = LogicalViewReadAuthority::new(
+        &cancellation,
+        "main",
+        "actor-fixture-extension-root-find",
+        SourceSetKind::Extension,
+        revisions,
+        source_root,
+        PlatformProfile::v8_3_27(),
+    );
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &cancellation,
+        )
+        .unwrap();
+    for expected in [
+        "main:Module.ManagedApplication",
+        "main:Module.ManagedApplication.Method.РасширениеПриСтарте",
+    ] {
+        let found = index.find(FindRequest::new(expected).unwrap());
+        assert!(
+            !found.is_nearest()
+                && found
+                    .candidates()
+                    .iter()
+                    .any(|candidate| candidate.at() == expected),
+            "extension root module identity is missing from find: {expected}: {found:?}"
+        );
+    }
 }
 
 #[test]
@@ -2092,7 +2131,7 @@ fn logical_reader_parity_contract_is_complete() {
     operation_lease_find_traversal_scans_once_then_confirms_once();
     websocket_client_source_view_is_an_explicit_provider_gap();
     extension_platform_event_does_not_advertise_unproved_interception();
-    extension_root_platform_module_remains_provider_unavailable();
+    extension_root_platform_modules_are_owned_by_the_extension_root();
     crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
         crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
     );
