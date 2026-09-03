@@ -2,7 +2,7 @@
 id: INV.SOURCE.LOGICAL-READER-PARITY
 status: active
 governs: product
-decision: DEC.2026-09-03.INLINE-COMMAND-REGISTRATION
+decision: DEC.2026-09-03.ROLE-CONFIGURATION-RIGHTS
 check: crates/unica-coder/src/infrastructure/v13_read/tests.rs::logical_reader_parity_contract_is_complete
 scope: [app, platform, product, source]
 ---
@@ -61,10 +61,10 @@ configuration, EPF и ERF через parent navigation и find, включая
 bounded/cancellable aggregate inventory read. Role объединяет allowed/denied по
 canonical `(kind, name)`, размещает уникальные RLS nodes только под Right и
 отклоняет неоднозначный короткий alias с canonical кандидатами. V13 принимает
-в Role только kinds из точного platform registry `METADATA_KIND_TAGS` без `_`,
-поэтому canonical `kind_name`
-инъективен; произвольный type prefix даёт `provider_unavailable`, не duplicate
-`at`.
+в Role kinds из точного platform registry `METADATA_KIND_TAGS` и корневой
+владелец `Configuration` (права конфигурации в целом), все без `_`, поэтому
+canonical `kind_name` инъективен; произвольный type prefix даёт
+`provider_unavailable`, не duplicate `at`.
 Отсутствующий HomePage sidecar допустим, present malformed/wrong-root evidence
 даёт `provider_unavailable`; V12 legacy wrapper сохраняет старую трактовку.
 Общий абсолютный 120-секундный operation budget view/find без replenishment

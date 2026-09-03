@@ -133,7 +133,7 @@ fn role_objects(payload: &Value) -> Result<Vec<RoleObject>, ViewError> {
             let Some(group_kind) = group.get("kind").and_then(Value::as_str) else {
                 continue;
             };
-            if metadata_kind(group_kind).is_none() {
+            if !is_role_right_owner_kind(group_kind) {
                 return Err(ViewError::new(
                     "provider_unavailable",
                     format!("role rights contain invalid metadata kind `{group_kind}`"),
@@ -170,6 +170,14 @@ fn role_objects(payload: &Value) -> Result<Vec<RoleObject>, ViewError> {
         }
     }
     Ok(result.into_values().collect())
+}
+
+/// Rights are granted on registry metadata kinds and on the configuration
+/// root itself (`Configuration.<Name>`: Administration, DataAdministration,
+/// ThinClient, …). Both spell their kind without `_`, so `kind_name` stays
+/// injective.
+fn is_role_right_owner_kind(kind: &str) -> bool {
+    kind == NodeKind::Configuration.as_str() || metadata_kind(kind).is_some()
 }
 
 fn role_object_value(address: &QualifiedAddress, object: &RoleObject) -> Option<Value> {
@@ -275,6 +283,52 @@ fn restricted_rights(object: &RoleObject) -> BTreeMap<String, Value> {
 mod tests {
     use super::*;
     use crate::infrastructure::metadata_kinds::METADATA_KIND_TAGS;
+
+    #[test]
+    fn configuration_rights_are_addressed_as_a_configuration_right_object() {
+        let payload = json!({
+            "name": "Administrator",
+            "allowed": [
+                {"kind": "Configuration", "objects": [{"name": "Trade", "rights": [
+                    {"name": "Administration"}, {"name": "ThinClient"}
+                ]}]},
+                {"kind": "Catalog", "objects": [{"name": "Products", "rights": [{"name": "Read"}]}]}
+            ],
+            "denied": []
+        });
+        let rights = QualifiedAddress::parse("main:Role.Administrator.Right").unwrap();
+        let collection =
+            serde_json::to_value(project_role(&rights, &payload, &rights.segments()[1..]).unwrap())
+                .unwrap();
+        let ats = collection["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.get("at").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ats,
+            vec![
+                "main:Role.Administrator.Right.Catalog_Products",
+                "main:Role.Administrator.Right.Configuration_Trade",
+            ]
+        );
+        for at in [
+            "main:Role.Administrator.Right.Configuration_Trade",
+            "main:Role.Administrator.Right.Trade",
+        ] {
+            let at = QualifiedAddress::parse(at).unwrap();
+            let node =
+                serde_json::to_value(project_role(&at, &payload, &at.segments()[1..]).unwrap())
+                    .unwrap();
+            assert_eq!(
+                node["at"],
+                "main:Role.Administrator.Right.Configuration_Trade"
+            );
+            assert_eq!(node["props"]["objectKind"], "Configuration");
+            assert_eq!(node["props"]["allowedCount"], 2);
+        }
+    }
 
     #[test]
     fn accepted_platform_role_kinds_make_kind_name_encoding_injective() {
