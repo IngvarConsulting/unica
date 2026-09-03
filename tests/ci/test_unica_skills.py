@@ -2501,6 +2501,29 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("`unica.check`", form_edit)
         self.assertNotIn("unica.form.validate", form_edit)
 
+    def test_form_skills_route_command_availability_through_items(self) -> None:
+        form_edit = (self.skill_root() / "form-edit" / "SKILL.md").read_text(encoding="utf-8")
+        form_events = (self.skill_root() / "form-events" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        common_tokens = [
+            "`unica.form.info`",
+            "`Команды[ИмяКоманды].Доступность`",
+            "Элементы[ИмяЭлемента].Доступность",
+            "`CommandName`",
+            "`Form.Command.<ИмяКоманды>`",
+            "`ТолькоПросмотр`",
+        ]
+
+        for skill, guidance in [("form-edit", form_edit), ("form-events", form_events)]:
+            for token in common_tokens:
+                with self.subTest(skill=skill, token=token):
+                    self.assertIn(token, guidance)
+
+        self.assertIn("все связанные элементы", form_edit)
+        self.assertIn("every related item", form_events)
+        self.assertNotRegex(form_edit, r"unica\.form\.info` или\s+Form\.xml")
+
     def test_form_patterns_ux_guidance_is_mirrored_and_uses_supported_dsl(self) -> None:
         heading = "## UX-правила для элементов и компоновки форм"
         legacy_heading = "## UX-правила для элементов форм"

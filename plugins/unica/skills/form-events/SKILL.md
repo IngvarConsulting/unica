@@ -45,6 +45,29 @@ A form module holds client and server code in one file, and the directive on eac
 6. Apply module changes with `unica.code.patch`, one verifiable step at a time, giving every new procedure exactly one directive.
 7. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, and require separate evidence for runtime behavior and opening the affected form.
 
+## Command Availability
+
+When a handler must disable, lock, or re-enable a form command in the UI, do not
+write `Команды[ИмяКоманды].Доступность`: the form command object is not the UI
+element whose availability is shown to the user. Inspect the form first with
+`unica.form.info` and find every item whose `CommandName` is
+`Form.Command.<ИмяКоманды>` or the matching standard-command reference.
+
+Set availability on every related item instead:
+
+```bsl
+Элементы[ИмяЭлемента].Доступность = Ложь;
+```
+
+If the same command is rendered by a main command bar button, table command bar
+button, context-menu item, group button, or submenu item, update all of them or
+state that the form must be inspected further before code is generated. For table
+part standard commands, check the table's `ТолькоПросмотр` property first:
+read-only tables usually let the platform block add, copy, delete, and move-row
+commands without duplicate manual code. Add manual blocking mainly for custom
+buttons or menu items whose handlers can still change table rows, prices,
+discounts, VAT, sorting, selection, loading, filling, or recalculation.
+
 ## Design rules
 
 - Do not branch with `#Если Сервер` or `#Если Клиент` inside a `КлиентСервер` common module — the execution context cannot be determined reliably there (std439, АПК:547). Split into `Клиент` and `Сервер` modules with the same function name and keep the shared part in `КлиентСервер`.
