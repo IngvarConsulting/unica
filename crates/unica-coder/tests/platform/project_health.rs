@@ -1603,7 +1603,55 @@ struct StatusResult {
 
 fn status(workspace: &Path) -> StatusResult {
     use std::io::{BufRead, BufReader};
-    use std::process::Stdio;
+    use std::process::{ChildStdout, Stdio};
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+    use std::time::{Duration, Instant};
+
+    /// A silent server must fail this test, not hold the job until an external
+    /// timeout stops it: every response is awaited on a reader thread with a
+    /// deadline, and a stalled child is killed and reaped.
+    const RESPONSE_DEADLINE: Duration = Duration::from_secs(15);
+
+    fn read_stdout_lines(stdout: ChildStdout, sender: mpsc::Sender<String>) {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match stdout.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) if sender.send(line).is_err() => return,
+                Ok(_) => {}
+            }
+        }
+    }
+
+    fn receive(child: &mut std::process::Child, lines: &Receiver<String>, id: &Value) -> Value {
+        let deadline = Instant::now() + RESPONSE_DEADLINE;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let line = match lines.recv_timeout(remaining) {
+                Ok(line) => line,
+                Err(RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("MCP response deadline elapsed");
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    let _ = child.wait();
+                    panic!("MCP exited before response");
+                }
+            };
+            let response: Value = serde_json::from_str(&line).expect("decode MCP response");
+            if response.get("id") == Some(id) {
+                return response;
+            }
+        }
+    }
+
+    fn send(stdin: &mut std::process::ChildStdin, message: &Value) {
+        serde_json::to_writer(&mut *stdin, message).expect("encode MCP message");
+        stdin.write_all(b"\n").expect("terminate MCP message");
+        stdin.flush().expect("flush MCP message");
+    }
 
     // The provider state lives outside the workspace: the readiness assertions
     // below compare the whole workspace tree before and after the call.
@@ -1623,53 +1671,42 @@ fn status(workspace: &Path) -> StatusResult {
         .spawn()
         .expect("start canonical Unica MCP");
     let mut stdin = child.stdin.take().expect("MCP stdin");
-    let mut stdout = BufReader::new(child.stdout.take().expect("MCP stdout"));
-    fn exchange(
-        stdin: &mut std::process::ChildStdin,
-        stdout: &mut BufReader<std::process::ChildStdout>,
-        request: Value,
-    ) -> Value {
-        let id = request["id"].clone();
-        serde_json::to_writer(&mut *stdin, &request).unwrap();
-        stdin.write_all(b"\n").unwrap();
-        stdin.flush().unwrap();
-        loop {
-            let mut line = String::new();
-            assert!(
-                stdout.read_line(&mut line).unwrap() > 0,
-                "MCP exited before response"
-            );
-            let response: Value = serde_json::from_str(&line).unwrap();
-            if response.get("id") == Some(&id) {
-                return response;
-            }
-        }
-    }
-    exchange(
-        &mut stdin,
-        &mut stdout,
-        serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "project-health-test", "version": "1"}}
-        }),
-    );
-    serde_json::to_writer(
+    let stdout = child.stdout.take().expect("MCP stdout");
+    let (line_sender, lines) = mpsc::channel();
+    let stdout_reader = std::thread::spawn(move || read_stdout_lines(stdout, line_sender));
+
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "project-health-test", "version": "1"}}
+    });
+    send(&mut stdin, &initialize);
+    receive(&mut child, &lines, &initialize["id"]);
+    send(
         &mut stdin,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
-    )
-    .unwrap();
-    stdin.write_all(b"\n").unwrap();
-    stdin.flush().unwrap();
-    let response = exchange(
-        &mut stdin,
-        &mut stdout,
-        serde_json::json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": {"name": "unica.view", "arguments": {}}
-        }),
     );
+    let view = serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "unica.view", "arguments": {}}
+    });
+    send(&mut stdin, &view);
+    let response = receive(&mut child, &lines, &view["id"]);
+
     drop(stdin);
-    let _ = child.wait();
+    let deadline = Instant::now() + RESPONSE_DEADLINE;
+    loop {
+        if child.try_wait().expect("poll MCP exit").is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    stdout_reader.join().expect("join MCP stdout reader");
+
     let structured = response["result"]["structuredContent"].clone();
     let ok = structured["ok"] == Value::Bool(true);
     let errors = structured["diagnostics"]
