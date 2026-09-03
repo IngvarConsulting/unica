@@ -2,7 +2,7 @@
 id: INV.APP.V13-RUN-DICTIONARY
 status: active
 governs: product
-decision: DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS
+decision: DEC.2026-09-03.INFOBASE-EXPORT-RUN-SLICE
 check: crates/unica-coder/src/application/v13/tool_catalog.rs::v13_run_dictionary_has_twelve_operations_without_query_execution
 scope: [app, product, wire]
 ---

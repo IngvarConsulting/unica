@@ -155,7 +155,7 @@ pub trait BslMcpRunner {
     fn call(&self, command: &BslMcpCommand) -> Result<BslMcpOutput, String>;
 }
 
-struct SystemProcessRunner;
+pub(crate) struct SystemProcessRunner;
 struct SystemBslMcpRunner;
 
 static SYSTEM_PROCESS_RUNNER: SystemProcessRunner = SystemProcessRunner;
