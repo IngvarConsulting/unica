@@ -4100,79 +4100,39 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     pub(crate) fn actor_authenticated_source_architecture_names_complete_witnesses() {
-        fn front_matter_value<'a>(document: &'a str, key: &str) -> &'a str {
-            document
-                .lines()
-                .find_map(|line| line.strip_prefix(key))
-                .map(str::trim)
-                .unwrap_or_else(|| panic!("architecture record has no `{key}` field"))
-        }
-
+        // Запись называет сами проверки, а не агрегат над ними. Раньше здесь
+        // разбирался Rust: свидетель обязан был звать перечисленное. Звал он
+        // это вторым заходом, потому что харнесс уже прогнал каждую проверку
+        // отдельным тестом. Требование прежнее и проверяется там, где живёт
+        // обещание.
         let capability = include_str!(
             "../../../../../arch/invariants/INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES.md"
         );
-        assert_eq!(
-            front_matter_value(capability, "check:"),
-            "crates/unica-coder/src/infrastructure/daemon/server.rs::actor_authenticated_source_capability_contract_is_complete",
-            "capability invariant points at a witness that omits daemon no-substitution"
-        );
+        for named in [
+            "actor_read_source_capability_is_sealed_after_binding",
+            "actor_read_authority_builder_uses_only_actor_bound_semantics",
+            "provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile",
+        ] {
+            assert!(
+                capability.contains(named),
+                "capability invariant omits the witness {named}"
+            );
+        }
 
         let decision = include_str!(
             "../../../../../arch/decisions/2026-08-26-actor-authenticated-source-profile-slice.md"
         );
-        assert_eq!(
-            front_matter_value(decision, "realized:"),
-            "crates/unica-coder/src/infrastructure/daemon/server.rs::actor_authenticated_source_profile_contract_is_complete"
-        );
-
-        let source = include_str!("server.rs");
-        let aggregate_declaration = [
-            "pub(crate) fn actor_authenticated_source_profile_contract_is_complete",
-            "()",
-        ]
-        .concat();
-        let (_, after_aggregate) = source
-            .split_once(&aggregate_declaration)
-            .expect("decision aggregate remains available to the architecture witness");
-        let (aggregate, _) = after_aggregate
-            .split_once("\n    }\n")
-            .expect("decision aggregate remains structurally bounded");
-        assert!(
-            aggregate.contains("actor_authenticated_source_capability_contract_is_complete();"),
-            "decision aggregate omits the complete actor capability witness"
-        );
-        assert!(
-            aggregate.contains(
-                "remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state();"
-            ),
-            "decision aggregate omits actor state-scope separation"
-        );
-        assert!(
-            aggregate.contains("duplicate_source_set_names_with_distinct_roots_are_rejected();"),
-            "decision aggregate omits duplicate source-set name rejection"
-        );
-
-        let capability_aggregate_declaration = [
-            "pub(crate) fn actor_authenticated_source_capability_contract_is_complete",
-            "()",
-        ]
-        .concat();
-        let (_, after_capability_aggregate) = source
-            .split_once(&capability_aggregate_declaration)
-            .expect("capability aggregate remains available to the architecture witness");
-        let (capability_aggregate, _) = after_capability_aggregate
-            .split_once("\n    }\n")
-            .expect("capability aggregate remains structurally bounded");
-        assert!(
-            capability_aggregate
-                .contains("actor_read_source_capability_is_sealed_after_binding();"),
-            "capability aggregate omits the complete AST and sibling-privacy witness"
-        );
-        assert!(
-            capability_aggregate
-                .contains("actor_read_authority_builder_uses_only_actor_bound_semantics();"),
-            "capability aggregate omits bound profile/kind/deadline behavior"
-        );
+        for named in [
+            "provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile",
+            "remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state",
+            "duplicate_source_set_names_with_distinct_roots_are_rejected",
+            "actor_read_source_capability_is_sealed_after_binding",
+        ] {
+            assert!(
+                decision.contains(named),
+                "decision omits the witness {named}"
+            );
+        }
     }
 
     #[test]
