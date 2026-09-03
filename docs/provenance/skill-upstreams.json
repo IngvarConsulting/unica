@@ -165,31 +165,6 @@
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
-          "skill": "cf-info",
-          "status": "ported-to-unica",
-          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through unica.cf.info; output covers own config, CFE, removed support, read-only, vendor count, and object rule counts. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
-          "upstreamPaths": [
-            ".claude/skills/cf-info/**",
-            "docs/cf-guide.md",
-            "docs/1c-configuration-spec.md",
-            "docs/1c-config-objects-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/cf-info",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/cf-info"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/common.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/cf.rs"
-          ],
-          "decision": "ignored-with-reason",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
-        },
-        {
           "skill": "cf-init",
           "status": "ported-to-unica",
           "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
@@ -490,34 +465,6 @@
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
-          "skill": "form-remove",
-          "status": "ported-to-unica",
-          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/form.rs) behind unica.form.*; adapted script behavior is kept only as Unica-owned migration-equivalence models under tests/fixtures/unica_mcp_script_parity/unica_reference_models. Packaged legacy operation directories are intentionally absent.",
-          "upstreamPaths": [
-            ".claude/skills/form-remove/**",
-            "docs/form-guide.md",
-            "docs/form-dsl-spec.md",
-            "docs/form-patterns.md",
-            "docs/1c-form-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/form-remove",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/form-remove",
-            "plugins/unica/references/specs/form-dsl-spec.md",
-            "plugins/unica/references/specs/form-patterns.md"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/form.rs"
-          ],
-          "decision": "ported",
-          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
-          "decisionReason": "Ported 78b5b73 form-remove cleanup semantics into native Rust and refreshed the parity fixture; prompt-visible skill documents the broader Default*Form/Auxiliary*Form cleanup."
-        },
-        {
           "skill": "interface-edit",
           "status": "ported-to-unica",
           "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
@@ -622,28 +569,6 @@
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decisionReason": "Reviewed donor drift remains either typed meta.info/internal-validator evidence or retired wrapper and guidance churn. It does not justify restoring a public validation route or the former batch grammar.",
           "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
-        },
-        {
-          "skill": "meta-remove",
-          "status": "ported-to-unica",
-          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. 2026-07-26 deliberate donor divergence: the donor -KeepFiles switch is retired from the Unica surface. The donor shipped it in 151ded9b as the only safety valve of a meta-remove that had no reference analysis; the reference check and -Force arrived later in 27bb08d1 and Unica carries both, so deregister-without-deleting no longer has a distinct role in the typed contract. Removed from the published MCP schema, the native operation, the packaged skill and the parity reference model; unica.meta.remove now rejects KeepFiles and keepFiles as unknown arguments.",
-          "upstreamPaths": [
-            ".claude/skills/meta-remove/**",
-            "docs/meta-guide.md",
-            "docs/meta-dsl-spec.md",
-            "docs/1c-config-objects-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/meta-remove",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-remove"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ],
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; none of that donor churn requires adopting donor changes. Separately, Unica deliberately diverges from the donor by retiring the -KeepFiles switch, and that divergence does change the prompt-visible skill, the typed MCP contract, the native operation and the parity model; see the entry notes for the reasoning and the affected surfaces."
         },
         {
           "skill": "mxl-compile",

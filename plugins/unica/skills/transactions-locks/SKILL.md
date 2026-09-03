@@ -7,7 +7,7 @@ description: "Транзакции, блокировки и ответствен
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, `unica.meta.info`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, `unica.meta.info`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -45,7 +45,7 @@ The read-decide-write pair is the shape to recognise: read a value, compute from
 
 1. Classify every read on the path: does its result change data or drive a decision that will? If yes, it is responsible and needs a lock.
 2. Name the resources the operation captures and in what order, before writing any lock code.
-3. Locate the existing transaction boundaries with `unica.code.outline` and `unica.code.graph` — a transaction begun in one method and finished in another is the defect, not a style issue.
+3. Locate the existing transaction boundaries with `unica.view` on the module node (its `Method` branch lists the methods) and `unica.code.graph` — a transaction begun in one method and finished in another is the defect, not a style issue.
 4. Write the shape whole: `НачатьТранзакцию()`, then `Попытка` with the lock, the read, the write and the commit, then `Исключение` with `ОтменитьТранзакцию()` first.
 5. Apply with `unica.code.patch`, one verifiable step at a time.
 6. Verify statically with `unica.code.diagnostics` — the transaction-scheme diagnostics are exactly what this skill's rules encode — and use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them; report runtime behavior as unverified.

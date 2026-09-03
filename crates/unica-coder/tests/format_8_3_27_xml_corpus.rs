@@ -98,7 +98,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["bsl-only"],
     },
     MutatorRegistryEntry {
-        tool: "unica.xdto.edit",
+        tool: CANONICAL_APPLY_TOOL,
         operation: "xdto-edit",
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["xdto-add-nested-property"],
@@ -164,7 +164,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["managed-form"],
     },
     MutatorRegistryEntry {
-        tool: "unica.form.remove",
+        tool: CANONICAL_APPLY_TOOL,
         operation: "form-remove",
         impact: XmlImpactClass::RemoveOrModify,
         case_ids: &["form-remove-managed"],
@@ -266,7 +266,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         ],
     },
     MutatorRegistryEntry {
-        tool: "unica.meta.remove",
+        tool: CANONICAL_APPLY_TOOL,
         operation: "meta-remove",
         impact: XmlImpactClass::RemoveOrModify,
         case_ids: &["meta-remove-object"],
@@ -389,7 +389,7 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "xdto-add-nested-property",
-        tool: "unica.xdto.edit",
+        tool: "unica.apply",
         branch: "nested-property",
     },
     ExecutableCase {
@@ -444,7 +444,7 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "form-remove-managed",
-        tool: "unica.form.remove",
+        tool: "unica.apply",
         branch: "remove-managed-form",
     },
     ExecutableCase {
@@ -599,7 +599,7 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "meta-remove-object",
-        tool: "unica.meta.remove",
+        tool: "unica.apply",
         branch: "remove-object",
     },
     ExecutableCase {
@@ -888,7 +888,7 @@ fn call_public_tool_result(
     let app = UnicaApplication::new();
     let result = if matches!(
         tool,
-        "unica.meta.add" | "unica.meta.edit" | "unica.meta.remove" | "unica.role.edit"
+        "unica.meta.add" | "unica.meta.edit" | "unica.role.edit"
     ) {
         static PROCESS_CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let _guard = PROCESS_CWD_LOCK
@@ -2202,22 +2202,22 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         copy_fixture_tree(&fixture, &workspace.join("src"))?;
         write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])?;
         let mut args = common_args(workspace);
-        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         args.insert(
-            "metadataPath".to_string(),
-            Value::String("XDTOPackage.EnterpriseData_1_17_3".to_string()),
+            "at".to_string(),
+            Value::String("main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка".to_string()),
         );
         args.insert(
-            "operations".to_string(),
+            "ops".to_string(),
             json!([{
-                "op": "addProperty",
-                "typeName": "ЛюбаяСсылка",
-                "propertyPath": "СсылкаНаОбъект",
-                "property": {
-                    "name": "Документ_Корпус",
-                    "type": "tns:Документ_ЗаказКлиента",
-                    "minOccurs": 0
-                }
+                "op": "property.add",
+                "args": {"values": {
+                    "propertyPath": "СсылкаНаОбъект",
+                    "property": {
+                        "name": "Документ_Корпус",
+                        "type": "tns:Документ_ЗаказКлиента",
+                        "minOccurs": 0
+                    }
+                }}
             }]),
         );
         return Ok(args);
@@ -2626,10 +2626,21 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         return Ok(args);
     }
 
-    if matches!(
-        case.id,
-        "meta-edit-predefined-items" | "meta-edit-property" | "meta-remove-object"
-    ) {
+    if case.id == "meta-remove-object" {
+        seed_catalog(workspace)?;
+        let mut args = common_args(workspace);
+        args.insert(
+            "at".to_string(),
+            Value::String("main:Catalog.CorpusCatalog".to_string()),
+        );
+        args.insert(
+            "ops".to_string(),
+            json!([{"op": "object.remove", "args": {"force": true}}]),
+        );
+        return Ok(args);
+    }
+
+    if matches!(case.id, "meta-edit-predefined-items" | "meta-edit-property") {
         seed_catalog(workspace)?;
         let mut args = common_args(workspace);
         args.insert("sourceSet".to_string(), Value::String("main".to_string()));
@@ -2663,9 +2674,6 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                 "operations".to_string(),
                 json!([{"op": "setProperties", "values": {"Comment": "Corpus edited"}}]),
             );
-        } else {
-            args.insert("force".to_string(), Value::Bool(true));
-            args.insert("confirm".to_string(), Value::Bool(true));
         }
         return Ok(args);
     }
@@ -2793,16 +2801,12 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
             );
         } else {
             args.insert(
-                "ObjectName".to_string(),
-                Value::String("CorpusCatalog".to_string()),
+                "at".to_string(),
+                Value::String("main:Catalog.CorpusCatalog.Form.CorpusForm".to_string()),
             );
             args.insert(
-                "FormName".to_string(),
-                Value::String("CorpusForm".to_string()),
-            );
-            args.insert(
-                "SrcDir".to_string(),
-                Value::String("src/Catalogs".to_string()),
+                "ops".to_string(),
+                json!([{"op": "form.remove", "args": {}}]),
             );
         }
         return Ok(args);
@@ -4038,7 +4042,6 @@ fn live_public_mutators() -> BTreeMap<&'static str, &'static str> {
                 ToolHandler::Metadata { .. } => match tool.name {
                     "unica.meta.add" => "meta-add",
                     "unica.meta.edit" => "meta-edit",
-                    "unica.meta.remove" => "meta-remove",
                     _ => return None,
                 },
                 _ => return None,
@@ -5349,24 +5352,21 @@ fn tracked_xdto_package_fixture_executes_public_corpus_preview_apply_and_noop() 
     let before = hashes_for_xml_payloads(&captured);
     let mut preview_args = args.clone();
     preview_args.insert("dryRun".to_string(), Value::Bool(true));
-    let preview = UnicaApplication::new()
-        .call_tool(case.tool, &preview_args)
-        .unwrap();
-    assert!(preview.ok, "{preview:?}");
-    assert_eq!(preview.data.as_ref().unwrap()["noOp"], false);
+    assert_eq!(case.tool, CANONICAL_APPLY_TOOL);
+    let preview = call_canonical_apply(&preview_args).unwrap();
+    assert!(!preview.is_empty(), "{preview:?}");
     assert_eq!(fs::read(&package_path).unwrap(), package_before);
 
-    let applied = UnicaApplication::new().call_tool(case.tool, &args).unwrap();
-    assert!(applied.ok, "{applied:?}");
+    call_canonical_apply(&args).unwrap();
     let package_after = fs::read(&package_path).unwrap();
     assert_eq!(package_after, expected_package);
 
-    let repeated = UnicaApplication::new()
-        .call_tool(case.tool, &preview_args)
-        .unwrap();
-    assert!(repeated.ok, "{repeated:?}");
-    assert_eq!(repeated.data.as_ref().unwrap()["noOp"], true);
-    assert!(repeated.cache.events.is_empty());
+    // Replanning the same operation over the applied package is a noop: the
+    // preview succeeds, the publication writes nothing new, and the bytes stay
+    // exactly what the first apply produced.
+    call_canonical_apply(&preview_args).expect("replanning the applied operation previews");
+    assert_eq!(fs::read(&package_path).unwrap(), package_after);
+    call_canonical_apply(&args).expect("replanning the applied operation publishes");
     assert_eq!(fs::read(&package_path).unwrap(), package_after);
 
     let post_payloads = capture_xml_payloads(&workspace).unwrap();

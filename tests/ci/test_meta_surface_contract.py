@@ -574,14 +574,15 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "tracked executable Meta DSL bridges remain:\n" + "\n".join(violations),
         )
 
-    def test_registry_is_exactly_the_four_typed_metadata_handlers(self) -> None:
+    def test_registry_is_exactly_the_three_typed_metadata_handlers(self) -> None:
+        # `unica.meta.remove` left with DEC.2026-09-03.V0-13-LEGACY-BATCH-2:
+        # removal is `unica.apply object.remove` on the canonical surface.
         blocks = registered_tool_blocks()
         meta = {name: block for name, block in blocks.items() if name.startswith("unica.meta.")}
         expected = {
             "unica.meta.info": ("Read", "Info"),
             "unica.meta.add": ("Mutation", "Add"),
             "unica.meta.edit": ("Mutation", "Edit"),
-            "unica.meta.remove": ("Mutation", "Remove"),
         }
 
         self.assertEqual(set(meta), set(expected))

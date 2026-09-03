@@ -2356,10 +2356,10 @@ mod tests {
             Value::String("XDTOPackage.Sample".to_string()),
         );
 
-        let check = evaluate_format_guard(spec("unica.xdto.edit"), &args, &context(&root))
+        let check = evaluate_format_guard(spec("unica.xdto.info"), &args, &context(&root))
             .expect("XDTO handler-resolved format path must resolve");
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("XDTO mutation inside an older source set must block");
+        let FormatGuardCheck::Warn { diagnostic, .. } = check else {
+            panic!("XDTO read inside an older source set must warn");
         };
 
         assert_eq!(diagnostic["code"], "formatMigrationAvailable");
@@ -2442,17 +2442,6 @@ mod tests {
         assert_eq!(read_diagnostic["code"], expected_code);
         assert_eq!(read_diagnostic["actualFormat"], expected_actual_format);
 
-        let mutation = evaluate_format_guard(spec("unica.xdto.edit"), &args, &context(&root))
-            .expect("logical mutation target must reach format policy");
-        let FormatGuardCheck::Block {
-            diagnostic: mutation_diagnostic,
-            ..
-        } = mutation
-        else {
-            panic!("logical mutation target must block");
-        };
-        assert_eq!(mutation_diagnostic["code"], expected_code);
-        assert_eq!(mutation_diagnostic["actualFormat"], expected_actual_format);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2472,7 +2461,7 @@ mod tests {
             Value::String("XDTOPackage.Missing".to_string()),
         );
 
-        let error = match evaluate_format_guard(spec("unica.xdto.edit"), &args, &context(&root)) {
+        let error = match evaluate_format_guard(spec("unica.xdto.info"), &args, &context(&root)) {
             Ok(_) => panic!("an unresolved XDTO HandlerResolved path must not degrade to Allow"),
             Err(error) => error,
         };
@@ -2566,10 +2555,10 @@ mod tests {
         let path = config(&root, Some("2.21"));
         let mut args = Map::new();
         args.insert(
-            "ConfigPath".into(),
+            "RightsPath".into(),
             Value::String(path.display().to_string()),
         );
-        let check = evaluate_format_guard(spec("unica.cf.info"), &args, &context(&root)).unwrap();
+        let check = evaluate_format_guard(spec("unica.role.info"), &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn {
             warning,
             diagnostic,
@@ -3272,24 +3261,6 @@ mod tests {
     }
 
     #[test]
-    fn form_remove_default_src_blocks_older_dump() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-default-form-remove-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        config(&root, Some("2.19"));
-        let mut args = Map::new();
-        args.insert("ObjectName".into(), Value::String("Catalogs/Items".into()));
-
-        assert!(matches!(
-            evaluate_format_guard(spec("unica.form.remove"), &args, &context(&root)).unwrap(),
-            FormatGuardCheck::Block { .. }
-        ));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn format_guard_normalizes_parent_segments_before_owner_lookup() {
         let root = std::env::temp_dir().join(format!(
             "unica-format-guard-normalized-parent-{}-{}",
@@ -3598,17 +3569,14 @@ mod tests {
             "unica.erf.init",
             "unica.form.compile",
             "unica.form.edit",
-            "unica.form.remove",
             "unica.interface.edit",
             "unica.meta.add",
             "unica.meta.edit",
-            "unica.meta.remove",
             "unica.mxl.compile",
             "unica.role.compile",
             "unica.role.edit",
             "unica.subsystem.compile",
             "unica.subsystem.edit",
-            "unica.xdto.edit",
         ]);
         let actual = tools()
             .into_iter()
@@ -3668,11 +3636,7 @@ mod tests {
         }
         assert_eq!(
             metadata_tools,
-            std::collections::BTreeSet::from([
-                "unica.meta.add",
-                "unica.meta.edit",
-                "unica.meta.remove"
-            ])
+            std::collections::BTreeSet::from(["unica.meta.add", "unica.meta.edit"])
         );
 
         // Every native descriptor enters the unconditional application

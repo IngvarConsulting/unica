@@ -41,11 +41,9 @@ MUTATION_TOOL_NAMES = frozenset(
         "unica.cfe.patch_method",
         "unica.meta.add",
         "unica.meta.edit",
-        "unica.meta.remove",
         "unica.form.add",
         "unica.form.compile",
         "unica.form.edit",
-        "unica.form.remove",
         "unica.interface.edit",
         "unica.subsystem.compile",
         "unica.subsystem.edit",
@@ -63,7 +61,6 @@ MUTATION_TOOL_NAMES = frozenset(
         "unica.runtime.job.start",
         "unica.runtime.job.cancel",
         "unica.code.patch",
-        "unica.xdto.edit",
     }
 )
 

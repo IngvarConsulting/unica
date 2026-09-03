@@ -348,7 +348,6 @@ def prompt_frontmatter(document: str) -> dict[str, str]:
 
 IN_SCOPE_TOOLS = {
     "cf-edit": "unica.cf.edit",
-    "cf-info": "unica.cf.info",
     "cf-init": "unica.cf.init",
     "cfe-borrow": "unica.cfe.borrow",
     "cfe-diff": "unica.cfe.diff",
@@ -359,11 +358,9 @@ IN_SCOPE_TOOLS = {
     "meta-add": "unica.meta.add",
     "meta-edit": "unica.meta.edit",
     "meta-info": "unica.meta.info",
-    "meta-remove": "unica.meta.remove",
     "form-compile": "unica.form.compile",
     "form-edit": "unica.form.edit",
     "form-info": "unica.form.info",
-    "form-remove": "unica.form.remove",
     "interface-edit": "unica.interface.edit",
     "subsystem-compile": "unica.subsystem.compile",
     "subsystem-edit": "unica.subsystem.edit",
@@ -394,7 +391,6 @@ SCENARIO_SKILLS = {
     "code-search": [
         "unica.code.search",
         "unica.code.definition",
-        "unica.code.outline",
         "unica.meta.info",
         "unica.view",
     ],
@@ -408,7 +404,6 @@ SCENARIO_SKILLS = {
     "code-review": [
         "unica.code.search",
         "unica.code.definition",
-        "unica.code.outline",
         "unica.code.diagnostics",
         "unica.meta.info",
         "unica.standards.explain",
@@ -418,7 +413,7 @@ SCENARIO_SKILLS = {
     ],
     "query-optimize": [
         "unica.code.search",
-        "unica.code.outline",
+        "unica.view",
         "unica.dcs.info",
         "unica.meta.info",
         "unica.standards.search",
@@ -490,7 +485,6 @@ SCENARIO_SKILLS = {
     "db-performance": [
         "unica.view",
         "unica.code.search",
-        "unica.code.outline",
         "unica.meta.info",
         "unica.dcs.info",
         "unica.code.diagnostics",
@@ -521,7 +515,6 @@ SCENARIO_SKILLS = {
     "release-support": [
         "unica.view",
         "unica.code.search",
-        "unica.cf.info",
         "unica.cfe.diff",
         "unica.meta.info",
         "unica.code.diagnostics",
@@ -541,7 +534,6 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.meta.edit",
         "unica.code.definition",
-        "unica.code.outline",
         "unica.code.patch",
         "unica.code.diagnostics",
         "unica.runtime.execute",
@@ -561,7 +553,6 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.code.search",
         "unica.code.definition",
-        "unica.code.outline",
         "unica.code.graph",
         "unica.code.patch",
         "unica.code.diagnostics",
@@ -572,7 +563,6 @@ SCENARIO_SKILLS = {
         "unica.form.info",
         "unica.form.edit",
         "unica.meta.info",
-        "unica.code.outline",
         "unica.code.patch",
         "unica.code.diagnostics",
         "unica.runtime.execute",
@@ -589,7 +579,6 @@ SCENARIO_SKILLS = {
     ],
     "metadata-modeling": [
         "unica.view",
-        "unica.cf.info",
         "unica.meta.info",
         "unica.meta.add",
         "unica.meta.edit",
@@ -600,7 +589,6 @@ SCENARIO_SKILLS = {
     "transactions-locks": [
         "unica.view",
         "unica.code.search",
-        "unica.code.outline",
         "unica.code.graph",
         "unica.code.patch",
         "unica.code.diagnostics",
@@ -871,7 +859,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
 }
 
 ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
-    "cf-init": {"unica.cf.info", "unica.check"},
+    "cf-init": {"unica.view", "unica.check"},
     "cfe-borrow": {"unica.check"},
     "cfe-init": {"unica.check"},
     "epf-init": {"unica.runtime.execute"},
@@ -906,7 +894,7 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Vendor": "Фирма 1С"',
         "Режим совместимости (default: `Version8_3_27`)",
         '"CompatibilityMode": "Version8_3_27"',
-        '"name": "unica.cf.info"',
+        '"name": "unica.view"',
         '"name": "unica.check"',
     ],
     "cfe-borrow": [
@@ -1307,12 +1295,11 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             / "unica_reference_models"
         )
 
-    def test_meta_skill_surface_is_exactly_four_typed_operations(self) -> None:
+    def test_meta_skill_surface_is_exactly_three_typed_operations(self) -> None:
         expected = {
             "meta-info": "unica.meta.info",
             "meta-add": "unica.meta.add",
             "meta-edit": "unica.meta.edit",
-            "meta-remove": "unica.meta.remove",
         }
         actual = {
             path.name
@@ -2707,7 +2694,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("support-state", release_support)
-        self.assertIn("unica.cf.info", release_support)
+        self.assertIn("unica.view", release_support)
         self.assertIn("unica.meta.info", release_support)
 
     def test_source_set_format_detection_contract_is_documented(self) -> None:
@@ -2966,11 +2953,11 @@ Use `.claude/commands/xdto.md` as the execution route.
         params = [call["params"] for call in calls]
         self.assertEqual(
             [item["name"] for item in params],
-            ["unica.xdto.info", "unica.xdto.edit", "unica.xdto.edit"],
+            ["unica.xdto.info", "unica.apply", "unica.apply"],
         )
         self.assertEqual(
             {item["name"] for item in params},
-            {"unica.xdto.info", "unica.xdto.edit"},
+            {"unica.xdto.info", "unica.apply"},
         )
 
         preview = dict(params[1]["arguments"])

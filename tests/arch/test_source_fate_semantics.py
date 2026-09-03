@@ -176,7 +176,7 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
             "INV.SOURCE.TAIL-INSERT":
                 "::tail_insert_public_and_write_contract_is_complete",
             "INV.SOURCE.ROOT-READINESS":
-                "::project_status_workspace_root_rejection_preserves_the_entire_tree",
+                "::project_health_workspace_root_rejection_suppresses_source_derived_git_facts",
         }
         for record_id, suffix in expected_suffixes.items():
             with self.subTest(record_id=record_id):

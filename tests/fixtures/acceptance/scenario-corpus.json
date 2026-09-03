@@ -7685,6 +7685,67 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S294",
+   "area": "Рабочее пространство",
+   "task": "Посмотреть готовность рабочего пространства без адреса — наборы, готовность источников и репозитория, проверки",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {},
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S295",
+   "area": "Поддержка поставщика",
+   "task": "Удалить форму у объекта поставщика на замке — отказ стража поддержки до поиска формы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика.Form.ФормаСписка",
+      "ops": [
+       {
+        "op": "form.remove",
+        "args": {}
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S296",
+   "area": "Объекты метаданных",
+   "task": "Опубликовать удаление объекта без ссылок — результат несёт событие и влияние на кеш",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
+        "op": "object.remove",
+        "args": {}
+       }
+      ],
+      "dryRun": false
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
   }
  ]
 }

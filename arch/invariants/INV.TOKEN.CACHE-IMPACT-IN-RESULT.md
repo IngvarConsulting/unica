@@ -1,9 +1,9 @@
 ---
 id: INV.TOKEN.CACHE-IMPACT-IN-RESULT
-status: active
+status: superseded
 governs: product
-decision: DEC.2026-08-22.EVIDENCE-BOUNDED-PRESERVATION
-check: crates/unica-coder/src/application/meta_remove_surface_tests.rs::real_public_meta_remove_reports_typed_cache_impact_in_the_same_result
+decision: DEC.2026-09-03.V0-13-LEGACY-BATCH-2
+check: crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication
 scope: [app, cache, product]
 ---
 

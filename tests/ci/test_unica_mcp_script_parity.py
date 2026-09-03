@@ -89,7 +89,6 @@ BSP_MXL_POWER_OF_ATTORNEY_FIXTURE = (
 )
 READER_STANDINS_ROOT = FIXTURES_ROOT / "reader-standins"
 DOCUMENTED_READER_TOOL_NAMES = {
-    "unica.cf.info",
     "unica.cfe.diff",
     "unica.code.definition",
     "unica.code.graph",
@@ -440,7 +439,6 @@ MUTATING_FORM_DCS_PARITY_TOOLS = {
 # why, instead of scenarios quietly disappearing.
 TYPED_RESULT_TOOLS = {
     "unica.cf.edit",
-    "unica.cf.info",
     "unica.cf.init",
     "unica.cfe.borrow",
     "unica.cfe.diff",
@@ -450,11 +448,9 @@ TYPED_RESULT_TOOLS = {
     "unica.dcs.info",
     "unica.form.edit",
     "unica.form.info",
-    "unica.form.remove",
     "unica.interface.edit",
     "unica.meta.edit",
     "unica.meta.info",
-    "unica.meta.remove",
     "unica.meta.add",
     "unica.mxl.info",
     "unica.role.info",
@@ -1754,7 +1750,6 @@ LOGICAL_READER_TARGETS: dict[str, dict[str, Any]] = {
     "unica.mxl.decompile": {"address": "Report.ParityReport.Template.ParityMxl"},
     "unica.subsystem.info": {"address": "Subsystem.ParitySubsystem"},
     "unica.subsystem.validate": {"address": "Subsystem.ParitySubsystem"},
-    "unica.cf.info": {"address": None},
     "unica.cf.validate": {"address": None},
 }
 
@@ -1762,7 +1757,6 @@ LOGICAL_READER_TARGETS: dict[str, dict[str, Any]] = {
 # registered logical owners. Keep the public selector form under test while
 # routing the synthetic execution through the same objects as logical examples.
 REGISTERED_SUPPORT_READER_PATHS: dict[str, tuple[str, str]] = {
-    "unica.cf.info": ("ConfigPath", "src/cf/Configuration.xml"),
     "unica.dcs.info": (
         "TemplatePath",
         "src/cf/Reports/ParityReport/Templates/ParityDcs/Ext/Template.xml",
@@ -1945,7 +1939,7 @@ EndProcedure
             arguments[path_argument] = registered_path
             continue
 
-        if tool_name in {"unica.cf.info", "unica.cf.validate", "unica.cfe.diff"}:
+        if tool_name in {"unica.cf.validate", "unica.cfe.diff"}:
             continue
         if tool_name == "unica.code.search":
             replace_reader_placeholder(arguments, "sourceSet", example, "main")

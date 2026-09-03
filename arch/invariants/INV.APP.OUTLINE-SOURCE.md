@@ -1,9 +1,9 @@
 ---
 id: INV.APP.OUTLINE-SOURCE
-status: active
+status: superseded
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs::code_outline_answers_from_the_current_file_without_touching_the_index
+decision: DEC.2026-09-03.V0-13-LEGACY-BATCH-2
+check: crates/unica-coder/tests/v13_workspace_bootstrap.rs::canonical_stdio_views_a_module_through_a_symlinked_workspace
 scope: [app]
 ---
 

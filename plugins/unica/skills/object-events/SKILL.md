@@ -7,7 +7,7 @@ description: "Обработчики событий объекта 1С. Испо
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -42,7 +42,7 @@ Two rules cut across all of them: `ОбменДанными.Загрузка` is
 ## Workflow
 
 1. Name what the logic needs to observe — fill source, old values, written state, or nothing yet — and let that pick the handler.
-2. Locate what already runs: read the object module with `unica.code.outline` and `unica.code.definition`, and find subscriptions on the same events with `unica.code.search` and `unica.meta.info`. A subscription is invisible from the object module it affects.
+2. Locate what already runs: read the object module with `unica.view` on the module node (its `Method` branch lists the methods) and `unica.code.definition`, and find subscriptions on the same events with `unica.code.search` and `unica.meta.info`. A subscription is invisible from the object module it affects.
 3. Use `unica.code.graph` when the handler calls shared procedures, to see what else the change reaches.
 4. Write the guard before the logic: `Если ОбменДанными.Загрузка Тогда Возврат; КонецЕсли;` — in the subscription handler too, not only in the object module.
 5. Express conditional requiredness by collecting `НепроверяемыеРеквизиты` and removing them from `ПроверяемыеРеквизиты` at the end, never by adding to `ПроверяемыеРеквизиты`.

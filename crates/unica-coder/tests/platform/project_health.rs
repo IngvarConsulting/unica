@@ -1,10 +1,9 @@
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
-use unica_coder::application::UnicaApplication;
 
 #[test]
 fn project_health_parent_repository_reports_repository_relative_remediation() {
@@ -907,14 +906,17 @@ fn project_health_workspace_root_rejection_suppresses_source_derived_git_facts()
         &root,
         &["add", "v8project.yaml", "Configuration.xml", ".gitignore"],
     );
+    let before = snapshot_files(&root);
 
     let result = status(&root);
 
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.unwrap();
+    assert_eq!(data["ready"], false, "{data}");
     assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
         diagnostic["code"] == "source_set.root_is_workspace"
     }), "{data}");
+    assert_eq!(snapshot_files(&root), before);
     assert!(!data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
         diagnostic["sourceSet"] == "main"
             && matches!(
@@ -1589,12 +1591,102 @@ fn project_health_linked_source_route_is_reported_without_following_it() {
     let _ = fs::remove_dir_all(root);
 }
 
-fn status(workspace: &Path) -> unica_coder::application::OperationResult {
-    let mut args = Map::new();
-    args.insert("cwd".into(), Value::String(workspace.display().to_string()));
-    UnicaApplication::new()
-        .call_tool("unica.project.status", &args)
-        .unwrap()
+static STATE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The canonical readiness answer of `unica.view {}` over the stdio surface,
+/// in the shape the assertions below read: `ok`, `errors` and `data`.
+struct StatusResult {
+    ok: bool,
+    errors: Vec<String>,
+    data: Option<Value>,
+}
+
+fn status(workspace: &Path) -> StatusResult {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    // The provider state lives outside the workspace: the readiness assertions
+    // below compare the whole workspace tree before and after the call.
+    let state = std::env::temp_dir().join(format!(
+        "unica-project-health-state-{}-{}",
+        std::process::id(),
+        STATE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&state).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
+        .arg("mcp")
+        .current_dir(workspace)
+        .env("UNICA_PROVIDER_STATE_DIR", fs::canonicalize(&state).unwrap())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("start canonical Unica MCP");
+    let mut stdin = child.stdin.take().expect("MCP stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("MCP stdout"));
+    fn exchange(
+        stdin: &mut std::process::ChildStdin,
+        stdout: &mut BufReader<std::process::ChildStdout>,
+        request: Value,
+    ) -> Value {
+        let id = request["id"].clone();
+        serde_json::to_writer(&mut *stdin, &request).unwrap();
+        stdin.write_all(b"\n").unwrap();
+        stdin.flush().unwrap();
+        loop {
+            let mut line = String::new();
+            assert!(
+                stdout.read_line(&mut line).unwrap() > 0,
+                "MCP exited before response"
+            );
+            let response: Value = serde_json::from_str(&line).unwrap();
+            if response.get("id") == Some(&id) {
+                return response;
+            }
+        }
+    }
+    exchange(
+        &mut stdin,
+        &mut stdout,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "project-health-test", "version": "1"}}
+        }),
+    );
+    serde_json::to_writer(
+        &mut stdin,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
+    )
+    .unwrap();
+    stdin.write_all(b"\n").unwrap();
+    stdin.flush().unwrap();
+    let response = exchange(
+        &mut stdin,
+        &mut stdout,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "unica.view", "arguments": {}}
+        }),
+    );
+    drop(stdin);
+    let _ = child.wait();
+    let structured = response["result"]["structuredContent"].clone();
+    let ok = structured["ok"] == Value::Bool(true);
+    let errors = structured["diagnostics"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("message").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    StatusResult {
+        ok,
+        errors,
+        data: Some(structured["data"].clone()),
+    }
 }
 
 fn assert_repository_check_status(

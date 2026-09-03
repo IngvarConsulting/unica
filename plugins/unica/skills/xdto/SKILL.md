@@ -15,9 +15,9 @@ allowed-tools:
 ## MCP routing
 
 - Используй только MCP `unica`: `unica.xdto.info` читает пакет, а
-  `unica.xdto.edit` строит и применяет точечную мутацию.
+  `unica.apply` с операциями семейства XDTO строит и применяет точечную мутацию.
 - Всегда начинай с `unica.xdto.info`, затем перед каждой мутацией вызывай
-  `unica.xdto.edit` с `dryRun: true`. Повторяй ровно тот же запрос с
+  `unica.apply` с `dryRun: true`. Повторяй ровно тот же запрос с
   `dryRun: false` лишь после явного подтверждения пользователя; любое изменение
   аргументов требует нового preview.
 - `unica.xdto.edit` принимает непустой упорядоченный массив `operations`
@@ -70,20 +70,21 @@ allowed-tools:
   "id": 2,
   "method": "tools/call",
   "params": {
-    "name": "unica.xdto.edit",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "sourceSet": "main",
-      "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-      "operations": [
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+      "ops": [
         {
-          "op": "addProperty",
-          "typeName": "ЛюбаяСсылка",
-          "propertyPath": "СсылкаНаОбъект",
-          "property": {
-            "name": "Документ_НовыйДокумент",
-            "type": "tns:Документ_ЗаказКлиента",
-            "minOccurs": 0
+          "op": "property.add",
+          "args": {
+            "values": {
+              "propertyPath": "СсылкаНаОбъект",
+              "property": {
+                "name": "Документ_НовыйДокумент",
+                "type": "tns:Документ_ЗаказКлиента",
+                "minOccurs": 0
+              }
+            }
           }
         }
       ],
@@ -108,20 +109,21 @@ preview.
   "id": 3,
   "method": "tools/call",
   "params": {
-    "name": "unica.xdto.edit",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "sourceSet": "main",
-      "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-      "operations": [
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+      "ops": [
         {
-          "op": "addProperty",
-          "typeName": "ЛюбаяСсылка",
-          "propertyPath": "СсылкаНаОбъект",
-          "property": {
-            "name": "Документ_НовыйДокумент",
-            "type": "tns:Документ_ЗаказКлиента",
-            "minOccurs": 0
+          "op": "property.add",
+          "args": {
+            "values": {
+              "propertyPath": "СсылкаНаОбъект",
+              "property": {
+                "name": "Документ_НовыйДокумент",
+                "type": "tns:Документ_ЗаказКлиента",
+                "minOccurs": 0
+              }
+            }
           }
         }
       ],

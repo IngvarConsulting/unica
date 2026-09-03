@@ -7,7 +7,7 @@ description: "Проведение документов 1С. Используй 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.edit`, `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.edit`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -42,7 +42,7 @@ By default the handler writes nothing itself: the platform writes the record set
 
 1. Name the accounting subjects the document affects before touching code. Each subject is a register, not a column on an existing one.
 2. Inspect the document with `unica.meta.info`: declared registers, `Posting`, `RealTimePosting`, `RegisterRecordsDeletion`, `RegisterRecordsWritingOnPost`, and privileged-mode flags. Inspect every target register the same way for dimensions, resources, and periodicity.
-3. Read the current handlers with `unica.code.definition` and `unica.code.outline` before reading full modules; use `unica.code.graph` when posting calls shared procedures.
+3. Read the current handlers with `unica.code.definition` and `unica.view` on the module node (its `Method` branch lists the methods) before reading full modules; use `unica.code.graph` when posting calls shared procedures.
 4. Decide the branch split: what the real-time branch checks, what the regular branch skips, and what both always write.
 5. Decide which balances need control at all. Skip control where it cannot fail: a receipt document only increases balances, and re-posting cannot write off more than the first posting already did.
 6. Fix the write order for the std661 shape: uncontrolled registers early with `БлокироватьДляИзменения = Ложь` in a stable register order, controlled registers last with `БлокироватьДляИзменения = Истина`, negative-balance queries after that write. Keep the same order in every handler that shares those registers.

@@ -7,7 +7,7 @@ description: "Код-ревью BSL и изменений 1С. Использу�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.diagnostics`, `unica.meta.info`, `unica.standards.explain`, `unica.standards.search`, `unica.view {}`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.diagnostics`, `unica.meta.info`, `unica.standards.explain`, `unica.standards.search`, `unica.view {}`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -27,7 +27,7 @@ Lead with findings. Order them by severity and ground each finding in a file/lin
 ## Workflow
 
 1. Identify the review scope: changed files, target source-set, affected metadata objects, public entry points.
-2. Resolve changed exported methods and entry points with `unica.code.definition`; inspect large modules with `unica.code.outline`.
+2. Resolve changed exported methods and entry points with `unica.code.definition`; inspect large modules with `unica.view` on the module node (its `Method` branch lists the methods).
 3. Use `unica.meta.info` for affected metadata objects to connect the review scope with modules, roles, subscriptions, functional options, and predefined items.
 4. Use `unica.code.graph` for callers, callees, neighbors, and impact analysis when a changed method/node can be resolved. Use `unica.code.search` for handlers, literals, query fragments, and non-method tokens.
 5. Inspect metadata with `unica.*.info` when code depends on object structure.

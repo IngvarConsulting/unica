@@ -7,7 +7,7 @@ description: "Модуль управляемой формы 1С. Использ
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.form.info`, `unica.form.edit`, `unica.meta.info`, `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.form.info`, `unica.form.edit`, `unica.meta.info`, `unica.code.search`, `unica.code.definition`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -39,7 +39,7 @@ A form module holds client and server code in one file, and the directive on eac
 
 1. Decide which side the logic belongs to before writing it: needs the database or the object → server; needs the user or the form's visual state → client.
 2. Inspect the form with `unica.form.info` for the declared events, parameters, and items, and `unica.meta.info` for the object behind it.
-3. Read the existing module with `unica.code.outline` and `unica.code.definition` before adding to it.
+3. Read the existing module with `unica.view` on the module node (its `Method` branch lists the methods) and `unica.code.definition` before adding to it.
 4. Count the server calls the change adds on the path of a single user action. If it adds one, name the reason.
 5. Declare any new form parameter through `unica.form.edit` before reading it in the module.
 6. Apply module changes with `unica.code.patch`, one verifiable step at a time, giving every new procedure exactly one directive.

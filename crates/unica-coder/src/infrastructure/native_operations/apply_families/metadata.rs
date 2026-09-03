@@ -1130,7 +1130,6 @@ pub(crate) fn plan_metadata_batch(
                 MetaDiagnosticCode::TargetNotFound => ApplyPlanErrorKind::NotFound,
                 MetaDiagnosticCode::ValidationFailed => ApplyPlanErrorKind::Postcondition,
                 MetaDiagnosticCode::AlreadyExists
-                | MetaDiagnosticCode::ReferenceConflict
                 | MetaDiagnosticCode::SupportLocked
                 | MetaDiagnosticCode::RedundantListPresentation
                 | MetaDiagnosticCode::CommandTextRecommendedLimit
@@ -1186,9 +1185,9 @@ pub(super) fn meta_failure_to_plan_error(
         | MetaDiagnosticCode::CapabilityUnavailable => ApplyPlanErrorKind::BadValue,
         MetaDiagnosticCode::TargetNotFound => ApplyPlanErrorKind::NotFound,
         MetaDiagnosticCode::ValidationFailed => ApplyPlanErrorKind::Postcondition,
-        MetaDiagnosticCode::AlreadyExists
-        | MetaDiagnosticCode::ReferenceConflict
-        | MetaDiagnosticCode::SupportLocked => ApplyPlanErrorKind::InvalidState,
+        MetaDiagnosticCode::AlreadyExists | MetaDiagnosticCode::SupportLocked => {
+            ApplyPlanErrorKind::InvalidState
+        }
         MetaDiagnosticCode::RedundantListPresentation
         | MetaDiagnosticCode::CommandTextRecommendedLimit
         | MetaDiagnosticCode::CommandTextUpperLimit
