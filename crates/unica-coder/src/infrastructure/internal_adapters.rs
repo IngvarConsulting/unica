@@ -2216,6 +2216,35 @@ impl StandardsAdapter {
             }
         };
 
+        let outcome = Self::call(operation, &endpoint, &request, http);
+
+        // The server's own alias list for a standard never carries the bare
+        // number (`"647"`), only `"std647"` and its other spellings — the
+        // search fallback already names `std647` as the top `code_variant`
+        // candidate on a miss, so a caller who typed the bare number the
+        // codes are usually cited by (#591) gets an honest `found: false`
+        // instead of the page. One bounded retry with the `std` prefix costs
+        // nothing when the id was already resolvable and turns the common
+        // case into a hit.
+        if request.method == "v8std_get_page" && get_page_reports_missing(&outcome) {
+            if let Some(digits) = bare_numeric_standard_id(&request.params) {
+                let retry = StandardsRequest {
+                    method: "v8std_get_page",
+                    params: with_prefixed_id(&request.params, &digits),
+                };
+                return Self::call(operation, &endpoint, &retry, http);
+            }
+        }
+
+        outcome
+    }
+
+    fn call(
+        operation: &str,
+        endpoint: &str,
+        request: &StandardsRequest,
+        http: &dyn HttpClient,
+    ) -> StandardsOutcome {
         let payload = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -2226,8 +2255,8 @@ impl StandardsAdapter {
             }
         });
 
-        match http.post_json(&endpoint, &payload) {
-            Ok(text) => Self::outcome_from_http_body(operation, &endpoint, request.method, &text),
+        match http.post_json(endpoint, &payload) {
+            Ok(text) => Self::outcome_from_http_body(operation, endpoint, request.method, &text),
             Err(err) => StandardsOutcome::plain(AdapterOutcome {
                 ok: false,
                 summary: format!(
@@ -2236,7 +2265,7 @@ impl StandardsAdapter {
                 changes: Vec::new(),
                 warnings: Vec::new(),
                 errors: vec![err.to_string()],
-                artifacts: vec![endpoint, request.method.to_string()],
+                artifacts: vec![endpoint.to_string(), request.method.to_string()],
                 stdout: None,
                 stderr: None,
                 command: None,
@@ -2334,6 +2363,50 @@ impl StandardsAdapter {
             }),
         }
     }
+}
+
+/// The digits of `id_or_alias_or_url` when it is nothing but a standard's
+/// bare number (`"647"`), the form skills and diagnostics cite it by but the
+/// server's own alias list never carries. `None` for every other shape,
+/// including an already-prefixed `"std647"` — that one already resolves and
+/// gains nothing from a retry.
+fn bare_numeric_standard_id(params: &Value) -> Option<String> {
+    let id = params.get("id_or_alias_or_url")?.as_str()?;
+    (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())).then(|| id.to_string())
+}
+
+/// Whether `v8std_get_page` itself reported the page missing — the only
+/// answer a retry may act on.
+///
+/// A failed call is not a verdict about the id: a refused connection, a
+/// JSON-RPC error and an unparseable body all say the server never got to
+/// look. Retrying those would double the wait on every failure and hand the
+/// caller the second attempt's error in place of the first one's, hiding the
+/// cause the failure actually carried. So the outcome must have succeeded,
+/// and `found` must be present and literally `false`.
+fn get_page_reports_missing(outcome: &StandardsOutcome) -> bool {
+    outcome.outcome.ok
+        && outcome
+            .data
+            .as_ref()
+            .and_then(|value| value.get("structuredContent"))
+            .and_then(|value| value.get("found"))
+            .and_then(Value::as_bool)
+            == Some(false)
+}
+
+/// `params` with `id_or_alias_or_url` replaced by the `std`-prefixed form of
+/// `digits`. `params` is always the object `request_for` built for the
+/// `explain`+id path, so the key is always present to replace.
+fn with_prefixed_id(params: &Value, digits: &str) -> Value {
+    let mut params = params.clone();
+    if let Some(object) = params.as_object_mut() {
+        object.insert(
+            "id_or_alias_or_url".to_string(),
+            Value::String(format!("std{digits}")),
+        );
+    }
+    params
 }
 
 /// A standards answer plus the `result` payload the remote MCP returned.
@@ -6439,6 +6512,252 @@ analyze_timeout_seconds = 900
             "модальные окна"
         );
         assert_eq!(payloads[0]["params"]["arguments"]["limit"], 2);
+    }
+
+    /// #591 point 7: `unica.standards.explain` misses a standard when
+    /// `idOrAliasOrUrl` is the bare number skills and users type naturally
+    /// (`"647"`), even though the server's own alias list only ever carries
+    /// the `std`-prefixed form (`"std647"`) and the search fallback already
+    /// names it as the top `code_variant` candidate. Two calls, second one
+    /// prefixed, proves the retry rather than a lucky first hit.
+    struct BareNumericStandardIdHttpClient {
+        payloads: RefCell<Vec<Value>>,
+    }
+
+    impl HttpClient for BareNumericStandardIdHttpClient {
+        fn post_json(&self, _endpoint: &str, payload: &Value) -> Result<String, String> {
+            self.payloads.borrow_mut().push(payload.clone());
+            let id = payload["params"]["arguments"]["id_or_alias_or_url"]
+                .as_str()
+                .unwrap_or_default();
+            let body = if id == "std647" {
+                r#"{"jsonrpc":"2.0","id":1,"result":{
+                    "content":[{"type":"text","text":"{\"found\":true,\"page\":{\"id\":\"std647\"}}"}],
+                    "structuredContent":{"found":true,"page":{"id":"std647"}}
+                }}"#
+            } else {
+                r#"{"jsonrpc":"2.0","id":1,"result":{
+                    "content":[{"type":"text","text":"{\"found\":false,\"candidates\":[{\"id\":\"std647\"}]}"}],
+                    "structuredContent":{"found":false,"candidates":[{"id":"std647"}]}
+                }}"#
+            };
+            Ok(body.to_string())
+        }
+    }
+
+    #[test]
+    fn standards_explain_retries_a_bare_numeric_id_with_the_std_prefix() {
+        let client = BareNumericStandardIdHttpClient {
+            payloads: RefCell::new(Vec::new()),
+        };
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("647"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
+
+        assert!(outcome.outcome.ok);
+        assert_eq!(
+            outcome.data.unwrap()["structuredContent"]["found"],
+            json!(true),
+            "the retried std647 lookup should be what the caller sees"
+        );
+
+        let payloads = client.payloads.borrow();
+        assert_eq!(
+            payloads.len(),
+            2,
+            "a bare number must be retried, not answered from the first miss"
+        );
+        assert_eq!(
+            payloads[0]["params"]["arguments"]["id_or_alias_or_url"],
+            "647"
+        );
+        assert_eq!(
+            payloads[1]["params"]["arguments"]["id_or_alias_or_url"],
+            "std647"
+        );
+    }
+
+    #[test]
+    fn standards_explain_does_not_retry_an_id_that_is_already_std_prefixed() {
+        let client = BareNumericStandardIdHttpClient {
+            payloads: RefCell::new(Vec::new()),
+        };
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("std647"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
+
+        assert!(outcome.outcome.ok);
+        let payloads = client.payloads.borrow();
+        assert_eq!(payloads.len(), 1, "an already-resolvable id must not retry");
+    }
+
+    #[test]
+    fn standards_explain_does_not_retry_a_non_numeric_miss() {
+        struct AlwaysMisses {
+            calls: RefCell<usize>,
+        }
+        impl HttpClient for AlwaysMisses {
+            fn post_json(&self, _endpoint: &str, _payload: &Value) -> Result<String, String> {
+                *self.calls.borrow_mut() += 1;
+                Ok(r#"{"jsonrpc":"2.0","id":1,"result":{
+                    "content":[{"type":"text","text":"{\"found\":false}"}],
+                    "structuredContent":{"found":false}
+                }}"#
+                .to_string())
+            }
+        }
+        let client = AlwaysMisses {
+            calls: RefCell::new(0),
+        };
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("modal-windows"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
+
+        // A name that was never a bare number has no `std<N>` form to retry
+        // with; the honest miss must reach the caller unchanged, in exactly
+        // one call.
+        assert_eq!(
+            *client.calls.borrow(),
+            1,
+            "a non-numeric miss must not be retried"
+        );
+        assert!(outcome.outcome.ok);
+        assert_eq!(
+            outcome.data.unwrap()["structuredContent"]["found"],
+            json!(false)
+        );
+    }
+
+    /// Counts calls and answers each one with a caller-supplied failure, so a
+    /// retry decision made on a *failed* first call is visible as a second
+    /// call rather than inferred.
+    struct CountingFailureHttpClient {
+        calls: RefCell<usize>,
+        response: Result<String, String>,
+    }
+
+    impl HttpClient for CountingFailureHttpClient {
+        fn post_json(&self, _endpoint: &str, _payload: &Value) -> Result<String, String> {
+            *self.calls.borrow_mut() += 1;
+            self.response.clone()
+        }
+    }
+
+    #[test]
+    fn standards_explain_does_not_retry_when_the_transport_failed() {
+        let client = CountingFailureHttpClient {
+            calls: RefCell::new(0),
+            response: Err("connection refused".to_string()),
+        };
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("647"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
+
+        // A dead endpoint is not evidence that `647` needs the `std` prefix.
+        // Retrying doubles the wait on every failure and replaces the first
+        // error with the second one's text.
+        assert_eq!(
+            *client.calls.borrow(),
+            1,
+            "a transport failure must not be retried as if it were a miss"
+        );
+        assert!(!outcome.outcome.ok);
+        assert!(
+            outcome
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("connection refused")),
+            "the original transport error must reach the caller: {:?}",
+            outcome.outcome.errors
+        );
+    }
+
+    #[test]
+    fn standards_explain_does_not_retry_a_remote_jsonrpc_error() {
+        let client = CountingFailureHttpClient {
+            calls: RefCell::new(0),
+            response: Ok(
+                r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad id"}}"#
+                    .to_string(),
+            ),
+        };
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("647"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
+
+        // The server answered, and what it answered was a protocol error, not
+        // `found: false`. Only its own verdict about the page may drive a retry.
+        assert_eq!(
+            *client.calls.borrow(),
+            1,
+            "a remote JSON-RPC error must not be retried as if it were a miss"
+        );
+        assert!(!outcome.outcome.ok);
+        assert!(outcome
+            .outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("bad id")));
+    }
+
+    #[test]
+    fn standards_explain_does_not_retry_an_unparseable_response() {
+        let client = CountingFailureHttpClient {
+            calls: RefCell::new(0),
+            response: Ok("not json at all".to_string()),
+        };
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("647"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
+
+        // A body that never parsed carries no `found` verdict at all; the
+        // parse failure must reach the caller as itself, not as a hidden
+        // second call.
+        assert_eq!(
+            *client.calls.borrow(),
+            1,
+            "an unparseable body must not be retried as if it were a miss"
+        );
+        assert!(!outcome.outcome.ok);
+        assert!(outcome.outcome.summary.contains("invalid v8std MCP JSON"));
+        assert!(outcome.data.is_none());
     }
 
     struct FakeProcessRunner {
