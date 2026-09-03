@@ -175,6 +175,13 @@ def _covered_names(repo: Path, base_ref: str, reference: str, pool: set[str]) ->
             None,
         )
 
+    def qualify(host: str | None, declaration: str) -> str:
+        # Адрес сравнивается целиком. Одноимённая функция в другом файле — это
+        # другая проверка, и принимать её за покрытую значит принять подмену.
+        # Файл, которого нет среди путей нового списка, назвать нечем: такая
+        # запись остаётся неквалифицированной и требует отдельного разбора.
+        return f"{host}::{declaration}" if host else f"::{declaration}"
+
     seen: set[tuple[str, str]] = set()
     leaves: set[str] = set()
     pending = [(path_text, name)]
@@ -186,12 +193,12 @@ def _covered_names(repo: Path, base_ref: str, reference: str, pool: set[str]) ->
         body = _body_at(sources.get(where, ""), what)
         calls = _CALL.findall(body) if body is not None else []
         if not calls:
-            leaves.add(what)
+            leaves.add(qualify(where, what))
             continue
         for called in calls:
             host = host_of(called)
             if host is None or survives(called):
-                leaves.add(called)
+                leaves.add(qualify(host, called))
             else:
                 pending.append((host, called))
     return leaves
@@ -227,7 +234,14 @@ def _is_evidence_repoint(repo: Path, base_ref: str, before: str, after: str) -> 
         covered = _covered_names(repo, base_ref, old_reference, pool)
         if not covered:
             return False
-        if not covered <= {reference.partition("::")[2] for reference in new_names}:
+        # Покрытие — включение, а не равенство: список вправе называть больше,
+        # чем исполняло исчезнувшее имя, и уцелевший адрес входит в него сам.
+        # Лишнее имя обещание не ослабляет, недостающее — ослабляет.
+        unqualified = {name for name in covered if name.startswith("::")}
+        declarations = {reference.partition("::")[2] for reference in new_names}
+        if not (covered - unqualified) <= set(new_names):
+            return False
+        if not {name[2:] for name in unqualified} <= declarations:
             return False
     return True
 

@@ -4105,8 +4105,40 @@ struct ActorLogicalReadLease {"#,
         // это вторым заходом, потому что харнесс уже прогнал каждую проверку
         // отдельным тестом. Требование прежнее и проверяется там, где живёт
         // обещание.
-        let capability = include_str!(
-            "../../../../../arch/invariants/INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES.md"
+        // Имя, встреченное в прозе записи, проверкой не является: смотрим
+        // только список под ключом во фронт-маттере.
+        fn declarations(record: &str, key: &str) -> Vec<String> {
+            let front = record
+                .strip_prefix("---\n")
+                .and_then(|rest| rest.split_once("\n---\n"))
+                .map(|(front, _)| front)
+                .expect("architecture record has front matter");
+            let mut collecting = false;
+            let mut named = Vec::new();
+            for line in front.lines() {
+                if let Some(inline) = line.strip_prefix(key) {
+                    collecting = inline.trim().is_empty();
+                    if !collecting {
+                        named.push(inline.trim().to_owned());
+                    }
+                    continue;
+                }
+                match line.trim_start().strip_prefix("- ") {
+                    Some(entry) if collecting => named.push(entry.trim().to_owned()),
+                    _ => collecting = false,
+                }
+            }
+            named
+                .into_iter()
+                .filter_map(|entry| entry.rsplit_once("::").map(|(_, name)| name.to_owned()))
+                .collect()
+        }
+
+        let capability = declarations(
+            include_str!(
+                "../../../../../arch/invariants/INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES.md"
+            ),
+            "check:",
         );
         for named in [
             "actor_read_source_capability_is_sealed_after_binding",
@@ -4114,13 +4146,16 @@ struct ActorLogicalReadLease {"#,
             "provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile",
         ] {
             assert!(
-                capability.contains(named),
+                capability.iter().any(|entry| entry == named),
                 "capability invariant omits the witness {named}"
             );
         }
 
-        let decision = include_str!(
-            "../../../../../arch/decisions/2026-08-26-actor-authenticated-source-profile-slice.md"
+        let decision = declarations(
+            include_str!(
+                "../../../../../arch/decisions/2026-08-26-actor-authenticated-source-profile-slice.md"
+            ),
+            "realized:",
         );
         for named in [
             "provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile",
@@ -4129,7 +4164,7 @@ struct ActorLogicalReadLease {"#,
             "actor_read_source_capability_is_sealed_after_binding",
         ] {
             assert!(
-                decision.contains(named),
+                decision.iter().any(|entry| entry == named),
                 "decision omits the witness {named}"
             );
         }

@@ -126,6 +126,19 @@ def _rust_has_attached_test_attribute(source: bytes, node) -> bool:
     return False
 
 
+def named_declarations(path: Path, prop: str) -> list[str]:
+    """Имена проверок, названные пропом записи.
+
+    Имя, встреченное в прозе, проверкой не является: разбирается только
+    фронт-маттер, и от адреса берётся объявление.
+    """
+    props, _ = REGISTRY.parse_front_matter(path.read_text(encoding="utf-8"))
+    return [
+        reference.partition("::")[2]
+        for reference in REGISTRY.evidence_names(props.get(prop))
+    ]
+
+
 def evidence_reference_error(
     root: Path,
     reference: str,
@@ -986,27 +999,30 @@ class RetainedApplyFoundationTests(unittest.TestCase):
         self.assertIn("status: active", decision.read_text(encoding="utf-8"))
         # Запись называет сами проверки, а не обёртку над ними: обёртка лишь
         # переисполняла то, что харнесс уже прогнал.
+        realized = named_declarations(decision, "realized")
         for name in (
             "retained_transaction_roles_require_explicit_roots_and_cache_authority",
             "closed_transaction_rejects_physical_alias_and_second_cache_participant",
             "prepared_apply_success_publishes_source_cache_record_and_state_as_one_revision",
         ):
-            self.assertIn(name, decision.read_text(encoding="utf-8"))
+            self.assertIn(name, realized)
+        participant_checks = named_declarations(participants, "check")
         for name in (
             "retained_transaction_roles_require_explicit_roots_and_cache_authority",
             "closed_transaction_rejects_physical_alias_and_second_cache_participant",
             "apply_admission_rejects_source_inside_cache",
         ):
-            self.assertIn(name, participants.read_text(encoding="utf-8"))
+            self.assertIn(name, participant_checks)
         self.assertIn(
             "retained_apply_failures_restore_source_cache_and_revision_machine_exactly",
             rollback.read_text(encoding="utf-8"),
         )
+        order_checks = named_declarations(order, "check")
         for name in (
             "prepared_apply_observer_sees_source_eager_revision_and_state_marker_order",
             "retained_apply_observer_sees_exact_reverse_rollback_after_state_marker",
         ):
-            self.assertIn(name, order.read_text(encoding="utf-8"))
+            self.assertIn(name, order_checks)
         self.assertIn(
             "apply_admission_and_dry_run_revision_observation_are_cache_tree_write_free",
             write_free.read_text(encoding="utf-8"),
@@ -1066,9 +1082,9 @@ class RetainedApplyEffectResultTests(unittest.TestCase):
         отдельным тестом. Требование по существу прежнее и переехало туда, где
         живёт обещание: запись называет эти семь проверок поимённо.
         """
-        record = (
-            ARCH_ROOT / "invariants/INV.CACHE.RETAINED-APPLY-EFFECT-RESULT.md"
-        ).read_text(encoding="utf-8")
+        record = named_declarations(
+            ARCH_ROOT / "invariants/INV.CACHE.RETAINED-APPLY-EFFECT-RESULT.md", "check"
+        )
         required = (
             "real_effect_foreign_actor_replay_preserves_both_actor_states",
             "real_effect_mutation_lane_cancellation_preserves_exact_state",

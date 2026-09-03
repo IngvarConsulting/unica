@@ -68,7 +68,7 @@ realized:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::websocket_client_source_view_is_an_explicit_provider_gap
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::extension_platform_event_does_not_advertise_unproved_interception
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::extension_root_platform_modules_are_owned_by_the_extension_root
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::logical_reader_parity_contract_is_complete
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::logical_read_operation_budget_survives_handoff_and_completes_once
 supersedes: []
 superseded-by: null
 establishes: [INV.SOURCE.LOGICAL-READER-PARITY]
