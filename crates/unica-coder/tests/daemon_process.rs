@@ -256,6 +256,23 @@ fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
     );
 }
 
+#[test]
+fn read_pid_waits_for_the_record_content_and_not_just_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("late.result");
+    std::fs::write(&path, b"").unwrap();
+    let writer = {
+        let path = path.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            std::fs::write(&path, b"4242").unwrap();
+        })
+    };
+
+    assert_eq!(read_pid(path), 4242);
+    writer.join().unwrap();
+}
+
 fn spawn_frontend(
     state_root: &Path,
     identity: &str,
@@ -312,7 +329,19 @@ fn wait_for_frontend_results(state_root: &Path, names: &[&str]) {
 }
 
 fn read_pid(path: PathBuf) -> u64 {
-    std::fs::read_to_string(path).unwrap().parse().unwrap()
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let record = std::fs::read_to_string(&path).unwrap_or_default();
+        if let Ok(pid) = record.trim().parse() {
+            return pid;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for a pid record in {}",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn endpoint_path(state_root: &Path, identity: &str) -> PathBuf {
