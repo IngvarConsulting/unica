@@ -2045,6 +2045,7 @@ fn extension_root_platform_module_remains_provider_unavailable() {
 fn logical_reader_parity_contract_is_complete() {
     crate::infrastructure::source_revision::tests::retained_revision_authority_contract_is_complete(
     );
+    object_commands_are_registered_inline_without_descriptor_files();
     actor_owned_reader_never_follows_a_source_set_remap_after_admission();
     actor_owned_configuration_support_and_home_page_sidecars_are_retained();
     actor_owned_typed_form_reader_never_follows_a_source_set_remap();
@@ -2818,7 +2819,7 @@ fn write_external_artifact(source: &Path, kind: &str, name: &str) {
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
   <{kind} uuid="10000000-0000-4000-8000-000000000010">
     <Properties><Name>{name}</Name></Properties>
-    <ChildObjects><Form>{form_name}</Form><Command>{command_name}</Command></ChildObjects>
+    <ChildObjects><Form>{form_name}</Form><Command uuid="10000000-0000-4000-8000-000000000012"><Properties><Name>{command_name}</Name></Properties></Command></ChildObjects>
   </{kind}>
 </MetaDataObject>"#,
         ),
@@ -2834,10 +2835,8 @@ fn write_external_artifact(source: &Path, kind: &str, name: &str) {
         r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
     );
     write(
-        &source.join(format!("{name}/Commands/{command_name}.xml")),
-        &format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000012"><Properties><Name>{command_name}</Name></Properties></Command></MetaDataObject>"#
-        ),
+        &source.join(format!("{name}/Commands/{command_name}/Ext/CommandModule.bsl")),
+        "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
     );
     write(
         &source.join(format!("{name}/Ext/ObjectModule.bsl")),
@@ -2919,8 +2918,8 @@ impl RealReaderFixture {
             &source.join("Catalogs/Items/Templates/Print/Ext/Template.xml"),
         );
         write(
-            &source.join("Catalogs/Items/Commands/Refresh.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000033"><Properties><Name>Refresh</Name></Properties></Command></MetaDataObject>"#,
+            &source.join("Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl"),
+            "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
         );
         let report = fixture_text("unica_mcp_script_parity/form-remove/ParityReport.xml");
         fs::create_dir_all(source.join("Reports")).unwrap();
@@ -3146,7 +3145,7 @@ impl RealReaderFixture {
             "Documents",
             "Document",
             "Заказ",
-            "<Form>ФормаДокумента</Form><Command>ПровестиИЗакрыть</Command>",
+            "<Form>ФормаДокумента</Form><Command uuid=\"10000000-0000-4000-8000-000000000022\"><Properties><Name>ПровестиИЗакрыть</Name></Properties></Command>",
         );
         write_metadata_owner(&self.source, "Documents", "Document", "ЕщеНеВыгружен", "");
         write_metadata_owner(
@@ -3195,8 +3194,8 @@ impl RealReaderFixture {
         write(
             &self
                 .source
-                .join("Documents/Заказ/Commands/ПровестиИЗакрыть.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000022"><Properties><Name>ПровестиИЗакрыть</Name></Properties></Command></MetaDataObject>"#,
+                .join("Documents/Заказ/Commands/ПровестиИЗакрыть/Ext/CommandModule.bsl"),
+            "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
         );
     }
 
@@ -3419,6 +3418,68 @@ fn cursor_retry_rejects_revision_change_during_role_canonicalization() {
 }
 
 #[test]
+pub(crate) fn object_commands_are_registered_inline_without_descriptor_files() {
+    let fixture = RealReaderFixture::new();
+    let descriptor = fixture.source.join("Catalogs/Items.xml");
+    let owner = fs::read_to_string(&descriptor).unwrap();
+    // The owner's own `ChildObjects` closes last; nested tabular sections
+    // close theirs earlier.
+    let close = owner.rfind("</ChildObjects>").unwrap();
+    let owner = format!(
+        "{}{}{}",
+        &owner[..close],
+        r#"<Command uuid="10000000-0000-4000-8000-000000000079"><Properties><Name>Inline</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Инлайн</v8:content></v8:item></Synonym></Properties></Command>"#,
+        &owner[close..]
+    );
+    fs::write(&descriptor, owner).unwrap();
+    write(
+        &fixture.source.join("Catalogs/Items/Commands/Inline/Ext/CommandModule.bsl"),
+        "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
+    );
+    let service = fixture.view_service();
+
+    let owner = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+    assert!(owner.ok, "{:?}", owner.diagnostics);
+    // The shared fixture registers `Refresh` by text and the test adds an
+    // inline definition; neither has a `Commands/<Name>.xml` on disk.
+    for (at, title) in [
+        ("main:Catalog.Items.Command.Refresh", "Refresh"),
+        ("main:Catalog.Items.Command.Inline", "Инлайн"),
+    ] {
+        let command = service.view(ViewRequest::new(at).unwrap());
+        assert!(command.ok, "{at}: {:?}", command.diagnostics);
+        let data = command.data.as_ref().unwrap();
+        assert_eq!(data["kind"], "Command", "{at}");
+        assert_eq!(data["title"], title, "{at}");
+    }
+
+    let authority = fixture.read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    for expected in [
+        "main:Catalog.Items.Command.Refresh",
+        "main:Catalog.Items.Command.Inline",
+    ] {
+        let found = index.find(FindRequest::new(expected).unwrap());
+        assert!(
+            !found.is_nearest()
+                && found
+                    .candidates()
+                    .iter()
+                    .any(|candidate| candidate.at() == expected),
+            "inline command identity is missing from find: {expected}: {found:?}"
+        );
+    }
+}
+
+#[test]
 fn review_rejects_orphan_nested_module_owners_not_registered_by_parent() {
     let fixture = RealReaderFixture::new();
     write(
@@ -3426,8 +3487,8 @@ fn review_rejects_orphan_nested_module_owners_not_registered_by_parent() {
         r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000077"><Properties><Name>Orphan</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#,
     );
     write(
-        &fixture.source.join("Catalogs/Items/Commands/Orphan.xml"),
-        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000078"><Properties><Name>Orphan</Name></Properties></Command></MetaDataObject>"#,
+        &fixture.source.join("Catalogs/Items/Commands/Orphan/Ext/CommandModule.bsl"),
+        "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
     );
     let service = fixture.view_service();
 
@@ -3471,20 +3532,18 @@ fn registered_physical_child_with_wrong_descriptor_fails_direct_and_parent_navig
     let owner_path = fixture.source.join("Reports/ParityReport.xml");
     let owner = fs::read_to_string(&owner_path).unwrap().replacen(
         "</ChildObjects>",
-        "<Command>Wrong</Command></ChildObjects>",
+        "<Form>Wrong</Form></ChildObjects>",
         1,
     );
     fs::write(owner_path, owner).unwrap();
     write(
-        &fixture
-            .source
-            .join("Reports/ParityReport/Commands/Wrong.xml"),
-        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Wrong</Name></Properties></Form></MetaDataObject>"#,
+        &fixture.source.join("Reports/ParityReport/Forms/Wrong.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command><Properties><Name>Wrong</Name></Properties></Command></MetaDataObject>"#,
     );
     let service = fixture.view_service();
 
     for at in [
-        "main:Report.ParityReport.Command.Wrong",
+        "main:Report.ParityReport.Form.Wrong",
         "main:Report.ParityReport",
     ] {
         let result = service.view(ViewRequest::new(at).unwrap());
@@ -3552,7 +3611,7 @@ fn orphan_and_missing_physical_children_fail_closed_across_reader_families() {
     let owner_path = missing.source.join("Reports/ParityReport.xml");
     let owner = fs::read_to_string(&owner_path).unwrap().replacen(
         "</ChildObjects>",
-        "<Form>MissingForm</Form><Template>MissingDcs</Template><Template>MissingMxl</Template><Command>MissingCommand</Command></ChildObjects>",
+        "<Form>MissingForm</Form><Template>MissingDcs</Template><Template>MissingMxl</Template></ChildObjects>",
         1,
     );
     fs::write(owner_path, owner).unwrap();
@@ -3561,7 +3620,6 @@ fn orphan_and_missing_physical_children_fail_closed_across_reader_families() {
         "main:Report.ParityReport.Form.MissingForm",
         "main:Report.ParityReport.Template.MissingDcs.DataSet",
         "main:Report.ParityReport.Template.MissingMxl.Area",
-        "main:Report.ParityReport.Command.MissingCommand.Module",
     ] {
         let result = service.view(ViewRequest::new(at).unwrap());
         assert!(
@@ -3622,7 +3680,7 @@ fn external_parent_childobjects_are_the_only_nested_owner_authority() {
     let descriptor = fixture.processor.join("Импорт.xml");
     let owner = fs::read_to_string(&descriptor).unwrap().replacen(
         "</ChildObjects>",
-        "<Command>Missing</Command></ChildObjects>",
+        "<Form>Missing</Form></ChildObjects>",
         1,
     );
     fs::write(descriptor, owner).unwrap();

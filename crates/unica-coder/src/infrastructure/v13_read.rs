@@ -825,6 +825,17 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 }
                 continue;
             }
+            if pair_count > 1 && parts[end - 2] == NodeKind::Command.as_str() {
+                // A command has no descriptor file: its full definition is the
+                // inline `ChildObjects` registration already proven above.
+                if end != parts.len() {
+                    return Err(ViewError::new(
+                        "not_found",
+                        "metadata command has no nested physical owners",
+                    ));
+                }
+                break;
+            }
             let evidence = self.owner_evidence(&current, admitted).map_err(|error| {
                 if error.code() == "not_found" {
                     ViewError::new(
