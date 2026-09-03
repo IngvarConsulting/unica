@@ -4040,6 +4040,8 @@ pub(crate) mod tests {
         },
     };
 
+    const PROCESS_TREE_STARTUP_BUDGET: Duration = Duration::from_secs(15);
+
     #[test]
     fn atomic_write_replaces_an_existing_runtime_job_record() {
         let cache = TestCache::new();
@@ -5011,7 +5013,7 @@ pub(crate) mod tests {
         );
         let mut process = runner.spawn(&request).expect("spawn process group");
         let descendant = scenario
-            .wait_for_descendant(Duration::from_secs(5))
+            .wait_for_descendant(PROCESS_TREE_STARTUP_BUDGET)
             .expect("observe runtime-job descendant");
 
         cancel_and_reap(&mut *process).expect("cancel and reap process group");
@@ -5042,7 +5044,7 @@ pub(crate) mod tests {
         );
         let started = service.start(request).expect("start runtime process tree");
         let descendant = scenario
-            .wait_for_descendant(Duration::from_secs(5))
+            .wait_for_descendant(PROCESS_TREE_STARTUP_BUDGET)
             .expect("observe runtime descendant");
 
         // Poll until the platform handle has reaped the leader. Reaching
@@ -6944,7 +6946,7 @@ pub(crate) mod tests {
         );
         let process = runner.spawn(&request).expect("spawn owned process tree");
         let descendant = scenario
-            .wait_for_descendant(Duration::from_secs(5))
+            .wait_for_descendant(PROCESS_TREE_STARTUP_BUDGET)
             .expect("observe drop-test descendant");
         assert!(
             descendant.is_alive().expect("probe live process tree"),

@@ -7,11 +7,39 @@ pub(crate) mod protocol_v5;
 pub(crate) mod runtime_v5;
 pub(crate) mod server;
 pub(crate) mod terminal_codec_v5;
+mod v13_infobase_exports;
 mod v13_read_modes;
 #[allow(dead_code)]
 mod v13_service;
 mod v13_workspace_bootstrap;
 mod v13_workspace_initialize;
+
+use identity::CoreIdentity;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+fn daemon_process_command(
+    executable: &Path,
+    state_root: &Path,
+    core_identity: &CoreIdentity,
+    idle_grace: Duration,
+) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .arg("--daemon")
+        .arg("--state-root")
+        .arg(state_root)
+        .arg("--core-identity")
+        .arg(core_identity.as_str())
+        .arg("--idle-grace-ms")
+        .arg(idle_grace.as_millis().to_string())
+        .current_dir(state_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
 
 #[cfg(test)]
 mod tests {
@@ -65,6 +93,19 @@ mod tests {
     const INTEGRATION_COORDINATION_TIMEOUT: Duration = Duration::from_secs(10);
     const INTEGRATION_TASK_WAIT_MS: u64 = 7_000;
     const FAIL_STOP_PROCESS_FIXTURE: &str = "UNICA_FAIL_STOP_PROCESS_FIXTURE";
+
+    #[test]
+    fn daemon_process_is_anchored_outside_the_caller_workspace() {
+        let state_root = std::env::temp_dir().join("unica-daemon-command-state");
+        let command = super::daemon_process_command(
+            PathBuf::from("unica").as_path(),
+            &state_root,
+            &CoreIdentity::production(),
+            Duration::from_secs(30),
+        );
+
+        assert_eq!(command.get_current_dir(), Some(state_root.as_path()));
+    }
 
     struct FailStopFixtureChild {
         child: Child,
@@ -378,15 +419,36 @@ mod tests {
                 .expect("raw owner handshake retry deadline expired");
             match try_connect_raw_owner(record, identity, remaining.min(Duration::from_secs(2))) {
                 Ok(owner) => return owner,
-                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                Err(error) if raw_owner_handshake_error_is_retryable(&error) => {
                     // A saturated test process can let the server-side handshake deadline
-                    // expire before its handler is scheduled. Retry only that silent close;
-                    // every protocol response is returned to the capacity assertions.
+                    // expire before its handler is scheduled. Keep silent closes and local
+                    // read-timeout spellings inside the outer deadline; every protocol
+                    // response is still returned to the capacity assertions.
                     thread::yield_now();
                 }
                 Err(error) => panic!("raw owner handshake failed before capacity result: {error}"),
             }
         }
+    }
+
+    fn raw_owner_handshake_error_is_retryable(error: &io::Error) -> bool {
+        matches!(
+            error.kind(),
+            io::ErrorKind::UnexpectedEof | io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        )
+    }
+
+    #[test]
+    fn raw_owner_handshake_timeout_remains_inside_the_outer_retry_budget() {
+        assert!(raw_owner_handshake_error_is_retryable(&io::Error::from(
+            io::ErrorKind::TimedOut
+        )));
+        assert!(raw_owner_handshake_error_is_retryable(&io::Error::from(
+            io::ErrorKind::WouldBlock
+        )));
+        assert!(!raw_owner_handshake_error_is_retryable(&io::Error::from(
+            io::ErrorKind::InvalidData
+        )));
     }
 
     struct BlockingCanonicalService {

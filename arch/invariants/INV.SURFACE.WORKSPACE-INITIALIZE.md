@@ -2,7 +2,7 @@
 id: INV.SURFACE.WORKSPACE-INITIALIZE
 status: active
 governs: product
-decision: DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS
+decision: DEC.2026-09-03.INFOBASE-EXPORT-RUN-SLICE
 check: crates/unica-coder/tests/v13_workspace_bootstrap.rs::canonical_stdio_previews_and_applies_workspace_initialization_before_admission
 scope: [source, wire]
 ---

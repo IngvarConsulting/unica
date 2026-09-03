@@ -5127,10 +5127,8 @@ mod tests {
             "unica.project.map",
             "unica.standards.explain",
             "unica.runtime.job.start",
-            "unica.runtime.job.status",
             "unica.runtime.job.wait",
             "unica.runtime.job.logs",
-            "unica.runtime.job.cancel",
             "unica.runtime.job.list",
         ] {
             assert!(
@@ -5412,56 +5410,6 @@ mod tests {
             .find(|tool| tool.name == "unica.form.edit")
             .expect("unica.form.edit must be listed");
         assert!(form_edit.input_schema["properties"].get("dryRun").is_some());
-    }
-
-    #[tokio::test]
-    async fn role_validate_schema_publishes_canonical_required_path_without_composition() {
-        let (mut client, _) = spawn_server(application_handler());
-        client.initialize().await;
-        client
-            .send(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }))
-            .await;
-        let response = client.receive().await;
-        let role_validate = response["result"]["tools"]
-            .as_array()
-            .expect("tools/list must return an array")
-            .iter()
-            .find(|tool| tool["name"] == "unica.role.validate")
-            .expect("unica.role.validate must be listed");
-
-        let schema = &role_validate["inputSchema"];
-        // ADR-0049 moved the requirement into the two selector branches: the
-        // path is still required to reach the tool by path, and the logical
-        // branch requires the address pair instead.
-        assert_eq!(schema["required"], json!([]));
-        assert_eq!(
-            schema["oneOf"],
-            json!([
-                {
-                    "required": ["sourceSet", "metadataPath"],
-                    "not": {"required": ["RightsPath"]}
-                },
-                {
-                    "required": ["RightsPath"],
-                    "not": {"anyOf": [
-                        {"required": ["sourceSet"]},
-                        {"required": ["metadataPath"]}
-                    ]}
-                }
-            ]),
-            "{schema}"
-        );
-        assert!(schema.get("allOf").is_none());
-        assert!(schema["properties"].get("RightsPath").is_some());
-        assert!(schema["properties"].get("Detailed").is_some());
-        assert!(schema["properties"].get("MaxErrors").is_some());
-        for alias in ["rightsPath", "Path", "path"] {
-            assert!(
-                schema["properties"].get(alias).is_none(),
-                "{alias} is a runtime compatibility alias, not a published argument"
-            );
-        }
-        client.shutdown().await;
     }
 
     #[test]

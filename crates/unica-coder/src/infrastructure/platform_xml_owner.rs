@@ -247,13 +247,8 @@ pub(crate) fn prove_already_read_source_set_owner(
             .children()
             .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
         {
-            if let Some(name) = registration
-                .text()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-            {
-                registrations
-                    .insert((registration.tag_name().name().to_string(), name.to_string()));
+            if let Some(name) = registered_child_name(registration) {
+                registrations.insert((registration.tag_name().name().to_string(), name));
             }
         }
     }
@@ -292,13 +287,8 @@ pub(crate) fn prove_already_read_metadata_owner(
             .children()
             .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
         {
-            if let Some(name) = registration
-                .text()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-            {
-                registrations
-                    .insert((registration.tag_name().name().to_string(), name.to_string()));
+            if let Some(name) = registered_child_name(registration) {
+                registrations.insert((registration.tag_name().name().to_string(), name));
             }
         }
     }
@@ -1104,6 +1094,36 @@ fn is_configuration_extension_artifact(artifact: roxmltree::Node<'_, '_>) -> boo
             })
 }
 
+/// The name a `ChildObjects` entry registers. Forms and templates are text
+/// references (`<Form>Main</Form>`); a command is registered by its full
+/// inline definition (`<Command uuid="…"><Properties><Name>…`) and has no
+/// descriptor file of its own, exactly as Platform XML 8.3.27 emits it.
+fn registered_child_name(registration: roxmltree::Node<'_, '_>) -> Option<String> {
+    if let Some(name) = registration
+        .text()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return Some(name.to_string());
+    }
+    let properties = registration.children().find(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && node.tag_name().name() == "Properties"
+    })?;
+    properties
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == "Name"
+        })
+        .and_then(|node| node.text())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
 fn is_supported_metadata_artifact(tag: &str) -> bool {
     METADATA_KIND_TAGS.contains(&tag)
         || matches!(
@@ -1183,6 +1203,22 @@ pub(crate) mod tests {
         ] {
             assert!(!known_standalone_root((Some(namespace), local_name)));
         }
+    }
+
+    #[test]
+    fn inline_command_definitions_register_the_command_by_name() {
+        let xml = format!(
+            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>ItemForm</Form><Command uuid="10000000-0000-4000-8000-000000000001"><Properties><Name>Refresh</Name><Synonym/></Properties></Command><Command uuid="10000000-0000-4000-8000-000000000002"><Properties><Comment/></Properties></Command></ChildObjects></Catalog></MetaDataObject>"#
+        );
+        let evidence =
+            prove_already_read_metadata_owner(Path::new("Catalogs/Items.xml"), xml.as_bytes())
+                .unwrap_or_else(|error| panic!("{}", error.message));
+        let registrations = evidence.registrations().collect::<Vec<_>>();
+        assert_eq!(
+            registrations,
+            vec![("Command", "Refresh"), ("Form", "ItemForm")],
+            "a command is registered by its inline definition; a nameless one registers nothing"
+        );
     }
 
     #[test]

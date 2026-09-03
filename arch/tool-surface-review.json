@@ -2,11 +2,12 @@
   "unica.view": {
     "result": {
       "contract": "typed",
-      "now": "Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, readiness и setup; с квалифицированным `at` содержит типизированную проекцию логического узла, revision, bounded cursor и закрытые секции `props`/`branches`/`can`/`limits`/`items`",
+      "now": "Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; с квалифицированным `at` содержит типизированную проекцию логического узла, revision, bounded cursor и закрытые секции `props`/`branches`/`can`/`limits`/`items`",
       "target": "Расширять проекции через закрытые `filter`, не возвращая физические пути"
     },
     "scenarios": [
       "Обнаружить workspace и получить точный рецепт v8project.yaml до source admission",
+      "Распознать существующую ИБ без исходников и предложить preview выгрузки CF или DT",
       "Прочитать конфигурацию или объект метаданных по квалифицированному адресу",
       "Получить наблюдаемую структуру узла и revision для последующей проверки"
     ],
@@ -51,12 +52,13 @@
   "unica.check": {
     "result": {
       "contract": "typed",
-      "now": "Без фильтра доказывает admission source set или читаемость указанного `at`; filter validation и маршрутизация meta/cf существуют только provisional, реальное исполнение валидатора не доказано",
-      "target": "Подключить реальные валидаторы и доказать их канонические diagnostics до объявления профилей поддержанными"
+      "now": "Без `at` доказывает admission source set; с `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`), отдавая `status`, `validators` и диагностики; узел без валидаторов отвечает читаемостью",
+      "target": "Держать таблицу вид → валидаторы закрытой и доказанной корпусом; на проводе у `check` нет аргумента выбора валидатора"
     },
     "scenarios": [
       "Проверить, что рабочее пространство и его source set допущены",
-      "Проверить читаемость конкретного логического узла"
+      "Проверить один логический узел всеми валидаторами его вида",
+      "Проверить читаемость узла без валидаторов"
     ],
     "scope": "in"
   },
@@ -75,12 +77,13 @@
   "unica.run": {
     "result": {
       "contract": "typed",
-      "now": "Вызов без `op` до source admission возвращает закрытый словарь двенадцати направленных runtime-намерений; `workspace.initialize` revision-fenced и create-only публикует autodetected однородные source sets без платформы; остальные одиннадцать операций честно неподдержаны",
-      "target": "Добавить infobase-only и combined initialization, затем подключать остальные направленные операции через preview/apply, capability-specific admission и закрытые terminal/provider-контракты"
+      "now": "Вызов без `op` до source admission возвращает закрытый словарь двенадцати направленных runtime-намерений; `workspace.initialize`, `infobase.configuration.export` и `infobase.dump` реализованы; обе выгрузки используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла",
+      "target": "Добавить infobase-only и combined initialization, затем подключать остальные девять направленных операций через preview/apply, capability-specific admission и закрытые terminal/provider-контракты"
     },
     "scenarios": [
       "Получить машинно-читаемый словарь допустимых runtime намерений",
       "Предпросмотреть и атомарно инициализировать workspace по autodetected source sets до admission",
+      "Предпросмотреть и выгрузить main CF, extension CFE или полный DT из существующей ИБ",
       "Различить сборку артефакта, экспорт конфигурации и полный снимок ИБ без выбора platform provider моделью"
     ],
     "scope": "in"
@@ -103,7 +106,9 @@
       "now": "Возвращает текущий durable Task state без повторного исполнения предметного вызова",
       "target": "достигнут"
     },
-    "scenarios": ["Немедленно получить состояние Task в клиенте без native Tasks"],
+    "scenarios": [
+      "Немедленно получить состояние Task в клиенте без native Tasks"
+    ],
     "scope": "in"
   },
   "unica.task.result": {
@@ -112,7 +117,9 @@
       "now": "Ждёт не более 7000 мс и возвращает terminal result либо новый working receipt без повторного исполнения",
       "target": "достигнут"
     },
-    "scenarios": ["Ожидать результат Task в compatibility-профиле"],
+    "scenarios": [
+      "Ожидать результат Task в compatibility-профиле"
+    ],
     "scope": "in"
   },
   "unica.task.cancel": {
@@ -121,7 +128,9 @@
       "now": "Идемпотентно запрашивает отмену и возвращает текущее durable состояние Task",
       "target": "достигнут"
     },
-    "scenarios": ["Отменить Task в клиенте без native Tasks"],
+    "scenarios": [
+      "Отменить Task в клиенте без native Tasks"
+    ],
     "scope": "in"
   }
 }

@@ -199,7 +199,7 @@ fn maintained_runner_target(target: &str) -> serde_json::Value {
         "asset": {
             "name": executable,
             "url": format!(
-                "https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v0.5.2-ic.4/{executable}"
+                "https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v0.7.1/{executable}"
             ),
             "mediaType": "application/octet-stream",
             "sha256": HASH
@@ -211,7 +211,7 @@ fn maintained_runner_target(target: &str) -> serde_json::Value {
 fn fixture_with_maintained_runner() -> serde_json::Value {
     let mut manifest = fixture();
     manifest["artifacts"]["v8-runner"] = serde_json::json!({
-        "version": "0.5.2-ic.4",
+        "version": "0.7.1",
         "role": "engine",
         "targets": {
             "darwin-arm64": maintained_runner_target("darwin-arm64"),
@@ -243,7 +243,7 @@ fn a_maintained_engine_source_is_approved_without_opening_other_origins() {
     let mut other = fixture_with_maintained_runner();
     other["artifacts"]["v8-runner"]["targets"]["linux-x64"]["asset"]["url"] =
         serde_json::json!(
-            "https://github.com/IngvarConsulting/another-project/releases/download/v0.5.2-ic.4/v8-runner-linux-x64"
+            "https://github.com/IngvarConsulting/another-project/releases/download/v0.6.0/v8-runner-linux-x64"
         );
     let error = parse(other)
         .validate("0.7.0")

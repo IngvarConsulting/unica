@@ -223,7 +223,7 @@ allowed-tools:
 `unica.build.*`.
 
 - Добавить ещё команду: `/epf-bsp-add-command`
-- Добавить форму: `/form-add`
+- Добавить форму: `unica.apply` с операцией `form.add` (словарь операций отдаёт `unica.view` в секции `can`)
 - Добавить макет: `/meta-edit` (операция `add` по коллекции `templates`)
 - Для runtime-сборки сначала запросить словарь `unica.run {}` и использовать
   `artifact.build` только когда операция помечена `implemented: true`; не

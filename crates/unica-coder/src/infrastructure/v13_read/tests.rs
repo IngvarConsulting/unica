@@ -412,6 +412,72 @@ fn every_typed_reader_remains_on_the_admitted_root_after_source_set_remap() {
     }
 }
 
+/// The root projection carries what the retired `unica.cf.info` reported:
+/// vendor facts, the support state, the closed root properties and the
+/// object total, every declared key present even when its value is null.
+#[test]
+fn configuration_root_carries_the_retired_cf_info_facts() {
+    let fixture = RealReaderFixture::new();
+    let cancellation = CancellationToken::new();
+    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
+    );
+    let authority = LogicalViewReadAuthority::new(
+        &cancellation,
+        "main",
+        "actor-fixture-main",
+        SourceSetKind::Configuration,
+        revisions,
+        source_root,
+        PlatformProfile::v8_3_27(),
+    );
+    let service = ViewService::new(authority, ViewCursorStore::default());
+
+    let root = service.view(ViewRequest::new("main:Configuration").unwrap());
+    let props = root.data.as_ref().unwrap()["props"].as_object().unwrap();
+    for key in [
+        "format",
+        "name",
+        "synonym",
+        "version",
+        "vendor",
+        "extensionPurpose",
+        "totalObjects",
+        "support",
+        "properties",
+        "homePage",
+    ] {
+        assert!(
+            props.contains_key(key),
+            "root props miss `{key}`: {props:?}"
+        );
+    }
+    assert_eq!(props["format"], "2.20");
+    assert!(props["totalObjects"].as_u64().unwrap() > 0);
+    assert!(props["support"]["state"].is_string());
+    let properties = props["properties"].as_object().unwrap();
+    for key in [
+        "compatibilityMode",
+        "defaultRunMode",
+        "scriptVariant",
+        "defaultLanguage",
+        "dataLockControlMode",
+        "modalityUseMode",
+        "interfaceCompatibilityMode",
+        "extensionCompatibilityMode",
+        "objectAutonumerationMode",
+        "synchronousCallUseMode",
+        "databaseTablespacesUseMode",
+        "mainWindowMode",
+        "comment",
+        "namePrefix",
+        "updateCatalogAddress",
+    ] {
+        assert!(properties.contains_key(key), "root properties miss `{key}`");
+    }
+}
+
 #[test]
 fn configuration_root_branch_counts_match_every_reachable_collection() {
     let fixture = RealReaderFixture::new();
@@ -2017,8 +2083,12 @@ fn extension_platform_event_does_not_advertise_unproved_interception() {
 }
 
 #[test]
-fn extension_root_platform_module_remains_provider_unavailable() {
+fn extension_root_platform_modules_are_owned_by_the_extension_root() {
     let fixture = RealReaderFixture::new();
+    write(
+        &fixture.source.join("Ext/ManagedApplicationModule.bsl"),
+        "Procedure ПередНачаломРаботыСистемы(Отказ)\nEndProcedure\n\nProcedure РасширениеПриСтарте()\nEndProcedure\n",
+    );
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
     let revisions = Arc::new(
@@ -2034,17 +2104,56 @@ fn extension_root_platform_module_remains_provider_unavailable() {
         PlatformProfile::v8_3_27(),
     );
 
-    let result = ViewService::new(authority, ViewCursorStore::default())
-        .view(ViewRequest::new("main:Module.ManagedApplication.Event.BeforeStart").unwrap());
+    let module = ViewService::new(authority, ViewCursorStore::default())
+        .view(ViewRequest::new("main:Module.ManagedApplication").unwrap());
+    assert!(module.ok, "{module:?}");
 
-    assert!(!result.ok, "{result:?}");
-    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
+    );
+    let authority = LogicalViewReadAuthority::new(
+        &cancellation,
+        "main",
+        "actor-fixture-extension-root-find",
+        SourceSetKind::Extension,
+        revisions,
+        source_root,
+        PlatformProfile::v8_3_27(),
+    );
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &cancellation,
+        )
+        .unwrap();
+    for expected in [
+        "main:Module.ManagedApplication",
+        "main:Module.ManagedApplication.Method.РасширениеПриСтарте",
+    ] {
+        let found = index.find(FindRequest::new(expected).unwrap());
+        assert!(
+            !found.is_nearest()
+                && found
+                    .candidates()
+                    .iter()
+                    .any(|candidate| candidate.at() == expected),
+            "extension root module identity is missing from find: {expected}: {found:?}"
+        );
+    }
 }
 
 #[test]
 fn logical_reader_parity_contract_is_complete() {
     crate::infrastructure::source_revision::tests::retained_revision_authority_contract_is_complete(
     );
+    object_commands_are_registered_inline_without_descriptor_files();
+    template_bodies_are_read_only_when_the_template_node_is_addressed();
+    add_in_templates_stop_addressing_at_the_template_without_reading_the_payload();
+    configuration_level_rights_are_readable_role_objects();
     actor_owned_reader_never_follows_a_source_set_remap_after_admission();
     actor_owned_configuration_support_and_home_page_sidecars_are_retained();
     actor_owned_typed_form_reader_never_follows_a_source_set_remap();
@@ -2090,7 +2199,7 @@ fn logical_reader_parity_contract_is_complete() {
     operation_lease_find_traversal_scans_once_then_confirms_once();
     websocket_client_source_view_is_an_explicit_provider_gap();
     extension_platform_event_does_not_advertise_unproved_interception();
-    extension_root_platform_module_remains_provider_unavailable();
+    extension_root_platform_modules_are_owned_by_the_extension_root();
     crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
         crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
     );
@@ -2664,6 +2773,74 @@ pub(crate) fn one_find_reads_each_module_source_once_per_actor_revision() {
 }
 
 #[test]
+pub(crate) fn one_find_parses_each_metadata_descriptor_once_per_actor_revision() {
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    for expected in [
+        "main:Catalog.Items",
+        "main:Catalog.Items.TabularSection.Lines",
+        "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+    ] {
+        let found = index.find(FindRequest::new(expected).unwrap());
+        assert!(
+            !found.is_nearest()
+                && found
+                    .candidates()
+                    .iter()
+                    .any(|candidate| candidate.at() == expected),
+            "the descriptor-count proof did not traverse {expected}: {found:?}"
+        );
+    }
+    // Owner proof reads the descriptor once and the typed projection once
+    // more; every logical address projected from that owner shares the parse.
+    assert_eq!(
+        authority.metadata_descriptor_read_count("Catalog.Items"),
+        2,
+        "one actor-owned revision must parse each metadata descriptor once per authority",
+    );
+}
+
+#[test]
+pub(crate) fn typed_reads_parse_the_support_marker_once_per_actor_revision() {
+    use crate::application::v13::view::{ViewFilter, ViewReadAuthority};
+    let fixture = RealReaderFixture::new();
+    fs::create_dir_all(fixture.source.join("Ext")).unwrap();
+    fs::copy(
+        fixture_path("platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"),
+        fixture.source.join("Ext/ParentConfigurations.bin"),
+    )
+    .unwrap();
+    let authority = fixture.read_authority();
+    // Three identities under two owners: every typed metadata read asks for
+    // the owner's support state, the marker itself is parsed once.
+    for at in [
+        "main:Catalog.Items",
+        "main:Catalog.Items.TabularSection.Lines",
+        "main:Report.ParityReport",
+    ] {
+        let at = QualifiedAddress::parse(at).unwrap();
+        let admitted = authority.snapshot(&at).unwrap();
+        authority
+            .read_exact(&at, &ViewFilter::default(), &admitted)
+            .unwrap_or_else(|error| panic!("{at}: {error:?}"));
+    }
+    assert_eq!(
+        authority.support_state_read_count(),
+        1,
+        "one actor-owned revision must parse Ext/ParentConfigurations.bin once, not once per owner",
+    );
+}
+
+#[test]
 fn ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work() {
     let payload = json!({
         "name": "SalesReader",
@@ -2818,7 +2995,7 @@ fn write_external_artifact(source: &Path, kind: &str, name: &str) {
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
   <{kind} uuid="10000000-0000-4000-8000-000000000010">
     <Properties><Name>{name}</Name></Properties>
-    <ChildObjects><Form>{form_name}</Form><Command>{command_name}</Command></ChildObjects>
+    <ChildObjects><Form>{form_name}</Form><Command uuid="10000000-0000-4000-8000-000000000012"><Properties><Name>{command_name}</Name></Properties></Command></ChildObjects>
   </{kind}>
 </MetaDataObject>"#,
         ),
@@ -2834,10 +3011,8 @@ fn write_external_artifact(source: &Path, kind: &str, name: &str) {
         r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
     );
     write(
-        &source.join(format!("{name}/Commands/{command_name}.xml")),
-        &format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000012"><Properties><Name>{command_name}</Name></Properties></Command></MetaDataObject>"#
-        ),
+        &source.join(format!("{name}/Commands/{command_name}/Ext/CommandModule.bsl")),
+        "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
     );
     write(
         &source.join(format!("{name}/Ext/ObjectModule.bsl")),
@@ -2919,8 +3094,8 @@ impl RealReaderFixture {
             &source.join("Catalogs/Items/Templates/Print/Ext/Template.xml"),
         );
         write(
-            &source.join("Catalogs/Items/Commands/Refresh.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000033"><Properties><Name>Refresh</Name></Properties></Command></MetaDataObject>"#,
+            &source.join("Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl"),
+            "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
         );
         let report = fixture_text("unica_mcp_script_parity/form-remove/ParityReport.xml");
         fs::create_dir_all(source.join("Reports")).unwrap();
@@ -3146,7 +3321,7 @@ impl RealReaderFixture {
             "Documents",
             "Document",
             "Заказ",
-            "<Form>ФормаДокумента</Form><Command>ПровестиИЗакрыть</Command>",
+            "<Form>ФормаДокумента</Form><Command uuid=\"10000000-0000-4000-8000-000000000022\"><Properties><Name>ПровестиИЗакрыть</Name></Properties></Command>",
         );
         write_metadata_owner(&self.source, "Documents", "Document", "ЕщеНеВыгружен", "");
         write_metadata_owner(
@@ -3195,8 +3370,8 @@ impl RealReaderFixture {
         write(
             &self
                 .source
-                .join("Documents/Заказ/Commands/ПровестиИЗакрыть.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000022"><Properties><Name>ПровестиИЗакрыть</Name></Properties></Command></MetaDataObject>"#,
+                .join("Documents/Заказ/Commands/ПровестиИЗакрыть/Ext/CommandModule.bsl"),
+            "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
         );
     }
 
@@ -3419,6 +3594,216 @@ fn cursor_retry_rejects_revision_change_during_role_canonicalization() {
 }
 
 #[test]
+pub(crate) fn configuration_level_rights_are_readable_role_objects() {
+    let fixture = RealReaderFixture::new();
+    let rights_path = fixture.source.join("Roles/SalesReader/Ext/Rights.xml");
+    let rights = fs::read_to_string(&rights_path).unwrap().replacen(
+        "</Rights>",
+        "<object><name>Configuration.CorpusConfiguration</name><right><name>Administration</name><value>true</value></right><right><name>ThinClient</name><value>true</value></right></object></Rights>",
+        1,
+    );
+    fs::write(&rights_path, rights).unwrap();
+    let service = fixture.view_service();
+
+    let role = service.view(ViewRequest::new("main:Role.SalesReader").unwrap());
+    assert!(role.ok, "{:?}", role.diagnostics);
+    let right = service.view(
+        ViewRequest::new("main:Role.SalesReader.Right.Configuration_CorpusConfiguration").unwrap(),
+    );
+    assert!(right.ok, "{:?}", right.diagnostics);
+    let data = right.data.as_ref().unwrap();
+    assert_eq!(data["kind"], "Right");
+    assert_eq!(data["props"]["objectKind"], "Configuration");
+    assert_eq!(data["props"]["allowedCount"], 2);
+
+    let authority = fixture.read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    let expected = "main:Role.SalesReader.Right.Configuration_CorpusConfiguration";
+    let found = index.find(FindRequest::new(expected).unwrap());
+    assert!(
+        !found.is_nearest()
+            && found
+                .candidates()
+                .iter()
+                .any(|candidate| candidate.at() == expected),
+        "configuration right is missing from find: {found:?}"
+    );
+}
+
+#[test]
+pub(crate) fn object_commands_are_registered_inline_without_descriptor_files() {
+    let fixture = RealReaderFixture::new();
+    let descriptor = fixture.source.join("Catalogs/Items.xml");
+    let owner = fs::read_to_string(&descriptor).unwrap();
+    // The owner's own `ChildObjects` closes last; nested tabular sections
+    // close theirs earlier.
+    let close = owner.rfind("</ChildObjects>").unwrap();
+    let owner = format!(
+        "{}{}{}",
+        &owner[..close],
+        r#"<Command uuid="10000000-0000-4000-8000-000000000079"><Properties><Name>Inline</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Инлайн</v8:content></v8:item></Synonym></Properties></Command>"#,
+        &owner[close..]
+    );
+    fs::write(&descriptor, owner).unwrap();
+    write(
+        &fixture.source.join("Catalogs/Items/Commands/Inline/Ext/CommandModule.bsl"),
+        "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
+    );
+    let service = fixture.view_service();
+
+    let owner = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+    assert!(owner.ok, "{:?}", owner.diagnostics);
+    // The shared fixture registers `Refresh` by text and the test adds an
+    // inline definition; neither has a `Commands/<Name>.xml` on disk.
+    for (at, title) in [
+        ("main:Catalog.Items.Command.Refresh", "Refresh"),
+        ("main:Catalog.Items.Command.Inline", "Инлайн"),
+    ] {
+        let command = service.view(ViewRequest::new(at).unwrap());
+        assert!(command.ok, "{at}: {:?}", command.diagnostics);
+        let data = command.data.as_ref().unwrap();
+        assert_eq!(data["kind"], "Command", "{at}");
+        assert_eq!(data["title"], title, "{at}");
+    }
+
+    let authority = fixture.read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    for expected in [
+        "main:Catalog.Items.Command.Refresh",
+        "main:Catalog.Items.Command.Inline",
+    ] {
+        let found = index.find(FindRequest::new(expected).unwrap());
+        assert!(
+            !found.is_nearest()
+                && found
+                    .candidates()
+                    .iter()
+                    .any(|candidate| candidate.at() == expected),
+            "inline command identity is missing from find: {expected}: {found:?}"
+        );
+    }
+}
+
+#[test]
+pub(crate) fn template_bodies_are_read_only_when_the_template_node_is_addressed() {
+    let fixture = RealReaderFixture::new();
+    let body = fixture
+        .source
+        .join("Reports/ParityReport/Templates/Print/Ext/Template.xml");
+    let readable = fs::read(&body).unwrap();
+    // An unreadable spreadsheet body must not take the owner or the template
+    // collection down with it: only the template node opens the body.
+    fs::write(
+        &body,
+        "<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\"><unclosed>",
+    )
+    .unwrap();
+    let service = fixture.view_service();
+    for at in [
+        "main:Report.ParityReport",
+        "main:Report.ParityReport.Template",
+    ] {
+        let result = service.view(ViewRequest::new(at).unwrap());
+        assert!(result.ok, "{at}: {:?}", result.diagnostics);
+    }
+    let node = service.view(ViewRequest::new("main:Report.ParityReport.Template.Print").unwrap());
+    assert!(
+        !node.ok,
+        "an unreadable template body escaped through its own node"
+    );
+    assert_eq!(node.diagnostics[0]["code"], "provider_unavailable");
+
+    // A readable body still publishes its interior on the template node.
+    fs::write(&body, readable).unwrap();
+    let service = fixture.view_service();
+    let node = service.view(ViewRequest::new("main:Report.ParityReport.Template.Print").unwrap());
+    assert!(node.ok, "{:?}", node.diagnostics);
+    let branches = node.data.as_ref().unwrap()["branches"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        branches
+            .iter()
+            .any(|branch| branch["at"] == "main:Report.ParityReport.Template.Print.Area"),
+        "{branches:?}"
+    );
+}
+
+#[test]
+pub(crate) fn add_in_templates_stop_addressing_at_the_template_without_reading_the_payload() {
+    let fixture = RealReaderFixture::new();
+    let descriptor = fixture.source.join("Catalogs/Items.xml");
+    let owner = fs::read_to_string(&descriptor).unwrap();
+    let close = owner.rfind("</ChildObjects>").unwrap();
+    let owner = format!(
+        "{}<Template>Driver</Template>{}",
+        &owner[..close],
+        &owner[close..]
+    );
+    fs::write(&descriptor, owner).unwrap();
+    write(
+        &fixture.source.join("Catalogs/Items/Templates/Driver.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template uuid="10000000-0000-4000-8000-000000000081"><Properties><Name>Driver</Name><TemplateType>AddIn</TemplateType></Properties></Template></MetaDataObject>"#,
+    );
+    // The payload is an opaque archive; make it something no XML reader could parse.
+    fs::create_dir_all(fixture.source.join("Catalogs/Items/Templates/Driver/Ext")).unwrap();
+    fs::write(
+        fixture
+            .source
+            .join("Catalogs/Items/Templates/Driver/Ext/Template.bin"),
+        [0x50, 0x4b, 0x03, 0x04, 0xff, 0x00, 0x80],
+    )
+    .unwrap();
+    let service = fixture.view_service();
+    let node = service.view(ViewRequest::new("main:Catalog.Items.Template.Driver").unwrap());
+    assert!(node.ok, "{:?}", node.diagnostics);
+    let data = node.data.as_ref().unwrap();
+    assert_eq!(data["kind"], "Template");
+    assert!(
+        data.get("branches").is_none(),
+        "an add-in template has no addressable interior: {data}"
+    );
+
+    let authority = fixture.read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    let expected = "main:Catalog.Items.Template.Driver";
+    let found = index.find(FindRequest::new(expected).unwrap());
+    assert!(
+        !found.is_nearest()
+            && found
+                .candidates()
+                .iter()
+                .any(|candidate| candidate.at() == expected),
+        "add-in template identity is missing from find: {found:?}"
+    );
+}
+
+#[test]
 fn review_rejects_orphan_nested_module_owners_not_registered_by_parent() {
     let fixture = RealReaderFixture::new();
     write(
@@ -3426,8 +3811,8 @@ fn review_rejects_orphan_nested_module_owners_not_registered_by_parent() {
         r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000077"><Properties><Name>Orphan</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#,
     );
     write(
-        &fixture.source.join("Catalogs/Items/Commands/Orphan.xml"),
-        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command uuid="10000000-0000-4000-8000-000000000078"><Properties><Name>Orphan</Name></Properties></Command></MetaDataObject>"#,
+        &fixture.source.join("Catalogs/Items/Commands/Orphan/Ext/CommandModule.bsl"),
+        "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
     );
     let service = fixture.view_service();
 
@@ -3471,20 +3856,18 @@ fn registered_physical_child_with_wrong_descriptor_fails_direct_and_parent_navig
     let owner_path = fixture.source.join("Reports/ParityReport.xml");
     let owner = fs::read_to_string(&owner_path).unwrap().replacen(
         "</ChildObjects>",
-        "<Command>Wrong</Command></ChildObjects>",
+        "<Form>Wrong</Form></ChildObjects>",
         1,
     );
     fs::write(owner_path, owner).unwrap();
     write(
-        &fixture
-            .source
-            .join("Reports/ParityReport/Commands/Wrong.xml"),
-        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Wrong</Name></Properties></Form></MetaDataObject>"#,
+        &fixture.source.join("Reports/ParityReport/Forms/Wrong.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command><Properties><Name>Wrong</Name></Properties></Command></MetaDataObject>"#,
     );
     let service = fixture.view_service();
 
     for at in [
-        "main:Report.ParityReport.Command.Wrong",
+        "main:Report.ParityReport.Form.Wrong",
         "main:Report.ParityReport",
     ] {
         let result = service.view(ViewRequest::new(at).unwrap());
@@ -3552,7 +3935,7 @@ fn orphan_and_missing_physical_children_fail_closed_across_reader_families() {
     let owner_path = missing.source.join("Reports/ParityReport.xml");
     let owner = fs::read_to_string(&owner_path).unwrap().replacen(
         "</ChildObjects>",
-        "<Form>MissingForm</Form><Template>MissingDcs</Template><Template>MissingMxl</Template><Command>MissingCommand</Command></ChildObjects>",
+        "<Form>MissingForm</Form><Template>MissingDcs</Template><Template>MissingMxl</Template></ChildObjects>",
         1,
     );
     fs::write(owner_path, owner).unwrap();
@@ -3561,7 +3944,6 @@ fn orphan_and_missing_physical_children_fail_closed_across_reader_families() {
         "main:Report.ParityReport.Form.MissingForm",
         "main:Report.ParityReport.Template.MissingDcs.DataSet",
         "main:Report.ParityReport.Template.MissingMxl.Area",
-        "main:Report.ParityReport.Command.MissingCommand.Module",
     ] {
         let result = service.view(ViewRequest::new(at).unwrap());
         assert!(
@@ -3622,7 +4004,7 @@ fn external_parent_childobjects_are_the_only_nested_owner_authority() {
     let descriptor = fixture.processor.join("Импорт.xml");
     let owner = fs::read_to_string(&descriptor).unwrap().replacen(
         "</ChildObjects>",
-        "<Command>Missing</Command></ChildObjects>",
+        "<Form>Missing</Form></ChildObjects>",
         1,
     );
     fs::write(descriptor, owner).unwrap();

@@ -166,6 +166,13 @@ pub(crate) enum MetadataTemplateType {
     SpreadsheetDocument,
     BinaryData,
     DataCompositionSchema,
+    /// External component archive. Same opaque payload as `BinaryData`; the
+    /// dedicated type exists so mobile builds can mark components. Logical
+    /// addressing stops at the template and never reads the payload.
+    AddIn,
+    /// Data composition appearance template: an opaque XML body whose
+    /// internals are not addressed.
+    DataCompositionAppearanceTemplate,
 }
 
 impl MetadataTemplateType {
@@ -176,7 +183,22 @@ impl MetadataTemplateType {
             "SpreadsheetDocument" => Some(Self::SpreadsheetDocument),
             "BinaryData" => Some(Self::BinaryData),
             "DataCompositionSchema" => Some(Self::DataCompositionSchema),
+            "AddIn" => Some(Self::AddIn),
+            "DataCompositionAppearanceTemplate" => Some(Self::DataCompositionAppearanceTemplate),
             _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn descriptor_value(self) -> &'static str {
+        match self {
+            Self::HtmlDocument => "HTMLDocument",
+            Self::TextDocument => "TextDocument",
+            Self::SpreadsheetDocument => "SpreadsheetDocument",
+            Self::BinaryData => "BinaryData",
+            Self::DataCompositionSchema => "DataCompositionSchema",
+            Self::AddIn => "AddIn",
+            Self::DataCompositionAppearanceTemplate => "DataCompositionAppearanceTemplate",
         }
     }
 }

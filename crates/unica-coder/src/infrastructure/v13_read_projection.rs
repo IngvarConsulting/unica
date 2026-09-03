@@ -554,7 +554,33 @@ fn project_configuration(
             "configuration projection does not accept an address suffix",
         ));
     }
-    let props = selected_scalar_props(payload, &["format", "name", "synonym"]);
+    // The root carries what the retired `unica.cf.info` reported: the
+    // identity of the export, the vendor facts, the support state, the
+    // closed set of root properties and the home page layout.
+    let mut props = selected_scalar_props(
+        payload,
+        &[
+            "format",
+            "name",
+            "synonym",
+            "version",
+            "vendor",
+            "extensionPurpose",
+            "totalObjects",
+        ],
+    );
+    for key in ["support", "properties", "homePage"] {
+        match payload.get(key) {
+            Some(Value::Object(object)) => {
+                // Typed, bounded structures of the root parser travel whole.
+                props.insert(key.to_string(), Value::Object(object.clone()));
+            }
+            Some(Value::Null) => {
+                props.insert(key.to_string(), Value::Null);
+            }
+            _ => {}
+        }
+    }
     let mut counts = std::collections::BTreeMap::<String, usize>::new();
     for item in payload
         .get("registeredObjects")

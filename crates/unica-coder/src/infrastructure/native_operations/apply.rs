@@ -188,11 +188,22 @@ pub(crate) struct PlannedApplyEffects {
     /// request-level reconciliation can drop exactly the events whose file
     /// was restored; an empty list means "the whole batch".
     paths: Vec<Vec<PathBuf>>,
+    /// Typed warnings a planner attaches to a plan that still executes: a
+    /// forced removal names the files that keep referring to the object.
+    warnings: Vec<serde_json::Value>,
 }
 
 impl PlannedApplyEffects {
     pub(crate) fn events(&self) -> &[DomainEvent] {
         &self.events
+    }
+
+    pub(crate) fn warnings(&self) -> &[serde_json::Value] {
+        &self.warnings
+    }
+
+    pub(crate) fn push_warning(&mut self, warning: serde_json::Value) {
+        self.warnings.push(warning);
     }
 
     pub(crate) fn into_events(self) -> Vec<DomainEvent> {
@@ -314,6 +325,43 @@ impl ApplyStagedState {
     pub(in crate::infrastructure) fn forbid_generated_subtree(mut self) -> Self {
         self.generated_subtree_forbidden = true;
         self
+    }
+
+    /// Whether every parent directory of `relative` exists below the retained
+    /// root, walked without following links and without recording an entry.
+    /// A read of a path below a missing parent retains that missing chain as a
+    /// postimage the publication must own; a gate that only wants to know
+    /// whether an optional marker is present asks this first.
+    pub(crate) fn parent_exists(&mut self, relative: &Path) -> Result<bool, ApplyStagingError> {
+        self.checkpoint("apply staged probe")?;
+        let relative = strict_relative(relative)?;
+        let mut ancestor = self.root.as_ref().clone();
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::ContainmentIdentity,
+                    format!(
+                        "staged target must contain only normal relative components: {}",
+                        relative.display()
+                    ),
+                ));
+            };
+            if Some(name) == relative.file_name() {
+                break;
+            }
+            match ancestor.retain_immediate_child_nofollow(name) {
+                Ok(RetainedChildCapability::Directory(directory)) => ancestor = directory,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+                Ok(_) => return Ok(false),
+                Err(error) => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::UnsupportedProvider,
+                        format!("staged target parent rejected link/reparse traversal: {error}"),
+                    ))
+                }
+            }
+        }
+        Ok(true)
     }
 
     pub(crate) fn read(&mut self, relative: &Path) -> Result<Option<Vec<u8>>, ApplyStagingError> {

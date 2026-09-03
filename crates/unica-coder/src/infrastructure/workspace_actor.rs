@@ -40,13 +40,13 @@ use crate::infrastructure::support_policy_evidence::{
 };
 use crate::infrastructure::workspace_index::{IndexRunner, WorkspaceIndexService};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(test)]
 thread_local! {
@@ -110,6 +110,12 @@ fn run_revision_service_after_binding_validation_hook() {
 }
 
 pub(crate) const MAX_ACTIVE_WORKSPACE_ACTORS: usize = 64;
+/// Recently used actors the daemon keeps alive between invocations so their
+/// trusted source revision and platform fence survive to the next call.
+pub(crate) const WARM_WORKSPACE_ACTORS: usize = 8;
+/// Idle time after which a warm actor is released together with its retained
+/// root descriptors and fence.
+pub(crate) const WARM_WORKSPACE_ACTOR_TTL: Duration = Duration::from_secs(600);
 const INDEX_FENCE_BUDGET: Duration = Duration::from_secs(7);
 static APPLY_WRITER_AUTHORITY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -1484,6 +1490,15 @@ impl<R> WorkspaceActor<R> {
         &self.identity
     }
 
+    /// Whether every retained source-set root is still the directory its
+    /// name resolves to. A warm actor whose root was replaced while idle
+    /// must not be handed to the next admission.
+    pub(crate) fn retains_named_roots(&self) -> bool {
+        self.source_roots
+            .values()
+            .all(|root| root.validate_named_identity().is_ok())
+    }
+
     pub(crate) fn workspace_identity(&self) -> &WorkspaceIdentity {
         &self.identity
     }
@@ -2466,14 +2481,29 @@ impl std::error::Error for WorkspaceActorRegistryError {}
 #[derive(Debug)]
 pub(crate) struct WorkspaceActorRegistry {
     actors: Mutex<HashMap<WorkspaceIdentity, Weak<WorkspaceActor>>>,
+    /// Bounded most-recently-used actors retained between invocations. The
+    /// weak map above stays the admission authority; this set only keeps a
+    /// few recent actors alive so the next call finds a trusted revision.
+    warm: Mutex<VecDeque<WarmWorkspaceActor>>,
+    warm_capacity: usize,
+    warm_ttl: Duration,
     #[cfg(test)]
     max_active_override: Option<usize>,
+}
+
+#[derive(Debug)]
+struct WarmWorkspaceActor {
+    actor: Arc<WorkspaceActor>,
+    last_used: Instant,
 }
 
 impl Default for WorkspaceActorRegistry {
     fn default() -> Self {
         Self {
             actors: Mutex::new(HashMap::new()),
+            warm: Mutex::new(VecDeque::new()),
+            warm_capacity: WARM_WORKSPACE_ACTORS,
+            warm_ttl: WARM_WORKSPACE_ACTOR_TTL,
             #[cfg(test)]
             max_active_override: None,
         }
@@ -2492,24 +2522,116 @@ impl WorkspaceActorRegistry {
     {
         let identity = WorkspaceIdentity::new(context, source_sets, provider_profile)
             .map_err(WorkspaceActorRegistryError::InvalidIdentity)?;
+        let now = Instant::now();
         let mut actors = self
             .actors
             .lock()
             .map_err(|_| WorkspaceActorRegistryError::Poisoned)?;
+        // Lock order is always `actors` then `warm`.
+        self.evict_expired_warm(now)?;
         actors.retain(|_, actor| actor.strong_count() > 0);
         if let Some(actor) = actors.get(&identity).and_then(Weak::upgrade) {
-            return Ok(actor);
+            if actor.retains_named_roots() {
+                self.touch_warm(&actor, now)?;
+                return Ok(actor);
+            }
+            // The named root was replaced while the actor idled. Forget the
+            // warm copy; an actor still held by a live invocation keeps its
+            // existing fail-closed behaviour.
+            self.forget_warm(&identity)?;
+            drop(actor);
+            if let Some(active) = actors.get(&identity).and_then(Weak::upgrade) {
+                return Ok(active);
+            }
+            actors.remove(&identity);
         }
         let max_active = self.max_active();
         if actors.len() >= max_active {
-            return Err(WorkspaceActorRegistryError::Capacity { limit: max_active });
+            // Idle warm actors are not active work: release them before the
+            // registry refuses a distinct identity.
+            self.clear_warm()?;
+            actors.retain(|_, actor| actor.strong_count() > 0);
+            if actors.len() >= max_active {
+                return Err(WorkspaceActorRegistryError::Capacity { limit: max_active });
+            }
         }
         let actor = Arc::new(
             WorkspaceActor::new(identity.clone(), context.clone())
                 .map_err(WorkspaceActorRegistryError::InvalidIdentity)?,
         );
         actors.insert(identity, Arc::downgrade(&actor));
+        self.touch_warm(&actor, now)?;
+        // Warming the new actor may have released the oldest warm one; do not
+        // leave its dead entry behind until the next admission.
+        actors.retain(|_, actor| actor.strong_count() > 0);
         Ok(actor)
+    }
+
+    /// Releases every warm actor. A daemon that has requested its own restart
+    /// keeps nothing alive beyond the invocations still executing.
+    pub(crate) fn release_warm_actors(&self) -> Result<(), WorkspaceActorRegistryError> {
+        let _actors = self
+            .actors
+            .lock()
+            .map_err(|_| WorkspaceActorRegistryError::Poisoned)?;
+        self.clear_warm()
+    }
+
+    /// Releases warm actors that idled past the TTL. The daemon calls this
+    /// from its accept loop so retained descriptors do not outlive the idle
+    /// window without a new admission.
+    pub(crate) fn evict_idle_warm_actors(&self) -> Result<(), WorkspaceActorRegistryError> {
+        let _actors = self
+            .actors
+            .lock()
+            .map_err(|_| WorkspaceActorRegistryError::Poisoned)?;
+        self.evict_expired_warm(Instant::now())
+    }
+
+    fn warm_lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, VecDeque<WarmWorkspaceActor>>, WorkspaceActorRegistryError>
+    {
+        self.warm
+            .lock()
+            .map_err(|_| WorkspaceActorRegistryError::Poisoned)
+    }
+
+    fn touch_warm(
+        &self,
+        actor: &Arc<WorkspaceActor>,
+        now: Instant,
+    ) -> Result<(), WorkspaceActorRegistryError> {
+        if self.warm_capacity == 0 {
+            return Ok(());
+        }
+        let mut warm = self.warm_lock()?;
+        warm.retain(|entry| !Arc::ptr_eq(&entry.actor, actor));
+        warm.push_back(WarmWorkspaceActor {
+            actor: Arc::clone(actor),
+            last_used: now,
+        });
+        while warm.len() > self.warm_capacity {
+            warm.pop_front();
+        }
+        Ok(())
+    }
+
+    fn evict_expired_warm(&self, now: Instant) -> Result<(), WorkspaceActorRegistryError> {
+        let mut warm = self.warm_lock()?;
+        warm.retain(|entry| now.saturating_duration_since(entry.last_used) < self.warm_ttl);
+        Ok(())
+    }
+
+    fn forget_warm(&self, identity: &WorkspaceIdentity) -> Result<(), WorkspaceActorRegistryError> {
+        let mut warm = self.warm_lock()?;
+        warm.retain(|entry| entry.actor.identity() != identity);
+        Ok(())
+    }
+
+    fn clear_warm(&self) -> Result<(), WorkspaceActorRegistryError> {
+        self.warm_lock()?.clear();
+        Ok(())
     }
 
     #[cfg(test)]
@@ -2529,9 +2651,41 @@ impl WorkspaceActorRegistry {
     pub(crate) fn with_capacity_for_test(max_active: usize) -> Self {
         assert!(max_active > 0);
         Self {
-            actors: Mutex::new(HashMap::new()),
             max_active_override: Some(max_active),
+            ..Self::default()
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_warm_policy_for_test(warm_capacity: usize, warm_ttl: Duration) -> Self {
+        Self {
+            warm_capacity,
+            warm_ttl,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_capacity_and_warm_policy_for_test(
+        max_active: usize,
+        warm_capacity: usize,
+        warm_ttl: Duration,
+    ) -> Self {
+        assert!(max_active > 0);
+        Self {
+            warm_capacity,
+            warm_ttl,
+            max_active_override: Some(max_active),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn warm_len_for_test(&self) -> Result<usize, String> {
+        self.warm
+            .lock()
+            .map(|warm| warm.len())
+            .map_err(|_| "workspace actor registry is poisoned".to_string())
     }
 
     fn max_active(&self) -> usize {
@@ -4124,6 +4278,119 @@ pub(crate) mod tests {
     }
 
     #[test]
+    pub(crate) fn warm_registry_reuses_the_same_actor_across_sequential_admissions() {
+        let root = temp_root("warm-reuse");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let registry = WorkspaceActorRegistry::default();
+        let context = context(&root);
+        let first = registry
+            .get_or_create(&context, [source_input("main", root.join("src"))], "p")
+            .unwrap();
+        let first = {
+            let weak = Arc::downgrade(&first);
+            drop(first);
+            weak
+        };
+        let second = registry
+            .get_or_create(&context, [source_input("main", root.join("src"))], "p")
+            .unwrap();
+        let first = first
+            .upgrade()
+            .expect("a released actor must stay warm for the next sequential admission");
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(registry.warm_len_for_test().unwrap(), 1);
+        assert_eq!(registry.live_len_for_test().unwrap(), 1);
+    }
+
+    #[test]
+    pub(crate) fn warm_actor_expires_after_the_idle_ttl_and_is_rebuilt() {
+        let root = temp_root("warm-ttl");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let registry = WorkspaceActorRegistry::with_warm_policy_for_test(
+            super::WARM_WORKSPACE_ACTORS,
+            Duration::ZERO,
+        );
+        let context = context(&root);
+        let first = registry
+            .get_or_create(&context, [source_input("main", root.join("src"))], "p")
+            .unwrap();
+        let first = {
+            let weak = Arc::downgrade(&first);
+            drop(first);
+            weak
+        };
+        registry.evict_idle_warm_actors().unwrap();
+        assert_eq!(registry.warm_len_for_test().unwrap(), 0);
+        assert_eq!(registry.live_len_for_test().unwrap(), 0);
+        assert!(
+            first.upgrade().is_none(),
+            "an expired warm actor must be released, not handed to a later admission"
+        );
+        let second = registry
+            .get_or_create(&context, [source_input("main", root.join("src"))], "p")
+            .unwrap();
+        assert_eq!(registry.warm_len_for_test().unwrap(), 1);
+        drop(second);
+    }
+
+    #[test]
+    pub(crate) fn warm_actor_whose_named_root_was_replaced_is_rebuilt() {
+        let root = temp_root("warm-replaced-root");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let registry = WorkspaceActorRegistry::default();
+        let context = context(&root);
+        let first = registry
+            .get_or_create(&context, [source_input("main", root.join("src"))], "p")
+            .unwrap();
+        let first = {
+            let weak = Arc::downgrade(&first);
+            drop(first);
+            weak
+        };
+        std::fs::rename(root.join("src"), root.join("src-old")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        assert!(
+            first.upgrade().is_some(),
+            "the stale actor is still warm before admission"
+        );
+        let second = registry
+            .get_or_create(&context, [source_input("main", root.join("src"))], "p")
+            .unwrap();
+        assert!(
+            first.upgrade().is_none(),
+            "a warm actor whose root directory was replaced must be released and rebuilt"
+        );
+        assert!(second.retains_named_roots());
+        assert_eq!(registry.warm_len_for_test().unwrap(), 1);
+    }
+
+    #[test]
+    pub(crate) fn warm_actors_yield_capacity_to_a_distinct_identity() {
+        let root = temp_root("warm-capacity");
+        let registry = WorkspaceActorRegistry::with_capacity_for_test(2);
+        let mut actors = Vec::new();
+        for index in 0..3 {
+            let workspace = root.join(format!("workspace-{index}"));
+            std::fs::create_dir_all(workspace.join("src")).unwrap();
+            let actor = registry
+                .get_or_create(
+                    &context(&workspace),
+                    [source_input("main", workspace.join("src"))],
+                    "p",
+                )
+                .unwrap_or_else(|error| {
+                    panic!("warm actors must not consume admission capacity: {error}")
+                });
+            actors.push(Arc::downgrade(&actor));
+        }
+        assert!(registry.live_len_for_test().unwrap() <= 2);
+        assert!(
+            actors[2].upgrade().is_some(),
+            "the newest admission stays warm after evicting older idle actors"
+        );
+    }
+
+    #[test]
     pub(crate) fn workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots(
     ) {
         let root = temp_root("identity");
@@ -4251,7 +4518,10 @@ pub(crate) mod tests {
     #[test]
     fn daemon_actor_registry_prunes_dead_entries_and_bounds_sequential_roots() {
         let parent = temp_root("bounded-sequential");
-        let registry = WorkspaceActorRegistry::with_capacity_for_test(2);
+        // The weak map is the admission authority; with the warm set disabled
+        // every released actor must die and its entry must be pruned.
+        let registry =
+            WorkspaceActorRegistry::with_capacity_and_warm_policy_for_test(2, 0, Duration::ZERO);
 
         for index in 0..12 {
             let root = parent.join(format!("workspace-{index}"));
@@ -4328,7 +4598,11 @@ pub(crate) mod tests {
         let source = root.join("src");
         std::fs::create_dir_all(&source).unwrap();
         std::fs::create_dir_all(root.join("nested")).unwrap();
-        let registry = WorkspaceActorRegistry::with_capacity_for_test(1);
+        let registry = WorkspaceActorRegistry::with_capacity_and_warm_policy_for_test(
+            1,
+            super::WARM_WORKSPACE_ACTORS,
+            Duration::ZERO,
+        );
         let first = registry
             .get_or_create(
                 &context(&root),
@@ -4348,6 +4622,9 @@ pub(crate) mod tests {
 
         drop(alias);
         drop(first);
+        // Once the warm TTL has elapsed the released actor is gone and the
+        // next admission builds a fresh instance with its own capability id.
+        registry.evict_idle_warm_actors().unwrap();
         let replacement = registry
             .get_or_create(
                 &context(&root),

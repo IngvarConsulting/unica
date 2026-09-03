@@ -77,37 +77,15 @@ impl LogicalAddress {
 /// the separate per-tool slice ADR-0021 §13 requires.
 const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
     ("unica.cf.info", "ConfigPath", LogicalAddress::Absent),
-    ("unica.cf.validate", "ConfigPath", LogicalAddress::Absent),
     (
         "unica.subsystem.info",
         "SubsystemPath",
         LogicalAddress::Optional,
     ),
-    (
-        "unica.subsystem.validate",
-        "SubsystemPath",
-        LogicalAddress::Required,
-    ),
     ("unica.role.info", "RightsPath", LogicalAddress::Required),
-    (
-        "unica.role.validate",
-        "RightsPath",
-        LogicalAddress::Required,
-    ),
     ("unica.form.info", "FormPath", LogicalAddress::Required),
-    ("unica.form.validate", "FormPath", LogicalAddress::Required),
     ("unica.dcs.info", "TemplatePath", LogicalAddress::Required),
-    (
-        "unica.dcs.validate",
-        "TemplatePath",
-        LogicalAddress::Required,
-    ),
     ("unica.mxl.info", "TemplatePath", LogicalAddress::Required),
-    (
-        "unica.mxl.validate",
-        "TemplatePath",
-        LogicalAddress::Required,
-    ),
     (
         "unica.mxl.decompile",
         "TemplatePath",
@@ -125,17 +103,11 @@ pub(crate) enum ReaderMigrationMode {
 /// consume this exact owner rather than maintaining independent reader lists.
 const READER_MIGRATION_INVENTORY: &[(&str, ReaderMigrationMode)] = &[
     ("unica.cf.info", ReaderMigrationMode::Bridge),
-    ("unica.cf.validate", ReaderMigrationMode::Bridge),
     ("unica.subsystem.info", ReaderMigrationMode::Bridge),
-    ("unica.subsystem.validate", ReaderMigrationMode::Bridge),
     ("unica.role.info", ReaderMigrationMode::Bridge),
-    ("unica.role.validate", ReaderMigrationMode::Bridge),
     ("unica.form.info", ReaderMigrationMode::Bridge),
-    ("unica.form.validate", ReaderMigrationMode::Bridge),
     ("unica.dcs.info", ReaderMigrationMode::Bridge),
-    ("unica.dcs.validate", ReaderMigrationMode::Bridge),
     ("unica.mxl.info", ReaderMigrationMode::Bridge),
-    ("unica.mxl.validate", ReaderMigrationMode::Bridge),
     ("unica.mxl.decompile", ReaderMigrationMode::Bridge),
     ("unica.code.diagnostics", ReaderMigrationMode::DirectSwitch),
 ];
@@ -1238,10 +1210,7 @@ pub fn validate_tool_argument_semantics(
     validate_source_navigation_arguments(tool, args)?;
     validate_source_resource_arguments(tool, args)?;
     validate_code_patch_arguments(tool, args)?;
-    validate_form_add_arguments(tool, args)?;
     validate_form_edit_arguments(tool, args, dry_run)?;
-    validate_template_add_arguments(tool, args)?;
-    validate_support_arguments(tool, args, dry_run)?;
     validate_external_init_arguments(tool, args)?;
     validate_cfe_patch_method_arguments(tool, args)?;
     validate_xdto_arguments(tool, args)?;
@@ -1913,13 +1882,6 @@ fn validate_external_init_arguments(
     Ok(())
 }
 
-fn validate_form_add_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
-    if tool.name != "unica.form.add" {
-        return Ok(());
-    }
-    validate_unique_alias_group(tool.name, args, &["SetDefault", "setDefault"])
-}
-
 /// ADR-0049: a bridged reader accepts exactly one selector. Two at once is a
 /// caller mistake, not a precedence question — resolving it silently would hide
 /// which selector produced the answer. Zero is the pre-existing missing-argument
@@ -1988,64 +1950,6 @@ fn validate_form_edit_arguments(
     Ok(())
 }
 
-fn validate_template_add_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    if tool.name != "unica.template.add" {
-        return Ok(());
-    }
-    validate_unique_alias_group(tool.name, args, &["SetMainSKD", "setMainSKD"])
-}
-
-fn validate_support_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-    dry_run: bool,
-) -> Result<(), String> {
-    if tool.name != "unica.support.edit" {
-        return Ok(());
-    }
-
-    validate_unique_alias_group(tool.name, args, &["Capability", "capability"])?;
-    validate_unique_alias_group(tool.name, args, &["Set", "set"])?;
-    validate_unique_alias_group(
-        tool.name,
-        args,
-        &["Path", "path", "TargetPath", "targetPath"],
-    )?;
-    validate_enum_alias_argument(
-        tool.name,
-        args,
-        &["Capability", "capability"],
-        &["on", "off"],
-    )?;
-    validate_enum_alias_argument(
-        tool.name,
-        args,
-        &["Set", "set"],
-        &["editable", "off-support", "locked"],
-    )?;
-
-    if dry_run {
-        return Ok(());
-    }
-
-    if !contains_any(args, &["Path", "path", "TargetPath", "targetPath"]) {
-        return Err(format!("{} requires `Path` argument", tool.name));
-    }
-    let has_capability = contains_any(args, &["Capability", "capability"]);
-    let has_set = contains_any(args, &["Set", "set"]);
-    if has_capability == has_set {
-        return Err(format!(
-            "{} requires exactly one of `Capability` or `Set`",
-            tool.name
-        ));
-    }
-
-    Ok(())
-}
-
 fn contains_any(args: &Map<String, Value>, names: &[&str]) -> bool {
     names.iter().any(|name| args.contains_key(*name))
 }
@@ -2065,28 +1969,6 @@ fn validate_unique_alias_group(
             "{tool_name} received conflicting aliases: {}",
             present.join(", ")
         ));
-    }
-    Ok(())
-}
-
-fn validate_enum_alias_argument(
-    tool_name: &'static str,
-    args: &Map<String, Value>,
-    names: &[&str],
-    allowed: &[&str],
-) -> Result<(), String> {
-    for name in names {
-        if let Some(value) = args.get(*name) {
-            let Some(value) = value.as_str() else {
-                return Err(format!("{tool_name} argument `{name}` must be string"));
-            };
-            if !allowed.contains(&value) {
-                return Err(format!(
-                    "{tool_name} argument `{name}` must be one of: {}",
-                    allowed.join(", ")
-                ));
-            }
-        }
     }
     Ok(())
 }
@@ -5019,11 +4901,9 @@ pub(crate) mod tests {
                 "dcs-edit",
                 "epf-init",
                 "erf-init",
-                "form-add",
                 "form-remove",
                 "interface-edit",
                 "subsystem-edit",
-                "support-edit",
             ],
             "ADR-0073 §5: the transitional list is approved item by item"
         );
@@ -5085,7 +4965,6 @@ pub(crate) mod tests {
                 "unica.build.run",
                 "unica.build.update",
                 "unica.runtime.execute",
-                "unica.runtime.job.cancel",
                 "unica.runtime.job.start",
             ]
         );
@@ -5228,28 +5107,18 @@ pub(crate) mod tests {
     #[test]
     fn read_only_native_tools_reject_out_file_arguments() {
         let required_path = |name: &str| match name {
-            "unica.cf.info" | "unica.cf.validate" => ("ConfigPath", "src"),
-            "unica.cfe.validate" => ("ExtensionPath", "src"),
-            "unica.interface.validate" => ("CIPath", "src/CommandInterface.xml"),
-            "unica.subsystem.info" | "unica.subsystem.validate" => {
-                ("SubsystemPath", "src/Subsystems/Main.xml")
-            }
-            "unica.dcs.info" | "unica.dcs.validate" => ("TemplatePath", "src/Template.xml"),
-            "unica.role.info" | "unica.role.validate" => ("RightsPath", "src/Rights.xml"),
+            "unica.cf.info" => ("ConfigPath", "src"),
+            "unica.subsystem.info" => ("SubsystemPath", "src/Subsystems/Main.xml"),
+            "unica.dcs.info" => ("TemplatePath", "src/Template.xml"),
+            "unica.role.info" => ("RightsPath", "src/Rights.xml"),
             _ => unreachable!("unexpected read-only tool"),
         };
 
         for name in [
             "unica.cf.info",
-            "unica.cf.validate",
-            "unica.cfe.validate",
-            "unica.interface.validate",
             "unica.subsystem.info",
-            "unica.subsystem.validate",
             "unica.dcs.info",
-            "unica.dcs.validate",
             "unica.role.info",
-            "unica.role.validate",
         ] {
             let tool = tools()
                 .into_iter()
@@ -6051,17 +5920,16 @@ pub(crate) mod tests {
         // `unica.cf.*` reads `Configuration.xml` at the root of a source set,
         // so no branch of its schema can honour an address. Publishing one
         // would advertise a selector the tool cannot use.
-        for name in ["unica.cf.info", "unica.cf.validate"] {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == name)
-                .expect("tool is registered");
-            let schema = input_schema_for_tool(&tool);
-            assert!(
-                schema["properties"].get("metadataPath").is_none(),
-                "{name} publishes an address it cannot use: {schema}"
-            );
-        }
+        let name = "unica.cf.info";
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .expect("tool is registered");
+        let schema = input_schema_for_tool(&tool);
+        assert!(
+            schema["properties"].get("metadataPath").is_none(),
+            "{name} publishes an address it cannot use: {schema}"
+        );
     }
 
     /// The bridged tools whose arguments come from `NATIVE_XML_DSL_ARGS`. The
@@ -6118,39 +5986,6 @@ pub(crate) mod tests {
                 panic!("{name} must keep tolerating the inherited name: {error}")
             });
         }
-    }
-
-    /// `unica.cf.validate` drew `metadataPath` from the shared catch-all before
-    /// this bridge and ignored it. Publishing it would be a lie, but refusing
-    /// it would break a call that used to work — and this bridge removes
-    /// nothing. So it stays accepted and unpublished.
-    ///
-    /// `unica.cf.info` never took it: it has carried a narrow argument list
-    /// since ADR-0023, so refusing it there is the contract it already had.
-    #[test]
-    fn cf_validate_still_tolerates_the_address_the_catch_all_used_to_hand_it() {
-        let args = Map::from_iter([
-            ("sourceSet".to_string(), json!("main")),
-            ("metadataPath".to_string(), json!("Catalog.Items")),
-        ]);
-
-        let validate = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.cf.validate")
-            .expect("tool is registered");
-        validate_tool_arguments(validate, &args, false)
-            .unwrap_or_else(|error| panic!("cf.validate must keep tolerating it: {error}"));
-
-        let info = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.cf.info")
-            .expect("tool is registered");
-        let error = validate_tool_arguments(info, &args, false)
-            .expect_err("cf.info never accepted an address");
-        assert!(
-            error.contains("does not accept argument `metadataPath`"),
-            "{error}"
-        );
     }
 
     #[test]
@@ -6228,17 +6063,11 @@ pub(crate) mod tests {
             inventory,
             vec![
                 ("unica.cf.info", ReaderMigrationMode::Bridge),
-                ("unica.cf.validate", ReaderMigrationMode::Bridge),
                 ("unica.subsystem.info", ReaderMigrationMode::Bridge),
-                ("unica.subsystem.validate", ReaderMigrationMode::Bridge),
                 ("unica.role.info", ReaderMigrationMode::Bridge),
-                ("unica.role.validate", ReaderMigrationMode::Bridge),
                 ("unica.form.info", ReaderMigrationMode::Bridge),
-                ("unica.form.validate", ReaderMigrationMode::Bridge),
                 ("unica.dcs.info", ReaderMigrationMode::Bridge),
-                ("unica.dcs.validate", ReaderMigrationMode::Bridge),
                 ("unica.mxl.info", ReaderMigrationMode::Bridge),
-                ("unica.mxl.validate", ReaderMigrationMode::Bridge),
                 ("unica.mxl.decompile", ReaderMigrationMode::Bridge),
                 ("unica.code.diagnostics", ReaderMigrationMode::DirectSwitch),
             ]
@@ -6403,10 +6232,6 @@ pub(crate) mod tests {
             ("unica.epf.init", entry("epf-init", "1729:02a6a6ebaf86d9f6")),
             ("unica.erf.init", entry("erf-init", "1729:02a6a6ebaf86d9f6")),
             (
-                "unica.form.add",
-                entry("form-add", "31503:ad0297af29ca9ed3"),
-            ),
-            (
                 "unica.form.compile",
                 entry("form-compile", "31140:8c354e756d3bb2f2"),
             ),
@@ -6453,10 +6278,6 @@ pub(crate) mod tests {
             (
                 "unica.subsystem.edit",
                 entry("subsystem-edit", "31164:52fff7efa16e1c71"),
-            ),
-            (
-                "unica.support.edit",
-                entry("support-edit", "31857:0742d10d9c5080e6"),
             ),
             (
                 "unica.xdto.edit",
@@ -6662,34 +6483,6 @@ pub(crate) mod tests {
         let mut invalid = base;
         invalid["selector"] = json!({"method": "A", "anchor": "B"});
         assert!(!validator.is_valid(&invalid));
-    }
-
-    #[test]
-    fn code_patch_metadata_path_description_is_tool_specific() {
-        let tools = tools();
-        let code_patch = tools
-            .iter()
-            .find(|tool| tool.name == "unica.code.patch")
-            .unwrap();
-        let role_validate = tools
-            .iter()
-            .find(|tool| tool.name == "unica.role.validate")
-            .unwrap();
-
-        let code_patch_schema = input_schema_for_tool(code_patch);
-        let role_validate_schema = input_schema_for_tool(role_validate);
-        let code_patch_description = code_patch_schema["properties"]["metadataPath"]["description"]
-            .as_str()
-            .unwrap();
-        let role_validate_description = role_validate_schema["properties"]["metadataPath"]
-            ["description"]
-            .as_str()
-            .unwrap();
-
-        assert!(code_patch_description.contains("logical module address"));
-        assert!(code_patch_description.contains("sourceSet"));
-        assert!(!role_validate_description.contains("unica.code.patch"));
-        assert!(!role_validate_description.contains("module"));
     }
 
     #[test]
@@ -6937,13 +6730,6 @@ pub(crate) mod tests {
             ])
         );
 
-        let validate_tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.form.validate")
-            .unwrap();
-        let validate_schema = input_schema_for_tool(&validate_tool);
-        assert!(validate_schema["properties"].get("definition").is_none());
-
         let mut inline = Map::new();
         inline.insert("FormPath".to_string(), json!("Form.xml"));
         inline.insert("definition".to_string(), json!({"formEvents": []}));
@@ -7034,67 +6820,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn support_edit_contract_exposes_typed_enums_and_rejects_invalid_payloads() {
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.support.edit")
-            .unwrap();
-
-        let schema = input_schema_for_tool(&tool);
-        assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(
-            schema["properties"]["Capability"]["enum"],
-            json!(["on", "off"])
-        );
-        assert_eq!(
-            schema["properties"]["Set"]["enum"],
-            json!(["editable", "off-support", "locked"])
-        );
-        assert!(schema["properties"].get("args").is_none());
-
-        let mut args = Map::new();
-        args.insert("Path".to_string(), json!("src"));
-        args.insert("Capability".to_string(), json!(true));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("Capability"));
-        assert!(error.contains("string"));
-
-        let mut args = Map::new();
-        args.insert("Path".to_string(), json!("src"));
-        args.insert("Capability".to_string(), json!("on"));
-        args.insert("Set".to_string(), json!("editable"));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("exactly one"));
-
-        let mut args = Map::new();
-        args.insert("Path".to_string(), json!("src"));
-        args.insert("Capability".to_string(), json!("on"));
-        args.insert("capability".to_string(), json!("off"));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("conflicting aliases"));
-        assert!(error.contains("Capability"));
-        assert!(error.contains("capability"));
-
-        let mut args = Map::new();
-        args.insert("Path".to_string(), json!("src"));
-        args.insert("Set".to_string(), json!("editable"));
-        args.insert("set".to_string(), json!("locked"));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("conflicting aliases"));
-        assert!(error.contains("Set"));
-        assert!(error.contains("set"));
-
-        let mut args = Map::new();
-        args.insert("Path".to_string(), json!("src"));
-        args.insert("TargetPath".to_string(), json!("src/Catalogs/Items.xml"));
-        args.insert("Capability".to_string(), json!("on"));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("conflicting aliases"));
-        assert!(error.contains("Path"));
-        assert!(error.contains("TargetPath"));
-    }
-
-    #[test]
     fn meta_edit_contract_accepts_only_typed_ordered_operations() {
         let tool = tools()
             .into_iter()
@@ -7160,33 +6885,6 @@ pub(crate) mod tests {
 
         assert!(error.contains("dryRun"));
         assert!(error.contains("boolean"));
-    }
-
-    #[test]
-    fn form_boolean_flags_are_boolean_in_mcp_contract() {
-        let form_add = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.form.add")
-            .unwrap();
-        let schema = input_schema_for_tool(&form_add);
-        assert_eq!(schema["properties"]["SetDefault"]["type"], "boolean");
-        assert_eq!(schema["properties"]["setDefault"]["type"], "boolean");
-
-        let mut args = Map::new();
-        args.insert("ObjectPath".to_string(), json!("src/Catalogs/Goods.xml"));
-        args.insert("FormName".to_string(), json!("ListForm"));
-        args.insert("SetDefault".to_string(), json!("false"));
-        let error = validate_tool_arguments(form_add, &args, false).unwrap_err();
-        assert!(error.contains("SetDefault"));
-        assert!(error.contains("boolean"));
-
-        let mut args = Map::new();
-        args.insert("ObjectPath".to_string(), json!("src/Catalogs/Goods.xml"));
-        args.insert("FormName".to_string(), json!("ListForm"));
-        args.insert("SetDefault".to_string(), json!(false));
-        args.insert("setDefault".to_string(), json!(true));
-        let error = validate_tool_arguments(form_add, &args, false).unwrap_err();
-        assert!(error.contains("conflicting aliases"));
     }
 
     #[test]
@@ -7514,11 +7212,9 @@ pub(crate) mod tests {
         assert_eq!(
             runtime_jobs,
             [
-                "unica.runtime.job.cancel",
                 "unica.runtime.job.list",
                 "unica.runtime.job.logs",
                 "unica.runtime.job.start",
-                "unica.runtime.job.status",
                 "unica.runtime.job.wait",
             ]
             .into_iter()
@@ -7676,10 +7372,6 @@ pub(crate) mod tests {
             .into_iter()
             .find(|tool| tool.name == "unica.runtime.job.wait")
             .expect("runtime job wait is registered");
-        let cancel = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.runtime.job.cancel")
-            .expect("runtime job cancel is registered");
         let logs = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.runtime.job.logs")
@@ -7740,14 +7432,6 @@ pub(crate) mod tests {
             )
             .unwrap_or_else(|error| panic!("tailChars={tail_chars}: {error}"));
         }
-        assert!(validate_tool_arguments(
-            cancel,
-            json!({"jobId":valid_id,"operation":"build"})
-                .as_object()
-                .unwrap(),
-            true
-        )
-        .is_err());
     }
 
     #[test]

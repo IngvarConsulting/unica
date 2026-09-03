@@ -44,21 +44,21 @@ Preview or atomically apply typed edits to one logically addressed 1C node.
 
 ### `unica.check`
 
-Confirm workspace source-set admission, or validate one logical node's readability.
+Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
-| `filter` | object | нет | Optional validation profile; requires at. |
 
-**Результат сейчас:** Без фильтра доказывает admission source set или читаемость указанного `at`; filter validation и маршрутизация meta/cf существуют только provisional, реальное исполнение валидатора не доказано (отвечают типизированным `data`)
+**Результат сейчас:** Без `at` доказывает admission source set; с `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`), отдавая `status`, `validators` и диагностики; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
 
-**Целевой контракт:** Подключить реальные валидаторы и доказать их канонические diagnostics до объявления профилей поддержанными
+**Целевой контракт:** Держать таблицу вид → валидаторы закрытой и доказанной корпусом; на проводе у `check` нет аргумента выбора валидатора
 
 **Сценарии:**
 
 - Проверить, что рабочее пространство и его source set допущены
-- Проверить читаемость конкретного логического узла
+- Проверить один логический узел всеми валидаторами его вида
+- Проверить читаемость узла без валидаторов
 
 ## diff
 
@@ -137,14 +137,15 @@ List canonical runtime operations and their invocation contract, or preview/exec
 | `ifRev` | string | нет | Revision returned by a prior preview of the same previewApply operation; required when dryRun is false. |
 | `op` | string | нет | Canonical operation name; omit to list operation status. |
 
-**Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь двенадцати направленных runtime-намерений; `workspace.initialize` revision-fenced и create-only публикует autodetected однородные source sets без платформы; остальные одиннадцать операций честно неподдержаны (отвечают типизированным `data`)
+**Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь двенадцати направленных runtime-намерений; `workspace.initialize`, `infobase.configuration.export` и `infobase.dump` реализованы; обе выгрузки используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла (отвечают типизированным `data`)
 
-**Целевой контракт:** Добавить infobase-only и combined initialization, затем подключать остальные направленные операции через preview/apply, capability-specific admission и закрытые terminal/provider-контракты
+**Целевой контракт:** Добавить infobase-only и combined initialization, затем подключать остальные девять направленных операций через preview/apply, capability-specific admission и закрытые terminal/provider-контракты
 
 **Сценарии:**
 
 - Получить машинно-читаемый словарь допустимых runtime намерений
 - Предпросмотреть и атомарно инициализировать workspace по autodetected source sets до admission
+- Предпросмотреть и выгрузить main CF, extension CFE или полный DT из существующей ИБ
 - Различить сборку артефакта, экспорт конфигурации и полный снимок ИБ без выбора platform provider моделью
 
 ## search
@@ -233,12 +234,13 @@ Inspect the workspace with no arguments, or read one logical 1C node by address.
 | `filter` | object | нет | Optional projection such as sections; valid only with at. |
 | `limit` | integer | нет | Maximum child items to return; valid only with at. |
 
-**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, readiness и setup; с квалифицированным `at` содержит типизированную проекцию логического узла, revision, bounded cursor и закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)
+**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; с квалифицированным `at` содержит типизированную проекцию логического узла, revision, bounded cursor и закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)
 
 **Целевой контракт:** Расширять проекции через закрытые `filter`, не возвращая физические пути
 
 **Сценарии:**
 
 - Обнаружить workspace и получить точный рецепт v8project.yaml до source admission
+- Распознать существующую ИБ без исходников и предложить preview выгрузки CF или DT
 - Прочитать конфигурацию или объект метаданных по квалифицированному адресу
 - Получить наблюдаемую структуру узла и revision для последующей проверки

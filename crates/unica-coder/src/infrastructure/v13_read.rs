@@ -29,7 +29,7 @@ use crate::infrastructure::logical_event_source::{
 };
 use crate::infrastructure::logical_event_source::{resolve_event_source, LogicalEventSource};
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
-use crate::infrastructure::native_operations::form::FormEventEvidence;
+use crate::infrastructure::native_operations::form::{FormEventEvidence, FormInfoData};
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::platform_xml_owner::PlatformXmlSourceSetOwnerEvidence;
 #[cfg(test)]
@@ -112,6 +112,19 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
     verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
+    typed_payloads: Mutex<BTreeMap<TypedPayloadCacheKey, Arc<Value>>>,
+    form_data: Mutex<BTreeMap<OwnerProofCacheKey, Arc<FormInfoData>>>,
+}
+
+/// One typed reader payload is a function of the admitted revision, the
+/// reader and its physical target (plus the XDTO type for that reader), so
+/// every logical address projected from the same descriptor shares one parse.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct TypedPayloadCacheKey {
+    revision: RevisionCacheKey,
+    reader: LogicalReader,
+    target: String,
+    detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -180,6 +193,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
             verified_owner_edges: Mutex::new(BTreeSet::new()),
+            typed_payloads: Mutex::new(BTreeMap::new()),
+            form_data: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -212,6 +227,16 @@ impl<'a> LogicalViewReadAuthority<'a> {
     }
 
     #[cfg(test)]
+    pub(crate) fn metadata_descriptor_read_count(&self, target: &str) -> usize {
+        self.read.metadata_descriptor_read_count(target)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn support_state_read_count(&self) -> usize {
+        self.read.support_state_read_count()
+    }
+
+    #[cfg(test)]
     pub(crate) const fn source_set_kind_for_test(&self) -> SourceSetKind {
         self.read.source_set_kind()
     }
@@ -240,8 +265,36 @@ impl<'a> LogicalViewReadAuthority<'a> {
         ) {
             if let Some(target) = route.reader_metadata_path() {
                 self.verify_registered_owner(target, admitted)?;
+                let key = TypedPayloadCacheKey {
+                    revision: RevisionCacheKey {
+                        source_set_identity: admitted.source_set_identity.clone(),
+                        revision: admitted.revision.clone(),
+                    },
+                    reader: route.reader(),
+                    target: target.as_str().to_string(),
+                    detail: (route.reader() == LogicalReader::Xdto)
+                        .then(|| named_segment(route.at(), NodeKind::Type).map(str::to_string))
+                        .flatten(),
+                };
+                let mut cache = self.typed_payloads.lock().map_err(|_| {
+                    ViewError::new("provider_unavailable", "typed payload cache is poisoned")
+                })?;
+                if let Some(payload) = cache.get(&key) {
+                    return Ok(payload.as_ref().clone());
+                }
+                let payload = Arc::new(self.uncached_typed_payload_for(route, admitted)?);
+                cache.insert(key, Arc::clone(&payload));
+                return Ok(payload.as_ref().clone());
             }
         }
+        self.uncached_typed_payload_for(route, admitted)
+    }
+
+    fn uncached_typed_payload_for(
+        &self,
+        route: &LogicalTreeRoute,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Value, ViewError> {
         if route.reader() == LogicalReader::Configuration {
             let payload = self.configuration_payload(admitted)?;
             self.verify_top_level_inventory(payload.as_ref(), admitted)?;
@@ -382,54 +435,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 self.verify_registered_owner(&child, admitted)?;
             }
         }
-        let template_branches = local
-            .collections
-            .templates
-            .iter()
-            .map(|template| {
-                let child = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("{}.Template.{}", target.as_str(), template.name),
-                )
-                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
-                let branches = match self.read.metadata_child_profile(&child) {
-                    Ok(MetadataChildProfile::Template(
-                        MetadataTemplateType::DataCompositionSchema,
-                    )) => {
-                        let payload = self.read.dcs_payload(&child)?;
-                        vec![(
-                            NodeKind::DataSet,
-                            payload
-                                .get("dataSets")
-                                .and_then(Value::as_array)
-                                .map_or(0, Vec::len),
-                        )]
-                    }
-                    Ok(MetadataChildProfile::Template(
-                        MetadataTemplateType::SpreadsheetDocument,
-                    )) => {
-                        let payload = self.read.mxl_payload(&child)?;
-                        vec![(
-                            NodeKind::Area,
-                            payload
-                                .get("areas")
-                                .and_then(Value::as_array)
-                                .map_or(0, Vec::len),
-                        )]
-                    }
-                    Ok(MetadataChildProfile::Template(_)) => Vec::new(),
-                    Ok(MetadataChildProfile::Form | MetadataChildProfile::Command) => {
-                        return Err(ViewError::new(
-                            "provider_unavailable",
-                            "template registry points to a non-template descriptor",
-                        ));
-                    }
-                    Err(error) if error.code() == "not_found" => Vec::new(),
-                    Err(error) => return Err(error),
-                };
-                Ok((template.name.clone(), branches))
-            })
-            .collect::<Result<std::collections::BTreeMap<_, _>, ViewError>>()?;
         let mut payload = Map::new();
         payload.insert("name".to_string(), json!(local.name));
         payload.insert("synonym".to_string(), json!(local.synonym));
@@ -439,26 +444,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
         insert_serialized(&mut payload, "properties", &local.properties)?;
         insert_serialized(&mut payload, "declarations", &local.declarations)?;
         insert_serialized(&mut payload, "relations", &local.relations)?;
-        let mut collections = serde_json::to_value(&local.collections)
+        let collections = serde_json::to_value(&local.collections)
             .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
-        if let Some(templates) = collections
-            .get_mut("templates")
-            .and_then(Value::as_array_mut)
-        {
-            for template in templates {
-                let Some(name) = template.get("name").and_then(Value::as_str) else {
-                    continue;
-                };
-                let Some(branches) = template_branches.get(name) else {
-                    continue;
-                };
-                template["logicalBranches"] = json!(branches
-                    .iter()
-                    .filter(|(_, count)| *count > 0)
-                    .map(|(kind, count)| json!({"kind": kind.as_str(), "count": count}))
-                    .collect::<Vec<_>>());
-            }
-        }
         payload.insert("collections".to_string(), collections);
         Ok(Value::Object(payload))
     }
@@ -645,7 +632,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             None
         };
         let handles = if capability.role() == ModuleRole::Form {
-            self.form_bindings(module_at)?
+            self.form_bindings(module_at, admitted)?
         } else {
             Vec::new()
         };
@@ -714,11 +701,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Result<(), ViewError> {
         if capability.source_layout() == ModuleSourceLayout::Root {
             return match self.read.source_set_kind() {
-                SourceSetKind::Configuration => Ok(()),
-                SourceSetKind::Extension => Err(ViewError::new(
-                    "provider_unavailable",
-                    "extension root runtime module ownership is not proved",
-                )),
+                // An extension extends the configuration runtime modules from
+                // its own root (`Ext/ManagedApplicationModule.bsl` and the
+                // like), so its `Configuration.xml` owns them exactly as the
+                // main configuration does.
+                SourceSetKind::Configuration | SourceSetKind::Extension => Ok(()),
                 SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
                     Err(ViewError::new(
                         "not_found",
@@ -825,6 +812,17 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 }
                 continue;
             }
+            if pair_count > 1 && parts[end - 2] == NodeKind::Command.as_str() {
+                // A command has no descriptor file: its full definition is the
+                // inline `ChildObjects` registration already proven above.
+                if end != parts.len() {
+                    return Err(ViewError::new(
+                        "not_found",
+                        "metadata command has no nested physical owners",
+                    ));
+                }
+                break;
+            }
             let evidence = self.owner_evidence(&current, admitted).map_err(|error| {
                 if error.code() == "not_found" {
                     ViewError::new(
@@ -881,9 +879,36 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(evidence)
     }
 
+    /// One parsed `Form.xml` per admitted revision and form target: every
+    /// item, attribute, command and event address under the form shares it.
+    fn form_data(
+        &self,
+        target: &MetadataAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Arc<FormInfoData>, ViewError> {
+        let key = OwnerProofCacheKey {
+            revision: RevisionCacheKey {
+                source_set_identity: admitted.source_set_identity.clone(),
+                revision: admitted.revision.clone(),
+            },
+            owner: target.as_str().to_string(),
+        };
+        let mut cache = self
+            .form_data
+            .lock()
+            .map_err(|_| ViewError::new("provider_unavailable", "form cache is poisoned"))?;
+        if let Some(data) = cache.get(&key) {
+            return Ok(Arc::clone(data));
+        }
+        let data = Arc::new(self.read.form_data(target)?);
+        cache.insert(key, Arc::clone(&data));
+        Ok(data)
+    }
+
     fn form_bindings(
         &self,
         module_at: &QualifiedAddress,
+        admitted: &ViewSourceSnapshot,
     ) -> Result<Vec<FormEventBindingInput>, ViewError> {
         let module_at_text = module_at.to_string();
         let form_at = module_at_text
@@ -897,7 +922,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let metadata_path =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path())
                 .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
-        let data = self.read.form_data(&metadata_path)?;
+        let data = self.form_data(&metadata_path, admitted)?;
         Ok(form_semantic_inputs(form_at, &FormEventEvidence::from_info(&data)).bindings)
     }
 
@@ -910,8 +935,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ViewError::new("provider_unavailable", "form route has no typed target")
         })?;
         self.verify_registered_owner(target, admitted)?;
-        let mut data = self.read.form_data(target)?;
-        data.event_context.metadata_owner = route.at().segments().first().map(AddressSegment::kind);
+        let data = self.form_data(target, admitted)?;
         let form_at =
             QualifiedAddress::parse(&format!("{}:{}", route.at().source_set(), target.as_str()))
                 .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
@@ -924,12 +948,13 @@ impl<'a> LogicalViewReadAuthority<'a> {
             )
         })?;
         self.verify_module_owner(&module_at, capability, admitted)?;
-        let evidence = FormEventEvidence::from_info(&data);
+        let mut evidence = FormEventEvidence::from_info(&data);
+        evidence.context.metadata_owner = route.at().segments().first().map(AddressSegment::kind);
         let inputs = form_semantic_inputs(&form_at.to_string(), &evidence);
         let module = self.module_projection(&module_at, capability, admitted)?;
         let events = project_property_events_from_projection(&evidence, &inputs, &module)
             .map_err(|error| ViewError::new(error.code(), error.to_string()))?;
-        let payload = serde_json::to_value(data).map_err(|error| {
+        let payload = serde_json::to_value(data.as_ref()).map_err(|error| {
             ViewError::new(
                 "provider_unavailable",
                 format!("form payload serialization failed: {error}"),
@@ -1123,7 +1148,8 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             self.form_view(&route, admitted)?
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
-            project_typed_payload(&route, payload)?
+            let projected = project_typed_payload(&route, payload)?;
+            self.with_template_body_branches(projected, &route)?
         };
         let projected = self.with_module_branch(projected, at, admitted)?;
         self.read_checkpoint()?;
@@ -1138,6 +1164,88 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
 }
 
 impl LogicalViewReadAuthority<'_> {
+    /// A template's own body (data sets of a DCS, areas of a spreadsheet) is
+    /// read only when the template node itself is addressed. Projecting the
+    /// owner or the template collection never opens template payloads, so a
+    /// large or unreadable body fails exactly one node instead of its owner.
+    fn with_template_body_branches(
+        &self,
+        projected: NodeViewData,
+        route: &LogicalTreeRoute,
+    ) -> Result<NodeViewData, ViewError> {
+        if route.reader() != LogicalReader::Metadata {
+            return Ok(projected);
+        }
+        let segments = route.at().segments();
+        let [owner, template] = segments else {
+            return Ok(projected);
+        };
+        if template.kind() != NodeKind::Template || template.name().is_none() {
+            return Ok(projected);
+        }
+        let Some(owner_name) = owner.name() else {
+            return Ok(projected);
+        };
+        let child = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!(
+                "{}.{owner_name}.Template.{}",
+                owner.kind().as_str(),
+                template.name().unwrap_or_default()
+            ),
+        )
+        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+        let mut projected = projected;
+        for (kind, count) in self.template_body_branches(&child)? {
+            if count > 0 {
+                projected = projected.with_branch(BranchRef::new(
+                    format!("{}.{}", route.at(), kind.as_str()),
+                    count,
+                ));
+            }
+        }
+        Ok(projected)
+    }
+
+    fn template_body_branches(
+        &self,
+        child: &MetadataAddress,
+    ) -> Result<Vec<(NodeKind, usize)>, ViewError> {
+        Ok(match self.read.metadata_child_profile(child) {
+            Ok(MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)) => {
+                let payload = self.read.dcs_payload(child)?;
+                vec![(
+                    NodeKind::DataSet,
+                    payload
+                        .get("dataSets")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len),
+                )]
+            }
+            Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
+                let payload = self.read.mxl_payload(child)?;
+                vec![(
+                    NodeKind::Area,
+                    payload
+                        .get("areas")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len),
+                )]
+            }
+            // Text, HTML, binary, add-in and appearance templates have no
+            // addressable interior: addressing stops at the template.
+            Ok(MetadataChildProfile::Template(_)) => Vec::new(),
+            Ok(MetadataChildProfile::Form | MetadataChildProfile::Command) => {
+                return Err(ViewError::new(
+                    "provider_unavailable",
+                    "template registry points to a non-template descriptor",
+                ));
+            }
+            Err(error) if error.code() == "not_found" => Vec::new(),
+            Err(error) => return Err(error),
+        })
+    }
+
     fn with_module_branch(
         &self,
         projected: NodeViewData,

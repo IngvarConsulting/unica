@@ -2,7 +2,7 @@
 id: INV.SOURCE.LOGICAL-READER-PARITY
 status: active
 governs: product
-decision: DEC.2026-08-25.LOGICAL-READ-CORE-SLICE
+decision: DEC.2026-09-03.ROLE-CONFIGURATION-RIGHTS
 check: crates/unica-coder/src/infrastructure/v13_read/tests.rs::logical_reader_parity_contract_is_complete
 scope: [app, platform, product, source]
 ---
@@ -43,10 +43,13 @@ arbitrary synchronized/ABA writer и не immutability retained tree после
 
 До dispatch всех typed readers действует один recursive owner admission:
 top-level `(kind,name)` присутствует в inventory и имеет matching descriptor, а
-каждый физический Form/Template/Command зарегистрирован parent `ChildObjects` и
-имеет matching child descriptor. Orphan physical content, registered missing
-descriptor и wrong kind/name fail closed одинаково в direct view, parent
-navigation и find; evidence и edges кешируются только внутри actor/revision.
+каждый физический Form/Template зарегистрирован parent `ChildObjects` текстовой
+ссылкой и имеет matching child descriptor. Command зарегистрирован полным
+инлайн-определением `<Command uuid><Properties><Name>` в parent `ChildObjects`,
+файла дескриптора не имеет и вложенных физических пар не открывает. Orphan
+physical content, registered missing descriptor и wrong kind/name fail closed
+одинаково в direct view, parent navigation и find; evidence и edges кешируются
+только внутри actor/revision.
 
 Зарегистрированный owner имеет ровно одну profile-derived `Module` branch:
 branch count равен числу уникальных допустимых ролей, а все 25 положительных
@@ -58,10 +61,10 @@ configuration, EPF и ERF через parent navigation и find, включая
 bounded/cancellable aggregate inventory read. Role объединяет allowed/denied по
 canonical `(kind, name)`, размещает уникальные RLS nodes только под Right и
 отклоняет неоднозначный короткий alias с canonical кандидатами. V13 принимает
-в Role только kinds из точного platform registry `METADATA_KIND_TAGS` без `_`,
-поэтому canonical `kind_name`
-инъективен; произвольный type prefix даёт `provider_unavailable`, не duplicate
-`at`.
+в Role kinds из точного platform registry `METADATA_KIND_TAGS` и корневой
+владелец `Configuration` (права конфигурации в целом), все без `_`, поэтому
+canonical `kind_name` инъективен; произвольный type prefix даёт
+`provider_unavailable`, не duplicate `at`.
 Отсутствующий HomePage sidecar допустим, present malformed/wrong-root evidence
 даёт `provider_unavailable`; V12 legacy wrapper сохраняет старую трактовку.
 Общий абсолютный 120-секундный operation budget view/find без replenishment

@@ -314,12 +314,28 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         self.assertEqual(runner["repository"], "https://github.com/IngvarConsulting/v8-runner-rust")
         self.assertEqual(runner["assetRepository"], runner["repository"])
-        self.assertEqual(runner["sourceTag"], "v0.5.2-ic.4")
+        self.assertEqual(runner["sourceTag"], "v0.7.1")
         self.assertEqual(runner["assetTag"], runner["sourceTag"])
         self.assertEqual(
             runner["sourceCommit"],
-            "37b8dee0e057db07dc94722b6aa155bdfcabb51a",
+            "d081dfcdc10a63dcff4cb6a854e19f7ea22243c4",
         )
+
+    def test_infobase_export_decision_names_the_locked_runner_version(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        lock = json.loads(
+            (repo_root / "plugins/unica/third-party/tools.lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        runner = next(
+            tool for tool in lock["tools"] if tool["name"] == "v8-runner"
+        )
+        decision = (
+            repo_root / "arch/decisions/2026-09-03-infobase-export-run-slice.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(f"`v8-runner` версии {runner['version']}", decision)
 
     def test_historical_build_2_release_provenance_is_immutable(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

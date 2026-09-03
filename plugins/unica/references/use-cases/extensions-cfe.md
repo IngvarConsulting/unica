@@ -14,7 +14,7 @@ Use metadata-modeling references and `unica.meta.*` for that.
 Use native CFE tools through MCP `unica`:
 
 - `unica.cfe.init`
-- `unica.cfe.validate`
+- `unica.check` on the extension root (`ext:Configuration`, validator `cfe`)
 - `unica.cfe.diff`
 - `unica.cfe.borrow`
 - `unica.cfe.patch_method`

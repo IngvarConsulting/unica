@@ -1222,21 +1222,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             "cleanup promoted a stale recorded PID into a replacement identity",
         )
 
-    def test_requires_all_logical_source_tools(self) -> None:
-        expected = self.expected_tools()
-
-        self.assertTrue(
-            {
-                "unica.source.resolve",
-                "unica.source.children",
-                "unica.source.resources",
-                "unica.source.read",
-            }.issubset(expected)
-        )
-        # The bounded resource surface is read-only; BSL mutation belongs to
-        # unica.code.patch, so the smoke must not demand a writer.
-        self.assertNotIn("unica.source.apply", expected)
-
     def test_waits_for_short_lived_workspace_service_before_temp_cleanup(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
@@ -1517,19 +1502,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     if process.poll() is None:
                         process.kill()
                     process.wait(timeout=2.0)
-
-    def test_expected_tools_are_the_canonical_review_ledger_exact_set(self) -> None:
-        review = json.loads(
-            (REPO_ROOT / "arch/tool-surface-review.json").read_text(
-                encoding="utf-8"
-            )
-        )
-
-        self.assertEqual(self.expected_tools(), set(review))
-        self.assertEqual(
-            {name for name in self.expected_tools() if name.startswith("unica.xdto.")},
-            {"unica.xdto.info", "unica.xdto.edit"},
-        )
 
     def test_review_ledger_resolution_handles_source_and_packaged_plugin_roots(self) -> None:
         module = load_module()
@@ -1876,31 +1848,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 check=False,
             )
 
-    def test_accepts_initialize_and_required_tool_responses(self) -> None:
-        result = self.run_smoke(self.tool_entries())
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("verified packaged Unica MCP source-resource flow", result.stdout)
-
-    def test_rejects_runtime_missing_a_required_tool(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(self.expected_tools() - {"unica.xdto.edit"})
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("missing", result.stderr)
-        self.assertIn("unica.xdto.edit", result.stderr)
-
-    def test_reports_source_tool_missing_from_ledger_before_projection(self) -> None:
-        module = load_module()
-        expected = self.expected_tools() - {"unica.source.read"}
-
-        with self.assertRaisesRegex(
-            SystemExit,
-            "source tools.*unica.source.read",
-        ):
-            module._stable_tool_contract(self.tool_entries(expected), expected)
-
     def test_accepts_exact_v13_compatibility_surface(self) -> None:
         module = load_module()
         expected = module.V13_COMPATIBILITY_TOOL_NAMES
@@ -1961,43 +1908,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 {".build/other/evidence.txt", "src/Configuration.xml"},
             )
 
-    def test_rejects_runtime_exposing_an_unexpected_tool(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(self.expected_tools() | {"unica.xdto.validate"})
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unexpected", result.stderr)
-        self.assertIn("unica.xdto.validate", result.stderr)
-
-    def test_reports_missing_and_unexpected_tools_together(self) -> None:
-        tools = self.expected_tools() - {"unica.xdto.edit"}
-        tools.add("unica.xdto.validate")
-        result = self.run_smoke(self.tool_entries(tools))
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("missing", result.stderr)
-        self.assertIn("unica.xdto.edit", result.stderr)
-        self.assertIn("unexpected", result.stderr)
-        self.assertIn("unica.xdto.validate", result.stderr)
-
-    def test_decodes_mcp_json_as_utf8_independently_of_windows_locale(self) -> None:
-        # The server name is fixed by INV-MCP-SERVER-NAME, so it cannot carry
-        # the non-ASCII payload this case is about. `instructions` is a
-        # documented initialize field and carries it instead, serialized with
-        # `ensure_ascii=False` and written as raw UTF-8 bytes.
-        result = self.run_smoke(
-            self.tool_entries(),
-            instructions="Уника читает выгрузку конфигуратора",
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_accepts_the_invariant_server_name(self) -> None:
-        result = self.run_smoke(self.tool_entries(), server_name="unica")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
     def test_rejects_a_server_name_other_than_unica(self) -> None:
         # INV-MCP-SERVER-NAME fixes the published identity of the server. A
         # release smoke that accepts any name cannot prove the invariant holds
@@ -2007,49 +1917,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("serverInfo", result.stderr)
         self.assertIn("Уника", result.stderr)
-
-    def test_rejects_incomplete_source_schema(self) -> None:
-        entries = self.tool_entries()
-        source_read = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.source.read"
-        )
-        source_read["inputSchema"]["required"].remove("resourceId")
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("schema", result.stderr)
-
-    def test_rejects_missing_meta_output_schema(self) -> None:
-        entries = self.tool_entries()
-        meta_info = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.meta.info"
-        )
-        meta_info.pop("outputSchema")
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Meta output schema", result.stderr)
-        self.assertIn("unica.meta.info", result.stderr)
-
-    def test_rejects_output_schema_on_non_meta_tool(self) -> None:
-        entries = self.tool_entries()
-        project_status = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.project.status"
-        )
-        project_status["outputSchema"] = load_module().EXPECTED_META_OUTPUT_SCHEMA
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("non-Meta tool", result.stderr)
-        self.assertIn("unica.project.status", result.stderr)
 
     @staticmethod
     def typed_code_search_output_schema() -> dict[str, object]:
@@ -2137,221 +2004,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             },
             "required": ["data"],
         }
-
-    def test_accepts_typed_code_search_output_schema(self) -> None:
-        entries = self.tool_entries()
-        code_search = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
-        )
-        code_search["outputSchema"] = self.typed_code_search_output_schema()
-
-        result = self.run_smoke(entries)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_rejects_code_search_schema_without_terminal_reason(self) -> None:
-        entries = self.tool_entries()
-        code_search = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
-        )
-        schema = self.typed_code_search_output_schema()
-        section = schema["properties"]["data"]["properties"]["sections"]["items"]
-        section["properties"].pop("termination")
-        section["required"].remove("termination")
-        code_search["outputSchema"] = schema
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("provider-neutral role-section fields", result.stderr)
-
-    def test_rejects_code_search_output_schema_that_does_not_require_data(self) -> None:
-        entries = self.tool_entries()
-        code_search = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
-        )
-        schema = self.typed_code_search_output_schema()
-        schema["required"] = []
-        code_search["outputSchema"] = schema
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must require data", result.stderr)
-
-    def test_rejects_xdto_info_schema_missing_required_target(self) -> None:
-        entries = self.tool_entries()
-        xdto_info = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.info"
-        )
-        xdto_info["inputSchema"]["required"].remove("metadataPath")
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("XDTO input schema", result.stderr)
-
-    def test_rejects_xdto_edit_schema_missing_operation_branch_requirement(self) -> None:
-        entries = self.tool_entries()
-        xdto_edit = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.edit"
-        )
-        add_value_type = next(
-            variant
-            for variant in xdto_edit["inputSchema"]["properties"]["operations"][
-                "items"
-            ]["oneOf"]
-            if variant["properties"]["op"]["enum"] == ["addValueType"]
-        )
-        add_value_type["required"].remove("base")
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("XDTO input schema", result.stderr)
-
-    def test_rejects_expected_xdto_tool_without_input_schema(self) -> None:
-        entries = self.tool_entries()
-        xdto_info = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.info"
-        )
-        xdto_info.pop("inputSchema")
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("input schema", result.stderr)
-        self.assertIn("unica.xdto.info", result.stderr)
-
-    def test_rejects_expected_xdto_tool_with_non_object_input_schema(self) -> None:
-        entries = self.tool_entries()
-        xdto_edit = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.edit"
-        )
-        xdto_edit["inputSchema"] = []
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("input schema", result.stderr)
-        self.assertIn("unica.xdto.edit", result.stderr)
-
-    def test_rejects_expected_xdto_schema_not_declaring_an_object(self) -> None:
-        entries = self.tool_entries()
-        xdto_edit = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.edit"
-        )
-        xdto_edit["inputSchema"] = {
-            "type": "array",
-            "properties": {},
-            "required": [],
-            "additionalProperties": False,
-        }
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("type object", result.stderr)
-        self.assertIn("unica.xdto.edit", result.stderr)
-
-    def test_rejects_duplicate_expected_tool_name(self) -> None:
-        entries = self.tool_entries()
-        duplicate = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.info"
-        )
-        entries.append(json.loads(json.dumps(duplicate)))
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("duplicate", result.stderr)
-        self.assertIn("unica.xdto.info", result.stderr)
-
-    def test_rejects_malformed_non_object_tool_entry(self) -> None:
-        entries = self.tool_entries()
-        entries.append("not-a-tool")
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("malformed entries", result.stderr)
-
-    def test_rejects_empty_tool_name_as_malformed(self) -> None:
-        entries = self.tool_entries()
-        entries.append(
-            {
-                "name": "",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                    "additionalProperties": False,
-                },
-            }
-        )
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("malformed entries", result.stderr)
-
-    def test_rejects_stable_source_result_drift(self) -> None:
-        result = self.run_smoke(self.tool_entries(), result_drift=True)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("stable", result.stderr)
-
-    def test_rejects_provider_revision_leakage(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(),
-            provider_revision=True,
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("providerRevision", result.stderr)
-
-    def test_rejects_a_read_that_writes(self) -> None:
-        """The whole source surface is read-only, so any byte it changes fails."""
-        result = self.run_smoke(self.tool_entries(), read_writes=True)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("read-only", result.stderr)
-
-    def test_rejects_failed_bsl_analyzer_section_in_packaged_search(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(),
-            code_search_status="failed",
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("bsl-analyzer", result.stderr)
-
-    def test_rejects_failed_code_search_even_when_bsl_section_has_a_hit(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(),
-            code_search_ok=False,
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("inconsistent success state", result.stderr)
 
     def test_unavailable_bsl_analyzer_is_terminal_even_with_building_prose(self) -> None:
         """`unavailable` is permanent; prose in the diagnostics cannot soften it.
@@ -2481,55 +2133,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertEqual(next_id, 19)
         self.assertEqual(session.request_ids, [17, 18])
         self.assertEqual(sleeps, [0.5])
-
-    def test_rejects_upstream_root_identity_leaking_from_packaged_search(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(),
-            code_search_root_field="rootId",
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("rootId", result.stderr)
-
-
-for _retired_test in {
-    "test_accepts_initialize_and_required_tool_responses",
-    "test_accepts_the_invariant_server_name",
-    "test_accepts_typed_code_search_output_schema",
-    "test_decodes_mcp_json_as_utf8_independently_of_windows_locale",
-    "test_expected_tools_are_the_canonical_review_ledger_exact_set",
-    "test_rejects_a_read_that_writes",
-    "test_rejects_code_search_output_schema_that_does_not_require_data",
-    "test_rejects_code_search_schema_without_terminal_reason",
-    "test_rejects_duplicate_expected_tool_name",
-    "test_rejects_empty_tool_name_as_malformed",
-    "test_rejects_expected_xdto_schema_not_declaring_an_object",
-    "test_rejects_expected_xdto_tool_with_non_object_input_schema",
-    "test_rejects_expected_xdto_tool_without_input_schema",
-    "test_rejects_failed_bsl_analyzer_section_in_packaged_search",
-    "test_rejects_failed_code_search_even_when_bsl_section_has_a_hit",
-    "test_rejects_incomplete_source_schema",
-    "test_rejects_malformed_non_object_tool_entry",
-    "test_rejects_missing_meta_output_schema",
-    "test_rejects_output_schema_on_non_meta_tool",
-    "test_rejects_provider_revision_leakage",
-    "test_rejects_runtime_exposing_an_unexpected_tool",
-    "test_rejects_runtime_missing_a_required_tool",
-    "test_rejects_stable_source_result_drift",
-    "test_rejects_upstream_root_identity_leaking_from_packaged_search",
-    "test_rejects_xdto_edit_schema_missing_operation_branch_requirement",
-    "test_rejects_xdto_info_schema_missing_required_target",
-    "test_reports_missing_and_unexpected_tools_together",
-    "test_reports_source_tool_missing_from_ledger_before_projection",
-    "test_requires_all_logical_source_tools",
-}:
-    setattr(
-        SmokeUnicaMcpTests,
-        _retired_test,
-        unittest.skip("retired v0.12 package smoke; canonical v0.13 has its own exact matrix")(
-            getattr(SmokeUnicaMcpTests, _retired_test)
-        ),
-    )
 
 
 if __name__ == "__main__":

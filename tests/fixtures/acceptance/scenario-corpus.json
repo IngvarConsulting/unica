@@ -615,6 +615,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     }
    ],
@@ -2824,6 +2828,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     }
    ],
@@ -4784,22 +4792,20 @@
   },
   {
    "area": "Роли и права",
-   "task": "Проверить роль профилем валидации role",
+   "task": "Проверить роль",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Role.SalesReader",
-      "filter": {
-       "validation": {
-        "profile": "role"
-       }
-      }
+      "at": "main:Role.SalesReader"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "role"
+     ]
     }
    ],
    "id": "S175"
@@ -4891,6 +4897,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "role"
      ]
     }
    ],
@@ -5281,22 +5291,20 @@
   },
   {
    "area": "СКД",
-   "task": "Проверить схему компоновки профилем валидации dcs",
+   "task": "Проверить схему компоновки данных",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
-      "filter": {
-       "validation": {
-        "profile": "dcs"
-       }
-      }
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "dcs"
+     ]
     }
    ],
    "id": "S194"
@@ -5468,22 +5476,20 @@
   },
   {
    "area": "Макеты",
-   "task": "Проверить табличный макет профилем валидации mxl",
+   "task": "Проверить табличный макет",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.МакетОтчета",
-      "filter": {
-       "validation": {
-        "profile": "mxl"
-       }
-      }
+      "at": "main:Report.АнализВерсийОбъектов.Template.МакетОтчета"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "mxl"
+     ]
     }
    ],
    "id": "S201"
@@ -5708,22 +5714,20 @@
   },
   {
    "area": "Подсистемы и интерфейс",
-   "task": "Проверить подсистему профилем валидации subsystem",
+   "task": "Проверить подсистему",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Subsystem.Администрирование",
-      "filter": {
-       "validation": {
-        "profile": "subsystem"
-       }
-      }
+      "at": "main:Subsystem.Администрирование"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "subsystem"
+     ]
     }
    ],
    "id": "S210"
@@ -5760,6 +5764,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "subsystem"
      ]
     }
    ],
@@ -5982,6 +5990,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     },
     {
@@ -5991,6 +6003,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     },
     {
@@ -6000,6 +6016,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     }
    ],
@@ -6007,66 +6027,60 @@
   },
   {
    "area": "Проверки качества",
-   "task": "Прогнать проверку описания объекта профилем meta",
+   "task": "Прогнать проверку описания объекта",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "filter": {
-       "validation": {
-        "profile": "meta"
-       }
-      }
+      "at": "main:Catalog.Валюты"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "meta"
+     ]
     }
    ],
    "id": "S223"
   },
   {
    "area": "Проверки качества",
-   "task": "Прогнать проверку корня конфигурации профилем cf",
+   "task": "Прогнать проверку корня конфигурации",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Configuration",
-      "filter": {
-       "validation": {
-        "profile": "cf"
-       }
-      }
+      "at": "main:Configuration"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "cf"
+     ]
     }
    ],
    "id": "S224"
   },
   {
    "area": "Проверки качества",
-   "task": "Проверить форму списка профилем валидации form",
+   "task": "Проверить форму списка",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаСписка",
-      "filter": {
-       "validation": {
-        "profile": "form"
-       }
-      }
+      "at": "main:Catalog.Валюты.Form.ФормаСписка"
      },
      "expect": [
       "ok"
      ],
-     "status": "passed"
+     "status": "passed",
+     "validators": [
+      "form"
+     ]
     }
    ],
    "id": "S225"
@@ -6155,6 +6169,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     }
    ],
@@ -6179,7 +6197,7 @@
   },
   {
    "area": "Проверки качества",
-   "task": "Проверка неизвестным профилем — закрытый список профилей",
+   "task": "Передать check фильтр — аргумента нет, валидаторы выбирает Unica по виду узла",
    "wire": [
     {
      "tool": "unica.check",
@@ -6187,13 +6205,14 @@
       "at": "main:Catalog.Валюты",
       "filter": {
        "validation": {
-        "profile": "security"
+        "profile": "meta"
        }
       }
      },
      "expect": [
-      "unsupported"
-     ]
+      "refused"
+     ],
+     "refusal": "bad_value: canonical invocation has unknown argument `filter`"
     }
    ],
    "id": "S230"
@@ -6209,7 +6228,9 @@
      },
      "expect": [
       "ok"
-     ]
+     ],
+     "status": "readable",
+     "validators": []
     }
    ],
    "id": "S231"
@@ -6885,6 +6906,10 @@
      },
      "expect": [
       "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
      ]
     }
    ],
@@ -6910,22 +6935,754 @@
   {
    "id": "S266",
    "area": "Проверки качества",
-   "task": "Профиль form указан для справочника — поверхность отказывает по несовпадению вида узла",
+   "task": "Проверить командный интерфейс подсистемы — валидатор interface выбран по узлу Interface",
    "wire": [
     {
      "tool": "unica.check",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "filter": {
-       "validation": {
-        "profile": "form"
-       }
-      }
+      "at": "main:Subsystem.Администрирование.Interface"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "interface"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S267",
+   "area": "Проверки качества",
+   "task": "Проверить корень конфигурации в выгрузке формата 2.21 — проверка проходит и предупреждает о формате новее профиля",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "newer:Configuration"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "platformVersionUnsupported",
+     "validators": [
+      "cf"
+     ]
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S268",
+   "area": "Проверки качества",
+   "task": "Проверить форму списка в выгрузке 2.21 — предупреждение о формате рядом с вердиктом",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "newer:Catalog.Валюты.Form.ФормаСписка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "platformVersionUnsupported",
+     "validators": [
+      "form"
+     ]
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S269",
+   "area": "Проверки качества",
+   "task": "Проверить роль в выгрузке 2.21 — предупреждение о формате рядом с вердиктом",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "newer:Role.SalesReader"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "platformVersionUnsupported",
+     "validators": [
+      "role"
+     ]
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S270",
+   "area": "Проверки качества",
+   "task": "Проверить подсистему в выгрузке 2.21 с командным интерфейсом 2.21 — предупреждение о формате",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "newer:Subsystem.Администрирование"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "platformVersionUnsupported",
+     "validators": [
+      "subsystem"
+     ]
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S271",
+   "area": "Проверки качества",
+   "task": "Проверить корень конфигурации без атрибута версии — формат считается 1.0 и проверка предупреждает о миграции",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "unversioned:Configuration"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "formatMigrationAvailable",
+     "validators": [
+      "cf"
+     ]
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S272",
+   "area": "Проверки качества",
+   "task": "Проверить отсутствующую подсистему — типизированный отказ, а не транспортная ошибка",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Subsystem.Отсутствует"
      },
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: validation profile `form` does not validate Catalog nodes; pick the profile of `main:Catalog.Валюты` or omit the filter"
+     "refusal": "not_found: metadata owner `Subsystem.Отсутствует` is not registered"
+    }
+   ]
+  },
+  {
+   "id": "S273",
+   "area": "Формы",
+   "task": "Добавить форму справочнику в выгрузке 2.21 — запись вне записываемого профиля отказывает до первого байта",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаНовая",
+           "type": "ListForm"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S274",
+   "area": "Поддержка поставщика",
+   "task": "Разрешить редактирование объекта поставщика в выгрузке 2.21 — отказ по формату до чтения ParentConfigurations.bin",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "editable"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S275",
+   "area": "Свойства объектов",
+   "task": "Изменить комментарий справочника в выгрузке 2.21 — отказ по формату новее профиля",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Ведём по классификатору"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S276",
+   "area": "Свойства объектов",
+   "task": "Изменить комментарий справочника в выгрузке без версии корня — формат 1.0 старше профиля, отказ до записи",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "unversioned:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Ведём по классификатору"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 1.0 is older than the writable profile 2.20 for 1C 8.3.27; re-export the sources with the platform before editing them"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S277",
+   "area": "Макеты",
+   "task": "Добавить макет справочнику в выгрузке 2.21 — отказ по формату",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "template.add",
+        "args": {
+         "items": [
+          {
+           "name": "Проба",
+           "templateType": "SpreadsheetDocument"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S278",
+   "area": "Код BSL",
+   "task": "Вставить код в общий модуль выгрузки 2.21 — отказ по формату владельца",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "// проба\n"
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S279",
+   "area": "Роли и права",
+   "task": "Выдать право в роли выгрузки 2.21 — отказ по формату до правки Rights.xml",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "newer:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "object": "Catalog.Валюты",
+          "right": "Read",
+          "value": true
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S280",
+   "area": "Поддержка поставщика",
+   "task": "Включить возможность изменения в конфигурации, которая не на поддержке — типизированный отказ вместо тихого no-op",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "nosupport:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "supportCapability.set",
+        "args": {
+         "values": {
+          "enabled": true
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: the configuration is not on vendor support (no Ext/ParentConfigurations.bin); there is no support state to switch"
+    }
+   ],
+   "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S281",
+   "area": "Поддержка поставщика",
+   "task": "Изменить свойство объекта поставщика на замке — отказ стража поддержки до первого байта",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Правка объекта поставщика"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S282",
+   "area": "Поддержка поставщика",
+   "task": "Добавить значение перечислению поставщика на замке — отказ стража поддержки",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "enumValue.add",
+        "args": {
+         "items": [
+          {
+           "name": "НовоеЗначение"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S283",
+   "area": "Поддержка поставщика",
+   "task": "Добавить форму объекту поставщика на замке — отказ стража поддержки",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаСписка",
+           "type": "ListForm"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S284",
+   "area": "Поддержка поставщика",
+   "task": "Добавить макет объекту поставщика на замке — отказ стража поддержки",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "template.add",
+        "args": {
+         "items": [
+          {
+           "name": "Макет",
+           "templateType": "SpreadsheetDocument"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S285",
+   "area": "Поддержка поставщика",
+   "task": "Удалить объект поставщика на замке — отказ стража поддержки",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "object.remove",
+        "args": {}
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S286",
+   "area": "Поддержка поставщика",
+   "task": "Разрешить редактирование объекта на замке — операция поддержки проходит сквозь страж",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "editable"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S287",
+   "area": "Поддержка поставщика",
+   "task": "Снять замок с объекта поставщика и после этого изменить его свойство",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "editable"
+         }
+        }
+       }
+      ],
+      "dryRun": false
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Правка после снятия замка"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S288",
+   "area": "Поддержка поставщика",
+   "task": "Запретить изменения конфигурации на поддержке и попытаться изменить редактируемый объект — отказ по общему флагу",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "supportCapability.set",
+        "args": {
+         "values": {
+          "enabled": false
+         }
+        }
+       }
+      ],
+      "dryRun": false
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Правка при запрете изменений"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S289",
+   "area": "Расширения конфигурации",
+   "task": "Открыть корень набора-расширения — проекция корня как у конфигурации",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:Configuration"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S290",
+   "area": "Расширения конфигурации",
+   "task": "Проверить корень набора-расширения — валидатор cfe выбран по виду набора",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Configuration"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "cfe"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S291",
+   "area": "Расширения конфигурации",
+   "task": "Проверить роль расширения — валидатор role работает и в наборе-расширении",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Role.ПР_ОсновнаяРоль"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "role"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S292",
+   "area": "Расширения конфигурации",
+   "task": "Проверить язык расширения — у узла нет валидаторов, ответ о читаемости",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Language.Русский"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "readable",
+     "validators": []
+    }
+   ]
+  },
+  {
+   "id": "S293",
+   "area": "Объекты метаданных",
+   "task": "Удалить объект, на который ещё ссылаются права роли, с force — план исполним и несёт предупреждение о сохранённых ссылках",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "object.remove",
+        "args": {
+         "force": true
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
     }
    ]
   }

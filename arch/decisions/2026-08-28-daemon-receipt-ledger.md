@@ -1,8 +1,8 @@
 ---
 id: DEC.2026-08-28.DAEMON-RECEIPT-LEDGER
-status: planned
+status: active
 governs: product
-realized: null
+realized: crates/unica-coder/tests/daemon_receipt_ledger.rs::every_cross_store_crash_point_reconciles_without_split_brain
 supersedes: []
 superseded-by: null
 establishes: []

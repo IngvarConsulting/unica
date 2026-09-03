@@ -182,15 +182,16 @@ allowed-tools:
 
 ## Верификация
 
+Проверка командного интерфейса — `unica.check` на узле `Interface` подсистемы; валидатор `interface` выбирается по узлу, вердикт в `data.status`.
+
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.interface.validate",
+    "name": "unica.check",
     "arguments": {
-      "cwd": "<workspace>",
-      "CIPath": "<CIPath>"
+      "at": "main:Subsystem.<SubsystemName>.Interface"
     }
   }
 }
