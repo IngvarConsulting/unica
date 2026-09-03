@@ -5446,7 +5446,7 @@ struct ActorLogicalReadLease {"#,
         assert!(published.ok);
         assert!(
             published.rev.is_none(),
-            "a find directory is not a revision snapshot: {published:?}"
+            "a find directory is not a revision snapshot and must publish no rev"
         );
         find_actor
             .begin_publication(

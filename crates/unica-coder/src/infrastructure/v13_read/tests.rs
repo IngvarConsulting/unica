@@ -2273,11 +2273,18 @@ pub(crate) fn typed_readers_never_publish_their_export_path_in_view_props() {
         "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы",
     ] {
         let result = service.view(ViewRequest::new(at).unwrap());
-        assert!(result.ok, "{at}: {:?}", result.diagnostics);
+        // Assertion messages name the address and the diagnostic code only:
+        // a projected payload can carry descriptor identity.
+        let codes = result
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic["code"].as_str())
+            .collect::<Vec<_>>();
+        assert!(result.ok, "{at}: {codes:?}");
         let props = result.data.as_ref().unwrap()["props"].to_string();
         assert!(
             !props.contains(".xml") && !props.contains(".bsl") && !props.contains('/'),
-            "{at} published a physical path in view props: {props}"
+            "{at} published a physical path in view props"
         );
     }
 }
