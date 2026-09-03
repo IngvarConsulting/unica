@@ -43,6 +43,119 @@ fn refuse_targets_outside_writable_profile(
     Ok(())
 }
 
+/// Operations that change the vendor-support state itself: they are the way
+/// to unlock an object, so the lock they edit never refuses them.
+const SUPPORT_STATE_OPERATIONS: &[&str] = &["supportCapability.set", "supportRule.set"];
+
+/// Vendor-support gate of the canonical mutation path. When the actor's
+/// support policy is `deny`, a request whose owner is a vendor object with
+/// the rule `locked`, or whose configuration is on support with changes
+/// disabled, refuses `invalid_state` before any family stages a byte. The
+/// owner is the top-level metadata object of the addressed node, or the
+/// configuration root for root-level targets; nested forms, templates and
+/// attributes inherit the rule of their owner, as they do in the platform.
+fn refuse_targets_on_locked_vendor_objects(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    admission: &ApplyAdmission,
+    staged: &mut ApplyStagedState,
+) -> Result<(), ApplyPlanError> {
+    use crate::infrastructure::native_operations::common::{
+        parse_support_state_compat_bytes, support_root_uuid_from_bytes,
+    };
+    use crate::infrastructure::support_policy_evidence::SupportPolicyMode;
+
+    if admission.support_policy_mode() != SupportPolicyMode::Deny {
+        return Ok(());
+    }
+    if request
+        .ops()
+        .iter()
+        .all(|operation| SUPPORT_STATE_OPERATIONS.contains(&operation.name()))
+    {
+        return Ok(());
+    }
+    let at = request.at().to_string();
+    let marker_path = std::path::Path::new("Ext/ParentConfigurations.bin");
+    // A source without `Ext/` is not on support; reading the marker below a
+    // missing parent would retain that chain as a postimage to own.
+    if !staged
+        .parent_exists(marker_path)
+        .map_err(|error| ApplyPlanError::staging(error, at.clone()))?
+    {
+        return Ok(());
+    }
+    let marker = staged
+        .read(marker_path)
+        .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
+    let Some(state) = parse_support_state_compat_bytes(marker.as_deref()) else {
+        return Ok(());
+    };
+    if state.removed() {
+        return Ok(());
+    }
+    if !state.global_editing_enabled() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first",
+        )
+        .at_path(at));
+    }
+    let Some((owner, owner_relative)) = support_owner_relative(request, binding.source_kind())
+    else {
+        return Ok(());
+    };
+    let Some(bytes) = staged
+        .read(&owner_relative)
+        .map_err(|error| ApplyPlanError::staging(error, at.clone()))?
+    else {
+        return Ok(());
+    };
+    let locked =
+        support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid)) == Some(0);
+    if locked {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            format!(
+                "`{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+            ),
+        )
+        .at_path(at));
+    }
+    Ok(())
+}
+
+/// The descriptor that carries the support rule of the addressed node: the
+/// top-level metadata object, or the configuration root for root targets.
+fn support_owner_relative(
+    request: &ApplyRequest,
+    source_kind: SourceSetKind,
+) -> Option<(String, std::path::PathBuf)> {
+    use crate::domain::address::NodeKind;
+    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
+
+    let segments = request.at().segments();
+    let owner = segments.first()?;
+    let root_owned = matches!(
+        source_kind,
+        SourceSetKind::Configuration | SourceSetKind::Extension
+    );
+    if owner.kind() == NodeKind::Configuration || !owner.kind().is_metadata_kind() {
+        return root_owned.then(|| {
+            (
+                "Configuration".to_string(),
+                std::path::PathBuf::from("Configuration.xml"),
+            )
+        });
+    }
+    let owner_path = format!("{}.{}", owner.kind().as_str(), owner.name()?);
+    let owner_address =
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner_path).ok()?;
+    let relative = metadata_descriptor_relative(&owner_address, source_kind).ok()?;
+    Some((owner_path, relative))
+}
+
 /// The platform XML documents whose root version decides whether the
 /// addressed node may be written: the source-set root descriptor, the owner
 /// descriptor of every metadata segment, the wrapper of a nested form,
@@ -407,6 +520,7 @@ pub(crate) fn plan_hidden_v13_apply(
         .staged_state()
         .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
+    refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
     let mut provisional = Vec::new();
     let mut cursor = 0;
     while cursor < parsed.len() {
@@ -546,11 +660,14 @@ pub(crate) fn plan_hidden_v13_apply(
 
 #[cfg(test)]
 mod tests {
+    use super::plan_hidden_v13_apply;
     use super::request::{reconcile_effects, ProvisionalApplyEffect};
+    use crate::domain::apply::ApplyRequest;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
     use crate::infrastructure::workspace_actor::{
         ApplyAdmission, ProviderRootBinding, WorkspaceActor, WorkspaceIdentity,
         WorkspaceSourceSetInput,
@@ -633,6 +750,93 @@ mod tests {
                 )
                 .unwrap()
         }
+    }
+
+    fn seam_request(at: &str, op: &str, args: serde_json::Value) -> ApplyRequest {
+        let input = serde_json::json!({
+            "at": at,
+            "ops": [{"op": op, "args": args}],
+            "dryRun": true,
+        });
+        ApplyRequest::parse(input.as_object().unwrap(), &["main"]).unwrap()
+    }
+
+    /// The vendor-support gate of the canonical path: a locked vendor object
+    /// refuses every family before a byte is staged, the support operations
+    /// stay the way out of the lock, and a source without the marker is not
+    /// on support at all.
+    #[test]
+    fn locked_vendor_objects_refuse_every_family_before_staging() {
+        let fixture = ApplySeamFixture::new();
+        let ext = fixture.source_dir().join("Ext");
+        std::fs::create_dir_all(&ext).unwrap();
+        // Both fixture documents carry uuid 1111…; the marker locks it.
+        std::fs::write(
+            ext.join("ParentConfigurations.bin"),
+            "\u{feff}{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,11111111-1111-4111-8111-111111111111,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,44444444-4444-4444-8444-444444444444,44444444-4444-4444-8444-444444444444,0,0,11111111-1111-4111-8111-111111111111,11111111-1111-4111-8111-111111111111}",
+        )
+        .unwrap();
+        let admission = fixture.admission();
+        for (op, args) in [
+            (
+                "props.set",
+                serde_json::json!({"values": {"Comment": "edited"}}),
+            ),
+            (
+                "attribute.add",
+                serde_json::json!({"items": [{"name": "Extra", "type": {"variants": [{"kind": "string", "length": 10, "allowedLength": "variable"}]}}]}),
+            ),
+            (
+                "form.add",
+                serde_json::json!({"items": [{"name": "Card", "type": "ObjectForm"}]}),
+            ),
+            (
+                "template.add",
+                serde_json::json!({"items": [{"name": "Print", "templateType": "SpreadsheetDocument"}]}),
+            ),
+            ("object.remove", serde_json::json!({})),
+        ] {
+            let request = seam_request("main:Document.First", op, args);
+            let error = plan_hidden_v13_apply(&request, &fixture.binding, &admission)
+                .err()
+                .unwrap_or_else(|| panic!("{op} on a locked vendor object must refuse"));
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{op}");
+            assert!(
+                error.to_string().contains("support rule `locked`"),
+                "{op}: {error}"
+            );
+        }
+        // The support operations are the way out of the lock.
+        let unlock = seam_request(
+            "main:Document.First",
+            "supportRule.set",
+            serde_json::json!({"values": {"rule": "editable"}}),
+        );
+        plan_hidden_v13_apply(&unlock, &fixture.binding, &admission)
+            .expect("supportRule.set plans on a locked vendor object");
+
+        // A configuration on support with changes disabled refuses even an
+        // unlisted object.
+        std::fs::write(
+            ext.join("ParentConfigurations.bin"),
+            "\u{feff}{6,1,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,11111111-1111-4111-8111-111111111111,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,44444444-4444-4444-8444-444444444444,44444444-4444-4444-8444-444444444444}",
+        )
+        .unwrap();
+        let admission = fixture.admission();
+        let request = seam_request(
+            "main:Document.Second",
+            "props.set",
+            serde_json::json!({"values": {"Comment": "edited"}}),
+        );
+        let error = plan_hidden_v13_apply(&request, &fixture.binding, &admission).unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+        assert!(error.to_string().contains("changes disabled"), "{error}");
+
+        // Without the marker the source is not on support and edits plan.
+        std::fs::remove_file(ext.join("ParentConfigurations.bin")).unwrap();
+        let admission = fixture.admission();
+        plan_hidden_v13_apply(&request, &fixture.binding, &admission)
+            .expect("a source without the support marker is editable");
     }
 
     #[test]
