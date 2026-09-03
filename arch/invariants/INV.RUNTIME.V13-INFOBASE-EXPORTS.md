@@ -3,7 +3,7 @@ id: INV.RUNTIME.V13-INFOBASE-EXPORTS
 status: active
 governs: product
 decision: DEC.2026-09-03.INFOBASE-EXPORT-RUN-SLICE
-check: crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::apply_repeats_preflight_and_returns_an_independent_file_receipt
+check: crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate
 scope: [app, product, wire]
 ---
 
@@ -15,3 +15,6 @@ provider, конфиги и состояние назначения с revision 
 повторяет такой preview, принимает только совпавший `ifRev`, затем запускает
 provider и независимо подтверждает непустой regular CF/CFE/DT внутри workspace.
 Публичный ответ не раскрывает командную строку, stdout, stderr или credentials.
+V3 и V5 обязаны подготовить эту операцию до admission PlatformXml source set и
+исполнять один и тот же `PreparedInfobaseExport`; транспорт не создаёт второй
+контракт preview/apply.

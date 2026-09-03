@@ -2,7 +2,7 @@
 id: DEC.2026-09-03.INFOBASE-EXPORT-RUN-SLICE
 status: active
 governs: product
-realized: crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::apply_repeats_preflight_and_returns_an_independent_file_receipt
+realized: crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate
 supersedes: [DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS]
 superseded-by: null
 establishes: [CTR.WIRE.TOOL-SURFACE, INV.APP.V13-IMPLEMENTATION-COVERAGE, INV.APP.V13-RUN-DICTIONARY, INV.RUNTIME.V13-INFOBASE-EXPORTS, INV.SURFACE.ARGUMENTS-DESCRIBED, INV.SURFACE.PROJECT-READINESS, INV.SURFACE.RUN-INTENTS-DIRECTIONAL, INV.SURFACE.WORKSPACE-BOOTSTRAP, INV.SURFACE.WORKSPACE-INITIALIZE]
@@ -28,3 +28,8 @@ Workspace с `infobase.connection` и без source set больше не счи
 неинициализированным: `unica.view {}` показывает это состояние без ложной
 диагностики и предлагает только preview CF и DT. Загрузка в ИБ, создание ИБ и
 выгрузка исходников остаются `unsupported` до отдельных вертикалей.
+
+Обе внутренние runtime-версии маршрутизируют эти две операции в общий
+`PreparedInfobaseExport` до admission PlatformXml workspace actor. Поэтому
+выбор V3 или V5 transport не меняет доступность выгрузок для infobase-only
+workspace и не ослабляет revision gate.

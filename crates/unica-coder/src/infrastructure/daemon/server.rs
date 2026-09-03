@@ -500,15 +500,26 @@ pub(super) enum V5CanonicalPrepareError {
     WorkspaceRegistryFailed,
 }
 
-pub(super) struct V5ActorBoundCanonicalInvocation {
-    invocation: ActorBoundInvocation,
-    service: Arc<dyn CanonicalInvocationService>,
+pub(super) enum V5ActorBoundCanonicalInvocation {
+    Workspace {
+        invocation: Box<ActorBoundInvocation>,
+        service: Arc<dyn CanonicalInvocationService>,
+    },
+    InfobaseExport {
+        export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+    },
 }
 
-pub(super) struct V5PreparedCanonicalInvocation {
-    invocation: ActorBoundInvocation,
-    class: ExecutionClass,
-    service: Arc<dyn CanonicalInvocationService>,
+pub(super) enum V5PreparedCanonicalInvocation {
+    Workspace {
+        invocation: Box<ActorBoundInvocation>,
+        class: ExecutionClass,
+        service: Arc<dyn CanonicalInvocationService>,
+    },
+    InfobaseExport {
+        export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
+    },
 }
 
 impl V5CanonicalInvocationRuntime {
@@ -545,6 +556,19 @@ impl V5CanonicalInvocationRuntime {
         ) {
             return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
         }
+        match super::v13_infobase_exports::prepare(&request) {
+            super::v13_infobase_exports::Preparation::NotApplicable => {}
+            super::v13_infobase_exports::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_infobase_exports::Preparation::Ready(export) => {
+                let workspace_identity_hash = export.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::InfobaseExport {
+                    export,
+                    workspace_identity_hash,
+                });
+            }
+        }
         let invocation = bind_workspace_invocation(
             &request,
             &self.workspace_actors,
@@ -573,8 +597,8 @@ impl V5CanonicalInvocationRuntime {
                 }
             }
         })?;
-        Ok(V5ActorBoundCanonicalInvocation {
-            invocation,
+        Ok(V5ActorBoundCanonicalInvocation::Workspace {
+            invocation: Box::new(invocation),
             service: Arc::clone(&self.service),
         })
     }
@@ -582,44 +606,71 @@ impl V5CanonicalInvocationRuntime {
 
 impl V5ActorBoundCanonicalInvocation {
     pub(super) fn workspace_identity_hash(&self) -> &crate::domain::invocation::SafeIdentityHash {
-        self.invocation.workspace_identity_hash()
+        match self {
+            Self::Workspace { invocation, .. } => invocation.workspace_identity_hash(),
+            Self::InfobaseExport {
+                workspace_identity_hash,
+                ..
+            } => workspace_identity_hash,
+        }
     }
 
     pub(super) fn prepare(self) -> Result<V5PreparedCanonicalInvocation, Box<DomainResult>> {
-        let class = self.service.prepare(&self.invocation)?;
-        Ok(V5PreparedCanonicalInvocation {
-            invocation: self.invocation,
-            class,
-            service: self.service,
-        })
+        match self {
+            Self::Workspace {
+                invocation,
+                service,
+            } => {
+                let class = service.prepare(&invocation)?;
+                Ok(V5PreparedCanonicalInvocation::Workspace {
+                    invocation,
+                    class,
+                    service,
+                })
+            }
+            Self::InfobaseExport { export, .. } => {
+                Ok(V5PreparedCanonicalInvocation::InfobaseExport { export })
+            }
+        }
     }
 }
 
 impl V5PreparedCanonicalInvocation {
     pub(super) const fn execution_class(&self) -> &ExecutionClass {
-        &self.class
+        const INFOBASE_EXPORT_CLASS: ExecutionClass =
+            ExecutionClass::KnownLong(KnownLongReason::ExternalProcess);
+        match self {
+            Self::Workspace { class, .. } => class,
+            Self::InfobaseExport { .. } => &INFOBASE_EXPORT_CLASS,
+        }
     }
 
     pub(super) fn execute(
         self,
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure> {
-        let execution = self
-            .invocation
-            .begin_execution(&cancellation)
-            .map_err(|_| {
-                InvocationFailure::new(
-                    "workspace_changed",
-                    "workspace actor capability changed before execution",
-                )
-            })?;
-        let outcome = self.service.execute(&execution, cancellation.clone());
-        execution.publish(outcome, &cancellation).map_err(|_| {
-            InvocationFailure::new(
-                "workspace_changed",
-                "workspace actor capability changed before publication",
-            )
-        })?
+        match self {
+            Self::Workspace {
+                invocation,
+                service,
+                ..
+            } => {
+                let execution = invocation.begin_execution(&cancellation).map_err(|_| {
+                    InvocationFailure::new(
+                        "workspace_changed",
+                        "workspace actor capability changed before execution",
+                    )
+                })?;
+                let outcome = service.execute(&execution, cancellation.clone());
+                execution.publish(outcome, &cancellation).map_err(|_| {
+                    InvocationFailure::new(
+                        "workspace_changed",
+                        "workspace actor capability changed before publication",
+                    )
+                })?
+            }
+            Self::InfobaseExport { export } => Ok(export.execute(cancellation)),
+        }
     }
 }
 
@@ -6339,6 +6390,105 @@ struct ActorLogicalReadLease {"#,
             .unwrap()
             .is_empty());
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate() {
+        let workspace = tempfile::tempdir().expect("temporary infobase workspace");
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "infobase:\n",
+                "  connection:\n",
+                "    type: file\n",
+                "    path: .build/infobase\n",
+            ),
+        )
+        .expect("write infobase-only workspace descriptor");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = |op: &str, args: serde_json::Value, dry_run: bool, if_rev: Option<&str>| {
+            let mut arguments = serde_json::json!({
+                "op": op,
+                "args": args,
+                "dryRun": dry_run,
+            });
+            if let Some(if_rev) = if_rev {
+                arguments["ifRev"] = serde_json::json!(if_rev);
+            }
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .expect("canonical workspace")
+                    .to_string_lossy(),
+                7_000,
+            )
+            .expect("valid infobase export request")
+        };
+
+        for (op, args) in [
+            (
+                "infobase.configuration.export",
+                serde_json::json!({"state": "working", "output": "dist/main.cf"}),
+            ),
+            (
+                "infobase.dump",
+                serde_json::json!({"output": "dist/main.dt"}),
+            ),
+        ] {
+            let preview = runtime
+                .bind(request(op, args.clone(), true, None))
+                .expect("preview binds without a PlatformXml source set")
+                .prepare()
+                .expect("preview preparation");
+            assert_eq!(
+                preview.execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+
+            let apply = runtime
+                .bind(request(
+                    op,
+                    args,
+                    false,
+                    Some("unica-infobase-export-sha256-v1:test"),
+                ))
+                .expect("revision-bound apply binds without a PlatformXml source set")
+                .prepare()
+                .expect("apply preparation");
+            assert_eq!(
+                apply.execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+        }
+
+        let missing_revision = match runtime.bind(request(
+            "infobase.configuration.export",
+            serde_json::json!({"state": "working", "output": "dist/main.cf"}),
+            false,
+            None,
+        )) {
+            Err(V5CanonicalPrepareError::Rejected(result)) => result,
+            Ok(_) => panic!("apply without ifRev passed the revision gate"),
+            Err(other) => panic!("apply revision gate returned infrastructure failure: {other:?}"),
+        };
+        assert_eq!(missing_revision.diagnostics[0]["code"], "bad_value");
+        assert!(missing_revision.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires ifRev"));
+        assert_eq!(
+            preparations.load(Ordering::SeqCst),
+            0,
+            "infobase exports must not enter the PlatformXml service"
+        );
     }
 
     impl CanonicalInvocationService for SharedDeliveryService {
