@@ -10021,6 +10021,10 @@ mod tests {
         Instant::now() + Duration::from_secs(2)
     }
 
+    fn near_limit_payload_deadline() -> Instant {
+        Instant::now() + Duration::from_secs(15)
+    }
+
     fn confirmed_task_bound(handoff: &TaskHandoffActorBoundReceipt) -> TaskBoundReceipt {
         let header = LifecycleLinkRecordHeader::new(
             handoff.key().clone(),
@@ -14139,7 +14143,7 @@ mod tests {
         let mut reopened = ReceiptLedgerStore::open(&receipts)
             .expect("reopen must read the full direct-terminal bound");
         assert_eq!(
-            ReceiptLedgerPort::recover(&mut reopened, &key, reserve_deadline())
+            ReceiptLedgerPort::recover(&mut reopened, &key, near_limit_payload_deadline())
                 .expect("recover near-limit direct terminal"),
             ReceiptState::DirectTerminalUnacked(committed)
         );
