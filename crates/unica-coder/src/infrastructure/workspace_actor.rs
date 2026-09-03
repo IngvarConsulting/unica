@@ -4637,13 +4637,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn daemon_actor_registry_is_bounded_weak_and_alias_safe() {
-        daemon_actor_registry_prunes_dead_entries_and_bounds_sequential_roots();
-        daemon_actor_registry_rejects_only_when_all_capacity_entries_are_live();
-        active_alias_reuses_actor_and_dropped_actor_recreates_a_new_instance();
-    }
-
-    #[test]
     fn multiroot_provider_keeps_identical_relative_paths_bound_to_the_requesting_root() {
         let fixture = actor_fixture("multiroot", &["A", "B"]);
         let relative = Path::new("CommonModules/Same/Ext/Module.bsl");

@@ -121,18 +121,6 @@ fn public_platform_xml_mutator_preimage_contract_is_complete() {
     }
 }
 
-#[test]
-fn repeated_interface_and_mxl_mutations_preserve_file_identity_but_report_attempted_updates() {
-    super::interface::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update();
-    super::mxl::tests::repeated_mxl_compile_preserves_identity_but_reports_attempted_update();
-}
-
-#[test]
-fn mutation_idempotence_scope_decision_is_fully_realized() {
-    verified_public_mutator_idempotence_cases_are_exact();
-    repeated_interface_and_mxl_mutations_preserve_file_identity_but_report_attempted_updates();
-}
-
 /// Every reader the migration inventory keeps in `bridge` mode answers a
 /// logical selector with the same typed data as its physical selector. The
 /// case table is compared against the inventory so a reader cannot enter or

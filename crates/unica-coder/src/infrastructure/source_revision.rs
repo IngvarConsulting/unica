@@ -3060,15 +3060,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn projected_revision_artifacts_equal_retained_postpublication_capture() {
-        crate::infrastructure::workspace_actor::tests::actor_revision_platform_resource_projection_matches_live_capture();
-        crate::infrastructure::workspace_actor::tests::actor_revision_unknown_staged_artifact_is_rejected_before_publication();
-        crate::infrastructure::workspace_actor::tests::actor_revision_late_failure_rolls_back_targeted_resource_without_receipt();
-        actor_revision_projection_uses_capture_byte_limits_and_final_batch_accounting();
-        retained_apply_revision_transient_authority_preserves_projection_capture_bounds();
-    }
-
-    #[test]
     fn actor_revision_projection_uses_capture_byte_limits_and_final_batch_accounting() {
         use crate::infrastructure::native_operations::apply::StagedChangeKind;
 
@@ -3719,28 +3710,6 @@ pub(crate) mod tests {
         let _limits =
             set_revision_scan_limits_for_test(RetainedScanLimits::new(4, u64::MAX, u64::MAX));
         crate::infrastructure::workspace_actor::tests::revision_transient_cleanup_failure_does_not_persist_authority();
-    }
-
-    #[test]
-    pub(crate) fn retained_apply_revision_transient_authority_preserves_projection_capture_bounds()
-    {
-        actor_revision_projection_rejects_entry_overflow_before_publication();
-        actor_revision_projection_preserves_final_entry_accounting();
-        actor_revision_projection_counts_new_parent_topology();
-        actor_revision_planning_requires_stable_ignored_entry_accounting();
-        actor_revision_projection_matches_capture_depth_boundary();
-        actor_revision_replacement_commit_at_entry_limit_survives_owned_backup();
-        actor_revision_new_leaf_commit_at_entry_limit_survives_owned_backup();
-        crate::infrastructure::native_operations::compile_transaction::tests::retained_apply_revision_transient_authority_is_borrowed_sealed_and_single_issuer();
-        actor_revision_multiple_recoveries_across_parents_preserve_exact_entry_limit();
-        actor_revision_remove_create_batch_at_entry_limit_preserves_final_tree_accounting();
-        crate::infrastructure::workspace_actor::tests::actor_revision_recovery_identity_swap_is_rejected_before_revision_install();
-        crate::infrastructure::workspace_actor::tests::actor_revision_recovery_hard_link_alias_is_never_discounted_or_restored();
-        actor_revision_exact_limit_late_failure_reaches_phase_and_rolls_back_without_receipt();
-        retained_apply_revision_transient_spoofs_still_consume_capacity();
-        retained_apply_revision_transient_create_only_and_restart_are_exact();
-        retained_apply_revision_transient_cleanup_failure_does_not_persist_authority();
-        crate::infrastructure::workspace_actor::tests::revision_transient_stop_causes_preserve_rollback();
     }
 
     struct UnsupportedFence;

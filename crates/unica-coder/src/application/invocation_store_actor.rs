@@ -431,11 +431,4 @@ pub(crate) mod tests {
             InvocationStoreError::ActorUnavailable
         );
     }
-
-    #[test]
-    pub(crate) fn daemon_store_actor_bounds_blocked_adapter_without_waiting() {
-        blocked_store_call_is_bounded_without_releasing_worker_barrier();
-        queued_call_expires_behind_a_stuck_store_worker_without_late_execution();
-        failed_store_worker_returns_a_closed_unavailable_error();
-    }
 }

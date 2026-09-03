@@ -10,7 +10,9 @@ check:
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::duplicate_physical_root_names_are_rejected_as_ambiguous
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::duplicate_source_set_names_with_distinct_roots_are_rejected
   - crates/unica-coder/src/infrastructure/daemon/server.rs::actor_read_source_capability_is_sealed_after_binding
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::actor_read_authority_builder_uses_only_actor_bound_semantics
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::actor_read_authority_builder_rejects_actor_bound_unsupported_profile
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::actor_read_authority_builder_preserves_actor_bound_source_kind
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::actor_read_authority_builder_preserves_non_replenishing_deadline
   - crates/unica-coder/src/infrastructure/daemon/server.rs::provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::capabilities_do_not_cross_distinct_actor_instances_with_equal_identity
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication

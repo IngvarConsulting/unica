@@ -1683,14 +1683,6 @@ mod tests {
     }
 
     #[test]
-    fn daemon_store_is_bounded_and_fail_stop_is_process_owned() {
-        crate::application::invocation_store_actor::tests::daemon_store_actor_bounds_blocked_adapter_without_waiting();
-        crate::infrastructure::task_store::tests::file_invocation_store_bounds_and_retention_are_enforced();
-        crate::infrastructure::daemon::server::actor_capacity_tests::restart_request_does_not_claim_noncooperative_actor_released_in_process();
-        process_death_owns_fail_stop_handoff_and_recovery();
-    }
-
-    #[test]
     fn injected_hidden_v13_service_executes_real_view_and_find_through_actor_capabilities() {
         let daemon_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();

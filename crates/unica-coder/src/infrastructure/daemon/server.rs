@@ -4092,13 +4092,6 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn actor_read_authority_builder_uses_only_actor_bound_semantics() {
-        actor_read_authority_builder_rejects_actor_bound_unsupported_profile();
-        actor_read_authority_builder_preserves_actor_bound_source_kind();
-        actor_read_authority_builder_preserves_non_replenishing_deadline();
-    }
-
-    #[test]
     pub(crate) fn actor_authenticated_source_architecture_names_complete_witnesses() {
         // Запись называет сами проверки, а не агрегат над ними. Раньше здесь
         // разбирался Rust: свидетель обязан был звать перечисленное. Звал он

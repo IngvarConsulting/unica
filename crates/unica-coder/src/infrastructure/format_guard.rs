@@ -3525,12 +3525,22 @@ mod tests {
         supported_dump_allows_mutation_preflight();
     }
 
+    /// Полезная нагрузка проверки реентерабельности, а не самостоятельный тест.
+    /// Харнесс гоняет каждую из этих проверок отдельно; здесь они нужны разом и
+    /// в восьми потоках, чтобы поймать общий временный корень. Пометка
+    /// `#[test]` сделала бы из этого ещё один прогон уже сделанной работы.
+    fn format_evidence_payload() {
+        single_writable_platform_xml_profile_is_exact();
+        crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
+        public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
+        dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
+        cf_init_public_guard_blocks_newer_existing_post_validation_dependency();
+    }
+
     #[test]
     fn aggregated_format_evidence_is_reentrant_under_parallel_test_execution() {
         let workers = (0..8)
-            .map(|_| {
-                std::thread::spawn(single_writable_platform_xml_profile_decision_is_fully_realized)
-            })
+            .map(|_| std::thread::spawn(format_evidence_payload))
             .collect::<Vec<_>>();
 
         for worker in workers {
@@ -3635,20 +3645,6 @@ mod tests {
         crate::application::tests::incompatible_format_blocks_before_native_handler();
         crate::application::tests::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
         std::fs::remove_dir_all(workspace_root).unwrap();
-    }
-
-    #[test]
-    fn native_mutation_surface_and_format_refusal_are_exact() {
-        crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
-        public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
-        dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
-        cf_init_public_guard_blocks_newer_existing_post_validation_dependency();
-    }
-
-    #[test]
-    fn single_writable_platform_xml_profile_decision_is_fully_realized() {
-        single_writable_platform_xml_profile_is_exact();
-        native_mutation_surface_and_format_refusal_are_exact();
     }
 
     #[test]

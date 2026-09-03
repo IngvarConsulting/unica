@@ -69,15 +69,21 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
             REPO_ROOT / "arch" / "decisions" /
             "2026-08-21-mutation-idempotence-scope.md"
         ).read_text(encoding="utf-8")
-        self.assertIn(
-            "realized: crates/unica-coder/src/infrastructure/format_guard.rs::single_writable_platform_xml_profile_decision_is_fully_realized",
-            profile,
-        )
+        for name in (
+            "single_writable_platform_xml_profile_is_exact",
+            "native_mutation_surface_has_exact_operations_and_schemas",
+            "public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal",
+            "dcs_edit_blocks_old_external_source_set_via_owner_descriptor",
+            "cf_init_public_guard_blocks_newer_existing_post_validation_dependency",
+        ):
+            self.assertIn(name, profile)
         self.assertNotIn("INV.SOURCE.PLATFORM-BEFORE-XSD", profile)
-        self.assertIn(
-            "realized: crates/unica-coder/src/infrastructure/native_operations/source_invariant_tests.rs::mutation_idempotence_scope_decision_is_fully_realized",
-            mutation,
-        )
+        for name in (
+            "verified_public_mutator_idempotence_cases_are_exact",
+            "repeated_interface_edit_preserves_identity_but_reports_attempted_update",
+            "repeated_mxl_compile_preserves_identity_but_reports_attempted_update",
+        ):
+            self.assertIn(name, mutation)
 
     def test_portable_git_and_platform_xml_checks_are_closed_matrices(self) -> None:
         self.assertTrue(
@@ -136,11 +142,15 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
                 "::unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog"
             )
         )
-        self.assertTrue(
-            check("INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS").endswith(
-                "::fault_injected_rollback_and_cleanup_paths_keep_distinct_diagnostics"
-            )
-        )
+        named = check("INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS")
+        for name in (
+            "registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap",
+            "registration_rollback_validation_reports_preserved_quarantine",
+            "removal_rollback_preserves_concurrent_file_and_recovery_artifact",
+            "removal_rollback_preserves_concurrent_empty_directory_and_recovery_tree",
+            "successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap",
+        ):
+            self.assertIn(name, named)
 
     def test_subsystem_checks_cover_public_schema_and_no_data_failures(self) -> None:
         self.assertTrue(
@@ -238,11 +248,14 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
         self.assertIn("public_code_mutator_inventory_is_exact", source)
 
     def test_no_format_migration_uses_exact_surface_and_behavior(self) -> None:
-        self.assertTrue(
-            check("INV.SOURCE.NO-FORMAT-MIGRATION").endswith(
-                "::native_mutation_surface_and_format_refusal_are_exact"
-            )
-        )
+        named = check("INV.SOURCE.NO-FORMAT-MIGRATION")
+        for name in (
+            "native_mutation_surface_has_exact_operations_and_schemas",
+            "public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal",
+            "dcs_edit_blocks_old_external_source_set_via_owner_descriptor",
+            "cf_init_public_guard_blocks_newer_existing_post_validation_dependency",
+        ):
+            self.assertIn(name, named)
 
     def test_portable_resource_role_and_lfs_readiness_are_aggregated(self) -> None:
         named = check("INV.SOURCE.PORTABLE-LFS-ADVISORY")
