@@ -6,7 +6,6 @@
 //! protocol sessions, daemon processes, barriers and clocks and performs every assertion here. The
 //! bridge is not a second ReceiptLedger and must not synthesize observations from a scenario name.
 
-use base64::Engine as _;
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -2434,6 +2433,51 @@ enum HarnessCode {
     EvidenceTooLarge,
 }
 
+fn decode_base64(value: &str) -> Result<Vec<u8>, String> {
+    if value.is_empty() || !value.len().is_multiple_of(4) {
+        return Err("encoded payload must contain nonempty complete quartets".to_string());
+    }
+    let decode = |byte: u8| match byte {
+        b'A'..=b'Z' => Ok(byte - b'A'),
+        b'a'..=b'z' => Ok(byte - b'a' + 26),
+        b'0'..=b'9' => Ok(byte - b'0' + 52),
+        b'+' => Ok(62),
+        b'/' => Ok(63),
+        _ => Err(format!("invalid base64 byte 0x{byte:02x}")),
+    };
+    let bytes = value.as_bytes();
+    let (quartets, remainder) = bytes.as_chunks::<4>();
+    debug_assert!(remainder.is_empty());
+    let mut decoded = Vec::with_capacity(bytes.len() / 4 * 3);
+    for (index, quartet) in quartets.iter().enumerate() {
+        let final_quartet = index + 1 == quartets.len();
+        let first = decode(quartet[0])?;
+        let second = decode(quartet[1])?;
+        decoded.push((first << 2) | (second >> 4));
+        match (quartet[2], quartet[3]) {
+            (b'=', b'=') if final_quartet && second & 0x0f == 0 => {}
+            (b'=', _) => return Err("invalid base64 padding".to_string()),
+            (third, b'=') if final_quartet => {
+                let third = decode(third)?;
+                if third & 0x03 != 0 {
+                    return Err("non-canonical base64 padding bits".to_string());
+                }
+                decoded.push((second << 4) | (third >> 2));
+            }
+            (_, b'=') => {
+                return Err("base64 padding is only allowed in the final quartet".to_string())
+            }
+            (third, fourth) => {
+                let third = decode(third)?;
+                let fourth = decode(fourth)?;
+                decoded.push((second << 4) | (third >> 2));
+                decoded.push((third << 6) | fourth);
+            }
+        }
+    }
+    Ok(decoded)
+}
+
 fn execute(scenario: Scenario) -> ScenarioReport {
     let requires_v5_receipt_runtime = scenario.actions.iter().any(|action| {
         matches!(
@@ -2465,11 +2509,9 @@ fn execute(scenario: Scenario) -> ScenarioReport {
         .unwrap_or_else(|error| panic!("HARNESS FAILURE: malformed_facade_envelope: {error}"));
     let envelope = match envelope {
         FacadeEnvelope::ObservedGzipBase64(encoded) => {
-            let compressed = base64::engine::general_purpose::STANDARD
-                .decode(encoded)
-                .unwrap_or_else(|error| {
-                    panic!("HARNESS FAILURE: malformed_compressed_facade_base64: {error}")
-                });
+            let compressed = decode_base64(&encoded).unwrap_or_else(|error| {
+                panic!("HARNESS FAILURE: malformed_compressed_facade_base64: {error}")
+            });
             let mut decoder = GzDecoder::new(compressed.as_slice());
             let mut payload = String::new();
             decoder

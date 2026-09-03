@@ -53,7 +53,6 @@ use crate::infrastructure::task_lifecycle_link_store_v5::{
 };
 use crate::infrastructure::task_store::SystemEpochMillisClock;
 use crate::infrastructure::task_store_v5::{FileInvocationStoreV5, PublicationFailure};
-use base64::Engine as _;
 use flate2::{write::GzEncoder, Compression};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -11510,13 +11509,36 @@ impl ScenarioReportBuilder {
         let compressed = encoder
             .finish()
             .map_err(|error| format!("finish protocol-v5 receipt scenario compression: {error}"))?;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(compressed);
+        let encoded = encode_base64(&compressed);
         serde_json::to_string(&json!({
             "kind": "observed_gzip_base64",
             "payload": encoded,
         }))
         .map_err(|error| format!("encode compressed protocol-v5 scenario report: {error}"))
     }
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(ALPHABET[(first >> 2) as usize] as char);
+        encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            ALPHABET[(third & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    encoded
 }
 
 struct ScenarioEpochClock {

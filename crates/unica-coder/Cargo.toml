@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-receipt-ledger-test-support = ["dep:base64"]
+receipt-ledger-test-support = []
 
 [[test]]
 name = "daemon_receipt_ledger"
@@ -24,7 +24,6 @@ required-features = ["receipt-ledger-test-support"]
 
 [dependencies]
 bsl-parser.workspace = true
-base64 = { workspace = true, optional = true }
 # Доставку движка по требованию ведёт тот же установщик, что ставит ядро:
 # формат манифеста, ключ кеша, блокировка и докачка у них общие, и вторая
 # реализация была бы местом, где они разойдутся.
