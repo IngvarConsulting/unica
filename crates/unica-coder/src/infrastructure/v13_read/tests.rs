@@ -412,6 +412,72 @@ fn every_typed_reader_remains_on_the_admitted_root_after_source_set_remap() {
     }
 }
 
+/// The root projection carries what the retired `unica.cf.info` reported:
+/// vendor facts, the support state, the closed root properties and the
+/// object total, every declared key present even when its value is null.
+#[test]
+fn configuration_root_carries_the_retired_cf_info_facts() {
+    let fixture = RealReaderFixture::new();
+    let cancellation = CancellationToken::new();
+    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let revisions = Arc::new(
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
+    );
+    let authority = LogicalViewReadAuthority::new(
+        &cancellation,
+        "main",
+        "actor-fixture-main",
+        SourceSetKind::Configuration,
+        revisions,
+        source_root,
+        PlatformProfile::v8_3_27(),
+    );
+    let service = ViewService::new(authority, ViewCursorStore::default());
+
+    let root = service.view(ViewRequest::new("main:Configuration").unwrap());
+    let props = root.data.as_ref().unwrap()["props"].as_object().unwrap();
+    for key in [
+        "format",
+        "name",
+        "synonym",
+        "version",
+        "vendor",
+        "extensionPurpose",
+        "totalObjects",
+        "support",
+        "properties",
+        "homePage",
+    ] {
+        assert!(
+            props.contains_key(key),
+            "root props miss `{key}`: {props:?}"
+        );
+    }
+    assert_eq!(props["format"], "2.20");
+    assert!(props["totalObjects"].as_u64().unwrap() > 0);
+    assert!(props["support"]["state"].is_string());
+    let properties = props["properties"].as_object().unwrap();
+    for key in [
+        "compatibilityMode",
+        "defaultRunMode",
+        "scriptVariant",
+        "defaultLanguage",
+        "dataLockControlMode",
+        "modalityUseMode",
+        "interfaceCompatibilityMode",
+        "extensionCompatibilityMode",
+        "objectAutonumerationMode",
+        "synchronousCallUseMode",
+        "databaseTablespacesUseMode",
+        "mainWindowMode",
+        "comment",
+        "namePrefix",
+        "updateCatalogAddress",
+    ] {
+        assert!(properties.contains_key(key), "root properties miss `{key}`");
+    }
+}
+
 #[test]
 fn configuration_root_branch_counts_match_every_reachable_collection() {
     let fixture = RealReaderFixture::new();
