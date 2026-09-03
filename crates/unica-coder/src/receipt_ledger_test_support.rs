@@ -44,6 +44,10 @@ pub fn execute_scenario_json(request: &str) -> Result<String, String> {
     execute_scenario(request).map_err(|error| error.to_string())
 }
 
+pub fn receipt_writer_wall_load_supported_for_test() -> bool {
+    crate::infrastructure::platform::receipt_writer_wall_load_supported_for_test()
+}
+
 pub fn request_scope_hash_for_test(workspace_hint: &str) -> String {
     request_scope_hash(workspace_hint)
         .unwrap_or_else(|error| panic!("invalid request scope supplied by test: {error}"))

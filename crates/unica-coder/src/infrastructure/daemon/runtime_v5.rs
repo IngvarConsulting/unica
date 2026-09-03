@@ -776,8 +776,15 @@ fn open_receipt_actor_for_scenario(
     receipts: RetainedDirectoryCapability,
     context: &'static str,
 ) -> Result<ReceiptLedgerActor, String> {
-    let store = ReceiptLedgerStore::open_retained_directory(receipts)
-        .map_err(|error| format!("{context}: {error}"))?;
+    // Opening a fixture after a horizon/full-pool action performs the same bounded
+    // retained-store recovery as daemon startup. Keep that test-only I/O inside the
+    // bulk fixture budget instead of accidentally applying the ordinary 5-second
+    // operation timeout to thousands of durable rows.
+    let store = ReceiptLedgerStore::open_retained_directory_before(
+        receipts,
+        Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT,
+    )
+    .map_err(|error| format!("{context}: {error}"))?;
     Ok(ReceiptLedgerActor::spawn(store))
 }
 

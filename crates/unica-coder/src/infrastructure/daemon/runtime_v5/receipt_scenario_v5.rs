@@ -2063,7 +2063,6 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                 &clock,
                                 &telemetry,
                                 control.side_effect_markers(),
-                                &known_keys,
                                 catalog,
                             )?),
                             None => None,
@@ -3654,7 +3653,6 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                 &clock,
                                 &telemetry,
                                 control.side_effect_markers(),
-                                &known_keys,
                                 catalog,
                             )?),
                             None => None,
@@ -3696,7 +3694,6 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                     &clock,
                                     &telemetry,
                                     control.side_effect_markers(),
-                                    &known_keys,
                                     catalog,
                                 )?,
                                 None => snapshot_with_actor(
@@ -3717,7 +3714,6 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                                         &clock,
                                         &telemetry,
                                         control.side_effect_markers(),
-                                        &known_keys,
                                         catalog,
                                     )?,
                                     None => snapshot_with_actor(
@@ -4099,7 +4095,6 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     &clock,
                     &telemetry,
                     control.side_effect_markers(),
-                    &known_keys,
                     &catalog,
                 )?);
                 bulk_receipt_catalog = Some(catalog);
@@ -9809,26 +9804,47 @@ fn snapshot_with_actor_and_bulk_catalog(
     clock: &ScenarioEpochClock,
     telemetry: &V5ReceiptRuntimeTelemetry,
     side_effect_markers: u64,
-    keys: &[ReceiptKey],
     bulk: &BulkReceiptCatalogObservation,
 ) -> Result<Value, String> {
     let deadline = Instant::now() + SCENARIO_BULK_SNAPSHOT_TIMEOUT;
+    // `known_keys` also contains every key from a bulk TaskStore fixture. Probing
+    // those thousands of Task-only keys through ReceiptLedger is both semantically
+    // wrong and slow enough to consume the shared Windows snapshot deadline. The
+    // sealed receipt catalog is the authoritative bounded set of active receipts.
+    let active_catalog = actor
+        .snapshot_catalog(deadline)
+        .map_err(|error| format!("snapshot active bulk protocol-v5 receipt catalog: {error}"))?;
     let mut receipts = Vec::new();
     let mut tombstones = bulk.tombstones.clone();
     let mut indexed_keys = bulk.indexed_keys.clone();
+    let mut indexed_digests = indexed_keys
+        .iter()
+        .map(|(digest, _)| digest.clone())
+        .collect::<HashSet<_>>();
     let mut receipt_actual_bytes = 0_u64;
     let mut receipt_reserved_bytes = 0_u64;
     let mut tombstone_bytes = bulk.tombstone_bytes;
-    for key in keys {
+    // The compact bulk observation mirrors tombstones already present in the
+    // store. Merge the actor catalog by digest so a tombstone created after the
+    // bulk fixture (for example, the post-reclaim acknowledgement) is visible
+    // without duplicating the seeded pool.
+    for tombstone in active_catalog.tombstones() {
+        let digest = tombstone.key_digest().as_str().to_owned();
+        if indexed_digests.insert(digest.clone()) {
+            tombstone_bytes = tombstone_bytes.saturating_add(tombstone.encoded_bytes());
+            indexed_keys.push((digest, receipt_key_observation(tombstone.key())));
+            tombstones.push(tombstone_observation(tombstone));
+        }
+    }
+    for key in active_catalog.keys() {
         match actor.recover(key.clone(), deadline) {
             Ok(ReceiptState::AcknowledgedTombstone(tombstone)) => {
-                let observation = tombstone_observation(&tombstone);
-                tombstone_bytes = tombstone_bytes.saturating_add(tombstone.encoded_bytes());
-                indexed_keys.push((
-                    tombstone.key_digest().as_str().to_owned(),
-                    receipt_key_observation(tombstone.key()),
-                ));
-                tombstones.push(observation);
+                let digest = tombstone.key_digest().as_str().to_owned();
+                if indexed_digests.insert(digest.clone()) {
+                    tombstone_bytes = tombstone_bytes.saturating_add(tombstone.encoded_bytes());
+                    indexed_keys.push((digest, receipt_key_observation(tombstone.key())));
+                    tombstones.push(tombstone_observation(&tombstone));
+                }
             }
             Ok(receipt) => {
                 let observation = receipt_observation(receipt)?;
@@ -9853,7 +9869,9 @@ fn snapshot_with_actor_and_bulk_catalog(
                     .and_then(Value::as_str)
                     .ok_or_else(|| "bulk receipt key has no digest".to_owned())?
                     .to_owned();
-                indexed_keys.push((digest, key_observation));
+                if indexed_digests.insert(digest.clone()) {
+                    indexed_keys.push((digest, key_observation));
+                }
                 receipts.push(observation);
             }
             Err(ReceiptLedgerError::ReceiptNotFound) => {}
