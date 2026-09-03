@@ -2046,6 +2046,7 @@ fn logical_reader_parity_contract_is_complete() {
     crate::infrastructure::source_revision::tests::retained_revision_authority_contract_is_complete(
     );
     object_commands_are_registered_inline_without_descriptor_files();
+    configuration_level_rights_are_readable_role_objects();
     actor_owned_reader_never_follows_a_source_set_remap_after_admission();
     actor_owned_configuration_support_and_home_page_sidecars_are_retained();
     actor_owned_typed_form_reader_never_follows_a_source_set_remap();
@@ -3415,6 +3416,51 @@ fn cursor_retry_rejects_revision_change_during_role_canonicalization() {
         "cursor page crossed a post-canonical read mutation"
     );
     assert_eq!(replay.diagnostics[0]["code"], "stale_cursor");
+}
+
+#[test]
+pub(crate) fn configuration_level_rights_are_readable_role_objects() {
+    let fixture = RealReaderFixture::new();
+    let rights_path = fixture.source.join("Roles/SalesReader/Ext/Rights.xml");
+    let rights = fs::read_to_string(&rights_path).unwrap().replacen(
+        "</Rights>",
+        "<object><name>Configuration.CorpusConfiguration</name><right><name>Administration</name><value>true</value></right><right><name>ThinClient</name><value>true</value></right></object></Rights>",
+        1,
+    );
+    fs::write(&rights_path, rights).unwrap();
+    let service = fixture.view_service();
+
+    let role = service.view(ViewRequest::new("main:Role.SalesReader").unwrap());
+    assert!(role.ok, "{:?}", role.diagnostics);
+    let right = service.view(
+        ViewRequest::new("main:Role.SalesReader.Right.Configuration_CorpusConfiguration").unwrap(),
+    );
+    assert!(right.ok, "{:?}", right.diagnostics);
+    let data = right.data.as_ref().unwrap();
+    assert_eq!(data["kind"], "Right");
+    assert_eq!(data["props"]["objectKind"], "Configuration");
+    assert_eq!(data["props"]["allowedCount"], 2);
+
+    let authority = fixture.read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    let expected = "main:Role.SalesReader.Right.Configuration_CorpusConfiguration";
+    let found = index.find(FindRequest::new(expected).unwrap());
+    assert!(
+        !found.is_nearest()
+            && found
+                .candidates()
+                .iter()
+                .any(|candidate| candidate.at() == expected),
+        "configuration right is missing from find: {found:?}"
+    );
 }
 
 #[test]
