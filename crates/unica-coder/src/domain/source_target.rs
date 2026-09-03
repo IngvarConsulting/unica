@@ -582,6 +582,16 @@ fn canonical_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
     )))
 }
 
+/// Non-allocating twin of `metadata_address_kind_spellings` for the hot
+/// address-parsing path: it answers whether `raw` is the canonical spelling
+/// or a Russian alias of `canonical`.
+pub(crate) fn metadata_address_kind_matches(canonical: &str, raw: &str) -> bool {
+    ADDRESS_KINDS
+        .iter()
+        .find(|kind| kind.canonical == canonical)
+        .is_some_and(|kind| kind.canonical == raw || kind.russian_aliases.contains(&raw))
+}
+
 pub(crate) fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static str>> {
     ADDRESS_KINDS
         .iter()

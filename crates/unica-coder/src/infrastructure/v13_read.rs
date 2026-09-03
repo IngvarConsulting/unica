@@ -29,7 +29,7 @@ use crate::infrastructure::logical_event_source::{
 };
 use crate::infrastructure::logical_event_source::{resolve_event_source, LogicalEventSource};
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
-use crate::infrastructure::native_operations::form::FormEventEvidence;
+use crate::infrastructure::native_operations::form::{FormEventEvidence, FormInfoData};
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::platform_xml_owner::PlatformXmlSourceSetOwnerEvidence;
 #[cfg(test)]
@@ -112,6 +112,19 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
     verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
+    typed_payloads: Mutex<BTreeMap<TypedPayloadCacheKey, Arc<Value>>>,
+    form_data: Mutex<BTreeMap<OwnerProofCacheKey, Arc<FormInfoData>>>,
+}
+
+/// One typed reader payload is a function of the admitted revision, the
+/// reader and its physical target (plus the XDTO type for that reader), so
+/// every logical address projected from the same descriptor shares one parse.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct TypedPayloadCacheKey {
+    revision: RevisionCacheKey,
+    reader: LogicalReader,
+    target: String,
+    detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -180,6 +193,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
             verified_owner_edges: Mutex::new(BTreeSet::new()),
+            typed_payloads: Mutex::new(BTreeMap::new()),
+            form_data: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -212,6 +227,16 @@ impl<'a> LogicalViewReadAuthority<'a> {
     }
 
     #[cfg(test)]
+    pub(crate) fn metadata_descriptor_read_count(&self, target: &str) -> usize {
+        self.read.metadata_descriptor_read_count(target)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn support_state_read_count(&self) -> usize {
+        self.read.support_state_read_count()
+    }
+
+    #[cfg(test)]
     pub(crate) const fn source_set_kind_for_test(&self) -> SourceSetKind {
         self.read.source_set_kind()
     }
@@ -240,8 +265,36 @@ impl<'a> LogicalViewReadAuthority<'a> {
         ) {
             if let Some(target) = route.reader_metadata_path() {
                 self.verify_registered_owner(target, admitted)?;
+                let key = TypedPayloadCacheKey {
+                    revision: RevisionCacheKey {
+                        source_set_identity: admitted.source_set_identity.clone(),
+                        revision: admitted.revision.clone(),
+                    },
+                    reader: route.reader(),
+                    target: target.as_str().to_string(),
+                    detail: (route.reader() == LogicalReader::Xdto)
+                        .then(|| named_segment(route.at(), NodeKind::Type).map(str::to_string))
+                        .flatten(),
+                };
+                let mut cache = self.typed_payloads.lock().map_err(|_| {
+                    ViewError::new("provider_unavailable", "typed payload cache is poisoned")
+                })?;
+                if let Some(payload) = cache.get(&key) {
+                    return Ok(payload.as_ref().clone());
+                }
+                let payload = Arc::new(self.uncached_typed_payload_for(route, admitted)?);
+                cache.insert(key, Arc::clone(&payload));
+                return Ok(payload.as_ref().clone());
             }
         }
+        self.uncached_typed_payload_for(route, admitted)
+    }
+
+    fn uncached_typed_payload_for(
+        &self,
+        route: &LogicalTreeRoute,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Value, ViewError> {
         if route.reader() == LogicalReader::Configuration {
             let payload = self.configuration_payload(admitted)?;
             self.verify_top_level_inventory(payload.as_ref(), admitted)?;
@@ -579,7 +632,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             None
         };
         let handles = if capability.role() == ModuleRole::Form {
-            self.form_bindings(module_at)?
+            self.form_bindings(module_at, admitted)?
         } else {
             Vec::new()
         };
@@ -826,9 +879,36 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(evidence)
     }
 
+    /// One parsed `Form.xml` per admitted revision and form target: every
+    /// item, attribute, command and event address under the form shares it.
+    fn form_data(
+        &self,
+        target: &MetadataAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Arc<FormInfoData>, ViewError> {
+        let key = OwnerProofCacheKey {
+            revision: RevisionCacheKey {
+                source_set_identity: admitted.source_set_identity.clone(),
+                revision: admitted.revision.clone(),
+            },
+            owner: target.as_str().to_string(),
+        };
+        let mut cache = self
+            .form_data
+            .lock()
+            .map_err(|_| ViewError::new("provider_unavailable", "form cache is poisoned"))?;
+        if let Some(data) = cache.get(&key) {
+            return Ok(Arc::clone(data));
+        }
+        let data = Arc::new(self.read.form_data(target)?);
+        cache.insert(key, Arc::clone(&data));
+        Ok(data)
+    }
+
     fn form_bindings(
         &self,
         module_at: &QualifiedAddress,
+        admitted: &ViewSourceSnapshot,
     ) -> Result<Vec<FormEventBindingInput>, ViewError> {
         let module_at_text = module_at.to_string();
         let form_at = module_at_text
@@ -842,7 +922,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let metadata_path =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path())
                 .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
-        let data = self.read.form_data(&metadata_path)?;
+        let data = self.form_data(&metadata_path, admitted)?;
         Ok(form_semantic_inputs(form_at, &FormEventEvidence::from_info(&data)).bindings)
     }
 
@@ -855,8 +935,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ViewError::new("provider_unavailable", "form route has no typed target")
         })?;
         self.verify_registered_owner(target, admitted)?;
-        let mut data = self.read.form_data(target)?;
-        data.event_context.metadata_owner = route.at().segments().first().map(AddressSegment::kind);
+        let data = self.form_data(target, admitted)?;
         let form_at =
             QualifiedAddress::parse(&format!("{}:{}", route.at().source_set(), target.as_str()))
                 .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
@@ -869,12 +948,13 @@ impl<'a> LogicalViewReadAuthority<'a> {
             )
         })?;
         self.verify_module_owner(&module_at, capability, admitted)?;
-        let evidence = FormEventEvidence::from_info(&data);
+        let mut evidence = FormEventEvidence::from_info(&data);
+        evidence.context.metadata_owner = route.at().segments().first().map(AddressSegment::kind);
         let inputs = form_semantic_inputs(&form_at.to_string(), &evidence);
         let module = self.module_projection(&module_at, capability, admitted)?;
         let events = project_property_events_from_projection(&evidence, &inputs, &module)
             .map_err(|error| ViewError::new(error.code(), error.to_string()))?;
-        let payload = serde_json::to_value(data).map_err(|error| {
+        let payload = serde_json::to_value(data.as_ref()).map_err(|error| {
             ViewError::new(
                 "provider_unavailable",
                 format!("form payload serialization failed: {error}"),

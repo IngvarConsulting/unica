@@ -6,6 +6,7 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 
 const MAX_SOURCE_SETS: usize = 64;
 const DEFAULT_MAX_DOCUMENTS: usize = 65_536;
@@ -49,40 +50,56 @@ impl std::fmt::Display for FindBuildError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct WorkspaceFindIndexBuilder {
     max_documents: usize,
     max_total_fact_bytes: usize,
+    /// The single index retained between operations. It is keyed by the exact
+    /// ordered admitted `(source set, identity, revision)` list, so a changed
+    /// revision, another source-set composition or another workspace identity
+    /// never inherits it; the retained index itself stays within the document
+    /// and fact-byte limits above.
+    retained: Mutex<Option<RetainedFindIndex>>,
+}
+
+/// Ordered admitted source revisions that identify one built index.
+type FindIndexKey = Vec<(String, String, String)>;
+
+#[derive(Debug)]
+struct RetainedFindIndex {
+    key: FindIndexKey,
+    index: Arc<FindIndex>,
+    revision: String,
 }
 
 pub(crate) struct BuiltFindIndex {
-    pub(crate) index: FindIndex,
+    pub(crate) index: Arc<FindIndex>,
     pub(crate) revision: String,
+}
+
+struct AdmittedFindSource<'s, 'a> {
+    source: &'s ActorFindSource<'a>,
+    root_at: QualifiedAddress,
+    snapshot: crate::application::v13::view::ViewSourceSnapshot,
 }
 
 impl Default for WorkspaceFindIndexBuilder {
     fn default() -> Self {
-        Self {
-            max_documents: DEFAULT_MAX_DOCUMENTS,
-            max_total_fact_bytes: DEFAULT_MAX_FACT_BYTES,
-        }
+        Self::with_limits(DEFAULT_MAX_DOCUMENTS, DEFAULT_MAX_FACT_BYTES)
     }
 }
 
 impl WorkspaceFindIndexBuilder {
     #[cfg(test)]
     fn with_document_limit(max_documents: usize) -> Self {
-        Self {
-            max_documents,
-            max_total_fact_bytes: DEFAULT_MAX_FACT_BYTES,
-        }
+        Self::with_limits(max_documents, DEFAULT_MAX_FACT_BYTES)
     }
 
-    #[cfg(test)]
     fn with_limits(max_documents: usize, max_total_fact_bytes: usize) -> Self {
         Self {
             max_documents,
             max_total_fact_bytes,
+            retained: Mutex::new(None),
         }
     }
 
@@ -91,7 +108,7 @@ impl WorkspaceFindIndexBuilder {
         sources: &[ActorFindSource<'_>],
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<FindIndex, FindBuildError> {
+    ) -> Result<Arc<FindIndex>, FindBuildError> {
         self.build_with_revision(sources, deadline, cancellation)
             .map(|built| built.index)
     }
@@ -108,41 +125,92 @@ impl WorkspaceFindIndexBuilder {
                 "find source-set count exceeds the bounded workspace limit",
             ));
         }
-        let mut documents = Vec::new();
-        let mut total_fact_bytes = 0;
-        let mut revisions = Vec::with_capacity(sources.len());
+        let mut admitted = Vec::with_capacity(sources.len());
         for source in sources {
             find_checkpoint(deadline, cancellation)?;
-            let admitted = self.add_source(
-                source,
+            admitted.push(Self::admit_source(source)?);
+        }
+        let key = admitted
+            .iter()
+            .map(|admission| {
+                (
+                    admission.source.name.to_string(),
+                    admission.snapshot.source_set_identity.clone(),
+                    admission.snapshot.revision.clone(),
+                )
+            })
+            .collect::<FindIndexKey>();
+        if let Some(built) = self.retained_index(&key)? {
+            return Ok(built);
+        }
+        let mut documents = Vec::new();
+        let mut seen = HashSet::new();
+        let mut total_fact_bytes = 0;
+        for admission in &admitted {
+            find_checkpoint(deadline, cancellation)?;
+            self.walk_source(
+                admission,
                 &mut documents,
+                &mut seen,
                 &mut total_fact_bytes,
                 deadline,
                 cancellation,
             )?;
-            revisions.push((
-                source.name.to_string(),
-                admitted.source_set_identity,
-                admitted.revision,
-            ));
         }
-        Ok(BuiltFindIndex {
-            index: FindIndex::new(documents),
-            revision: aggregate_revision(&revisions),
+        let index = Arc::new(FindIndex::new(documents));
+        let revision = aggregate_revision(&key);
+        *self.retained_lock()? = Some(RetainedFindIndex {
+            key,
+            index: Arc::clone(&index),
+            revision: revision.clone(),
+        });
+        Ok(BuiltFindIndex { index, revision })
+    }
+
+    fn retained_lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<RetainedFindIndex>>, FindBuildError> {
+        self.retained.lock().map_err(|_| {
+            FindBuildError::new("provider_unavailable", "retained find index is poisoned")
         })
     }
 
-    fn add_source(
+    fn retained_index(&self, key: &FindIndexKey) -> Result<Option<BuiltFindIndex>, FindBuildError> {
+        let retained = self.retained_lock()?;
+        Ok(retained
+            .as_ref()
+            .filter(|retained| &retained.key == key)
+            .map(|retained| BuiltFindIndex {
+                index: Arc::clone(&retained.index),
+                revision: retained.revision.clone(),
+            }))
+    }
+
+    fn admit_source<'s, 'a>(
+        source: &'s ActorFindSource<'a>,
+    ) -> Result<AdmittedFindSource<'s, 'a>, FindBuildError> {
+        let root_at = QualifiedAddress::parse(&format!("{}:Configuration", source.name))
+            .map_err(|error| FindBuildError::new("provider_unavailable", error.to_string()))?;
+        let snapshot = source.reader.snapshot(&root_at).map_err(view_error)?;
+        Ok(AdmittedFindSource {
+            source,
+            root_at,
+            snapshot,
+        })
+    }
+
+    fn walk_source(
         &self,
-        source: &ActorFindSource<'_>,
+        admission: &AdmittedFindSource<'_, '_>,
         documents: &mut Vec<FindDocument>,
+        seen: &mut HashSet<String>,
         total_fact_bytes: &mut usize,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<crate::application::v13::view::ViewSourceSnapshot, FindBuildError> {
-        let root_at = QualifiedAddress::parse(&format!("{}:Configuration", source.name))
-            .map_err(|error| FindBuildError::new("provider_unavailable", error.to_string()))?;
-        let admitted = source.reader.snapshot(&root_at).map_err(view_error)?;
+    ) -> Result<(), FindBuildError> {
+        let source = admission.source;
+        let root_at = &admission.root_at;
+        let admitted = &admission.snapshot;
         let mut queue = VecDeque::from([root_at.clone()]);
         let mut queued = HashSet::new();
         let mut fallbacks = HashMap::<String, Value>::new();
@@ -152,12 +220,18 @@ impl WorkspaceFindIndexBuilder {
             let projection =
                 match source
                     .reader
-                    .read_exact(&address, &ViewFilter::default(), &admitted)
+                    .read_exact(&address, &ViewFilter::default(), admitted)
                 {
                     Ok(projection) => projection,
-                    Err(error) if error.code() == "not_found" && address != root_at => {
+                    Err(error) if error.code() == "not_found" && &address != root_at => {
                         if let Some(fallback) = fallbacks.get(&address.to_string()) {
-                            self.push_identity_value(documents, total_fact_bytes, fallback, None)?;
+                            self.push_identity_value(
+                                documents,
+                                seen,
+                                total_fact_bytes,
+                                fallback,
+                                None,
+                            )?;
                         }
                         continue;
                     }
@@ -171,7 +245,13 @@ impl WorkspaceFindIndexBuilder {
                                 "typed identity fallback was not projected by its parent",
                             )
                         })?;
-                        self.push_identity_value(documents, total_fact_bytes, fallback, None)?;
+                        self.push_identity_value(
+                            documents,
+                            seen,
+                            total_fact_bytes,
+                            fallback,
+                            None,
+                        )?;
                         continue;
                     }
                     Err(error) => {
@@ -188,7 +268,13 @@ impl WorkspaceFindIndexBuilder {
                 .reader
                 .identity_export_path(&address)
                 .map_err(view_error)?;
-            self.push_identity_value(documents, total_fact_bytes, &value, export_path.as_deref())?;
+            self.push_identity_value(
+                documents,
+                seen,
+                total_fact_bytes,
+                &value,
+                export_path.as_deref(),
+            )?;
             for child in logical_children(&value)? {
                 let Some(at) = child.get("at").and_then(Value::as_str) else {
                     continue;
@@ -224,19 +310,20 @@ impl WorkspaceFindIndexBuilder {
             }
         }
         find_checkpoint(deadline, cancellation)?;
-        let current = source.reader.snapshot(&root_at).map_err(view_error)?;
-        if current != admitted {
+        let current = source.reader.snapshot(root_at).map_err(view_error)?;
+        if &current != admitted {
             return Err(FindBuildError::new(
                 "stale_revision",
                 "source revision changed during find index construction",
             ));
         }
-        Ok(admitted)
+        Ok(())
     }
 
     fn push_identity_value(
         &self,
         documents: &mut Vec<FindDocument>,
+        seen: &mut HashSet<String>,
         total_fact_bytes: &mut usize,
         value: &Value,
         export_path: Option<&str>,
@@ -244,10 +331,7 @@ impl WorkspaceFindIndexBuilder {
         let Some(document) = identity_document_from_view(value, export_path)? else {
             return Ok(());
         };
-        if documents
-            .iter()
-            .any(|existing| existing.at() == document.at())
-        {
+        if !seen.insert(document.at().to_string()) {
             return Ok(());
         }
         self.push_document(documents, total_fact_bytes, document)
@@ -433,7 +517,7 @@ mod tests {
         source: &std::path::Path,
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
-    ) -> Result<crate::application::v13::find::FindIndex, super::FindBuildError> {
+    ) -> Result<Arc<crate::application::v13::find::FindIndex>, super::FindBuildError> {
         let workspace_root = source.parent().unwrap().to_path_buf();
         let context = WorkspaceContext {
             cwd: workspace_root.clone(),
@@ -915,10 +999,21 @@ mod tests {
             identity_source("Procedure StableMethod()\nОдинСекретныйОператор();\nEndProcedure");
         let (_right_fixture, right_source) =
             identity_source("Procedure StableMethod()\nСовсемДругойОператор();\nEndProcedure");
-        let builder = WorkspaceFindIndexBuilder::default();
         let cancellation = CancellationToken::new();
-        let left = build_index(builder.clone(), &left_source, &cancellation, deadline()).unwrap();
-        let right = build_index(builder, &right_source, &cancellation, deadline()).unwrap();
+        let left = build_index(
+            WorkspaceFindIndexBuilder::default(),
+            &left_source,
+            &cancellation,
+            deadline(),
+        )
+        .unwrap();
+        let right = build_index(
+            WorkspaceFindIndexBuilder::default(),
+            &right_source,
+            &cancellation,
+            deadline(),
+        )
+        .unwrap();
 
         assert_eq!(left.fact_bytes(), right.fact_bytes());
         for query in ["Номенклатура", "Номенклатур"] {
@@ -942,9 +1037,20 @@ mod tests {
         let (_right_fixture, right_source) =
             common_module_identity_source("RightBodyOnlyStatement()");
         let cancellation = CancellationToken::new();
-        let builder = WorkspaceFindIndexBuilder::default();
-        let left = build_index(builder.clone(), &left_source, &cancellation, deadline()).unwrap();
-        let right = build_index(builder, &right_source, &cancellation, deadline()).unwrap();
+        let left = build_index(
+            WorkspaceFindIndexBuilder::default(),
+            &left_source,
+            &cancellation,
+            deadline(),
+        )
+        .unwrap();
+        let right = build_index(
+            WorkspaceFindIndexBuilder::default(),
+            &right_source,
+            &cancellation,
+            deadline(),
+        )
+        .unwrap();
 
         assert_eq!(left.fact_bytes(), right.fact_bytes());
         for address in [
@@ -1187,6 +1293,154 @@ mod tests {
         assert_eq!(error.code(), "provider_limit_exceeded");
     }
 
+    struct CountingIdentityReader {
+        revision: std::sync::Mutex<String>,
+        snapshots: AtomicUsize,
+        identity_reads: AtomicUsize,
+    }
+
+    impl CountingIdentityReader {
+        fn new(revision: &str) -> Self {
+            Self {
+                revision: std::sync::Mutex::new(revision.to_string()),
+                snapshots: AtomicUsize::new(0),
+                identity_reads: AtomicUsize::new(0),
+            }
+        }
+
+        fn set_revision(&self, revision: &str) {
+            *self.revision.lock().unwrap() = revision.to_string();
+        }
+
+        fn identity_reads(&self) -> usize {
+            self.identity_reads.load(Ordering::SeqCst)
+        }
+
+        fn snapshots(&self) -> usize {
+            self.snapshots.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ViewReadAuthority for CountingIdentityReader {
+        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
+            self.snapshots.fetch_add(1, Ordering::SeqCst);
+            Ok(ViewSourceSnapshot {
+                source_set_identity: "source-a".to_string(),
+                revision: self.revision.lock().unwrap().clone(),
+            })
+        }
+
+        fn read_exact(
+            &self,
+            at: &QualifiedAddress,
+            _filter: &ViewFilter,
+            _admitted: &ViewSourceSnapshot,
+        ) -> Result<NodeViewData, ViewError> {
+            self.identity_reads.fetch_add(1, Ordering::SeqCst);
+            let node = |kind: &str, title: &str| {
+                NodeView::new(at.to_string(), kind, title, serde_json::Map::new())
+            };
+            match at.to_string().as_str() {
+                "main:Configuration" => Ok(NodeViewData::Node(
+                    node("Configuration", "Configuration")
+                        .with_branches(vec![BranchRef::new("main:Catalog", 1)]),
+                )),
+                "main:Catalog" => Ok(NodeViewData::Collection(CollectionView::new(
+                    node("Catalog", "Catalog"),
+                    vec![serde_json::to_value(NodeView::new(
+                        "main:Catalog.Валюты",
+                        "Catalog",
+                        "Валюты",
+                        serde_json::Map::new(),
+                    ))
+                    .unwrap()],
+                ))),
+                "main:Catalog.Валюты" => Ok(NodeViewData::Node(node("Catalog", "Валюты"))),
+                other => Err(ViewError::new(
+                    "not_found",
+                    format!("unexpected identity read `{other}`"),
+                )),
+            }
+        }
+    }
+
+    #[test]
+    fn unchanged_workspace_reuses_the_retained_find_index_without_rereading_identities() {
+        let reader = CountingIdentityReader::new("rev-a");
+        let builder = WorkspaceFindIndexBuilder::default();
+        let cancellation = CancellationToken::new();
+        let sources = [ActorFindSource::new("main", &reader)];
+
+        let first = builder
+            .build_with_revision(&sources, deadline(), &cancellation)
+            .unwrap();
+        let reads_after_first = reader.identity_reads();
+        let snapshots_after_first = reader.snapshots();
+        assert_eq!(
+            reads_after_first, 3,
+            "the first build walks every logical identity exactly once"
+        );
+
+        let second = builder
+            .build_with_revision(&sources, deadline(), &cancellation)
+            .unwrap();
+
+        assert_eq!(
+            reader.identity_reads(),
+            reads_after_first,
+            "an unchanged admitted revision must not re-read identities"
+        );
+        assert_eq!(
+            reader.snapshots(),
+            snapshots_after_first + 1,
+            "reuse still admits the exact source revision before answering"
+        );
+        assert_eq!(second.revision, first.revision);
+        assert_eq!(second.revision, "rev-a");
+        assert!(Arc::ptr_eq(&first.index, &second.index));
+        let found = second.index.find(FindRequest::new("Валюты").unwrap());
+        assert!(found
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.at() == "main:Catalog.Валюты"));
+    }
+
+    #[test]
+    fn changed_source_revision_rebuilds_the_find_index() {
+        let reader = CountingIdentityReader::new("rev-a");
+        let builder = WorkspaceFindIndexBuilder::default();
+        let cancellation = CancellationToken::new();
+        let sources = [ActorFindSource::new("main", &reader)];
+        let first = builder
+            .build_with_revision(&sources, deadline(), &cancellation)
+            .unwrap();
+        let reads_after_first = reader.identity_reads();
+
+        reader.set_revision("rev-b");
+        let second = builder
+            .build_with_revision(&sources, deadline(), &cancellation)
+            .unwrap();
+
+        assert_eq!(
+            reader.identity_reads(),
+            reads_after_first * 2,
+            "a new exact revision walks the logical tree again"
+        );
+        assert_eq!(second.revision, "rev-b");
+        assert_ne!(second.revision, first.revision);
+        assert!(!Arc::ptr_eq(&first.index, &second.index));
+
+        reader.set_revision("rev-a");
+        builder
+            .build_with_revision(&sources, deadline(), &cancellation)
+            .unwrap();
+        assert_eq!(
+            reader.identity_reads(),
+            reads_after_first * 3,
+            "one retained index per builder: a superseded revision is rebuilt, not remembered"
+        );
+    }
+
     #[test]
     fn find_identity_only_contract_is_complete() {
         actor_owned_platform_xml_registry_builds_identity_only_find_index();
@@ -1194,6 +1448,10 @@ mod tests {
         find_indexes_nested_addressable_metadata_identity();
         crate::infrastructure::v13_read::tests::production_authorities_reach_all_profile_module_capabilities_from_real_parent_inventories();
         crate::infrastructure::v13_read::tests::one_find_reads_each_module_source_once_per_actor_revision();
+        crate::infrastructure::v13_read::tests::one_find_parses_each_metadata_descriptor_once_per_actor_revision();
+        crate::infrastructure::v13_read::tests::typed_reads_parse_the_support_marker_once_per_actor_revision();
+        unchanged_workspace_reuses_the_retained_find_index_without_rereading_identities();
+        changed_source_revision_rebuilds_the_find_index();
         crate::infrastructure::v13_read::tests::operation_lease_find_traversal_scans_once_then_confirms_once();
         profile_matrix_supplements_production_module_capability_coverage();
         find_keeps_profile_identity_for_the_typed_unreadable_websocket_module();

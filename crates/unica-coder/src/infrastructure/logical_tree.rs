@@ -13,7 +13,7 @@ use serde::Deserialize;
 use std::fmt;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum LogicalReader {
     Configuration,

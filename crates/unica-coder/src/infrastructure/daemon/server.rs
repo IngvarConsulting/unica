@@ -448,10 +448,17 @@ impl DaemonInvocationRuntime {
         &self,
         task_id: crate::domain::invocation::TaskId,
     ) -> Result<DaemonTaskSnapshot, DaemonInvocationError> {
-        self.executor
+        let cancelled = self
+            .executor
             .cancel_task(task_id)
             .map(DaemonTaskSnapshot::from_domain)
-            .map_err(DaemonInvocationError::from)
+            .map_err(DaemonInvocationError::from);
+        if self.executor.restart_requested() {
+            // Process death is the release authority now; warm actors must
+            // not outlive the executing invocations until then.
+            let _ = self.workspace_actors.release_warm_actors();
+        }
+        cancelled
     }
 
     fn has_active_invocations(&self) -> bool {
@@ -667,7 +674,9 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
         }
 
         handlers = reap_finished_handlers(handlers);
+        let _ = invocation_runtime.workspace_actors.evict_idle_warm_actors();
         if invocation_runtime.restart_requested() {
+            let _ = invocation_runtime.workspace_actors.release_warm_actors();
             restart_requested = true;
             break;
         }
@@ -6809,6 +6818,8 @@ struct ActorLogicalReadLease {"#,
             Arc::new(TokioClock),
         );
 
+        // Sequential completed workspaces stay bounded by the warm set: the
+        // most recent few actors survive for the next call, nothing beyond.
         for index in 0..80 {
             let workspace = workspaces.path().join(format!("workspace-{index}"));
             std::fs::create_dir(&workspace).unwrap();
@@ -6828,9 +6839,55 @@ struct ActorLogicalReadLease {"#,
                 InvocationResponse::Direct(result)
                     if !result.ok && result.summary == "test rejection after actor admission"
             ));
-            assert!(runtime.workspace_actors.entry_len_for_test().unwrap() <= 1);
+            assert!(
+                runtime.workspace_actors.entry_len_for_test().unwrap()
+                    <= crate::infrastructure::workspace_actor::WARM_WORKSPACE_ACTORS
+            );
         }
-        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 1);
+        assert_eq!(
+            runtime.workspace_actors.entry_len_for_test().unwrap(),
+            crate::infrastructure::workspace_actor::WARM_WORKSPACE_ACTORS
+        );
+
+        // With the warm TTL elapsed every completed workspace releases its
+        // actor capability and the registry prunes the dead entry.
+        let expired_task_root = tempfile::tempdir().unwrap();
+        let (store, _) =
+            FileInvocationStore::open(expired_task_root.path(), Arc::new(SystemEpochMillisClock))
+                .unwrap();
+        let runtime = DaemonInvocationRuntime {
+            executor: Arc::new(InvocationExecutor::new(
+                Arc::new(store),
+                Arc::new(TokioClock),
+            )),
+            service: Arc::new(RejectingAfterActorAdmissionService),
+            workspace_actors: WorkspaceActorRegistry::with_warm_policy_for_test(
+                crate::infrastructure::workspace_actor::WARM_WORKSPACE_ACTORS,
+                Duration::ZERO,
+            ),
+            deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
+            provider_hosts: Arc::new(ProviderHostOwner::default()),
+            runtime_resources: Arc::new(RuntimeResourceOwner::default()),
+            runtime_service: None,
+        };
+        for index in 0..20 {
+            let workspace = workspaces.path().join(format!("expired-{index}"));
+            std::fs::create_dir(&workspace).unwrap();
+            submit_at_receipt(
+                &runtime,
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
+                    std::fs::canonicalize(&workspace).unwrap().to_string_lossy(),
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            runtime.workspace_actors.evict_idle_warm_actors().unwrap();
+            assert!(runtime.workspace_actors.live_len_for_test().unwrap() <= 1);
+        }
+        assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 0);
     }
 
     #[test]
@@ -6894,6 +6951,10 @@ struct ActorLogicalReadLease {"#,
         concurrent_same_identity_admission_creates_one_actor();
         poisoned_registry_is_a_closed_internal_error_and_admits_nothing();
         sequential_direct_admissions_release_actor_capabilities_and_prune_dead_entries();
+        crate::infrastructure::workspace_actor::tests::warm_registry_reuses_the_same_actor_across_sequential_admissions();
+        crate::infrastructure::workspace_actor::tests::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt();
+        crate::infrastructure::workspace_actor::tests::warm_actor_whose_named_root_was_replaced_is_rebuilt();
+        crate::infrastructure::workspace_actor::tests::warm_actors_yield_capacity_to_a_distinct_identity();
     }
 
     #[test]

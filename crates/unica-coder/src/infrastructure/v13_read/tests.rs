@@ -2707,6 +2707,74 @@ pub(crate) fn one_find_reads_each_module_source_once_per_actor_revision() {
 }
 
 #[test]
+pub(crate) fn one_find_parses_each_metadata_descriptor_once_per_actor_revision() {
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    let index = WorkspaceFindIndexBuilder::default()
+        .build(
+            &[ActorFindSource::new("main", &authority)],
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
+            ),
+            &fixture.cancellation,
+        )
+        .unwrap();
+    for expected in [
+        "main:Catalog.Items",
+        "main:Catalog.Items.TabularSection.Lines",
+        "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+    ] {
+        let found = index.find(FindRequest::new(expected).unwrap());
+        assert!(
+            !found.is_nearest()
+                && found
+                    .candidates()
+                    .iter()
+                    .any(|candidate| candidate.at() == expected),
+            "the descriptor-count proof did not traverse {expected}: {found:?}"
+        );
+    }
+    // Owner proof reads the descriptor once and the typed projection once
+    // more; every logical address projected from that owner shares the parse.
+    assert_eq!(
+        authority.metadata_descriptor_read_count("Catalog.Items"),
+        2,
+        "one actor-owned revision must parse each metadata descriptor once per authority",
+    );
+}
+
+#[test]
+pub(crate) fn typed_reads_parse_the_support_marker_once_per_actor_revision() {
+    use crate::application::v13::view::{ViewFilter, ViewReadAuthority};
+    let fixture = RealReaderFixture::new();
+    fs::create_dir_all(fixture.source.join("Ext")).unwrap();
+    fs::copy(
+        fixture_path("platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"),
+        fixture.source.join("Ext/ParentConfigurations.bin"),
+    )
+    .unwrap();
+    let authority = fixture.read_authority();
+    // Three identities under two owners: every typed metadata read asks for
+    // the owner's support state, the marker itself is parsed once.
+    for at in [
+        "main:Catalog.Items",
+        "main:Catalog.Items.TabularSection.Lines",
+        "main:Report.ParityReport",
+    ] {
+        let at = QualifiedAddress::parse(at).unwrap();
+        let admitted = authority.snapshot(&at).unwrap();
+        authority
+            .read_exact(&at, &ViewFilter::default(), &admitted)
+            .unwrap_or_else(|error| panic!("{at}: {error:?}"));
+    }
+    assert_eq!(
+        authority.support_state_read_count(),
+        1,
+        "one actor-owned revision must parse Ext/ParentConfigurations.bin once, not once per owner",
+    );
+}
+
+#[test]
 fn ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work() {
     let payload = json!({
         "name": "SalesReader",
