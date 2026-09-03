@@ -12,6 +12,7 @@ const IDENTITY_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const IDENTITY_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const PRODUCTION_V5_IDENTITY: &str =
     "884b76181583ce34907a2a9758e2b493e5b40883e7cbb0d7f88dcec0e468cfa0";
+const PROCESS_FIXTURE_IDLE_GRACE_MS: u64 = 2_000;
 const STALE_ENDPOINT_INITIAL_IDLE_GRACE_MS: u64 = 500;
 
 #[test]
@@ -37,7 +38,7 @@ fn daemon_frontend_process_fixture() {
         &state_root,
         &identity,
         &executable,
-        350,
+        PROCESS_FIXTURE_IDLE_GRACE_MS,
     )
     .unwrap();
     owner.ping().unwrap();
@@ -164,7 +165,7 @@ fn v5_frontend_process_spawns_the_same_binary_and_pings_the_v5_runtime() {
         &state_root,
         PRODUCTION_V5_IDENTITY,
         &executable,
-        150,
+        PROCESS_FIXTURE_IDLE_GRACE_MS,
     )
     .expect("spawn and connect exact protocol-v5 daemon");
     owner.ping().expect("ping exact protocol-v5 daemon");
@@ -227,7 +228,7 @@ fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
         &state_root,
         PRODUCTION_V5_IDENTITY,
         &executable,
-        100,
+        PROCESS_FIXTURE_IDLE_GRACE_MS,
     );
     let elapsed = started.elapsed();
     drop(blackhole);
