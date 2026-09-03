@@ -2970,10 +2970,10 @@ Use `.claude/commands/xdto.md` as the execution route.
             preview["ops"][0]["args"]["values"]["property"]["type"],
             "tns:Документ_ЗаказКлиента",
         )
-        # ADR-0071: a coherent change travels as one ordered transactional
-        # operations array, and effects are reported by operationIndex.
+        # A coherent change travels as one ordered transactional `ops` array,
+        # and a rejected element is named by its position in it.
         self.assertIn("одним вызовом", text)
-        self.assertIn("operationIndex", text)
+        self.assertIn("`ops[<индекс>]`", text)
         for forbidden in (
             "unica.xdto.validate",
             "xdto-compile",

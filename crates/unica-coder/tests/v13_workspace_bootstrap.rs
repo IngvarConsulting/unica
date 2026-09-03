@@ -20,8 +20,11 @@ impl McpProcess {
         Self::start_at(&workspace, state)
     }
 
-    /// Starts the MCP in `workspace` exactly as given: a symlinked workspace
-    /// path stays a symlink, the way a shell would hand it over.
+    /// Starts the MCP with `workspace` as the child's working directory,
+    /// without canonicalizing it first: a caller standing inside a symlinked
+    /// workspace reaches the server the way a shell would hand it over. What
+    /// the runtime then resolves the workspace to is its own business — the
+    /// point here is only that the call succeeds through the link.
     fn start_at(workspace: &std::path::Path, state: &std::path::Path) -> Self {
         let state = std::fs::canonicalize(state).expect("canonical bootstrap daemon state");
         let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))

@@ -4747,7 +4747,10 @@ pub(crate) mod tests {
         let result = app
             .call_tool(tool_name, json!({"name": "Needle"}).as_object().unwrap())
             .expect("valid full-range config must not panic public dispatch");
-        assert!(result.ok, "{tool_name}: {result:?}");
+        assert!(
+            result.ok,
+            "{tool_name} must answer under a full-range budget"
+        );
     }
 
     #[test]
@@ -10416,7 +10419,7 @@ pub(crate) mod tests {
         let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
         assert!(
             !result.warnings.is_empty(),
-            "{tool} {alias} must preserve the old-format warning: {result:?}"
+            "{tool} {alias} must preserve the old-format warning"
         );
         assert_eq!(
             result.diagnostics.as_ref().unwrap()["formatCompatibility"]["actualFormat"],

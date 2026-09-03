@@ -2525,20 +2525,6 @@ pub(crate) mod tests {
         serde_json::to_value(data.expect("typed XDTO execution must carry data")).unwrap()
     }
 
-    fn public_edit_args(
-        context: &WorkspaceContext,
-        base: &Map<String, Value>,
-        dry_run: bool,
-    ) -> Map<String, Value> {
-        let mut arguments = base.clone();
-        arguments.insert(
-            "cwd".to_string(),
-            json!(context.workspace_root.to_string_lossy()),
-        );
-        arguments.insert("dryRun".to_string(), json!(dry_run));
-        arguments
-    }
-
     fn transaction_debris(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         fn visit(path: &std::path::Path, debris: &mut Vec<std::path::PathBuf>) {
             let Ok(entries) = fs::read_dir(path) else {
@@ -2562,73 +2548,6 @@ pub(crate) mod tests {
         let mut debris = Vec::new();
         visit(root, &mut debris);
         debris
-    }
-
-    fn enterprise_xdto_fixture(
-        name: &str,
-    ) -> (WorkspaceContext, Map<String, Value>, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "unica-xdto-enterprise-{name}-{}-{}",
-            std::process::id(),
-            TEMP_NONCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let source = root.join("src");
-        let descriptor = source.join("XDTOPackages/EnterpriseData_1_17_3.xml");
-        let package = source.join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
-        fs::create_dir_all(package.parent().unwrap()).unwrap();
-        fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        fs::write(
-            source.join("Configuration.xml"),
-            include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../tests/fixtures/xdto/enterprise-data-minimal/Configuration.xml"
-            )),
-        )
-        .unwrap();
-        fs::write(
-            &descriptor,
-            include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../tests/fixtures/xdto/enterprise-data-minimal/XDTOPackages/EnterpriseData_1_17_3.xml"
-            )),
-        )
-        .unwrap();
-        fs::write(
-            &package,
-            include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../tests/fixtures/xdto/enterprise-data-minimal/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"
-            )),
-        )
-        .unwrap();
-        let context = WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        let arguments = args(&[
-            ("sourceSet", json!("main")),
-            ("metadataPath", json!("XDTOPackage.EnterpriseData_1_17_3")),
-            (
-                "operations",
-                json!([{
-                    "op": "addProperty",
-                    "typeName": "ЛюбаяСсылка",
-                    "propertyPath": "СсылкаНаОбъект",
-                    "property": {
-                        "name":"Документ_НовыйДокумент",
-                        "type":"tns:Документ_ЗаказКлиента",
-                        "minOccurs":0
-                    }
-                }]),
-            ),
-        ]);
-        (context, arguments, package)
     }
 
     #[test]
