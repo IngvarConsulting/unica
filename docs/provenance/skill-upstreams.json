@@ -298,28 +298,6 @@
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
-          "skill": "cfe-validate",
-          "status": "ported-to-unica",
-          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
-          "upstreamPaths": [
-            ".claude/skills/cfe-validate/**",
-            "docs/cfe-guide.md",
-            "docs/1c-extension-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/cfe-validate",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/cfe-validate"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ],
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
-          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
-        },
-        {
           "skill": "epf-bsp-add-command",
           "status": "ported-to-unica",
           "notes": "Adapted from the cc-1c-skills command surface for the packaged Unica skill. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
@@ -551,27 +529,6 @@
           "localPaths": [
             "plugins/unica/skills/interface-edit",
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/interface-edit"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ],
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
-        },
-        {
-          "skill": "interface-validate",
-          "status": "ported-to-unica",
-          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
-          "upstreamPaths": [
-            ".claude/skills/interface-validate/**",
-            "docs/subsystem-guide.md",
-            "docs/1c-subsystem-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/interface-validate",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/interface-validate"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",

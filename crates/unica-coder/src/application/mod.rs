@@ -2953,17 +2953,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.cfe.validate",
-            description: "Validate extension XML structure.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("cfe-validate", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "cfe-validate",
-                event: None,
-            },
-        },
-        ToolSpec {
             name: "unica.meta.info",
             description: "Inspect one metadata object with validation, proven subsystem memberships, and source-tree usage.",
             execution: ToolExecution::Read,
@@ -3072,17 +3061,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             handler: ToolHandler::NativeOperation {
                 operation: "interface-edit",
                 event: Some(DomainEventKind::SubsystemChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.interface.validate",
-            description: "Validate CommandInterface.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("interface-validate", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "interface-validate",
-                event: None,
             },
         },
         ToolSpec {
@@ -7097,9 +7075,7 @@ pub(crate) mod tests {
         // `unica.cf.info` left the parity stand when it started answering with
         // typed data: there is no prose left to compare (ADR-0023).
         const PARITY_COVERED_TOOLS: &[&str] = &[
-            "unica.cfe.validate",
             "unica.form.compile",
-            "unica.interface.validate",
             "unica.subsystem.compile",
             "unica.dcs.compile",
             "unica.mxl.compile",
@@ -11034,7 +11010,6 @@ pub(crate) mod tests {
 
         for (tool, alias, directory) in [
             ("unica.cf.info", "Path", src.clone()),
-            ("unica.cfe.validate", "Path", extension.clone()),
             ("unica.role.info", "path", role_dir.clone()),
         ] {
             let mut args = Map::new();
@@ -12770,10 +12745,8 @@ pub(crate) mod tests {
 
         let affected_tools = [
             ("unica.cf.info", "ConfigPath", "OutFile", "outFile"),
-            ("unica.cfe.validate", "ExtensionPath", "OutFile", "outFile"),
             // Retired metadata readers are covered by the exact unknown-tool
             // contract; typed meta.info has no output sink in its schema.
-            ("unica.interface.validate", "CIPath", "OutFile", "outFile"),
             (
                 "unica.subsystem.info",
                 "SubsystemPath",

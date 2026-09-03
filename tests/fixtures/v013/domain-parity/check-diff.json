@@ -96,6 +96,36 @@
           ]
         }
       ]
+    },
+    {
+      "legacyTool": "unica.cfe.validate",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "check"
+          },
+          "caseIds": [
+            "batch2-check-cfe-passed"
+          ]
+        }
+      ]
+    },
+    {
+      "legacyTool": "unica.interface.validate",
+      "variants": [
+        {
+          "legacyVariant": "default",
+          "disposition": "mapped",
+          "successor": {
+            "entry": "check"
+          },
+          "caseIds": [
+            "batch2-check-interface-passed"
+          ]
+        }
+      ]
     }
   ],
   "cases": [
@@ -253,6 +283,28 @@
         "scenario": "S272",
         "class": "refused",
         "code": "not_found"
+      }
+    },
+    {
+      "caseId": "batch2-check-cfe-passed",
+      "entry": "check",
+      "mode": "validator=cfe",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S290",
+        "class": "ok",
+        "status": "passed"
+      }
+    },
+    {
+      "caseId": "batch2-check-interface-passed",
+      "entry": "check",
+      "mode": "validator=interface",
+      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "expected": {
+        "scenario": "S266",
+        "class": "ok",
+        "status": "passed"
       }
     }
   ],

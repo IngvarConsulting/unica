@@ -1349,8 +1349,7 @@ mod tests {
             Value::String(graph.extension.display().to_string()),
         )]);
 
-        let check =
-            evaluate_format_guard(spec("unica.cfe.validate"), &args, &context(&root)).unwrap();
+        let check = evaluate_read_format_guard("cfe-validate", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("full CFE validation must warn for a newer registered form wrapper");
         };

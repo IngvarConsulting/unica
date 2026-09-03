@@ -5108,8 +5108,6 @@ pub(crate) mod tests {
     fn read_only_native_tools_reject_out_file_arguments() {
         let required_path = |name: &str| match name {
             "unica.cf.info" => ("ConfigPath", "src"),
-            "unica.cfe.validate" => ("ExtensionPath", "src"),
-            "unica.interface.validate" => ("CIPath", "src/CommandInterface.xml"),
             "unica.subsystem.info" => ("SubsystemPath", "src/Subsystems/Main.xml"),
             "unica.dcs.info" => ("TemplatePath", "src/Template.xml"),
             "unica.role.info" => ("RightsPath", "src/Rights.xml"),
@@ -5118,8 +5116,6 @@ pub(crate) mod tests {
 
         for name in [
             "unica.cf.info",
-            "unica.cfe.validate",
-            "unica.interface.validate",
             "unica.subsystem.info",
             "unica.dcs.info",
             "unica.role.info",
