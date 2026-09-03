@@ -1576,7 +1576,12 @@ fn validate_template_resource(
                 .map(|_| ())
                 .map_err(|error| format!("text template is not UTF-8: {error}"))
         }
-        (MetadataTemplateType::BinaryData, MetadataTemplateResourcePart::Primary) => Ok(()),
+        (
+            MetadataTemplateType::BinaryData
+            | MetadataTemplateType::AddIn
+            | MetadataTemplateType::DataCompositionAppearanceTemplate,
+            MetadataTemplateResourcePart::Primary,
+        ) => Ok(()),
         (MetadataTemplateType::HtmlDocument, MetadataTemplateResourcePart::Primary) => {
             html_template_page_names(bytes).map(|_| ())
         }
@@ -4586,13 +4591,7 @@ mod tests {
         let child_address = address(child);
         let name = child_address.segments().last().unwrap().to_string();
         let template_type = resources.first().unwrap().0;
-        let template_type_value = match template_type {
-            MetadataTemplateType::HtmlDocument => "HTMLDocument",
-            MetadataTemplateType::TextDocument => "TextDocument",
-            MetadataTemplateType::SpreadsheetDocument => "SpreadsheetDocument",
-            MetadataTemplateType::BinaryData => "BinaryData",
-            MetadataTemplateType::DataCompositionSchema => "DataCompositionSchema",
-        };
+        let template_type_value = template_type.descriptor_value();
         let descriptor = typed_child_xml("Template", &name, Some(template_type_value));
         let directories = if template_type == MetadataTemplateType::HtmlDocument {
             vec![

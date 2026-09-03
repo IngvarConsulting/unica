@@ -1742,9 +1742,10 @@ pub(super) fn typed_template_primary_path(template_type: MetadataTemplateType) -
     match template_type {
         MetadataTemplateType::HtmlDocument
         | MetadataTemplateType::SpreadsheetDocument
-        | MetadataTemplateType::DataCompositionSchema => "Ext/Template.xml",
+        | MetadataTemplateType::DataCompositionSchema
+        | MetadataTemplateType::DataCompositionAppearanceTemplate => "Ext/Template.xml",
         MetadataTemplateType::TextDocument => "Ext/Template.txt",
-        MetadataTemplateType::BinaryData => "Ext/Template.bin",
+        MetadataTemplateType::BinaryData | MetadataTemplateType::AddIn => "Ext/Template.bin",
     }
 }
 
@@ -1772,7 +1773,10 @@ pub(super) fn typed_template_initial_content(template_type: MetadataTemplateType
                 .expect("closed template kind")
                 .into_bytes()
         }
-        MetadataTemplateType::TextDocument | MetadataTemplateType::BinaryData => Vec::new(),
+        MetadataTemplateType::TextDocument
+        | MetadataTemplateType::BinaryData
+        | MetadataTemplateType::AddIn
+        | MetadataTemplateType::DataCompositionAppearanceTemplate => Vec::new(),
     }
 }
 
@@ -2002,8 +2006,13 @@ fn typed_child_payload_role(
                 {
                     MetadataTemplateResourcePart::Primary
                 }
-                (MetadataTemplateType::BinaryData, path)
+                (MetadataTemplateType::BinaryData | MetadataTemplateType::AddIn, path)
                     if path == Path::new("Ext/Template.bin") =>
+                {
+                    MetadataTemplateResourcePart::Primary
+                }
+                (MetadataTemplateType::DataCompositionAppearanceTemplate, path)
+                    if path == Path::new("Ext/Template.xml") =>
                 {
                     MetadataTemplateResourcePart::Primary
                 }

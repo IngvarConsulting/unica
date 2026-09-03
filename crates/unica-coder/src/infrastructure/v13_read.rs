@@ -382,54 +382,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 self.verify_registered_owner(&child, admitted)?;
             }
         }
-        let template_branches = local
-            .collections
-            .templates
-            .iter()
-            .map(|template| {
-                let child = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("{}.Template.{}", target.as_str(), template.name),
-                )
-                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
-                let branches = match self.read.metadata_child_profile(&child) {
-                    Ok(MetadataChildProfile::Template(
-                        MetadataTemplateType::DataCompositionSchema,
-                    )) => {
-                        let payload = self.read.dcs_payload(&child)?;
-                        vec![(
-                            NodeKind::DataSet,
-                            payload
-                                .get("dataSets")
-                                .and_then(Value::as_array)
-                                .map_or(0, Vec::len),
-                        )]
-                    }
-                    Ok(MetadataChildProfile::Template(
-                        MetadataTemplateType::SpreadsheetDocument,
-                    )) => {
-                        let payload = self.read.mxl_payload(&child)?;
-                        vec![(
-                            NodeKind::Area,
-                            payload
-                                .get("areas")
-                                .and_then(Value::as_array)
-                                .map_or(0, Vec::len),
-                        )]
-                    }
-                    Ok(MetadataChildProfile::Template(_)) => Vec::new(),
-                    Ok(MetadataChildProfile::Form | MetadataChildProfile::Command) => {
-                        return Err(ViewError::new(
-                            "provider_unavailable",
-                            "template registry points to a non-template descriptor",
-                        ));
-                    }
-                    Err(error) if error.code() == "not_found" => Vec::new(),
-                    Err(error) => return Err(error),
-                };
-                Ok((template.name.clone(), branches))
-            })
-            .collect::<Result<std::collections::BTreeMap<_, _>, ViewError>>()?;
         let mut payload = Map::new();
         payload.insert("name".to_string(), json!(local.name));
         payload.insert("synonym".to_string(), json!(local.synonym));
@@ -439,26 +391,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
         insert_serialized(&mut payload, "properties", &local.properties)?;
         insert_serialized(&mut payload, "declarations", &local.declarations)?;
         insert_serialized(&mut payload, "relations", &local.relations)?;
-        let mut collections = serde_json::to_value(&local.collections)
+        let collections = serde_json::to_value(&local.collections)
             .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
-        if let Some(templates) = collections
-            .get_mut("templates")
-            .and_then(Value::as_array_mut)
-        {
-            for template in templates {
-                let Some(name) = template.get("name").and_then(Value::as_str) else {
-                    continue;
-                };
-                let Some(branches) = template_branches.get(name) else {
-                    continue;
-                };
-                template["logicalBranches"] = json!(branches
-                    .iter()
-                    .filter(|(_, count)| *count > 0)
-                    .map(|(kind, count)| json!({"kind": kind.as_str(), "count": count}))
-                    .collect::<Vec<_>>());
-            }
-        }
         payload.insert("collections".to_string(), collections);
         Ok(Value::Object(payload))
     }
@@ -1134,7 +1068,8 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             self.form_view(&route, admitted)?
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
-            project_typed_payload(&route, payload)?
+            let projected = project_typed_payload(&route, payload)?;
+            self.with_template_body_branches(projected, &route)?
         };
         let projected = self.with_module_branch(projected, at, admitted)?;
         self.read_checkpoint()?;
@@ -1149,6 +1084,88 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
 }
 
 impl LogicalViewReadAuthority<'_> {
+    /// A template's own body (data sets of a DCS, areas of a spreadsheet) is
+    /// read only when the template node itself is addressed. Projecting the
+    /// owner or the template collection never opens template payloads, so a
+    /// large or unreadable body fails exactly one node instead of its owner.
+    fn with_template_body_branches(
+        &self,
+        projected: NodeViewData,
+        route: &LogicalTreeRoute,
+    ) -> Result<NodeViewData, ViewError> {
+        if route.reader() != LogicalReader::Metadata {
+            return Ok(projected);
+        }
+        let segments = route.at().segments();
+        let [owner, template] = segments else {
+            return Ok(projected);
+        };
+        if template.kind() != NodeKind::Template || template.name().is_none() {
+            return Ok(projected);
+        }
+        let Some(owner_name) = owner.name() else {
+            return Ok(projected);
+        };
+        let child = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!(
+                "{}.{owner_name}.Template.{}",
+                owner.kind().as_str(),
+                template.name().unwrap_or_default()
+            ),
+        )
+        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+        let mut projected = projected;
+        for (kind, count) in self.template_body_branches(&child)? {
+            if count > 0 {
+                projected = projected.with_branch(BranchRef::new(
+                    format!("{}.{}", route.at(), kind.as_str()),
+                    count,
+                ));
+            }
+        }
+        Ok(projected)
+    }
+
+    fn template_body_branches(
+        &self,
+        child: &MetadataAddress,
+    ) -> Result<Vec<(NodeKind, usize)>, ViewError> {
+        Ok(match self.read.metadata_child_profile(child) {
+            Ok(MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)) => {
+                let payload = self.read.dcs_payload(child)?;
+                vec![(
+                    NodeKind::DataSet,
+                    payload
+                        .get("dataSets")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len),
+                )]
+            }
+            Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
+                let payload = self.read.mxl_payload(child)?;
+                vec![(
+                    NodeKind::Area,
+                    payload
+                        .get("areas")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len),
+                )]
+            }
+            // Text, HTML, binary, add-in and appearance templates have no
+            // addressable interior: addressing stops at the template.
+            Ok(MetadataChildProfile::Template(_)) => Vec::new(),
+            Ok(MetadataChildProfile::Form | MetadataChildProfile::Command) => {
+                return Err(ViewError::new(
+                    "provider_unavailable",
+                    "template registry points to a non-template descriptor",
+                ));
+            }
+            Err(error) if error.code() == "not_found" => Vec::new(),
+            Err(error) => return Err(error),
+        })
+    }
+
     fn with_module_branch(
         &self,
         projected: NodeViewData,
