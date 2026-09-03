@@ -199,7 +199,7 @@ fn maintained_runner_target(target: &str) -> serde_json::Value {
         "asset": {
             "name": executable,
             "url": format!(
-                "https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v0.6.0/{executable}"
+                "https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v0.7.1/{executable}"
             ),
             "mediaType": "application/octet-stream",
             "sha256": HASH
@@ -211,7 +211,7 @@ fn maintained_runner_target(target: &str) -> serde_json::Value {
 fn fixture_with_maintained_runner() -> serde_json::Value {
     let mut manifest = fixture();
     manifest["artifacts"]["v8-runner"] = serde_json::json!({
-        "version": "0.6.0",
+        "version": "0.7.1",
         "role": "engine",
         "targets": {
             "darwin-arm64": maintained_runner_target("darwin-arm64"),

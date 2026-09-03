@@ -314,11 +314,11 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         self.assertEqual(runner["repository"], "https://github.com/IngvarConsulting/v8-runner-rust")
         self.assertEqual(runner["assetRepository"], runner["repository"])
-        self.assertEqual(runner["sourceTag"], "v0.6.0")
+        self.assertEqual(runner["sourceTag"], "v0.7.1")
         self.assertEqual(runner["assetTag"], runner["sourceTag"])
         self.assertEqual(
             runner["sourceCommit"],
-            "344af6e87113feaf89c6b3c63f0e7bad17d73cbb",
+            "d081dfcdc10a63dcff4cb6a854e19f7ea22243c4",
         )
 
     def test_historical_build_2_release_provenance_is_immutable(self) -> None:

@@ -22,7 +22,7 @@ use crate::application::invocation::{
     TASK_RECONCILIATION_BUDGET,
 };
 use crate::application::invocation_store::{InvocationStore, InvocationStoreError};
-use crate::application::operation_descriptors::ExecutionClass;
+use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
 use crate::application::ports::{Clock, TokioClock};
 use crate::application::shared_work::ProviderHostOwner;
 use crate::application::tool_contracts::SurfaceRelease;
@@ -318,6 +318,15 @@ impl DaemonInvocationRuntime {
                 ) {
                     return Ok(InvocationResponse::Direct(result));
                 }
+                match super::v13_infobase_exports::prepare(&request) {
+                    super::v13_infobase_exports::Preparation::NotApplicable => {}
+                    super::v13_infobase_exports::Preparation::Rejected(result) => {
+                        return Ok(InvocationResponse::Direct(*result))
+                    }
+                    super::v13_infobase_exports::Preparation::Ready(prepared) => {
+                        return self.submit_infobase_export(&request, response_deadline, prepared)
+                    }
+                }
                 match bind_workspace_invocation(
                     &request,
                     &self.workspace_actors,
@@ -390,6 +399,33 @@ impl DaemonInvocationRuntime {
                         "workspace actor capability changed before publication",
                     )
                 })?
+            })
+            .map(|outcome| match outcome {
+                InvocationOutcome::Direct(result) => InvocationResponse::Direct(result),
+                InvocationOutcome::Task(task) => {
+                    InvocationResponse::Task(DaemonTaskSnapshot::from_domain(task))
+                }
+            })
+            .map_err(DaemonInvocationError::from)
+    }
+
+    fn submit_infobase_export(
+        &self,
+        request: &InvocationRequest,
+        response_deadline: InvocationResponseDeadline,
+        export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
+    ) -> Result<InvocationResponse, DaemonInvocationError> {
+        let prepared = PreparedDaemonInvocation::new(
+            request.tool(),
+            normalized_arguments_hash(request.arguments()),
+            export.workspace_identity_hash(),
+            ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+            response_deadline.clone(),
+        )
+        .with_resource_lease(export.clone());
+        self.executor
+            .submit_prepared(response_deadline, Ok(prepared), move |cancellation| {
+                Ok(export.execute(cancellation))
             })
             .map(|outcome| match outcome {
                 InvocationOutcome::Direct(result) => InvocationResponse::Direct(result),
@@ -1370,6 +1406,80 @@ pub(crate) mod actor_capacity_tests {
             InvocationResponse::Direct(result) => result,
             InvocationResponse::Task(_) => panic!("workspace bootstrap must finish directly"),
         }
+    }
+
+    #[test]
+    fn infobase_export_is_task_admitted_without_platform_xml_source_sets() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=base'\n",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+        let request = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({
+                "op": "infobase.dump",
+                "args": {"output": "dist/base.dt"},
+                "dryRun": true
+            }),
+            workspace.path().display().to_string(),
+            7_000,
+        )
+        .unwrap();
+
+        let response = runtime
+            .submit(request, runtime.capture_response_deadline())
+            .expect("runtime export admission");
+
+        assert!(matches!(response, InvocationResponse::Task(_)));
+    }
+
+    #[test]
+    fn canonical_view_bootstrap_recognizes_an_infobase_only_workspace() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=base'\n",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.summary,
+            "workspace configuration and infobase target discovered; no source sets are attached"
+        );
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert_eq!(data["config"]["state"], "configured");
+        assert_eq!(data["sourceSets"], serde_json::json!([]));
+        assert_eq!(data["infobase"]["configured"], true);
+        assert_eq!(data["ready"], true);
+        assert_eq!(data["sourceSelectionError"], serde_json::Value::Null);
+        assert_eq!(data["diagnostics"], serde_json::json!([]));
+        assert_eq!(data["setup"], serde_json::Value::Null);
+        assert_eq!(result.next.len(), 2, "{result:?}");
+        assert_eq!(
+            result.next[0]["args"],
+            serde_json::json!({
+                "op": "infobase.configuration.export",
+                "args": {"state": "working", "output": "dist/main.cf"},
+                "dryRun": true
+            })
+        );
+        assert_eq!(
+            result.next[1]["args"],
+            serde_json::json!({
+                "op": "infobase.dump",
+                "args": {"output": "dist/base.dt"},
+                "dryRun": true
+            })
+        );
     }
 
     #[test]
