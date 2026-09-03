@@ -298,14 +298,12 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 280)
-        self.assertEqual(
-            sum(len(scenario["wire"]) for scenario in scenarios),
-            309,
-            "a wire step went missing: the corpus freezes 309 steps",
+        self.assertEqual(len(scenarios), 288)
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 319,
+            "a wire step went missing: the corpus freezes 319 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 281)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 289)])
 
     def test_the_run_half_of_the_surface_stays_out_of_this_corpus(self) -> None:
         for scenario in self.corpus["scenarios"]:

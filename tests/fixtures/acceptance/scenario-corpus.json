@@ -7316,6 +7316,272 @@
     }
    ],
    "workspace": "tests/fixtures/acceptance/workspace-format"
+  },
+  {
+   "id": "S281",
+   "area": "Поддержка поставщика",
+   "task": "Изменить свойство объекта поставщика на замке — отказ стража поддержки до первого байта",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Правка объекта поставщика"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S282",
+   "area": "Поддержка поставщика",
+   "task": "Добавить значение перечислению поставщика на замке — отказ стража поддержки",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "enumValue.add",
+        "args": {
+         "items": [
+          {
+           "name": "НовоеЗначение"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S283",
+   "area": "Поддержка поставщика",
+   "task": "Добавить форму объекту поставщика на замке — отказ стража поддержки",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаСписка",
+           "type": "ListForm"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S284",
+   "area": "Поддержка поставщика",
+   "task": "Добавить макет объекту поставщика на замке — отказ стража поддержки",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "template.add",
+        "args": {
+         "items": [
+          {
+           "name": "Макет",
+           "templateType": "SpreadsheetDocument"
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S285",
+   "area": "Поддержка поставщика",
+   "task": "Удалить объект поставщика на замке — отказ стража поддержки",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "object.remove",
+        "args": {}
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+    }
+   ]
+  },
+  {
+   "id": "S286",
+   "area": "Поддержка поставщика",
+   "task": "Разрешить редактирование объекта на замке — операция поддержки проходит сквозь страж",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "editable"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S287",
+   "area": "Поддержка поставщика",
+   "task": "Снять замок с объекта поставщика и после этого изменить его свойство",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "editable"
+         }
+        }
+       }
+      ],
+      "dryRun": false
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Правка после снятия замка"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S288",
+   "area": "Поддержка поставщика",
+   "task": "Запретить изменения конфигурации на поддержке и попытаться изменить редактируемый объект — отказ по общему флагу",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "supportCapability.set",
+        "args": {
+         "values": {
+          "enabled": false
+         }
+        }
+       }
+      ],
+      "dryRun": false
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Правка при запрете изменений"
+         }
+        }
+       }
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first"
+    }
+   ]
   }
  ]
 }

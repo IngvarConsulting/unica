@@ -316,6 +316,43 @@ impl ApplyStagedState {
         self
     }
 
+    /// Whether every parent directory of `relative` exists below the retained
+    /// root, walked without following links and without recording an entry.
+    /// A read of a path below a missing parent retains that missing chain as a
+    /// postimage the publication must own; a gate that only wants to know
+    /// whether an optional marker is present asks this first.
+    pub(crate) fn parent_exists(&mut self, relative: &Path) -> Result<bool, ApplyStagingError> {
+        self.checkpoint("apply staged probe")?;
+        let relative = strict_relative(relative)?;
+        let mut ancestor = self.root.as_ref().clone();
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::ContainmentIdentity,
+                    format!(
+                        "staged target must contain only normal relative components: {}",
+                        relative.display()
+                    ),
+                ));
+            };
+            if Some(name) == relative.file_name() {
+                break;
+            }
+            match ancestor.retain_immediate_child_nofollow(name) {
+                Ok(RetainedChildCapability::Directory(directory)) => ancestor = directory,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+                Ok(_) => return Ok(false),
+                Err(error) => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::UnsupportedProvider,
+                        format!("staged target parent rejected link/reparse traversal: {error}"),
+                    ))
+                }
+            }
+        }
+        Ok(true)
+    }
+
     pub(crate) fn read(&mut self, relative: &Path) -> Result<Option<Vec<u8>>, ApplyStagingError> {
         let relative = strict_relative(relative)?;
         let index = self.ensure_loaded(&relative)?;
