@@ -880,7 +880,7 @@ mod tests {
         )
         .expect("a forced removal plans");
         assert!(!staged.planned_changes().is_empty());
-        assert_eq!(effects.warnings().len(), 1, "{:?}", effects.warnings());
+        assert_eq!(effects.warnings().len(), 1);
         let warning = &effects.warnings()[0];
         assert_eq!(warning["code"], "references_kept");
         assert_eq!(warning["count"], 1);
