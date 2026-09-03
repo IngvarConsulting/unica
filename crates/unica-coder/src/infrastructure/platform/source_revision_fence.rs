@@ -8,6 +8,10 @@ use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FenceCapability {
+    // Only the macOS fence proves a fast flush. The vocabulary belongs to the
+    // cross-platform `SourceRevisionFence` trait, so the variant stays on every
+    // target and only its dead-code state follows the producer.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     ProvenFast,
     Unsupported,
 }
@@ -28,7 +32,10 @@ pub(crate) fn expected_platform_fence_capability_for_test(_root: &Path) -> Fence
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FenceOutcome {
-    Proven { changed_paths: Vec<PathBuf> },
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Proven {
+        changed_paths: Vec<PathBuf>,
+    },
     TrustLost(SourceRevisionTrustLoss),
 }
 
