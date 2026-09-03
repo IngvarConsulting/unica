@@ -30,6 +30,9 @@ pub(crate) struct ProvisionalApplyEffect {
     paths: Vec<PathBuf>,
     event: DomainEvent,
     operation_index: usize,
+    /// A typed warning the planner wants to travel with the plan even when
+    /// the effect itself is reconciled away.
+    warning: Option<serde_json::Value>,
 }
 
 impl ProvisionalApplyEffect {
@@ -42,6 +45,7 @@ impl ProvisionalApplyEffect {
             paths: vec![path.into()],
             event,
             operation_index,
+            warning: None,
         }
     }
 
@@ -55,7 +59,14 @@ impl ProvisionalApplyEffect {
             paths,
             event,
             operation_index,
+            warning: None,
         }
+    }
+
+    /// Attaches a typed warning that reaches the caller with the plan.
+    pub(crate) fn with_warning(mut self, warning: serde_json::Value) -> Self {
+        self.warning = Some(warning);
+        self
     }
 
     pub(crate) fn event(&self) -> &DomainEvent {
@@ -82,6 +93,9 @@ pub(crate) fn reconcile_effects(
     let mut effects = PlannedApplyEffects::default();
     provisional.sort_by_key(ProvisionalApplyEffect::operation_index);
     for candidate in provisional {
+        if let Some(warning) = candidate.warning.clone() {
+            effects.push_warning(warning);
+        }
         if !candidate.paths.is_empty()
             // Every file the effect stands for must still differ; planners
             // name the file behind each event, so restoring one module of a

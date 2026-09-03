@@ -22,7 +22,7 @@ use crate::application::invocation::{
     TASK_RECONCILIATION_BUDGET,
 };
 use crate::application::invocation_store::{InvocationStore, InvocationStoreError};
-use crate::application::operation_descriptors::ExecutionClass;
+use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
 use crate::application::ports::{Clock, TokioClock};
 use crate::application::shared_work::ProviderHostOwner;
 use crate::application::tool_contracts::SurfaceRelease;
@@ -45,29 +45,6 @@ const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const MAX_HANDSHAKES: usize = 8;
 pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
-
-/// v5 keeps this explicit unavailable service while its distinct runtime is
-/// migrated. Production v3 uses `CanonicalV13ReadService` directly.
-struct UnavailableV5InvocationService;
-
-impl CanonicalInvocationService for UnavailableV5InvocationService {
-    fn prepare(
-        &self,
-        _invocation: &ActorBoundInvocation,
-    ) -> Result<ExecutionClass, Box<DomainResult>> {
-        Ok(ExecutionClass::InlineCandidate)
-    }
-
-    fn execute(
-        &self,
-        _invocation: &ActorBoundExecution,
-        _cancellation: CancellationToken,
-    ) -> Result<DomainResult, InvocationFailure> {
-        Ok(failed_domain_result(
-            "canonical v0.13 invocation is unavailable in the v5 daemon runtime",
-        ))
-    }
-}
 
 #[derive(Debug)]
 enum DaemonInvocationError {
@@ -276,7 +253,7 @@ pub(crate) struct DaemonInvocationRuntime {
 }
 
 impl DaemonInvocationRuntime {
-    fn new(
+    pub(super) fn new(
         store: Arc<dyn InvocationStore>,
         service: Arc<dyn CanonicalInvocationService>,
         clock: Arc<dyn Clock>,
@@ -340,6 +317,15 @@ impl DaemonInvocationRuntime {
                     &response_deadline,
                 ) {
                     return Ok(InvocationResponse::Direct(result));
+                }
+                match super::v13_infobase_exports::prepare(&request) {
+                    super::v13_infobase_exports::Preparation::NotApplicable => {}
+                    super::v13_infobase_exports::Preparation::Rejected(result) => {
+                        return Ok(InvocationResponse::Direct(*result))
+                    }
+                    super::v13_infobase_exports::Preparation::Ready(prepared) => {
+                        return self.submit_infobase_export(&request, response_deadline, prepared)
+                    }
                 }
                 match bind_workspace_invocation(
                     &request,
@@ -423,6 +409,33 @@ impl DaemonInvocationRuntime {
             .map_err(DaemonInvocationError::from)
     }
 
+    fn submit_infobase_export(
+        &self,
+        request: &InvocationRequest,
+        response_deadline: InvocationResponseDeadline,
+        export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
+    ) -> Result<InvocationResponse, DaemonInvocationError> {
+        let prepared = PreparedDaemonInvocation::new(
+            request.tool(),
+            normalized_arguments_hash(request.arguments()),
+            export.workspace_identity_hash(),
+            ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+            response_deadline.clone(),
+        )
+        .with_resource_lease(export.clone());
+        self.executor
+            .submit_prepared(response_deadline, Ok(prepared), move |cancellation| {
+                Ok(export.execute(cancellation))
+            })
+            .map(|outcome| match outcome {
+                InvocationOutcome::Direct(result) => InvocationResponse::Direct(result),
+                InvocationOutcome::Task(task) => {
+                    InvocationResponse::Task(DaemonTaskSnapshot::from_domain(task))
+                }
+            })
+            .map_err(DaemonInvocationError::from)
+    }
+
     fn get(
         &self,
         task_id: crate::domain::invocation::TaskId,
@@ -470,6 +483,197 @@ impl DaemonInvocationRuntime {
     }
 }
 
+pub(super) struct V5CanonicalInvocationRuntime {
+    service: Arc<dyn CanonicalInvocationService>,
+    clock: Arc<dyn Clock>,
+    workspace_actors: WorkspaceActorRegistry,
+    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+    provider_hosts: Arc<ProviderHostOwner>,
+    runtime_resources: Arc<RuntimeResourceOwner>,
+}
+
+#[derive(Debug)]
+pub(super) enum V5CanonicalPrepareError {
+    Direct(Box<DomainResult>),
+    Rejected(Box<DomainResult>),
+    WorkspaceCapacity,
+    WorkspaceRegistryFailed,
+}
+
+pub(super) enum V5ActorBoundCanonicalInvocation {
+    Workspace {
+        invocation: Box<ActorBoundInvocation>,
+        service: Arc<dyn CanonicalInvocationService>,
+    },
+    InfobaseExport {
+        export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+    },
+}
+
+pub(super) enum V5PreparedCanonicalInvocation {
+    Workspace {
+        invocation: Box<ActorBoundInvocation>,
+        class: ExecutionClass,
+        service: Arc<dyn CanonicalInvocationService>,
+    },
+    InfobaseExport {
+        export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
+    },
+}
+
+impl V5CanonicalInvocationRuntime {
+    pub(super) fn new(service: Arc<dyn CanonicalInvocationService>, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            service,
+            clock,
+            workspace_actors: WorkspaceActorRegistry::default(),
+            deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
+            provider_hosts: Arc::new(ProviderHostOwner::default()),
+            runtime_resources: Arc::new(RuntimeResourceOwner::default()),
+        }
+    }
+
+    pub(super) fn bind(
+        &self,
+        request: InvocationRequest,
+    ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
+        let response_deadline = InvocationResponseDeadline::capture(Arc::clone(&self.clock))
+            .restrict_to_frontend_budget(Duration::from_millis(request.response_budget_ms()));
+        if let Err(summary) = validate_hidden_v13_request(&request) {
+            return Err(V5CanonicalPrepareError::Rejected(Box::new(
+                DomainResult::canonical_rejection(None, "bad_value", summary),
+            )));
+        }
+        if let Some(result) =
+            super::v13_workspace_bootstrap::execute_view_bootstrap(&request, &response_deadline)
+        {
+            return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
+        }
+        if let Some(result) = super::v13_workspace_initialize::execute_workspace_initialize(
+            &request,
+            &response_deadline,
+        ) {
+            return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
+        }
+        match super::v13_infobase_exports::prepare(&request) {
+            super::v13_infobase_exports::Preparation::NotApplicable => {}
+            super::v13_infobase_exports::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_infobase_exports::Preparation::Ready(export) => {
+                let workspace_identity_hash = export.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::InfobaseExport {
+                    export,
+                    workspace_identity_hash,
+                });
+            }
+        }
+        let invocation = bind_workspace_invocation(
+            &request,
+            &self.workspace_actors,
+            Arc::clone(&self.deliveries),
+            Arc::clone(&self.provider_hosts),
+            Arc::clone(&self.runtime_resources),
+            None,
+            response_deadline,
+        )
+        .map_err(|error| match error {
+            WorkspaceAdmissionError::Capacity => V5CanonicalPrepareError::WorkspaceCapacity,
+            WorkspaceAdmissionError::RegistryFailed => {
+                V5CanonicalPrepareError::WorkspaceRegistryFailed
+            }
+            WorkspaceAdmissionError::Invalid => {
+                if let Some(result) =
+                    super::v13_workspace_initialize::reject_unavailable_run_before_admission(
+                        &request,
+                    )
+                {
+                    V5CanonicalPrepareError::Direct(Box::new(result))
+                } else {
+                    V5CanonicalPrepareError::Rejected(Box::new(failed_domain_result(
+                        "workspace actor admission failed",
+                    )))
+                }
+            }
+        })?;
+        Ok(V5ActorBoundCanonicalInvocation::Workspace {
+            invocation: Box::new(invocation),
+            service: Arc::clone(&self.service),
+        })
+    }
+}
+
+impl V5ActorBoundCanonicalInvocation {
+    pub(super) fn workspace_identity_hash(&self) -> &crate::domain::invocation::SafeIdentityHash {
+        match self {
+            Self::Workspace { invocation, .. } => invocation.workspace_identity_hash(),
+            Self::InfobaseExport {
+                workspace_identity_hash,
+                ..
+            } => workspace_identity_hash,
+        }
+    }
+
+    pub(super) fn prepare(self) -> Result<V5PreparedCanonicalInvocation, Box<DomainResult>> {
+        match self {
+            Self::Workspace {
+                invocation,
+                service,
+            } => {
+                let class = service.prepare(&invocation)?;
+                Ok(V5PreparedCanonicalInvocation::Workspace {
+                    invocation,
+                    class,
+                    service,
+                })
+            }
+            Self::InfobaseExport { export, .. } => {
+                Ok(V5PreparedCanonicalInvocation::InfobaseExport { export })
+            }
+        }
+    }
+}
+
+impl V5PreparedCanonicalInvocation {
+    pub(super) const fn execution_class(&self) -> &ExecutionClass {
+        const INFOBASE_EXPORT_CLASS: ExecutionClass =
+            ExecutionClass::KnownLong(KnownLongReason::ExternalProcess);
+        match self {
+            Self::Workspace { class, .. } => class,
+            Self::InfobaseExport { .. } => &INFOBASE_EXPORT_CLASS,
+        }
+    }
+
+    pub(super) fn execute(
+        self,
+        cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        match self {
+            Self::Workspace {
+                invocation,
+                service,
+                ..
+            } => {
+                let execution = invocation.begin_execution(&cancellation).map_err(|_| {
+                    InvocationFailure::new(
+                        "workspace_changed",
+                        "workspace actor capability changed before execution",
+                    )
+                })?;
+                let outcome = service.execute(&execution, cancellation.clone());
+                execution.publish(outcome, &cancellation).map_err(|_| {
+                    InvocationFailure::new(
+                        "workspace_changed",
+                        "workspace actor capability changed before publication",
+                    )
+                })?
+            }
+            Self::InfobaseExport { export } => Ok(export.execute(cancellation)),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct DaemonServerConfig {
     pub(crate) state_root: std::path::PathBuf,
@@ -480,8 +684,12 @@ pub(crate) struct DaemonServerConfig {
     invocation_store: Option<Arc<dyn InvocationStore>>,
     #[cfg(test)]
     reconciliation_budget: Option<Duration>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     invocation_clock: Option<Arc<dyn Clock>>,
+    #[cfg(feature = "receipt-ledger-test-support")]
+    v5_epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
+    #[cfg(feature = "receipt-ledger-test-support")]
+    skip_v5_startup_reconciliation: bool,
     #[cfg(test)]
     startup_pause: Option<Arc<HandshakePause>>,
     #[cfg(test)]
@@ -499,7 +707,9 @@ impl DaemonServerConfig {
                 DaemonProtocolIdentity::V3 => Arc::new(
                     crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
                 ),
-                DaemonProtocolIdentity::V5 => Arc::new(UnavailableV5InvocationService),
+                DaemonProtocolIdentity::V5 => Arc::new(
+                    crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+                ),
             };
         Self {
             state_root,
@@ -510,8 +720,12 @@ impl DaemonServerConfig {
             invocation_store: None,
             #[cfg(test)]
             reconciliation_budget: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
             invocation_clock: None,
+            #[cfg(feature = "receipt-ledger-test-support")]
+            v5_epoch_clock: None,
+            #[cfg(feature = "receipt-ledger-test-support")]
+            skip_v5_startup_reconciliation: false,
             #[cfg(test)]
             startup_pause: None,
             #[cfg(test)]
@@ -523,7 +737,33 @@ impl DaemonServerConfig {
         Arc::clone(&self.invocation_service)
     }
 
-    #[cfg(test)]
+    pub(super) fn invocation_clock_for_v5(&self) -> Arc<dyn Clock> {
+        #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+        if let Some(clock) = &self.invocation_clock {
+            return Arc::clone(clock);
+        }
+        Arc::new(TokioClock)
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(super) fn epoch_clock_for_v5_test(
+        &self,
+    ) -> Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>> {
+        self.v5_epoch_clock.clone()
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(super) const fn skip_v5_startup_reconciliation_for_test(&self) -> bool {
+        self.skip_v5_startup_reconciliation
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn without_v5_startup_reconciliation_for_test(mut self) -> Self {
+        self.skip_v5_startup_reconciliation = true;
+        self
+    }
+
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn with_invocation_service(
         mut self,
         service: Arc<dyn CanonicalInvocationService>,
@@ -547,9 +787,18 @@ impl DaemonServerConfig {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn with_invocation_clock_for_test(mut self, clock: Arc<dyn Clock>) -> Self {
         self.invocation_clock = Some(clock);
+        self
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn with_v5_epoch_clock_for_test(
+        mut self,
+        clock: Arc<dyn crate::application::invocation_store::EpochMillisClock>,
+    ) -> Self {
+        self.v5_epoch_clock = Some(clock);
         self
     }
 
@@ -605,11 +854,7 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
         let _recovery_classifications = opened_store.recovery.classifications.len();
         opened_store.store
     };
-    #[cfg(test)]
-    let invocation_clock = config
-        .invocation_clock
-        .clone()
-        .unwrap_or_else(|| Arc::new(TokioClock));
+    let invocation_clock = config.invocation_clock_for_v5();
     #[cfg(test)]
     let invocation_runtime = Arc::new(match config.reconciliation_budget {
         Some(budget) => DaemonInvocationRuntime::new_with_reconciliation_budget_for_test(
@@ -628,7 +873,7 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
     let invocation_runtime = Arc::new(DaemonInvocationRuntime::new(
         invocation_store,
         Arc::clone(&config.invocation_service),
-        Arc::new(TokioClock),
+        invocation_clock,
     ));
 
     let record = EndpointRecord::new(config.core_identity.clone(), port);
@@ -1212,6 +1457,80 @@ pub(crate) mod actor_capacity_tests {
             InvocationResponse::Direct(result) => result,
             InvocationResponse::Task(_) => panic!("workspace bootstrap must finish directly"),
         }
+    }
+
+    #[test]
+    fn infobase_export_is_task_admitted_without_platform_xml_source_sets() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=base'\n",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+        let request = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({
+                "op": "infobase.dump",
+                "args": {"output": "dist/base.dt"},
+                "dryRun": true
+            }),
+            workspace.path().display().to_string(),
+            7_000,
+        )
+        .unwrap();
+
+        let response = runtime
+            .submit(request, runtime.capture_response_deadline())
+            .expect("runtime export admission");
+
+        assert!(matches!(response, InvocationResponse::Task(_)));
+    }
+
+    #[test]
+    fn canonical_view_bootstrap_recognizes_an_infobase_only_workspace() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=base'\n",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime(task_root.path());
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.summary,
+            "workspace configuration and infobase target discovered; no source sets are attached"
+        );
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert_eq!(data["config"]["state"], "configured");
+        assert_eq!(data["sourceSets"], serde_json::json!([]));
+        assert_eq!(data["infobase"]["configured"], true);
+        assert_eq!(data["ready"], true);
+        assert_eq!(data["sourceSelectionError"], serde_json::Value::Null);
+        assert_eq!(data["diagnostics"], serde_json::json!([]));
+        assert_eq!(data["setup"], serde_json::Value::Null);
+        assert_eq!(result.next.len(), 2, "{result:?}");
+        assert_eq!(
+            result.next[0]["args"],
+            serde_json::json!({
+                "op": "infobase.configuration.export",
+                "args": {"state": "working", "output": "dist/main.cf"},
+                "dryRun": true
+            })
+        );
+        assert_eq!(
+            result.next[1]["args"],
+            serde_json::json!({
+                "op": "infobase.dump",
+                "args": {"output": "dist/base.dt"},
+                "dryRun": true
+            })
+        );
     }
 
     #[test]
@@ -5751,6 +6070,10 @@ struct ActorLogicalReadLease {"#,
         executions: Arc<AtomicUsize>,
     }
 
+    struct CountingPrepareService {
+        preparations: Arc<AtomicUsize>,
+    }
+
     struct SharedDeliveryService {
         key: DeliveryWorkKey,
         ready_root: std::path::PathBuf,
@@ -5914,6 +6237,227 @@ struct ActorLogicalReadLease {"#,
             self.executions.fetch_add(1, Ordering::SeqCst);
             Ok(DomainResult::success("deadline-bound prepare result"))
         }
+    }
+
+    impl CanonicalInvocationService for CountingPrepareService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            self.preparations.fetch_add(1, Ordering::SeqCst);
+            Ok(ExecutionClass::InlineCandidate)
+        }
+
+        fn execute(
+            &self,
+            _invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            Ok(DomainResult::success("counted execution"))
+        }
+    }
+
+    #[test]
+    fn v5_actor_binding_does_not_enter_domain_prepare_before_explicit_begin() {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).expect("create source root");
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .expect("write workspace descriptor");
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .expect("write configuration root");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Configuration"}),
+            std::fs::canonicalize(workspace.path())
+                .expect("canonical workspace")
+                .to_string_lossy(),
+            7_000,
+        )
+        .expect("valid request");
+
+        let bound = runtime.bind(request).expect("bind workspace actor");
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+        let prepared = bound.prepare().expect("enter domain prepare explicitly");
+        assert_eq!(preparations.load(Ordering::SeqCst), 1);
+        assert_eq!(prepared.execution_class(), &ExecutionClass::InlineCandidate);
+    }
+
+    #[test]
+    fn v5_view_without_at_returns_the_workspace_bootstrap_before_actor_admission() {
+        let workspace = tempfile::tempdir().expect("temporary empty workspace");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({}),
+            std::fs::canonicalize(workspace.path())
+                .expect("canonical workspace")
+                .to_string_lossy(),
+            7_000,
+        )
+        .expect("valid bootstrap request");
+
+        let result = match runtime.bind(request) {
+            Err(V5CanonicalPrepareError::Direct(result)) => result,
+            Ok(_) => panic!("workspace bootstrap must not enter actor admission"),
+            Err(other) => panic!("workspace bootstrap returned infrastructure failure: {other:?}"),
+        };
+
+        assert!(result.ok, "v5 bootstrap was misclassified: {result:?}");
+        assert_eq!(result.data.as_ref().unwrap()["config"]["state"], "missing");
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
+        let workspace = tempfile::tempdir().expect("temporary empty workspace");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({}),
+            std::fs::canonicalize(workspace.path())
+                .expect("canonical workspace")
+                .to_string_lossy(),
+            7_000,
+        )
+        .expect("valid run dictionary request");
+
+        let result = match runtime.bind(request) {
+            Err(V5CanonicalPrepareError::Direct(result)) => result,
+            Ok(_) => panic!("run dictionary must not enter actor admission"),
+            Err(other) => panic!("run dictionary returned infrastructure failure: {other:?}"),
+        };
+
+        assert!(result.ok, "v5 run dictionary was misclassified: {result:?}");
+        assert!(!result.data.as_ref().unwrap()["operations"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate() {
+        let workspace = tempfile::tempdir().expect("temporary infobase workspace");
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "infobase:\n",
+                "  connection:\n",
+                "    type: file\n",
+                "    path: .build/infobase\n",
+            ),
+        )
+        .expect("write infobase-only workspace descriptor");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = |op: &str, args: serde_json::Value, dry_run: bool, if_rev: Option<&str>| {
+            let mut arguments = serde_json::json!({
+                "op": op,
+                "args": args,
+                "dryRun": dry_run,
+            });
+            if let Some(if_rev) = if_rev {
+                arguments["ifRev"] = serde_json::json!(if_rev);
+            }
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .expect("canonical workspace")
+                    .to_string_lossy(),
+                7_000,
+            )
+            .expect("valid infobase export request")
+        };
+
+        for (op, args) in [
+            (
+                "infobase.configuration.export",
+                serde_json::json!({"state": "working", "output": "dist/main.cf"}),
+            ),
+            (
+                "infobase.dump",
+                serde_json::json!({"output": "dist/main.dt"}),
+            ),
+        ] {
+            let preview = runtime
+                .bind(request(op, args.clone(), true, None))
+                .expect("preview binds without a PlatformXml source set")
+                .prepare()
+                .expect("preview preparation");
+            assert_eq!(
+                preview.execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+
+            let apply = runtime
+                .bind(request(
+                    op,
+                    args,
+                    false,
+                    Some("unica-infobase-export-sha256-v1:test"),
+                ))
+                .expect("revision-bound apply binds without a PlatformXml source set")
+                .prepare()
+                .expect("apply preparation");
+            assert_eq!(
+                apply.execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+        }
+
+        let missing_revision = match runtime.bind(request(
+            "infobase.configuration.export",
+            serde_json::json!({"state": "working", "output": "dist/main.cf"}),
+            false,
+            None,
+        )) {
+            Err(V5CanonicalPrepareError::Rejected(result)) => result,
+            Ok(_) => panic!("apply without ifRev passed the revision gate"),
+            Err(other) => panic!("apply revision gate returned infrastructure failure: {other:?}"),
+        };
+        assert_eq!(missing_revision.diagnostics[0]["code"], "bad_value");
+        assert!(missing_revision.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires ifRev"));
+        assert_eq!(
+            preparations.load(Ordering::SeqCst),
+            0,
+            "infobase exports must not enter the PlatformXml service"
+        );
     }
 
     impl CanonicalInvocationService for SharedDeliveryService {

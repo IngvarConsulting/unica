@@ -82,7 +82,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed directional twelve-operation dictionary and pre-admission revision-fenced workspace.initialize are implemented; the other eleven run operations remain unsupported.",
+      "reason": "The closed directional twelve-operation dictionary, workspace.initialize, configuration-package export, and DT export are implemented through non-executing preview and revision-fenced apply; the other nine run operations remain unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -137,9 +137,15 @@
       "evidence": []
     },
     "infobase.configuration.export": {
-      "status": "unsupported",
-      "reason": "Configuration package export execution has not been connected to the v0.13 run adapter.",
-      "evidence": []
+      "status": "supported",
+      "reason": "Working/database main configuration and named extension export use v8-runner provider selection, non-executing preview, revision-fenced apply, and independent artifact verification.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+        "test": "apply_repeats_preflight_and_returns_an_independent_file_receipt"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+        "test": "cfe_and_dt_invocations_use_only_their_closed_runner_arguments"
+      }]
     },
     "infobase.configuration.load": {
       "status": "unsupported",
@@ -147,9 +153,15 @@
       "evidence": []
     },
     "infobase.dump": {
-      "status": "unsupported",
-      "reason": "Full infobase DT export has not been connected to the v0.13 run adapter.",
-      "evidence": []
+      "status": "supported",
+      "reason": "Full DT export uses v8-runner provider selection, non-executing preview, revision-fenced apply, and independent artifact verification.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+        "test": "cfe_and_dt_invocations_use_only_their_closed_runner_arguments"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "infobase_export_is_task_admitted_without_platform_xml_source_sets"
+      }]
     },
     "infobase.restore": {
       "status": "unsupported",

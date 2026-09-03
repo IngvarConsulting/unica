@@ -2,7 +2,7 @@
 id: INV.SURFACE.WORKSPACE-BOOTSTRAP
 status: active
 governs: product
-decision: DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS
+decision: DEC.2026-09-03.INFOBASE-EXPORT-RUN-SLICE
 check: crates/unica-coder/tests/v13_workspace_bootstrap.rs::canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery
 scope: [source, wire]
 ---
@@ -15,3 +15,7 @@ scope: [source, wire]
 однородные source sets получают `workspace.initialize` preview; смешанные форматы не
 сворачиваются в ложный глобальный рецепт, существующий config не предлагается
 перезаписать, а health не расходует response serialization margin.
+
+Configured workspace только с `infobase.connection` является готовым
+runtime-состоянием, а не ошибкой исходников: он не получает `sourceSetExample`
+или `source_roots_missing`, но получает точные preview-продолжения для CF и DT.

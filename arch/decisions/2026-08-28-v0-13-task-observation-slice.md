@@ -1,8 +1,8 @@
 ---
 id: DEC.2026-08-28.V0-13-TASK-OBSERVATION-SLICE
-status: planned
+status: active
 governs: product
-realized: null
+realized: crates/unica-coder/tests/daemon_receipt_ledger.rs::v5_rejects_v3_v4_and_strictly_round_trips_receipt_messages
 supersedes: []
 superseded-by: null
 establishes: []

@@ -35,6 +35,9 @@ enum MetadataPlanKind {
         target: MetadataAddress,
         kind: MetadataKind,
         name: String,
+        /// Remove even when other source files still refer to the object;
+        /// the plan then carries a typed warning naming those files.
+        force: bool,
     },
     HelpCreate {
         target: MetadataAddress,
@@ -406,17 +409,29 @@ fn parse_object_remove(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("object.remove", args, &["at"], op_index)?;
+    reject_unknown_args("object.remove", args, &["at", "force"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (address, kind) = metadata_owner(&target, op_index)?;
     let name = target.segments()[0]
         .name()
         .expect("metadata_owner proved the segment is named")
         .to_string();
+    let force = match args.get("force") {
+        None => false,
+        Some(Value::Bool(force)) => *force,
+        Some(_) => {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "`force` must be a boolean",
+            )
+            .at_path(format!("ops[{op_index}].args.force")))
+        }
+    };
     Ok(MetadataPlanKind::Remove {
         target: address,
         kind,
         name,
+        force,
     })
 }
 
@@ -961,13 +976,19 @@ pub(crate) fn plan_metadata_batch(
                 )?;
                 continue;
             }
-            MetadataPlanKind::Remove { target, kind, name } => {
+            MetadataPlanKind::Remove {
+                target,
+                kind,
+                name,
+                force,
+            } => {
                 stage_object_remove(
                     &mut staged,
                     &authority,
                     target,
                     *kind,
                     name,
+                    *force,
                     op_index,
                     &mut provisional,
                 )?;
@@ -1371,12 +1392,14 @@ pub(super) fn stage_object_create(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage_object_remove(
     staged: &mut ApplyStagedState,
     authority: &MetadataApplyAuthority<'_>,
     target: &MetadataAddress,
     kind: MetadataKind,
     name: &str,
+    force: bool,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
@@ -1415,6 +1438,7 @@ fn stage_object_remove(
     .map_err(|error| {
         ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error).at_path(at_path.clone())
     })?;
+    let mut kept_references = None;
     if !references.is_empty() {
         let shown = references
             .iter()
@@ -1422,15 +1446,31 @@ fn stage_object_remove(
             .cloned()
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidState,
-            format!(
-                "`{}` is still referenced by {} source file(s): {shown}; remove the references first",
+        if !force {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                format!(
+                    "`{}` is still referenced by {} source file(s): {shown}; remove the references first",
+                    target.as_str(),
+                    references.len()
+                ),
+            )
+            .at_path(at_path));
+        }
+        // A forced removal leaves the referrers as they are and says so:
+        // the caller asked for the object to go, the dangling references
+        // are the caller's next task.
+        kept_references = Some(serde_json::json!({
+            "code": "references_kept",
+            "at": at_path,
+            "count": references.len(),
+            "files": references.iter().take(5).cloned().collect::<Vec<_>>(),
+            "message": format!(
+                "`{}` was removed with force; {} source file(s) still refer to it: {shown}",
                 target.as_str(),
                 references.len()
             ),
-        )
-        .at_path(at_path));
+        }));
     }
     let mut touched = Vec::new();
     if has_dir {
@@ -1509,14 +1549,18 @@ fn stage_object_remove(
         .remove(&descriptor_relative, &descriptor_preimage)
         .map_err(|error| ApplyPlanError::staging(error, at_path))?;
     touched.push(descriptor_relative);
-    provisional.push(ProvisionalApplyEffect::spanning(
+    let effect = ProvisionalApplyEffect::spanning(
         touched,
         DomainEvent::new(
             DomainEventKind::MetadataChanged,
             target.as_str().to_string(),
         ),
         op_index,
-    ));
+    );
+    provisional.push(match kept_references {
+        Some(warning) => effect.with_warning(warning),
+        None => effect,
+    });
     Ok(())
 }
 

@@ -141,6 +141,24 @@ impl RunOperation {
                 "properties": {},
                 "required": []
             })),
+            RunIntent::InfobaseConfigurationExport => Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "state": {"type": "string", "enum": ["working", "database"]},
+                    "output": {"type": "string", "description": "Workspace-relative .cf or .cfe output path."},
+                    "extension": {"type": "string", "description": "1C extension name; omit for the main configuration."}
+                },
+                "required": ["state", "output"]
+            })),
+            RunIntent::InfobaseDump => Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "output": {"type": "string", "description": "Workspace-relative .dt output path."}
+                },
+                "required": ["output"]
+            })),
             _ => None,
         }
     }
@@ -347,7 +365,12 @@ fn run_dictionary() -> Vec<RunOperation> {
     .map(|intent| RunOperation {
         terminal: intent == RunIntent::ClientRun,
         rejects_sessions: intent == RunIntent::ClientRun,
-        implemented: intent == RunIntent::WorkspaceInitialize,
+        implemented: matches!(
+            intent,
+            RunIntent::WorkspaceInitialize
+                | RunIntent::InfobaseConfigurationExport
+                | RunIntent::InfobaseDump
+        ),
         intent,
     })
     .collect()
@@ -710,7 +733,11 @@ mod tests {
                 .filter(|operation| operation.implemented)
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
-            ["workspace.initialize"]
+            [
+                "workspace.initialize",
+                "infobase.configuration.export",
+                "infobase.dump"
+            ]
         );
 
         let output = &catalog.result_envelope_schema;
@@ -828,8 +855,12 @@ mod tests {
                 .filter(|operation| operation.implemented)
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
-            ["workspace.initialize"],
-            "only the renamed initialization vertical is implemented in this contract slice"
+            [
+                "workspace.initialize",
+                "infobase.configuration.export",
+                "infobase.dump"
+            ],
+            "the initialization and first two infobase export verticals are implemented"
         );
     }
 
@@ -857,5 +888,47 @@ mod tests {
         // The no-query guarantee remains independently active while the
         // directional-intents test above owns the exact operation names.
         v13_run_dictionary_has_twelve_directional_runtime_intents();
+    }
+
+    #[test]
+    fn v13_infobase_exports_are_implemented_with_closed_agent_facing_arguments() {
+        let catalog = catalog_for(SurfaceRelease::V13).expect("v0.13 catalog");
+        let operation = |intent| {
+            catalog
+                .run_dictionary
+                .iter()
+                .find(|operation| operation.intent == intent)
+                .expect("runtime operation")
+        };
+
+        let configuration = operation(RunIntent::InfobaseConfigurationExport);
+        assert!(configuration.implemented);
+        assert_eq!(
+            configuration.args_schema(),
+            Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "state": {"type": "string", "enum": ["working", "database"]},
+                    "output": {"type": "string", "description": "Workspace-relative .cf or .cfe output path."},
+                    "extension": {"type": "string", "description": "1C extension name; omit for the main configuration."}
+                },
+                "required": ["state", "output"]
+            }))
+        );
+
+        let dump = operation(RunIntent::InfobaseDump);
+        assert!(dump.implemented);
+        assert_eq!(
+            dump.args_schema(),
+            Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "output": {"type": "string", "description": "Workspace-relative .dt output path."}
+                },
+                "required": ["output"]
+            }))
+        );
     }
 }

@@ -7,12 +7,22 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::DomainResult;
 use crate::domain::project_health::evaluate_project_health;
 use crate::domain::project_sources::{ProjectSourceMap, SourceFormat, SourceSetKind};
+use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::project_health::inspect_project_health;
 use crate::infrastructure::project_sources::discover_project_source_map_controlled;
+use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace::discover_workspace;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
+
+const PROJECT_CONFIG_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InfobaseTarget {
+    configured: bool,
+    source: Option<&'static str>,
+}
 
 pub(super) fn execute_view_bootstrap(
     request: &InvocationRequest,
@@ -80,12 +90,34 @@ pub(super) fn execute_view_bootstrap(
                 ))
             }
         };
-    Some(bootstrap_result(&context, source_map, deadline))
+    let infobase = match inspect_infobase_target(&context.workspace_root, config_present) {
+        Ok(target) => target,
+        Err(error) => {
+            let mut result = DomainResult::canonical_rejection(
+                None,
+                "invalid_state",
+                format!("infobase target configuration is invalid: {error}"),
+            );
+            result.data = Some(object([
+                ("workspaceRoot", value(&context.workspace_root)),
+                (
+                    "config",
+                    object([
+                        ("state", Value::String("invalid".to_string())),
+                        ("path", Value::String("v8project.yaml".to_string())),
+                    ]),
+                ),
+            ]));
+            return Some(result);
+        }
+    };
+    Some(bootstrap_result(&context, source_map, infobase, deadline))
 }
 
 fn bootstrap_result(
     context: &crate::domain::workspace::WorkspaceContext,
     source_map: ProjectSourceMap,
+    infobase: InfobaseTarget,
     response_deadline: &InvocationResponseDeadline,
 ) -> DomainResult {
     let config_state = if source_map.config_path.is_some() {
@@ -119,19 +151,24 @@ fn bootstrap_result(
     };
     let (mut ready, repository_ready, checks, mut diagnostics, readiness_state) = match health {
         None => (
-            false,
+            infobase.configured,
             false,
             Value::Array(Vec::new()),
-            Value::Array(vec![object([
-                ("code", Value::String("source_roots_missing".to_string())),
-                (
-                    "message",
-                    Value::String(
-                        "No v8project.yaml or 1C source roots were found. Call unica.run with an empty object to inspect source, CF/DT, and existing-infobase initialization routes."
-                            .to_string(),
+            if infobase.configured {
+                Value::Array(Vec::new())
+            } else {
+                Value::Array(vec![object([
+                    ("code", Value::String("source_roots_missing".to_string())),
+                    (
+                        "message",
+                        Value::String(if config_state == "configured" {
+                            "v8project.yaml is present, but it declares neither source sets nor an infobase connection. Add the input that matches the intended operation."
+                        } else {
+                            "No v8project.yaml or 1C source roots were found. Call unica.run with an empty object to inspect source, CF/DT, and existing-infobase initialization routes."
+                        }.to_string()),
                     ),
-                ),
-            ])]),
+                ])])
+            },
             "complete",
         ),
         Some(Ok(report)) => {
@@ -233,7 +270,10 @@ fn bootstrap_result(
             ]));
         }
     }
-    let setup = if config_state == "configured" && source_map.source_sets.is_empty() {
+    let setup = if config_state == "configured"
+        && source_map.source_sets.is_empty()
+        && !infobase.configured
+    {
         Some(object([
             ("path", Value::String("v8project.yaml".to_string())),
             ("content", Value::Null),
@@ -294,11 +334,17 @@ fn bootstrap_result(
         None
     };
 
+    let source_selection_error = if infobase.configured && source_map.source_sets.is_empty() {
+        None
+    } else {
+        source_map.source_selection_error.as_deref()
+    };
     let source_sets = serde_json::to_value(&source_map.source_sets)
         .expect("project source sets always serialize");
-    let mut result = DomainResult::success(match config_state {
-        "configured" => "workspace configuration and source sets discovered",
-        "autodetected" => "source sets autodetected; v8project.yaml is not present",
+    let mut result = DomainResult::success(match (config_state, infobase.configured, source_map.source_sets.is_empty()) {
+        ("configured", true, true) => "workspace configuration and infobase target discovered; no source sets are attached",
+        ("configured", _, _) => "workspace configuration and source sets discovered",
+        ("autodetected", _, _) => "source sets autodetected; v8project.yaml is not present",
         _ => "workspace is uninitialized; no v8project.yaml or 1C source roots were found",
     });
     result.data = Some(object([
@@ -312,6 +358,13 @@ fn bootstrap_result(
         ),
         ("sourceSets", source_sets),
         (
+            "infobase",
+            object([
+                ("configured", Value::Bool(infobase.configured)),
+                ("source", value(infobase.source)),
+            ]),
+        ),
+        (
             "effectiveSourceSet",
             value(&source_map.effective_source_set),
         ),
@@ -319,10 +372,7 @@ fn bootstrap_result(
             "effectiveSourceRoot",
             value(&source_map.effective_source_root),
         ),
-        (
-            "sourceSelectionError",
-            value(&source_map.source_selection_error),
-        ),
+        ("sourceSelectionError", value(source_selection_error)),
         ("ready", Value::Bool(ready)),
         ("discoveredReady", Value::Bool(discovered_ready)),
         ("repositoryReady", Value::Bool(repository_ready)),
@@ -348,6 +398,38 @@ fn bootstrap_result(
             "preview creation of v8project.yaml from the autodetected source sets",
         ));
     }
+    if infobase.configured && source_map.source_sets.is_empty() {
+        result.next.push(next_action(
+            "unica.run",
+            object([
+                (
+                    "op",
+                    Value::String("infobase.configuration.export".to_string()),
+                ),
+                (
+                    "args",
+                    object([
+                        ("state", Value::String("working".to_string())),
+                        ("output", Value::String("dist/main.cf".to_string())),
+                    ]),
+                ),
+                ("dryRun", Value::Bool(true)),
+            ]),
+            "preview export of the working main configuration without changing the infobase",
+        ));
+        result.next.push(next_action(
+            "unica.run",
+            object([
+                ("op", Value::String("infobase.dump".to_string())),
+                (
+                    "args",
+                    object([("output", Value::String("dist/base.dt".to_string()))]),
+                ),
+                ("dryRun", Value::Bool(true)),
+            ]),
+            "preview a full DT snapshot export without changing the infobase",
+        ));
+    }
     if let (true, Some(Ok(at))) = (ready, next_address) {
         result.next.push(next_action(
             "unica.view",
@@ -361,6 +443,86 @@ fn bootstrap_result(
         ));
     }
     result
+}
+
+fn inspect_infobase_target(
+    workspace_root: &std::path::Path,
+    config_present: bool,
+) -> Result<InfobaseTarget, String> {
+    if !config_present {
+        return Ok(InfobaseTarget {
+            configured: false,
+            source: None,
+        });
+    }
+    let base = read_yaml_config(workspace_root, "v8project.yaml")?
+        .ok_or_else(|| "v8project.yaml disappeared during inspection".to_string())?;
+    let base_connection = yaml_infobase_connection(&base, "v8project.yaml")?;
+    let local = read_yaml_config(workspace_root, "v8project.local.yaml")?;
+    let local_connection = local
+        .as_ref()
+        .map(|value| yaml_infobase_connection(value, "v8project.local.yaml"))
+        .transpose()?
+        .flatten();
+    let (connection, source) = match local_connection {
+        Some(connection) => (Some(connection), Some("v8project.local.yaml")),
+        None => (base_connection, Some("v8project.yaml")),
+    };
+    let configured = connection
+        .as_deref()
+        .is_some_and(|connection| !connection.trim().is_empty());
+    Ok(InfobaseTarget {
+        configured,
+        source: configured.then_some(source.expect("configured connection has a source")),
+    })
+}
+
+fn read_yaml_config(
+    workspace_root: &std::path::Path,
+    name: &str,
+) -> Result<Option<serde_yaml::Value>, String> {
+    let workspace_root = normalize_path_identity(workspace_root).map_err(|error| {
+        format!(
+            "failed to resolve workspace root {}: {error}",
+            workspace_root.display()
+        )
+    })?;
+    let path = workspace_root.join(name);
+    let read = match read_root_relative_regular_file(
+        &workspace_root,
+        &path,
+        PROJECT_CONFIG_MAX_BYTES,
+        |_| {},
+    ) {
+        Ok(read) => read,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("{name} must be a bounded regular file: {error}")),
+    };
+    serde_yaml::from_slice(&read.bytes)
+        .map(Some)
+        .map_err(|error| format!("failed to parse {name}: {error}"))
+}
+
+fn yaml_infobase_connection(
+    root: &serde_yaml::Value,
+    source: &str,
+) -> Result<Option<String>, String> {
+    let Some(mapping) = root.as_mapping() else {
+        return Err(format!("{source} document root must be a mapping"));
+    };
+    let Some(infobase) = mapping.get(serde_yaml::Value::String("infobase".to_string())) else {
+        return Ok(None);
+    };
+    let Some(infobase) = infobase.as_mapping() else {
+        return Err(format!("{source} infobase must be a mapping"));
+    };
+    let Some(connection) = infobase.get(serde_yaml::Value::String("connection".to_string())) else {
+        return Ok(None);
+    };
+    connection
+        .as_str()
+        .map(|connection| Some(connection.to_string()))
+        .ok_or_else(|| format!("{source} infobase.connection must be text"))
 }
 
 fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
@@ -453,7 +615,7 @@ pub(super) fn project_config_recipe(source_map: &ProjectSourceMap) -> Option<Str
 
 #[cfg(test)]
 mod tests {
-    use super::project_config_recipe;
+    use super::{inspect_infobase_target, project_config_recipe};
     use crate::domain::project_sources::{
         ProjectSourceMap, ProjectSourceSet, SourceFormat, SourceSetKind,
     };
@@ -507,5 +669,45 @@ mod tests {
             serde_yaml::from_str(&project_config_recipe(&source_map).unwrap()).unwrap();
 
         assert_eq!(parsed["format"], "EDT");
+    }
+
+    #[test]
+    fn infobase_target_uses_the_machine_local_connection_override() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.local.yaml"),
+            "infobase:\n  connection: 'Srvr=server;Ref=base'\n",
+        )
+        .unwrap();
+
+        let target = inspect_infobase_target(workspace.path(), true).unwrap();
+
+        assert!(target.configured);
+        assert_eq!(target.source, Some("v8project.local.yaml"));
+    }
+
+    #[test]
+    fn empty_local_connection_does_not_claim_runtime_readiness() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "infobase:\n  connection: 'File=base'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.local.yaml"),
+            "infobase:\n  connection: ''\n",
+        )
+        .unwrap();
+
+        let target = inspect_infobase_target(workspace.path(), true).unwrap();
+
+        assert!(!target.configured);
+        assert_eq!(target.source, None);
     }
 }

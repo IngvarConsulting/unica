@@ -188,11 +188,22 @@ pub(crate) struct PlannedApplyEffects {
     /// request-level reconciliation can drop exactly the events whose file
     /// was restored; an empty list means "the whole batch".
     paths: Vec<Vec<PathBuf>>,
+    /// Typed warnings a planner attaches to a plan that still executes: a
+    /// forced removal names the files that keep referring to the object.
+    warnings: Vec<serde_json::Value>,
 }
 
 impl PlannedApplyEffects {
     pub(crate) fn events(&self) -> &[DomainEvent] {
         &self.events
+    }
+
+    pub(crate) fn warnings(&self) -> &[serde_json::Value] {
+        &self.warnings
+    }
+
+    pub(crate) fn push_warning(&mut self, warning: serde_json::Value) {
+        self.warnings.push(warning);
     }
 
     pub(crate) fn into_events(self) -> Vec<DomainEvent> {

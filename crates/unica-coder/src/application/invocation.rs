@@ -60,7 +60,7 @@ impl std::fmt::Debug for InvocationResponseDeadline {
 }
 
 impl InvocationResponseDeadline {
-    fn capture(clock: Arc<dyn Clock>) -> Self {
+    pub(crate) fn capture(clock: Arc<dyn Clock>) -> Self {
         let receipt_at = clock.now();
         let handoff_at = receipt_at + INVOCATION_HANDOFF_WINDOW;
         Self {
@@ -332,7 +332,7 @@ impl ReconciliationPolicy {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     const fn with_budget_for_test(budget: Duration) -> Self {
         Self {
             budget,
@@ -365,7 +365,7 @@ enum DurableTerminalOutcome {
     Fail(SafeFailureReason),
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "receipt-ledger-test-support"))]
 struct TerminalWorkerGate {
     entered: std::sync::mpsc::Sender<()>,
     release: Mutex<std::sync::mpsc::Receiver<()>>,
@@ -410,7 +410,7 @@ impl InvocationExecutor {
         InvocationResponseDeadline::capture(Arc::clone(&self.clock))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn new_with_reconciliation_budget_for_test(
         store: Arc<dyn InvocationStore>,
         clock: Arc<dyn Clock>,
@@ -424,6 +424,7 @@ impl InvocationExecutor {
             health: Arc::new(Mutex::new(InvocationExecutorHealth::Healthy)),
             reconciliation: ReconciliationPolicy::with_budget_for_test(budget),
             reconciliation_timer: Arc::new(SystemReconciliationTimer),
+            #[cfg(test)]
             terminal_worker_gate: Mutex::new(None),
         }
     }

@@ -453,10 +453,11 @@ pub(crate) enum V5DaemonErrorCode {
     TaskExpired,
     StoreFailed,
     DurabilityUncertain,
+    StoreCommitUncertain,
 }
 
 impl V5DaemonErrorCode {
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 18] = [
         Self::InvalidRequest,
         Self::HandshakeRequired,
         Self::ProtocolMismatch,
@@ -474,6 +475,7 @@ impl V5DaemonErrorCode {
         Self::TaskExpired,
         Self::StoreFailed,
         Self::DurabilityUncertain,
+        Self::StoreCommitUncertain,
     ];
 }
 
@@ -497,6 +499,7 @@ impl fmt::Display for V5DaemonErrorCode {
             Self::TaskExpired => "task_expired",
             Self::StoreFailed => "store_failed",
             Self::DurabilityUncertain => "durability_uncertain",
+            Self::StoreCommitUncertain => "store_commit_uncertain",
         };
         formatter.write_str(code)
     }
@@ -775,6 +778,10 @@ impl StrictV5Submit {
     #[allow(dead_code)]
     pub(crate) fn response_budget_ms(&self) -> u64 {
         self.invocation.response_budget_ms()
+    }
+
+    pub(crate) fn invocation(&self) -> &V5InvocationRequest {
+        &self.invocation
     }
 
     pub(crate) fn into_parts(self) -> (ReceiptKey, u64) {
@@ -1127,7 +1134,7 @@ pub(crate) fn run_strict_envelope_reachability_probe_for_test(
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
-fn strict_envelope_case_frame(case: StrictV5EnvelopeCase) -> Result<Vec<u8>, String> {
+pub(crate) fn strict_envelope_case_frame(case: StrictV5EnvelopeCase) -> Result<Vec<u8>, String> {
     use serde_json::{json, Value};
 
     let mut envelope = json!({
