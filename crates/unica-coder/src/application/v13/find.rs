@@ -96,7 +96,8 @@ pub(crate) struct FindDocument {
     at: String,
     kind: String,
     title: String,
-    /// The file that carries this object, relative to the source-set root.
+    /// Where this object lives in the source layout, relative to the
+    /// source-set root: a descriptor file, or the directory of a command.
     path: Option<String>,
     facts: Vec<FindFact>,
 }
@@ -148,8 +149,9 @@ pub(crate) struct FindCandidate {
     at: String,
     kind: String,
     title: String,
-    /// The file to open when the caller wants to read or repair the object
-    /// outside Unica. Absent only for an entry the layout cannot place.
+    /// What to open when the caller wants to read or repair the object
+    /// outside Unica: a descriptor file, or a command's directory. Absent only
+    /// for an entry the layout cannot place.
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     reason: String,

@@ -13,6 +13,7 @@
 | `CTR.SOURCE.REVISION-ARTIFACT-PROFILE` | контракт · product | active |  | Профиль артефактов ревизии actor-owned source set | [contracts/CTR.SOURCE.REVISION-ARTIFACT-PROFILE.md](contracts/CTR.SOURCE.REVISION-ARTIFACT-PROFILE.md) |
 | `CTR.WIRE.COMPATIBILITY-TASK-TOOLS` | контракт · product | active |  | Три compatibility-инструмента durable Task | [contracts/CTR.WIRE.COMPATIBILITY-TASK-TOOLS.md](contracts/CTR.WIRE.COMPATIBILITY-TASK-TOOLS.md) |
 | `CTR.WIRE.DAEMON-INVOCATION-PROTOCOL` | контракт · product | active |  | Внутренний daemon protocol canonical Invocation | [contracts/CTR.WIRE.DAEMON-INVOCATION-PROTOCOL.md](contracts/CTR.WIRE.DAEMON-INVOCATION-PROTOCOL.md) |
+| `CTR.WIRE.FIND-CANDIDATE-SHAPE` | контракт · product | active |  | Кандидат find несёт адрес и место объекта в раскладке, но не ревизию | [contracts/CTR.WIRE.FIND-CANDIDATE-SHAPE.md](contracts/CTR.WIRE.FIND-CANDIDATE-SHAPE.md) |
 | `CTR.WIRE.LIST-CACHE-FIELDS` | контракт · product | active |  | Современный list несёт cache-поля, legacy сохраняет прежнюю форму | [contracts/CTR.WIRE.LIST-CACHE-FIELDS.md](contracts/CTR.WIRE.LIST-CACHE-FIELDS.md) |
 | `CTR.WIRE.NATIVE-TASK-PROJECTION` | контракт · product | active |  | SEP-2663 projection скрытого V13 | [contracts/CTR.WIRE.NATIVE-TASK-PROJECTION.md](contracts/CTR.WIRE.NATIVE-TASK-PROJECTION.md) |
 | `CTR.WIRE.TOOL-SURFACE` | контракт · product | active |  | Package-selected поверхность содержит восемь или одиннадцать описанных инструментов | [contracts/CTR.WIRE.TOOL-SURFACE.md](contracts/CTR.WIRE.TOOL-SURFACE.md) |

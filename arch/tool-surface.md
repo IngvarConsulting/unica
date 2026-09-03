@@ -113,16 +113,16 @@ Map between object names, logical addresses and the files that carry them, in bo
 | --- | --- | --- | --- |
 | `kind` | string | нет | Optional logical kind such as Catalog or CommonModule. |
 | `limit` | integer | нет | Maximum candidates to return. |
-| `query` | string | да | Object name, synonym, logical address, or a path to a source file. |
+| `query` | string | да | Object name, synonym, logical address, or a path to a source file or object directory. |
 
-**Результат сейчас:** `data.candidates` содержит кандидатов с квалифицированным логическим адресом и путём к файлу; ответ не несёт `rev` (отвечают типизированным `data`)
+**Результат сейчас:** `data.candidates` содержит кандидатов с квалифицированным логическим адресом и путём к месту объекта в раскладке (файл дескриптора либо каталог команды); ответ не несёт `rev` (отвечают типизированным `data`)
 
 **Целевой контракт:** Добавить закрытые виды сопоставления без возврата к физическим selector-ам
 
 **Сценарии:**
 
 - Узнать, какому объекту принадлежит найденный файл
-- Получить путь к файлу объекта, чтобы прочитать или починить его вне Unica
+- Получить путь к файлу или каталогу объекта, чтобы прочитать или починить его вне Unica
 - Разрешить имя или синоним в квалифицированный логический адрес перед точным `view` или `apply`
 
 ## run

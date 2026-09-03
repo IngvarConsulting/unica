@@ -233,8 +233,16 @@ impl WorkspaceFindDirectoryBuilder {
                 continue;
             }
             let relative = PathBuf::from(entry_name);
-            let head = read_descriptor_head(source.root, &relative);
-            let synonym = head.as_deref().and_then(|head| descriptor_identity(head).1);
+            // A Designer dump keeps `ConfigDumpInfo.xml` next to the owner
+            // descriptor; only a file that declares the expected owner element
+            // is an object.
+            let Some(head) = read_descriptor_head(source.root, &relative) else {
+                continue;
+            };
+            if !declares_owner(&head, kind.as_str(), stem) {
+                continue;
+            }
+            let synonym = descriptor_identity(&head).1;
             self.push(
                 build,
                 source,
@@ -262,8 +270,8 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(())
     }
 
-    /// Forms, templates and commands own their own file or directory under the
-    /// object, so the layout addresses them directly.
+    /// Forms and templates own a descriptor file; a command owns only its
+    /// directory. Both are addressed straight from the layout.
     #[allow(clippy::too_many_arguments)]
     fn add_nested_families(
         &self,
@@ -418,6 +426,13 @@ fn read_descriptor_head(root: &RetainedDirectoryCapability, relative: &Path) -> 
 /// Reads `Name` and the first localized `Synonym` out of a descriptor head
 /// without parsing the document: a malformed or truncated descriptor simply
 /// contributes no synonym instead of failing the directory.
+/// Whether a descriptor head declares the expected owner element and name.
+fn declares_owner(head: &[u8], kind: &str, name: &str) -> bool {
+    let text = String::from_utf8_lossy(head);
+    text.contains(&format!("<{kind} "))
+        && between(&text, "<Name>", "</Name>").is_some_and(|declared| declared == name)
+}
+
 fn descriptor_identity(head: &[u8]) -> (Option<String>, Option<String>) {
     let text = String::from_utf8_lossy(head);
     let name = between(&text, "<Name>", "</Name>").map(str::to_string);
@@ -682,6 +697,70 @@ mod tests {
     }
 
     #[test]
+    fn an_external_root_publishes_its_owner_and_never_the_dump_sidecar() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().canonicalize().unwrap().join("processor");
+        write(
+            &source.join("Импорт.xml"),
+            &owner(
+                "Импорт",
+                "ExternalDataProcessor",
+                "Импорт данных",
+                "<Form>Основная</Form>",
+            ),
+        );
+        write(
+            &source.join("Импорт/Forms/Основная.xml"),
+            &owner("Основная", "Form", "Основная форма", ""),
+        );
+        // A Designer dump keeps this sidecar beside the owner descriptor.
+        write(
+            &source.join("ConfigDumpInfo.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" format="Hierarchical" version="2.20"/>"#,
+        );
+        let retained = RetainedDirectoryCapability::open(&source).unwrap();
+        let index = WorkspaceFindDirectoryBuilder::default()
+            .build(
+                &[LayoutFindSource::new(
+                    "processor",
+                    SourceSetKind::ExternalProcessor,
+                    &retained,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            single(&index, "Импорт"),
+            (
+                "processor:ExternalDataProcessor.Импорт".to_string(),
+                "Импорт.xml".to_string()
+            )
+        );
+        assert_eq!(
+            single(&index, "Основная").0,
+            "processor:ExternalDataProcessor.Импорт.Form.Основная"
+        );
+        for query in ["ConfigDumpInfo", "ConfigDumpInfo.xml"] {
+            let found = index.find(FindRequest::new(query).unwrap());
+            assert!(
+                found.is_nearest() || found.candidates().is_empty(),
+                "the dump sidecar became an object: {found:?}"
+            );
+        }
+        // An external source set has no configuration root, so nothing may
+        // answer its export path.
+        let fabricated = index.find(FindRequest::new("Configuration.xml").unwrap());
+        assert!(
+            fabricated
+                .candidates()
+                .iter()
+                .all(|candidate| candidate.reason() != "exportPath"),
+            "an external source set advertised a configuration export path: {fabricated:?}"
+        );
+    }
+
+    #[test]
     fn find_address_path_directory_contract_is_complete() {
         a_name_resolves_to_the_address_and_the_file_that_carries_it();
         a_file_path_resolves_back_to_its_object_address();
@@ -689,5 +768,6 @@ mod tests {
         the_directory_holds_objects_and_never_code_symbols_or_inner_nodes();
         the_directory_refuses_to_grow_past_its_entry_bound();
         the_directory_observes_cancellation();
+        an_external_root_publishes_its_owner_and_never_the_dump_sidecar();
     }
 }

@@ -206,7 +206,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     description: "Map between object names, logical addresses and the files that carry them, in both directions.",
                     input_schema: schema(
                         json!({
-                            "query": {"type": "string", "description": "Object name, synonym, logical address, or a path to a source file."},
+                            "query": {"type": "string", "description": "Object name, synonym, logical address, or a path to a source file or object directory."},
                             "kind": {"type": "string", "description": "Optional logical kind such as Catalog or CommonModule."},
                             "limit": limit("Maximum candidates to return."),
                         }),

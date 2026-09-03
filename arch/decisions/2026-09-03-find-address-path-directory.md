@@ -5,7 +5,8 @@ governs: product
 realized: crates/unica-coder/src/infrastructure/v13_find.rs::find_address_path_directory_contract_is_complete
 supersedes: []
 superseded-by: null
-establishes: [INV.SOURCE.FIND-IDENTITY-ONLY, INV.SOURCE.LOGICAL-READER-PARITY]
+establishes: [INV.SOURCE.FIND-IDENTITY-ONLY, INV.SOURCE.LOGICAL-READER-PARITY, CTR.WIRE.FIND-CANDIDATE-SHAPE]
+changes: [CTR.WIRE.TOOL-SURFACE]
 design: docs/design/2026-09-03-find-is-an-address-path-directory-design.md
 ---
 
@@ -15,9 +16,11 @@ design: docs/design/2026-09-03-find-is-an-address-path-directory-design.md
 и каким файлом представлен объект. Словарь строится перечислением физической
 раскладки допущенных корней: каталоги коллекций, их прямые элементы и
 вложенные формы, макеты и команды. Запись — квалифицированный адрес,
-канонический вид, программное имя и путь к файлу; синоним читается только у
-кандидатов ответа. Аргумент `query` принимает имя, фрагмент адреса или путь к
-файлу и разрешается в обе стороны; ответ несёт путь рядом с адресом.
+канонический вид, программное имя и путь к его месту в раскладке: файл
+дескриптора, а у команды — её каталог, потому что отдельного дескриптора
+команда не имеет. Синоним читается только у кандидатов ответа. Аргумент `query` принимает имя, фрагмент адреса или путь к
+файлу или каталогу и разрешается в обе стороны; ответ несёт путь рядом с
+адресом.
 
 Модули не разбираются: методы, области и прочие символы кода принадлежат
 `unica.search`. Реквизиты, элементы форм, права ролей и прочие внутренние

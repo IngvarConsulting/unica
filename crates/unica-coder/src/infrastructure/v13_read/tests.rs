@@ -2376,20 +2376,9 @@ fn real_external_sources_are_traversable_without_configuration_xml_and_hide_root
         );
     }
 
-    let fabricated_configuration_path = index.find(
-        FindRequest::new("Configuration.xml")
-            .unwrap()
-            .with_limit(64)
-            .unwrap(),
-    );
-    assert!(
-        fabricated_configuration_path
-            .candidates()
-            .iter()
-            .all(|candidate| candidate.reason() != "exportPath"),
-        "external source sets must not advertise a configuration export path: \
-         {fabricated_configuration_path:?}",
-    );
+    // The export-path half of this contract is proven against the find
+    // directory in `v13_find`, where a candidate carries its real reason;
+    // through the reader probe every candidate reads "reader".
 }
 
 #[test]
@@ -2888,10 +2877,18 @@ impl<'a> ReaderReach<'a> {
                     authority.snapshot(&address).is_ok_and(|admitted| {
                         match authority.read_exact(&address, &ViewFilter::default(), &admitted) {
                             Ok(_) => true,
-                            // A profile identity whose source layout is not
-                            // specified (WebSocketClient) answers a typed
-                            // `provider_unavailable`; the reader still knows it.
-                            Err(error) => error.code() == "provider_unavailable",
+                            // WebSocketClient is the one profile identity whose
+                            // source layout 8.3.27 leaves unspecified: it
+                            // answers a typed `provider_unavailable` while the
+                            // reader still knows the address. No other provider
+                            // failure counts as coverage.
+                            Err(error) => {
+                                error.code() == "provider_unavailable"
+                                    && address.segments().first().is_some_and(|segment| {
+                                        segment.kind()
+                                            == crate::domain::address::NodeKind::WebSocketClient
+                                    })
+                            }
                         }
                     })
                 })
