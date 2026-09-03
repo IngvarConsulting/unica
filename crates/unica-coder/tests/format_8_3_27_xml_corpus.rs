@@ -1,14 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-#[cfg(windows)]
-use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-#[cfg(windows)]
-use std::thread;
-#[cfg(windows)]
-use std::time::{Duration, Instant};
 
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
@@ -1517,47 +1511,8 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     ))
 }
 
-#[cfg(windows)]
-fn is_windows_sharing_violation(error: &io::Error) -> bool {
-    const WINDOWS_SHARING_VIOLATION: i32 = 32;
-    error.raw_os_error() == Some(WINDOWS_SHARING_VIOLATION)
-}
-
-#[cfg(windows)]
 fn remove_temp_tree(root: &Path) {
-    const RETRY_BUDGET: Duration = Duration::from_secs(15);
-    const RETRY_DELAY: Duration = Duration::from_millis(50);
-
-    let deadline = Instant::now() + RETRY_BUDGET;
-    loop {
-        match fs::remove_dir_all(root) {
-            Ok(()) => return,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
-            Err(error) if is_windows_sharing_violation(&error) && Instant::now() < deadline => {
-                thread::sleep(RETRY_DELAY);
-            }
-            Err(error) => panic!("cannot remove temporary tree {}: {error}", root.display()),
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn remove_temp_tree(root: &Path) {
-    if let Err(error) = fs::remove_dir_all(root) {
-        assert_eq!(
-            error.kind(),
-            std::io::ErrorKind::NotFound,
-            "cannot remove temporary tree {}: {error}",
-            root.display()
-        );
-    }
-}
-
-#[cfg(windows)]
-#[test]
-fn windows_corpus_cleanup_recognizes_the_observed_sharing_violation() {
-    let error = io::Error::from_raw_os_error(32);
-    assert!(is_windows_sharing_violation(&error));
+    platform_support::remove_temp_tree(root);
 }
 
 fn write_designer_project(
