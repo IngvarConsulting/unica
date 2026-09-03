@@ -123,7 +123,9 @@ def derive_source_sets(source: Path, workspace: Path) -> None:
     `v8project.yaml` of that fixture declares three sets and no `main`:
     `newer` is the same tree with every 2.20 root rewritten to 2.21 (and the
     Reports and XDTO packages dropped, because the strict read port cannot
-    open a 2.21 template wrapper), `nosupport` is `src` without
+    open a 2.21 template wrapper), `older` is the same tree at 2.19 — the
+    dump a platform before 8.3.27 wrote, which reads but cannot be edited —
+    `nosupport` is `src` without
     `Ext/ParentConfigurations.bin`, and `unversioned` is `src` whose
     Configuration root carries no version attribute. Deriving them here keeps
     one copy of the platform XML in the repository. The probes live in their
@@ -153,12 +155,19 @@ def derive_source_sets(source: Path, workspace: Path) -> None:
             text = re.sub(r"<(Report|XDTOPackage)>[^<]+</\1>", "", text)
         return text
 
+    def older(path: Path, text: str) -> str:
+        text = text.replace('version="2.20"', 'version="2.19"')
+        if path.name == "Configuration.xml":
+            text = re.sub(r"<(Report|XDTOPackage)>[^<]+</\1>", "", text)
+        return text
+
     def unversioned(path: Path, text: str) -> str:
         if path.name == "Configuration.xml":
             text = re.sub(r'(<MetaDataObject[^>]*?) version="2\.20"', r"\1", text, count=1)
         return text
 
     copy("src-newer", newer, drop_dirs=("Reports", "XDTOPackages"))
+    copy("src-older", older, drop_dirs=("Reports", "XDTOPackages"))
     copy("src-nosupport", lambda path, text: text, drop_bin=True)
     copy("src-unversioned", unversioned)
 
@@ -298,12 +307,12 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 296)
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 327,
-            "a wire step went missing: the corpus freezes 327 steps",
+        self.assertEqual(len(scenarios), 305)
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 336,
+            "a wire step went missing: the corpus freezes 336 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 297)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 306)])
 
     def test_the_run_half_of_the_surface_stays_out_of_this_corpus(self) -> None:
         for scenario in self.corpus["scenarios"]:

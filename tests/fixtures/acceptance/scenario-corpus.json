@@ -7746,6 +7746,177 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S297",
+   "area": "Документация и стандарты",
+   "task": "Пустой запрос к документации — отказ до обращения к поставщику",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "",
+      "source": "platform-help"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: docs query must be non-blank"
+    }
+   ]
+  },
+  {
+   "id": "S298",
+   "area": "Документация и стандарты",
+   "task": "Неизвестный источник документации — отказ называет допустимые",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "ссылка",
+      "source": "справка-платформы"
+     },
+     "expect": [
+      "unsupported"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S299",
+   "area": "Навигация и чтение",
+   "task": "Продолжить страницу чужим курсором — отказ вместо чужого ответа",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Configuration",
+      "limit": 2,
+      "cursor": "не-наш-курсор"
+     },
+     "expect": [
+      "gap"
+     ],
+     "gap": "Канонический `view` отказывает чужому курсору кодом `invalid_cursor`, который не входит в закрытый набор отказов поверхности (bad_value, not_found, invalid_state, invalid_source, stale_revision)."
+    }
+   ]
+  },
+  {
+   "id": "S300",
+   "area": "Навигация и чтение",
+   "task": "Ограничить страницу подсказок поиска",
+   "wire": [
+    {
+     "tool": "unica.find",
+     "args": {
+      "query": "Валюты",
+      "limit": 2
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S301",
+   "area": "Навигация и чтение",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "task": "Проверить корень старой выгрузки 2.19 — совет перевыгрузить платформой приходит из check",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "older:Configuration"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "formatMigrationAvailable",
+     "validators": [
+      "cf"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S302",
+   "area": "Формы",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "task": "Проверить форму в старой выгрузке — тот же совет на узле формы",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "older:Catalog.Валюты.Form.ФормаСписка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "formatMigrationAvailable",
+     "validators": [
+      "form"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S303",
+   "area": "Роли и права",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "task": "Проверить роль в старой выгрузке — совет доходит и до прав",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "older:Role.SalesReader"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "diagnostic": "formatMigrationAvailable",
+     "validators": [
+      "role"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S304",
+   "area": "Объекты метаданных",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "task": "Проверить объект в старой выгрузке — типизированный отказ поставщика вместо догадки",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "older:Catalog.Валюты"
+     },
+     "expect": [
+      "provider"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S305",
+   "area": "Навигация и чтение",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "task": "Прочитать узел старой выгрузки — чтение открыто, совет о формате остаётся за check",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "older:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
   }
  ]
 }
