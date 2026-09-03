@@ -28,7 +28,7 @@
       "contentDigest": "7ab72a417d56c7da691b22fec2e8d12fe88339986deb075a8eccc2ac52527965"
     },
     "cfe-validate": {
-      "ownerSkill": "cfe-validate",
+      "ownerSkill": "cfe-init",
       "caseScopes": [],
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "reviewId": "2026-07-24-cfe-portable-path-profile",

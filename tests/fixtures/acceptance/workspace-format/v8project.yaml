@@ -9,3 +9,6 @@ source-set:
   - name: unversioned
     type: CONFIGURATION
     path: src-unversioned
+  - name: ext
+    type: EXTENSION
+    path: src-ext

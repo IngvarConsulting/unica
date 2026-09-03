@@ -91,7 +91,6 @@ READER_STANDINS_ROOT = FIXTURES_ROOT / "reader-standins"
 DOCUMENTED_READER_TOOL_NAMES = {
     "unica.cf.info",
     "unica.cfe.diff",
-    "unica.cfe.validate",
     "unica.code.definition",
     "unica.code.graph",
     "unica.code.search",
@@ -99,7 +98,6 @@ DOCUMENTED_READER_TOOL_NAMES = {
     "unica.documentation.get",
     "unica.documentation.search",
     "unica.form.info",
-    "unica.interface.validate",
     "unica.meta.info",
     "unica.mxl.decompile",
     "unica.mxl.info",
@@ -170,33 +168,6 @@ class CcSkillCase:
 
 
 SUCCESS_SCENARIOS = [
-    ParityScenario(
-        name="cfe-validate-detailed-outfile",
-        tool="unica.cfe.validate",
-        skill="cfe-validate",
-        script="cfe-validate.py",
-        arguments={
-            "ExtensionPath": "src-cfe/Configuration.xml",
-            "Detailed": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                },
-            ),
-        ),
-        expect_ok=True,
-    ),
     ParityScenario(
         name="form-compile-simple",
         tool="unica.form.compile",
@@ -306,46 +277,6 @@ SUCCESS_SCENARIOS = [
         fixtures=(FileFixture("subsystem-sales.json", "fixtures/subsystem-sales.json"),),
         expect_ok=True,
         compare_files=True,
-    ),
-    ParityScenario(
-        name="interface-validate-detailed",
-        tool="unica.interface.validate",
-        skill="interface-validate",
-        script="interface-validate.py",
-        arguments={
-            "CIPath": "src/Subsystems/Sales/Ext/CommandInterface.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture(
-                "interface-validate/Sales/Ext/CommandInterface.xml",
-                "src/Subsystems/Sales/Ext/CommandInterface.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-interface-validate-real-command-interface",
-        tool="unica.interface.validate",
-        skill="interface-validate",
-        script="interface-validate.py",
-        arguments={
-            "CIPath": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_SUBSYSTEM_FIXTURE,
-                "src/Subsystems/Администрирование.xml",
-            ),
-            FileFixture(
-                BSP_SUBSYSTEM_COMMAND_INTERFACE_FIXTURE,
-                "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
-            ),
-        ),
-        expect_ok=True,
     ),
     ParityScenario(
         name="dcs-compile-simple",
@@ -470,26 +401,10 @@ VALIDATION_FAILURE_SCENARIOS = [
 
 
 MISSING_INPUT_SCENARIOS = [
-    ParityScenario(
-        "cfe-validate-missing-extension",
-        "unica.cfe.validate",
-        "cfe-validate",
-        "cfe-validate.py",
-        {"ExtensionPath": "missing-extension"},
-        False,
-    ),
     # `unica.meta.info` has no missing-input scenario: the reference model fails
     # on a missing file, the tool fails on an address it cannot prove, and those
     # are different contracts by construction. The typed refusal is covered by
     # `meta_info_reports_an_unknown_address_without_naming_a_path`.
-    ParityScenario(
-        "interface-validate-missing-command-interface",
-        "unica.interface.validate",
-        "interface-validate",
-        "interface-validate.py",
-        {"CIPath": "missing/CommandInterface.xml"},
-        False,
-    ),
     ParityScenario(
         "mxl-decompile-missing-template",
         "unica.mxl.decompile",
@@ -506,10 +421,8 @@ SCENARIOS = tuple(
 MIN_NATIVE_PARITY_COVERAGE = 1.0
 
 NATIVE_PARITY_TOOLS = {
-    "unica.cfe.validate",
     "unica.form.compile",
     "unica.subsystem.compile",
-    "unica.interface.validate",
     "unica.dcs.compile",
     "unica.mxl.compile",
     "unica.mxl.decompile",
@@ -551,9 +464,7 @@ TYPED_RESULT_TOOLS = {
 }
 
 EXPECTED_TOOLS = {
-    "unica.cfe.validate",
     "unica.form.compile",
-    "unica.interface.validate",
     "unica.subsystem.compile",
     "unica.dcs.compile",
     "unica.mxl.compile",
@@ -564,7 +475,6 @@ EXPECTED_TOOLS = {
 BSP_PARITY_REQUIRED_TOOLS = {
     "unica.mxl.decompile",
     "unica.mxl.compile",
-    "unica.interface.validate",
 }
 
 BSP_MUTATING_REQUIRED_TOOLS = {
@@ -2037,13 +1947,6 @@ EndProcedure
 
         if tool_name in {"unica.cf.info", "unica.cf.validate", "unica.cfe.diff"}:
             continue
-        if tool_name == "unica.cfe.validate":
-            extension_path = str(arguments["ExtensionPath"])
-            if extension_path == "src":
-                arguments["ExtensionPath"] = "src/cfe"
-            elif extension_path == "src/Configuration.xml":
-                arguments["ExtensionPath"] = "src/cfe/Configuration.xml"
-            continue
         if tool_name == "unica.code.search":
             replace_reader_placeholder(arguments, "sourceSet", example, "main")
             continue
@@ -2073,18 +1976,6 @@ EndProcedure
             copy_reader_fixture(
                 BSP_FORM_BUSINESS_PROCESS_FIXTURE,
                 workspace / reader_content_path(raw, "Form.xml"),
-            )
-            continue
-        if tool_name == "unica.interface.validate":
-            raw = replace_reader_placeholder(
-                arguments,
-                "CIPath",
-                example,
-                f"reader-fixtures/interfaces/{example.line}",
-            )
-            copy_reader_fixture(
-                interface_fixture,
-                workspace / reader_content_path(raw, "CommandInterface.xml"),
             )
             continue
         if tool_name in {"unica.mxl.info", "unica.mxl.decompile"}:

@@ -7582,6 +7582,84 @@
      "refusal": "invalid_state: the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first"
     }
    ]
+  },
+  {
+   "id": "S289",
+   "area": "Расширения конфигурации",
+   "task": "Открыть корень набора-расширения — проекция корня как у конфигурации",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:Configuration"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S290",
+   "area": "Расширения конфигурации",
+   "task": "Проверить корень набора-расширения — валидатор cfe выбран по виду набора",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Configuration"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "cfe"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S291",
+   "area": "Расширения конфигурации",
+   "task": "Проверить роль расширения — валидатор role работает и в наборе-расширении",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Role.ПР_ОсновнаяРоль"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "role"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S292",
+   "area": "Расширения конфигурации",
+   "task": "Проверить язык расширения — у узла нет валидаторов, ответ о читаемости",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Language.Русский"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "readable",
+     "validators": []
+    }
+   ]
   }
  ]
 }
