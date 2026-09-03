@@ -1,27 +1,44 @@
 use crate::application::v13::find::{FindDocument, FindFact, FindFactKind, FindIndex};
-use crate::application::v13::view::{ViewFilter, ViewReadAuthority};
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
-use serde_json::Value;
-use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use crate::domain::project_sources::SourceSetKind;
+use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
+use crate::infrastructure::platform::filesystem::{
+    RetainedChildCapability, RetainedDirectoryCapability,
+};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 const MAX_SOURCE_SETS: usize = 64;
 const DEFAULT_MAX_DOCUMENTS: usize = 65_536;
 const DEFAULT_MAX_FACT_BYTES: usize = 16 * 1024 * 1024;
+/// Enough of a descriptor head to carry `Name` and `Synonym`. The directory
+/// never needs the rest of the file.
+const DESCRIPTOR_HEAD_BYTES: usize = 8 * 1024;
+const MAX_COLLECTION_ENTRIES: usize = 65_536;
+/// Physical child families an object owns as its own files or directories.
+const NESTED_FAMILIES: [(&str, NodeKind); 3] = [
+    ("Forms", NodeKind::Form),
+    ("Templates", NodeKind::Template),
+    ("Commands", NodeKind::Command),
+];
 
-/// One source-set root retained by the workspace actor. The builder never
-/// reopens a workspace path or discovers ambient roots on its own.
-pub(crate) struct ActorFindSource<'a> {
+/// One admitted source-set root. The directory is read through the retained
+/// no-follow capability the actor owns; no path is reopened by name.
+pub(crate) struct LayoutFindSource<'a> {
     name: &'a str,
-    reader: &'a dyn ViewReadAuthority,
+    kind: SourceSetKind,
+    root: &'a RetainedDirectoryCapability,
 }
 
-impl<'a> ActorFindSource<'a> {
-    pub(crate) const fn new(name: &'a str, reader: &'a dyn ViewReadAuthority) -> Self {
-        Self { name, reader }
+impl<'a> LayoutFindSource<'a> {
+    pub(crate) const fn new(
+        name: &'a str,
+        kind: SourceSetKind,
+        root: &'a RetainedDirectoryCapability,
+    ) -> Self {
+        Self { name, kind, root }
     }
 }
 
@@ -50,417 +67,418 @@ impl std::fmt::Display for FindBuildError {
     }
 }
 
+/// Builds the two-way directory between qualified logical addresses and where
+/// objects live in the source layout. It reads that layout only: no typed
+/// projection, no module source, no revision lease.
 #[derive(Debug)]
-pub(crate) struct WorkspaceFindIndexBuilder {
+pub(crate) struct WorkspaceFindDirectoryBuilder {
     max_documents: usize,
     max_total_fact_bytes: usize,
-    /// The single index retained between operations. It is keyed by the exact
-    /// ordered admitted `(source set, identity, revision)` list, so a changed
-    /// revision, another source-set composition or another workspace identity
-    /// never inherits it; the retained index itself stays within the document
-    /// and fact-byte limits above.
-    retained: Mutex<Option<RetainedFindIndex>>,
 }
 
-/// Ordered admitted source revisions that identify one built index.
-type FindIndexKey = Vec<(String, String, String)>;
-
-#[derive(Debug)]
-struct RetainedFindIndex {
-    key: FindIndexKey,
-    index: Arc<FindIndex>,
-    revision: String,
-}
-
-pub(crate) struct BuiltFindIndex {
-    pub(crate) index: Arc<FindIndex>,
-    pub(crate) revision: String,
-}
-
-struct AdmittedFindSource<'s, 'a> {
-    source: &'s ActorFindSource<'a>,
-    root_at: QualifiedAddress,
-    snapshot: crate::application::v13::view::ViewSourceSnapshot,
-}
-
-impl Default for WorkspaceFindIndexBuilder {
+impl Default for WorkspaceFindDirectoryBuilder {
     fn default() -> Self {
         Self::with_limits(DEFAULT_MAX_DOCUMENTS, DEFAULT_MAX_FACT_BYTES)
     }
 }
 
-impl WorkspaceFindIndexBuilder {
+struct DirectoryBuild {
+    documents: Vec<FindDocument>,
+    fact_bytes: usize,
+}
+
+impl WorkspaceFindDirectoryBuilder {
+    fn with_limits(max_documents: usize, max_total_fact_bytes: usize) -> Self {
+        Self {
+            max_documents,
+            max_total_fact_bytes,
+        }
+    }
+
     #[cfg(test)]
     fn with_document_limit(max_documents: usize) -> Self {
         Self::with_limits(max_documents, DEFAULT_MAX_FACT_BYTES)
     }
 
-    fn with_limits(max_documents: usize, max_total_fact_bytes: usize) -> Self {
-        Self {
-            max_documents,
-            max_total_fact_bytes,
-            retained: Mutex::new(None),
-        }
-    }
-
     pub(crate) fn build(
         &self,
-        sources: &[ActorFindSource<'_>],
+        sources: &[LayoutFindSource<'_>],
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<Arc<FindIndex>, FindBuildError> {
-        self.build_with_revision(sources, deadline, cancellation)
-            .map(|built| built.index)
-    }
-
-    pub(crate) fn build_with_revision(
-        &self,
-        sources: &[ActorFindSource<'_>],
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<BuiltFindIndex, FindBuildError> {
+    ) -> Result<FindIndex, FindBuildError> {
         if sources.len() > MAX_SOURCE_SETS {
             return Err(FindBuildError::new(
                 "provider_limit_exceeded",
                 "find source-set count exceeds the bounded workspace limit",
             ));
         }
-        let mut admitted = Vec::with_capacity(sources.len());
+        let mut build = DirectoryBuild {
+            documents: Vec::new(),
+            fact_bytes: 0,
+        };
         for source in sources {
             find_checkpoint(deadline, cancellation)?;
-            admitted.push(Self::admit_source(source)?);
+            self.add_source(source, &mut build, deadline, cancellation)?;
         }
-        let key = admitted
-            .iter()
-            .map(|admission| {
-                (
-                    admission.source.name.to_string(),
-                    admission.snapshot.source_set_identity.clone(),
-                    admission.snapshot.revision.clone(),
-                )
-            })
-            .collect::<FindIndexKey>();
-        if let Some(built) = self.retained_index(&key)? {
-            return Ok(built);
-        }
-        let mut documents = Vec::new();
-        let mut seen = HashSet::new();
-        let mut total_fact_bytes = 0;
-        for admission in &admitted {
-            find_checkpoint(deadline, cancellation)?;
-            self.walk_source(
-                admission,
-                &mut documents,
-                &mut seen,
-                &mut total_fact_bytes,
-                deadline,
-                cancellation,
-            )?;
-        }
-        let index = Arc::new(FindIndex::new(documents));
-        let revision = aggregate_revision(&key);
-        *self.retained_lock()? = Some(RetainedFindIndex {
-            key,
-            index: Arc::clone(&index),
-            revision: revision.clone(),
-        });
-        Ok(BuiltFindIndex { index, revision })
+        Ok(FindIndex::new(build.documents))
     }
 
-    fn retained_lock(
+    fn add_source(
         &self,
-    ) -> Result<std::sync::MutexGuard<'_, Option<RetainedFindIndex>>, FindBuildError> {
-        self.retained.lock().map_err(|_| {
-            FindBuildError::new("provider_unavailable", "retained find index is poisoned")
-        })
-    }
-
-    fn retained_index(&self, key: &FindIndexKey) -> Result<Option<BuiltFindIndex>, FindBuildError> {
-        let retained = self.retained_lock()?;
-        Ok(retained
-            .as_ref()
-            .filter(|retained| &retained.key == key)
-            .map(|retained| BuiltFindIndex {
-                index: Arc::clone(&retained.index),
-                revision: retained.revision.clone(),
-            }))
-    }
-
-    fn admit_source<'s, 'a>(
-        source: &'s ActorFindSource<'a>,
-    ) -> Result<AdmittedFindSource<'s, 'a>, FindBuildError> {
-        let root_at = QualifiedAddress::parse(&format!("{}:Configuration", source.name))
-            .map_err(|error| FindBuildError::new("provider_unavailable", error.to_string()))?;
-        let snapshot = source.reader.snapshot(&root_at).map_err(view_error)?;
-        Ok(AdmittedFindSource {
-            source,
-            root_at,
-            snapshot,
-        })
-    }
-
-    fn walk_source(
-        &self,
-        admission: &AdmittedFindSource<'_, '_>,
-        documents: &mut Vec<FindDocument>,
-        seen: &mut HashSet<String>,
-        total_fact_bytes: &mut usize,
+        source: &LayoutFindSource<'_>,
+        build: &mut DirectoryBuild,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), FindBuildError> {
-        let source = admission.source;
-        let root_at = &admission.root_at;
-        let admitted = &admission.snapshot;
-        let mut queue = VecDeque::from([root_at.clone()]);
-        let mut queued = HashSet::new();
-        let mut fallbacks = HashMap::<String, Value>::new();
-        queued.insert(queue[0].to_string());
-        while let Some(address) = queue.pop_front() {
-            find_checkpoint(deadline, cancellation)?;
-            let projection =
-                match source
-                    .reader
-                    .read_exact(&address, &ViewFilter::default(), admitted)
-                {
-                    Ok(projection) => projection,
-                    Err(error) if error.code() == "not_found" && &address != root_at => {
-                        if let Some(fallback) = fallbacks.get(&address.to_string()) {
-                            self.push_identity_value(
-                                documents,
-                                seen,
-                                total_fact_bytes,
-                                fallback,
-                                None,
-                            )?;
-                        }
-                        continue;
-                    }
-                    Err(error)
-                        if error.code() == "provider_unavailable"
-                            && source.reader.permits_identity_fallback(&address) =>
-                    {
-                        let fallback = fallbacks.get(&address.to_string()).ok_or_else(|| {
-                            FindBuildError::new(
-                                "provider_unavailable",
-                                "typed identity fallback was not projected by its parent",
-                            )
-                        })?;
-                        self.push_identity_value(
-                            documents,
-                            seen,
-                            total_fact_bytes,
-                            fallback,
-                            None,
-                        )?;
-                        continue;
-                    }
-                    Err(error) => {
-                        let mapped = view_error(error);
-                        return Err(FindBuildError::new(
-                            mapped.code(),
-                            format!("find could not read logical identity `{address}`: {mapped}"),
-                        ));
-                    }
-                };
-            let value = serde_json::to_value(projection)
-                .map_err(|error| FindBuildError::new("provider_unavailable", error.to_string()))?;
-            let export_path = source
-                .reader
-                .identity_export_path(&address)
-                .map_err(view_error)?;
-            self.push_identity_value(
-                documents,
-                seen,
-                total_fact_bytes,
-                &value,
-                export_path.as_deref(),
+        if matches!(
+            source.kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            return self.add_external_source(source, build, deadline, cancellation);
+        }
+        let configuration = Path::new("Configuration.xml");
+        if let Some(head) = read_descriptor_head(source.root, configuration) {
+            let (name, synonym) = descriptor_identity(&head);
+            self.push(
+                build,
+                source,
+                &format!("{}:Configuration", source.name),
+                NodeKind::Configuration.as_str(),
+                name.as_deref().unwrap_or("Configuration"),
+                synonym.as_deref(),
+                configuration,
             )?;
-            for child in logical_children(&value)? {
-                let Some(at) = child.get("at").and_then(Value::as_str) else {
+        }
+        for entry in immediate_names(source.root, deadline, cancellation)? {
+            find_checkpoint(deadline, cancellation)?;
+            let Some(directory) = entry.to_str() else {
+                continue;
+            };
+            let Some(layout) = metadata_kind_by_directory(directory) else {
+                continue;
+            };
+            let Some(RetainedChildCapability::Directory(collection)) =
+                retain_child(source.root, &entry)
+            else {
+                continue;
+            };
+            for owner in immediate_names(&collection, deadline, cancellation)? {
+                find_checkpoint(deadline, cancellation)?;
+                let Some(owner_name) = owner.to_str() else {
                     continue;
                 };
-                let address = QualifiedAddress::parse(at).map_err(|error| {
-                    FindBuildError::new("provider_unavailable", error.to_string())
-                })?;
-                if address
-                    .segments()
-                    .last()
-                    .is_some_and(|segment| segment.kind() == NodeKind::Body)
-                {
-                    continue;
-                }
-                if child.get("kind").is_some() && child.get("title").is_some() {
-                    fallbacks.insert(at.to_string(), child.clone());
-                }
-                if queued.insert(at.to_string()) {
-                    if address.source_set() != source.name {
-                        return Err(FindBuildError::new(
-                            "provider_unavailable",
-                            "typed logical child belongs to another source set",
-                        ));
+                match retain_child(&collection, &owner) {
+                    Some(RetainedChildCapability::RegularFile(_)) => {
+                        let Some(stem) = owner_name.strip_suffix(".xml") else {
+                            continue;
+                        };
+                        let relative = PathBuf::from(directory).join(owner_name);
+                        // A file whose name looks like an object is not one:
+                        // only a descriptor that declares the expected owner
+                        // element and name enters the directory.
+                        let Some(head) = read_descriptor_head(source.root, &relative) else {
+                            continue;
+                        };
+                        if !declares_owner(&head, layout.tag, stem) {
+                            continue;
+                        }
+                        let synonym = descriptor_identity(&head).1;
+                        self.push(
+                            build,
+                            source,
+                            &format!("{}:{}.{stem}", source.name, layout.tag),
+                            layout.tag,
+                            stem,
+                            synonym.as_deref(),
+                            &relative,
+                        )?;
                     }
-                    if queued.len() > self.max_documents {
-                        return Err(FindBuildError::new(
-                            "provider_limit_exceeded",
-                            "find logical-tree queue exceeds the bounded document limit",
-                        ));
+                    Some(RetainedChildCapability::Directory(owner_root)) => {
+                        self.add_nested_families(
+                            source,
+                            build,
+                            &owner_root,
+                            layout.tag,
+                            owner_name,
+                            &PathBuf::from(directory).join(owner_name),
+                            deadline,
+                            cancellation,
+                        )?;
                     }
-                    queue.push_back(address);
+                    _ => continue,
                 }
             }
-        }
-        find_checkpoint(deadline, cancellation)?;
-        let current = source.reader.snapshot(root_at).map_err(view_error)?;
-        if &current != admitted {
-            return Err(FindBuildError::new(
-                "stale_revision",
-                "source revision changed during find index construction",
-            ));
         }
         Ok(())
     }
 
-    fn push_identity_value(
+    /// An external processor or report keeps its single owner descriptor at
+    /// the root of the source set.
+    fn add_external_source(
         &self,
-        documents: &mut Vec<FindDocument>,
-        seen: &mut HashSet<String>,
-        total_fact_bytes: &mut usize,
-        value: &Value,
-        export_path: Option<&str>,
+        source: &LayoutFindSource<'_>,
+        build: &mut DirectoryBuild,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
     ) -> Result<(), FindBuildError> {
-        let Some(document) = identity_document_from_view(value, export_path)? else {
-            return Ok(());
+        let kind = if source.kind == SourceSetKind::ExternalProcessor {
+            NodeKind::ExternalDataProcessor
+        } else {
+            NodeKind::ExternalReport
         };
-        if !seen.insert(document.at().to_string()) {
-            return Ok(());
+        for entry in immediate_names(source.root, deadline, cancellation)? {
+            find_checkpoint(deadline, cancellation)?;
+            let Some(entry_name) = entry.to_str() else {
+                continue;
+            };
+            let Some(stem) = entry_name.strip_suffix(".xml") else {
+                continue;
+            };
+            if !matches!(
+                retain_child(source.root, &entry),
+                Some(RetainedChildCapability::RegularFile(_))
+            ) {
+                continue;
+            }
+            let relative = PathBuf::from(entry_name);
+            // A Designer dump keeps `ConfigDumpInfo.xml` next to the owner
+            // descriptor; only a file that declares the expected owner element
+            // is an object.
+            let Some(head) = read_descriptor_head(source.root, &relative) else {
+                continue;
+            };
+            if !declares_owner(&head, kind.as_str(), stem) {
+                continue;
+            }
+            let synonym = descriptor_identity(&head).1;
+            self.push(
+                build,
+                source,
+                &format!("{}:{}.{stem}", source.name, kind.as_str()),
+                kind.as_str(),
+                stem,
+                synonym.as_deref(),
+                &relative,
+            )?;
+            if let Some(RetainedChildCapability::Directory(owner_root)) =
+                retain_child(source.root, OsStr::new(stem))
+            {
+                self.add_nested_families(
+                    source,
+                    build,
+                    &owner_root,
+                    kind.as_str(),
+                    stem,
+                    &PathBuf::from(stem),
+                    deadline,
+                    cancellation,
+                )?;
+            }
         }
-        self.push_document(documents, total_fact_bytes, document)
+        Ok(())
     }
 
-    fn push_document(
+    /// Forms and templates own a descriptor file; a command owns only its
+    /// directory. Both are addressed straight from the layout.
+    #[allow(clippy::too_many_arguments)]
+    fn add_nested_families(
         &self,
-        documents: &mut Vec<FindDocument>,
-        total_fact_bytes: &mut usize,
-        document: FindDocument,
+        source: &LayoutFindSource<'_>,
+        build: &mut DirectoryBuild,
+        owner_root: &RetainedDirectoryCapability,
+        owner_kind: &str,
+        owner_name: &str,
+        owner_relative: &Path,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
     ) -> Result<(), FindBuildError> {
-        if documents.len() == self.max_documents {
+        for (family_directory, family_kind) in NESTED_FAMILIES {
+            find_checkpoint(deadline, cancellation)?;
+            let Some(RetainedChildCapability::Directory(family)) =
+                retain_child(owner_root, OsStr::new(family_directory))
+            else {
+                continue;
+            };
+            for entry in immediate_names(&family, deadline, cancellation)? {
+                find_checkpoint(deadline, cancellation)?;
+                let Some(entry_name) = entry.to_str() else {
+                    continue;
+                };
+                let (child_name, relative) = match retain_child(&family, &entry) {
+                    Some(RetainedChildCapability::RegularFile(_)) => {
+                        let Some(stem) = entry_name.strip_suffix(".xml") else {
+                            continue;
+                        };
+                        (
+                            stem.to_string(),
+                            owner_relative.join(family_directory).join(entry_name),
+                        )
+                    }
+                    // A command has no descriptor file: its directory carries
+                    // only the module, and the name is the directory itself.
+                    Some(RetainedChildCapability::Directory(_))
+                        if family_kind == NodeKind::Command =>
+                    {
+                        (
+                            entry_name.to_string(),
+                            owner_relative.join(family_directory).join(entry_name),
+                        )
+                    }
+                    _ => continue,
+                };
+                let synonym = if family_kind == NodeKind::Command {
+                    None
+                } else {
+                    let Some(head) = read_descriptor_head(source.root, &relative) else {
+                        continue;
+                    };
+                    if !declares_owner(&head, family_kind.as_str(), &child_name) {
+                        continue;
+                    }
+                    descriptor_identity(&head).1
+                };
+                self.push(
+                    build,
+                    source,
+                    &format!(
+                        "{}:{owner_kind}.{owner_name}.{}.{child_name}",
+                        source.name,
+                        family_kind.as_str()
+                    ),
+                    family_kind.as_str(),
+                    &child_name,
+                    synonym.as_deref(),
+                    &relative,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push(
+        &self,
+        build: &mut DirectoryBuild,
+        source: &LayoutFindSource<'_>,
+        at: &str,
+        kind: &str,
+        name: &str,
+        synonym: Option<&str>,
+        relative: &Path,
+    ) -> Result<(), FindBuildError> {
+        if QualifiedAddress::parse(at).is_err() {
+            // A directory entry whose name is not addressable is not an
+            // object; the layout simply does not describe it.
+            return Ok(());
+        }
+        let _ = source;
+        let path = path_text(relative);
+        let mut facts = vec![
+            FindFact::new(FindFactKind::Name, name),
+            FindFact::new(FindFactKind::ExportPath, &path),
+        ];
+        if let Some(synonym) = synonym.filter(|value| !value.is_empty() && *value != name) {
+            facts.push(FindFact::new(FindFactKind::Synonym, synonym));
+        }
+        let title = synonym.filter(|value| !value.is_empty()).unwrap_or(name);
+        let document = FindDocument::new(at, kind, title, facts).with_path(path);
+        if build.documents.len() == self.max_documents {
             return Err(FindBuildError::new(
                 "provider_limit_exceeded",
-                "find document count exceeds the bounded workspace limit",
+                "find directory exceeds the bounded workspace entry limit",
             ));
         }
-        let next_total = total_fact_bytes
-            .checked_add(document.estimated_identity_bytes())
-            .ok_or_else(|| {
-                FindBuildError::new(
-                    "provider_limit_exceeded",
-                    "find identity facts exceed the bounded workspace byte budget",
-                )
-            })?;
+        let next_total = build
+            .fact_bytes
+            .saturating_add(document.estimated_identity_bytes());
         if next_total > self.max_total_fact_bytes {
             return Err(FindBuildError::new(
                 "provider_limit_exceeded",
-                "find identity facts exceed the bounded workspace byte budget",
+                "find directory exceeds the bounded workspace byte budget",
             ));
         }
-        *total_fact_bytes = next_total;
-        documents.push(document);
+        build.fact_bytes = next_total;
+        build.documents.push(document);
         Ok(())
     }
 }
 
-fn aggregate_revision(revisions: &[(String, String, String)]) -> String {
-    if let [(_, _, revision)] = revisions {
-        return revision.clone();
-    }
-    let mut digest = Sha256::new();
-    digest.update(b"unica-find-source-revision-v1\0");
-    for (name, identity, revision) in revisions {
-        for value in [name, identity, revision] {
-            digest.update((value.len() as u64).to_le_bytes());
-            digest.update(value.as_bytes());
-        }
-    }
-    let mut encoded = String::with_capacity(64);
-    for byte in digest.finalize() {
-        use std::fmt::Write as _;
-        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    encoded
-}
-
-fn logical_children(value: &Value) -> Result<Vec<&Value>, FindBuildError> {
-    let object = value.as_object().ok_or_else(|| {
-        FindBuildError::new(
-            "provider_unavailable",
-            "typed logical view is not an object",
-        )
-    })?;
-    let mut children = Vec::new();
-    for key in ["branches", "items"] {
-        if let Some(values) = object.get(key) {
-            let values = values.as_array().ok_or_else(|| {
+fn immediate_names(
+    directory: &RetainedDirectoryCapability,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<Vec<std::ffi::OsString>, FindBuildError> {
+    directory
+        .read_immediate_names_bounded(MAX_COLLECTION_ENTRIES, || {
+            find_checkpoint(deadline, cancellation)
+                .map_err(|error| std::io::Error::other(error.to_string()))
+        })
+        .map_err(|error| {
+            if cancellation.is_cancelled() {
+                FindBuildError::new("cancelled", "find directory build was cancelled")
+            } else if deadline.remaining().is_zero() {
+                FindBuildError::new("provider_deadline", "find directory build deadline elapsed")
+            } else {
                 FindBuildError::new(
                     "provider_unavailable",
-                    format!("typed logical view `{key}` is not an array"),
+                    format!("find could not read the source layout: {error}"),
                 )
-            })?;
-            children.extend(values.iter().filter(|value| value.get("at").is_some()));
-        }
-    }
-    Ok(children)
+            }
+        })
 }
 
-fn identity_document_from_view(
-    value: &Value,
-    export_path: Option<&str>,
-) -> Result<Option<FindDocument>, FindBuildError> {
-    let Some(at) = value.get("at").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    let address = QualifiedAddress::parse(at)
-        .map_err(|error| FindBuildError::new("provider_unavailable", error.to_string()))?;
-    let Some(kind) = value.get("kind").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    NodeKind::parse(kind).map_err(|_| {
-        FindBuildError::new(
-            "provider_unavailable",
-            format!("typed node has unaddressable kind `{kind}`"),
+fn retain_child(
+    directory: &RetainedDirectoryCapability,
+    name: &OsStr,
+) -> Option<RetainedChildCapability> {
+    directory.retain_immediate_child_nofollow(name).ok()
+}
+
+fn read_descriptor_head(root: &RetainedDirectoryCapability, relative: &Path) -> Option<Vec<u8>> {
+    root.read_relative_regular_bounded(relative, DESCRIPTOR_HEAD_BYTES)
+        .ok()
+}
+
+/// Reads `Name` and the first localized `Synonym` out of a descriptor head
+/// without parsing the document: a malformed or truncated descriptor simply
+/// contributes no synonym instead of failing the directory.
+/// Whether a descriptor head declares the expected owner element and name.
+fn declares_owner(head: &[u8], kind: &str, name: &str) -> bool {
+    let text = String::from_utf8_lossy(head);
+    // XML allows any whitespace between the element name and its attributes,
+    // and a pretty-printed descriptor may put the uuid on the next line.
+    let open = format!("<{kind}");
+    let opens = text.match_indices(&open).any(|(offset, _)| {
+        matches!(
+            text.as_bytes().get(offset + open.len()),
+            Some(b'>' | b' ' | b'\t' | b'\r' | b'\n')
         )
-    })?;
-    let Some(title) = value.get("title").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    let name = address
-        .segments()
-        .last()
-        .and_then(|segment| segment.name())
-        .unwrap_or(kind);
-    let mut facts = vec![FindFact::new(FindFactKind::Name, name)];
-    if title != name && title != kind {
-        facts.push(FindFact::new(FindFactKind::Synonym, title));
-    }
-    if let Some(props) = value.get("props").and_then(Value::as_object) {
-        for key in ["name", "synonym"] {
-            if let Some(identity) = props.get(key).and_then(Value::as_str) {
-                if !identity.is_empty() {
-                    facts.push(FindFact::new(
-                        if key == "synonym" {
-                            FindFactKind::Synonym
-                        } else {
-                            FindFactKind::Name
-                        },
-                        identity,
-                    ));
-                }
-            }
-        }
-    }
-    if let Some(path) = export_path {
-        facts.push(FindFact::new(FindFactKind::ExportPath, path));
-    }
-    Ok(Some(FindDocument::new(at, kind, title, facts)))
+    });
+    opens && between(&text, "<Name>", "</Name>").is_some_and(|declared| declared == name)
+}
+
+fn descriptor_identity(head: &[u8]) -> (Option<String>, Option<String>) {
+    let text = String::from_utf8_lossy(head);
+    let name = between(&text, "<Name>", "</Name>").map(str::to_string);
+    let synonym = text.find("<Synonym>").and_then(|start| {
+        let rest = &text[start..];
+        between(rest, "<v8:content>", "</v8:content>").map(str::to_string)
+    });
+    (name, synonym)
+}
+
+fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let start = text.find(open)? + open.len();
+    let end = text[start..].find(close)? + start;
+    Some(text[start..end].trim()).filter(|value| !value.is_empty())
+}
+
+fn path_text(relative: &Path) -> String {
+    relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn find_checkpoint(
@@ -470,1000 +488,407 @@ fn find_checkpoint(
     if cancellation.is_cancelled() {
         return Err(FindBuildError::new(
             "cancelled",
-            "find index construction was cancelled",
+            "find directory build was cancelled",
         ));
     }
     if deadline.remaining().is_zero() {
         return Err(FindBuildError::new(
             "provider_deadline",
-            "find index construction deadline elapsed",
+            "find directory build deadline elapsed",
         ));
     }
     Ok(())
 }
 
-fn view_error(error: crate::application::v13::view::ViewError) -> FindBuildError {
-    FindBuildError::new(error.code(), error.to_string())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ActorFindSource, WorkspaceFindIndexBuilder};
+    use super::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
     use crate::application::v13::find::FindRequest;
-    use crate::application::v13::view::{
-        ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot,
-    };
-    use crate::domain::address::QualifiedAddress;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
-    use crate::domain::platform_profile::PlatformProfile;
     use crate::domain::project_sources::SourceSetKind;
-    use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
-    use crate::infrastructure::source_revision::SourceRevisionService;
-    use crate::infrastructure::v13_read::{
-        module_branch_for_parent, project_module_branch, LogicalViewReadAuthority,
-    };
-    use serde::Deserialize;
-    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::path::Path;
     use std::time::Duration;
 
-    fn build_index(
-        builder: WorkspaceFindIndexBuilder,
-        source: &std::path::Path,
-        cancellation: &CancellationToken,
-        deadline: ProviderDeadline,
-    ) -> Result<Arc<crate::application::v13::find::FindIndex>, super::FindBuildError> {
-        let workspace_root = source.parent().unwrap().to_path_buf();
-        let context = WorkspaceContext {
-            cwd: workspace_root.clone(),
-            workspace_root: workspace_root.clone(),
-            cache_root: workspace_root.join(".cache"),
-            workspace_epoch: 1,
-        };
-        let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
-        let revisions =
-            Arc::new(SourceRevisionService::new_reconciling_for_test(&context, source).unwrap());
-        let authority = LogicalViewReadAuthority::new(
-            cancellation,
-            "main",
-            "find-fixture-main",
-            SourceSetKind::Configuration,
-            revisions,
-            root,
-            PlatformProfile::v8_3_27(),
-        );
-        builder.build(
-            &[ActorFindSource::new("main", &authority)],
-            deadline,
-            cancellation,
+    fn write(path: &Path, contents: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+
+    fn owner(name: &str, kind: &str, synonym: &str, children: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+  <{kind} uuid="10000000-0000-4000-8000-000000000001">
+    <Properties><Name>{name}</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>{synonym}</v8:content></v8:item></Synonym></Properties>
+    <ChildObjects>{children}</ChildObjects>
+  </{kind}>
+</MetaDataObject>"#
         )
     }
 
-    fn deadline() -> ProviderDeadline {
-        ProviderDeadline::from_budget(Duration::from_secs(7))
+    struct Fixture {
+        _root: tempfile::TempDir,
+        source: std::path::PathBuf,
     }
 
-    struct MutatingRevisionReader {
-        snapshots: AtomicUsize,
-    }
-
-    impl ViewReadAuthority for MutatingRevisionReader {
-        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
-            let revision = if self.snapshots.fetch_add(1, Ordering::SeqCst) == 0 {
-                "rev-a"
-            } else {
-                "rev-b"
-            };
-            Ok(ViewSourceSnapshot {
-                source_set_identity: "source-a".to_string(),
-                revision: revision.to_string(),
-            })
-        }
-
-        fn read_exact(
-            &self,
-            at: &QualifiedAddress,
-            _filter: &ViewFilter,
-            _admitted: &ViewSourceSnapshot,
-        ) -> Result<NodeViewData, ViewError> {
-            Ok(NodeViewData::Node(NodeView::new(
-                at.to_string(),
-                "Configuration",
-                "Configuration",
-                serde_json::Map::new(),
-            )))
-        }
-    }
-
-    struct CancellingReader {
-        cancellation: CancellationToken,
-    }
-
-    struct UnreadableWebSocketModuleReader;
-
-    impl ViewReadAuthority for UnreadableWebSocketModuleReader {
-        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
-            Ok(ViewSourceSnapshot {
-                source_set_identity: "source-a".to_string(),
-                revision: "rev-a".to_string(),
-            })
-        }
-
-        fn read_exact(
-            &self,
-            at: &QualifiedAddress,
-            _filter: &ViewFilter,
-            _admitted: &ViewSourceSnapshot,
-        ) -> Result<NodeViewData, ViewError> {
-            match at.to_string().as_str() {
-                "main:Configuration" => Ok(NodeViewData::Node(
-                    NodeView::new(
-                        at.to_string(),
-                        "Configuration",
-                        "Configuration",
-                        serde_json::Map::new(),
-                    )
-                    .with_branches(vec![BranchRef::new("main:WebSocketClient", 1)]),
-                )),
-                "main:WebSocketClient" => Ok(NodeViewData::Collection(CollectionView::new(
-                    NodeView::new(
-                        at.to_string(),
-                        "WebSocketClient",
-                        "WebSocketClient",
-                        serde_json::Map::new(),
-                    ),
-                    vec![serde_json::to_value(
-                        NodeView::new(
-                            "main:WebSocketClient.Telephony",
-                            "WebSocketClient",
-                            "Telephony",
-                            serde_json::Map::new(),
-                        )
-                        .with_branches(vec![BranchRef::new(
-                            "main:WebSocketClient.Telephony.Module",
-                            1,
-                        )]),
-                    )
-                    .unwrap()],
-                ))),
-                "main:WebSocketClient.Telephony" => Ok(NodeViewData::Node(
-                    NodeView::new(
-                        at.to_string(),
-                        "WebSocketClient",
-                        "Telephony",
-                        serde_json::Map::new(),
-                    )
-                    .with_branches(vec![BranchRef::new(
-                        "main:WebSocketClient.Telephony.Module",
-                        1,
-                    )]),
-                )),
-                "main:WebSocketClient.Telephony.Module" => {
-                    Ok(NodeViewData::Collection(CollectionView::new(
-                        NodeView::new(at.to_string(), "Module", "Module", serde_json::Map::new()),
-                        vec![serde_json::to_value(NodeView::new(
-                            "main:WebSocketClient.Telephony.Module.WebSocketClient",
-                            "Module",
-                            "WebSocketClient module Telephony",
-                            serde_json::Map::new(),
-                        ))
-                        .unwrap()],
-                    )))
-                }
-                "main:WebSocketClient.Telephony.Module.WebSocketClient" => Err(ViewError::new(
-                    "provider_unavailable",
-                    "WebSocketClient source layout is intentionally unavailable",
-                )),
-                other => Err(ViewError::new("not_found", format!("unknown {other}"))),
-            }
-        }
-
-        fn permits_identity_fallback(&self, at: &QualifiedAddress) -> bool {
-            at.to_string() == "main:WebSocketClient.Telephony.Module.WebSocketClient"
-        }
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ModuleMatrixFixture {
-        module_capabilities: Vec<ModuleMatrixCase>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    struct ModuleMatrixCase {
-        at: String,
-        exists: bool,
-    }
-
-    struct ProfileModuleMatrixReader {
-        source: String,
-        modules: Vec<String>,
-    }
-
-    impl ProfileModuleMatrixReader {
-        fn new(source: &str, modules: &[String]) -> Self {
-            Self {
-                source: source.to_string(),
-                modules: modules
-                    .iter()
-                    .filter(|address| address.starts_with(&format!("{source}:")))
-                    .cloned()
-                    .collect(),
-            }
-        }
-
-        fn root_owners(&self) -> BTreeSet<String> {
-            self.modules
-                .iter()
-                .filter_map(|module| {
-                    let logical = module.split_once(':')?.1;
-                    if logical.starts_with("Module.") {
-                        return None;
-                    }
-                    let owner = module
-                        .split_once(".Module.")
-                        .map_or(module.as_str(), |(owner, _)| owner);
-                    let tokens = owner.split_once(':')?.1.split('.').collect::<Vec<_>>();
-                    (tokens.len() >= 2)
-                        .then(|| format!("{}:{}.{}", self.source, tokens[0], tokens[1]))
-                })
-                .collect()
-        }
-
-        fn nested_owners(&self, root: &str) -> BTreeSet<String> {
-            self.modules
-                .iter()
-                .filter_map(|module| module.split_once(".Module.").map(|(owner, _)| owner))
-                .filter(|owner| owner.starts_with(&format!("{root}.")))
-                .filter(|owner| owner.split_once(':').unwrap().1.split('.').count() == 4)
-                .map(str::to_string)
-                .collect()
-        }
-
-        fn owner_node(&self, at: &QualifiedAddress) -> NodeViewData {
-            let mut branches = Vec::new();
-            if let Some(module_branch) = module_branch_for_parent(at, PlatformProfile::v8_3_27()) {
-                branches.push(module_branch);
-            }
-            let nested = self.nested_owners(&at.to_string());
-            let mut child_counts = BTreeMap::<String, usize>::new();
-            for child in nested {
-                let logical = child
-                    .split_once(':')
-                    .unwrap()
-                    .1
-                    .split('.')
-                    .collect::<Vec<_>>();
-                *child_counts.entry(logical[2].to_string()).or_default() += 1;
-            }
-            branches.extend(
-                child_counts
-                    .into_iter()
-                    .map(|(kind, count)| BranchRef::new(format!("{at}.{kind}"), count)),
+    impl Fixture {
+        fn new() -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().canonicalize().unwrap().join("src");
+            write(
+                &source.join("Configuration.xml"),
+                &owner(
+                    "Магазин",
+                    "Configuration",
+                    "Магазин",
+                    "<Catalog>Валюты</Catalog>",
+                ),
             );
-            let segment = at.segments().last().unwrap();
-            NodeViewData::Node(
-                NodeView::new(
-                    at.to_string(),
-                    segment.kind().as_str(),
-                    segment.name().unwrap_or(segment.kind().as_str()),
-                    serde_json::Map::new(),
+            write(
+                &source.join("Catalogs/Валюты.xml"),
+                &owner(
+                    "Валюты",
+                    "Catalog",
+                    "Валюты и курсы",
+                    "<Form>ФормаЭлемента</Form>",
+                ),
+            );
+            write(
+                &source.join("Catalogs/Валюты/Forms/ФормаЭлемента.xml"),
+                &owner("ФормаЭлемента", "Form", "Форма элемента", ""),
+            );
+            write(
+                &source.join("Catalogs/Валюты/Templates/Печать.xml"),
+                &owner("Печать", "Template", "Печатная форма", ""),
+            );
+            write(
+                &source.join("Catalogs/Валюты/Commands/Обновить/Ext/CommandModule.bsl"),
+                "&AtClient\nProcedure CommandProcessing()\nEndProcedure\n",
+            );
+            // Module bodies must not be read by the directory at all.
+            write(
+                &source.join("Catalogs/Валюты/Ext/ObjectModule.bsl"),
+                "Procedure СекретныйМетод()\nEndProcedure\n",
+            );
+            Self {
+                _root: root,
+                source,
+            }
+        }
+
+        fn directory(&self) -> crate::application::v13::find::FindIndex {
+            let root = RetainedDirectoryCapability::open(&self.source).unwrap();
+            WorkspaceFindDirectoryBuilder::default()
+                .build(
+                    &[LayoutFindSource::new(
+                        "main",
+                        SourceSetKind::Configuration,
+                        &root,
+                    )],
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
                 )
-                .with_branches(branches),
-            )
-        }
-
-        fn module_collection(&self, at: &QualifiedAddress) -> NodeViewData {
-            project_module_branch(at, PlatformProfile::v8_3_27()).unwrap()
-        }
-    }
-
-    impl ViewReadAuthority for ProfileModuleMatrixReader {
-        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
-            Ok(ViewSourceSnapshot {
-                source_set_identity: format!("{}-source", self.source),
-                revision: "rev-a".to_string(),
-            })
-        }
-
-        fn read_exact(
-            &self,
-            at: &QualifiedAddress,
-            _filter: &ViewFilter,
-            _admitted: &ViewSourceSnapshot,
-        ) -> Result<NodeViewData, ViewError> {
-            let text = at.to_string();
-            if text == format!("{}:Configuration", self.source) {
-                let roots = self.root_owners();
-                let mut counts = BTreeMap::<String, usize>::new();
-                for owner in &roots {
-                    let kind = owner.split_once(':').unwrap().1.split('.').next().unwrap();
-                    *counts.entry(kind.to_string()).or_default() += 1;
-                }
-                let mut branches = counts
-                    .into_iter()
-                    .map(|(kind, count)| BranchRef::new(format!("{}:{kind}", self.source), count))
-                    .collect::<Vec<_>>();
-                let root = QualifiedAddress::parse(&text).unwrap();
-                if self.source == "main" {
-                    branches.extend(module_branch_for_parent(&root, PlatformProfile::v8_3_27()));
-                }
-                return Ok(NodeViewData::Node(
-                    NodeView::new(
-                        text,
-                        "Configuration",
-                        "Configuration",
-                        serde_json::Map::new(),
-                    )
-                    .with_branches(branches),
-                ));
-            }
-            if PlatformProfile::v8_3_27().module_capability(at).is_some() {
-                if text == "main:Document.ЕщеНеВыгружен.Module.Object" {
-                    return Err(ViewError::new(
-                        "not_found",
-                        "registered owner has no retained Module.bsl source",
-                    ));
-                }
-                if at
-                    .segments()
-                    .last()
-                    .is_some_and(|segment| segment.name() == Some("WebSocketClient"))
-                {
-                    return Err(ViewError::new(
-                        "provider_unavailable",
-                        "WebSocketClient source layout is intentionally unavailable",
-                    ));
-                }
-                return Ok(NodeViewData::Node(NodeView::new(
-                    text,
-                    "Module",
-                    "Module",
-                    serde_json::Map::new(),
-                )));
-            }
-            if !PlatformProfile::v8_3_27().module_children(at).is_empty() {
-                return Ok(self.module_collection(at));
-            }
-            let logical = text
-                .split_once(':')
                 .unwrap()
-                .1
-                .split('.')
-                .collect::<Vec<_>>();
-            if logical.len() == 1 {
-                let roots = self.root_owners();
-                let items = roots
-                    .iter()
-                    .filter(|owner| owner.split_once(':').unwrap().1.starts_with(logical[0]))
-                    .map(|owner| {
-                        let owner = QualifiedAddress::parse(owner).unwrap();
-                        serde_json::to_value(self.owner_node(&owner)).unwrap()
-                    })
-                    .collect();
-                return Ok(NodeViewData::Collection(CollectionView::new(
-                    NodeView::new(text.clone(), logical[0], logical[0], serde_json::Map::new()),
-                    items,
-                )));
-            }
-            if logical.len() == 3 {
-                let root = format!("{}:{}.{}", self.source, logical[0], logical[1]);
-                let nested = self.nested_owners(&root);
-                let items = nested
-                    .iter()
-                    .filter(|owner| {
-                        owner.split_once(':').unwrap().1.split('.').nth(2) == Some(logical[2])
-                    })
-                    .map(|owner| {
-                        let owner = QualifiedAddress::parse(owner).unwrap();
-                        serde_json::to_value(self.owner_node(&owner)).unwrap()
-                    })
-                    .collect();
-                return Ok(NodeViewData::Collection(CollectionView::new(
-                    NodeView::new(text.clone(), logical[2], logical[2], serde_json::Map::new()),
-                    items,
-                )));
-            }
-            let roots = self.root_owners();
-            let nested = roots
-                .iter()
-                .flat_map(|root| self.nested_owners(root))
-                .collect::<BTreeSet<_>>();
-            if roots.contains(&text) || nested.contains(&text) {
-                return Ok(self.owner_node(at));
-            }
-            Err(ViewError::new("not_found", format!("unknown {text}")))
-        }
-
-        fn permits_identity_fallback(&self, at: &QualifiedAddress) -> bool {
-            PlatformProfile::v8_3_27()
-                .module_capability(at)
-                .is_some_and(|capability| {
-                    capability.role()
-                        == crate::domain::platform_profile::ModuleRole::WebSocketClient
-                })
         }
     }
 
-    impl ViewReadAuthority for CancellingReader {
-        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
-            Ok(ViewSourceSnapshot {
-                source_set_identity: "source-a".to_string(),
-                revision: "rev-a".to_string(),
-            })
-        }
-
-        fn read_exact(
-            &self,
-            at: &QualifiedAddress,
-            _filter: &ViewFilter,
-            _admitted: &ViewSourceSnapshot,
-        ) -> Result<NodeViewData, ViewError> {
-            self.cancellation.cancel();
-            Ok(NodeViewData::Node(NodeView::new(
-                at.to_string(),
-                "Configuration",
-                "Configuration",
-                serde_json::Map::new(),
-            )))
-        }
-    }
-
-    fn identity_source(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-        let fixture = tempfile::tempdir().unwrap();
-        let source = fixture.path().join("src");
-        fs::create_dir_all(source.join("Catalogs/Товары/Ext")).unwrap();
-        fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Configuration><Properties><Name>Store</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Магазин</v8:content></v8:item></Synonym></Properties><ChildObjects><Catalog>Товары</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+    fn single(index: &crate::application::v13::find::FindIndex, query: &str) -> (String, String) {
+        let found = index.find(FindRequest::new(query).unwrap());
+        let candidate = found
+            .candidates()
+            .first()
+            .unwrap_or_else(|| panic!("{query}: {found:?}"));
+        assert!(!found.is_nearest(), "{query}: {found:?}");
+        (
+            candidate.at().to_string(),
+            candidate.path().unwrap_or_default().to_string(),
         )
-        .unwrap();
-        fs::write(
-            source.join("Catalogs/Товары.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Товары</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item></Synonym></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
-        )
-        .unwrap();
-        fs::write(source.join("Catalogs/Товары/Ext/ObjectModule.bsl"), body).unwrap();
-        let source = fs::canonicalize(source).unwrap();
-        (fixture, source)
-    }
-
-    fn common_module_identity_source(statement: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-        let fixture = tempfile::tempdir().unwrap();
-        let source = fixture.path().join("src");
-        fs::create_dir_all(source.join("CommonModules/IdentityModule/Ext")).unwrap();
-        fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><CommonModule>IdentityModule</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        fs::write(
-            source.join("CommonModules/IdentityModule.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>IdentityModule</Name><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
-        )
-        .unwrap();
-        fs::write(
-            source.join("CommonModules/IdentityModule/Ext/Module.bsl"),
-            format!(
-                "#Region PublicApi\nProcedure StableMethod(Value) Export\n    {statement};\nEndProcedure\n#EndRegion\n"
-            ),
-        )
-        .unwrap();
-        let source = fs::canonicalize(source).unwrap();
-        (fixture, source)
     }
 
     #[test]
-    fn actor_owned_platform_xml_registry_builds_identity_only_find_index() {
-        let (_fixture, source) =
-            identity_source("Procedure StableMethod()\nСовершенноСекретноеСлово();\nEndProcedure");
-        let cancellation = CancellationToken::new();
-        let index = build_index(
-            WorkspaceFindIndexBuilder::default(),
-            &source,
-            &cancellation,
-            deadline(),
-        )
-        .unwrap();
+    fn a_name_resolves_to_the_address_and_the_file_that_carries_it() {
+        let index = Fixture::new().directory();
+        for (query, at, path) in [
+            ("Валюты", "main:Catalog.Валюты", "Catalogs/Валюты.xml"),
+            (
+                "main:Catalog.Валюты",
+                "main:Catalog.Валюты",
+                "Catalogs/Валюты.xml",
+            ),
+            (
+                "ФормаЭлемента",
+                "main:Catalog.Валюты.Form.ФормаЭлемента",
+                "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+            ),
+            (
+                "Печать",
+                "main:Catalog.Валюты.Template.Печать",
+                "Catalogs/Валюты/Templates/Печать.xml",
+            ),
+            (
+                "Обновить",
+                "main:Catalog.Валюты.Command.Обновить",
+                "Catalogs/Валюты/Commands/Обновить",
+            ),
+            ("Магазин", "main:Configuration", "Configuration.xml"),
+        ] {
+            assert_eq!(single(&index, query), (at.to_string(), path.to_string()));
+        }
+    }
 
-        for (query, reason, expected_at) in [
-            ("Товары", "name", "main:Catalog.Товары"),
-            ("Номенклатура", "synonym", "main:Catalog.Товары"),
-            ("Catalog", "name", "main:Catalog"),
-            ("Catalogs/Товары.xml", "exportPath", "main:Catalog.Товары"),
+    #[test]
+    fn a_file_path_resolves_back_to_its_object_address() {
+        let index = Fixture::new().directory();
+        for (query, at) in [
+            ("Catalogs/Валюты.xml", "main:Catalog.Валюты"),
+            (
+                "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+                "main:Catalog.Валюты.Form.ФормаЭлемента",
+            ),
+            // The caller pastes what the shell gave them: the stored path is
+            // the tail of an absolute or workspace-relative path.
+            (
+                "/home/user/project/src/Catalogs/Валюты.xml",
+                "main:Catalog.Валюты",
+            ),
+            ("src/Catalogs/Валюты.xml", "main:Catalog.Валюты"),
+        ] {
+            assert_eq!(single(&index, query).0, at, "{query}");
+        }
+    }
+
+    #[test]
+    fn a_synonym_resolves_to_its_object() {
+        let index = Fixture::new().directory();
+        assert_eq!(single(&index, "Валюты и курсы").0, "main:Catalog.Валюты");
+    }
+
+    #[test]
+    fn the_directory_holds_objects_and_never_code_symbols_or_inner_nodes() {
+        let index = Fixture::new().directory();
+        for query in [
+            "СекретныйМетод",
+            "main:Catalog.Валюты.Module.Object",
+            "main:Catalog.Валюты.Attribute.Код",
         ] {
             let found = index.find(FindRequest::new(query).unwrap());
-            assert_eq!(found.candidates()[0].at(), expected_at);
-            assert_eq!(found.candidates()[0].reason(), reason);
-        }
-        let english_kind = index.find(FindRequest::new("Catalog").unwrap());
-        assert!(english_kind.candidates().iter().any(|candidate| {
-            candidate.at() == "main:Catalog.Товары" && candidate.reason() == "kind"
-        }));
-        let content = index.find(FindRequest::new("СовершенноСекретноеСлово").unwrap());
-        assert!(content.is_nearest());
-        assert!(content.candidates().iter().all(|candidate| {
-            candidate.reason().starts_with("nearest:name")
-                || candidate.reason().starts_with("nearest:address")
-        }));
-    }
-
-    #[test]
-    fn find_identity_facts_and_results_are_independent_of_bsl_body_bytes() {
-        let (_left_fixture, left_source) =
-            identity_source("Procedure StableMethod()\nОдинСекретныйОператор();\nEndProcedure");
-        let (_right_fixture, right_source) =
-            identity_source("Procedure StableMethod()\nСовсемДругойОператор();\nEndProcedure");
-        let cancellation = CancellationToken::new();
-        let left = build_index(
-            WorkspaceFindIndexBuilder::default(),
-            &left_source,
-            &cancellation,
-            deadline(),
-        )
-        .unwrap();
-        let right = build_index(
-            WorkspaceFindIndexBuilder::default(),
-            &right_source,
-            &cancellation,
-            deadline(),
-        )
-        .unwrap();
-
-        assert_eq!(left.fact_bytes(), right.fact_bytes());
-        for query in ["Номенклатура", "Номенклатур"] {
-            let left_result = left.find(FindRequest::new(query).unwrap());
-            let right_result = right.find(FindRequest::new(query).unwrap());
-            assert_eq!(
-                serde_json::to_vec(&left_result).unwrap(),
-                serde_json::to_vec(&right_result).unwrap(),
-            );
-            assert!(left_result.candidates().iter().all(|candidate| {
-                !left_result.is_nearest()
-                    || candidate.reason().starts_with("nearest:name")
-                    || candidate.reason().starts_with("nearest:address")
-            }));
-        }
-    }
-
-    #[test]
-    fn find_reads_only_module_declarations_and_never_indexes_the_body_projection() {
-        let (_left_fixture, left_source) = common_module_identity_source("LeftBodyOnlyStatement()");
-        let (_right_fixture, right_source) =
-            common_module_identity_source("RightBodyOnlyStatement()");
-        let cancellation = CancellationToken::new();
-        let left = build_index(
-            WorkspaceFindIndexBuilder::default(),
-            &left_source,
-            &cancellation,
-            deadline(),
-        )
-        .unwrap();
-        let right = build_index(
-            WorkspaceFindIndexBuilder::default(),
-            &right_source,
-            &cancellation,
-            deadline(),
-        )
-        .unwrap();
-
-        assert_eq!(left.fact_bytes(), right.fact_bytes());
-        for address in [
-            "main:CommonModule.IdentityModule.Method.StableMethod",
-            "main:CommonModule.IdentityModule.Region.PublicApi",
-        ] {
-            let left_result = left.find(FindRequest::new(address).unwrap());
-            let right_result = right.find(FindRequest::new(address).unwrap());
-            assert!(!left_result.is_nearest(), "{left_result:?}");
-            assert!(left_result
-                .candidates()
-                .iter()
-                .any(|candidate| candidate.at() == address));
-            assert_eq!(
-                serde_json::to_vec(&left_result).unwrap(),
-                serde_json::to_vec(&right_result).unwrap(),
-            );
-        }
-        for (index, query) in [
-            (&left, "main:CommonModule.IdentityModule.Body"),
-            (&left, "LeftBodyOnlyStatement"),
-            (&right, "RightBodyOnlyStatement"),
-        ] {
-            let result = index.find(FindRequest::new(query).unwrap());
             assert!(
-                result.is_nearest(),
-                "body identity leaked for {query}: {result:?}"
+                found.is_nearest() || found.candidates().is_empty(),
+                "the directory answered a non-object query {query}: {found:?}"
             );
-            assert!(result.candidates().iter().all(|candidate| {
-                candidate.at() != "main:CommonModule.IdentityModule.Body"
-                    && (candidate.reason().starts_with("nearest:name")
-                        || candidate.reason().starts_with("nearest:address"))
-            }));
         }
     }
 
     #[test]
-    fn find_indexes_nested_addressable_metadata_identity() {
-        let (_fixture, source) = identity_source("Procedure Any()\nEndProcedure");
-        fs::write(
-            source.join("Catalogs/Товары.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Товары</Name></Properties><ChildObjects><Attribute uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>КодПоставщика</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Код поставщика</v8:content></v8:item></Synonym><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#,
-        )
-        .unwrap();
-        let cancellation = CancellationToken::new();
-        let index = build_index(
-            WorkspaceFindIndexBuilder::default(),
-            &source,
-            &cancellation,
-            deadline(),
-        )
-        .unwrap();
-
-        let result = index.find(FindRequest::new("Код поставщика").unwrap());
-        assert!(!result.is_nearest(), "{result:?}");
-        assert_eq!(
-            result.candidates()[0].at(),
-            "main:Catalog.Товары.Attribute.КодПоставщика"
-        );
-    }
-
-    #[test]
-    fn find_fails_closed_when_a_registered_descriptor_is_malformed() {
-        let (_fixture, source) = identity_source("Procedure Any()\nEndProcedure");
-        fs::write(source.join("Catalogs/Товары.xml"), "<broken>").unwrap();
-        let cancellation = CancellationToken::new();
-        let error = build_index(
-            WorkspaceFindIndexBuilder::default(),
-            &source,
-            &cancellation,
-            deadline(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code(), "provider_unavailable");
-    }
-
-    #[test]
-    fn find_fails_when_the_exact_source_revision_changes_during_the_walk() {
-        let reader = MutatingRevisionReader {
-            snapshots: AtomicUsize::new(0),
-        };
-        let cancellation = CancellationToken::new();
-        let error = WorkspaceFindIndexBuilder::default()
+    fn the_directory_refuses_to_grow_past_its_entry_bound() {
+        let fixture = Fixture::new();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let error = WorkspaceFindDirectoryBuilder::with_document_limit(1)
             .build(
-                &[ActorFindSource::new("main", &reader)],
-                deadline(),
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "provider_limit_exceeded");
+    }
+
+    #[test]
+    fn the_directory_observes_cancellation() {
+        let fixture = Fixture::new();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let error = WorkspaceFindDirectoryBuilder::default()
+            .build(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
                 &cancellation,
             )
             .unwrap_err();
-
-        assert_eq!(error.code(), "stale_revision");
-    }
-
-    #[test]
-    fn find_observes_cancellation_inside_the_logical_tree_walk() {
-        let cancellation = CancellationToken::new();
-        let reader = CancellingReader {
-            cancellation: cancellation.clone(),
-        };
-        let error = WorkspaceFindIndexBuilder::default()
-            .build(
-                &[ActorFindSource::new("main", &reader)],
-                deadline(),
-                &cancellation,
-            )
-            .unwrap_err();
-
         assert_eq!(error.code(), "cancelled");
     }
 
     #[test]
-    fn find_observes_one_aggregate_provider_deadline() {
-        let reader = MutatingRevisionReader {
-            snapshots: AtomicUsize::new(0),
-        };
-        let cancellation = CancellationToken::new();
-        let error = WorkspaceFindIndexBuilder::default()
+    fn an_external_root_publishes_its_owner_and_never_the_dump_sidecar() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().canonicalize().unwrap().join("processor");
+        write(
+            &source.join("Импорт.xml"),
+            &owner(
+                "Импорт",
+                "ExternalDataProcessor",
+                "Импорт данных",
+                "<Form>Основная</Form>",
+            ),
+        );
+        write(
+            &source.join("Импорт/Forms/Основная.xml"),
+            &owner("Основная", "Form", "Основная форма", ""),
+        );
+        // A Designer dump keeps this sidecar beside the owner descriptor.
+        write(
+            &source.join("ConfigDumpInfo.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" format="Hierarchical" version="2.20"/>"#,
+        );
+        let retained = RetainedDirectoryCapability::open(&source).unwrap();
+        let index = WorkspaceFindDirectoryBuilder::default()
             .build(
-                &[ActorFindSource::new("main", &reader)],
+                &[LayoutFindSource::new(
+                    "processor",
+                    SourceSetKind::ExternalProcessor,
+                    &retained,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            single(&index, "Импорт"),
+            (
+                "processor:ExternalDataProcessor.Импорт".to_string(),
+                "Импорт.xml".to_string()
+            )
+        );
+        assert_eq!(
+            single(&index, "Основная").0,
+            "processor:ExternalDataProcessor.Импорт.Form.Основная"
+        );
+        for query in ["ConfigDumpInfo", "ConfigDumpInfo.xml"] {
+            let found = index.find(FindRequest::new(query).unwrap());
+            assert!(
+                found.is_nearest() || found.candidates().is_empty(),
+                "the dump sidecar became an object: {found:?}"
+            );
+        }
+        // An external source set has no configuration root, so nothing may
+        // answer its export path.
+        let fabricated = index.find(FindRequest::new("Configuration.xml").unwrap());
+        assert!(
+            fabricated
+                .candidates()
+                .iter()
+                .all(|candidate| candidate.reason() != "exportPath"),
+            "an external source set advertised a configuration export path: {fabricated:?}"
+        );
+    }
+
+    #[test]
+    fn the_directory_observes_its_operation_deadline() {
+        let fixture = Fixture::new();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let error = WorkspaceFindDirectoryBuilder::default()
+            .build(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
                 ProviderDeadline::from_budget(Duration::ZERO),
-                &cancellation,
+                &CancellationToken::new(),
             )
             .unwrap_err();
-
         assert_eq!(error.code(), "provider_deadline");
     }
 
     #[test]
-    fn find_keeps_profile_identity_for_the_typed_unreadable_websocket_module() {
-        let cancellation = CancellationToken::new();
-        let built = WorkspaceFindIndexBuilder::default().build(
-            &[ActorFindSource::new(
-                "main",
-                &UnreadableWebSocketModuleReader,
-            )],
-            deadline(),
-            &cancellation,
+    fn a_file_that_is_not_an_owner_descriptor_never_becomes_an_object() {
+        let fixture = Fixture::new();
+        // A stray file whose name looks like an object, a descriptor of the
+        // wrong kind, and one whose declared name disagrees with the file.
+        write(
+            &fixture.source.join("Catalogs/Резервная копия.xml"),
+            "<!-- not a descriptor -->",
         );
-        let index = built.expect("the typed unreadable module must not collapse other identities");
-        let address = "main:WebSocketClient.Telephony.Module.WebSocketClient";
-        let found = index.find(FindRequest::new(address).unwrap());
-        assert!(!found.is_nearest(), "{found:?}");
-        assert!(found
-            .candidates()
-            .iter()
-            .any(|candidate| candidate.at() == address));
-    }
-
-    #[test]
-    fn profile_matrix_supplements_production_module_capability_coverage() {
-        let fixture: ModuleMatrixFixture = serde_json::from_str(include_str!(
-            "../../../../tests/fixtures/v013/address-profile-8.3.27.json"
-        ))
-        .unwrap();
-        let expected = fixture
-            .module_capabilities
-            .into_iter()
-            .filter(|case| case.exists)
-            .map(|case| case.at)
-            .collect::<BTreeSet<_>>();
-        assert_eq!(expected.len(), 25);
-        let main =
-            ProfileModuleMatrixReader::new("main", &expected.iter().cloned().collect::<Vec<_>>());
-        let epf =
-            ProfileModuleMatrixReader::new("epf", &expected.iter().cloned().collect::<Vec<_>>());
-        let erf =
-            ProfileModuleMatrixReader::new("erf", &expected.iter().cloned().collect::<Vec<_>>());
-        let cancellation = CancellationToken::new();
-        let index = WorkspaceFindIndexBuilder::default()
+        write(
+            &fixture.source.join("Catalogs/Подделка.xml"),
+            &owner("Подделка", "Document", "Подделка", ""),
+        );
+        write(
+            &fixture.source.join("Catalogs/Валюты/Forms/Чужая.xml"),
+            &owner("Другая", "Form", "Другая форма", ""),
+        );
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let index = WorkspaceFindDirectoryBuilder::default()
             .build(
-                &[
-                    ActorFindSource::new("main", &main),
-                    ActorFindSource::new("epf", &epf),
-                    ActorFindSource::new("erf", &erf),
-                ],
-                deadline(),
-                &cancellation,
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
             )
             .unwrap();
-        assert!(main.root_owners().contains("main:Document.ЕщеНеВыгружен"));
-        for address in expected {
-            let found = index.find(FindRequest::new(&address).unwrap().with_limit(100).unwrap());
+        for query in [
+            "Резервная копия",
+            "main:Catalog.Подделка",
+            "main:Catalog.Валюты.Form.Чужая",
+        ] {
+            let found = index.find(FindRequest::new(query).unwrap());
             assert!(
-                !found.is_nearest()
-                    && found
-                        .candidates()
-                        .iter()
-                        .any(|candidate| candidate.at() == address),
-                "missing module identity {address}: {found:?}",
+                found.is_nearest() || found.candidates().is_empty(),
+                "a file that declares no matching owner became an object: {query}: {found:?}"
             );
         }
+        // The real objects beside them are still there.
+        assert_eq!(single(&index, "Валюты").0, "main:Catalog.Валюты");
+        assert_eq!(
+            single(&index, "ФормаЭлемента").0,
+            "main:Catalog.Валюты.Form.ФормаЭлемента"
+        );
     }
 
     #[test]
-    fn workspace_find_builder_refuses_registry_materialization_above_bound() {
-        let fixture = tempfile::tempdir().unwrap();
-        let source = fixture.path().join("src");
-        fs::create_dir_all(&source).unwrap();
-        fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>One</Catalog><Catalog>Two</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        fs::create_dir_all(source.join("Catalogs")).unwrap();
-        for name in ["One", "Two"] {
-            fs::write(
-                source.join(format!("Catalogs/{name}.xml")),
-                format!(
-                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>{name}</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#
-                ),
+    fn a_descriptor_whose_attributes_start_on_a_new_line_is_still_an_object() {
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("Catalogs/Склады.xml"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" version=\"2.20\">\n  <Catalog\n    uuid=\"10000000-0000-4000-8000-000000000002\">\n    <Properties><Name>Склады</Name></Properties>\n    <ChildObjects/>\n  </Catalog>\n</MetaDataObject>",
+        );
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let index = WorkspaceFindDirectoryBuilder::default()
+            .build(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
             )
             .unwrap();
-        }
-        let source = fs::canonicalize(source).unwrap();
-        let cancellation = CancellationToken::new();
-        let error = build_index(
-            WorkspaceFindIndexBuilder::with_document_limit(2),
-            &source,
-            &cancellation,
-            deadline(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code(), "provider_limit_exceeded");
-    }
-
-    #[test]
-    fn workspace_find_builder_refuses_identity_facts_above_byte_budget() {
-        let (_fixture, source) = identity_source("Procedure Any()\nEndProcedure");
-        let cancellation = CancellationToken::new();
-        let error = build_index(
-            WorkspaceFindIndexBuilder::with_limits(10, 64),
-            &source,
-            &cancellation,
-            deadline(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code(), "provider_limit_exceeded");
-    }
-
-    struct CountingIdentityReader {
-        revision: std::sync::Mutex<String>,
-        snapshots: AtomicUsize,
-        identity_reads: AtomicUsize,
-    }
-
-    impl CountingIdentityReader {
-        fn new(revision: &str) -> Self {
-            Self {
-                revision: std::sync::Mutex::new(revision.to_string()),
-                snapshots: AtomicUsize::new(0),
-                identity_reads: AtomicUsize::new(0),
-            }
-        }
-
-        fn set_revision(&self, revision: &str) {
-            *self.revision.lock().unwrap() = revision.to_string();
-        }
-
-        fn identity_reads(&self) -> usize {
-            self.identity_reads.load(Ordering::SeqCst)
-        }
-
-        fn snapshots(&self) -> usize {
-            self.snapshots.load(Ordering::SeqCst)
-        }
-    }
-
-    impl ViewReadAuthority for CountingIdentityReader {
-        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
-            self.snapshots.fetch_add(1, Ordering::SeqCst);
-            Ok(ViewSourceSnapshot {
-                source_set_identity: "source-a".to_string(),
-                revision: self.revision.lock().unwrap().clone(),
-            })
-        }
-
-        fn read_exact(
-            &self,
-            at: &QualifiedAddress,
-            _filter: &ViewFilter,
-            _admitted: &ViewSourceSnapshot,
-        ) -> Result<NodeViewData, ViewError> {
-            self.identity_reads.fetch_add(1, Ordering::SeqCst);
-            let node = |kind: &str, title: &str| {
-                NodeView::new(at.to_string(), kind, title, serde_json::Map::new())
-            };
-            match at.to_string().as_str() {
-                "main:Configuration" => Ok(NodeViewData::Node(
-                    node("Configuration", "Configuration")
-                        .with_branches(vec![BranchRef::new("main:Catalog", 1)]),
-                )),
-                "main:Catalog" => Ok(NodeViewData::Collection(CollectionView::new(
-                    node("Catalog", "Catalog"),
-                    vec![serde_json::to_value(NodeView::new(
-                        "main:Catalog.Валюты",
-                        "Catalog",
-                        "Валюты",
-                        serde_json::Map::new(),
-                    ))
-                    .unwrap()],
-                ))),
-                "main:Catalog.Валюты" => Ok(NodeViewData::Node(node("Catalog", "Валюты"))),
-                other => Err(ViewError::new(
-                    "not_found",
-                    format!("unexpected identity read `{other}`"),
-                )),
-            }
-        }
-    }
-
-    #[test]
-    fn unchanged_workspace_reuses_the_retained_find_index_without_rereading_identities() {
-        let reader = CountingIdentityReader::new("rev-a");
-        let builder = WorkspaceFindIndexBuilder::default();
-        let cancellation = CancellationToken::new();
-        let sources = [ActorFindSource::new("main", &reader)];
-
-        let first = builder
-            .build_with_revision(&sources, deadline(), &cancellation)
-            .unwrap();
-        let reads_after_first = reader.identity_reads();
-        let snapshots_after_first = reader.snapshots();
         assert_eq!(
-            reads_after_first, 3,
-            "the first build walks every logical identity exactly once"
-        );
-
-        let second = builder
-            .build_with_revision(&sources, deadline(), &cancellation)
-            .unwrap();
-
-        assert_eq!(
-            reader.identity_reads(),
-            reads_after_first,
-            "an unchanged admitted revision must not re-read identities"
-        );
-        assert_eq!(
-            reader.snapshots(),
-            snapshots_after_first + 1,
-            "reuse still admits the exact source revision before answering"
-        );
-        assert_eq!(second.revision, first.revision);
-        assert_eq!(second.revision, "rev-a");
-        assert!(Arc::ptr_eq(&first.index, &second.index));
-        let found = second.index.find(FindRequest::new("Валюты").unwrap());
-        assert!(found
-            .candidates()
-            .iter()
-            .any(|candidate| candidate.at() == "main:Catalog.Валюты"));
-    }
-
-    #[test]
-    fn changed_source_revision_rebuilds_the_find_index() {
-        let reader = CountingIdentityReader::new("rev-a");
-        let builder = WorkspaceFindIndexBuilder::default();
-        let cancellation = CancellationToken::new();
-        let sources = [ActorFindSource::new("main", &reader)];
-        let first = builder
-            .build_with_revision(&sources, deadline(), &cancellation)
-            .unwrap();
-        let reads_after_first = reader.identity_reads();
-
-        reader.set_revision("rev-b");
-        let second = builder
-            .build_with_revision(&sources, deadline(), &cancellation)
-            .unwrap();
-
-        assert_eq!(
-            reader.identity_reads(),
-            reads_after_first * 2,
-            "a new exact revision walks the logical tree again"
-        );
-        assert_eq!(second.revision, "rev-b");
-        assert_ne!(second.revision, first.revision);
-        assert!(!Arc::ptr_eq(&first.index, &second.index));
-
-        reader.set_revision("rev-a");
-        builder
-            .build_with_revision(&sources, deadline(), &cancellation)
-            .unwrap();
-        assert_eq!(
-            reader.identity_reads(),
-            reads_after_first * 3,
-            "one retained index per builder: a superseded revision is rebuilt, not remembered"
+            single(&index, "Склады"),
+            (
+                "main:Catalog.Склады".to_string(),
+                "Catalogs/Склады.xml".to_string()
+            )
         );
     }
 
     #[test]
-    fn find_identity_only_contract_is_complete() {
-        actor_owned_platform_xml_registry_builds_identity_only_find_index();
-        find_reads_only_module_declarations_and_never_indexes_the_body_projection();
-        find_indexes_nested_addressable_metadata_identity();
-        crate::infrastructure::v13_read::tests::production_authorities_reach_all_profile_module_capabilities_from_real_parent_inventories();
-        crate::infrastructure::v13_read::tests::one_find_reads_each_module_source_once_per_actor_revision();
-        crate::infrastructure::v13_read::tests::one_find_parses_each_metadata_descriptor_once_per_actor_revision();
-        crate::infrastructure::v13_read::tests::typed_reads_parse_the_support_marker_once_per_actor_revision();
-        unchanged_workspace_reuses_the_retained_find_index_without_rereading_identities();
-        changed_source_revision_rebuilds_the_find_index();
-        crate::infrastructure::v13_read::tests::operation_lease_find_traversal_scans_once_then_confirms_once();
-        profile_matrix_supplements_production_module_capability_coverage();
-        find_keeps_profile_identity_for_the_typed_unreadable_websocket_module();
-        find_fails_closed_when_a_registered_descriptor_is_malformed();
-        find_fails_when_the_exact_source_revision_changes_during_the_walk();
-        find_observes_cancellation_inside_the_logical_tree_walk();
-        find_observes_one_aggregate_provider_deadline();
-        workspace_find_builder_refuses_registry_materialization_above_bound();
-        workspace_find_builder_refuses_identity_facts_above_byte_budget();
-        crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
-            crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-        );
-        crate::infrastructure::v13_read::tests::find_uses_each_typed_readers_real_export_path_without_publishing_it_in_view_props();
+    fn find_address_path_directory_contract_is_complete() {
+        a_name_resolves_to_the_address_and_the_file_that_carries_it();
+        a_file_path_resolves_back_to_its_object_address();
+        a_synonym_resolves_to_its_object();
+        the_directory_holds_objects_and_never_code_symbols_or_inner_nodes();
+        the_directory_refuses_to_grow_past_its_entry_bound();
+        the_directory_observes_cancellation();
+        the_directory_observes_its_operation_deadline();
+        an_external_root_publishes_its_owner_and_never_the_dump_sidecar();
+        a_file_that_is_not_an_owner_descriptor_never_becomes_an_object();
+        a_descriptor_whose_attributes_start_on_a_new_line_is_still_an_object();
     }
 }

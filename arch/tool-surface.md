@@ -107,22 +107,23 @@ Search bundled Unica and safe 1C documentation by topic.
 
 ### `unica.find`
 
-Resolve a human query to canonical logical address candidates.
+Map between object names, logical addresses and where objects live in the source layout, in both directions.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `kind` | string | нет | Optional logical kind such as Catalog or CommonModule. |
-| `limit` | integer | нет | Maximum address candidates to return. |
-| `query` | string | да | Object name or address fragment to resolve. |
+| `limit` | integer | нет | Maximum candidates to return. |
+| `query` | string | да | Object name, synonym, logical address, or a path to a source file or object directory. |
 
-**Результат сейчас:** `data.candidates` содержит детерминированные кандидаты квалифицированных логических адресов (отвечают типизированным `data`)
+**Результат сейчас:** `data.candidates` содержит кандидатов с квалифицированным логическим адресом и путём к месту объекта в раскладке (файл дескриптора либо каталог команды); ответ не несёт `rev` (отвечают типизированным `data`)
 
-**Целевой контракт:** Добавлять закрытые виды поиска без возврата к физическим selector-ам
+**Целевой контракт:** Добавить закрытые виды сопоставления без возврата к физическим selector-ам
 
 **Сценарии:**
 
-- Разрешить имя объекта в квалифицированный логический адрес
-- Найти несколько кандидатов перед точным `view` или `apply`
+- Узнать, какому объекту принадлежит найденный файл
+- Получить путь к файлу или каталогу объекта, чтобы прочитать или починить его вне Unica
+- Разрешить имя или синоним в квалифицированный логический адрес перед точным `view` или `apply`
 
 ## run
 

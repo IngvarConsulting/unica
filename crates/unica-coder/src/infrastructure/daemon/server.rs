@@ -5736,9 +5736,9 @@ struct ActorLogicalReadLease {"#,
             .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
             .unwrap();
         assert_eq!(
-            find_execution.read_sources().unwrap().len(),
+            find_execution.layout_sources().unwrap().len(),
             2,
-            "aggregate find must admit every workspace source set"
+            "the find directory must admit every workspace source set"
         );
         let find_result = service
             .execute(&find_execution, cancellation.clone())
@@ -5747,6 +5747,9 @@ struct ActorLogicalReadLease {"#,
             find_result.ok,
             "canonical v0.13 find execution must succeed"
         );
+        // A layout directory publishes no revision state: `find` confirms
+        // nothing and never holds the actor mutation lane, so a competing
+        // publication is free while its result stands.
         let find_actor = Arc::clone(find_execution.actor_for_test());
         let legacy_fence = find_actor
             .capture_revision(
@@ -5755,56 +5758,22 @@ struct ActorLogicalReadLease {"#,
                 &cancellation,
             )
             .unwrap();
-        let (first_confirmed_tx, first_confirmed_rx) = mpsc::channel();
-        let (release_confirm_tx, release_confirm_rx) = mpsc::channel();
-        let (logical_done_tx, logical_done_rx) = mpsc::channel();
-        let logical_cancellation = cancellation.clone();
-        std::thread::spawn(move || {
-            set_logical_read_now(started + Duration::from_secs(8));
-            crate::infrastructure::workspace_actor::set_logical_publication_after_confirmation_hook(
-                move || {
-                    first_confirmed_tx.send(()).unwrap();
-                    release_confirm_rx.recv().unwrap();
-                },
-            );
-            logical_done_tx
-                .send(find_execution.publish(Ok(find_result), &logical_cancellation))
-                .unwrap();
-        });
-        first_confirmed_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("first aggregate source was confirmed under the lane");
-        let (competitor_tx, competitor_rx) = mpsc::channel();
-        let competing_actor = Arc::clone(&find_actor);
-        let competing_cancellation = cancellation.clone();
-        std::thread::spawn(move || {
-            let acquired = competing_actor.begin_publication(
+        let published = find_execution
+            .publish(Ok(find_result), &cancellation)
+            .expect("find publication")
+            .expect("find result");
+        assert!(published.ok);
+        assert!(
+            published.rev.is_none(),
+            "a find directory is not a revision snapshot and must publish no rev"
+        );
+        find_actor
+            .begin_publication(
                 &legacy_fence,
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &competing_cancellation,
-            );
-            competitor_tx.send(acquired.map(drop)).unwrap();
-        });
-        assert!(
-            matches!(
-                competitor_rx.recv_timeout(Duration::from_millis(100)),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ),
-            "the mutation lane must remain held between aggregate source confirmations"
-        );
-        release_confirm_tx.send(()).unwrap();
-        assert!(
-            logical_done_rx
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap()
-                .unwrap()
-                .unwrap()
-                .ok
-        );
-        competitor_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("competing publication resumes after every source confirmation")
-            .unwrap();
+                &cancellation,
+            )
+            .expect("find must not hold the actor mutation lane");
 
         let find_invocation = bind_workspace_invocation(
             &find_request,
@@ -5830,8 +5799,8 @@ struct ActorLogicalReadLease {"#,
         assert!(
             find_execution
                 .publish(Ok(find_result), &cancellation)
-                .is_err(),
-            "find must confirm every admitted source set"
+                .is_ok(),
+            "a directory answer stands even when a source set changes after it"
         );
 
         let invocation = bind_workspace_invocation(

@@ -4,8 +4,8 @@ use super::{
     MetadataAddress, SourceTarget, TargetKindPolicy, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::application::result_store::ViewCursorStore;
-use crate::application::v13::find::FindRequest;
-use crate::application::v13::view::{ViewRequest, ViewService};
+use crate::application::v13::find::{FindRequest, FindResult};
+use crate::application::v13::view::{ViewFilter, ViewReadAuthority, ViewRequest, ViewService};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -17,7 +17,7 @@ use crate::infrastructure::platform::filesystem::{
     supports_retained_root_replacement_test, RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_revision::SourceRevisionService;
-use crate::infrastructure::v13_find::{ActorFindSource, WorkspaceFindIndexBuilder};
+
 use crate::infrastructure::v13_read_port::{
     review_clear_revision_identity_hooks, review_set_revision_identity_hooks, ProviderReadAuthority,
 };
@@ -1430,15 +1430,7 @@ fn production_form_command_execute_has_one_semantic_identity_across_view_and_fin
     }
 
     let authority = fixture.operation_read_authority();
-    let index = WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
+    let index = ReaderReach::new(vec![("main", &authority)]);
     for command in ["Zero", "Missing", "Implemented", "Duplicate"] {
         let event_at = format!("{form_at}.Command.{command}.Event.Execute");
         let found = index.find(
@@ -1571,15 +1563,7 @@ fn production_form_command_execute_requires_an_exact_client_directive() {
     }
 
     let authority = fixture.operation_read_authority();
-    let index = WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
+    let index = ReaderReach::new(vec![("main", &authority)]);
     for command in [
         "RussianClient",
         "EnglishClient",
@@ -2121,15 +2105,7 @@ fn extension_root_platform_modules_are_owned_by_the_extension_root() {
         source_root,
         PlatformProfile::v8_3_27(),
     );
-    let index = WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &cancellation,
-        )
-        .unwrap();
+    let index = ReaderReach::new(vec![("main", &authority)]);
     for expected in [
         "main:Module.ManagedApplication",
         "main:Module.ManagedApplication.Method.РасширениеПриСтарте",
@@ -2210,15 +2186,7 @@ fn find_walks_every_real_addressable_reader_family_without_parallel_xml_semantic
     let fixture = RealReaderFixture::new();
     fixture.install_accepted_profile_sources();
     let authority = fixture.operation_read_authority();
-    let index = WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
+    let index = ReaderReach::new(vec![("main", &authority)]);
     let expected_addresses = [
         "main:Configuration",
         "main:Catalog",
@@ -2278,13 +2246,7 @@ pub(crate) fn operation_lease_find_traversal_scans_once_then_confirms_once() {
         PlatformProfile::v8_3_27(),
         deadline,
     );
-    let built = WorkspaceFindIndexBuilder::default()
-        .build_with_revision(
-            &[ActorFindSource::new("main", &authority)],
-            deadline,
-            &fixture.cancellation,
-        )
-        .unwrap();
+    let built = ReaderReach::new(vec![("main", &authority)]);
     for expected in [
         "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
         "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
@@ -2293,7 +2255,7 @@ pub(crate) fn operation_lease_find_traversal_scans_once_then_confirms_once() {
         "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы",
         "main:CommonModule.РеактивныйСервер.Method.InternalService",
     ] {
-        let found = built.index.find(FindRequest::new(expected).unwrap());
+        let found = built.find(FindRequest::new(expected).unwrap());
         assert!(
             !found.is_nearest()
                 && found
@@ -2365,60 +2327,30 @@ fn operation_lease_rejects_named_root_replacement_before_node_read() {
 }
 
 #[test]
-pub(crate) fn find_uses_each_typed_readers_real_export_path_without_publishing_it_in_view_props() {
+pub(crate) fn typed_readers_never_publish_their_export_path_in_view_props() {
     let fixture = RealReaderFixture::new();
-    let authority = fixture.read_authority();
-    let index = WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
-    let cases = [
-        (
-            "Reports/ParityReport/Forms/MainForm.xml",
-            "main:Report.ParityReport.Form.MainForm",
-        ),
-        (
-            "Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            "main:Report.ParityReport.Form.MainForm.Item.Goods",
-        ),
-        (
-            "Roles/SalesReader/Ext/Rights.xml",
-            "main:Role.SalesReader.Right.Catalog_Products.RLS.View",
-        ),
-        (
-            "Subsystems/Sales/Ext/CommandInterface.xml",
-            "main:Subsystem.Sales.Interface",
-        ),
-        (
-            "Reports/ParityReport/Templates/MainSchema/Ext/Template.xml",
-            "main:Report.ParityReport.Template.MainSchema.DataSet.MainData.Field.Code",
-        ),
-        (
-            "Reports/ParityReport/Templates/Print/Ext/Template.xml",
-            "main:Report.ParityReport.Template.Print.Area.Header.Parameter.Title",
-        ),
-        (
-            "XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
-            "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы",
-        ),
-        (
-            "CommonModules/РеактивныйСервер/Ext/Module.bsl",
-            "main:CommonModule.РеактивныйСервер.Method.InternalService",
-        ),
-    ];
-    for (path, expected_at) in cases {
-        let result = index.find(FindRequest::new(path).unwrap().with_limit(64).unwrap());
+    let service = fixture.view_service();
+    for at in [
+        "main:Report.ParityReport.Form.MainForm",
+        "main:Report.ParityReport.Form.MainForm.Item.Goods",
+        "main:Role.SalesReader.Right.Catalog_Products.RLS.View",
+        "main:Subsystem.Sales.Interface",
+        "main:Report.ParityReport.Template.MainSchema.DataSet.MainData.Field.Code",
+        "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы",
+    ] {
+        let result = service.view(ViewRequest::new(at).unwrap());
+        // Assertion messages name the address and the diagnostic code only:
+        // a projected payload can carry descriptor identity.
+        let codes = result
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic["code"].as_str())
+            .collect::<Vec<_>>();
+        assert!(result.ok, "{at}: {codes:?}");
+        let props = result.data.as_ref().unwrap()["props"].to_string();
         assert!(
-            !result.is_nearest()
-                && result.candidates().iter().any(|candidate| {
-                    candidate.at() == expected_at && candidate.reason() == "exportPath"
-                }),
-            "missing {expected_at} for {path}: {result:?}"
+            !props.contains(".xml") && !props.contains(".bsl") && !props.contains('/'),
+            "{at} published a physical path in view props"
         );
     }
 }
@@ -2485,18 +2417,10 @@ fn real_external_sources_are_traversable_without_configuration_xml_and_hide_root
 
     let epf = fixture.read_authority("artifact_processor", SourceSetKind::ExternalProcessor);
     let erf = fixture.read_authority("artifact_report", SourceSetKind::ExternalReport);
-    let index = WorkspaceFindIndexBuilder::default()
-        .build(
-            &[
-                ActorFindSource::new("artifact_processor", &epf),
-                ActorFindSource::new("artifact_report", &erf),
-            ],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
+    let index = ReaderReach::new(vec![
+        ("artifact_processor", &epf),
+        ("artifact_report", &erf),
+    ]);
     for expected in [
         "artifact_processor:ExternalDataProcessor.Import",
         "artifact_processor:ExternalDataProcessor.Import.Form.Main",
@@ -2518,20 +2442,9 @@ fn real_external_sources_are_traversable_without_configuration_xml_and_hide_root
         );
     }
 
-    let fabricated_configuration_path = index.find(
-        FindRequest::new("Configuration.xml")
-            .unwrap()
-            .with_limit(64)
-            .unwrap(),
-    );
-    assert!(
-        fabricated_configuration_path
-            .candidates()
-            .iter()
-            .all(|candidate| candidate.reason() != "exportPath"),
-        "external source sets must not advertise a configuration export path: \
-         {fabricated_configuration_path:?}",
-    );
+    // The export-path half of this contract is proven against the find
+    // directory in `v13_find`, where a candidate carries its real reason;
+    // through the reader probe every candidate reads "reader".
 }
 
 #[test]
@@ -2665,19 +2578,7 @@ pub(crate) fn production_authorities_reach_all_profile_module_capabilities_from_
     .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(expected.len(), 25);
 
-    let index = WorkspaceFindIndexBuilder::default()
-        .build(
-            &[
-                ActorFindSource::new("main", &main),
-                ActorFindSource::new("epf", &epf),
-                ActorFindSource::new("erf", &erf),
-            ],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &main_fixture.cancellation,
-        )
-        .unwrap();
+    let index = ReaderReach::new(vec![("main", &main), ("epf", &epf), ("erf", &erf)]);
     for expected_at in expected {
         let found = index.find(
             FindRequest::new(&expected_at)
@@ -2709,18 +2610,19 @@ struct ModuleCapabilityCase {
 }
 
 #[test]
-pub(crate) fn one_find_reads_each_module_source_once_per_actor_revision() {
+pub(crate) fn one_read_parses_each_module_source_once_per_actor_revision() {
     let fixture = RealReaderFixture::new();
     let authority = fixture.read_authority();
-    WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
+    assert_reader_reaches(
+        &authority,
+        &[
+            "main:CommonModule.РеактивныйСервер.Method",
+            "main:Catalog.Items",
+            "main:Catalog.Items.TabularSection.Lines",
+            "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+            "main:Configuration",
+        ],
+    );
     assert_eq!(
         authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
         1,
@@ -2738,15 +2640,16 @@ pub(crate) fn one_find_reads_each_module_source_once_per_actor_revision() {
     let mut changed = fs::read_to_string(&module).unwrap();
     changed.push_str("\nProcedure AfterRevisionChange()\nEndProcedure\n");
     fs::write(&module, changed).unwrap();
-    WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
+    assert_reader_reaches(
+        &authority,
+        &[
+            "main:CommonModule.РеактивныйСервер.Method",
+            "main:Catalog.Items",
+            "main:Catalog.Items.TabularSection.Lines",
+            "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+            "main:Configuration",
+        ],
+    );
     assert_eq!(
         authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
         2,
@@ -2755,15 +2658,16 @@ pub(crate) fn one_find_reads_each_module_source_once_per_actor_revision() {
     assert_eq!(authority.configuration_payload_read_count(), 2);
 
     let second_authority = fixture.read_authority();
-    WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &second_authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
+    assert_reader_reaches(
+        &second_authority,
+        &[
+            "main:CommonModule.РеактивныйСервер.Method",
+            "main:Catalog.Items",
+            "main:Catalog.Items.TabularSection.Lines",
+            "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+            "main:Configuration",
+        ],
+    );
     assert_eq!(
         second_authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
         1,
@@ -2773,33 +2677,17 @@ pub(crate) fn one_find_reads_each_module_source_once_per_actor_revision() {
 }
 
 #[test]
-pub(crate) fn one_find_parses_each_metadata_descriptor_once_per_actor_revision() {
+pub(crate) fn one_read_parses_each_metadata_descriptor_once_per_actor_revision() {
     let fixture = RealReaderFixture::new();
     let authority = fixture.read_authority();
-    let index = WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
-    for expected in [
-        "main:Catalog.Items",
-        "main:Catalog.Items.TabularSection.Lines",
-        "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
-    ] {
-        let found = index.find(FindRequest::new(expected).unwrap());
-        assert!(
-            !found.is_nearest()
-                && found
-                    .candidates()
-                    .iter()
-                    .any(|candidate| candidate.at() == expected),
-            "the descriptor-count proof did not traverse {expected}: {found:?}"
-        );
-    }
+    assert_reader_reaches(
+        &authority,
+        &[
+            "main:Catalog.Items",
+            "main:Catalog.Items.TabularSection.Lines",
+            "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+        ],
+    );
     // Owner proof reads the descriptor once and the typed projection once
     // more; every logical address projected from that owner shares the parse.
     assert_eq!(
@@ -3018,6 +2906,61 @@ fn write_external_artifact(source: &Path, kind: &str, name: &str) {
         &source.join(format!("{name}/Ext/ObjectModule.bsl")),
         "Procedure Execute()\nEndProcedure\n",
     );
+}
+
+/// Proves the typed reader reaches an address. `find` no longer traverses the
+/// logical tree, so reader coverage is asserted against the reader itself.
+fn assert_reader_reaches(authority: &LogicalViewReadAuthority<'_>, addresses: &[&str]) {
+    for at in addresses {
+        let address = QualifiedAddress::parse(at).unwrap_or_else(|error| panic!("{at}: {error}"));
+        let admitted = authority
+            .snapshot(&address)
+            .unwrap_or_else(|error| panic!("{at}: {error:?}"));
+        authority
+            .read_exact(&address, &ViewFilter::default(), &admitted)
+            .unwrap_or_else(|error| panic!("{at}: {error:?}"));
+    }
+}
+
+/// `find` is a layout directory now, so reader-coverage tests probe the typed
+/// reader directly. The shim keeps the assertion shape those tests already use.
+struct ReaderReach<'a> {
+    authorities: Vec<(&'a str, &'a LogicalViewReadAuthority<'a>)>,
+}
+
+impl<'a> ReaderReach<'a> {
+    fn new(authorities: Vec<(&'a str, &'a LogicalViewReadAuthority<'a>)>) -> Self {
+        Self { authorities }
+    }
+
+    fn find(&self, request: FindRequest) -> FindResult {
+        let at = request.query();
+        let reached = QualifiedAddress::parse(at).is_ok_and(|address| {
+            self.authorities
+                .iter()
+                .filter(|(name, _)| *name == address.source_set())
+                .any(|(_, authority)| {
+                    authority.snapshot(&address).is_ok_and(|admitted| {
+                        match authority.read_exact(&address, &ViewFilter::default(), &admitted) {
+                            Ok(_) => true,
+                            // WebSocketClient is the one profile identity whose
+                            // source layout 8.3.27 leaves unspecified: it
+                            // answers a typed `provider_unavailable` while the
+                            // reader still knows the address. No other provider
+                            // failure counts as coverage.
+                            Err(error) => {
+                                error.code() == "provider_unavailable"
+                                    && address.segments().first().is_some_and(|segment| {
+                                        segment.kind()
+                                            == crate::domain::address::NodeKind::WebSocketClient
+                                    })
+                            }
+                        }
+                    })
+                })
+        });
+        FindResult::reader_probe(at, reached)
+    }
 }
 
 fn write_metadata_owner(
@@ -3617,15 +3560,7 @@ pub(crate) fn configuration_level_rights_are_readable_role_objects() {
     assert_eq!(data["props"]["allowedCount"], 2);
 
     let authority = fixture.read_authority();
-    let index = WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
+    let index = ReaderReach::new(vec![("main", &authority)]);
     let expected = "main:Role.SalesReader.Right.Configuration_CorpusConfiguration";
     let found = index.find(FindRequest::new(expected).unwrap());
     assert!(
@@ -3675,15 +3610,7 @@ pub(crate) fn object_commands_are_registered_inline_without_descriptor_files() {
     }
 
     let authority = fixture.read_authority();
-    let index = WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
+    let index = ReaderReach::new(vec![("main", &authority)]);
     for expected in [
         "main:Catalog.Items.Command.Refresh",
         "main:Catalog.Items.Command.Inline",
@@ -3782,15 +3709,7 @@ pub(crate) fn add_in_templates_stop_addressing_at_the_template_without_reading_t
     );
 
     let authority = fixture.read_authority();
-    let index = WorkspaceFindIndexBuilder::default()
-        .build(
-            &[ActorFindSource::new("main", &authority)],
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-            ),
-            &fixture.cancellation,
-        )
-        .unwrap();
+    let index = ReaderReach::new(vec![("main", &authority)]);
     let expected = "main:Catalog.Items.Template.Driver";
     let found = index.find(FindRequest::new(expected).unwrap());
     assert!(
