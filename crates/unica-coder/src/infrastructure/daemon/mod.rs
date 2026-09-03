@@ -918,7 +918,7 @@ mod tests {
             identity,
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
 
@@ -959,7 +959,7 @@ mod tests {
             task_identity,
         ));
         let mut task_owner = match task_client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
 
@@ -1009,7 +1009,7 @@ mod tests {
             identity,
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
 
@@ -1047,7 +1047,7 @@ mod tests {
             task_identity,
         ));
         let mut task_owner = match task_client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
 
@@ -1111,7 +1111,7 @@ mod tests {
         });
         let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("fake endpoint must connect"),
         };
 
@@ -1209,7 +1209,7 @@ mod tests {
                 identity,
             ));
             let mut owner = match client.connect_existing().unwrap() {
-                ExistingDaemon::Connected(owner) => owner,
+                ExistingDaemon::Connected(owner) => *owner,
                 ExistingDaemon::Absent => panic!("published daemon must connect"),
             };
             let submission = owner.submit_invocation(
@@ -1382,7 +1382,7 @@ mod tests {
             identity.clone(),
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
 
@@ -1447,7 +1447,7 @@ mod tests {
         let (_directory, _record) = wait_for_record(root.path(), &identity);
         let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("restarted daemon must connect"),
         };
         let task_deadline = owner
@@ -1494,7 +1494,7 @@ mod tests {
             identity,
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
         let task = owner
@@ -1552,7 +1552,7 @@ mod tests {
         let (directory, record) = wait_for_record(root.path(), &identity);
         let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
         let response = owner
@@ -1610,7 +1610,7 @@ mod tests {
             identity.clone(),
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("fault fixture must publish an endpoint"),
         };
         let task = owner
@@ -1659,7 +1659,7 @@ mod tests {
             identity,
         ));
         let mut successor_owner = match successor_client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("successor must own the endpoint"),
         };
         successor_owner.ping().unwrap();
@@ -1722,7 +1722,7 @@ mod tests {
             identity,
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
 
@@ -1875,7 +1875,7 @@ mod tests {
             identity,
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
         let workspace_hint = physical_root(workspace.path())
@@ -2036,7 +2036,7 @@ mod tests {
                 identity,
             ));
             let mut owner = match client.connect_existing().unwrap() {
-                ExistingDaemon::Connected(owner) => owner,
+                ExistingDaemon::Connected(owner) => *owner,
                 ExistingDaemon::Absent => panic!("published daemon must connect"),
             };
 
@@ -2108,7 +2108,7 @@ mod tests {
             identity,
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
 
@@ -2156,7 +2156,7 @@ mod tests {
             identity,
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
 
@@ -2219,7 +2219,7 @@ mod tests {
             identity,
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
         let response = owner
@@ -2522,7 +2522,7 @@ mod tests {
         let (_directory, _record) = wait_for_record(root.path(), &identity);
         let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
         let mut anchor = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
 
@@ -2546,7 +2546,7 @@ mod tests {
         let (_directory, _record) = wait_for_record(root.path(), &identity);
         let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
 
@@ -2593,7 +2593,7 @@ mod tests {
             identity.clone(),
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
         let secret = "task7-secret-never-persist";
@@ -2673,7 +2673,7 @@ mod tests {
         });
         let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("fake endpoint must connect"),
         };
         let error = owner
@@ -2893,7 +2893,7 @@ mod tests {
             .with_connect_timeout_for_test(Duration::from_secs(1));
         let client = DaemonClient::new(config);
         let anchor = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("fake endpoint must connect"),
         };
 
@@ -3023,7 +3023,7 @@ mod tests {
         });
         let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("fake task endpoint must connect"),
         };
 
@@ -3162,7 +3162,7 @@ mod tests {
             .with_connect_timeout_for_test(Duration::from_secs(5));
         let client = DaemonClient::new(config);
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("fake endpoint must connect"),
         };
         clock.advance_after_next_response_read(Duration::from_secs(5));
@@ -3195,7 +3195,7 @@ mod tests {
         });
         let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
         let owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("fake endpoint must connect"),
         };
 
@@ -3242,7 +3242,7 @@ mod tests {
             identity.clone(),
         ));
         let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
         };
         owner.ping().unwrap();
@@ -3321,7 +3321,7 @@ mod tests {
         let retry_deadline = Instant::now() + Duration::from_secs(2);
         let mut recovered = loop {
             match client.connect_existing() {
-                Ok(ExistingDaemon::Connected(owner)) => break owner,
+                Ok(ExistingDaemon::Connected(owner)) => break *owner,
                 Ok(ExistingDaemon::Absent) => panic!("published daemon disappeared during retry"),
                 Err(error) if error == "daemon owner capacity reached; retry later" => {
                     assert!(
