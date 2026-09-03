@@ -89,15 +89,15 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
     return entries, implemented
 
 
-def load_check_profiles() -> list[str]:
+def load_check_validators() -> list[str]:
     source = CHECK_PROFILES.read_text(encoding="utf-8")
-    start = source.index("const SUPPORTED_PROFILES: &[CheckProfile] = &[")
+    start = source.index("const NATIVE_VALIDATORS: &[CheckValidator] = &[")
     end = source.index("];", start)
-    names = re.findall(r"CheckProfile::(\w+)", source[start:end])
-    profiles = [name.lower() for name in names]
-    # `meta` runs through the typed metadata validator, outside CheckProfile.
-    profiles.append("meta")
-    return profiles
+    names = re.findall(r"CheckValidator::(\w+)", source[start:end])
+    validators = [name.lower() for name in names]
+    # `meta` runs through the typed metadata validator, outside CheckValidator.
+    validators.append("meta")
+    return validators
 
 
 def step_wire(step: dict) -> str:
@@ -107,9 +107,8 @@ def step_wire(step: dict) -> str:
     ops = [op.get("op", "?") for op in (args.get("ops") or [])]
     if ops:
         parts.append(" ".join(f"`{op}`" for op in ops))
-    profile = ((args.get("filter") or {}).get("validation") or {}).get("profile")
-    if profile:
-        parts.append(f"профиль `{profile}`")
+    if step.get("validators"):
+        parts.append("валидаторы " + ", ".join(f"`{name}`" for name in step["validators"]))
     if args.get("dryRun"):
         parts.append("(превью)")
     return " ".join(parts)
@@ -128,13 +127,12 @@ def scenario_ops(scenario: dict) -> set[str]:
     return ops
 
 
-def scenario_profiles(scenario: dict) -> set[str]:
-    profiles = set()
+def scenario_validators(scenario: dict) -> set[str]:
+    validators = set()
     for step in scenario["wire"]:
-        profile = ((step["args"].get("filter") or {}).get("validation") or {}).get("profile")
-        if step["tool"] == "unica.check" and profile:
-            profiles.add(profile)
-    return profiles
+        if step["tool"] == "unica.check":
+            validators.update(step.get("validators") or [])
+    return validators
 
 
 def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented: set[str], profiles: list[str]) -> str:
@@ -152,7 +150,7 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
             op_scenarios.setdefault(op, []).append(scenario["id"])
     profile_scenarios: dict[str, list[str]] = {}
     for scenario in scenarios:
-        for profile in scenario_profiles(scenario):
+        for profile in scenario_validators(scenario):
             profile_scenarios.setdefault(profile, []).append(scenario["id"])
     tool_scenarios: dict[str, list[str]] = {}
     for scenario in scenarios:
@@ -307,7 +305,7 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
 
 def render_document() -> str:
     registry, implemented = load_apply_registry()
-    return render(load_corpus(), registry, implemented, load_check_profiles())
+    return render(load_corpus(), registry, implemented, load_check_validators())
 
 
 def main(argv: list[str]) -> int:

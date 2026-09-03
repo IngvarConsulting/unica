@@ -344,16 +344,20 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
                             REFUSAL_CODES,
                             "a refusal is frozen as `code: message` with a code from the closed set",
                         )
-                    profile = (
-                        ((step["args"].get("filter") or {}).get("validation") or {}).get("profile")
-                        if step["tool"] == "unica.check"
-                        else None
-                    )
-                    if profile and expected == ["ok"]:
+                    if step["tool"] == "unica.check" and step["args"].get("at") and expected == ["ok"]:
+                        # A check over a node freezes the verdict it expects and
+                        # the validators the node kind owns; the caller never
+                        # names a validator, so the corpus is where the
+                        # kind-to-validator table is witnessed.
                         self.assertIn(
                             step.get("status"),
-                            {"passed", "failed"},
-                            "a validation profile step freezes the verdict it expects",
+                            {"passed", "failed", "readable"},
+                            "a check over a node freezes the verdict it expects",
+                        )
+                        self.assertIsInstance(
+                            step.get("validators"),
+                            list,
+                            "a check over a node freezes the validators its kind owns",
                         )
 
     def test_gaps_stay_a_bounded_exception_not_a_habit(self) -> None:
@@ -462,8 +466,8 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
                                 f"{label}: expected {step['expect']}, got {actual} :: {note[:160]}"
                             )
                             continue
-                        # A refusal proves its exact answer, and a validation
-                        # profile proves the verdict it froze; without these two
+                        # A refusal proves its exact answer, and a check over a
+                        # node proves the verdict it froze; without these two
                         # checks a typo in an address or a failing validator
                         # would pass as the intended outcome.
                         if actual == "refused" and note != step.get("refusal"):
@@ -477,6 +481,14 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
                                 mismatches.append(
                                     f"{label}: expected validation status {step['status']!r}, "
                                     f"got {verdict!r}"
+                                )
+                        if "validators" in step and actual == "ok":
+                            structured = response.get("result", {}).get("structuredContent") or {}
+                            validators = (structured.get("data") or {}).get("validators")
+                            if validators != step["validators"]:
+                                mismatches.append(
+                                    f"{label}: expected validators {step['validators']!r}, "
+                                    f"got {validators!r}"
                                 )
                         if "diagnostic" in step and actual == "ok":
                             # A validation step may freeze one diagnostic code it

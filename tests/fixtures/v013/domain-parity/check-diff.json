@@ -102,7 +102,7 @@
     {
       "caseId": "check-cf-real-validator",
       "entry": "check",
-      "mode": "validation.profile=cf",
+      "mode": "validator=cf",
       "fixture": "tests/fixtures/v013/domain-parity/check-diff.json",
       "expected": {
         "outcome": "normalized-diagnostics",
@@ -113,7 +113,7 @@
     {
       "caseId": "check-unavailable-dependency",
       "entry": "check",
-      "mode": "validation.profile=cf;dependency=unavailable",
+      "mode": "validator=cf;dependency=unavailable",
       "fixture": "tests/fixtures/v013/domain-parity/check-diff.json",
       "expected": {
         "outcome": "dependency_unavailable"
@@ -133,7 +133,7 @@
     {
       "caseId": "batch1-check-cf-passed",
       "entry": "check",
-      "mode": "validation.profile=cf",
+      "mode": "validator=cf",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S224",
@@ -144,7 +144,7 @@
     {
       "caseId": "batch1-check-cf-newer-export-warns",
       "entry": "check",
-      "mode": "validation.profile=cf;export=2.21",
+      "mode": "validator=cf;export=2.21",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S267",
@@ -156,7 +156,7 @@
     {
       "caseId": "batch1-check-form-passed",
       "entry": "check",
-      "mode": "validation.profile=form",
+      "mode": "validator=form",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S225",
@@ -167,7 +167,7 @@
     {
       "caseId": "batch1-check-form-newer-export-warns",
       "entry": "check",
-      "mode": "validation.profile=form;export=2.21",
+      "mode": "validator=form;export=2.21",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S268",
@@ -179,7 +179,7 @@
     {
       "caseId": "batch1-check-role-passed",
       "entry": "check",
-      "mode": "validation.profile=role",
+      "mode": "validator=role",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S175",
@@ -190,7 +190,7 @@
     {
       "caseId": "batch1-check-role-newer-export-warns",
       "entry": "check",
-      "mode": "validation.profile=role;export=2.21",
+      "mode": "validator=role;export=2.21",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S269",
@@ -202,7 +202,7 @@
     {
       "caseId": "batch1-check-subsystem-passed",
       "entry": "check",
-      "mode": "validation.profile=subsystem",
+      "mode": "validator=subsystem",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S210",
@@ -213,7 +213,7 @@
     {
       "caseId": "batch1-check-subsystem-newer-export-warns",
       "entry": "check",
-      "mode": "validation.profile=subsystem;export=2.21",
+      "mode": "validator=subsystem;export=2.21",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S270",
@@ -225,7 +225,7 @@
     {
       "caseId": "batch1-check-dcs-passed",
       "entry": "check",
-      "mode": "validation.profile=dcs",
+      "mode": "validator=dcs",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S194",
@@ -236,7 +236,7 @@
     {
       "caseId": "batch1-check-mxl-passed",
       "entry": "check",
-      "mode": "validation.profile=mxl",
+      "mode": "validator=mxl",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S201",
@@ -247,7 +247,7 @@
     {
       "caseId": "batch1-check-missing-subsystem-refuses",
       "entry": "check",
-      "mode": "validation.profile=subsystem;target=missing",
+      "mode": "validator=subsystem;target=missing",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S272",

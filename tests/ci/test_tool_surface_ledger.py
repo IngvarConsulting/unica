@@ -191,7 +191,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             "unica.apply": {"at", "ops", "dryRun", "ifRev"},
             "unica.find": {"query", "kind", "limit"},
             "unica.search": {"query", "scope", "regex", "limit"},
-            "unica.check": {"at", "filter"},
+            "unica.check": {"at"},
             "unica.diff": {"left", "right", "filter", "limit", "cursor"},
             "unica.run": {"op", "args", "dryRun", "ifRev"},
             "unica.docs": {"query", "source"},

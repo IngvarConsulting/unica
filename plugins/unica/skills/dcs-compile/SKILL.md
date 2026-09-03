@@ -463,8 +463,7 @@ Raw XML (`"template": "<...>"`) остаётся как fallback. Детект: 
   "params": {
     "name": "unica.check",
     "arguments": {
-      "at": "<sourceSet>:<Kind>.<Name>.Template.<Template>",
-      "filter": {"validation": {"profile": "dcs"}}
+      "at": "<sourceSet>:<Kind>.<Name>.Template.<Template>"
     }
   }
 }
