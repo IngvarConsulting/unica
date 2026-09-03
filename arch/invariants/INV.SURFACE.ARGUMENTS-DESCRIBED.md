@@ -2,7 +2,7 @@
 id: INV.SURFACE.ARGUMENTS-DESCRIBED
 status: active
 governs: product
-decision: DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS
+decision: DEC.2026-09-03.INFOBASE-EXPORT-RUN-SLICE
 check: crates/unica-coder/src/application/v13/tool_catalog.rs::canonical_arguments_are_described_within_wire_budget
 scope: [wire]
 ---

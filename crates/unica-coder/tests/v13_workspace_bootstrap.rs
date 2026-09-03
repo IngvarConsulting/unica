@@ -207,9 +207,10 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
         "method": "tools/call",
         "params": {"name": "unica.run", "arguments": {}}
     }));
-    let source_attach = dictionary["result"]["structuredContent"]["data"]["operations"]
+    let operations = dictionary["result"]["structuredContent"]["data"]["operations"]
         .as_array()
-        .unwrap()
+        .unwrap();
+    let source_attach = operations
         .iter()
         .find(|operation| operation["op"] == "workspace.initialize")
         .unwrap();
@@ -230,14 +231,29 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
             "required": []
         })
     );
-    assert!(
-        dictionary["result"]["structuredContent"]["data"]["operations"]
-            .as_array()
-            .unwrap()
+    assert!(operations
+        .iter()
+        .filter(|operation| operation["implemented"] == false)
+        .all(|operation| operation["argsSchema"].is_null()));
+    assert_eq!(
+        operations
             .iter()
-            .filter(|operation| operation["implemented"] == false)
-            .all(|operation| operation["argsSchema"].is_null())
+            .filter(|operation| operation["implemented"] == true)
+            .map(|operation| operation["op"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([
+            "workspace.initialize",
+            "infobase.configuration.export",
+            "infobase.dump",
+        ])
     );
+    for operation in ["infobase.configuration.export", "infobase.dump"] {
+        assert!(operations
+            .iter()
+            .find(|candidate| candidate["op"] == operation)
+            .unwrap()["argsSchema"]
+            .is_object());
+    }
 
     for (id, op, expected_summary) in [
         (

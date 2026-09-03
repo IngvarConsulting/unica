@@ -2,8 +2,8 @@
 id: CTR.WIRE.TOOL-SURFACE
 status: active
 governs: product
-version: 5
-decision: DEC.2026-09-02.DIRECTIONAL-RUNTIME-OPERATIONS
+version: 6
+decision: DEC.2026-09-03.INFOBASE-EXPORT-RUN-SLICE
 producer: scripts/ci/generate-tool-surface.py
 consumers: [review, docs]
 check: crates/unica-coder/src/interfaces/mcp.rs::production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility
@@ -31,3 +31,8 @@ infobase transfer. Реализованная операция также соо
 для ещё не реализованных операций это поле равно `null`, чтобы модель не
 угадывала будущий контракт. Операции `previewApply` принимают `dryRun`;
 applied-вызов связывается с preview через `ifRev`.
+
+`infobase.configuration.export` и `infobase.dump` реализованы до source
+admission. Их schema не принимает выбор provider: v8-runner выбирает Designer
+или ibcmd и возвращает этот выбор данными preview. Apply повторяет preview,
+сверяет `ifRev` и публикует проверенную квитанцию CF/CFE/DT через Task transport.

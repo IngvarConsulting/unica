@@ -6,6 +6,10 @@ use crate::application::receipt_ledger::{
     TerminalDigest, V5CanonicalTerminal, DIRECT_TERMINAL_RETENTION_MS,
     MAX_RECEIPT_ENTITLEMENT_BYTES,
 };
+#[cfg(feature = "receipt-ledger-test-support")]
+use crate::infrastructure::daemon::protocol_v5::{
+    decode_v5_server_response, V5ServerResponse, MAX_V5_RESPONSE_LINE_BYTES,
+};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
@@ -301,6 +305,23 @@ fn append_u64(target: &mut Vec<u8>, value: u64) {
 
 fn artifact_sha256(bytes: &[u8]) -> ArtifactSha256 {
     ArtifactSha256::from_sha256(Sha256::digest(bytes).into())
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+pub(in crate::infrastructure) fn encode_strict_v5_response_jsonl(
+    response: &V5ServerResponse,
+) -> Result<Vec<u8>, String> {
+    let mut encoded = serde_json::to_vec(response)
+        .map_err(|_| "protocol-v5 response could not be serialized".to_owned())?;
+    if encoded.len().saturating_add(1) > MAX_V5_RESPONSE_LINE_BYTES {
+        return Err("protocol-v5 response exceeds the byte limit".to_owned());
+    }
+    let decoded = decode_v5_server_response(&encoded)?;
+    if &decoded != response {
+        return Err("protocol-v5 response changed across its strict codec".to_owned());
+    }
+    encoded.push(b'\n');
+    Ok(encoded)
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use unica_bootstrap::{
-    launch_runtime, provider_state_root, runtime_cache_root, verify_installed_plugin_metadata,
+    launch_runtime, provider_state_root, runtime_cache_root, verify_installed_skill_package,
     verify_mcp_runtime, AttemptLog, HostTarget, HttpDownloader, Result, RuntimeHandoff,
     RuntimeInstaller, RuntimeManifest, UnfinishedAttempt,
 };
@@ -166,7 +166,7 @@ fn install_runtime(plugin_root: &Path) -> Result<unica_bootstrap::RuntimeInstall
 }
 
 fn install_and_verify_runtime(plugin_root: &Path, provider_state_root: &Path) -> Result<()> {
-    verify_installed_skill_package(plugin_root)?;
+    verify_installed_skill_package(plugin_root, VERSION)?;
     let installed = install_runtime(plugin_root)?;
     verify_mcp_runtime(
         &installed.entrypoint,
@@ -179,40 +179,6 @@ fn install_and_verify_runtime(plugin_root: &Path, provider_state_root: &Path) ->
         VERSION,
         installed.root.display()
     );
-    Ok(())
-}
-
-fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
-    verify_installed_plugin_metadata(plugin_root, VERSION)?;
-
-    let skills_root = plugin_root.join("skills");
-    let mut visible = std::collections::BTreeSet::new();
-    for entry in std::fs::read_dir(&skills_root)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let skill_file = entry.path().join("SKILL.md");
-        if !skill_file.is_file() {
-            return Err(unica_bootstrap::BootstrapError::new(format!(
-                "installed prompt-visible skill is incomplete: {}",
-                entry.path().display()
-            )));
-        }
-        visible.insert(entry.file_name().to_string_lossy().into_owned());
-    }
-    for required in ["code-search", "platform-help", "release-support"] {
-        if !visible.contains(required) {
-            return Err(unica_bootstrap::BootstrapError::new(format!(
-                "installed prompt-visible skill is missing: {required}"
-            )));
-        }
-    }
-    if visible.is_empty() {
-        return Err(unica_bootstrap::BootstrapError::new(
-            "installed Unica plugin exposes no prompt-visible skills",
-        ));
-    }
     Ok(())
 }
 
@@ -247,16 +213,5 @@ fn normalize_exit_code(code: i32) -> u8 {
         code as u8
     } else {
         1
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn source_plugin_exposes_required_prompt_visible_skills() {
-        let plugin_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica");
-        verify_installed_skill_package(&plugin_root).unwrap();
     }
 }
