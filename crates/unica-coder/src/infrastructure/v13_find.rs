@@ -173,8 +173,16 @@ impl WorkspaceFindDirectoryBuilder {
                             continue;
                         };
                         let relative = PathBuf::from(directory).join(owner_name);
-                        let head = read_descriptor_head(source.root, &relative);
-                        let synonym = head.as_deref().and_then(|head| descriptor_identity(head).1);
+                        // A file whose name looks like an object is not one:
+                        // only a descriptor that declares the expected owner
+                        // element and name enters the directory.
+                        let Some(head) = read_descriptor_head(source.root, &relative) else {
+                            continue;
+                        };
+                        if !declares_owner(&head, layout.tag, stem) {
+                            continue;
+                        }
+                        let synonym = descriptor_identity(&head).1;
                         self.push(
                             build,
                             source,
@@ -318,9 +326,17 @@ impl WorkspaceFindDirectoryBuilder {
                     }
                     _ => continue,
                 };
-                let synonym = read_descriptor_head(source.root, &relative)
-                    .as_deref()
-                    .and_then(|head| descriptor_identity(head).1);
+                let synonym = if family_kind == NodeKind::Command {
+                    None
+                } else {
+                    let Some(head) = read_descriptor_head(source.root, &relative) else {
+                        continue;
+                    };
+                    if !declares_owner(&head, family_kind.as_str(), &child_name) {
+                        continue;
+                    }
+                    descriptor_identity(&head).1
+                };
                 self.push(
                     build,
                     source,
@@ -429,8 +445,8 @@ fn read_descriptor_head(root: &RetainedDirectoryCapability, relative: &Path) -> 
 /// Whether a descriptor head declares the expected owner element and name.
 fn declares_owner(head: &[u8], kind: &str, name: &str) -> bool {
     let text = String::from_utf8_lossy(head);
-    text.contains(&format!("<{kind} "))
-        && between(&text, "<Name>", "</Name>").is_some_and(|declared| declared == name)
+    let opens = text.contains(&format!("<{kind} ")) || text.contains(&format!("<{kind}>"));
+    opens && between(&text, "<Name>", "</Name>").is_some_and(|declared| declared == name)
 }
 
 fn descriptor_identity(head: &[u8]) -> (Option<String>, Option<String>) {
@@ -779,6 +795,54 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_is_not_an_owner_descriptor_never_becomes_an_object() {
+        let fixture = Fixture::new();
+        // A stray file whose name looks like an object, a descriptor of the
+        // wrong kind, and one whose declared name disagrees with the file.
+        write(
+            &fixture.source.join("Catalogs/Резервная копия.xml"),
+            "<!-- not a descriptor -->",
+        );
+        write(
+            &fixture.source.join("Catalogs/Подделка.xml"),
+            &owner("Подделка", "Document", "Подделка", ""),
+        );
+        write(
+            &fixture.source.join("Catalogs/Валюты/Forms/Чужая.xml"),
+            &owner("Другая", "Form", "Другая форма", ""),
+        );
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let index = WorkspaceFindDirectoryBuilder::default()
+            .build(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        for query in [
+            "Резервная копия",
+            "main:Catalog.Подделка",
+            "main:Catalog.Валюты.Form.Чужая",
+        ] {
+            let found = index.find(FindRequest::new(query).unwrap());
+            assert!(
+                found.is_nearest() || found.candidates().is_empty(),
+                "a file that declares no matching owner became an object: {query}: {found:?}"
+            );
+        }
+        // The real objects beside them are still there.
+        assert_eq!(single(&index, "Валюты").0, "main:Catalog.Валюты");
+        assert_eq!(
+            single(&index, "ФормаЭлемента").0,
+            "main:Catalog.Валюты.Form.ФормаЭлемента"
+        );
+    }
+
+    #[test]
     fn find_address_path_directory_contract_is_complete() {
         a_name_resolves_to_the_address_and_the_file_that_carries_it();
         a_file_path_resolves_back_to_its_object_address();
@@ -788,5 +852,6 @@ mod tests {
         the_directory_observes_cancellation();
         the_directory_observes_its_operation_deadline();
         an_external_root_publishes_its_owner_and_never_the_dump_sidecar();
+        a_file_that_is_not_an_owner_descriptor_never_becomes_an_object();
     }
 }
