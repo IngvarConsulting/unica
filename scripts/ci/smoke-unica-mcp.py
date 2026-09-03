@@ -643,7 +643,7 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
         }
       ]
     }
-  },
+  }
 }
 '''
 )

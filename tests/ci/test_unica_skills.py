@@ -801,7 +801,6 @@ REPLACED_RUNTIME_SKILLS = {
 
 TASK_EXAMPLE_ARGUMENT_KEYS = {
     "cf-edit": ["ConfigPath", "Operation", "Value"],
-    "cf-info": ["ConfigPath"],
     "cf-init": ["Name", "OutputDir"],
     "cfe-borrow": ["ExtensionPath", "ConfigPath", "Object"],
     "cfe-diff": ["ExtensionPath", "ConfigPath"],
@@ -812,7 +811,6 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "meta-add": ["sourceSet", "kind", "name"],
     "meta-edit": ["sourceSet", "metadataPath", "operations"],
     "meta-info": ["sourceSet", "metadataPath"],
-    "meta-remove": ["sourceSet", "metadataPath", "dryRun"],
     "form-compile": ["JsonPath", "OutputPath"],
     "form-edit": ["FormPath", "JsonPath"],
     "form-info": ["FormPath"],
@@ -834,7 +832,6 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
 
 SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cf-edit": 6,
-    "cf-info": 6,
     "cf-init": 6,
     "cfe-borrow": 7,
     "cfe-diff": 3,
@@ -843,7 +840,6 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "meta-add": 2,
     "meta-edit": 3,
     "meta-info": 6,
-    "meta-remove": 1,
     "form-compile": 4,
     "interface-edit": 8,
     "subsystem-compile": 4,
@@ -879,14 +875,6 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Operation": "remove-childObject"',
         '"Operation": "add-defaultRole"',
         '"Operation": "set-defaultRoles"',
-    ],
-    # ADR-0023: cf.info answers with typed data, so the prose-size levers are
-    # gone from the skill and the documented fields take their place.
-    "cf-info": [
-        '"ConfigPath": "src"',
-        "`support`",
-        "`childObjects`",
-        "`homePage`",
     ],
     "cf-init": [
         '"Name": "МояКонфигурация"',
@@ -951,11 +939,6 @@ SCENARIO_PRESERVING_TOKENS = {
         '"metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"',
         '"metadataPath": "DefinedType.GLN"',
         '"metadataPath": "EventSubscription.ОбработкаИзменений"',
-    ],
-    "meta-remove": [
-        '"metadataPath": "Catalog.Устаревший"',
-        '`force: true`, `confirm: true`, `dryRun: false`',
-        '"dryRun": true',
     ],
     "form-compile": [
         '"OutputPath": "<.../TypePlural/ObjectName/Forms/FormName/Ext/Form.xml>"',
@@ -1028,8 +1011,6 @@ SCENARIO_PRESERVING_TOKENS = {
 SCENARIO_RETIRED_TOKENS = {
     "meta-add": ['"JsonPath"', '"OutputDir"', '"DefinitionFile"'],
     "meta-edit": ['"ObjectPath"', '"Operation"', '"Value"', '"DefinitionFile"'],
-    "meta-remove": ['"ConfigDir"', '"Object"', '"Force"', '"KeepFiles"', '"keepFiles"'],
-    "cf-info": ['"Mode"', '"Section"', '"Limit"', '"Offset"'],
     "role-info": ['"ShowDenied"', '"Limit"', '"Offset"'],
     "subsystem-info": ['"Mode"', '"Name"', '"Limit"', '"Offset"'],
     "mxl-info": ['"Format"', '"MaxParams"', '"Limit"', '"Offset"'],
@@ -1271,7 +1252,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
     def test_read_only_skills_do_not_offer_outfile(self) -> None:
         read_only_skills = [
-            "cf-info",
             "meta-info",
             "subsystem-info",
             "dcs-info",
@@ -1322,7 +1302,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             skill: (self.skill_root() / skill / "SKILL.md").read_text(
                 encoding="utf-8"
             )
-            for skill in ("meta-info", "meta-add", "meta-edit", "meta-remove")
+            for skill in ("meta-info", "meta-add", "meta-edit")
         }
         calls = {
             skill: [
@@ -1504,7 +1484,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             )
         )
 
-        for skill in ("meta-add", "meta-edit", "meta-info", "meta-remove"):
+        for skill in ("meta-add", "meta-edit", "meta-info"):
             with self.subTest(skill=skill, contract="structured result"):
                 text = documents[skill]
                 self.assertIn("structuredContent", text)
@@ -1515,15 +1495,11 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
         self.assertNotIn("upsert-predefined", documents["meta-edit"])
 
-        for skill in ("meta-add", "meta-edit", "meta-remove"):
+        for skill in ("meta-add", "meta-edit"):
             with self.subTest(skill=skill, contract="preview effects"):
                 text = documents[skill]
                 self.assertIn("data.effects", text)
                 self.assertIn("полный XML", text)
-
-        remove = documents["meta-remove"]
-        self.assertIn("`sourceSet + metadataPath`", remove)
-        self.assertIn("`force: true`, `confirm: true`, `dryRun: false`", remove)
 
     def test_role_edit_skill_uses_only_the_logical_typed_contract(self) -> None:
         text = (self.skill_root() / "role-edit" / "SKILL.md").read_text(
@@ -2674,7 +2650,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
     def test_support_state_reporting_is_documented_for_info_skills(self) -> None:
         for skill in (
-            "cf-info",
             "meta-info",
             "form-info",
             "dcs-info",
@@ -2968,20 +2943,31 @@ Use `.claude/commands/xdto.md` as the execution route.
         confirmation_text = text[blocks[1].end() : blocks[2].start()].casefold()
         self.assertIn("явного подтверждения", confirmation_text)
 
+        # The reader still addresses the package by source set and logical
+        # path; the canonical writer addresses the typed node with `at`.
+        reader_arguments = params[0]["arguments"]
+        self.assertEqual(reader_arguments.get("sourceSet"), "main")
+        self.assertEqual(
+            reader_arguments.get("metadataPath"),
+            "XDTOPackage.EnterpriseData_1_17_3",
+        )
         for item in params:
             with self.subTest(tool=item["name"]):
                 arguments = item["arguments"]
-                self.assertEqual(arguments.get("sourceSet"), "main")
-                self.assertEqual(
-                    arguments.get("metadataPath"),
-                    "XDTOPackage.EnterpriseData_1_17_3",
-                )
                 self.assertNotIn("path", arguments)
                 self.assertNotIn("Package.bin", json.dumps(arguments, ensure_ascii=False))
-        self.assertEqual(len(preview["operations"]), 1)
-        self.assertEqual(preview["operations"][0]["op"], "addProperty")
+        for item in params[1:]:
+            with self.subTest(tool=item["name"], role="writer"):
+                self.assertTrue(
+                    item["arguments"]["at"].startswith(
+                        "main:XDTOPackage.EnterpriseData_1_17_3."
+                    ),
+                    item["arguments"]["at"],
+                )
+        self.assertEqual(len(preview["ops"]), 1)
+        self.assertEqual(preview["ops"][0]["op"], "property.add")
         self.assertEqual(
-            preview["operations"][0]["property"]["type"],
+            preview["ops"][0]["args"]["values"]["property"]["type"],
             "tns:Документ_ЗаказКлиента",
         )
         # ADR-0071: a coherent change travels as one ordered transactional
@@ -3297,7 +3283,6 @@ class PlatformHelpRoutingTests(unittest.TestCase):
 CONDITIONAL_MARKER = "один из двух"
 
 BRIDGED_SKILL_SELECTORS = {
-    "cf-info": ("ConfigPath", False),
     "subsystem-info": ("SubsystemPath", True),
     "role-info": ("RightsPath", True),
     "form-info": ("FormPath", True),

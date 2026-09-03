@@ -3,7 +3,7 @@ id: INV.APP.OUTLINE-SOURCE
 status: superseded
 governs: product
 decision: DEC.2026-09-03.V0-13-LEGACY-BATCH-2
-check: crates/unica-coder/tests/v13_workspace_bootstrap.rs::canonical_stdio_views_a_module_through_a_symlinked_workspace
+check: crates/unica-coder/tests/platform/v13_canonical_symlinked_workspace.rs::canonical_stdio_views_a_module_through_a_symlinked_workspace
 scope: [app]
 ---
 

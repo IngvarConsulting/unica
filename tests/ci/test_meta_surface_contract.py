@@ -643,7 +643,6 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "Info": '["sourceSet", "metadataPath"]',
             "Add": '["sourceSet", "kind", "name"]',
             "Edit": '["sourceSet", "metadataPath", "operations"]',
-            "Remove": '["sourceSet", "metadataPath"]',
         }
         # `cwd` адресует рабочее пространство и обязателен на всей поверхности:
         # упакованный сервер стартует в каталоге плагина (ADR-0006 §4), а
@@ -652,7 +651,6 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "Info": {"cwd", "sourceSet", "metadataPath", "sections", "limit"},
             "Add": {"cwd", "sourceSet", "kind", "name", "operations", "dryRun"},
             "Edit": {"cwd", "sourceSet", "metadataPath", "operations", "dryRun"},
-            "Remove": {"cwd", "sourceSet", "metadataPath", "dryRun", "force", "confirm"},
         }
 
         for operation, required in expected_required.items():
@@ -724,7 +722,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
                     re.DOTALL,
                 )
             ),
-            3,
+            2,
         )
         success = rust_function(metadata, "fn metadata_success")
         self.assertIn("adapter: AdapterOutcome::ok(summary)", success)
