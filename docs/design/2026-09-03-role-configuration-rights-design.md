@@ -1,6 +1,10 @@
+- Date: `2026-09-03`
+- Status: `approved`
+- Decision: `DEC.2026-09-03.ROLE-CONFIGURATION-RIGHTS`
+
 # Права роли на конфигурацию в целом
 
-Дата: 2026-09-03. Контекст: `unica.find` на дампе УТ 11 падал закрытым отказом
+Контекст: `unica.find` на дампе УТ 11 падал закрытым отказом
 `role rights contain invalid metadata kind \`Configuration\`` на роли
 `АдминистраторСистемы`.
 
