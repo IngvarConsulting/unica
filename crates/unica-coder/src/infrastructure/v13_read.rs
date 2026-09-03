@@ -714,11 +714,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Result<(), ViewError> {
         if capability.source_layout() == ModuleSourceLayout::Root {
             return match self.read.source_set_kind() {
-                SourceSetKind::Configuration => Ok(()),
-                SourceSetKind::Extension => Err(ViewError::new(
-                    "provider_unavailable",
-                    "extension root runtime module ownership is not proved",
-                )),
+                // An extension extends the configuration runtime modules from
+                // its own root (`Ext/ManagedApplicationModule.bsl` and the
+                // like), so its `Configuration.xml` owns them exactly as the
+                // main configuration does.
+                SourceSetKind::Configuration | SourceSetKind::Extension => Ok(()),
                 SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
                     Err(ViewError::new(
                         "not_found",
