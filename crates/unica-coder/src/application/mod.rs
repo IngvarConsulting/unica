@@ -49,7 +49,6 @@ pub(crate) mod result_store;
 pub(crate) mod runtime_admission;
 pub(crate) mod shared_work;
 pub(crate) mod source_navigation;
-pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
 // The catalog is compiled for hidden canonical routing, while most semantic
 // descriptors remain unused until the atomic Task 22 public cutover.
@@ -192,7 +191,6 @@ pub enum ToolHandler {
         operation: &'static str,
         event: Option<DomainEventKind>,
     },
-    ProjectMap,
     BuildRuntime {
         command: &'static [&'static str],
         event: Option<DomainEventKind>,
@@ -204,26 +202,12 @@ pub enum ToolHandler {
     CodeIntelligence {
         operation: CodeIntelligenceOperation,
     },
-    SourceNavigation {
-        operation: SourceNavigationOperation,
-    },
-    SourceResources {
-        operation: SourceResourceOperation,
-    },
     Diagnostics,
     CodeAdapter {
         command: &'static [&'static str],
     },
-    StandardsAdapter {
-        operation: &'static str,
-    },
-    Documentation {
-        operation: &'static str,
-    },
 }
 
-pub use source_navigation::SourceNavigationOperation;
-pub use source_resources::SourceResourceOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeJobAction {
@@ -713,82 +697,6 @@ pub fn tools() -> Vec<ToolSpec> {
     let mut specs = configuration_tools();
     specs.extend([
         ToolSpec {
-            name: "unica.project.map",
-            description:
-                "Inspect configured source sets and effective source format per source set.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess {
-                reads: &["workspace_graph"],
-                writes: &[],
-            },
-            handler: ToolHandler::ProjectMap,
-        },
-        ToolSpec {
-            name: "unica.source.resolve",
-            description:
-                "Resolve an exact or prefix logical metadata query inside one named source set.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess {
-                reads: &["workspace_graph", "metadata_graph"],
-                writes: &[],
-            },
-            handler: ToolHandler::SourceNavigation {
-                operation: SourceNavigationOperation::Resolve,
-            },
-        },
-        ToolSpec {
-            name: "unica.source.children",
-            description:
-                "List exactly one level below a logical source-set root or metadata address.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess {
-                reads: &["workspace_graph", "metadata_graph"],
-                writes: &[],
-            },
-            handler: ToolHandler::SourceNavigation {
-                operation: SourceNavigationOperation::Children,
-            },
-        },
-        ToolSpec {
-            name: "unica.source.locate",
-            description:
-                "Recover the logical metadata address that owns one source path inside a named source set.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess {
-                reads: &["workspace_graph", "metadata_graph"],
-                writes: &[],
-            },
-            handler: ToolHandler::SourceNavigation {
-                operation: SourceNavigationOperation::Locate,
-            },
-        },
-        ToolSpec {
-            name: "unica.source.resources",
-            description:
-                "Open or page an immutable bounded manifest for one logical source target.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::SourceResources {
-                operation: SourceResourceOperation::Resources,
-            },
-        },
-        ToolSpec {
-            name: "unica.source.read",
-            description:
-                "Read one bounded byte range from a resource in an issued immutable snapshot.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::SourceResources {
-                operation: SourceResourceOperation::Read,
-            },
-        },
-        ToolSpec {
             name: "unica.build.dump",
             description: "Dump source set through the internal build/runtime adapter.",
             execution: ToolExecution::Mutation,
@@ -946,14 +854,6 @@ pub fn tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.xdto.info",
-            description: "Inspect one logically addressed 1C XDTO package schema.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::NativeOperation { operation: "xdto-info", event: None },
-        },
-        ToolSpec {
             name: "unica.code.graph",
             description: "Inspect BSL call graph through the typed Unica code analysis boundary.",
             execution: ToolExecution::Read,
@@ -976,47 +876,6 @@ pub fn tools() -> Vec<ToolSpec> {
                 writes: &[],
             },
             handler: ToolHandler::Diagnostics,
-        },
-        ToolSpec {
-            name: "unica.standards.search",
-            description: "Search 1C standards through the internal standards adapter.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::StandardsAdapter {
-                operation: "search",
-            },
-        },
-        ToolSpec {
-            name: "unica.standards.explain",
-            description:
-                "Explain 1C diagnostics or standards through the internal standards adapter.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::StandardsAdapter {
-                operation: "explain",
-            },
-        },
-        ToolSpec {
-            name: "unica.documentation.search",
-            description:
-                "Search the workspace configuration's embedded help, platform help, and development standards across documentation providers.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::Documentation {
-                operation: "search",
-            },
-        },
-        ToolSpec {
-            name: "unica.documentation.get",
-            description:
-                "Fetch the full text of a documentation search hit by its documentId locator.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::Documentation { operation: "get" },
         },
     ]);
     specs
@@ -1464,12 +1323,6 @@ fn call_tool_with_runtime_admission(
                     })?,
                     cancellation,
                 })?
-            }
-            ToolHandler::SourceNavigation { operation } => {
-                source_navigation::invoke(operation, ports, args, &context, cancellation)?
-            }
-            ToolHandler::SourceResources { operation } => {
-                source_resources::invoke(operation, ports, args, &context, cancellation)?
             }
             ToolHandler::Diagnostics => diagnostics::invoke(
                 ports,
@@ -2687,7 +2540,6 @@ fn domain_events(spec: ToolSpec, args: &Map<String, Value>) -> Vec<DomainEvent> 
             .map(|event| vec![DomainEvent::new(event, spec.name)])
             .unwrap_or_default(),
         ToolHandler::RuntimeJob { .. } => Vec::new(),
-        ToolHandler::SourceNavigation { .. } => Vec::new(),
         _ => Vec::new(),
     }
 }
@@ -2696,51 +2548,6 @@ fn runtime_event(args: &Map<String, Value>) -> Option<DomainEventKind> {
     args.get("operation")
         .and_then(Value::as_str)
         .and_then(runtime_event_kind)
-}
-
-/// A read whose result is data: ADR-0023 keeps the typed payload out of
-/// `stdout`, so the caller reads fields instead of parsing a rendered report.
-pub(crate) struct TypedReadOutcome {
-    pub(crate) outcome: AdapterOutcome,
-    pub(crate) data: Option<Value>,
-}
-
-pub(crate) fn project_map(
-    source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
-) -> TypedReadOutcome {
-    match source_map {
-        Ok(source_map) => {
-            let mut outcome = AdapterOutcome::ok(format!(
-                "project map discovered {} source set(s)",
-                source_map.source_sets.len()
-            ));
-            if let Some(error) = &source_map.source_selection_error {
-                outcome.warnings.push(error.clone());
-            }
-            // The map used to be serialized into `stdout`, which put a JSON
-            // string inside the JSON envelope -- exactly the shape ADR-0020
-            // rejected.
-            let data = serde_json::to_value(&source_map).expect("source map serializes");
-            TypedReadOutcome {
-                outcome,
-                data: Some(data),
-            }
-        }
-        Err(error) => TypedReadOutcome {
-            outcome: AdapterOutcome {
-                ok: false,
-                summary: "project map discovery failed".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![error],
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: None,
-                command: None,
-            },
-            data: None,
-        },
-    }
 }
 
 fn configuration_tools() -> Vec<ToolSpec> {
@@ -2777,17 +2584,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             handler: ToolHandler::NativeOperation {
                 operation: "cfe-borrow",
                 event: Some(DomainEventKind::CfeChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.cfe.diff",
-            description: "Inspect extension contents and transferred insertion blocks.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("cfe-diff", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "cfe-diff",
-                event: None,
             },
         },
         ToolSpec {
@@ -2847,19 +2643,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.meta.info",
-            description: "Inspect one metadata object with validation, proven subsystem memberships, and source-tree usage.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess {
-                reads: &["workspace_graph", "metadata_graph"],
-                writes: &[],
-            },
-            handler: ToolHandler::Metadata {
-                operation: metadata::MetadataOperation::Info,
-            },
-        },
-        ToolSpec {
             name: "unica.meta.add",
             description: "Create one metadata object from a typed internal template and optionally configure it atomically with ordered operations.",
             execution: ToolExecution::Mutation,
@@ -2909,17 +2692,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.form.info",
-            description: "Inspect managed Form.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("form-info", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "form-info",
-                event: None,
-            },
-        },
-        ToolSpec {
             name: "unica.interface.edit",
             description: "Edit subsystem CommandInterface.xml.",
             execution: ToolExecution::Mutation,
@@ -2962,17 +2734,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.subsystem.info",
-            description: "Inspect a registered subsystem tree from a directory, a focused registered tree from XML, or an unregistered XML locally.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("subsystem-info", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "subsystem-info",
-                event: None,
-            },
-        },
-        ToolSpec {
             name: "unica.dcs.compile",
             description: "Compile Data Composition Schema XML from JSON DSL.",
             execution: ToolExecution::Mutation,
@@ -2995,17 +2756,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.dcs.info",
-            description: "Inspect Data Composition Schema Template.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("dcs-info", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "dcs-info",
-                event: None,
-            },
-        },
-        ToolSpec {
             name: "unica.mxl.compile",
             description: "Compile spreadsheet Template.xml from JSON DSL.",
             execution: ToolExecution::Mutation,
@@ -3014,28 +2764,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             handler: ToolHandler::NativeOperation {
                 operation: "mxl-compile",
                 event: Some(DomainEventKind::MxlChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.mxl.decompile",
-            description: "Decompile spreadsheet Template.xml to JSON DSL.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("mxl-decompile", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "mxl-decompile",
-                event: None,
-            },
-        },
-        ToolSpec {
-            name: "unica.mxl.info",
-            description: "Inspect spreadsheet Template.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("mxl-info", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "mxl-info",
-                event: None,
             },
         },
         ToolSpec {
@@ -3061,17 +2789,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             handler: ToolHandler::NativeOperation {
                 operation: "role-edit",
                 event: Some(DomainEventKind::RoleChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.role.info",
-            description: "Inspect role Rights.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("role-info", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "role-info",
-                event: None,
             },
         },
     ]
@@ -4840,65 +4557,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn source_navigation_tools_use_provider_neutral_application_handlers() {
-        let expected = [
-            ("unica.source.resolve", SourceNavigationOperation::Resolve),
-            ("unica.source.children", SourceNavigationOperation::Children),
-        ];
-
-        for (name, operation) in expected {
-            let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
-            assert!(
-                !tool.execution.is_mutating(),
-                "{name} must remain read-only"
-            );
-            assert!(matches!(
-                tool.handler,
-                ToolHandler::SourceNavigation {
-                    operation: actual
-                } if actual == operation
-            ));
-        }
-    }
-
-    #[test]
-    fn source_resource_tools_are_read_only_and_have_no_cache_or_event_effects() {
-        let expected = [
-            ("unica.source.resources", SourceResourceOperation::Resources),
-            ("unica.source.read", SourceResourceOperation::Read),
-        ];
-
-        for (name, operation) in expected {
-            let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
-            assert!(
-                !tool.execution.is_mutating(),
-                "{name} must remain read-only"
-            );
-            assert!(
-                tool.cache_access.reads.is_empty(),
-                "{name} must not read cache"
-            );
-            assert!(
-                tool.cache_access.writes.is_empty(),
-                "{name} must not invalidate cache"
-            );
-            assert!(matches!(
-                tool.handler,
-                ToolHandler::SourceResources {
-                    operation: actual
-                } if actual == operation
-            ));
-        }
-
-        // The bounded resource surface is read-only: BSL mutation belongs to
-        // `unica.code.patch`, which edits the selected method or anchor instead
-        // of rewriting a whole module.
-        assert!(tools()
-            .into_iter()
-            .all(|tool| tool.name != "unica.source.apply"));
-    }
-
-    #[test]
     fn removed_code_grep_error_points_to_unified_search() {
         let error = UnicaApplication::new()
             .call_tool("unica.code.grep", &Map::new())
@@ -5689,18 +5347,33 @@ pub(crate) mod tests {
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
-                _context: &WorkspaceContext,
+                context: &WorkspaceContext,
                 _mode: InvocationMode,
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
-                Ok(ports::HandlerOutcome::with_data_and_events(
-                    AdapterOutcome::ok("legacy preview with an explicit event"),
-                    json!({"preview": true}),
-                    vec![DomainEvent::new(
-                        DomainEventKind::ModuleChanged,
-                        "src/CommonModules/Preview/Ext/Module.bsl",
-                    )],
-                ))
+                let event = DomainEvent::new(DomainEventKind::ModuleChanged, "src/Module.bsl");
+                let mut adapter = AdapterOutcome::ok("source and cache state committed");
+                adapter.changes = vec!["updated src/Module.bsl".to_string()];
+                let mut outcome = ports::HandlerOutcome::with_data_and_events(
+                    adapter,
+                    serde_json::json!({"postHash": "sha256:after"}),
+                    vec![event],
+                );
+                outcome.recorded_cache = Some(CacheReport {
+                    mode: "applied".to_string(),
+                    root: context.cache_root.display().to_string(),
+                    workspace_epoch: context.workspace_epoch,
+                    events: vec!["ModuleChanged".to_string()],
+                    invalidated: vec!["bsl_diagnostics".to_string(), "bsl_index".to_string()],
+                    refreshed: Vec::new(),
+                    lazy_rebuilt: Vec::new(),
+                    stale: vec!["bsl_diagnostics".to_string(), "bsl_index".to_string()],
+                    fresh: Vec::new(),
+                    publication_warnings: vec![
+                        "transaction committed with one cleanup warning".to_string()
+                    ],
+                });
+                Ok(outcome)
             }
 
             fn cache_report(

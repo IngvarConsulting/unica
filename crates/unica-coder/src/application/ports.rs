@@ -1,10 +1,5 @@
 use super::{AdapterOutcome, InvocationMode, ToolSpec};
 use crate::application::metadata::{MetaFailure, MetaInfoRequest, MetadataRequest};
-use crate::application::source_navigation::{
-    SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
-    SourceResolveRequest, SourceResolveResult,
-};
-use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -25,9 +20,6 @@ use crate::domain::metadata::{
 };
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::progress::ProgressSink;
-use crate::domain::source_resources::{
-    ResourceManifestPage, SourceReadResult, SourceResourceError,
-};
 use crate::domain::source_target::MetadataAddress;
 use crate::domain::subsystem::SubsystemAddress;
 use crate::domain::workspace::WorkspaceContext;
@@ -62,6 +54,25 @@ pub(crate) struct HandlerOutcome {
 }
 
 impl HandlerOutcome {
+    /// Типизированный результат с событиями: конструктор нужен тестовым
+    /// портам, которые доказывают путь публикации событий через шов.
+    #[cfg(test)]
+    pub(crate) fn with_data_and_events(
+        adapter: AdapterOutcome,
+        data: Value,
+        events: Vec<DomainEvent>,
+    ) -> Self {
+        Self {
+            adapter,
+            data: Some(data),
+            job: None,
+            events,
+            projected_events: Vec::new(),
+            recorded_cache: None,
+            diagnostics: None,
+        }
+    }
+
     pub(crate) fn plain(adapter: AdapterOutcome) -> Self {
         Self {
             adapter,
@@ -86,38 +97,6 @@ impl HandlerOutcome {
         }
     }
 
-    pub(crate) fn with_data_and_events(
-        adapter: AdapterOutcome,
-        data: Value,
-        events: Vec<DomainEvent>,
-    ) -> Self {
-        Self {
-            adapter,
-            data: Some(data),
-            job: None,
-            events,
-            projected_events: Vec::new(),
-            recorded_cache: None,
-            diagnostics: None,
-        }
-    }
-
-    pub(crate) fn with_data_events_and_projection(
-        adapter: AdapterOutcome,
-        data: Value,
-        events: Vec<DomainEvent>,
-        projected_events: Vec<DomainEvent>,
-    ) -> Self {
-        Self {
-            adapter,
-            data: Some(data),
-            job: None,
-            events,
-            projected_events,
-            recorded_cache: None,
-            diagnostics: None,
-        }
-    }
 }
 
 pub(crate) struct PreparedToolInvocation {
@@ -646,33 +625,6 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         Err("diagnostic provider registry is not configured".to_string())
     }
 
-    fn resolve_source_navigation(
-        &self,
-        _request: SourceResolveRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-    ) -> Result<SourceResolveResult, String> {
-        Err("source navigation resolver is not configured".to_string())
-    }
-
-    fn children_source_navigation(
-        &self,
-        _request: SourceChildrenRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-    ) -> Result<SourceChildrenResult, String> {
-        Err("source navigation traversal is not configured".to_string())
-    }
-
-    fn locate_source_navigation(
-        &self,
-        _request: SourceLocateRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-    ) -> Result<SourceLocateResult, String> {
-        Err("source navigation locator is not configured".to_string())
-    }
-
     fn resolve_diagnostic_context(
         &self,
         _request: &DiagnosticRequest,
@@ -709,30 +661,6 @@ pub(crate) trait ApplicationPorts: Send + Sync {
             .into_iter()
             .map(|observation| self.map_diagnostic_observation(observation, context, cancellation))
             .collect()
-    }
-
-    fn source_resources(
-        &self,
-        _request: SourceResourcesRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-    ) -> Result<ResourceManifestPage, SourceResourceError> {
-        Err(SourceResourceError::new(
-            crate::domain::source_resources::SourceResourceErrorCode::SourceUnavailable,
-            "source resource provider is not configured",
-        ))
-    }
-
-    fn read_source_resource(
-        &self,
-        _request: SourceReadRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-    ) -> Result<SourceReadResult, SourceResourceError> {
-        Err(SourceResourceError::new(
-            crate::domain::source_resources::SourceResourceErrorCode::SourceUnavailable,
-            "source resource provider is not configured",
-        ))
     }
 
     fn evaluate_format_guard(

@@ -6,8 +6,7 @@ use super::source_navigation::SOURCE_NAVIGATION_LIMIT_MAX;
 #[cfg(test)]
 use super::ToolExecution;
 use super::{
-    CodeIntelligenceOperation, InvocationMode, RuntimeJobAction, SourceNavigationOperation,
-    SourceResourceOperation, ToolHandler, ToolSpec,
+    CodeIntelligenceOperation, InvocationMode, RuntimeJobAction, ToolHandler, ToolSpec,
 };
 use crate::domain::diagnostics::{DiagnosticAction, LIVE_DIAGNOSTIC_PROVIDERS};
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
@@ -15,7 +14,6 @@ use crate::domain::role::{
     all_role_right_names, parse_role_edit_request, ROLE_METADATA_PATH_PATTERN,
     ROLE_OBJECT_NAME_PATTERN,
 };
-use crate::domain::source_resources::{SOURCE_READ_LIMIT_MAX, SOURCE_RESOURCE_PAGE_LIMIT_MAX};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use uuid::Uuid;
@@ -192,25 +190,6 @@ const XDTO_EDIT_OPS: &[&str] = &[
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
-const SOURCE_RESOLVE_ARGS: &[&str] = &[
-    "sourceSet",
-    "query",
-    "mode",
-    "targetKind",
-    "limit",
-    "cursor",
-];
-const SOURCE_CHILDREN_ARGS: &[&str] = &["sourceSet", "metadataPath", "limit", "cursor"];
-const SOURCE_LOCATE_ARGS: &[&str] = &["sourceSet", "path"];
-const SOURCE_RESOURCES_ARGS: &[&str] = &[
-    "sourceSet",
-    "metadataPath",
-    "scope",
-    "snapshotId",
-    "cursor",
-    "limit",
-];
-const SOURCE_READ_ARGS: &[&str] = &["snapshotId", "resourceId", "offset", "limit"];
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS: u64 = 3600;
 
@@ -648,28 +627,6 @@ const CODE_GRAPH_MODES: &[&str] = &[
 const CODE_GRAPH_DIRECTIONS: &[&str] = &["in", "out", "both"];
 const CODE_GRAPH_DETAIL: &[&str] = &["names", "signatures", "bodies"];
 const CODE_DIAGNOSTIC_SEVERITIES: &[&str] = &["error", "warning", "info", "hint"];
-const STANDARDS_ARGS: &[&str] = &[
-    "body_limit",
-    "bodyLimit",
-    "codes",
-    "id",
-    "idOrAliasOrUrl",
-    "language",
-    "limit",
-    "mode",
-    "query",
-    "snippet",
-    "types",
-];
-const DOCUMENTATION_SEARCH_ARGS: &[&str] = &[
-    "language",
-    "limit",
-    "platformVersion",
-    "query",
-    "sourceKinds",
-];
-const DOCUMENTATION_GET_ARGS: &[&str] = &["documentId", "language", "platformVersion"];
-
 /// Removes JSON Schema `description` annotations from a schema tree without
 /// touching members that are property names (a property literally called
 /// `description` survives; only its own annotation is dropped).
@@ -1186,8 +1143,6 @@ pub fn validate_tool_argument_semantics(
         validate_runtime_job_arguments(tool.name, action, args, dry_run)?;
     }
     validate_code_arguments(tool, args, dry_run)?;
-    validate_source_navigation_arguments(tool, args)?;
-    validate_source_resource_arguments(tool, args)?;
     validate_code_patch_arguments(tool, args)?;
     validate_form_edit_arguments(tool, args, dry_run)?;
     validate_external_init_arguments(tool, args)?;
@@ -1509,113 +1464,6 @@ fn is_xml_ncname_start(character: char) -> bool {
 fn is_xml_ncname_char(character: char) -> bool {
     is_xml_ncname_start(character)
         || xml_character_is_in_ranges(character, XML_NCNAME_CONTINUATION_RANGES)
-}
-
-fn validate_source_resource_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    let ToolHandler::SourceResources { operation } = tool.handler else {
-        return Ok(());
-    };
-    match operation {
-        SourceResourceOperation::Resources => {
-            validate_integer_bound(
-                tool.name,
-                args,
-                "limit",
-                1,
-                SOURCE_RESOURCE_PAGE_LIMIT_MAX as u64,
-            )?;
-            if let Some(value) = args.get("scope") {
-                let scope = value
-                    .as_str()
-                    .ok_or_else(|| format!("{} argument `scope` must be a string", tool.name))?;
-                if !matches!(scope, "self" | "aggregate" | "registrations") {
-                    return Err(format!(
-                        "{} argument `scope` must be `self`, `aggregate`, or `registrations`",
-                        tool.name
-                    ));
-                }
-            }
-        }
-        SourceResourceOperation::Read => {
-            validate_integer_bound(tool.name, args, "limit", 1, SOURCE_READ_LIMIT_MAX as u64)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_source_navigation_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    let ToolHandler::SourceNavigation { operation } = tool.handler else {
-        return Ok(());
-    };
-    for required in match operation {
-        SourceNavigationOperation::Resolve => &["sourceSet", "query"][..],
-        SourceNavigationOperation::Children => &["sourceSet"][..],
-        SourceNavigationOperation::Locate => &["sourceSet", "path"][..],
-    } {
-        let value = args
-            .get(*required)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("{} requires `{required}` argument", tool.name))?;
-        debug_assert!(!value.is_empty());
-    }
-    if let Some(value) = args.get("mode") {
-        let mode = value
-            .as_str()
-            .ok_or_else(|| format!("{} argument `mode` must be a string", tool.name))?;
-        if !matches!(mode, "exact" | "prefix") {
-            return Err(format!(
-                "{} argument `mode` must be `exact` or `prefix`",
-                tool.name
-            ));
-        }
-    }
-    if let Some(value) = args.get("targetKind") {
-        let target_kind = value
-            .as_str()
-            .ok_or_else(|| format!("{} argument `targetKind` must be a string", tool.name))?;
-        if !matches!(target_kind, "metadataObject" | "module") {
-            return Err(format!(
-                "{} argument `targetKind` must be `metadataObject` or `module`",
-                tool.name
-            ));
-        }
-    }
-    if let Some(value) = args.get("limit") {
-        let limit = value
-            .as_u64()
-            .ok_or_else(|| format!("{} argument `limit` must be a positive integer", tool.name))?;
-        if !(1..=u64::try_from(SOURCE_NAVIGATION_LIMIT_MAX).expect("small constant"))
-            .contains(&limit)
-        {
-            return Err(format!(
-                "{} argument `limit` must be between 1 and {SOURCE_NAVIGATION_LIMIT_MAX}",
-                tool.name
-            ));
-        }
-    }
-    for optional in ["metadataPath", "cursor"] {
-        if let Some(value) = args.get(optional) {
-            let non_empty = value
-                .as_str()
-                .map(str::trim)
-                .is_some_and(|value| !value.is_empty());
-            if !non_empty {
-                return Err(format!(
-                    "{} argument `{optional}` must be a non-empty string",
-                    tool.name
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn validate_removed_target_arguments(
@@ -2610,15 +2458,6 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::CodeIntelligence { operation } => {
             names.extend(code_intelligence_args(operation))
         }
-        ToolHandler::SourceNavigation { operation } => names.extend(match operation {
-            SourceNavigationOperation::Resolve => SOURCE_RESOLVE_ARGS,
-            SourceNavigationOperation::Children => SOURCE_CHILDREN_ARGS,
-            SourceNavigationOperation::Locate => SOURCE_LOCATE_ARGS,
-        }),
-        ToolHandler::SourceResources { operation } => names.extend(match operation {
-            SourceResourceOperation::Resources => SOURCE_RESOURCES_ARGS,
-            SourceResourceOperation::Read => SOURCE_READ_ARGS,
-        }),
         ToolHandler::Diagnostics => {
             names.clear();
             names.extend(
@@ -2628,10 +2467,6 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
             );
         }
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
-        ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
-        ToolHandler::Documentation { operation: "get" } => names.extend(DOCUMENTATION_GET_ARGS),
-        ToolHandler::Documentation { .. } => names.extend(DOCUMENTATION_SEARCH_ARGS),
-        ToolHandler::ProjectMap => {}
     }
     if tool.name == "unica.mxl.decompile" {
         names.retain(|name| *name != "OutputPath" && *name != "outputPath");
@@ -2668,32 +2503,12 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::NativeOperation { operation, .. } => native_operation_descriptor(operation)
             .map(|descriptor| descriptor.required_args.to_vec())
             .unwrap_or_default(),
-        ToolHandler::StandardsAdapter {
-            operation: "search",
-            ..
-        } => vec!["query"],
-        ToolHandler::Documentation {
-            operation: "search",
-            ..
-        } => vec!["query"],
-        ToolHandler::Documentation {
-            operation: "get", ..
-        } => vec!["documentId"],
         ToolHandler::RuntimeAdapter => runtime_required_args(tool),
         ToolHandler::RuntimeJob { action } => runtime_job_required_args(action),
         ToolHandler::CodeIntelligence { operation } => match operation {
             CodeIntelligenceOperation::Search => vec!["query"],
             CodeIntelligenceOperation::Definition => vec!["name"],
             CodeIntelligenceOperation::Outline => vec!["path"],
-        },
-        ToolHandler::SourceNavigation { operation } => match operation {
-            SourceNavigationOperation::Resolve => vec!["sourceSet", "query"],
-            SourceNavigationOperation::Children => vec!["sourceSet"],
-            SourceNavigationOperation::Locate => vec!["sourceSet", "path"],
-        },
-        ToolHandler::SourceResources { operation } => match operation {
-            SourceResourceOperation::Resources => Vec::new(),
-            SourceResourceOperation::Read => vec!["snapshotId", "resourceId"],
         },
         ToolHandler::Diagnostics => vec!["action", "sourceSet"],
         ToolHandler::CodeAdapter { .. } => match tool.name {
@@ -3726,57 +3541,6 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                     { "required": ["anchor"] }
                 ]
             }),
-            _ => property_schema(name),
-        };
-    }
-    if matches!(tool.handler, ToolHandler::SourceNavigation { .. }) {
-        return match name {
-            "path" => json!({
-                "type": "string",
-                "minLength": 1,
-                "pattern": r"\S",
-                "description": "Source file to look up, given either workspace-relative or relative to the named source set; the answer names the metadata address that owns it"
-            }),
-            "sourceSet" | "query" | "metadataPath" | "cursor" => {
-                json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
-            }
-            "mode" => json!({ "type": "string", "enum": ["exact", "prefix"] }),
-            "targetKind" => json!({
-                "type": "string",
-                "enum": ["metadataObject", "module"]
-            }),
-            "limit" => json!({
-                "type": "integer",
-                "minimum": 1,
-                "maximum": SOURCE_NAVIGATION_LIMIT_MAX
-            }),
-            _ => property_schema(name),
-        };
-    }
-    if let ToolHandler::SourceResources { operation } = tool.handler {
-        return match (operation, name) {
-            (SourceResourceOperation::Resources, "scope") => json!({
-                "type": "string",
-                "enum": ["self", "aggregate", "registrations"]
-            }),
-            (SourceResourceOperation::Resources, "limit") => json!({
-                "type": "integer",
-                "minimum": 1,
-                "maximum": SOURCE_RESOURCE_PAGE_LIMIT_MAX
-            }),
-            (SourceResourceOperation::Read, "limit") => json!({
-                "type": "integer",
-                "minimum": 1,
-                "maximum": SOURCE_READ_LIMIT_MAX
-            }),
-            (SourceResourceOperation::Read, "offset") => json!({
-                "type": "integer",
-                "minimum": 0,
-                "description": "Zero-based byte offset inside the immutable resource snapshot"
-            }),
-            (_, "sourceSet" | "metadataPath" | "snapshotId" | "resourceId" | "cursor") => {
-                json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
-            }
             _ => property_schema(name),
         };
     }
@@ -5586,119 +5350,6 @@ pub(crate) mod tests {
             (
                 "unica.subsystem.edit",
                 entry("subsystem-edit", "31164:52fff7efa16e1c71"),
-            ),
-        ]);
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn logical_only_tool_schemas_match_exact_property_allowlists() {
-        use std::collections::{BTreeMap, BTreeSet};
-
-        let mut actual = BTreeMap::new();
-        for tool in tools() {
-            let schema = input_schema_for_tool(&tool);
-            let Some(properties) = schema["properties"].as_object() else {
-                continue;
-            };
-            if !properties.contains_key("sourceSet") || !properties.contains_key("metadataPath") {
-                continue;
-            }
-            if bridged_selector(tool.name).is_some()
-                || tool.name == "unica.code.search"
-                || matches!(
-                    tool.handler,
-                    ToolHandler::SourceNavigation {
-                        operation: SourceNavigationOperation::Locate
-                    }
-                )
-            {
-                continue;
-            }
-            assert_eq!(schema["additionalProperties"], false, "{}", tool.name);
-            actual.insert(
-                tool.name,
-                properties.keys().cloned().collect::<BTreeSet<_>>(),
-            );
-        }
-        fn fields(names: &[&str]) -> BTreeSet<String> {
-            names.iter().map(|name| (*name).to_string()).collect()
-        }
-        let expected = BTreeMap::from([
-            (
-                "unica.code.diagnostics",
-                fields(&[
-                    "action",
-                    "cwd",
-                    "filter",
-                    "limit",
-                    "metadataPath",
-                    "range",
-                    "sourceSet",
-                    "timeoutSeconds",
-                ]),
-            ),
-            (
-                "unica.code.patch",
-                fields(&[
-                    "confirm",
-                    "content",
-                    "cwd",
-                    "dryRun",
-                    "metadataPath",
-                    "operation",
-                    "position",
-                    "selector",
-                    "sourceSet",
-                ]),
-            ),
-            (
-                "unica.meta.edit",
-                fields(&["cwd", "dryRun", "metadataPath", "operations", "sourceSet"]),
-            ),
-            (
-                "unica.meta.info",
-                fields(&["cwd", "limit", "metadataPath", "sections", "sourceSet"]),
-            ),
-            (
-                "unica.role.edit",
-                fields(&["dryRun", "metadataPath", "operations", "sourceSet"]),
-            ),
-            (
-                "unica.source.children",
-                fields(&[
-                    "confirm",
-                    "cursor",
-                    "cwd",
-                    "limit",
-                    "metadataPath",
-                    "sourceSet",
-                ]),
-            ),
-            (
-                "unica.source.resources",
-                fields(&[
-                    "confirm",
-                    "cursor",
-                    "cwd",
-                    "limit",
-                    "metadataPath",
-                    "scope",
-                    "snapshotId",
-                    "sourceSet",
-                ]),
-            ),
-            (
-                "unica.xdto.info",
-                fields(&[
-                    "confirm",
-                    "cursor",
-                    "cwd",
-                    "limit",
-                    "metadataPath",
-                    "sourceSet",
-                    "typeName",
-                ]),
             ),
         ]);
         assert_eq!(actual, expected);

@@ -1,24 +1,12 @@
-use super::ports::{ApplicationPorts, HandlerOutcome};
-use super::AdapterOutcome;
-use crate::domain::cancellation::CancellationToken;
 pub(crate) use crate::domain::source_location::{LocateRejection, SourceLocation};
-use crate::domain::source_target::{MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20};
-use crate::domain::workspace::WorkspaceContext;
+use crate::domain::source_target::{MetadataAddress, TargetKind};
 use serde::Serialize;
-use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
 pub(crate) const SOURCE_NAVIGATION_LIMIT_DEFAULT: usize = 20;
 pub(crate) const SOURCE_NAVIGATION_LIMIT_MAX: usize = 50;
 const CURSOR_MASK: u64 = 0xa93f_4761_c2d8_5be7;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceNavigationOperation {
-    Resolve,
-    Children,
-    Locate,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SourceNavigationMode {
@@ -149,145 +137,6 @@ pub(crate) struct SourceChildrenRequest {
     pub(crate) metadata_path: Option<MetadataAddress>,
     pub(crate) limit: usize,
     pub(crate) cursor: Option<String>,
-}
-
-pub(crate) fn invoke(
-    operation: SourceNavigationOperation,
-    ports: &dyn ApplicationPorts,
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    cancellation: &CancellationToken,
-) -> Result<HandlerOutcome, String> {
-    if cancellation.is_cancelled() {
-        return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
-            "source navigation stopped before provider resolution",
-        )));
-    }
-    let (summary, data) = match operation {
-        SourceNavigationOperation::Resolve => {
-            let result =
-                ports.resolve_source_navigation(resolve_request(args)?, context, cancellation)?;
-            (
-                format!(
-                    "source.resolve returned {} canonical candidate(s)",
-                    result.candidates.len()
-                ),
-                serde_json::to_value(result)
-                    .map_err(|error| format!("failed to serialize source.resolve: {error}"))?,
-            )
-        }
-        SourceNavigationOperation::Children => {
-            let result =
-                ports.children_source_navigation(children_request(args)?, context, cancellation)?;
-            (
-                format!(
-                    "source.children returned {} immediate child node(s)",
-                    result.children.len()
-                ),
-                serde_json::to_value(result)
-                    .map_err(|error| format!("failed to serialize source.children: {error}"))?,
-            )
-        }
-        SourceNavigationOperation::Locate => {
-            let result =
-                ports.locate_source_navigation(locate_request(args)?, context, cancellation)?;
-            let summary = match result.metadata_path.as_ref() {
-                Some(address) => format!("source.locate resolved `{}`", address.as_str()),
-                None => "source.locate found no logical address for the path".to_string(),
-            };
-            (
-                summary,
-                serde_json::to_value(result)
-                    .map_err(|error| format!("failed to serialize source.locate: {error}"))?,
-            )
-        }
-    };
-    Ok(HandlerOutcome::with_data(AdapterOutcome::ok(summary), data))
-}
-
-fn resolve_request(args: &Map<String, Value>) -> Result<SourceResolveRequest, String> {
-    Ok(SourceResolveRequest {
-        source_set: required_string(args, "sourceSet")?.to_string(),
-        query: required_string(args, "query")?.to_string(),
-        mode: SourceNavigationMode::parse(args.get("mode").and_then(Value::as_str))?,
-        target_kind: args
-            .get("targetKind")
-            .and_then(Value::as_str)
-            .map(|value| match value {
-                "metadataObject" => Ok(TargetKind::MetadataObject),
-                "module" => Ok(TargetKind::Module),
-                _ => Err(
-                    "source navigation `targetKind` must be `metadataObject` or `module`"
-                        .to_string(),
-                ),
-            })
-            .transpose()?,
-        limit: navigation_limit(args)?,
-        cursor: optional_non_empty_string(args, "cursor")?,
-    })
-}
-
-fn locate_request(args: &Map<String, Value>) -> Result<SourceLocateRequest, String> {
-    Ok(SourceLocateRequest {
-        source_set: required_string(args, "sourceSet")?.to_string(),
-        path: required_string(args, "path")?.to_string(),
-    })
-}
-
-fn children_request(args: &Map<String, Value>) -> Result<SourceChildrenRequest, String> {
-    let metadata_path = optional_non_empty_string(args, "metadataPath")?
-        .map(|raw| MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &raw))
-        .transpose()
-        .map_err(|error| error.to_string())?;
-    Ok(SourceChildrenRequest {
-        source_set: required_string(args, "sourceSet")?.to_string(),
-        metadata_path,
-        limit: navigation_limit(args)?,
-        cursor: optional_non_empty_string(args, "cursor")?,
-    })
-}
-
-fn required_string<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a str, String> {
-    args.get(name)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("source navigation requires non-empty `{name}`"))
-}
-
-fn optional_non_empty_string(
-    args: &Map<String, Value>,
-    name: &str,
-) -> Result<Option<String>, String> {
-    args.get(name)
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .ok_or_else(|| format!("source navigation `{name}` must be a non-empty string"))
-        })
-        .transpose()
-}
-
-fn navigation_limit(args: &Map<String, Value>) -> Result<usize, String> {
-    let limit = args
-        .get("limit")
-        .map(|value| {
-            value
-                .as_u64()
-                .and_then(|value| usize::try_from(value).ok())
-                .ok_or_else(|| "source navigation `limit` must be an integer".to_string())
-        })
-        .transpose()?
-        .unwrap_or(SOURCE_NAVIGATION_LIMIT_DEFAULT);
-    if !(1..=SOURCE_NAVIGATION_LIMIT_MAX).contains(&limit) {
-        return Err(format!(
-            "source navigation `limit` must be between 1 and {SOURCE_NAVIGATION_LIMIT_MAX}"
-        ));
-    }
-    Ok(limit)
 }
 
 pub(crate) fn page_bounds(
