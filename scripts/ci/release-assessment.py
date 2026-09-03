@@ -44,10 +44,36 @@ EXPECTED_PUBLIC_TOOLS = {
 INDEX_WAIT_TIMEOUT_SECONDS = 300
 INDEX_POLL_INTERVAL_SECONDS = 1
 INDEXED_SEARCH_ROLES = ("semantic", "symbol")
+P0_LIFECYCLE_SCENARIOS = (
+    "fresh_install",
+    "upgrade",
+    "offline_prefetch",
+    "restart",
+    "rollback",
+)
+SAFE_V13_AT_LEAST_ONCE_REPLAY_TOOLS = frozenset(
+    {"unica.check", "unica.view", "unica.find", "unica.search", "unica.diff"}
+)
+LOST_DAEMON_SUBMIT_RESPONSE_CODE = -32000
+LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE = (
+    "daemon deadline expired during invocation submit response"
+)
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def dry_lifecycle_outcomes() -> dict[str, dict[str, Any]]:
+    """Name lifecycle evidence that is intentionally deferred outside RC joins."""
+    return {
+        name: {
+            "status": "deferred",
+            "supported": False,
+            "evidence": [f"release-assessment:{name}:not-run"],
+        }
+        for name in P0_LIFECYCLE_SCENARIOS
+    }
 
 
 def json_digest(value: Any) -> str:
@@ -216,8 +242,31 @@ def prepare_runtime_overlay(overlay_input: Path, extract_dir: Path) -> Path:
 
 
 def unica_version(run_unica: Path) -> str:
-    plugin_json = read_json(plugin_root_for(run_unica) / ".codex-plugin" / "plugin.json")
-    return str(plugin_json.get("version", "unknown"))
+    plugin_root = plugin_root_for(run_unica)
+    tool_manifest_path = plugin_root / "third-party" / "manifest.json"
+    if tool_manifest_path.is_file():
+        tool_manifest = read_json(tool_manifest_path)
+        candidates = [
+            tool
+            for tool in tool_manifest.get("tools", [])
+            if isinstance(tool, dict) and tool.get("name") == "unica"
+        ]
+        if len(candidates) != 1:
+            raise SystemExit("candidate runtime manifest must contain exactly one unica tool")
+        version = candidates[0].get("version")
+        if not isinstance(version, str) or not version:
+            raise SystemExit("candidate runtime manifest unica version is missing")
+        plugin_json = read_json(plugin_root / ".codex-plugin" / "plugin.json")
+        host_version = plugin_json.get("version")
+        if host_version is not None and host_version != version:
+            raise SystemExit("candidate runtime and host manifest versions differ")
+        return version
+
+    plugin_json = read_json(plugin_root / ".codex-plugin" / "plugin.json")
+    version = plugin_json.get("version")
+    if not isinstance(version, str) or not version:
+        raise SystemExit("candidate package unica version is missing")
+    return version
 
 
 def call_mcp(
@@ -729,6 +778,7 @@ def run_v13_tool_scenario(
     total_duration_ms = 0
     total_output_bytes = 0
     task_polls = 0
+    submit_retries = 0
     next_tool = tool
     next_arguments = dict(arguments)
 
@@ -745,6 +795,25 @@ def run_v13_tool_scenario(
             timeout_seconds=remaining,
         )
         total_duration_ms += duration_ms
+        if (
+            submit_retries == 0
+            and next_tool == tool
+            and tool in SAFE_V13_AT_LEAST_ONCE_REPLAY_TOOLS
+            and returncode == 0
+            and len(responses) == 1
+            and responses[0].get("error")
+            == {
+                "code": LOST_DAEMON_SUBMIT_RESPONSE_CODE,
+                "message": LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE,
+            }
+        ):
+            # The daemon may have accepted this read before its bounded submit
+            # response was lost. V3 has no stable recovery identity, so replay
+            # is explicitly at-least-once and may execute the read twice. Keep
+            # it to read-only tools, one replay and the original scenario budget.
+            total_output_bytes += response_output_size(stdout, stderr, None)
+            submit_retries += 1
+            continue
         if returncode != 0:
             errors.append(f"unica exited with {returncode}: {stderr.strip()}")
         if len(responses) != 1:
@@ -772,6 +841,8 @@ def run_v13_tool_scenario(
     metrics: dict[str, Any] = {
         "outputBytes": total_output_bytes,
         "taskPolls": task_polls,
+        "submitRetries": submit_retries,
+        "submitReplaySemantics": "at-least-once" if submit_retries else "none",
         "warningsCount": len(payload.get("warnings", [])) if payload else 0,
         "errorsCount": len(errors),
     }
@@ -1366,6 +1437,7 @@ def build_assessment_report(
         },
         "environment": environment_metadata(run_unica, runtime_overlay),
         "scenarios": scenarios,
+        "lifecycle": dry_lifecycle_outcomes(),
         "summary": build_summary(scenarios, diagnostic_codes, cache_dir),
     }
     write_report_files(report, out_dir)

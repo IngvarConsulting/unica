@@ -32,6 +32,51 @@ def load_bsp_harvest_module():
 
 
 class ReleaseAssessmentTests(unittest.TestCase):
+    def test_runtime_version_comes_from_the_candidate_tool_manifest(self) -> None:
+        module = load_assessment_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        runtime = root / "runtime"
+        manifest = runtime / "third-party" / "manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "tools": [
+                        {"name": "unica", "version": "0.12.0"},
+                        {"name": "bsl-analyzer", "version": "0.2.67"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        run_unica = runtime / "bin" / "linux-x64" / "unica"
+        run_unica.parent.mkdir(parents=True)
+        run_unica.write_bytes(b"unica")
+
+        self.assertEqual(module.unica_version(run_unica), "0.12.0")
+
+    def test_dry_assessment_declares_separate_p0_lifecycle_outcomes(self) -> None:
+        module = load_assessment_module()
+
+        self.assertEqual(
+            module.dry_lifecycle_outcomes(),
+            {
+                name: {
+                    "status": "deferred",
+                    "supported": False,
+                    "evidence": [f"release-assessment:{name}:not-run"],
+                }
+                for name in (
+                    "fresh_install",
+                    "upgrade",
+                    "offline_prefetch",
+                    "restart",
+                    "rollback",
+                )
+            },
+        )
+
     def building_section(self, role: str, provider: str) -> dict:
         """A role whose index is still being built: retryable, not broken."""
         return {
@@ -321,6 +366,11 @@ for raw in sys.stdin:
             root = Path(tmp)
             fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
             self.write_fake_mcp(fake_mcp)
+            (root / ".codex-plugin").mkdir()
+            (root / ".codex-plugin" / "plugin.json").write_text(
+                json.dumps({"name": "unica", "version": "9.9.9"}),
+                encoding="utf-8",
+            )
             bsp_root = root / "bsp"
             (bsp_root / "src" / "cf").mkdir(parents=True)
             (bsp_root / "src" / "cf" / "Module.bsl").write_text("Процедура Smoke()\nКонецПроцедуры\n", encoding="utf-8")
@@ -414,6 +464,73 @@ for raw in sys.stdin:
             self.assertEqual(returncode, 0, stderr)
             self.assertEqual(len(responses), 1)
             self.assertNotIn("error", responses[0])
+
+    def test_v13_read_replays_one_lost_submit_response_as_at_least_once(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
+            fake_mcp.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+for raw in sys.stdin:
+    message = json.loads(raw)
+    if "id" not in message:
+        continue
+    response = {"jsonrpc": "2.0", "id": message["id"]}
+    if message["method"] == "initialize":
+        response["result"] = {"serverInfo": {"name": "unica"}}
+    elif message["method"] == "tools/call":
+        executions = Path(os.environ["UNICA_CACHE_DIR"]) / "view-executions"
+        count = int(executions.read_text(encoding="utf-8")) + 1 if executions.exists() else 1
+        executions.write_text(str(count), encoding="utf-8")
+        if count == 1:
+            response["error"] = {
+                "code": -32000,
+                "message": "daemon deadline expired during invocation submit response",
+            }
+        else:
+            response["result"] = {
+                "content": [],
+                "structuredContent": {
+                    "ok": True,
+                    "summary": "view completed",
+                    "warnings": [],
+                    "errors": [],
+                    "artifacts": [],
+                    "data": {"kind": "Configuration", "branches": []},
+                },
+                "isError": False,
+            }
+    print(json.dumps(response), flush=True)
+""",
+                encoding="utf-8",
+            )
+            fake_mcp.chmod(fake_mcp.stat().st_mode | stat.S_IXUSR)
+
+            scenario, payload = module.run_v13_tool_scenario(
+                fake_mcp,
+                bsp_root=root,
+                cache_dir=root / "cache",
+                scenario_id="configuration-view",
+                title="view",
+                tool="unica.view",
+                arguments={"at": "main:Configuration"},
+                timeout_seconds=2,
+            )
+
+            self.assertEqual(scenario["status"], "passed", scenario)
+            self.assertEqual(scenario["metrics"]["submitRetries"], 1)
+            self.assertEqual(
+                scenario["metrics"]["submitReplaySemantics"], "at-least-once"
+            )
+            self.assertEqual((root / "cache" / "view-executions").read_text(), "2")
+            self.assertEqual(payload["data"]["kind"], "Configuration")
 
     def test_mcp_client_surfaces_injected_handshake_error(self) -> None:
         module = load_assessment_module()

@@ -168,6 +168,37 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(upstream=upstream):
                 self.assertIn(f"      - {upstream}", gate)
 
+    def test_p0_dry_release_proof_is_read_only_and_aggregated(self) -> None:
+        text = self.release_text()
+        jobs = parse_workflow_jobs(text)
+        proof = jobs.get("p0-release-proof")
+        self.assertIsNotNone(proof)
+        assert proof is not None
+        self.assertEqual(
+            set(proof.needs),
+            {"build-tools", "package-thin", "release-assessment"},
+        )
+        for argument in (
+            "scripts/ci/release-proof.py",
+            "--mode dry",
+            "--wire-dir",
+            "--package-dir",
+            "--asset-verification-dir",
+            "--source-commit",
+            "--baseline",
+            "--out-dir dist/p0-proof",
+        ):
+            self.assertIn(argument, proof.body)
+        self.assertIn("permissions:\n      contents: read", proof.body)
+        self.assertNotIn("softprops/action-gh-release", proof.body)
+        self.assertNotIn("git tag", proof.body)
+        self.assertIn("      - p0-release-proof", job_block(text, "unica-ci"))
+
+    def test_wire_probes_embed_the_matrix_target_in_their_evidence(self) -> None:
+        build = job_block(self.release_text(), "build-tools")
+
+        self.assertEqual(2, build.count('--target "$TARGET"'))
+
     def test_classifier_exposes_typed_contours_and_ci_full_override(self) -> None:
         text = self.release_text()
         classifier = job_block(text, "classify-changes")
@@ -283,6 +314,19 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("needs: [classify-changes, build-tools]", assessment)
         self.assertIn("assessment_required == 'true'", assessment)
         self.assertIn("needs.build-tools.result == 'success'", assessment)
+
+    def test_release_assessment_uses_the_candidate_release_identity(self) -> None:
+        assessment = job_block(self.release_text(), "release-assessment")
+
+        self.assertIn(
+            "RELEASE_TAG: ${{ github.event_name == 'push' && "
+            "startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}",
+            assessment,
+        )
+        self.assertIn("if: ${{ env.RELEASE_TAG == '' }}", assessment)
+        self.assertIn('echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"', assessment)
+        self.assertIn('--release-tag "$RELEASE_TAG"', assessment)
+        self.assertNotIn("RELEASE_REF: ${{ github.ref_name }}", assessment)
 
     def test_only_tag_pushes_enable_release_behavior(self) -> None:
         text = self.release_text()

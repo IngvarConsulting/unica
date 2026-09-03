@@ -16,6 +16,7 @@ from pathlib import Path
 
 _CLEANUP_GRACE_SECONDS = 0.5
 _WINDOWS_CREATE_SUSPENDED = 0x00000004
+EVIDENCE_TARGETS = ("darwin-arm64", "linux-x64", "win-x64")
 
 
 class ProcessIdentity:
@@ -532,6 +533,8 @@ class WireProbe:
         *,
         protocol_version: str,
         tasks_capability: str,
+        profile: str | None = None,
+        target: str | None = None,
         timeout_seconds: float,
         environment: dict[str, str] | None = None,
         cwd: Path | None = None,
@@ -539,6 +542,14 @@ class WireProbe:
         self.command = command
         self.protocol_version = protocol_version
         self.tasks_capability = tasks_capability
+        if profile is not None and profile not in {"native", "compatibility"}:
+            raise ValueError(f"unsupported wire evidence profile: {profile}")
+        if (profile is None) != (target is None):
+            raise ValueError("wire evidence profile and target must be provided together")
+        if target is not None and target not in EVIDENCE_TARGETS:
+            raise ValueError(f"unsupported wire evidence target: {target}")
+        self.profile = profile
+        self.target = target
         self.timeout_seconds = timeout_seconds
         self.environment = dict(environment or os.environ)
         self.cwd = (cwd or Path.cwd()).resolve()
@@ -657,6 +668,7 @@ class WireProbe:
                 request_id += 1
 
             output = {
+                "schemaVersion": 1 if self.profile is not None else None,
                 "protocolVersion": self.protocol_version,
                 "responseKinds": session.response_kinds,
                 "serverInfo": server_info,
@@ -665,6 +677,11 @@ class WireProbe:
                 "toolCount": len(tool_names),
                 "toolNames": sorted(tool_names),
             }
+            if self.profile is None:
+                output.pop("schemaVersion")
+            else:
+                output["profile"] = self.profile
+                output["target"] = self.target
             completed = True
             return output
         finally:
@@ -1314,10 +1331,14 @@ def main() -> None:
         "--tasks-capability", required=True, choices=("on", "off")
     )
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--profile", choices=("native", "compatibility"))
+    parser.add_argument("--target", choices=EVIDENCE_TARGETS)
     parser.add_argument("--timeout-seconds", type=float, default=20.0)
     args = parser.parse_args()
     if args.timeout_seconds <= 0:
         parser.error("--timeout-seconds must be positive")
+    if (args.profile is None) != (args.target is None):
+        parser.error("--profile and --target must be provided together")
     executable = Path(args.binary)
     command = [
         str(executable.resolve()) if executable.exists() else args.binary,
@@ -1327,6 +1348,8 @@ def main() -> None:
         command,
         protocol_version=args.protocol_version,
         tasks_capability=args.tasks_capability,
+        profile=args.profile,
+        target=args.target,
         timeout_seconds=args.timeout_seconds,
     ).run()
     args.output.parent.mkdir(parents=True, exist_ok=True)

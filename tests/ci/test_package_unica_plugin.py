@@ -27,6 +27,24 @@ def load_package_module():
 
 
 class PackageUnicaPluginTests(unittest.TestCase):
+    def test_package_tree_hash_frames_path_and_content_boundaries(self) -> None:
+        module = load_package_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        first = root / "first"
+        second = root / "second"
+        first.mkdir()
+        second.mkdir()
+        (first / "a").write_bytes(b"x\0y")
+        (first / "z").write_bytes(b"w")
+        (second / "a").write_bytes(b"x\0yz\0w")
+
+        first_digest = module.package_tree_sha256(first)
+        self.assertEqual(
+            first_digest,
+            "5188569041dcc3e6e365f6a5b95d375ba69964b3cd93a8f28c198a521c30bda2",
+        )
+        self.assertNotEqual(first_digest, module.package_tree_sha256(second))
+
     def test_runtime_metadata_asset_must_be_an_object(self) -> None:
         module = load_package_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -1275,6 +1293,19 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertNotIn("source\": \"local", json.dumps(catalog))
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
             self.assertEqual(list(out_dir.glob("*.zip")), [])
+            package_evidence = json.loads(
+                (out_dir / "p0-package-evidence.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(package_evidence["schemaVersion"], 1)
+            self.assertEqual(
+                package_evidence["packageHashFormat"],
+                "sha256-u64be-path-content-v1",
+            )
+            self.assertEqual(package_evidence["pluginVersion"], version)
+            self.assertEqual(package_evidence["sourceCommit"], "a" * 40)
+            self.assertFalse(package_evidence["versionBumped"])
+            self.assertFalse(package_evidence["published"])
+            self.assertIsNone(package_evidence["tag"])
 
             # Maintainer material stays in the source tree. The donor index and
             # the dated review records answer questions a consumer never asks,
