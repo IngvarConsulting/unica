@@ -2063,28 +2063,6 @@ pub(crate) enum TaskCancellationReceipt {
 }
 
 impl TaskCancellationReceipt {
-    // Transitional constructors keep the receipt-state vocabulary available to
-    // runtime callers while the enum variants avoid redundant `Task` prefixes.
-    #[allow(non_snake_case)]
-    pub(crate) fn TaskPromisedUnbound(receipt: TaskPromisedUnboundReceipt) -> Self {
-        Self::PromisedUnbound(receipt)
-    }
-
-    #[allow(non_snake_case)]
-    pub(crate) fn TaskPromisedActorBound(receipt: TaskPromisedActorBoundReceipt) -> Self {
-        Self::PromisedActorBound(receipt)
-    }
-
-    #[allow(non_snake_case)]
-    pub(crate) fn TaskHandoffActorBound(receipt: TaskHandoffActorBoundReceipt) -> Self {
-        Self::HandoffActorBound(receipt)
-    }
-
-    #[allow(non_snake_case)]
-    pub(crate) fn TaskReceiptOwnedActorBound(receipt: TaskReceiptOwnedActorBoundReceipt) -> Self {
-        Self::ReceiptOwnedActorBound(receipt)
-    }
-
     pub(crate) fn key(&self) -> &ReceiptKey {
         match self {
             Self::PromisedUnbound(receipt) => receipt.key(),

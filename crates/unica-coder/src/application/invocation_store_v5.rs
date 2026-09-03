@@ -587,7 +587,51 @@ impl V5TerminalPublication {
     }
 
     pub(crate) fn matches_task(&self, task: &V5StoredTask) -> bool {
-        self.clone().into_stored_task() == *task
+        match (self, task) {
+            (
+                Self::Completed {
+                    terminal_epoch_ms: publication_epoch,
+                    terminal_digest: publication_digest,
+                    result: publication_result,
+                },
+                V5StoredTask::Completed {
+                    terminal_epoch_ms: task_epoch,
+                    terminal_digest: task_digest,
+                    result: task_result,
+                },
+            ) => {
+                publication_epoch == task_epoch
+                    && publication_digest == task_digest
+                    && publication_result == task_result
+            }
+            (
+                Self::Failed {
+                    terminal_epoch_ms: publication_epoch,
+                    terminal_digest: publication_digest,
+                    reason: publication_reason,
+                },
+                V5StoredTask::Failed {
+                    terminal_epoch_ms: task_epoch,
+                    terminal_digest: task_digest,
+                    reason: task_reason,
+                },
+            ) => {
+                publication_epoch == task_epoch
+                    && publication_digest == task_digest
+                    && publication_reason == task_reason
+            }
+            (
+                Self::Cancelled {
+                    terminal_epoch_ms: publication_epoch,
+                    terminal_digest: publication_digest,
+                },
+                V5StoredTask::Cancelled {
+                    terminal_epoch_ms: task_epoch,
+                    terminal_digest: task_digest,
+                },
+            ) => publication_epoch == task_epoch && publication_digest == task_digest,
+            _ => false,
+        }
     }
 
     pub(crate) const fn status(&self) -> V5TaskStatus {

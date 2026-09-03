@@ -809,6 +809,7 @@ closed_unit_enum!(V5DaemonErrorCodeFixtureInput {
     TaskExpired,
     StoreFailed,
     DurabilityUncertain,
+    StoreCommitUncertain,
 });
 closed_unit_enum!(StrictSchemaTargetInput {
     RequestUnknownField,

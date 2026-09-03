@@ -8360,6 +8360,9 @@ fn fixture_daemon_error_code(code: ScenarioV5DaemonErrorCodeFixture) -> V5Daemon
         ScenarioV5DaemonErrorCodeFixture::DurabilityUncertain => {
             V5DaemonErrorCode::DurabilityUncertain
         }
+        ScenarioV5DaemonErrorCodeFixture::StoreCommitUncertain => {
+            V5DaemonErrorCode::StoreCommitUncertain
+        }
     }
 }
 
@@ -12126,6 +12129,7 @@ enum ScenarioV5DaemonErrorCodeFixture {
     TaskExpired,
     StoreFailed,
     DurabilityUncertain,
+    StoreCommitUncertain,
 }
 
 #[derive(Clone, Copy, Deserialize)]

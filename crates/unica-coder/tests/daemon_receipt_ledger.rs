@@ -735,6 +735,7 @@ enum V5DaemonErrorCodeFixture {
     TaskExpired,
     StoreFailed,
     DurabilityUncertain,
+    StoreCommitUncertain,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -7441,6 +7442,11 @@ fn v5_rejects_v3_v4_and_strictly_round_trips_receipt_messages() {
             V5DaemonErrorCodeFixture::DurabilityUncertain,
             "durability_uncertain",
             ErrorCode::DurabilityUncertain,
+        ),
+        (
+            V5DaemonErrorCodeFixture::StoreCommitUncertain,
+            "store_commit_uncertain",
+            ErrorCode::StoreCommitUncertain,
         ),
     ];
     for (code, wire, _) in error_code_cases {
