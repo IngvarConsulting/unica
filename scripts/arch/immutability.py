@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -110,6 +111,125 @@ def _split(text: str) -> tuple[dict, str]:
         return _REGISTRY.parse_front_matter(text)
     except ValueError:
         return {}, text
+
+
+# Свидетельство можно перенаправить, но только вслед за исчезнувшим адресом.
+# Одно имя, за которым стояла обёртка, вызывавшая настоящие проверки, законно
+# раскрывается в список этих проверок: обещание записи от этого не слабеет, а
+# перестаёт держаться на функции, которая лишь повторяла уже сделанную работу.
+# Опортунистическая подмена рабочего адреса под это не подпадает — старый адрес
+# обязан исчезнуть из дерева.
+EVIDENCE_FIELDS = ("check", "realized")
+_CALL = re.compile(r"^\s*(?:crate::)?(?:[a-z_0-9]+::)*([a-z_0-9]+)\(\s*\)\s*;", re.M)
+
+
+def _declaration_in(text: str, name: str) -> bool:
+    return re.search(rf"\bfn\s+{re.escape(name)}\s*[(<]", text) is not None
+
+
+def _body_at(text: str, name: str) -> str | None:
+    found = re.search(rf"\bfn\s+{re.escape(name)}\s*\(", text)
+    if not found:
+        return None
+    start = text.index("{", found.end())
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1 : index]
+    return None
+
+
+def _covered_names(repo: Path, base_ref: str, reference: str, pool: set[str]) -> set[str]:
+    """Проверки, которые старый адрес приводил в исполнение.
+
+    Разворачивается только то, что этой же правкой исчезло из дерева: раз
+    обёртки больше нет, названные ею проверки поднимаются в запись. Всё, что
+    в дереве осталось, — лист, и его запись обязана назвать сама.
+    """
+    path_text, _, name = reference.partition("::")
+    sources: dict[str, str] = {}
+    for candidate in {path_text, *pool}:
+        try:
+            sources[candidate] = _git(repo, "show", f"{base_ref}:{candidate}")
+        except subprocess.CalledProcessError:
+            continue
+    if path_text not in sources:
+        return set()
+
+    def survives(declaration: str) -> bool:
+        for candidate in {path_text, *pool}:
+            current = repo / candidate
+            if current.is_file() and _declaration_in(
+                current.read_text(encoding="utf-8"), declaration
+            ):
+                return True
+        return False
+
+    def host_of(declaration: str) -> str | None:
+        return next(
+            (file for file, text in sources.items() if _body_at(text, declaration) is not None),
+            None,
+        )
+
+    seen: set[tuple[str, str]] = set()
+    leaves: set[str] = set()
+    pending = [(path_text, name)]
+    while pending:
+        where, what = pending.pop()
+        if (where, what) in seen:
+            continue
+        seen.add((where, what))
+        body = _body_at(sources.get(where, ""), what)
+        calls = _CALL.findall(body) if body is not None else []
+        if not calls:
+            leaves.add(what)
+            continue
+        for called in calls:
+            host = host_of(called)
+            if host is None or survives(called):
+                leaves.add(called)
+            else:
+                pending.append((host, called))
+    return leaves
+
+
+def _is_evidence_repoint(repo: Path, base_ref: str, before: str, after: str) -> bool:
+    """Правка сводится к раскрытию исчезнувшего адреса в его составляющие."""
+    old_props, old_body = _split(before)
+    new_props, new_body = _split(after)
+    if old_body != new_body or set(old_props) != set(new_props):
+        return False
+    changed = {key for key in old_props if old_props[key] != new_props[key]}
+    if not changed or any(key not in EVIDENCE_FIELDS for key in changed):
+        return False
+
+    for key in changed:
+        old_names = _REGISTRY.evidence_names(old_props[key])
+        new_names = _REGISTRY.evidence_names(new_props[key])
+        if len(old_names) != 1 or len(new_names) < 2:
+            return False
+        old_reference = old_names[0]
+        old_path, _, old_declaration = old_reference.partition("::")
+        current = repo / old_path
+        # Старый адрес либо исчез вместе с обёрткой, либо уцелел и тогда обязан
+        # остаться в списке: обещание расширяется, а не подменяется.
+        if (
+            current.is_file()
+            and _declaration_in(current.read_text(encoding="utf-8"), old_declaration)
+            and old_reference not in new_names
+        ):
+            return False
+        pool = {reference.partition("::")[0] for reference in new_names}
+        covered = _covered_names(repo, base_ref, old_reference, pool)
+        if not covered:
+            return False
+        if not covered <= {reference.partition("::")[2] for reference in new_names}:
+            return False
+    return True
 
 
 def _is_recordable_only(before: str, after: str) -> bool:
@@ -341,13 +461,18 @@ def inspect(repo: Path, base_ref: str) -> Verdict:
             continue
 
         if path.startswith("arch/decisions/"):
-            if not _is_recordable_only(before, after):
+            if not _is_recordable_only(before, after) and not _is_evidence_repoint(
+                repo, base_ref, before, after
+            ):
                 offenders.append(f"{path}: продуктовое решение отредактировано, а не заменено")
             continue
 
         # Инвариант и контракт: правка законна, если этой же правкой заведено
         # решение, на которое запись теперь и ссылается. Существующее основание
         # не годится — оно писалось раньше и этой перемены не предвидело.
+        if _is_evidence_repoint(repo, base_ref, before, after):
+            continue
+
         ground = _split(after)[0].get("decision")
         introduced_ground = introduced.get(ground)
         if introduced_ground is None:

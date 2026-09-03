@@ -3526,20 +3526,6 @@ mod tests {
     }
 
     #[test]
-    fn owner_version_read_write_gate_is_complete() {
-        newer_dump_warns_for_read_only_with_roadmap_copy();
-        mxl_info_warns_old_external_source_set_via_owner_descriptor();
-        missing_root_version_is_classified_as_1_0();
-        versionless_known_standalone_form_is_classified_as_1_0_owner();
-        dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
-        version_owning_target_cannot_hide_behind_supported_source_set_owner();
-        xdto_guard_empty_handler_resolution_is_a_contract_error();
-        valid_standalone_mxl_without_owner_version_is_not_an_old_dump();
-        unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog();
-        crate::infrastructure::platform_xml_owner::tests::equal_depth_source_set_owners_are_ambiguous_for_existing_and_new_outputs();
-    }
-
-    #[test]
     fn aggregated_format_evidence_is_reentrant_under_parallel_test_execution() {
         let workers = (0..8)
             .map(|_| {
@@ -3662,7 +3648,6 @@ mod tests {
     #[test]
     fn single_writable_platform_xml_profile_decision_is_fully_realized() {
         single_writable_platform_xml_profile_is_exact();
-        owner_version_read_write_gate_is_complete();
         native_mutation_surface_and_format_refusal_are_exact();
     }
 

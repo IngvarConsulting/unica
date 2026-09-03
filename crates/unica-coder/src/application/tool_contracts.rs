@@ -5361,18 +5361,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Registry-facing falsifier for the complete public selector bridge.
-    /// The component tests stay independently runnable, while this name binds
-    /// one architecture record to publication, exclusivity and acceptance for
-    /// every bridged reader.
-    #[test]
-    fn bridged_reader_selector_schema_contract_is_complete() {
-        bridged_readers_publish_two_mutually_exclusive_selector_branches();
-        bridged_readers_refuse_two_selectors_at_once();
-        bridged_readers_still_refuse_a_call_with_no_selector();
-        bridged_readers_accept_either_selector_on_its_own();
-    }
-
     #[test]
     fn subject_reader_migration_inventory_is_complete() {
         let inventory = authoritative_reader_migration_inventory().collect::<Vec<_>>();

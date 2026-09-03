@@ -161,15 +161,3 @@ fn bridged_reader_outputs_are_identical_for_logical_and_physical_selectors() {
         parity_test();
     }
 }
-
-/// One registry-facing falsifier for every clause of selector-free tail
-/// insertion, whose public schema and write behavior live on opposite sides of
-/// the application/infrastructure boundary.
-#[test]
-fn tail_insert_public_and_write_contract_is_complete() {
-    crate::application::tool_contracts::tests::code_patch_tail_insert_public_contract_is_closed();
-    super::code::tests::code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat();
-    super::code::tests::code_patch_writes_the_first_body_of_an_empty_or_bom_only_module();
-    super::code::tests::code_patch_creates_a_module_file_the_platform_never_exported();
-    super::code::tests::code_patch_refuses_a_module_role_the_metadata_kind_never_owns();
-}

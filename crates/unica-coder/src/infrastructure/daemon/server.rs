@@ -5623,29 +5623,6 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
-    #[test]
-    pub(crate) fn actor_authenticated_source_profile_contract_is_complete() {
-        crate::infrastructure::workspace_actor::tests::same_name_root_changed_kind_rotates_actor_and_state_scope();
-        crate::infrastructure::workspace_actor::tests::same_name_root_changed_format_or_platform_profile_rotates_actor();
-        crate::infrastructure::workspace_actor::tests::workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots();
-        crate::infrastructure::workspace_actor::tests::duplicate_physical_root_names_are_rejected_as_ambiguous();
-        crate::infrastructure::workspace_actor::tests::duplicate_source_set_names_with_distinct_roots_are_rejected();
-        actor_authenticated_source_capability_contract_is_complete();
-        crate::infrastructure::workspace_actor::tests::remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state();
-        subsequent_daemon_invocation_after_same_root_kind_change_gets_new_actor_identity();
-        v13_daemon_rejects_unproved_edt_invalid_or_empty_platform_fallback();
-        hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once();
-    }
-
-    #[test]
-    pub(crate) fn actor_authenticated_source_capability_contract_is_complete() {
-        actor_read_source_capability_is_sealed_after_binding();
-        actor_read_authority_builder_uses_only_actor_bound_semantics();
-        provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile();
-        crate::infrastructure::workspace_actor::tests::capabilities_do_not_cross_distinct_actor_instances_with_equal_identity();
-        crate::infrastructure::workspace_actor::tests::workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication();
-    }
-
     struct ManualInvocationClock(Mutex<Instant>);
 
     impl ManualInvocationClock {
@@ -6124,16 +6101,6 @@ struct ActorLogicalReadLease {"#,
             accepted.is_empty(),
             "zero-fence publication accepted forbidden envelopes: {accepted:?}"
         );
-    }
-
-    #[test]
-    pub(crate) fn hidden_v13_logical_publication_contract_is_complete() {
-        crate::infrastructure::source_revision::tests::retained_final_confirmation_stabilization_contract_is_complete();
-        hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once();
-        review_invalid_logical_address_reaches_typed_bad_value_result();
-        valid_unknown_source_reaches_typed_provider_unavailable_without_scanning();
-        zero_fence_view_rejection_accepts_only_the_exact_canonical_envelope();
-        crate::infrastructure::workspace_actor::tests::logical_read_publication_lane_wait_honors_existing_cancellation_and_deadline();
     }
 
     struct BlockingService {

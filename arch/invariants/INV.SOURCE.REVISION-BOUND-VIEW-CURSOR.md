@@ -3,7 +3,10 @@ id: INV.SOURCE.REVISION-BOUND-VIEW-CURSOR
 status: active
 governs: product
 decision: DEC.2026-08-25.LOGICAL-READ-CORE-SLICE
-check: crates/unica-coder/src/application/result_store.rs::revision_bound_view_cursor_contract_is_complete
+check:
+  - crates/unica-coder/src/application/result_store.rs::opaque_view_cursor_retry_is_idempotent_and_bound_to_the_complete_question
+  - crates/unica-coder/src/application/result_store.rs::exact_revision_change_is_stale_but_tampering_and_expiry_are_invalid
+  - crates/unica-coder/src/application/result_store.rs::cursor_chain_is_refused_before_it_can_exceed_the_entry_bound
 scope: [app, product, source]
 ---
 
