@@ -3368,18 +3368,36 @@ impl V5ReceiptRuntime {
             .record_event(V5ReceiptRuntimeEventKind::ValidationEntered, batch_epoch_ms);
         self.telemetry
             .record_event(V5ReceiptRuntimeEventKind::AdmissionEntered, batch_epoch_ms);
-        let mut actor_bounds = Vec::with_capacity(work.len());
-        for ((_, invocation, _epoch_ms), _reservation) in work.iter().zip(&reservations) {
+        for _ in &work {
             self.telemetry.record_validation();
             self.telemetry.record_admission();
-            let actor_bound = self
-                .invocation_executor
-                .bind(invocation.clone())
-                .map_err(|_| {
-                    ReceiptLedgerError::Corrupt("direct load batch invocation did not bind")
-                })?;
-            actor_bounds.push(actor_bound);
         }
+        // The transport admits these calls concurrently. Keep every invocation's own validation
+        // and actor binding, but do not serialize that admission ahead of the durable writer
+        // batch. The scope joins every binding before the ledger can advance to ActorBound.
+        let actor_bounds = thread::scope(|scope| {
+            let bindings = work
+                .iter()
+                .map(|(_, invocation, _)| {
+                    scope.spawn(|| self.invocation_executor.bind(invocation.clone()))
+                })
+                .collect::<Vec<_>>();
+            bindings
+                .into_iter()
+                .map(|binding| {
+                    binding
+                        .join()
+                        .map_err(|_| {
+                            ReceiptLedgerError::Corrupt(
+                                "direct load batch invocation binding panicked",
+                            )
+                        })?
+                        .map_err(|_| {
+                            ReceiptLedgerError::Corrupt("direct load batch invocation did not bind")
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })?;
         let bound = self.receipt_ledger.bind_reserved_actor_batch(
             reservations
                 .iter()
