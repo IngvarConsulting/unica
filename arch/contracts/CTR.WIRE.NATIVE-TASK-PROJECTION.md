@@ -1,0 +1,29 @@
+---
+id: CTR.WIRE.NATIVE-TASK-PROJECTION
+status: active
+governs: product
+decision: DEC.2026-08-24.NATIVE-TASK-PROJECTION-SLICE
+check: crates/unica-coder/src/interfaces/mcp.rs::native_task_projection_contract_is_capability_gated_durable_and_replay_free
+scope: [wire]
+version: 1
+producer: crates/unica-coder/src/interfaces/task_projection.rs
+consumers: [host]
+---
+
+# SEP-2663 projection скрытого V13
+
+`tools/call` может вернуть `CreateTaskResult`; `tasks/get` возвращает
+`DetailedTask`, `tasks/cancel` — idempotent complete ack. `tasks/update` для
+существующей неистёкшей Task возвращает `task_input_not_supported`, а unknown,
+expired и noncanonical identity не маскируются. Task timestamps — стабильный
+ISO-8601 projection durable epoch values; TTL и poll interval также приходят из
+store; `updatedAt < createdAt` отклоняется. В `completed.result` лежит
+байт-в-байт тот же `CallToolResult`, что в direct-ответе: canonical JSON один раз
+находится в `structuredContent`, `content` пуст, а `isError`, `_meta` и
+`resultType` совпадают. Сериализованные `CallToolResult` и `DetailedTask` не
+превышают 8 MiB + 64 KiB; превышение возвращает закрытый `result_too_large`.
+
+`tasks/get`, `tasks/update` и `tasks/cancel` получают один absolute monotonic
+cutoff при входе во frontend, не позже 7000 мс + 125 мс от приёма запроса.
+Connect, handshake, request, response read и parse расходуют этот общий cutoff и
+не заменяют его отдельными окнами 125 мс.

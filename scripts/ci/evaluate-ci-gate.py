@@ -31,6 +31,7 @@ PACKAGE_JOBS = (
     "package-thin",
 )
 ASSESSMENT_JOB = "release-assessment"
+P0_PROOF_JOB = "p0-release-proof"
 PUBLISH_JOBS = (
     "publish-release-assets",
     "smoke-thin-plugin",
@@ -121,6 +122,11 @@ def expected_results(
     )
     expected.update({job: "success" if package_pipeline else "skipped" for job in PACKAGE_JOBS})
     expected[ASSESSMENT_JOB] = "success" if values["assessment_required"] else "skipped"
+    expected[P0_PROOF_JOB] = (
+        "success"
+        if values["assessment_required"] and (is_pr or is_manual)
+        else "skipped"
+    )
     expected["probe-thin-bootstrap"] = (
         "success" if package_pipeline and (is_pr or is_manual) else "skipped"
     )

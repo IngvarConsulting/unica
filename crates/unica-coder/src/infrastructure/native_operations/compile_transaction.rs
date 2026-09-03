@@ -23,17 +23,109 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::domain::source_revision::SourceRevision;
 use crate::infrastructure::platform::filesystem::{
     create_new_directory_child, file_identity, hard_link_count, metadata_is_link_or_reparse_point,
     open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
     prepare_file_for_removal, remove_identity_bound_empty_directory_child,
     remove_identity_bound_regular_child, rename_identity_bound_regular_child_no_replace,
     rename_no_replace, retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
+    RetainedChildCapability, RetainedDirectoryCapability, RetainedRegularFileCapability,
 };
+use crate::infrastructure::source_revision::PreparedRevisionReconciliation;
 use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::workspace_actor::{
+    retained_revision_publication_error, ApplyPublicationError, ApplyPublicationErrorKind,
+    ApplyWriterAuthority, RetainedApplyFinalGate, WorkspaceCacheParticipantAuthority,
+};
 
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RetainedApplyObservedEvent {
+    Source(PathBuf),
+    EagerMetadata(PathBuf),
+    RevisionRecord(PathBuf),
+    StateMarker(PathBuf),
+    Rollback(PathBuf),
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetainedApplyFailpoint {
+    Source(usize),
+    EagerMetadata(usize),
+    RevisionRecord,
+    StateMarker,
+    AfterAllPostimages,
+}
+
+#[cfg(test)]
+thread_local! {
+    static RETAINED_APPLY_OBSERVED_EVENTS: RefCell<Vec<RetainedApplyObservedEvent>> = const { RefCell::new(Vec::new()) };
+    static RETAINED_APPLY_FAILPOINT: RefCell<Option<RetainedApplyFailpoint>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_retained_apply_observed_events() -> Vec<RetainedApplyObservedEvent> {
+    RETAINED_APPLY_OBSERVED_EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()))
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_apply_failpoint(failpoint: RetainedApplyFailpoint) {
+    RETAINED_APPLY_FAILPOINT.with(|slot| *slot.borrow_mut() = Some(failpoint));
+}
+
+#[cfg(test)]
+fn retained_apply_fail_after(event: &RetainedApplyObservedEvent) -> Result<(), String> {
+    RETAINED_APPLY_FAILPOINT.with(|slot| {
+        let mut pending = slot.borrow_mut();
+        let Some(failpoint) = pending.as_mut() else {
+            return Ok(());
+        };
+        let triggered = match (failpoint, event) {
+            (RetainedApplyFailpoint::Source(remaining), RetainedApplyObservedEvent::Source(_)) => {
+                *remaining = remaining.saturating_sub(1);
+                *remaining == 0
+            }
+            (
+                RetainedApplyFailpoint::EagerMetadata(remaining),
+                RetainedApplyObservedEvent::EagerMetadata(_),
+            ) => {
+                *remaining = remaining.saturating_sub(1);
+                *remaining == 0
+            }
+            (
+                RetainedApplyFailpoint::RevisionRecord,
+                RetainedApplyObservedEvent::RevisionRecord(_),
+            )
+            | (RetainedApplyFailpoint::StateMarker, RetainedApplyObservedEvent::StateMarker(_)) => {
+                true
+            }
+            _ => false,
+        };
+        if triggered {
+            pending.take();
+            Err("injected retained apply failure after publication".to_string())
+        } else {
+            Ok(())
+        }
+    })
+}
+
+#[cfg(test)]
+fn retained_apply_fail_after_all_postimages() -> Result<(), String> {
+    RETAINED_APPLY_FAILPOINT.with(|slot| {
+        if *slot.borrow() == Some(RetainedApplyFailpoint::AfterAllPostimages) {
+            slot.borrow_mut().take();
+            Err("injected retained apply failure after all postimages".to_string())
+        } else {
+            Ok(())
+        }
+    })
+}
 
 #[cfg(test)]
 use crate::infrastructure::platform::filesystem::replace_file_atomically;
@@ -88,6 +180,160 @@ pub(crate) struct CommitReport {
     /// Cleanup failures do not invalidate already-validated published bytes.
     /// They are surfaced so a caller can report an orphaned recovery copy explicitly.
     pub(crate) cleanup_warnings: Vec<String>,
+    /// Retained-apply cleanup has a closed diagnostic shape so the workspace
+    /// actor can surface actionable logical context without exposing a root.
+    pub(crate) retained_apply_cleanup_diagnostics: Vec<RetainedApplyCleanupDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedApplyCleanupDiagnostic {
+    logical_target: PathBuf,
+    artifact_name: OsString,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetainedApplyValidationErrorKind {
+    ContainmentIdentity,
+    AbsentChainOccupied,
+    UnsupportedProvider,
+    Invariant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedApplyValidationError {
+    kind: RetainedApplyValidationErrorKind,
+    message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetainedApplyPublishErrorKind {
+    ContainmentIdentity,
+    Provider,
+    Invariant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedApplyPublishError {
+    kind: RetainedApplyPublishErrorKind,
+    message: String,
+}
+
+impl RetainedApplyPublishError {
+    fn new(kind: RetainedApplyPublishErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> RetainedApplyPublishErrorKind {
+        self.kind
+    }
+
+    fn provider(message: impl Into<String>) -> Self {
+        Self::new(RetainedApplyPublishErrorKind::Provider, message)
+    }
+
+    fn containment(message: impl Into<String>) -> Self {
+        Self::new(RetainedApplyPublishErrorKind::ContainmentIdentity, message)
+    }
+}
+
+impl From<RetainedApplyValidationError> for RetainedApplyPublishError {
+    fn from(error: RetainedApplyValidationError) -> Self {
+        let kind = match error.kind() {
+            RetainedApplyValidationErrorKind::ContainmentIdentity
+            | RetainedApplyValidationErrorKind::AbsentChainOccupied => {
+                RetainedApplyPublishErrorKind::ContainmentIdentity
+            }
+            RetainedApplyValidationErrorKind::UnsupportedProvider => {
+                RetainedApplyPublishErrorKind::Provider
+            }
+            RetainedApplyValidationErrorKind::Invariant => RetainedApplyPublishErrorKind::Invariant,
+        };
+        Self::new(kind, error.to_string())
+    }
+}
+
+impl std::fmt::Display for RetainedApplyPublishError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RetainedApplyPublishError {}
+
+fn retained_apply_publish_publication_error(
+    error: RetainedApplyPublishError,
+) -> ApplyPublicationError {
+    let kind = match error.kind() {
+        RetainedApplyPublishErrorKind::ContainmentIdentity => {
+            ApplyPublicationErrorKind::ContainmentIdentity
+        }
+        RetainedApplyPublishErrorKind::Provider => {
+            ApplyPublicationErrorKind::ProviderPostvalidation
+        }
+        RetainedApplyPublishErrorKind::Invariant => ApplyPublicationErrorKind::Invariant,
+    };
+    ApplyPublicationError::new(kind, error.to_string())
+}
+
+fn retained_apply_revision_transient_publication_error(
+    error: RetainedApplyRevisionTransientError,
+) -> ApplyPublicationError {
+    let kind = match error.kind() {
+        RetainedApplyRevisionTransientErrorKind::ContainmentIdentity => {
+            ApplyPublicationErrorKind::ContainmentIdentity
+        }
+        RetainedApplyRevisionTransientErrorKind::Provider => {
+            ApplyPublicationErrorKind::ProviderPostvalidation
+        }
+        RetainedApplyRevisionTransientErrorKind::Invariant => ApplyPublicationErrorKind::Invariant,
+    };
+    ApplyPublicationError::new(kind, error.to_string())
+}
+
+impl RetainedApplyValidationError {
+    fn new(kind: RetainedApplyValidationErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> RetainedApplyValidationErrorKind {
+        self.kind
+    }
+}
+
+impl std::fmt::Display for RetainedApplyValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RetainedApplyValidationError {}
+
+fn retained_apply_validation_publication_error(
+    error: RetainedApplyValidationError,
+) -> ApplyPublicationError {
+    let kind = match error.kind() {
+        RetainedApplyValidationErrorKind::ContainmentIdentity
+        | RetainedApplyValidationErrorKind::AbsentChainOccupied => {
+            ApplyPublicationErrorKind::ContainmentIdentity
+        }
+        RetainedApplyValidationErrorKind::UnsupportedProvider => {
+            ApplyPublicationErrorKind::ProviderPostvalidation
+        }
+        RetainedApplyValidationErrorKind::Invariant => ApplyPublicationErrorKind::Invariant,
+    };
+    ApplyPublicationError::new(kind, error.to_string())
+}
+
+impl RetainedApplyCleanupDiagnostic {
+    pub(in crate::infrastructure) fn into_parts(self) -> (PathBuf, OsString) {
+        (self.logical_target, self.artifact_name)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +439,12 @@ pub(crate) enum DirectoryMembershipSelector {
     /// Every direct regular file or directory. This binds recursive scanner
     /// topology one directory at a time without following links.
     AllDirectEntries,
+    /// Direct children that are real directories. A container whose *listing*
+    /// decided a result — source-set autodetection derives names from the direct
+    /// child directories of an extension container — binds exactly that: files,
+    /// links and other entry types beside them are not members, so their churn
+    /// is not a conflict and their presence does not make the guard unusable.
+    DirectChildDirectories,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -252,6 +504,36 @@ pub(crate) struct CompileTransaction {
     directory_membership_guards: BTreeMap<PathBuf, DirectoryMembershipGuard>,
     removals: Vec<PlannedRemoval>,
     planned_path_identities: BTreeMap<PathBuf, PlannedPathKind>,
+    retained_apply: Vec<PlannedRetainedApplyChange>,
+    retained_apply_authority: Option<ApplyWriterAuthority>,
+    retained_apply_root: Option<Arc<RetainedDirectoryCapability>>,
+    retained_apply_cache_root: Option<Arc<RetainedDirectoryCapability>>,
+    retained_apply_cache_start: Option<usize>,
+}
+
+#[derive(Debug)]
+struct PlannedRetainedApplyChange {
+    root: Arc<RetainedDirectoryCapability>,
+    relative_path: PathBuf,
+    ancestor: RetainedDirectoryCapability,
+    missing_parent_chain: Vec<OsString>,
+    name: OsString,
+    original: Option<Vec<u8>>,
+    current: Option<Vec<u8>>,
+    original_file:
+        Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
+}
+
+pub(super) struct RetainedApplyChangeBinding {
+    pub(super) root: Arc<RetainedDirectoryCapability>,
+    pub(super) relative_path: PathBuf,
+    pub(super) ancestor: RetainedDirectoryCapability,
+    pub(super) missing_parent_chain: Vec<OsString>,
+    pub(super) name: OsString,
+    pub(super) original: Option<Vec<u8>>,
+    pub(super) current: Option<Vec<u8>>,
+    pub(super) original_file:
+        Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,6 +546,448 @@ pub(crate) enum PlannedChangeKind {
 impl CompileTransaction {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(super) fn bind_retained_apply_authority(
+        &mut self,
+        authority: &ApplyWriterAuthority,
+    ) -> Result<(), String> {
+        match &self.retained_apply_authority {
+            Some(bound) if bound != authority => {
+                Err("retained apply plans cannot mix actor authorities".to_string())
+            }
+            Some(_) => Ok(()),
+            None => {
+                self.retained_apply_authority = Some(authority.clone());
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn bind_retained_apply_root(
+        &mut self,
+        root: Arc<RetainedDirectoryCapability>,
+        authority: &ApplyWriterAuthority,
+    ) -> Result<(), String> {
+        self.bind_retained_apply_authority(authority)?;
+        match &self.retained_apply_root {
+            Some(bound) if bound.identity() != root.identity() => {
+                Err("one retained apply transaction cannot mix source roots".to_string())
+            }
+            Some(_) => Ok(()),
+            None => {
+                self.retained_apply_root = Some(root);
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn bind_retained_apply_change(
+        &mut self,
+        binding: RetainedApplyChangeBinding,
+        authority: &ApplyWriterAuthority,
+    ) -> Result<(), String> {
+        let RetainedApplyChangeBinding {
+            root,
+            relative_path,
+            ancestor,
+            missing_parent_chain,
+            name,
+            original,
+            current,
+            original_file,
+        } = binding;
+        validate_strict_relative_file_path(&relative_path)?;
+        if original.is_some() != original_file.is_some() {
+            return Err("retained apply preimage bytes and file authority disagree".to_string());
+        }
+        self.bind_retained_apply_root(Arc::clone(&root), authority)?;
+        if self.retained_apply.iter().any(|entry| {
+            entry.root.identity() == root.identity() && entry.relative_path == relative_path
+        }) {
+            return Err(format!(
+                "duplicate retained apply target: {}",
+                relative_path.display()
+            ));
+        }
+        if self
+            .retained_apply
+            .iter()
+            .any(|entry| entry.root.identity() != root.identity())
+        {
+            return Err("one retained apply transaction cannot mix source roots".to_string());
+        }
+        self.retained_apply.push(PlannedRetainedApplyChange {
+            root,
+            relative_path,
+            ancestor,
+            missing_parent_chain,
+            name,
+            original,
+            current,
+            original_file,
+        });
+        self.retained_apply
+            .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        Ok(())
+    }
+
+    pub(in crate::infrastructure) fn close_with_workspace_cache_participant(
+        mut self,
+        cache: CompileTransaction,
+        participant: &WorkspaceCacheParticipantAuthority,
+    ) -> Result<Self, String> {
+        let authority = participant.writer_authority();
+        if self.retained_apply_cache_start.is_some() || self.retained_apply_cache_root.is_some() {
+            return Err(
+                "retained apply transaction already has a workspace-cache participant".to_string(),
+            );
+        }
+        if cache.retained_apply_cache_start.is_some() || cache.retained_apply_cache_root.is_some() {
+            return Err(
+                "workspace-cache participant must be an unclosed retained transaction".to_string(),
+            );
+        }
+        if self.retained_apply_authority.as_ref() != Some(authority)
+            || cache.retained_apply_authority.as_ref() != Some(authority)
+        {
+            return Err(
+                "source and workspace-cache participants require one actor authority".to_string(),
+            );
+        }
+        let source_root = self
+            .retained_apply_root
+            .as_ref()
+            .ok_or_else(|| "source participant requires one explicit retained root".to_string())?;
+        let cache_root = cache.retained_apply_root.as_ref().ok_or_else(|| {
+            "workspace-cache participant requires one explicit retained root".to_string()
+        })?;
+        if cache_root.identity() != participant.anchor_identity() {
+            return Err(
+                "workspace-cache participant root does not match actor-captured authority"
+                    .to_string(),
+            );
+        }
+        if source_root.identity() == cache_root.identity() {
+            let relative_cache = participant
+                .logical_root()
+                .strip_prefix(source_root.path())
+                .map_err(|_| {
+                    "source and workspace-cache participants physically alias".to_string()
+                })?;
+            if relative_cache.as_os_str().is_empty()
+                || self.retained_apply.iter().any(|entry| {
+                    entry.relative_path.starts_with(relative_cache)
+                        || relative_cache.starts_with(&entry.relative_path)
+                })
+                || cache
+                    .retained_apply
+                    .iter()
+                    .any(|entry| !entry.relative_path.starts_with(relative_cache))
+            {
+                return Err(
+                    "source and workspace-cache participant targets physically overlap".to_string(),
+                );
+            }
+        }
+        let cache_start = self.retained_apply.len();
+        self.retained_apply.extend(cache.retained_apply);
+        self.retained_apply_cache_root = cache.retained_apply_root;
+        self.retained_apply_cache_start = Some(cache_start);
+        Ok(self)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn validate_retained_for_apply(&self) -> Result<(), String> {
+        self.validate_retained_for_apply_typed()
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn validate_retained_for_apply_typed(
+        &self,
+    ) -> Result<(), RetainedApplyValidationError> {
+        #[cfg(test)]
+        if TEST_RETAINED_APPLY_VALIDATION_PROVIDER_FAILURE.with(|slot| slot.replace(false)) {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::UnsupportedProvider,
+                "injected retained apply provider validation failure",
+            ));
+        }
+        if self.retained_apply.is_empty() {
+            return Ok(());
+        }
+        if !self.creates.is_empty()
+            || !self.registrations.is_empty()
+            || !self.read_guards.is_empty()
+            || !self.absence_guards.is_empty()
+            || !self.directory_membership_guards.is_empty()
+            || !self.removals.is_empty()
+        {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::Invariant,
+                "retained apply entries cannot mix with ambient transaction entries",
+            ));
+        }
+        for entry in &self.retained_apply {
+            entry.root.validate_named_identity().map_err(|error| {
+                RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::ContainmentIdentity,
+                    format!("retained apply source-root physical identity changed: {error}"),
+                )
+            })?;
+            validate_retained_apply_preimage_typed(entry)?;
+            if let Some(bytes) = &entry.current {
+                validate_xml_when_applicable(&entry.root.path().join(&entry.relative_path), bytes)
+                    .map_err(|error| {
+                        RetainedApplyValidationError::new(
+                            RetainedApplyValidationErrorKind::Invariant,
+                            error,
+                        )
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(in crate::infrastructure) fn commit_retained_apply_with<T>(
+        self,
+        authority: ApplyWriterAuthority,
+        mut checkpoint: impl FnMut() -> Result<(), String>,
+        post_validation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<(CommitReport, T), String> {
+        if self.retained_apply_authority.as_ref() != Some(&authority) {
+            return Err("retained apply commit requires its actor-issued authority".to_string());
+        }
+        self.validate_retained_for_apply()?;
+        checkpoint()?;
+        let mut published = Vec::with_capacity(self.retained_apply.len());
+        let mut created_directories = Vec::new();
+        let operation = (|| {
+            for (_index, entry) in self.retained_apply.iter().enumerate() {
+                checkpoint()?;
+                publish_retained_apply_change(entry, &mut published, &mut created_directories)
+                    .map_err(|error| error.to_string())?;
+                #[cfg(test)]
+                RETAINED_APPLY_OBSERVED_EVENTS.with(|events| {
+                    let event = if self
+                        .retained_apply_cache_start
+                        .is_some_and(|cache_start| _index >= cache_start)
+                    {
+                        if entry.relative_path.ends_with("state.json") {
+                            RetainedApplyObservedEvent::StateMarker(entry.relative_path.clone())
+                        } else if entry.relative_path.components().any(|component| {
+                            component.as_os_str() == OsStr::new("source-revisions")
+                        }) {
+                            RetainedApplyObservedEvent::RevisionRecord(entry.relative_path.clone())
+                        } else {
+                            RetainedApplyObservedEvent::EagerMetadata(entry.relative_path.clone())
+                        }
+                    } else {
+                        RetainedApplyObservedEvent::Source(entry.relative_path.clone())
+                    };
+                    events.borrow_mut().push(event);
+                });
+            }
+            for entry in &self.retained_apply {
+                checkpoint()?;
+                validate_retained_apply_postimage(entry, &entry.current, &created_directories)
+                    .map_err(|error| error.to_string())?;
+            }
+            #[cfg(test)]
+            run_retained_apply_before_post_validation_hook();
+            let validated = post_validation()?;
+            let mut report = CommitReport::default();
+            finalize_retained_apply_recovery(&mut published, &mut report);
+            for entry in &self.retained_apply {
+                let path = entry.root.path().join(&entry.relative_path);
+                match (&entry.original, &entry.current) {
+                    (None, Some(_)) => report.created.push(path),
+                    (Some(before), Some(after)) if before != after => report.updated.push(path),
+                    (Some(_), Some(_)) => {}
+                    (Some(_), None) | (None, None) => {}
+                }
+            }
+            Ok((report, validated))
+        })();
+        match operation {
+            Ok(result) => Ok(result),
+            Err(primary) => {
+                #[cfg(test)]
+                run_retained_apply_before_rollback_hook();
+                let rollback_errors =
+                    rollback_retained_apply(&mut published, &mut created_directories);
+                if rollback_errors.is_empty() {
+                    Err(primary)
+                } else {
+                    Err(format!(
+                        "{primary}; retained apply rollback encountered: {}",
+                        rollback_errors.join("; ")
+                    ))
+                }
+            }
+        }
+    }
+
+    pub(in crate::infrastructure) fn commit_retained_apply<R>(
+        self,
+        authority: ApplyWriterAuthority,
+        reconciliation: PreparedRevisionReconciliation,
+        final_gate: RetainedApplyFinalGate<'_, R>,
+    ) -> Result<(CommitReport, SourceRevision), ApplyPublicationError> {
+        if self.retained_apply_authority.as_ref() != Some(&authority) {
+            return Err(ApplyPublicationError::new(
+                ApplyPublicationErrorKind::Invariant,
+                "retained apply commit requires its actor-issued authority",
+            ));
+        }
+        let cache_start = self.retained_apply_cache_start.ok_or_else(|| {
+            ApplyPublicationError::new(
+                ApplyPublicationErrorKind::Invariant,
+                "retained apply commit requires a closed workspace-cache participant",
+            )
+        })?;
+        self.validate_retained_for_apply_typed()
+            .map_err(retained_apply_validation_publication_error)?;
+        final_gate.checkpoint("prepared apply commit")?;
+        let active_revision = reconciliation
+            .activate(final_gate.deadline(), final_gate.cancellation())
+            .map_err(retained_revision_publication_error)?;
+        let mut published = Vec::with_capacity(self.retained_apply.len());
+        let mut created_directories = Vec::new();
+        let operation = (|| {
+            for entry in &self.retained_apply[..cache_start] {
+                final_gate.checkpoint("prepared apply source publication")?;
+                publish_retained_apply_change(entry, &mut published, &mut created_directories)
+                    .map_err(retained_apply_publish_publication_error)?;
+                #[cfg(test)]
+                {
+                    let event = RetainedApplyObservedEvent::Source(entry.relative_path.clone());
+                    RETAINED_APPLY_OBSERVED_EVENTS
+                        .with(|events| events.borrow_mut().push(event.clone()));
+                    retained_apply_fail_after(&event).map_err(|error| {
+                        ApplyPublicationError::new(
+                            ApplyPublicationErrorKind::ProviderPostvalidation,
+                            error,
+                        )
+                    })?;
+                }
+            }
+            #[cfg(test)]
+            run_retained_apply_before_revision_validation_hook();
+            {
+                let transients = RetainedApplyRevisionTransients::issue(
+                    active_revision.retained_root(),
+                    &published,
+                )
+                .map_err(retained_apply_revision_transient_publication_error)?;
+                active_revision
+                    .validate_published_source(
+                        &transients,
+                        final_gate.deadline(),
+                        final_gate.cancellation(),
+                    )
+                    .map_err(retained_revision_publication_error)?;
+            }
+            for entry in &self.retained_apply[cache_start..] {
+                final_gate.checkpoint("prepared apply cache publication")?;
+                publish_retained_apply_change(entry, &mut published, &mut created_directories)
+                    .map_err(retained_apply_publish_publication_error)?;
+                #[cfg(test)]
+                {
+                    let event =
+                        if entry.relative_path.ends_with("state.json") {
+                            RetainedApplyObservedEvent::StateMarker(entry.relative_path.clone())
+                        } else if entry.relative_path.components().any(|component| {
+                            component.as_os_str() == OsStr::new("source-revisions")
+                        }) {
+                            RetainedApplyObservedEvent::RevisionRecord(entry.relative_path.clone())
+                        } else {
+                            RetainedApplyObservedEvent::EagerMetadata(entry.relative_path.clone())
+                        };
+                    RETAINED_APPLY_OBSERVED_EVENTS
+                        .with(|events| events.borrow_mut().push(event.clone()));
+                    retained_apply_fail_after(&event).map_err(|error| {
+                        ApplyPublicationError::new(
+                            ApplyPublicationErrorKind::ProviderPostvalidation,
+                            error,
+                        )
+                    })?;
+                }
+            }
+            #[cfg(test)]
+            run_retained_apply_before_postimages_hook();
+            for entry in &self.retained_apply {
+                final_gate.checkpoint("prepared apply postimage validation")?;
+                validate_retained_apply_postimage(entry, &entry.current, &created_directories)
+                    .map_err(retained_apply_publish_publication_error)?;
+            }
+            #[cfg(test)]
+            retained_apply_fail_after_all_postimages().map_err(|error| {
+                ApplyPublicationError::new(ApplyPublicationErrorKind::ProviderPostvalidation, error)
+            })?;
+            #[cfg(test)]
+            run_retained_apply_before_post_validation_hook();
+            let published_replacements = self.retained_apply[..cache_start]
+                .iter()
+                .filter_map(|entry| match (&entry.original, &entry.current) {
+                    (Some(_), Some(current)) => Some((
+                        entry.root.path().join(&entry.relative_path),
+                        current.clone(),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            final_gate.validate_after_publication(&published_replacements)?;
+            let revision = active_revision
+                .install()
+                .map_err(retained_revision_publication_error)?;
+            let mut report = CommitReport::default();
+            finalize_retained_apply_recovery(&mut published, &mut report);
+            for entry in &self.retained_apply {
+                let path = entry.root.path().join(&entry.relative_path);
+                match (&entry.original, &entry.current) {
+                    (None, Some(_)) => report.created.push(path),
+                    (Some(before), Some(after)) if before != after => report.updated.push(path),
+                    (Some(_), Some(_)) => {}
+                    (Some(_), None) | (None, None) => {}
+                }
+            }
+            Ok((report, revision))
+        })();
+        match operation {
+            Ok(result) => Ok(result),
+            Err(primary) => {
+                #[cfg(test)]
+                run_retained_apply_before_rollback_hook();
+                let rollback_errors =
+                    rollback_retained_apply(&mut published, &mut created_directories);
+                if rollback_errors.is_empty() {
+                    Err(primary)
+                } else {
+                    Err(ApplyPublicationError::new(
+                        ApplyPublicationErrorKind::RollbackIncomplete,
+                        format!(
+                            "{primary}; retained apply rollback encountered: {}",
+                            rollback_errors.join("; ")
+                        ),
+                    ))
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_planned_change_count_for_test(&self) -> usize {
+        self.retained_apply.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_role_root_counts_for_test(&self) -> (usize, usize) {
+        (
+            usize::from(self.retained_apply_root.is_some()),
+            usize::from(self.retained_apply_cache_root.is_some()),
+        )
     }
 
     /// Whether an existing exact plan already protects this path with the
@@ -807,7 +1531,8 @@ impl CompileTransaction {
 
     #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.creates.is_empty()
+        self.retained_apply.is_empty()
+            && self.creates.is_empty()
             && self.read_guards.is_empty()
             && self.absence_guards.is_empty()
             && self.directory_membership_guards.is_empty()
@@ -985,6 +1710,11 @@ impl CompileTransaction {
     where
         F: FnOnce() -> Result<(), CommitFailure>,
     {
+        if self.retained_apply_authority.is_some() || !self.retained_apply.is_empty() {
+            return Err(CommitFailure::provider(
+                "retained apply plans require the actor-owned commit path",
+            ));
+        }
         let mut state = PublishState::default();
         self.recheck_planned_path_identities("before parent preparation")
             .map_err(CommitFailure::concurrent)?;
@@ -1352,6 +2082,7 @@ impl CompileTransaction {
                 created: self.planned_created_paths(),
                 updated: self.planned_updated_paths(),
                 cleanup_warnings: Vec::new(),
+                retained_apply_cleanup_diagnostics: Vec::new(),
             })
         })();
 
@@ -1574,6 +2305,951 @@ impl CompileTransaction {
     }
 }
 
+fn validate_strict_relative_file_path(relative: &Path) -> Result<(), String> {
+    use std::path::Component;
+
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "retained apply target must contain only normal relative components: {}",
+            relative.display()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_retained_apply_preimage_typed(
+    entry: &PlannedRetainedApplyChange,
+) -> Result<(), RetainedApplyValidationError> {
+    validate_retained_apply_state_typed(entry, &entry.original, true)
+}
+
+fn validate_retained_apply_state_typed(
+    entry: &PlannedRetainedApplyChange,
+    expected: &Option<Vec<u8>>,
+    validate_root_name: bool,
+) -> Result<(), RetainedApplyValidationError> {
+    if validate_root_name {
+        entry.root.validate_named_identity().map_err(|error| {
+            RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ContainmentIdentity,
+                format!("retained apply source-root physical identity changed: {error}"),
+            )
+        })?;
+    }
+    if !entry.missing_parent_chain.is_empty() {
+        entry.ancestor.validate_named_identity().map_err(|error| {
+            RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ContainmentIdentity,
+                format!(
+                    "retained apply nearest ancestor link/reparse route or physical identity changed {}: {error}",
+                    entry.relative_path.display()
+                ),
+            )
+        })?;
+        if expected.is_some() {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::Invariant,
+                format!(
+                    "retained apply staging invariant requires an absent file below an absent parent: {}",
+                    entry.relative_path.display()
+                ),
+            ));
+        }
+        return match entry
+            .ancestor
+            .retain_immediate_child_nofollow(&entry.missing_parent_chain[0])
+        {
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Ok(RetainedChildCapability::ReparsePoint) => Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ContainmentIdentity,
+                format!(
+                    "retained apply absent parent chain became a link/reparse point: {}",
+                    entry.relative_path.display()
+                ),
+            )),
+            Ok(_) => Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::AbsentChainOccupied,
+                format!(
+                    "retained apply absent parent chain is occupied: {}",
+                    entry.relative_path.display()
+                ),
+            )),
+            Err(error) => Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::UnsupportedProvider,
+                format!(
+                    "retained apply absent parent chain cannot be inspected {}: {error}",
+                    entry.relative_path.display()
+                ),
+            )),
+        };
+    }
+    validate_retained_apply_state_at_parent_typed(entry, &entry.ancestor, expected)
+}
+
+fn validate_retained_apply_state_at_parent_typed(
+    entry: &PlannedRetainedApplyChange,
+    parent: &RetainedDirectoryCapability,
+    expected: &Option<Vec<u8>>,
+) -> Result<(), RetainedApplyValidationError> {
+    parent.validate_named_identity().map_err(|error| {
+        RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ContainmentIdentity,
+            format!(
+                "retained apply target parent link/reparse route or physical identity changed {}: {error}",
+                entry.relative_path.display()
+            ),
+        )
+    })?;
+    let observed = match parent.retain_immediate_child_nofollow(&entry.name) {
+        Ok(RetainedChildCapability::RegularFile(file)) => {
+            if file.hard_link_count().map_err(|error| {
+                RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::UnsupportedProvider,
+                    format!("retained apply hard-link count cannot be read: {error}"),
+                )
+            })? != 1
+            {
+                return Err(RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::ContainmentIdentity,
+                    format!(
+                        "retained apply target has a hard-link alias: {}",
+                        entry.relative_path.display()
+                    ),
+                ));
+            }
+            Some(file.read_bounded(32 * 1024 * 1024).map_err(|error| {
+                RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::UnsupportedProvider,
+                    format!("retained apply preimage cannot be read: {error}"),
+                )
+            })?)
+        }
+        Ok(RetainedChildCapability::ReparsePoint) => {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ContainmentIdentity,
+                format!(
+                    "retained apply target is a link/reparse point: {}",
+                    entry.relative_path.display()
+                ),
+            ))
+        }
+        Ok(RetainedChildCapability::Directory(_) | RetainedChildCapability::Unsupported) => {
+            let kind = if expected.is_none() {
+                RetainedApplyValidationErrorKind::AbsentChainOccupied
+            } else {
+                RetainedApplyValidationErrorKind::ContainmentIdentity
+            };
+            return Err(RetainedApplyValidationError::new(
+                kind,
+                format!(
+                    "retained apply target is not a regular file: {}",
+                    entry.relative_path.display()
+                ),
+            ));
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::UnsupportedProvider,
+                format!(
+                    "retained apply target cannot be inspected {}: {error}",
+                    entry.relative_path.display()
+                ),
+            ))
+        }
+    };
+    if observed != *expected {
+        let kind = if expected.is_none() {
+            RetainedApplyValidationErrorKind::AbsentChainOccupied
+        } else {
+            RetainedApplyValidationErrorKind::ContainmentIdentity
+        };
+        return Err(RetainedApplyValidationError::new(
+            kind,
+            format!(
+                "retained apply preimage changed: {}",
+                entry.relative_path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct PublishedRetainedApplyChange {
+    parent: RetainedDirectoryCapability,
+    relative_path: PathBuf,
+    name: OsString,
+    recovery_name: Option<OsString>,
+    kind: PlannedChangeKind,
+    published: Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
+    displaced: Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
+}
+
+pub(crate) struct RetainedApplyRevisionTransients<'journal> {
+    root: &'journal RetainedDirectoryCapability,
+    by_parent: BTreeMap<FileIdentity, Vec<RetainedApplyRevisionTransient<'journal>>>,
+}
+
+struct RetainedApplyRevisionTransient<'journal> {
+    parent: &'journal RetainedDirectoryCapability,
+    recovery_name: &'journal OsStr,
+    recovery: &'journal RetainedRegularFileCapability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetainedApplyRevisionTransientErrorKind {
+    ContainmentIdentity,
+    Provider,
+    Invariant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedApplyRevisionTransientError {
+    kind: RetainedApplyRevisionTransientErrorKind,
+    message: String,
+}
+
+impl RetainedApplyRevisionTransientError {
+    fn new(kind: RetainedApplyRevisionTransientErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> RetainedApplyRevisionTransientErrorKind {
+        self.kind
+    }
+}
+
+impl std::fmt::Display for RetainedApplyRevisionTransientError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RetainedApplyRevisionTransientError {}
+
+impl<'journal> RetainedApplyRevisionTransients<'journal> {
+    fn issue(
+        root: &'journal RetainedDirectoryCapability,
+        published: &'journal [PublishedRetainedApplyChange],
+    ) -> Result<Self, RetainedApplyRevisionTransientError> {
+        root.validate_named_identity().map_err(|error| {
+            RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                format!("retained revision-transient root identity changed: {error}"),
+            )
+        })?;
+        let mut by_parent: BTreeMap<FileIdentity, Vec<RetainedApplyRevisionTransient<'journal>>> =
+            BTreeMap::new();
+        for change in published {
+            let pair = match (&change.recovery_name, &change.displaced) {
+                (Some(name), Some(recovery)) => Some((name.as_os_str(), recovery)),
+                (None, None) => None,
+                _ => {
+                    return Err(RetainedApplyRevisionTransientError::new(
+                        RetainedApplyRevisionTransientErrorKind::Invariant,
+                        "retained apply journal recovery name/capability pair is incomplete",
+                    ))
+                }
+            };
+            let Some((recovery_name, recovery)) = pair else {
+                continue;
+            };
+            change.parent.validate_named_identity().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    format!("retained revision-transient parent identity changed: {error}"),
+                )
+            })?;
+            recovery.validate_named_identity().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    format!("retained revision-transient recovery identity changed: {error}"),
+                )
+            })?;
+            if recovery.hard_link_count().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Provider,
+                    format!("retained revision-transient hard-link count failed: {error}"),
+                )
+            })? != 1
+            {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    "retained revision-transient recovery gained a hard-link alias",
+                ));
+            }
+            let entries = by_parent.entry(change.parent.identity()).or_default();
+            if entries
+                .iter()
+                .any(|entry| entry.recovery_name == recovery_name)
+            {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Invariant,
+                    "retained revision-transient journal contains a duplicate recovery name",
+                ));
+            }
+            entries.push(RetainedApplyRevisionTransient {
+                parent: &change.parent,
+                recovery_name,
+                recovery,
+            });
+        }
+        Ok(RetainedApplyRevisionTransients { root, by_parent })
+    }
+
+    pub(crate) fn validate_root(
+        &self,
+        root: &RetainedDirectoryCapability,
+    ) -> Result<(), RetainedApplyRevisionTransientError> {
+        if self.root.identity() != root.identity() {
+            return Err(RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                "retained revision-transient authority belongs to another source root",
+            ));
+        }
+        self.root.validate_named_identity().map_err(|error| {
+            RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                format!("retained revision-transient root identity changed: {error}"),
+            )
+        })?;
+        root.validate_named_identity().map_err(|error| {
+            RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                format!("revision validation root identity changed: {error}"),
+            )
+        })
+    }
+
+    pub(crate) fn count_for_parent(
+        &self,
+        parent: &RetainedDirectoryCapability,
+    ) -> Result<usize, RetainedApplyRevisionTransientError> {
+        let Some(entries) = self.by_parent.get(&parent.identity()) else {
+            return Ok(0);
+        };
+        parent.validate_named_identity().map_err(|error| {
+            RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                format!("retained revision-transient parent identity changed: {error}"),
+            )
+        })?;
+        for entry in entries {
+            if entry.parent.identity() != parent.identity() {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Invariant,
+                    "retained revision-transient parent index is inconsistent",
+                ));
+            }
+            entry.parent.validate_named_identity().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    format!("retained revision-transient parent identity changed: {error}"),
+                )
+            })?;
+            entry.recovery.validate_named_identity().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    format!("retained revision-transient recovery identity changed: {error}"),
+                )
+            })?;
+            if entry.recovery.hard_link_count().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Provider,
+                    format!("retained revision-transient hard-link count failed: {error}"),
+                )
+            })? != 1
+            {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    "retained revision-transient recovery gained a hard-link alias",
+                ));
+            }
+        }
+        Ok(entries.len())
+    }
+
+    pub(crate) fn validate_and_select_names(
+        &self,
+        parent: &RetainedDirectoryCapability,
+        names: &[OsString],
+    ) -> Result<Vec<bool>, RetainedApplyRevisionTransientError> {
+        let Some(entries) = self.by_parent.get(&parent.identity()) else {
+            return Ok(vec![false; names.len()]);
+        };
+        let comparator = parent.child_name_comparator().map_err(|error| {
+            RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::Provider,
+                format!("retained revision-transient name policy cannot be proven: {error}"),
+            )
+        })?;
+        let exact_names = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.as_os_str(), index))
+            .collect::<BTreeMap<_, _>>();
+        let mut selected = vec![false; names.len()];
+        for entry in entries {
+            let exact = exact_names.get(entry.recovery_name).copied();
+            let index = if let Some(index) = exact {
+                index
+            } else {
+                let mut equivalent = None;
+                for (index, name) in names.iter().enumerate() {
+                    if comparator
+                        .names_equivalent(name, entry.recovery_name)
+                        .map_err(|error| {
+                            RetainedApplyRevisionTransientError::new(
+                                RetainedApplyRevisionTransientErrorKind::Provider,
+                                format!(
+                                    "retained revision-transient name identity cannot be proven: {error}"
+                                ),
+                            )
+                        })?
+                        && equivalent.replace(index).is_some()
+                    {
+                        return Err(RetainedApplyRevisionTransientError::new(
+                            RetainedApplyRevisionTransientErrorKind::Invariant,
+                            "retained revision-transient name has multiple equivalent children",
+                        ));
+                    }
+                }
+                equivalent.ok_or_else(|| {
+                    RetainedApplyRevisionTransientError::new(
+                        RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                        "retained revision-transient recovery disappeared from its parent",
+                    )
+                })?
+            };
+            if std::mem::replace(&mut selected[index], true) {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Invariant,
+                    "retained revision-transient journal entries alias one child name",
+                ));
+            }
+            let observed = parent
+                .retain_immediate_child_nofollow(&names[index])
+                .map_err(|error| {
+                    RetainedApplyRevisionTransientError::new(
+                        RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                        format!("retained revision-transient recovery cannot be retained: {error}"),
+                    )
+                })?;
+            let RetainedChildCapability::RegularFile(observed) = observed else {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    "retained revision-transient recovery is not a regular file",
+                ));
+            };
+            if observed.identity() != entry.recovery.identity() {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    "retained revision-transient recovery identity was replaced",
+                ));
+            }
+            observed.validate_named_identity().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    format!(
+                        "retained revision-transient named identity changed during scan: {error}"
+                    ),
+                )
+            })?;
+            if observed.hard_link_count().map_err(|error| {
+                RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::Provider,
+                    format!("retained revision-transient hard-link count failed: {error}"),
+                )
+            })? != 1
+            {
+                return Err(RetainedApplyRevisionTransientError::new(
+                    RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                    "retained revision-transient recovery gained a hard-link alias",
+                ));
+            }
+        }
+        Ok(selected)
+    }
+
+    pub(crate) fn validate_observed_parents(
+        &self,
+        observed: &BTreeSet<FileIdentity>,
+    ) -> Result<(), RetainedApplyRevisionTransientError> {
+        let expected = self.by_parent.keys().copied().collect::<BTreeSet<_>>();
+        if expected != *observed {
+            return Err(RetainedApplyRevisionTransientError::new(
+                RetainedApplyRevisionTransientErrorKind::ContainmentIdentity,
+                "retained revision-transient parent was not observed exactly once by the source scan",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct CreatedRetainedApplyDirectory {
+    parent: RetainedDirectoryCapability,
+    name: OsString,
+    directory: RetainedDirectoryCapability,
+    logical_path: PathBuf,
+    published: bool,
+}
+
+fn retained_apply_stage_name() -> OsString {
+    OsString::from(format!(".unica-apply-{}", uuid::Uuid::new_v4()))
+}
+
+fn retained_apply_directory_stage_name() -> OsString {
+    OsString::from(format!(".unica-apply-dir-{}", uuid::Uuid::new_v4()))
+}
+
+fn retained_apply_directory_cleanup_name() -> OsString {
+    OsString::from(format!(".unica-apply-dir-cleanup-{}", uuid::Uuid::new_v4()))
+}
+
+fn create_retained_apply_parent_chain(
+    entry: &PlannedRetainedApplyChange,
+    created: &mut Vec<CreatedRetainedApplyDirectory>,
+) -> Result<RetainedDirectoryCapability, RetainedApplyPublishError> {
+    entry.root.validate_named_identity().map_err(|error| {
+        RetainedApplyPublishError::containment(format!(
+            "retained apply source-root physical identity changed: {error}"
+        ))
+    })?;
+    entry.ancestor.validate_named_identity().map_err(|error| {
+        RetainedApplyPublishError::containment(format!(
+            "retained apply nearest ancestor physical identity changed {}: {error}",
+            entry.relative_path.display()
+        ))
+    })?;
+    let parent_path = entry
+        .relative_path
+        .parent()
+        .expect("retained file path has a parent");
+    let parent_components = parent_path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name.to_os_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let retained_prefix_len = parent_components
+        .len()
+        .checked_sub(entry.missing_parent_chain.len())
+        .ok_or_else(|| {
+            RetainedApplyPublishError::new(
+                RetainedApplyPublishErrorKind::Invariant,
+                "retained apply missing-parent chain exceeds its logical path",
+            )
+        })?;
+    let mut logical_path = parent_components[..retained_prefix_len]
+        .iter()
+        .collect::<PathBuf>();
+    let mut parent = entry.ancestor.clone();
+    for name in &entry.missing_parent_chain {
+        logical_path.push(name);
+        if let Some(directory) = owned_retained_apply_directory_child(&parent, name, created)? {
+            parent = directory;
+            continue;
+        }
+        match parent.retain_immediate_child_nofollow(name) {
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(RetainedApplyPublishError::containment(format!(
+                    "retained apply absent parent chain is occupied: {}",
+                    logical_path.display()
+                )))
+            }
+            Err(error) => {
+                return Err(RetainedApplyPublishError::provider(format!(
+                    "retained apply absent parent chain cannot be inspected {}: {error}",
+                    logical_path.display()
+                )))
+            }
+        }
+        let private_name = retained_apply_directory_stage_name();
+        let directory = match parent.create_directory_child_atomically(&private_name, name) {
+            Ok(directory) => directory,
+            Err(error) => {
+                let (error, artifact) = error.into_parts();
+                if let Some((directory, artifact_name, published)) = artifact {
+                    created.push(CreatedRetainedApplyDirectory {
+                        parent: parent.clone(),
+                        name: artifact_name,
+                        directory,
+                        logical_path: logical_path.clone(),
+                        published,
+                    });
+                }
+                let kind = if error.kind() == ErrorKind::AlreadyExists
+                    || error.kind() == ErrorKind::NotFound
+                {
+                    RetainedApplyPublishErrorKind::ContainmentIdentity
+                } else {
+                    RetainedApplyPublishErrorKind::Provider
+                };
+                return Err(RetainedApplyPublishError::new(
+                    kind,
+                    format!(
+                        "retained apply absent parent publication failed {}: {error}",
+                        logical_path.display()
+                    ),
+                ));
+            }
+        };
+        created.push(CreatedRetainedApplyDirectory {
+            parent: parent.clone(),
+            name: name.clone(),
+            directory: directory.clone(),
+            logical_path: logical_path.clone(),
+            published: true,
+        });
+        parent = directory;
+    }
+    Ok(parent)
+}
+
+fn owned_retained_apply_directory_child(
+    parent: &RetainedDirectoryCapability,
+    name: &OsStr,
+    created: &[CreatedRetainedApplyDirectory],
+) -> Result<Option<RetainedDirectoryCapability>, RetainedApplyPublishError> {
+    for owned in created {
+        if !owned.published || owned.parent.identity() != parent.identity() {
+            continue;
+        }
+        if !parent
+            .child_names_equivalent(&owned.name, name)
+            .map_err(|error| {
+                RetainedApplyPublishError::provider(format!(
+                    "retained apply child identity cannot be proven: {error}"
+                ))
+            })?
+        {
+            continue;
+        }
+        owned.directory.validate_named_identity().map_err(|error| {
+            RetainedApplyPublishError::containment(format!(
+                "batch-created retained directory identity changed {}: {error}",
+                owned.logical_path.display()
+            ))
+        })?;
+        return Ok(Some(owned.directory.clone()));
+    }
+    Ok(None)
+}
+
+fn validate_retained_apply_postimage(
+    entry: &PlannedRetainedApplyChange,
+    expected: &Option<Vec<u8>>,
+    created: &[CreatedRetainedApplyDirectory],
+) -> Result<(), RetainedApplyPublishError> {
+    if entry.missing_parent_chain.is_empty() {
+        return validate_retained_apply_state_typed(entry, expected, true)
+            .map_err(RetainedApplyPublishError::from);
+    }
+    entry.root.validate_named_identity().map_err(|error| {
+        RetainedApplyPublishError::containment(format!(
+            "retained apply source-root physical identity changed: {error}"
+        ))
+    })?;
+    let mut parent = entry.ancestor.clone();
+    for name in &entry.missing_parent_chain {
+        parent =
+            owned_retained_apply_directory_child(&parent, name, created)?.ok_or_else(|| {
+                RetainedApplyPublishError::new(
+                    RetainedApplyPublishErrorKind::Invariant,
+                    format!(
+                        "retained apply postimage parent is not transaction-owned: {}",
+                        entry.relative_path.display()
+                    ),
+                )
+            })?;
+    }
+    validate_retained_apply_state_at_parent_typed(entry, &parent, expected)
+        .map_err(RetainedApplyPublishError::from)
+}
+
+fn publish_retained_apply_change(
+    entry: &PlannedRetainedApplyChange,
+    journal: &mut Vec<PublishedRetainedApplyChange>,
+    created_directories: &mut Vec<CreatedRetainedApplyDirectory>,
+) -> Result<(), RetainedApplyPublishError> {
+    if entry.original == entry.current {
+        return Ok(());
+    }
+    let parent = if entry.missing_parent_chain.is_empty() {
+        validate_retained_apply_state_typed(entry, &entry.original, false)
+            .map_err(RetainedApplyPublishError::from)?;
+        entry.ancestor.clone()
+    } else {
+        let parent = create_retained_apply_parent_chain(entry, created_directories)?;
+        validate_retained_apply_state_at_parent_typed(entry, &parent, &entry.original)
+            .map_err(RetainedApplyPublishError::from)?;
+        parent
+    };
+    parent.validate_named_identity().map_err(|error| {
+        RetainedApplyPublishError::containment(format!(
+            "retained apply parent identity cannot be validated: {error}"
+        ))
+    })?;
+    #[cfg(test)]
+    run_retained_apply_before_provider_io_hook();
+    let name = entry.name.clone();
+    match (&entry.original, &entry.current) {
+        (None, Some(bytes)) => {
+            let result =
+                parent.create_regular_child_atomically(&retained_apply_stage_name(), &name, bytes);
+            match result {
+                Ok(published) => journal.push(PublishedRetainedApplyChange {
+                    parent,
+                    relative_path: entry.relative_path.clone(),
+                    name,
+                    recovery_name: None,
+                    kind: PlannedChangeKind::Create,
+                    published: Some(published),
+                    displaced: None,
+                }),
+                Err(error) => {
+                    let (error, published) = error.into_parts();
+                    if let Some(published) = published {
+                        journal.push(PublishedRetainedApplyChange {
+                            parent,
+                            relative_path: entry.relative_path.clone(),
+                            name,
+                            recovery_name: None,
+                            kind: PlannedChangeKind::Create,
+                            published: Some(published),
+                            displaced: None,
+                        });
+                    }
+                    let kind = if error.kind() == ErrorKind::AlreadyExists
+                        || error.kind() == ErrorKind::NotFound
+                    {
+                        RetainedApplyPublishErrorKind::ContainmentIdentity
+                    } else {
+                        RetainedApplyPublishErrorKind::Provider
+                    };
+                    return Err(RetainedApplyPublishError::new(
+                        kind,
+                        format!("retained apply create failed: {error}"),
+                    ));
+                }
+            }
+        }
+        (Some(original), current) => {
+            let expected = entry.original_file.as_ref().ok_or_else(|| {
+                RetainedApplyPublishError::new(
+                    RetainedApplyPublishErrorKind::Invariant,
+                    "retained apply original file authority is missing",
+                )
+            })?;
+            let recovery_name = retained_apply_stage_name();
+            let displaced = parent
+                .displace_regular_child_no_replace(&name, expected, &recovery_name)
+                .map_err(|error| {
+                    let kind = if matches!(
+                        error.kind(),
+                        ErrorKind::PermissionDenied
+                            | ErrorKind::ReadOnlyFilesystem
+                            | ErrorKind::StorageFull
+                            | ErrorKind::QuotaExceeded
+                    ) {
+                        RetainedApplyPublishErrorKind::Provider
+                    } else {
+                        RetainedApplyPublishErrorKind::ContainmentIdentity
+                    };
+                    RetainedApplyPublishError::new(
+                        kind,
+                        format!("retained apply destination identity/preimage changed: {error}"),
+                    )
+                })?;
+            let kind = if current.is_some() {
+                PlannedChangeKind::Update
+            } else {
+                PlannedChangeKind::Remove
+            };
+            journal.push(PublishedRetainedApplyChange {
+                parent,
+                relative_path: entry.relative_path.clone(),
+                name,
+                recovery_name: Some(recovery_name),
+                kind,
+                published: None,
+                displaced: Some(displaced),
+            });
+            validate_displaced_apply_preimage_typed(
+                journal
+                    .last()
+                    .and_then(|change| change.displaced.as_ref())
+                    .expect("displacement journal owns the original file"),
+                original,
+            )?;
+            if let Some(bytes) = current {
+                let change = journal.last_mut().expect("displacement journal exists");
+                match change.parent.create_regular_child_atomically(
+                    &retained_apply_stage_name(),
+                    &change.name,
+                    bytes,
+                ) {
+                    Ok(published) => change.published = Some(published),
+                    Err(error) => {
+                        let (error, published) = error.into_parts();
+                        change.published = published;
+                        let kind = if error.kind() == ErrorKind::AlreadyExists
+                            || error.kind() == ErrorKind::NotFound
+                        {
+                            RetainedApplyPublishErrorKind::ContainmentIdentity
+                        } else {
+                            RetainedApplyPublishErrorKind::Provider
+                        };
+                        return Err(RetainedApplyPublishError::new(
+                            kind,
+                            format!("retained apply replace failed: {error}"),
+                        ));
+                    }
+                }
+            }
+        }
+        (None, None) => {
+            return Err(RetainedApplyPublishError::new(
+                RetainedApplyPublishErrorKind::Invariant,
+                "retained apply no-op reached publication",
+            ))
+        }
+    }
+    Ok(())
+}
+
+fn validate_displaced_apply_preimage_typed(
+    displaced: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+    expected: &[u8],
+) -> Result<(), RetainedApplyPublishError> {
+    if displaced.hard_link_count().map_err(|error| {
+        RetainedApplyPublishError::provider(format!(
+            "retained apply displaced hard-link count failed: {error}"
+        ))
+    })? != 1
+    {
+        return Err(RetainedApplyPublishError::containment(
+            "retained apply destination gained a hard-link alias",
+        ));
+    }
+    let observed = displaced.read_bounded(32 * 1024 * 1024).map_err(|error| {
+        RetainedApplyPublishError::provider(format!(
+            "retained apply displaced preimage read failed: {error}"
+        ))
+    })?;
+    if observed != expected {
+        return Err(RetainedApplyPublishError::containment(
+            "retained apply destination preimage changed at mutation boundary",
+        ));
+    }
+    Ok(())
+}
+
+fn rollback_retained_apply(
+    published: &mut Vec<PublishedRetainedApplyChange>,
+    created_directories: &mut Vec<CreatedRetainedApplyDirectory>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    while let Some(mut change) = published.pop() {
+        #[cfg(test)]
+        RETAINED_APPLY_OBSERVED_EVENTS.with(|events| {
+            events
+                .borrow_mut()
+                .push(RetainedApplyObservedEvent::Rollback(
+                    change.relative_path.clone(),
+                ));
+        });
+        if let Some(file) = change.published.take() {
+            let removal = file
+                .remove_named_identity_relative_for_retained_apply(&retained_apply_stage_name());
+            // Windows completes a handle-based delete only after every handle to the
+            // delete-pending file is closed.  Release the journal's retained handle
+            // before attempting to restore a displaced preimage at the same name.
+            drop(file);
+            if let Err(error) = removal {
+                errors.push(format!("published apply child was preserved: {error}"));
+            }
+        } else if change.kind == PlannedChangeKind::Create {
+            errors.push("published create capability is missing".to_string());
+        }
+        if let Some(displaced) = change.displaced.as_ref() {
+            match displaced.hard_link_count() {
+                Ok(1) => {}
+                Ok(_) => {
+                    errors.push(
+                        "displaced apply preimage gained a hard-link alias; recovery was preserved"
+                            .to_string(),
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    errors.push(format!(
+                        "displaced apply preimage hard-link count failed; recovery was preserved: {error}"
+                    ));
+                    continue;
+                }
+            }
+            if let Err(error) = change
+                .parent
+                .restore_displaced_regular_child_no_replace(displaced, &change.name)
+            {
+                errors.push(format!("displaced apply preimage was preserved: {error}"));
+            }
+        }
+    }
+    while let Some(created) = created_directories.pop() {
+        if let Err(error) = created
+            .directory
+            .remove_empty_named_identity_relative_for_retained_apply(
+                &retained_apply_directory_cleanup_name(),
+            )
+        {
+            errors.push(format!(
+                "batch-created directory was preserved {}: {error}",
+                created.logical_path.display()
+            ));
+        }
+    }
+    errors
+}
+
+fn finalize_retained_apply_recovery(
+    published: &mut [PublishedRetainedApplyChange],
+    report: &mut CommitReport,
+) {
+    for change in published {
+        if let Some(displaced) = change.displaced.take() {
+            if let Err(error) = displaced
+                .remove_named_identity_relative_for_retained_apply(&retained_apply_stage_name())
+            {
+                report.cleanup_warnings.push(format!(
+                    "retained apply recovery child was preserved after success: {error}"
+                ));
+                report
+                    .retained_apply_cleanup_diagnostics
+                    .push(RetainedApplyCleanupDiagnostic {
+                        logical_target: change.relative_path.clone(),
+                        artifact_name: change
+                            .recovery_name
+                            .clone()
+                            .expect("displaced retained apply change owns a recovery name"),
+                    });
+            }
+        }
+    }
+}
+
 pub(crate) fn snapshot_directory_membership(
     directory: &Path,
     selector: DirectoryMembershipSelector,
@@ -1597,13 +3273,26 @@ fn snapshot_directory_membership_entries(
             ));
         }
     };
+    // A guard over the child directories of a container states which of them exist.
+    // A path that is not a usable directory holds none, which is the same answer as
+    // an absent path — and the only one that keeps the guard takeable. Erroring
+    // instead would make every compile transaction in a workspace whose container
+    // path is a stray file or a link fail at planning.
+    let holds_no_child_directories =
+        selector == DirectoryMembershipSelector::DirectChildDirectories;
     if metadata_is_link_or_reparse_point(&metadata) {
+        if holds_no_child_directories {
+            return Ok(DirectoryMembershipSnapshot::Absent);
+        }
         return Err(format!(
             "directory membership guard must not be a symbolic link or reparse point: {}",
             directory.display()
         ));
     }
     if !metadata.is_dir() {
+        if holds_no_child_directories {
+            return Ok(DirectoryMembershipSnapshot::Absent);
+        }
         return Err(format!(
             "directory membership guard target is not a directory: {}",
             directory.display()
@@ -1638,29 +3327,37 @@ fn snapshot_directory_membership_entries(
                 path.display()
             )
         })?;
+        // A selector that binds only the child directories of a container is used
+        // where the container legitimately holds other things too. Those are not
+        // members: skipping them is what the guard means, while failing would make
+        // it unusable on any real container.
+        let skips_non_members = selector == DirectoryMembershipSelector::DirectChildDirectories;
         if metadata_is_link_or_reparse_point(&metadata) {
+            if skips_non_members {
+                continue;
+            }
             return Err(format!(
                 "directory membership entry must not be a symbolic link or reparse point: {}",
                 path.display()
             ));
         }
-        let valid_entry_kind = match selector {
-            DirectoryMembershipSelector::AllDirectEntries => {
-                metadata.is_file() || metadata.is_dir()
-            }
-            DirectoryMembershipSelector::XmlFiles
-            | DirectoryMembershipSelector::CfFilesAsciiCaseInsensitive => metadata.is_file(),
+        let entry_kind = if metadata.is_dir() {
+            Some(DirectoryTopologyEntryKind::Directory)
+        } else if metadata.is_file() {
+            Some(DirectoryTopologyEntryKind::File)
+        } else {
+            None
         };
-        if !valid_entry_kind {
+        let Some(kind) =
+            entry_kind.filter(|kind| directory_membership_accepts_kind(selector, *kind))
+        else {
+            if skips_non_members {
+                continue;
+            }
             return Err(format!(
                 "directory membership entry has an unsupported filesystem type: {}",
                 path.display()
             ));
-        }
-        let kind = if metadata.is_dir() {
-            DirectoryTopologyEntryKind::Directory
-        } else {
-            DirectoryTopologyEntryKind::File
         };
         names.push(DirectoryTopologyEntry { name, kind });
     }
@@ -1740,8 +3437,7 @@ fn normalize_expected_directory_entries(
         if !matches!(components.next(), Some(std::path::Component::Normal(_)))
             || components.next().is_some()
             || !directory_membership_name_matches(selector, &entry.name)
-            || (selector != DirectoryMembershipSelector::AllDirectEntries
-                && entry.kind != DirectoryTopologyEntryKind::File)
+            || !directory_membership_accepts_kind(selector, entry.kind)
         {
             return Err(format!(
                 "invalid directory membership entry name: {}",
@@ -1782,7 +3478,25 @@ fn directory_membership_name_matches(selector: DirectoryMembershipSelector, name
             .extension()
             .and_then(OsStr::to_str)
             .is_some_and(|extension| extension.eq_ignore_ascii_case("cf")),
+        DirectoryMembershipSelector::AllDirectEntries
+        | DirectoryMembershipSelector::DirectChildDirectories => true,
+    }
+}
+
+/// Whether an entry of this filesystem kind is a member under this selector.
+fn directory_membership_accepts_kind(
+    selector: DirectoryMembershipSelector,
+    kind: DirectoryTopologyEntryKind,
+) -> bool {
+    match selector {
         DirectoryMembershipSelector::AllDirectEntries => true,
+        DirectoryMembershipSelector::DirectChildDirectories => {
+            kind == DirectoryTopologyEntryKind::Directory
+        }
+        DirectoryMembershipSelector::XmlFiles
+        | DirectoryMembershipSelector::CfFilesAsciiCaseInsensitive => {
+            kind == DirectoryTopologyEntryKind::File
+        }
     }
 }
 
@@ -1850,9 +3564,13 @@ fn apply_direct_membership_delta(
                 path.display()
             )
         })?;
-        if selector != DirectoryMembershipSelector::AllDirectEntries
-            && kind != DirectoryTopologyEntryKind::File
-        {
+        if !directory_membership_accepts_kind(selector, kind) {
+            // A planned entry the selector does not admit is simply not a member of
+            // this guard; only the file-shaped selectors treat it as a planning
+            // error, because for them a non-file under a matching name is a defect.
+            if selector == DirectoryMembershipSelector::DirectChildDirectories {
+                return Ok(());
+            }
             return Err(format!(
                 "planned directory membership entry is not a regular file: {}",
                 path.display()
@@ -3931,7 +5649,7 @@ fn finalize_success(state: &mut PublishState) {
     state.cleanup_warnings.extend(recovery_warnings);
 }
 
-fn split_utf8_bom_prefix(bytes: &[u8]) -> (&[u8], &[u8]) {
+pub(crate) fn split_utf8_bom_prefix(bytes: &[u8]) -> (&[u8], &[u8]) {
     let mut offset = 0usize;
     while bytes[offset..].starts_with(UTF8_BOM) {
         offset += UTF8_BOM.len();
@@ -3939,7 +5657,7 @@ fn split_utf8_bom_prefix(bytes: &[u8]) -> (&[u8], &[u8]) {
     bytes.split_at(offset)
 }
 
-fn preserve_inserted_line_endings(source: &str, updated: &str) -> String {
+pub(crate) fn preserve_inserted_line_endings(source: &str, updated: &str) -> String {
     let line_ending = source_line_ending(source);
     if line_ending == "\n" {
         return updated.to_string();
@@ -4073,6 +5791,21 @@ type BeforeRollbackQuarantineRestoreRenameHook = Box<dyn FnOnce(&Path, &Path)>;
 type AfterRegistrationRollbackRestoreHook = Box<dyn FnOnce(&Path, &Path)>;
 
 #[cfg(test)]
+type RetainedApplyBeforePostValidationHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+type RetainedApplyBeforePostimagesHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+type RetainedApplyBeforeRollbackHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+type RetainedApplyBeforeProviderIoHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+type RetainedApplyBeforeRevisionValidationHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
 thread_local! {
     static TEST_FAILPOINT: Cell<Option<CommitFailpoint>> = const { Cell::new(None) };
     static TEST_REGISTRATION_RECOVERY_PAUSE: RefCell<Option<RegistrationRecoveryPause>> = const { RefCell::new(None) };
@@ -4083,6 +5816,97 @@ thread_local! {
     static TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK: RefCell<Option<BeforeRollbackQuarantineCleanupHook>> = const { RefCell::new(None) };
     static TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK: RefCell<Option<BeforeRollbackQuarantineRestoreRenameHook>> = const { RefCell::new(None) };
     static TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK: RefCell<Option<AfterRegistrationRollbackRestoreHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_BEFORE_POST_VALIDATION_HOOK: RefCell<Option<RetainedApplyBeforePostValidationHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_BEFORE_POSTIMAGES_HOOK: RefCell<Option<RetainedApplyBeforePostimagesHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_BEFORE_ROLLBACK_HOOK: RefCell<Option<RetainedApplyBeforeRollbackHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_BEFORE_PROVIDER_IO_HOOK: RefCell<Option<RetainedApplyBeforeProviderIoHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_BEFORE_REVISION_VALIDATION_HOOK: RefCell<Option<RetainedApplyBeforeRevisionValidationHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_VALIDATION_PROVIDER_FAILURE: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn inject_retained_apply_validation_provider_failure_for_test() {
+    TEST_RETAINED_APPLY_VALIDATION_PROVIDER_FAILURE.with(|slot| slot.set(true));
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_apply_before_post_validation_hook(hook: impl FnOnce() + 'static) {
+    TEST_RETAINED_APPLY_BEFORE_POST_VALIDATION_HOOK.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_apply_before_postimages_hook(hook: impl FnOnce() + 'static) {
+    TEST_RETAINED_APPLY_BEFORE_POSTIMAGES_HOOK.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_apply_before_rollback_hook(hook: impl FnOnce() + 'static) {
+    TEST_RETAINED_APPLY_BEFORE_ROLLBACK_HOOK.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_apply_before_provider_io_hook(hook: impl FnOnce() + 'static) {
+    TEST_RETAINED_APPLY_BEFORE_PROVIDER_IO_HOOK.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_apply_before_revision_validation_hook(hook: impl FnOnce() + 'static) {
+    TEST_RETAINED_APPLY_BEFORE_REVISION_VALIDATION_HOOK.with(|slot| {
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+fn run_retained_apply_before_provider_io_hook() {
+    if let Some(hook) =
+        TEST_RETAINED_APPLY_BEFORE_PROVIDER_IO_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn run_retained_apply_before_revision_validation_hook() {
+    if let Some(hook) =
+        TEST_RETAINED_APPLY_BEFORE_REVISION_VALIDATION_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn run_retained_apply_before_postimages_hook() {
+    if let Some(hook) =
+        TEST_RETAINED_APPLY_BEFORE_POSTIMAGES_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn run_retained_apply_before_rollback_hook() {
+    if let Some(hook) =
+        TEST_RETAINED_APPLY_BEFORE_ROLLBACK_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn run_retained_apply_before_post_validation_hook() {
+    if let Some(hook) =
+        TEST_RETAINED_APPLY_BEFORE_POST_VALIDATION_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
 }
 
 #[cfg(test)]
@@ -4331,7 +6155,7 @@ fn failpoint_post_write_validation() -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::infrastructure::platform::testing;
@@ -4339,6 +6163,129 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    pub(crate) fn retained_apply_revision_transient_authority_is_borrowed_sealed_and_single_issuer()
+    {
+        use quote::ToTokens;
+        use syn::visit::Visit;
+
+        const AUTHORITY: &str = "RetainedApplyRevisionTransients";
+        const ENTRY: &str = "RetainedApplyRevisionTransient";
+        let transaction = syn::parse_file(include_str!("compile_transaction.rs"))
+            .expect("compile transaction production Rust must parse");
+        let revision = syn::parse_file(include_str!("../source_revision.rs"))
+            .expect("source revision production Rust must parse");
+        let authority = transaction
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == AUTHORITY => Some(item),
+                _ => None,
+            })
+            .expect("retained apply journal has no revision-transient authority");
+        let entry = transaction
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == ENTRY => Some(item),
+                _ => None,
+            })
+            .expect("revision-transient authority has no borrowed recovery entry");
+
+        assert!(
+            authority
+                .generics
+                .params
+                .iter()
+                .any(|parameter| matches!(parameter, syn::GenericParam::Lifetime(_))),
+            "revision-transient authority is not journal-lifetime-bound"
+        );
+        for item in [authority, entry] {
+            assert!(
+                item.fields
+                    .iter()
+                    .all(|field| matches!(field.vis, syn::Visibility::Inherited)),
+                "{} exposes forgeable fields",
+                item.ident
+            );
+            let derives = item
+                .attrs
+                .iter()
+                .filter(|attribute| attribute.path().is_ident("derive"))
+                .map(|attribute| attribute.meta.to_token_stream().to_string())
+                .collect::<String>();
+            assert!(
+                !["Clone", "Serialize", "Deserialize"]
+                    .iter()
+                    .any(|forbidden| derives.contains(forbidden)),
+                "{} acquired replay/serialization derives: {derives}",
+                item.ident
+            );
+        }
+        let entry_types = entry
+            .fields
+            .iter()
+            .map(|field| field.ty.to_token_stream().to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            entry_types
+                .iter()
+                .any(|field| field.contains("&") && field.contains("RetainedDirectoryCapability"))
+                && entry_types.iter().any(|field| {
+                    field.contains("&") && field.contains("RetainedRegularFileCapability")
+                }),
+            "revision-transient entry does not borrow exact parent and recovery capabilities"
+        );
+
+        struct ConstructionCounter {
+            count: usize,
+        }
+        impl<'ast> Visit<'ast> for ConstructionCounter {
+            fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
+                if expression
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "RetainedApplyRevisionTransients")
+                {
+                    self.count += 1;
+                }
+                syn::visit::visit_expr_struct(self, expression);
+            }
+        }
+        let mut constructions = ConstructionCounter { count: 0 };
+        constructions.visit_file(&transaction);
+        assert_eq!(
+            constructions.count, 1,
+            "revision-transient authority must have one production issuer"
+        );
+
+        let validation_requires_authority = revision.items.iter().any(|item| {
+            let syn::Item::Impl(item) = item else {
+                return false;
+            };
+            item.items.iter().any(|member| {
+                let syn::ImplItem::Fn(function) = member else {
+                    return false;
+                };
+                function.sig.ident == "validate_published_source"
+                    && function
+                        .sig
+                        .inputs
+                        .iter()
+                        .any(|input| input.to_token_stream().to_string().contains(AUTHORITY))
+            })
+        });
+        assert!(
+            validation_requires_authority,
+            "production revision validation can bypass journal authority"
+        );
+        assert!(
+            !include_str!("../source_revision.rs").contains(".unica-apply-"),
+            "source scanner trusts a raw retained-apply prefix"
+        );
+    }
 
     #[test]
     fn commit_failure_kind_does_not_depend_on_message_wording() {
@@ -4352,6 +6299,32 @@ mod tests {
 
         let rollback = with_rollback_diagnostics(provider, vec!["cleanup failed".into()]);
         assert_eq!(rollback.kind(), CommitFailureKind::RollbackFailed);
+    }
+
+    #[test]
+    fn retained_apply_rollback_releases_published_capability_before_preimage_restore() {
+        let source = include_str!("compile_transaction.rs");
+        let rollback = source
+            .split_once("fn rollback_retained_apply(")
+            .expect("retained apply rollback must exist")
+            .1
+            .split_once("fn finalize_retained_apply_recovery(")
+            .expect("retained apply rollback must precede recovery finalization")
+            .0;
+        let take = rollback
+            .find("change.published.take()")
+            .expect("rollback must take ownership of the published capability");
+        let release = rollback
+            .find("drop(file)")
+            .expect("rollback must explicitly release the published capability");
+        let restore = rollback
+            .find("restore_displaced_regular_child_no_replace")
+            .expect("rollback must restore the displaced preimage");
+
+        assert!(
+            take < release && release < restore,
+            "a delete-pending Windows publication handle must close before same-name preimage restoration"
+        );
     }
 
     fn temp_root(name: &str) -> PathBuf {
@@ -4774,6 +6747,119 @@ mod tests {
     }
 
     #[test]
+    fn direct_child_directory_guard_lists_directories_and_skips_everything_else() {
+        let root = temp_root("membership-child-directories-skips");
+        fs::create_dir_all(root.join("extension")).unwrap();
+        fs::write(root.join(".gitkeep"), b"").unwrap();
+        let external = temp_root("membership-child-directories-external");
+        let has_link = matches!(
+            testing::create_directory_link_fixture_for_test(&external, root.join("linked"))
+                .unwrap(),
+            testing::FileLinkFixtureOutcome::Created
+        );
+
+        // A container guarded for its child directories legitimately holds other
+        // things. They are not members: the snapshot lists the directories and
+        // refuses nothing, because a guard that cannot be taken beside a `.gitkeep`
+        // is a guarantee that is silently absent.
+        let snapshot = snapshot_directory_membership(
+            &root,
+            DirectoryMembershipSelector::DirectChildDirectories,
+        )
+        .expect("a file or link beside the directories must not fail the snapshot");
+
+        assert_eq!(
+            snapshot,
+            DirectoryMembershipSnapshot::Present(vec![DirectoryTopologyEntry {
+                name: OsString::from("extension"),
+                kind: DirectoryTopologyEntryKind::Directory,
+            }]),
+            "link fixture created: {has_link}"
+        );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn direct_child_directory_guard_detects_a_child_directory_that_appeared() {
+        let root = temp_root("membership-child-directories-appeared");
+        fs::create_dir_all(root.join("extension")).unwrap();
+        let expected = snapshot_directory_membership(
+            &root,
+            DirectoryMembershipSelector::DirectChildDirectories,
+        )
+        .unwrap();
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .guard_or_verify_directory_membership(
+                &root,
+                DirectoryMembershipSelector::DirectChildDirectories,
+                expected,
+            )
+            .unwrap();
+        fs::create_dir_all(root.join("late")).unwrap();
+
+        let error = transaction
+            .commit()
+            .expect_err("a child directory that appeared after planning must be caught");
+
+        assert!(error.contains("late"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn direct_child_directory_guard_ignores_a_planned_file_in_the_guarded_directory() {
+        let root = temp_root("membership-child-directories-planned-file");
+        fs::create_dir_all(root.join("extension")).unwrap();
+        let expected = snapshot_directory_membership(
+            &root,
+            DirectoryMembershipSelector::DirectChildDirectories,
+        )
+        .unwrap();
+        let created = root.join("Created.xml");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .guard_or_verify_directory_membership(
+                &root,
+                DirectoryMembershipSelector::DirectChildDirectories,
+                expected,
+            )
+            .unwrap();
+
+        // Writing a file into the guarded container does not change which of its
+        // children are directories, so it is not a membership delta at all.
+        transaction
+            .create_bytes(&created, b"<Created/>\n".to_vec())
+            .unwrap();
+        let report = transaction
+            .commit()
+            .expect("a planned file is not a member of a child-directory guard");
+
+        assert_eq!(report.created, vec![created]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn direct_child_directory_guard_rejects_a_file_shaped_expected_entry() {
+        let root = temp_root("membership-child-directories-file-entry");
+        let mut transaction = CompileTransaction::new();
+
+        let error = transaction
+            .guard_or_verify_directory_membership(
+                &root,
+                DirectoryMembershipSelector::DirectChildDirectories,
+                DirectoryMembershipSnapshot::Present(vec![DirectoryTopologyEntry {
+                    name: OsString::from("Configuration.xml"),
+                    kind: DirectoryTopologyEntryKind::File,
+                }]),
+            )
+            .expect_err("a file cannot be a member of a child-directory guard");
+
+        assert!(error.contains("Configuration.xml"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn directory_membership_guard_accepts_its_own_top_level_xml_create() {
         let root = temp_root("membership-own-create");
         let expected =
@@ -5128,7 +7214,7 @@ mod tests {
     }
 
     #[test]
-    fn already_present_registration_commits_as_a_byte_for_byte_noop() {
+    pub(crate) fn already_present_registration_commits_as_a_byte_for_byte_noop() {
         let root = temp_root("registration-noop");
         let config = root.join("Configuration.xml");
         let original = concat!(
@@ -5156,6 +7242,26 @@ mod tests {
         assert_eq!(fs::read(&config).unwrap(), original);
         assert!(transaction_debris(&root).is_empty());
         fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    pub(crate) fn identical_replacement_commits_as_a_byte_for_byte_noop() {
+        let root = temp_root("replacement-noop");
+        let target = root.join("Configuration.xml");
+        let original = b"<MetaDataObject><Configuration/></MetaDataObject>".to_vec();
+        fs::write(&target, &original).unwrap();
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .replace_bytes(&target, &original, original.clone())
+            .expect("an identical replacement remains a bound transaction input");
+
+        let report = transaction.commit().expect("no-op replacement must commit");
+
+        assert!(report.created.is_empty());
+        assert!(report.updated.is_empty());
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert!(transaction_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -6665,6 +8771,18 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// Registry-facing rollback diagnostic falsifier built only from real
+    /// publication failures.  It executes restore, removal, quarantine and
+    /// post-commit cleanup races instead of formatting invented messages.
+    #[test]
+    fn fault_injected_rollback_and_cleanup_paths_keep_distinct_diagnostics() {
+        registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap();
+        registration_rollback_validation_reports_preserved_quarantine();
+        removal_rollback_preserves_concurrent_file_and_recovery_artifact();
+        removal_rollback_preserves_concurrent_empty_directory_and_recovery_tree();
+        successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap();
+    }
+
     #[test]
     fn after_registration_backup_failure_restores_exact_bytes_and_removes_debris() {
         let root = temp_root("rollback-registration-backup");
@@ -6855,7 +8973,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_read_guard_serializes_with_owner_writer_and_rejects_stale_plan() {
+    pub(crate) fn exact_read_guard_serializes_with_owner_writer_and_rejects_stale_plan() {
         let root = temp_root("read-guard-concurrent-owner-writer");
         let owner = root.join("Owner.xml");
         let owner_before = b"<Owner><State>before</State></Owner>\n".to_vec();

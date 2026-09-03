@@ -54,19 +54,35 @@ claude plugin install unica@unica
 Затем выполните `/reload-plugins` либо начните новую сессию. Навыки становятся
 доступны с префиксом плагина, например `/unica:meta-info`.
 
-### Загрузка runtime
+### Доставка ядра и движков
 
-При первом MCP-вызове `unica` скачивает из релиза `IngvarConsulting/unica`
-исполнительные файлы для текущей ОС и архитектуры. Архив и каждый файл
-проверяются по SHA-256. Неполная или повреждённая загрузка не получает маркер
+При старте MCP bootstrap скачивает только ядро `unica` из релиза
+`IngvarConsulting/unica` для текущей ОС и архитектуры. После запуска ядро
+доставляет нужный движок из закреплённого релиза `unica-toolchain` перед первым
+вызовом, которому этот движок действительно нужен. Архив, ассет и каждый файл
+проверяются по SHA-256; неполная или повреждённая загрузка не получает маркер
 готовности.
 
-Готовый runtime атомарно публикуется в кэше хоста:
+Если доставка движка не завершилась внутри ограниченного окна, вызов возвращает
+`work.status=working` и не запускает обработчик. Повторите тот же предметный
+вызов: отдельного публичного инструмента установки нет. Параллельные вызовы
+делят одну загрузку.
+
+Корень кэша зависит от хоста:
 
 | Хост | Каталог кэша |
 | --- | --- |
-| Codex | `$CODEX_HOME/unica/runtimes/<version>/<target>`, при стандартном `CODEX_HOME` — `~/.codex/unica/runtimes/...` |
-| Claude Code | `${CLAUDE_PLUGIN_DATA}/runtimes/<version>/<target>`, по умолчанию — `~/.claude/plugins/data/unica-unica/...`; этот каталог переживает обновление плагина |
+| Codex | `$CODEX_HOME/unica/runtimes`, при стандартном `CODEX_HOME` — `~/.codex/unica/runtimes` |
+| Claude Code | `${CLAUDE_PLUGIN_DATA}/runtimes`, по умолчанию — `~/.claude/plugins/data/unica-unica/...`; этот каталог переживает обновление плагина |
+
+Внутри корня каждая неизменяемая поставка лежит по адресу
+`<artifact>/<version>--<asset-sha256>/<target>`. Поэтому пересобранные байты с
+той же версией не перезаписывают прежний движок. Для образа, который после
+сборки работает без сети, заранее доставьте ядро и все движки:
+
+```sh
+<plugin-root>/bootstrap/bin/<target>/unica-bootstrap prefetch --plugin-root <plugin-root>
+```
 
 ## Обновление
 
@@ -165,6 +181,12 @@ claude plugin marketplace remove unica
 
 ## Разработка
 
+Рекомендуемое окружение разработчика, настройка `rust-analyzer` для кодовых
+агентов и установка навыков MCP Server Dev описаны в
+[руководстве для контрибьюторов](CONTRIBUTING.md). Реестр приёмочных
+сценариев поверхности и покрытие операций — в
+[`docs/acceptance-scenarios.md`](docs/acceptance-scenarios.md).
+
 Для разработки под Codex используется отдельный marketplace `unica-dev`:
 
 ```sh
@@ -180,7 +202,7 @@ claude --plugin-dir ./plugins/unica
 ```
 
 На Windows x64 запускайте этот скрипт из **Git Bash**, входящего в 64-битный
-Git for Windows. Для локальной сборки нужны Python 3.10 или новее, стабильный
+Git for Windows. Для локальной сборки нужны Python 3.12 или новее, стабильный
 Rust с нативным toolchain MSVC, а также Microsoft C++ Build Tools и Windows SDK.
 
 WSL сохраняет Linux-семантику и собирает `linux-x64`. MSYS2 и Cygwin не входят
@@ -188,13 +210,13 @@ WSL сохраняет Linux-семантику и собирает `linux-x64`.
 
 Исходный `.mcp.json` запускает `cargo run`; локальный скрипт собирает инструменты
 только для текущей машины. Официальный пакет остаётся тонким: skills, assets,
-три bootstrap-бинарника и `runtime-manifest.json`, без полного runtime.
+три bootstrap-бинарника и `runtime-manifest.json`, без ядра и движков.
 
 ## Репозиторий
 
 - `plugins/unica/skills/` — прикладные навыки 1С;
 - `crates/unica-coder/` — единый MCP runtime `unica`;
-- `crates/unica-bootstrap/` — загрузка, проверка и запуск runtime;
+- `crates/unica-bootstrap/` — проверяемая доставка, кеш и запуск ядра;
 - `plugins/unica/third-party/tools.lock.json` — версии внутренних инструментов.
 
 [Авторы, источники и лицензии](plugins/unica/ATTRIBUTIONS.md).

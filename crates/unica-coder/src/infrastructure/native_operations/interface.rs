@@ -1533,7 +1533,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::domain::workspace::WorkspaceContext;
@@ -1721,6 +1721,35 @@ mod tests {
             );
             let _ = fs::remove_dir_all(&context.workspace_root);
         }
+    }
+
+    #[test]
+    pub(crate) fn repeated_interface_edit_preserves_identity_but_reports_attempted_update() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
+        let context = temp_context("repeat-noop");
+        let ci_rel = "src/Subsystems/Sales/Ext/CommandInterface.xml";
+        write_valid_subsystem_owner(&context, ci_rel);
+        let ci_path = write_command_interface(
+            &context,
+            ci_rel,
+            &command_interface_document(INTERFACE_CI_NS, ""),
+        );
+        let args = hide_args(ci_rel, false);
+
+        let first = edit_interface(&args, &context);
+        assert!(first.ok, "{first:?}");
+        assert!(!first.changes.is_empty(), "{first:?}");
+        let after = fs::read(&ci_path).unwrap();
+        let identity = file_identity_for_test(&ci_path).unwrap();
+
+        let repeated = edit_interface(&args, &context);
+        assert!(repeated.ok, "{repeated:?}");
+        assert_eq!(repeated.changes.len(), 1, "{repeated:?}");
+        assert!(repeated.summary.contains("added 0, removed 0, modified 0"));
+        assert_eq!(fs::read(&ci_path).unwrap(), after);
+        assert_eq!(file_identity_for_test(&ci_path).unwrap(), identity);
+        fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
     #[test]
@@ -2056,7 +2085,8 @@ mod tests {
     }
 
     #[test]
-    fn interface_edit_rolls_back_if_unchanged_metadata_owner_changes_during_publication() {
+    pub(crate) fn interface_edit_rolls_back_if_unchanged_metadata_owner_changes_during_publication()
+    {
         let context = temp_context("metadata-owner-race");
         fs::write(
             context.cwd.join("v8project.yaml"),

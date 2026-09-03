@@ -582,6 +582,16 @@ fn canonical_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
     )))
 }
 
+/// Non-allocating twin of `metadata_address_kind_spellings` for the hot
+/// address-parsing path: it answers whether `raw` is the canonical spelling
+/// or a Russian alias of `canonical`.
+pub(crate) fn metadata_address_kind_matches(canonical: &str, raw: &str) -> bool {
+    ADDRESS_KINDS
+        .iter()
+        .find(|kind| kind.canonical == canonical)
+        .is_some_and(|kind| kind.canonical == raw || kind.russian_aliases.contains(&raw))
+}
+
 pub(crate) fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static str>> {
     ADDRESS_KINDS
         .iter()
@@ -978,6 +988,14 @@ mod tests {
                 "targetKind": "metadataObject"
             })
         );
+    }
+
+    #[test]
+    fn logical_target_identity_contract_is_complete() {
+        source_target_profile_emits_canonical_english_kind_tokens();
+        source_target_profile_normalizes_only_registered_exact_russian_kind_aliases();
+        source_target_profile_preserves_application_name_case();
+        source_target_and_resolved_target_serialize_only_logical_identity();
     }
 
     #[test]

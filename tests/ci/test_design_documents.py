@@ -21,17 +21,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 DESIGN_DIR = REPO_ROOT / "docs" / "design"
 PLANS_DIR = REPO_ROOT / "docs" / "plans"
-DECISIONS_DIR = REPO_ROOT / "spec" / "decisions"
-SPEC_DIR = REPO_ROOT / "spec"
+V1_DECISIONS_DIR = REPO_ROOT / "docs" / "arch-v1" / "decisions"
+V2_DECISIONS_DIR = REPO_ROOT / "arch" / "decisions"
+RETIRED_SPEC_DIR = REPO_ROOT / "spec"
 
 DATE_FIELD = re.compile(r"^- Date: `(?P<date>\d{4}-\d{2}-\d{2})`$", re.MULTILINE)
 STATUS_FIELD = re.compile(
     r"^- Status: `(?P<status>draft|approved|superseded)`$", re.MULTILINE
 )
 DECISION_FIELD = re.compile(
-    r"^- Decision: (?:`(?P<adr>ADR-\d{4})`|`none` — .+|none — .+)$", re.MULTILINE
+    r"^- Decision: (?:`(?P<decision>ADR-\d{4}|DEC\.\d{4}-\d{2}-\d{2}\.[A-Z0-9-]+)`|"
+    r"`none` — .+|none — .+)$",
+    re.MULTILINE,
 )
-ADR_IN_DECISION = re.compile(r"ADR-(?P<number>\d{4})")
 ADR_FILE = re.compile(r"^(?P<number>\d{4})-.+\.md$")
 
 ARCHIVE_MARKER = "Архивный материал планирования, а не источник истины"
@@ -78,13 +80,21 @@ TITLE_FIRST_LEGACY = {
 }
 
 
-def decision_numbers_on_disk() -> set[str]:
-    numbers = set()
-    for path in DECISIONS_DIR.glob("*.md"):
+def decision_symbols_on_disk() -> set[str]:
+    symbols = set()
+    for path in V1_DECISIONS_DIR.glob("*.md"):
         match = ADR_FILE.match(path.name)
         if match:
-            numbers.add(match.group("number"))
-    return numbers
+            symbols.add(f"ADR-{match.group('number')}")
+    for path in V2_DECISIONS_DIR.glob("*.md"):
+        match = re.search(
+            r"^id:\s*(DEC\.[A-Z0-9.-]+)\s*$",
+            path.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        if match:
+            symbols.add(match.group(1))
+    return symbols
 
 
 def design_documents() -> list[Path]:
@@ -106,7 +116,7 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_registry_contract_tests_do_not_read_the_dated_rlm_plan(self) -> None:
-        registry_tests = (REPO_ROOT / "tests/ci/test_architecture_registry.py").read_text(
+        registry_tests = (REPO_ROOT / "tests/arch/test_registry.py").read_text(
             encoding="utf-8"
         )
         self.assertNotIn(
@@ -157,8 +167,8 @@ class LayoutTests(unittest.TestCase):
         """
         retired = [
             REPO_ROOT / "docs" / "superpowers",
-            SPEC_DIR / "designs",
-            SPEC_DIR / "plans",
+            RETIRED_SPEC_DIR / "designs",
+            RETIRED_SPEC_DIR / "plans",
         ]
         existing = [
             path.relative_to(REPO_ROOT).as_posix() for path in retired if path.exists()
@@ -261,15 +271,15 @@ class DesignHeaderTests(unittest.TestCase):
         )
 
     def test_declared_decisions_exist(self) -> None:
-        available = decision_numbers_on_disk()
+        available = decision_symbols_on_disk()
         offenders = []
         for path in design_documents():
             match = DECISION_FIELD.search(path.read_text(encoding="utf-8"))
-            if not match or not match.group("adr"):
+            if not match or not match.group("decision"):
                 continue
-            number = ADR_IN_DECISION.search(match.group("adr")).group("number")
-            if number not in available:
-                offenders.append(f"{path.name}: {match.group('adr')} has no record")
+            decision = match.group("decision")
+            if decision not in available:
+                offenders.append(f"{path.name}: {decision} has no record")
         self.assertEqual(offenders, [])
 
     def test_legacy_exemption_list_only_names_documents_that_exist(self) -> None:
@@ -300,7 +310,7 @@ class NormativeBoundaryTests(unittest.TestCase):
         contract. If a design really needs to state a rule, that rule belongs in
         a decision record or the invariant registry.
         """
-        claims = ("INV-", "REQ-")
+        claims = ("INV-", "REQ-", "INV.", "CTR.", "DEC.")
         offenders = []
         for path in design_documents():
             for number, line in enumerate(
@@ -314,7 +324,7 @@ class NormativeBoundaryTests(unittest.TestCase):
         self.assertEqual(
             offenders,
             [],
-            "registry entries are declared in spec/, never in a design document",
+            "registry entries are declared in arch/, never in a design document",
         )
 
 

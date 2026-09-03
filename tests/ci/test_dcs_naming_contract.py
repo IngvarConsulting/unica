@@ -11,14 +11,12 @@ EXPECTED_TOOLS = {
     "unica.dcs.compile",
     "unica.dcs.edit",
     "unica.dcs.info",
-    "unica.dcs.validate",
 }
 REMOVED_TOOLS = {name.replace(".dcs.", ".skd.") for name in EXPECTED_TOOLS}
 EXPECTED_SKILLS = {
     "dcs-compile",
     "dcs-edit",
     "dcs-info",
-    "dcs-validate",
 }
 REMOVED_SKILLS = {name.replace("dcs-", "skd-") for name in EXPECTED_SKILLS}
 SKD_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9])(?:skd|Skd|SKD)")
@@ -97,7 +95,7 @@ class DcsNamingContractTests(unittest.TestCase):
         self.assertEqual(violations, [])
 
     def test_provenance_names_local_dcs_contract_but_preserves_donor_paths(self) -> None:
-        path = REPO_ROOT / "spec" / "provenance" / "skill-upstreams.json"
+        path = REPO_ROOT / "docs" / "provenance" / "skill-upstreams.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         entries = {
             entry["skill"]: entry
@@ -145,12 +143,11 @@ class DcsNamingContractTests(unittest.TestCase):
             REPO_ROOT / "crates" / "unica-coder" / "src",
             REPO_ROOT / "plugins" / "unica",
             REPO_ROOT / "scripts",
-            REPO_ROOT / "spec",
+            REPO_ROOT / "arch",
             REPO_ROOT / "tests" / "ci",
         ]
         excluded = {
-            "spec/provenance/skill-upstreams.json",
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/provenance/skill-upstreams.json",
             "tests/ci/test_dcs_naming_contract.py",
         }
         paths: list[Path] = []

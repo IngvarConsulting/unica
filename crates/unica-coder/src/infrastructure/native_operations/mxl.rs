@@ -1,12 +1,14 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::AdapterOutcome;
+use crate::domain::address::QualifiedAddress;
 use crate::domain::support_state::{
     ObjectSupportData as DomainObjectSupportData, SupportStateReader,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
+    logical_selection, physical_selection, typed_reader_metadata_target, AttachedResource,
+    ResolvedReadTarget,
 };
 use crate::infrastructure::platform_xml_owner::MXL_ROOT;
 use crate::infrastructure::support_state::WorkspaceSupportStateReader;
@@ -22,6 +24,12 @@ use super::common::*;
 use super::compile_transaction::CompileTransaction;
 
 pub(crate) const MXL_DOCUMENT_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+
+pub(crate) fn typed_mxl_reader_target(
+    address: &QualifiedAddress,
+) -> Option<crate::domain::source_target::MetadataAddress> {
+    typed_reader_metadata_target(address, TEMPLATE_KINDS)
+}
 
 pub(crate) fn empty_spreadsheet_document_xml() -> String {
     format!(
@@ -229,6 +237,201 @@ pub(crate) struct MxlInfoExecution {
     pub(crate) data: Option<MxlInfoData>,
 }
 
+pub(crate) fn parse_mxl_info_xml(
+    bytes: &[u8],
+    template_name: &str,
+    support: DomainObjectSupportData,
+    include_text: bool,
+) -> Result<MxlInfoData, String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "Template.xml is not UTF-8".to_string())?;
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error in Template.xml: {err}"))?;
+    let root = doc.root_element();
+    require_mxl_document_root(root)?;
+
+    let mut column_sets = Vec::<(String, i64)>::new();
+    let mut default_col_count = 0i64;
+    for cols in root
+        .children()
+        .filter(|node| role_info_element(*node, "columns", None))
+    {
+        let size = child_text(cols, "size", None).parse::<i64>().unwrap_or(0);
+        let id = child_text(cols, "id", None);
+        if id.is_empty() {
+            default_col_count = size;
+        } else {
+            column_sets.push((id, size));
+        }
+    }
+
+    let row_nodes = root
+        .children()
+        .filter(|node| role_info_element(*node, "rowsItem", None))
+        .collect::<Vec<_>>();
+    let doc_height = mxl_logical_height(root, &row_nodes);
+    let mut row_map = Vec::<(i64, roxmltree::Node<'_, '_>)>::new();
+    for row_item in &row_nodes {
+        if let Ok(index) = child_text(*row_item, "index", None).parse::<i64>() {
+            row_map.push((index, *row_item));
+        }
+    }
+
+    let mut named_areas = Vec::<MxlNamedArea>::new();
+    let mut named_drawings = Vec::<(String, String)>::new();
+    for item in root
+        .children()
+        .filter(|node| role_info_element(*node, "namedItem", None))
+    {
+        let item_type = attribute_by_local_name(item, "type").unwrap_or("");
+        let name = child_text(item, "name", None);
+        if item_type.contains("NamedItemCells") {
+            if let Some(area) = item
+                .children()
+                .find(|node| role_info_element(*node, "area", None))
+            {
+                named_areas.push(MxlNamedArea {
+                    name,
+                    area_type: child_text(area, "type", None),
+                    begin_row: child_text(area, "beginRow", None).parse().unwrap_or(0),
+                    end_row: child_text(area, "endRow", None).parse().unwrap_or(0),
+                    begin_col: child_text(area, "beginColumn", None).parse().unwrap_or(0),
+                    end_col: child_text(area, "endColumn", None).parse().unwrap_or(0),
+                    columns_id: {
+                        let value = child_text(area, "columnsID", None);
+                        (!value.is_empty()).then_some(value)
+                    },
+                });
+            }
+        } else if item_type.contains("NamedItemDrawing") {
+            named_drawings.push((name, child_text(item, "drawingID", None)));
+        }
+    }
+    named_areas.sort_by(|left, right| {
+        let left_key = if left.area_type == "Columns" {
+            (left.begin_col, &left.name)
+        } else {
+            (left.begin_row, &left.name)
+        };
+        let right_key = if right.area_type == "Columns" {
+            (right.begin_col, &right.name)
+        } else {
+            (right.begin_row, &right.name)
+        };
+        left_key.cmp(&right_key)
+    });
+
+    let mut area_data = Vec::<MxlAreaInfo>::new();
+    let mut covered_rows = Vec::<i64>::new();
+    for area in &named_areas {
+        let (params, details, texts, templates) =
+            mxl_area_cell_data(area, &row_map, doc_height, include_text);
+        if area.begin_row != -1 && area.end_row != -1 {
+            for row in area.begin_row..=area.end_row {
+                if !covered_rows.contains(&row) {
+                    covered_rows.push(row);
+                }
+            }
+        }
+        area_data.push(MxlAreaInfo {
+            area: area.clone(),
+            params,
+            details,
+            texts,
+            templates,
+        });
+    }
+
+    let mut outside_params = Vec::<String>::new();
+    let mut outside_details = Vec::<String>::new();
+    let mut outside_texts = Vec::<String>::new();
+    let mut outside_templates = Vec::<String>::new();
+    row_map.sort_by_key(|(index, _)| *index);
+    for (row_index, row_node) in &row_map {
+        if covered_rows.contains(row_index) {
+            continue;
+        }
+        for cell in mxl_cell_data(*row_node, include_text) {
+            match cell {
+                MxlCellData::Parameter(value, detail) => {
+                    if let Some(detail) = detail {
+                        outside_details.push(format!("{value}->{detail}"));
+                    }
+                    outside_params.push(value);
+                }
+                MxlCellData::TemplateParam(value) => outside_params.push(format!("{value} [tpl]")),
+                MxlCellData::Text(value) => outside_texts.push(value),
+                MxlCellData::Template(value) => outside_templates.push(value),
+            }
+        }
+    }
+
+    let merge_count = root
+        .children()
+        .filter(|node| role_info_element(*node, "merge", None))
+        .count();
+    let drawing_count = root
+        .children()
+        .filter(|node| role_info_element(*node, "drawing", None))
+        .count();
+    // Both branches described the same template: one as prose, the other as
+    // a JSON string inside the JSON envelope. Data replaces both.
+    let areas = area_data
+        .iter()
+        .map(|item| MxlAreaData {
+            name: item.area.name.clone(),
+            kind: item.area.area_type.clone(),
+            begin_row: item.area.begin_row,
+            end_row: item.area.end_row,
+            begin_col: item.area.begin_col,
+            end_col: item.area.end_col,
+            columns_id: item.area.columns_id.clone(),
+            drawing_id: None,
+            params: item.params.clone(),
+            details: item.details.clone(),
+            texts: include_text.then(|| item.texts.clone()),
+            templates: include_text.then(|| item.templates.clone()),
+        })
+        .chain(named_drawings.iter().map(|(name, drawing_id)| MxlAreaData {
+            name: name.clone(),
+            kind: "Drawing".to_string(),
+            begin_row: 0,
+            end_row: 0,
+            begin_col: 0,
+            end_col: 0,
+            columns_id: None,
+            drawing_id: Some(drawing_id.clone()),
+            params: Vec::new(),
+            details: Vec::new(),
+            texts: include_text.then(Vec::new),
+            templates: include_text.then(Vec::new),
+        }))
+        .collect::<Vec<_>>();
+
+    let data = MxlInfoData {
+        name: template_name.to_string(),
+        support,
+        rows: doc_height,
+        columns: default_col_count,
+        column_sets: column_sets
+            .iter()
+            .map(|(id, size)| MxlColumnSetData {
+                id: id.clone(),
+                size: *size,
+            })
+            .collect(),
+        areas,
+        outside: MxlOutsideData {
+            params: outside_params,
+            details: outside_details,
+            texts: include_text.then_some(outside_texts),
+            templates: include_text.then_some(outside_templates),
+        },
+        merge_count,
+        drawing_count,
+    };
+    Ok(data)
+}
+
 pub(crate) fn analyze_mxl_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -240,206 +443,24 @@ pub(crate) fn analyze_mxl_info(
         if !template_path.is_file() {
             return Err(format!("File not found: {}", template_path.display()));
         }
-        let text = fs::read_to_string(&template_path)
+        let bytes = fs::read(&template_path)
             .map_err(|err| format!("failed to read {}: {err}", template_path.display()))?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", template_path.display()))?;
-        let root = doc.root_element();
-        require_mxl_document_root(root)?;
-        let include_text = bool_arg(args, &["withText", "WithText"]);
-
-        let mut column_sets = Vec::<(String, i64)>::new();
-        let mut default_col_count = 0i64;
-        for cols in root
-            .children()
-            .filter(|node| role_info_element(*node, "columns", None))
-        {
-            let size = child_text(cols, "size", None).parse::<i64>().unwrap_or(0);
-            let id = child_text(cols, "id", None);
-            if id.is_empty() {
-                default_col_count = size;
-            } else {
-                column_sets.push((id, size));
-            }
-        }
-
-        let row_nodes = root
-            .children()
-            .filter(|node| role_info_element(*node, "rowsItem", None))
-            .collect::<Vec<_>>();
-        let doc_height = mxl_logical_height(root, &row_nodes);
-        let mut row_map = Vec::<(i64, roxmltree::Node<'_, '_>)>::new();
-        for row_item in &row_nodes {
-            if let Ok(index) = child_text(*row_item, "index", None).parse::<i64>() {
-                row_map.push((index, *row_item));
-            }
-        }
-
-        let mut named_areas = Vec::<MxlNamedArea>::new();
-        let mut named_drawings = Vec::<(String, String)>::new();
-        for item in root
-            .children()
-            .filter(|node| role_info_element(*node, "namedItem", None))
-        {
-            let item_type = attribute_by_local_name(item, "type").unwrap_or("");
-            let name = child_text(item, "name", None);
-            if item_type.contains("NamedItemCells") {
-                if let Some(area) = item
-                    .children()
-                    .find(|node| role_info_element(*node, "area", None))
-                {
-                    named_areas.push(MxlNamedArea {
-                        name,
-                        area_type: child_text(area, "type", None),
-                        begin_row: child_text(area, "beginRow", None).parse().unwrap_or(0),
-                        end_row: child_text(area, "endRow", None).parse().unwrap_or(0),
-                        begin_col: child_text(area, "beginColumn", None).parse().unwrap_or(0),
-                        end_col: child_text(area, "endColumn", None).parse().unwrap_or(0),
-                        columns_id: {
-                            let value = child_text(area, "columnsID", None);
-                            (!value.is_empty()).then_some(value)
-                        },
-                    });
-                }
-            } else if item_type.contains("NamedItemDrawing") {
-                named_drawings.push((name, child_text(item, "drawingID", None)));
-            }
-        }
-        named_areas.sort_by(|left, right| {
-            let left_key = if left.area_type == "Columns" {
-                (left.begin_col, &left.name)
-            } else {
-                (left.begin_row, &left.name)
-            };
-            let right_key = if right.area_type == "Columns" {
-                (right.begin_col, &right.name)
-            } else {
-                (right.begin_row, &right.name)
-            };
-            left_key.cmp(&right_key)
-        });
-
-        let mut area_data = Vec::<MxlAreaInfo>::new();
-        let mut covered_rows = Vec::<i64>::new();
-        for area in &named_areas {
-            let (params, details, texts, templates) =
-                mxl_area_cell_data(area, &row_map, doc_height, include_text);
-            if area.begin_row != -1 && area.end_row != -1 {
-                for row in area.begin_row..=area.end_row {
-                    if !covered_rows.contains(&row) {
-                        covered_rows.push(row);
-                    }
-                }
-            }
-            area_data.push(MxlAreaInfo {
-                area: area.clone(),
-                params,
-                details,
-                texts,
-                templates,
-            });
-        }
-
-        let mut outside_params = Vec::<String>::new();
-        let mut outside_details = Vec::<String>::new();
-        let mut outside_texts = Vec::<String>::new();
-        let mut outside_templates = Vec::<String>::new();
-        row_map.sort_by_key(|(index, _)| *index);
-        for (row_index, row_node) in &row_map {
-            if covered_rows.contains(row_index) {
-                continue;
-            }
-            for cell in mxl_cell_data(*row_node, include_text) {
-                match cell {
-                    MxlCellData::Parameter(value, detail) => {
-                        if let Some(detail) = detail {
-                            outside_details.push(format!("{value}->{detail}"));
-                        }
-                        outside_params.push(value);
-                    }
-                    MxlCellData::TemplateParam(value) => {
-                        outside_params.push(format!("{value} [tpl]"))
-                    }
-                    MxlCellData::Text(value) => outside_texts.push(value),
-                    MxlCellData::Template(value) => outside_templates.push(value),
-                }
-            }
-        }
-
-        let merge_count = root
-            .children()
-            .filter(|node| role_info_element(*node, "merge", None))
-            .count();
-        let drawing_count = root
-            .children()
-            .filter(|node| role_info_element(*node, "drawing", None))
-            .count();
         let template_name = template_path
             .parent()
             .and_then(Path::parent)
             .and_then(|path| path.file_name())
             .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        // Both branches described the same template: one as prose, the other as
-        // a JSON string inside the JSON envelope. Data replaces both.
-        let areas = area_data
-            .iter()
-            .map(|item| MxlAreaData {
-                name: item.area.name.clone(),
-                kind: item.area.area_type.clone(),
-                begin_row: item.area.begin_row,
-                end_row: item.area.end_row,
-                begin_col: item.area.begin_col,
-                end_col: item.area.end_col,
-                columns_id: item.area.columns_id.clone(),
-                drawing_id: None,
-                params: item.params.clone(),
-                details: item.details.clone(),
-                texts: include_text.then(|| item.texts.clone()),
-                templates: include_text.then(|| item.templates.clone()),
-            })
-            .chain(named_drawings.iter().map(|(name, drawing_id)| MxlAreaData {
-                name: name.clone(),
-                kind: "Drawing".to_string(),
-                begin_row: 0,
-                end_row: 0,
-                begin_col: 0,
-                end_col: 0,
-                columns_id: None,
-                drawing_id: Some(drawing_id.clone()),
-                params: Vec::new(),
-                details: Vec::new(),
-                texts: include_text.then(Vec::new),
-                templates: include_text.then(Vec::new),
-            }))
-            .collect::<Vec<_>>();
-
-        let data = MxlInfoData {
-            name: template_name,
-            support: support_reader
-                .object_support(&selection.target)
-                .map_err(|error| error.to_string())?,
-            rows: doc_height,
-            columns: default_col_count,
-            column_sets: column_sets
-                .iter()
-                .map(|(id, size)| MxlColumnSetData {
-                    id: id.clone(),
-                    size: *size,
-                })
-                .collect(),
-            areas,
-            outside: MxlOutsideData {
-                params: outside_params,
-                details: outside_details,
-                texts: include_text.then_some(outside_texts),
-                templates: include_text.then_some(outside_templates),
-            },
-            merge_count,
-            drawing_count,
-        };
+            .unwrap_or("");
+        let support = support_reader
+            .object_support(&selection.target)
+            .map_err(|error| error.to_string())?;
+        let data = parse_mxl_info_xml(
+            &bytes,
+            template_name,
+            support,
+            bool_arg(args, &["withText", "WithText"]),
+        )
+        .map_err(|error| mxl_info_path_error(error, &template_path))?;
         Ok((data, template_path))
     })();
 
@@ -477,6 +498,19 @@ pub(crate) fn analyze_mxl_info(
             data: None,
         },
     }
+}
+
+fn mxl_info_path_error(error: String, template_path: &Path) -> String {
+    if error == "Template.xml is not UTF-8" {
+        return format!(
+            "failed to read {}: stream did not contain valid UTF-8",
+            template_path.display()
+        );
+    }
+    if let Some(detail) = error.strip_prefix("XML parse error in Template.xml:") {
+        return format!("XML parse error in {}:{detail}", template_path.display());
+    }
+    error
 }
 
 pub(crate) fn validate_mxl(
@@ -843,13 +877,204 @@ pub(crate) fn validate_mxl(
     }
 }
 
+/// One decompiled spreadsheet document: the JSON definition the compiler
+/// accepts back, plus the counts the adapters report.
+pub(crate) struct MxlDecompiledDocument {
+    pub(crate) json_text: String,
+    pub(crate) area_count: usize,
+    pub(crate) font_count: usize,
+    pub(crate) style_count: usize,
+    pub(crate) merge_count: usize,
+    pub(crate) logical_height: i64,
+    pub(crate) total_columns: i64,
+}
+
+/// Decompiles spreadsheet XML text into the JSON definition. This is the
+/// single source of the decompiler: the legacy adapter and the v0.13 staged
+/// planner both route through it.
+pub(crate) fn mxl_decompile_document(
+    text: &str,
+    label: &str,
+) -> Result<MxlDecompiledDocument, String> {
+    const NS_D: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+    const NS_V8: &str = "http://v8.1c.ru/8.1/data/core";
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error in {label}: {err}"))?;
+    let root = doc.root_element();
+    require_mxl_document_root(root)?;
+
+    let raw_fonts = mxl_decompile_fonts(root, NS_D);
+    let raw_lines = mxl_decompile_lines(root, NS_D);
+    let raw_formats = mxl_decompile_formats(root, NS_D, NS_V8);
+
+    let columns_node = mxl_child(root, "columns", Some(NS_D));
+    let total_columns = columns_node
+        .map(|node| mxl_int_child(node, "size", Some(NS_D)))
+        .unwrap_or(0);
+    let mut col_format_indices = BTreeMap::<i64, i64>::new();
+    if let Some(columns_node) = columns_node {
+        for item in mxl_direct_children(columns_node, "columnsItem", Some(NS_D)) {
+            let col_idx = mxl_int_child(item, "index", Some(NS_D));
+            let fmt_idx = mxl_child(item, "column", Some(NS_D))
+                .map(|column| mxl_int_child(column, "formatIndex", Some(NS_D)))
+                .unwrap_or(0);
+            col_format_indices.insert(col_idx, fmt_idx);
+        }
+    }
+
+    let default_fmt_idx =
+        mxl_optional_int_child(root, "defaultFormatIndex", Some(NS_D)).unwrap_or(0);
+    let mut default_width = 10;
+    if let Some(format) = mxl_decompile_format(&raw_formats, default_fmt_idx) {
+        if format.width > 0 {
+            default_width = format.width;
+        }
+    }
+
+    let mut col_width_map = BTreeMap::<i64, i64>::new();
+    for (col0, fmt_idx) in &col_format_indices {
+        if let Some(format) = mxl_decompile_format(&raw_formats, *fmt_idx) {
+            if format.width > 0 && format.width != default_width {
+                col_width_map.insert(*col0 + 1, format.width);
+            }
+        }
+    }
+
+    let mut merge_map = BTreeMap::<(i64, i64), (i64, i64)>::new();
+    for merge in mxl_direct_children(root, "merge", Some(NS_D)) {
+        let row = mxl_int_child(merge, "r", Some(NS_D));
+        let col = mxl_int_child(merge, "c", Some(NS_D));
+        let width = mxl_int_child(merge, "w", Some(NS_D));
+        let height = mxl_optional_int_child(merge, "h", Some(NS_D)).unwrap_or(0);
+        merge_map.insert((row, col), (width, height));
+    }
+
+    let mut named_areas = Vec::<MxlNamedItem>::new();
+    for named in mxl_direct_children(root, "namedItem", Some(NS_D)) {
+        if attribute_by_local_name(named, "type").unwrap_or("") != "NamedItemCells" {
+            continue;
+        }
+        let Some(area) = mxl_child(named, "area", Some(NS_D)) else {
+            continue;
+        };
+        if mxl_child_text(area, "type", Some(NS_D)) != "Rows" {
+            continue;
+        }
+        named_areas.push(MxlNamedItem {
+            name: mxl_child_text(named, "name", Some(NS_D)),
+            begin_row: mxl_int_child(area, "beginRow", Some(NS_D)),
+            end_row: mxl_int_child(area, "endRow", Some(NS_D)),
+        });
+    }
+
+    let row_nodes = mxl_direct_children(root, "rowsItem", Some(NS_D));
+    let is_empty_sentinel = is_platform_empty_mxl_sentinel(root, &row_nodes);
+    let logical_height = mxl_logical_height(root, &row_nodes);
+    let mut row_data = BTreeMap::<i64, MxlDecompiledRow>::new();
+    for row_item in row_nodes {
+        if is_empty_sentinel {
+            break;
+        }
+        let row_idx = mxl_int_child(row_item, "index", Some(NS_D));
+        let index_to = mxl_optional_int_child(row_item, "indexTo", Some(NS_D)).unwrap_or(row_idx);
+        let Some(row_node) = mxl_child(row_item, "row", Some(NS_D)) else {
+            continue;
+        };
+        let row_fmt_idx = mxl_optional_int_child(row_node, "formatIndex", Some(NS_D)).unwrap_or(0);
+        let is_empty = mxl_child_text(row_node, "empty", Some(NS_D)) == "true";
+        let mut cells = Vec::<MxlDecompiledCell>::new();
+        if !is_empty {
+            let mut col = -1;
+            for c_group in mxl_direct_children(row_node, "c", Some(NS_D)) {
+                if let Some(idx) = mxl_optional_int_child(c_group, "i", Some(NS_D)) {
+                    col = idx;
+                } else {
+                    col += 1;
+                }
+                let Some(cell) = mxl_child(c_group, "c", Some(NS_D)) else {
+                    continue;
+                };
+                let format_idx = mxl_optional_int_child(cell, "f", Some(NS_D)).unwrap_or(0);
+                let param = non_empty_string(mxl_child_text(cell, "parameter", Some(NS_D)));
+                let detail = non_empty_string(mxl_child_text(cell, "detailParameter", Some(NS_D)));
+                let text = mxl_child(cell, "tl", Some(NS_D)).and_then(|tl| {
+                    tl.descendants()
+                        .find(|node| role_info_element(*node, "content", Some(NS_V8)))
+                        .and_then(|node| node.text())
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                });
+                cells.push(MxlDecompiledCell {
+                    col,
+                    format_idx,
+                    param,
+                    detail,
+                    text,
+                });
+            }
+        }
+        for row in row_idx..=index_to {
+            row_data.insert(
+                row,
+                MxlDecompiledRow {
+                    format_idx: row_fmt_idx,
+                    cells: cells.clone(),
+                    empty: is_empty,
+                },
+            );
+        }
+    }
+
+    let (font_names, font_defs) = mxl_decompile_name_fonts(&raw_fonts);
+    let (style_names, mut style_defs, format_to_style_key) =
+        mxl_decompile_styles(&row_data, &raw_formats, &raw_lines, &font_names);
+    let areas = mxl_decompile_areas(
+        &named_areas,
+        &row_data,
+        &raw_formats,
+        &raw_lines,
+        &merge_map,
+        &style_names,
+        &format_to_style_key,
+    );
+    let column_widths = mxl_decompile_compress_widths(&col_width_map);
+
+    if style_defs
+        .iter()
+        .any(|(name, props)| name == "default" && ordered_json_is_empty_object(props))
+    {
+        style_defs.retain(|(name, _)| name != "default");
+    }
+    let used_styles = mxl_decompile_used_styles(&areas);
+    style_defs.retain(|(name, _)| used_styles.contains(name));
+    let style_count = style_defs.len();
+
+    let mut result_fields = vec![
+        ("columns".to_string(), OrderedJson::Int(total_columns)),
+        ("defaultWidth".to_string(), OrderedJson::Int(default_width)),
+    ];
+    if !column_widths.is_empty() {
+        result_fields.push(("columnWidths".to_string(), OrderedJson::Obj(column_widths)));
+    }
+    result_fields.push(("fonts".to_string(), OrderedJson::Obj(font_defs)));
+    result_fields.push(("styles".to_string(), OrderedJson::Obj(style_defs)));
+    result_fields.push(("areas".to_string(), OrderedJson::Arr(areas)));
+    let json_text = render_ordered_json(&OrderedJson::Obj(result_fields));
+    Ok(MxlDecompiledDocument {
+        json_text,
+        area_count: named_areas.len(),
+        font_count: raw_fonts.len(),
+        style_count,
+        merge_count: merge_map.len(),
+        logical_height,
+        total_columns,
+    })
+}
+
 pub(crate) fn decompile_mxl(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    const NS_D: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
-    const NS_V8: &str = "http://v8.1c.ru/8.1/data/core";
-
     let result = (|| -> Result<(String, String, PathBuf), String> {
         let template_path = resolve_mxl_decompile_path(args, context)?;
         if !template_path.is_file() {
@@ -865,179 +1090,23 @@ pub(crate) fn decompile_mxl(
             return Err(format!("File not found: {}", shown.display()));
         }
         let text = read_utf8_sig(&template_path)?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", template_path.display()))?;
-        let root = doc.root_element();
-        require_mxl_document_root(root)?;
-
-        let raw_fonts = mxl_decompile_fonts(root, NS_D);
-        let raw_lines = mxl_decompile_lines(root, NS_D);
-        let raw_formats = mxl_decompile_formats(root, NS_D, NS_V8);
-
-        let columns_node = mxl_child(root, "columns", Some(NS_D));
-        let total_columns = columns_node
-            .map(|node| mxl_int_child(node, "size", Some(NS_D)))
-            .unwrap_or(0);
-        let mut col_format_indices = BTreeMap::<i64, i64>::new();
-        if let Some(columns_node) = columns_node {
-            for item in mxl_direct_children(columns_node, "columnsItem", Some(NS_D)) {
-                let col_idx = mxl_int_child(item, "index", Some(NS_D));
-                let fmt_idx = mxl_child(item, "column", Some(NS_D))
-                    .map(|column| mxl_int_child(column, "formatIndex", Some(NS_D)))
-                    .unwrap_or(0);
-                col_format_indices.insert(col_idx, fmt_idx);
-            }
-        }
-
-        let default_fmt_idx =
-            mxl_optional_int_child(root, "defaultFormatIndex", Some(NS_D)).unwrap_or(0);
-        let mut default_width = 10;
-        if let Some(format) = mxl_decompile_format(&raw_formats, default_fmt_idx) {
-            if format.width > 0 {
-                default_width = format.width;
-            }
-        }
-
-        let mut col_width_map = BTreeMap::<i64, i64>::new();
-        for (col0, fmt_idx) in &col_format_indices {
-            if let Some(format) = mxl_decompile_format(&raw_formats, *fmt_idx) {
-                if format.width > 0 && format.width != default_width {
-                    col_width_map.insert(*col0 + 1, format.width);
-                }
-            }
-        }
-
-        let mut merge_map = BTreeMap::<(i64, i64), (i64, i64)>::new();
-        for merge in mxl_direct_children(root, "merge", Some(NS_D)) {
-            let row = mxl_int_child(merge, "r", Some(NS_D));
-            let col = mxl_int_child(merge, "c", Some(NS_D));
-            let width = mxl_int_child(merge, "w", Some(NS_D));
-            let height = mxl_optional_int_child(merge, "h", Some(NS_D)).unwrap_or(0);
-            merge_map.insert((row, col), (width, height));
-        }
-
-        let mut named_areas = Vec::<MxlNamedItem>::new();
-        for named in mxl_direct_children(root, "namedItem", Some(NS_D)) {
-            if attribute_by_local_name(named, "type").unwrap_or("") != "NamedItemCells" {
-                continue;
-            }
-            let Some(area) = mxl_child(named, "area", Some(NS_D)) else {
-                continue;
-            };
-            if mxl_child_text(area, "type", Some(NS_D)) != "Rows" {
-                continue;
-            }
-            named_areas.push(MxlNamedItem {
-                name: mxl_child_text(named, "name", Some(NS_D)),
-                begin_row: mxl_int_child(area, "beginRow", Some(NS_D)),
-                end_row: mxl_int_child(area, "endRow", Some(NS_D)),
-            });
-        }
-
-        let row_nodes = mxl_direct_children(root, "rowsItem", Some(NS_D));
-        let is_empty_sentinel = is_platform_empty_mxl_sentinel(root, &row_nodes);
-        let logical_height = mxl_logical_height(root, &row_nodes);
-        let mut row_data = BTreeMap::<i64, MxlDecompiledRow>::new();
-        for row_item in row_nodes {
-            if is_empty_sentinel {
-                break;
-            }
-            let row_idx = mxl_int_child(row_item, "index", Some(NS_D));
-            let index_to =
-                mxl_optional_int_child(row_item, "indexTo", Some(NS_D)).unwrap_or(row_idx);
-            let Some(row_node) = mxl_child(row_item, "row", Some(NS_D)) else {
-                continue;
-            };
-            let row_fmt_idx =
-                mxl_optional_int_child(row_node, "formatIndex", Some(NS_D)).unwrap_or(0);
-            let is_empty = mxl_child_text(row_node, "empty", Some(NS_D)) == "true";
-            let mut cells = Vec::<MxlDecompiledCell>::new();
-            if !is_empty {
-                let mut col = -1;
-                for c_group in mxl_direct_children(row_node, "c", Some(NS_D)) {
-                    if let Some(idx) = mxl_optional_int_child(c_group, "i", Some(NS_D)) {
-                        col = idx;
-                    } else {
-                        col += 1;
-                    }
-                    let Some(cell) = mxl_child(c_group, "c", Some(NS_D)) else {
-                        continue;
-                    };
-                    let format_idx = mxl_optional_int_child(cell, "f", Some(NS_D)).unwrap_or(0);
-                    let param = non_empty_string(mxl_child_text(cell, "parameter", Some(NS_D)));
-                    let detail =
-                        non_empty_string(mxl_child_text(cell, "detailParameter", Some(NS_D)));
-                    let text = mxl_child(cell, "tl", Some(NS_D)).and_then(|tl| {
-                        tl.descendants()
-                            .find(|node| role_info_element(*node, "content", Some(NS_V8)))
-                            .and_then(|node| node.text())
-                            .filter(|value| !value.is_empty())
-                            .map(ToOwned::to_owned)
-                    });
-                    cells.push(MxlDecompiledCell {
-                        col,
-                        format_idx,
-                        param,
-                        detail,
-                        text,
-                    });
-                }
-            }
-            for row in row_idx..=index_to {
-                row_data.insert(
-                    row,
-                    MxlDecompiledRow {
-                        format_idx: row_fmt_idx,
-                        cells: cells.clone(),
-                        empty: is_empty,
-                    },
-                );
-            }
-        }
-
-        let (font_names, font_defs) = mxl_decompile_name_fonts(&raw_fonts);
-        let (style_names, mut style_defs, format_to_style_key) =
-            mxl_decompile_styles(&row_data, &raw_formats, &raw_lines, &font_names);
-        let areas = mxl_decompile_areas(
-            &named_areas,
-            &row_data,
-            &raw_formats,
-            &raw_lines,
-            &merge_map,
-            &style_names,
-            &format_to_style_key,
-        );
-        let column_widths = mxl_decompile_compress_widths(&col_width_map);
-
-        if style_defs
-            .iter()
-            .any(|(name, props)| name == "default" && ordered_json_is_empty_object(props))
-        {
-            style_defs.retain(|(name, _)| name != "default");
-        }
-        let used_styles = mxl_decompile_used_styles(&areas);
-        style_defs.retain(|(name, _)| used_styles.contains(name));
-        let style_count = style_defs.len();
-
-        let mut result_fields = vec![
-            ("columns".to_string(), OrderedJson::Int(total_columns)),
-            ("defaultWidth".to_string(), OrderedJson::Int(default_width)),
-        ];
-        if !column_widths.is_empty() {
-            result_fields.push(("columnWidths".to_string(), OrderedJson::Obj(column_widths)));
-        }
-        result_fields.push(("fonts".to_string(), OrderedJson::Obj(font_defs)));
-        result_fields.push(("styles".to_string(), OrderedJson::Obj(style_defs)));
-        result_fields.push(("areas".to_string(), OrderedJson::Arr(areas)));
-        let json_text = render_ordered_json(&OrderedJson::Obj(result_fields));
+        let MxlDecompiledDocument {
+            json_text,
+            area_count,
+            font_count,
+            style_count,
+            merge_count,
+            logical_height,
+            total_columns,
+        } = mxl_decompile_document(&text, &template_path.display().to_string())?;
 
         let stdout = format!("{json_text}\n");
         let stderr = format!(
             "     Areas: {}, Rows: {logical_height}, Columns: {total_columns}\n     Fonts: {}, Styles: {}, Merges: {}\n",
-            named_areas.len(),
-            raw_fonts.len(),
+            area_count,
+            font_count,
             style_count,
-            merge_map.len()
+            merge_count
         );
 
         Ok((stdout, stderr, template_path))
@@ -2283,6 +2352,514 @@ impl MxlFormatRegistry {
     }
 }
 
+/// One compiled spreadsheet document with the counts the adapters report.
+pub(crate) struct MxlCompiledDocument {
+    pub(crate) xml: String,
+    pub(crate) page_name: Option<String>,
+    pub(crate) target_width: Option<i64>,
+    pub(crate) default_width: i64,
+    pub(crate) area_count: usize,
+    pub(crate) row_count: i64,
+    pub(crate) total_columns: i64,
+    pub(crate) font_count: usize,
+    pub(crate) line_count: usize,
+    pub(crate) format_count: usize,
+    pub(crate) merge_count: usize,
+}
+
+/// Compiles a JSON definition into spreadsheet XML text. This is the single
+/// source of the compiler: the legacy adapter and the v0.13 staged planner
+/// both route through it.
+pub(crate) fn mxl_compile_document(defn: &Value) -> Result<MxlCompiledDocument, String> {
+    if !truthy_json_field(defn, "columns") {
+        return Err("Required field 'columns' is missing".to_string());
+    }
+    if !truthy_json_field(defn, "areas") {
+        return Err("Required field 'areas' is missing".to_string());
+    }
+
+    let total_columns = json_i64_field(defn, "columns").unwrap_or(0);
+    let mut default_width = json_i64_field(defn, "defaultWidth").unwrap_or(10);
+
+    let mut font_map = std::collections::BTreeMap::<String, usize>::new();
+    let mut font_entries = Vec::<MxlFontEntry>::new();
+    let mut has_default = false;
+    if let Some(fonts) = defn.get("fonts").and_then(Value::as_object) {
+        for (name, font_def) in fonts {
+            if name == "default" {
+                has_default = true;
+            }
+            add_mxl_font(name, Some(font_def), &mut font_map, &mut font_entries);
+        }
+    }
+    if !has_default {
+        add_mxl_font("default", None, &mut font_map, &mut font_entries);
+    }
+
+    let mut has_thin_borders = false;
+    let mut has_thick_borders = false;
+    if let Some(styles) = defn.get("styles").and_then(Value::as_object) {
+        for style in styles.values() {
+            let border = json_string_field(style, "border").unwrap_or_default();
+            if !border.is_empty() && border != "none" {
+                if json_string_field(style, "borderWidth").as_deref() == Some("thick") {
+                    has_thick_borders = true;
+                } else {
+                    has_thin_borders = true;
+                }
+            }
+        }
+    }
+    let mut line_count = 0usize;
+    let thin_line_index = if has_thin_borders {
+        let index = line_count as i64;
+        line_count += 1;
+        index
+    } else {
+        -1
+    };
+    let thick_line_index = if has_thick_borders {
+        let index = line_count as i64;
+        line_count += 1;
+        index
+    } else {
+        -1
+    };
+
+    let mut page_name = None::<String>;
+    let mut target_width = None::<i64>;
+    if let Some(page) = json_string_field(defn, "page") {
+        page_name = Some(page.clone());
+        target_width = if page.chars().all(|ch| ch.is_ascii_digit()) {
+            page.parse::<i64>().ok()
+        } else {
+            match page.as_str() {
+                "A4-landscape" => Some(780),
+                "A4-portrait" => Some(540),
+                _ => None,
+            }
+        };
+
+        if let Some(target) = target_width {
+            let mut total_units = 0.0f64;
+            let mut absolute_sum = 0i64;
+            let mut specified_cols = std::collections::BTreeMap::<i64, bool>::new();
+            if let Some(widths) = defn.get("columnWidths").and_then(Value::as_object) {
+                for (spec, value) in widths {
+                    let value = json_value_to_python_string(value);
+                    for column in parse_mxl_column_spec(spec)? {
+                        specified_cols.insert(column, true);
+                        if let Some(multiplier) = value.strip_suffix('x') {
+                            total_units += multiplier.parse::<f64>().unwrap_or(0.0);
+                        } else {
+                            absolute_sum += value.parse::<i64>().unwrap_or(0);
+                        }
+                    }
+                }
+            }
+            for column in 1..=total_columns {
+                if !specified_cols.contains_key(&column) {
+                    total_units += 1.0;
+                }
+            }
+            if total_units > 0.0 {
+                default_width = ((target - absolute_sum) as f64 / total_units).round() as i64;
+            }
+        }
+    }
+
+    let mut col_width_map = std::collections::BTreeMap::<i64, i64>::new();
+    if let Some(widths) = defn.get("columnWidths").and_then(Value::as_object) {
+        for (spec, value) in widths {
+            let value = json_value_to_python_string(value);
+            let width = if let Some(multiplier) = value.strip_suffix('x') {
+                (multiplier.parse::<f64>().unwrap_or(0.0) * default_width as f64).round() as i64
+            } else {
+                value.parse::<i64>().unwrap_or(0)
+            };
+            for column in parse_mxl_column_spec(spec)? {
+                col_width_map.insert(column, width);
+            }
+        }
+    }
+
+    let mut registry = MxlFormatRegistry::new();
+    let mut col_format_map = std::collections::BTreeMap::<i64, usize>::new();
+    for (column, width) in &col_width_map {
+        let props = MxlFormatProps {
+            width: Some(*width),
+            ..Default::default()
+        };
+        let index = registry.register(mxl_format_key(&props), props);
+        col_format_map.insert(*column, index);
+    }
+
+    let areas = defn
+        .get("areas")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Required field 'areas' is missing".to_string())?;
+
+    for area in areas {
+        if let Some(rows) = area.get("rows").and_then(Value::as_array) {
+            for row in rows {
+                let Some(row_object) = row.as_object() else {
+                    continue;
+                };
+                if truthy_value(row_object.get("empty")) {
+                    continue;
+                }
+                if let Some(height) = row_object.get("height").and_then(json_i64_value) {
+                    let props = MxlFormatProps {
+                        height: Some(height),
+                        ..Default::default()
+                    };
+                    registry.register(mxl_format_key(&props), props);
+                }
+                if let Some(row_style) = row_object.get("rowStyle").and_then(Value::as_str) {
+                    register_mxl_cell_format(
+                        row_style,
+                        "",
+                        defn,
+                        &font_map,
+                        thin_line_index,
+                        thick_line_index,
+                        &mut registry,
+                    );
+                }
+                if let Some(cells) = row_object.get("cells").and_then(Value::as_array) {
+                    for cell in cells {
+                        let cell_style = cell
+                            .get("style")
+                            .and_then(Value::as_str)
+                            .or_else(|| row_object.get("rowStyle").and_then(Value::as_str))
+                            .unwrap_or("default");
+                        let fill_type = mxl_fill_type(cell);
+                        register_mxl_cell_format(
+                            cell_style,
+                            fill_type,
+                            defn,
+                            &font_map,
+                            thin_line_index,
+                            thick_line_index,
+                            &mut registry,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let default_key = mxl_format_key(&MxlFormatProps {
+        width: Some(default_width),
+        ..Default::default()
+    });
+    let default_format_index = registry.register(
+        default_key,
+        MxlFormatProps {
+            width: Some(default_width),
+            ..Default::default()
+        },
+    );
+
+    let mut lines = Vec::<String>::new();
+    lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
+    lines.push("<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">".to_string());
+    lines.push("\t<languageSettings>".to_string());
+    lines.push("\t\t<currentLanguage>ru</currentLanguage>".to_string());
+    lines.push("\t\t<defaultLanguage>ru</defaultLanguage>".to_string());
+    lines.push("\t\t<languageInfo>".to_string());
+    lines.push("\t\t\t<id>ru</id>".to_string());
+    lines.push("\t\t\t<code>Русский</code>".to_string());
+    lines.push("\t\t\t<description>Русский</description>".to_string());
+    lines.push("\t\t</languageInfo>".to_string());
+    lines.push("\t</languageSettings>".to_string());
+    lines.push("\t<columns>".to_string());
+    lines.push(format!("\t\t<size>{total_columns}</size>"));
+    for (column, format_index) in &col_format_map {
+        lines.push("\t\t<columnsItem>".to_string());
+        lines.push(format!("\t\t\t<index>{}</index>", column - 1));
+        lines.push("\t\t\t<column>".to_string());
+        lines.push(format!("\t\t\t\t<formatIndex>{format_index}</formatIndex>"));
+        lines.push("\t\t\t</column>".to_string());
+        lines.push("\t\t</columnsItem>".to_string());
+    }
+    lines.push("\t</columns>".to_string());
+
+    let mut global_row = 0i64;
+    let mut merges = Vec::<MxlMerge>::new();
+    let mut named_items = Vec::<MxlNamedItem>::new();
+    for area in areas {
+        let area_start_row = global_row;
+        let area_name = json_string_field(area, "name").unwrap_or_default();
+        let mut active_rowspans = Vec::<MxlRowspan>::new();
+        let mut local_row = 0i64;
+        if let Some(rows) = area.get("rows").and_then(Value::as_array) {
+            for row_value in rows {
+                let empty_row = Value::Object(Map::new());
+                let row = if row_value.is_array() {
+                    empty_row.as_object().unwrap()
+                } else {
+                    row_value
+                        .as_object()
+                        .ok_or_else(|| "MXL row must be an object or array".to_string())?
+                };
+                if let Some(count) = row.get("empty").and_then(json_i64_value) {
+                    for _ in 0..count {
+                        lines.push("\t<rowsItem>".to_string());
+                        lines.push(format!("\t\t<index>{global_row}</index>"));
+                        lines.push("\t\t<row>".to_string());
+                        lines.push("\t\t\t<empty>true</empty>".to_string());
+                        lines.push("\t\t</row>".to_string());
+                        lines.push("\t</rowsItem>".to_string());
+                        global_row += 1;
+                        local_row += 1;
+                    }
+                    continue;
+                }
+
+                let mut rowspan_occupied = std::collections::BTreeMap::<i64, bool>::new();
+                for rowspan in &active_rowspans {
+                    if local_row > rowspan.start_local_row && local_row <= rowspan.end_local_row {
+                        for column in rowspan.col_start..=rowspan.col_end {
+                            rowspan_occupied.insert(column, true);
+                        }
+                    }
+                }
+
+                let mut row_has_content = false;
+                let mut row_cells = Vec::<MxlCellInfo>::new();
+                let mut row_format_idx = 0usize;
+                if let Some(height) = row.get("height").and_then(json_i64_value) {
+                    let props = MxlFormatProps {
+                        height: Some(height),
+                        ..Default::default()
+                    };
+                    row_format_idx = registry.index_of(&mxl_format_key(&props)).unwrap_or(0);
+                }
+
+                if let Some(cells) = row.get("cells").and_then(Value::as_array) {
+                    if !cells.is_empty() {
+                        row_has_content = true;
+                        let mut occupied_cols = rowspan_occupied.clone();
+                        for cell in cells {
+                            let col_start = cell.get("col").and_then(json_i64_value).unwrap_or(0);
+                            let col_span = cell.get("span").and_then(json_i64_value).unwrap_or(1);
+                            for column in col_start..(col_start + col_span) {
+                                occupied_cols.insert(column, true);
+                            }
+                        }
+
+                        for cell in cells {
+                            let col_start = cell.get("col").and_then(json_i64_value).unwrap_or(0);
+                            let col_span = cell.get("span").and_then(json_i64_value).unwrap_or(1);
+                            let rowspan = cell.get("rowspan").and_then(json_i64_value).unwrap_or(1);
+                            let cell_style = cell
+                                .get("style")
+                                .and_then(Value::as_str)
+                                .or_else(|| row.get("rowStyle").and_then(Value::as_str))
+                                .unwrap_or("default");
+                            let fill_type = mxl_fill_type(cell);
+                            let fmt_idx = register_mxl_cell_format(
+                                cell_style,
+                                fill_type,
+                                defn,
+                                &font_map,
+                                thin_line_index,
+                                thick_line_index,
+                                &mut registry,
+                            );
+
+                            row_cells.push(MxlCellInfo {
+                                col: col_start - 1,
+                                col_span,
+                                format_idx: fmt_idx,
+                                param: json_string_field(cell, "param"),
+                                detail: json_string_field(cell, "detail"),
+                                text: json_string_field(cell, "text"),
+                                template: json_string_field(cell, "template"),
+                            });
+
+                            if rowspan > 1 {
+                                active_rowspans.push(MxlRowspan {
+                                    col_start,
+                                    col_end: col_start + col_span - 1,
+                                    start_local_row: local_row,
+                                    end_local_row: local_row + rowspan - 1,
+                                });
+                            }
+                            if col_span > 1 || rowspan > 1 {
+                                merges.push(MxlMerge {
+                                    row: global_row,
+                                    column: col_start - 1,
+                                    width: col_span - 1,
+                                    height: (rowspan > 1).then_some(rowspan - 1),
+                                });
+                            }
+                        }
+
+                        if let Some(row_style) = row.get("rowStyle").and_then(Value::as_str) {
+                            let gap_fmt_idx = register_mxl_cell_format(
+                                row_style,
+                                "",
+                                defn,
+                                &font_map,
+                                thin_line_index,
+                                thick_line_index,
+                                &mut registry,
+                            );
+                            for column in 1..=total_columns {
+                                if !occupied_cols.contains_key(&column) {
+                                    row_cells.push(MxlCellInfo {
+                                        col: column - 1,
+                                        col_span: 1,
+                                        format_idx: gap_fmt_idx,
+                                        param: None,
+                                        detail: None,
+                                        text: None,
+                                        template: None,
+                                    });
+                                }
+                            }
+                        }
+                        row_cells.sort_by_key(|cell| cell.col);
+                    }
+                } else if let Some(row_style) = row.get("rowStyle").and_then(Value::as_str) {
+                    row_has_content = true;
+                    let gap_fmt_idx = register_mxl_cell_format(
+                        row_style,
+                        "",
+                        defn,
+                        &font_map,
+                        thin_line_index,
+                        thick_line_index,
+                        &mut registry,
+                    );
+                    for column in 1..=total_columns {
+                        if !rowspan_occupied.contains_key(&column) {
+                            row_cells.push(MxlCellInfo {
+                                col: column - 1,
+                                col_span: 1,
+                                format_idx: gap_fmt_idx,
+                                param: None,
+                                detail: None,
+                                text: None,
+                                template: None,
+                            });
+                        }
+                    }
+                }
+
+                lines.push("\t<rowsItem>".to_string());
+                lines.push(format!("\t\t<index>{global_row}</index>"));
+                lines.push("\t\t<row>".to_string());
+                if row_format_idx > 0 {
+                    lines.push(format!("\t\t\t<formatIndex>{row_format_idx}</formatIndex>"));
+                }
+                if !row_has_content {
+                    lines.push("\t\t\t<empty>true</empty>".to_string());
+                } else {
+                    let mut expected_col = 0;
+                    for cell in &row_cells {
+                        emit_mxl_cell(&mut lines, cell, expected_col);
+                        expected_col = cell.col + cell.col_span;
+                    }
+                }
+                lines.push("\t\t</row>".to_string());
+                lines.push("\t</rowsItem>".to_string());
+
+                local_row += 1;
+                global_row += 1;
+            }
+        }
+        named_items.push(MxlNamedItem {
+            name: area_name,
+            begin_row: area_start_row,
+            end_row: global_row - 1,
+        });
+    }
+
+    if global_row == 0 {
+        return Err(
+            "MXL definition must contain at least one row; a zero-row definition cannot preserve columns or named areas in the canonical platform 8.3.27 empty sentinel"
+                .to_string(),
+        );
+    }
+
+    lines.push("\t<templateMode>true</templateMode>".to_string());
+    lines.push(format!(
+        "\t<defaultFormatIndex>{default_format_index}</defaultFormatIndex>"
+    ));
+    lines.push(format!("\t<height>{global_row}</height>"));
+    lines.push(format!("\t<vgRows>{global_row}</vgRows>"));
+    for merge in &merges {
+        lines.push("\t<merge>".to_string());
+        lines.push(format!("\t\t<r>{}</r>", merge.row));
+        lines.push(format!("\t\t<c>{}</c>", merge.column));
+        if let Some(height) = merge.height {
+            lines.push(format!("\t\t<h>{height}</h>"));
+        }
+        lines.push(format!("\t\t<w>{}</w>", merge.width));
+        lines.push("\t</merge>".to_string());
+    }
+    for item in &named_items {
+        lines.push("\t<namedItem xsi:type=\"NamedItemCells\">".to_string());
+        lines.push(format!(
+            "\t\t<name>{}</name>",
+            escape_mxl_xml_text(&item.name)
+        ));
+        lines.push("\t\t<area>".to_string());
+        lines.push("\t\t\t<type>Rows</type>".to_string());
+        lines.push(format!("\t\t\t<beginRow>{}</beginRow>", item.begin_row));
+        lines.push(format!("\t\t\t<endRow>{}</endRow>", item.end_row));
+        lines.push("\t\t\t<beginColumn>-1</beginColumn>".to_string());
+        lines.push("\t\t\t<endColumn>-1</endColumn>".to_string());
+        lines.push("\t\t</area>".to_string());
+        lines.push("\t</namedItem>".to_string());
+    }
+    if has_thin_borders {
+        lines.push("\t<line width=\"1\" gap=\"false\">".to_string());
+        lines.push(
+            "\t\t<v8ui:style xsi:type=\"v8ui:SpreadsheetDocumentCellLineType\">Solid</v8ui:style>"
+                .to_string(),
+        );
+        lines.push("\t</line>".to_string());
+    }
+    if has_thick_borders {
+        lines.push("\t<line width=\"2\" gap=\"false\">".to_string());
+        lines.push(
+            "\t\t<v8ui:style xsi:type=\"v8ui:SpreadsheetDocumentCellLineType\">Solid</v8ui:style>"
+                .to_string(),
+        );
+        lines.push("\t</line>".to_string());
+    }
+    for font in &font_entries {
+        lines.push(format!(
+            "\t<font faceName=\"{}\" height=\"{}\" bold=\"{}\" italic=\"{}\" underline=\"{}\" strikeout=\"{}\" kind=\"Absolute\" scale=\"100\"/>",
+            escape_mxl_xml_attribute(&font.face), font.size, font.bold, font.italic, font.underline, font.strikeout
+        ));
+    }
+    for (_, format) in &registry.entries {
+        emit_mxl_format(&mut lines, format);
+    }
+    lines.push("</document>".to_string());
+
+    let xml = format!("{}\n", lines.join("\n"));
+    Document::parse(&xml).map_err(|error| format!("compiled MXL is not valid XML: {error}"))?;
+    Ok(MxlCompiledDocument {
+        xml,
+        page_name,
+        target_width,
+        default_width,
+        area_count: named_items.len(),
+        row_count: global_row,
+        total_columns,
+        font_count: font_entries.len(),
+        line_count,
+        format_count: registry.entries.len(),
+        merge_count: merges.len(),
+    })
+}
+
 pub(crate) fn compile_mxl(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
     let write_result = (|| -> Result<(String, PathBuf, Vec<String>), String> {
         let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
@@ -2296,480 +2873,19 @@ pub(crate) fn compile_mxl(args: &Map<String, Value>, context: &WorkspaceContext)
             FileBackedJson::read(&json_path, |err| format!("failed to parse MXL JSON: {err}"))?
                 .bind_to(&mut transaction)?;
 
-        if !truthy_json_field(&defn, "columns") {
-            return Err("Required field 'columns' is missing".to_string());
-        }
-        if !truthy_json_field(&defn, "areas") {
-            return Err("Required field 'areas' is missing".to_string());
-        }
-
-        let total_columns = json_i64_field(&defn, "columns").unwrap_or(0);
-        let mut default_width = json_i64_field(&defn, "defaultWidth").unwrap_or(10);
-
-        let mut font_map = std::collections::BTreeMap::<String, usize>::new();
-        let mut font_entries = Vec::<MxlFontEntry>::new();
-        let mut has_default = false;
-        if let Some(fonts) = defn.get("fonts").and_then(Value::as_object) {
-            for (name, font_def) in fonts {
-                if name == "default" {
-                    has_default = true;
-                }
-                add_mxl_font(name, Some(font_def), &mut font_map, &mut font_entries);
-            }
-        }
-        if !has_default {
-            add_mxl_font("default", None, &mut font_map, &mut font_entries);
-        }
-
-        let mut has_thin_borders = false;
-        let mut has_thick_borders = false;
-        if let Some(styles) = defn.get("styles").and_then(Value::as_object) {
-            for style in styles.values() {
-                let border = json_string_field(style, "border").unwrap_or_default();
-                if !border.is_empty() && border != "none" {
-                    if json_string_field(style, "borderWidth").as_deref() == Some("thick") {
-                        has_thick_borders = true;
-                    } else {
-                        has_thin_borders = true;
-                    }
-                }
-            }
-        }
-        let mut line_count = 0usize;
-        let thin_line_index = if has_thin_borders {
-            let index = line_count as i64;
-            line_count += 1;
-            index
-        } else {
-            -1
-        };
-        let thick_line_index = if has_thick_borders {
-            let index = line_count as i64;
-            line_count += 1;
-            index
-        } else {
-            -1
-        };
-
-        let mut page_name = None::<String>;
-        let mut target_width = None::<i64>;
-        if let Some(page) = json_string_field(&defn, "page") {
-            page_name = Some(page.clone());
-            target_width = if page.chars().all(|ch| ch.is_ascii_digit()) {
-                page.parse::<i64>().ok()
-            } else {
-                match page.as_str() {
-                    "A4-landscape" => Some(780),
-                    "A4-portrait" => Some(540),
-                    _ => None,
-                }
-            };
-
-            if let Some(target) = target_width {
-                let mut total_units = 0.0f64;
-                let mut absolute_sum = 0i64;
-                let mut specified_cols = std::collections::BTreeMap::<i64, bool>::new();
-                if let Some(widths) = defn.get("columnWidths").and_then(Value::as_object) {
-                    for (spec, value) in widths {
-                        let value = json_value_to_python_string(value);
-                        for column in parse_mxl_column_spec(spec)? {
-                            specified_cols.insert(column, true);
-                            if let Some(multiplier) = value.strip_suffix('x') {
-                                total_units += multiplier.parse::<f64>().unwrap_or(0.0);
-                            } else {
-                                absolute_sum += value.parse::<i64>().unwrap_or(0);
-                            }
-                        }
-                    }
-                }
-                for column in 1..=total_columns {
-                    if !specified_cols.contains_key(&column) {
-                        total_units += 1.0;
-                    }
-                }
-                if total_units > 0.0 {
-                    default_width = ((target - absolute_sum) as f64 / total_units).round() as i64;
-                }
-            }
-        }
-
-        let mut col_width_map = std::collections::BTreeMap::<i64, i64>::new();
-        if let Some(widths) = defn.get("columnWidths").and_then(Value::as_object) {
-            for (spec, value) in widths {
-                let value = json_value_to_python_string(value);
-                let width = if let Some(multiplier) = value.strip_suffix('x') {
-                    (multiplier.parse::<f64>().unwrap_or(0.0) * default_width as f64).round() as i64
-                } else {
-                    value.parse::<i64>().unwrap_or(0)
-                };
-                for column in parse_mxl_column_spec(spec)? {
-                    col_width_map.insert(column, width);
-                }
-            }
-        }
-
-        let mut registry = MxlFormatRegistry::new();
-        let mut col_format_map = std::collections::BTreeMap::<i64, usize>::new();
-        for (column, width) in &col_width_map {
-            let props = MxlFormatProps {
-                width: Some(*width),
-                ..Default::default()
-            };
-            let index = registry.register(mxl_format_key(&props), props);
-            col_format_map.insert(*column, index);
-        }
-
-        let areas = defn
-            .get("areas")
-            .and_then(Value::as_array)
-            .ok_or_else(|| "Required field 'areas' is missing".to_string())?;
-
-        for area in areas {
-            if let Some(rows) = area.get("rows").and_then(Value::as_array) {
-                for row in rows {
-                    let Some(row_object) = row.as_object() else {
-                        continue;
-                    };
-                    if truthy_value(row_object.get("empty")) {
-                        continue;
-                    }
-                    if let Some(height) = row_object.get("height").and_then(json_i64_value) {
-                        let props = MxlFormatProps {
-                            height: Some(height),
-                            ..Default::default()
-                        };
-                        registry.register(mxl_format_key(&props), props);
-                    }
-                    if let Some(row_style) = row_object.get("rowStyle").and_then(Value::as_str) {
-                        register_mxl_cell_format(
-                            row_style,
-                            "",
-                            &defn,
-                            &font_map,
-                            thin_line_index,
-                            thick_line_index,
-                            &mut registry,
-                        );
-                    }
-                    if let Some(cells) = row_object.get("cells").and_then(Value::as_array) {
-                        for cell in cells {
-                            let cell_style = cell
-                                .get("style")
-                                .and_then(Value::as_str)
-                                .or_else(|| row_object.get("rowStyle").and_then(Value::as_str))
-                                .unwrap_or("default");
-                            let fill_type = mxl_fill_type(cell);
-                            register_mxl_cell_format(
-                                cell_style,
-                                fill_type,
-                                &defn,
-                                &font_map,
-                                thin_line_index,
-                                thick_line_index,
-                                &mut registry,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        let default_key = mxl_format_key(&MxlFormatProps {
-            width: Some(default_width),
-            ..Default::default()
-        });
-        let default_format_index = registry.register(
-            default_key,
-            MxlFormatProps {
-                width: Some(default_width),
-                ..Default::default()
-            },
-        );
-
-        let mut lines = Vec::<String>::new();
-        lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
-        lines.push("<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">".to_string());
-        lines.push("\t<languageSettings>".to_string());
-        lines.push("\t\t<currentLanguage>ru</currentLanguage>".to_string());
-        lines.push("\t\t<defaultLanguage>ru</defaultLanguage>".to_string());
-        lines.push("\t\t<languageInfo>".to_string());
-        lines.push("\t\t\t<id>ru</id>".to_string());
-        lines.push("\t\t\t<code>Русский</code>".to_string());
-        lines.push("\t\t\t<description>Русский</description>".to_string());
-        lines.push("\t\t</languageInfo>".to_string());
-        lines.push("\t</languageSettings>".to_string());
-        lines.push("\t<columns>".to_string());
-        lines.push(format!("\t\t<size>{total_columns}</size>"));
-        for (column, format_index) in &col_format_map {
-            lines.push("\t\t<columnsItem>".to_string());
-            lines.push(format!("\t\t\t<index>{}</index>", column - 1));
-            lines.push("\t\t\t<column>".to_string());
-            lines.push(format!("\t\t\t\t<formatIndex>{format_index}</formatIndex>"));
-            lines.push("\t\t\t</column>".to_string());
-            lines.push("\t\t</columnsItem>".to_string());
-        }
-        lines.push("\t</columns>".to_string());
-
-        let mut global_row = 0i64;
-        let mut merges = Vec::<MxlMerge>::new();
-        let mut named_items = Vec::<MxlNamedItem>::new();
-        for area in areas {
-            let area_start_row = global_row;
-            let area_name = json_string_field(area, "name").unwrap_or_default();
-            let mut active_rowspans = Vec::<MxlRowspan>::new();
-            let mut local_row = 0i64;
-            if let Some(rows) = area.get("rows").and_then(Value::as_array) {
-                for row_value in rows {
-                    let empty_row = Value::Object(Map::new());
-                    let row = if row_value.is_array() {
-                        empty_row.as_object().unwrap()
-                    } else {
-                        row_value
-                            .as_object()
-                            .ok_or_else(|| "MXL row must be an object or array".to_string())?
-                    };
-                    if let Some(count) = row.get("empty").and_then(json_i64_value) {
-                        for _ in 0..count {
-                            lines.push("\t<rowsItem>".to_string());
-                            lines.push(format!("\t\t<index>{global_row}</index>"));
-                            lines.push("\t\t<row>".to_string());
-                            lines.push("\t\t\t<empty>true</empty>".to_string());
-                            lines.push("\t\t</row>".to_string());
-                            lines.push("\t</rowsItem>".to_string());
-                            global_row += 1;
-                            local_row += 1;
-                        }
-                        continue;
-                    }
-
-                    let mut rowspan_occupied = std::collections::BTreeMap::<i64, bool>::new();
-                    for rowspan in &active_rowspans {
-                        if local_row > rowspan.start_local_row && local_row <= rowspan.end_local_row
-                        {
-                            for column in rowspan.col_start..=rowspan.col_end {
-                                rowspan_occupied.insert(column, true);
-                            }
-                        }
-                    }
-
-                    let mut row_has_content = false;
-                    let mut row_cells = Vec::<MxlCellInfo>::new();
-                    let mut row_format_idx = 0usize;
-                    if let Some(height) = row.get("height").and_then(json_i64_value) {
-                        let props = MxlFormatProps {
-                            height: Some(height),
-                            ..Default::default()
-                        };
-                        row_format_idx = registry.index_of(&mxl_format_key(&props)).unwrap_or(0);
-                    }
-
-                    if let Some(cells) = row.get("cells").and_then(Value::as_array) {
-                        if !cells.is_empty() {
-                            row_has_content = true;
-                            let mut occupied_cols = rowspan_occupied.clone();
-                            for cell in cells {
-                                let col_start =
-                                    cell.get("col").and_then(json_i64_value).unwrap_or(0);
-                                let col_span =
-                                    cell.get("span").and_then(json_i64_value).unwrap_or(1);
-                                for column in col_start..(col_start + col_span) {
-                                    occupied_cols.insert(column, true);
-                                }
-                            }
-
-                            for cell in cells {
-                                let col_start =
-                                    cell.get("col").and_then(json_i64_value).unwrap_or(0);
-                                let col_span =
-                                    cell.get("span").and_then(json_i64_value).unwrap_or(1);
-                                let rowspan =
-                                    cell.get("rowspan").and_then(json_i64_value).unwrap_or(1);
-                                let cell_style = cell
-                                    .get("style")
-                                    .and_then(Value::as_str)
-                                    .or_else(|| row.get("rowStyle").and_then(Value::as_str))
-                                    .unwrap_or("default");
-                                let fill_type = mxl_fill_type(cell);
-                                let fmt_idx = register_mxl_cell_format(
-                                    cell_style,
-                                    fill_type,
-                                    &defn,
-                                    &font_map,
-                                    thin_line_index,
-                                    thick_line_index,
-                                    &mut registry,
-                                );
-
-                                row_cells.push(MxlCellInfo {
-                                    col: col_start - 1,
-                                    col_span,
-                                    format_idx: fmt_idx,
-                                    param: json_string_field(cell, "param"),
-                                    detail: json_string_field(cell, "detail"),
-                                    text: json_string_field(cell, "text"),
-                                    template: json_string_field(cell, "template"),
-                                });
-
-                                if rowspan > 1 {
-                                    active_rowspans.push(MxlRowspan {
-                                        col_start,
-                                        col_end: col_start + col_span - 1,
-                                        start_local_row: local_row,
-                                        end_local_row: local_row + rowspan - 1,
-                                    });
-                                }
-                                if col_span > 1 || rowspan > 1 {
-                                    merges.push(MxlMerge {
-                                        row: global_row,
-                                        column: col_start - 1,
-                                        width: col_span - 1,
-                                        height: (rowspan > 1).then_some(rowspan - 1),
-                                    });
-                                }
-                            }
-
-                            if let Some(row_style) = row.get("rowStyle").and_then(Value::as_str) {
-                                let gap_fmt_idx = register_mxl_cell_format(
-                                    row_style,
-                                    "",
-                                    &defn,
-                                    &font_map,
-                                    thin_line_index,
-                                    thick_line_index,
-                                    &mut registry,
-                                );
-                                for column in 1..=total_columns {
-                                    if !occupied_cols.contains_key(&column) {
-                                        row_cells.push(MxlCellInfo {
-                                            col: column - 1,
-                                            col_span: 1,
-                                            format_idx: gap_fmt_idx,
-                                            param: None,
-                                            detail: None,
-                                            text: None,
-                                            template: None,
-                                        });
-                                    }
-                                }
-                            }
-                            row_cells.sort_by_key(|cell| cell.col);
-                        }
-                    } else if let Some(row_style) = row.get("rowStyle").and_then(Value::as_str) {
-                        row_has_content = true;
-                        let gap_fmt_idx = register_mxl_cell_format(
-                            row_style,
-                            "",
-                            &defn,
-                            &font_map,
-                            thin_line_index,
-                            thick_line_index,
-                            &mut registry,
-                        );
-                        for column in 1..=total_columns {
-                            if !rowspan_occupied.contains_key(&column) {
-                                row_cells.push(MxlCellInfo {
-                                    col: column - 1,
-                                    col_span: 1,
-                                    format_idx: gap_fmt_idx,
-                                    param: None,
-                                    detail: None,
-                                    text: None,
-                                    template: None,
-                                });
-                            }
-                        }
-                    }
-
-                    lines.push("\t<rowsItem>".to_string());
-                    lines.push(format!("\t\t<index>{global_row}</index>"));
-                    lines.push("\t\t<row>".to_string());
-                    if row_format_idx > 0 {
-                        lines.push(format!("\t\t\t<formatIndex>{row_format_idx}</formatIndex>"));
-                    }
-                    if !row_has_content {
-                        lines.push("\t\t\t<empty>true</empty>".to_string());
-                    } else {
-                        let mut expected_col = 0;
-                        for cell in &row_cells {
-                            emit_mxl_cell(&mut lines, cell, expected_col);
-                            expected_col = cell.col + cell.col_span;
-                        }
-                    }
-                    lines.push("\t\t</row>".to_string());
-                    lines.push("\t</rowsItem>".to_string());
-
-                    local_row += 1;
-                    global_row += 1;
-                }
-            }
-            named_items.push(MxlNamedItem {
-                name: area_name,
-                begin_row: area_start_row,
-                end_row: global_row - 1,
-            });
-        }
-
-        if global_row == 0 {
-            return Err(
-                "MXL definition must contain at least one row; a zero-row definition cannot preserve columns or named areas in the canonical platform 8.3.27 empty sentinel"
-                    .to_string(),
-            );
-        }
-
-        lines.push("\t<templateMode>true</templateMode>".to_string());
-        lines.push(format!(
-            "\t<defaultFormatIndex>{default_format_index}</defaultFormatIndex>"
-        ));
-        lines.push(format!("\t<height>{global_row}</height>"));
-        lines.push(format!("\t<vgRows>{global_row}</vgRows>"));
-        for merge in &merges {
-            lines.push("\t<merge>".to_string());
-            lines.push(format!("\t\t<r>{}</r>", merge.row));
-            lines.push(format!("\t\t<c>{}</c>", merge.column));
-            if let Some(height) = merge.height {
-                lines.push(format!("\t\t<h>{height}</h>"));
-            }
-            lines.push(format!("\t\t<w>{}</w>", merge.width));
-            lines.push("\t</merge>".to_string());
-        }
-        for item in &named_items {
-            lines.push("\t<namedItem xsi:type=\"NamedItemCells\">".to_string());
-            lines.push(format!(
-                "\t\t<name>{}</name>",
-                escape_mxl_xml_text(&item.name)
-            ));
-            lines.push("\t\t<area>".to_string());
-            lines.push("\t\t\t<type>Rows</type>".to_string());
-            lines.push(format!("\t\t\t<beginRow>{}</beginRow>", item.begin_row));
-            lines.push(format!("\t\t\t<endRow>{}</endRow>", item.end_row));
-            lines.push("\t\t\t<beginColumn>-1</beginColumn>".to_string());
-            lines.push("\t\t\t<endColumn>-1</endColumn>".to_string());
-            lines.push("\t\t</area>".to_string());
-            lines.push("\t</namedItem>".to_string());
-        }
-        if has_thin_borders {
-            lines.push("\t<line width=\"1\" gap=\"false\">".to_string());
-            lines.push("\t\t<v8ui:style xsi:type=\"v8ui:SpreadsheetDocumentCellLineType\">Solid</v8ui:style>".to_string());
-            lines.push("\t</line>".to_string());
-        }
-        if has_thick_borders {
-            lines.push("\t<line width=\"2\" gap=\"false\">".to_string());
-            lines.push("\t\t<v8ui:style xsi:type=\"v8ui:SpreadsheetDocumentCellLineType\">Solid</v8ui:style>".to_string());
-            lines.push("\t</line>".to_string());
-        }
-        for font in &font_entries {
-            lines.push(format!(
-                "\t<font faceName=\"{}\" height=\"{}\" bold=\"{}\" italic=\"{}\" underline=\"{}\" strikeout=\"{}\" kind=\"Absolute\" scale=\"100\"/>",
-                escape_mxl_xml_attribute(&font.face), font.size, font.bold, font.italic, font.underline, font.strikeout
-            ));
-        }
-        for (_, format) in &registry.entries {
-            emit_mxl_format(&mut lines, format);
-        }
-        lines.push("</document>".to_string());
-
-        let xml = format!("{}\n", lines.join("\n"));
-        Document::parse(&xml).map_err(|error| format!("compiled MXL is not valid XML: {error}"))?;
+        let MxlCompiledDocument {
+            xml,
+            page_name,
+            target_width,
+            default_width,
+            area_count,
+            row_count: global_row,
+            total_columns,
+            font_count,
+            line_count,
+            format_count,
+            merge_count,
+        } = mxl_compile_document(&defn)?;
         let output_path = absolutize(output_path_raw.clone(), &context.cwd);
         transaction.create_or_replace_bytes(&output_path, utf8_bom_bytes(&xml))?;
         guard_active_format_owner_with_exact_root(
@@ -2790,14 +2906,13 @@ pub(crate) fn compile_mxl(args: &Map<String, Value>, context: &WorkspaceContext)
         }
         stdout.push_str(&format!(
             "     Areas: {}, Rows: {global_row}, Columns: {total_columns}\n",
-            named_items.len()
+            area_count
         ));
         stdout.push_str(&format!(
             "     Fonts: {}, Lines: {line_count}, Formats: {}\n",
-            font_entries.len(),
-            registry.entries.len()
+            font_count, format_count
         ));
-        stdout.push_str(&format!("     Merges: {}\n", merges.len()));
+        stdout.push_str(&format!("     Merges: {}\n", merge_count));
 
         Ok((stdout, output_path, report.cleanup_warnings))
     })();
@@ -3200,13 +3315,56 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
+    use crate::domain::support_state::{ObjectSupportData, ObjectSupportState};
     use crate::infrastructure::native_operations::compile_transaction::{
         with_commit_failpoint, CommitFailpoint,
     };
     use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
+
+    #[test]
+    fn mxl_info_shared_core_parses_admitted_bytes_without_workspace_resolution() {
+        let bytes = fs::read(platform_mxl_fixture()).unwrap();
+        let support = ObjectSupportData {
+            state: ObjectSupportState::EditableWithSupport,
+            direct_edit_safe: Some(true),
+        };
+
+        let data = parse_mxl_info_xml(&bytes, "Печать", support.clone(), false).unwrap();
+        let value = serde_json::to_value(data).unwrap();
+
+        assert_eq!(value["name"], "Печать");
+        assert_eq!(value["support"], serde_json::to_value(support).unwrap());
+        assert_eq!(value["rows"], 0);
+        assert!(value["outside"]["texts"].is_null());
+    }
+
+    #[test]
+    fn mxl_v12_wrapper_and_shared_core_return_the_same_typed_data() {
+        let context = test_context("info-shared-core-parity");
+        let template_path = mxl_info_template_path(&context);
+        fs::copy(platform_mxl_fixture(), &template_path).unwrap();
+        let args = path_args(&template_path);
+        let wrapper =
+            analyze_mxl_info(&args, &context, &WorkspaceSupportStateReader::new(&context))
+                .data
+                .unwrap();
+        let core = parse_mxl_info_xml(
+            &fs::read(&template_path).unwrap(),
+            &wrapper.name,
+            wrapper.support.clone(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(wrapper).unwrap(),
+            serde_json::to_value(core).unwrap()
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
 
     #[test]
     fn empty_spreadsheet_document_has_no_rows_container() {
@@ -3631,6 +3789,44 @@ mod tests {
     }
 
     #[test]
+    pub(crate) fn repeated_mxl_compile_preserves_identity_but_reports_attempted_update() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
+        let context = test_context("compile-repeat-noop");
+        let definition_path = context.cwd.join("definition.json");
+        let output_path = context.cwd.join("Template.xml");
+        fs::write(
+            &definition_path,
+            serde_json::to_vec(&json!({
+                "columns": 1,
+                "areas": [{
+                    "name": "Area",
+                    "rows": [{"cells": [{"col": 1, "text": "value"}]}]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("JsonPath".to_string(), json!(definition_path)),
+            ("OutputPath".to_string(), json!(output_path)),
+        ]);
+
+        let first = compile_mxl(&args, &context);
+        assert!(first.ok, "{first:?}");
+        let after = fs::read(&output_path).unwrap();
+        let identity = file_identity_for_test(&output_path).unwrap();
+
+        let repeated = compile_mxl(&args, &context);
+        assert!(repeated.ok, "{repeated:?}");
+        assert_eq!(repeated.changes.len(), 1, "{repeated:?}");
+        assert!(repeated.changes[0].contains("updated"), "{repeated:?}");
+        assert_eq!(fs::read(&output_path).unwrap(), after);
+        assert_eq!(file_identity_for_test(&output_path).unwrap(), identity);
+        fs::remove_dir_all(context.cwd).unwrap();
+    }
+
+    #[test]
     fn mxl_compile_escapes_all_user_xml_text_and_attributes() {
         let context = test_context("compile-xml-escaping");
         let definition_path = context.cwd.join("definition.json");
@@ -3761,7 +3957,7 @@ mod tests {
     }
 
     #[test]
-    fn mxl_compile_rolls_back_if_format_owner_changes_during_publication() {
+    pub(crate) fn mxl_compile_rolls_back_if_format_owner_changes_during_publication() {
         let context = test_context("compile-format-owner-race");
         let source = context.cwd.join("src");
         let output_path = source.join("Templates/Guarded/Ext/Template.xml");
@@ -4274,7 +4470,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod mxl_read_selector_bridge_tests {
+pub(super) mod mxl_read_selector_bridge_tests {
     use super::*;
     use crate::infrastructure::native_operations::dcs::{analyze_dcs_info_with_data, validate_dcs};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -4363,7 +4559,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn mxl_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn mxl_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("mxl-info");
 
         let support_reader = WorkspaceSupportStateReader::new(&context);
@@ -4379,7 +4575,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn mxl_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn mxl_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("mxl-validate");
 
         let physical = validate_mxl(&physical_args(), &context);
@@ -4391,7 +4587,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("mxl-decompile");
 
         let physical = decompile_mxl(&physical_args(), &context);
@@ -4420,7 +4616,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn dcs_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn dcs_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("dcs-info");
 
         let support_reader = WorkspaceSupportStateReader::new(&context);
@@ -4443,7 +4639,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn dcs_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn dcs_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("dcs-validate");
 
         let physical = validate_dcs(&dcs_physical_args(), &context);

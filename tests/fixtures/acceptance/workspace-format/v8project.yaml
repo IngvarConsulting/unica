@@ -1,0 +1,14 @@
+format: DESIGNER
+source-set:
+  - name: newer
+    type: CONFIGURATION
+    path: src-newer
+  - name: nosupport
+    type: CONFIGURATION
+    path: src-nosupport
+  - name: unversioned
+    type: CONFIGURATION
+    path: src-unversioned
+  - name: ext
+    type: EXTENSION
+    path: src-ext

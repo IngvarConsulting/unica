@@ -29,6 +29,92 @@ def load_module():
     return module
 
 
+class FakeWindowsProcess:
+    pid = 99
+
+    def __init__(self) -> None:
+        self._handle = "process"
+        self.returncode = None
+        self.stdin = io.StringIO()
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
+
+
+class FakeWindowsApi:
+    """Fault-injectable handle ledger for Windows ownership tests."""
+
+    def __init__(
+        self,
+        *failures: str,
+        active_counts: tuple[int, ...] = (0,),
+        wait_signaled: bool = True,
+    ) -> None:
+        self.failures = list(failures)
+        self.active_counts = list(active_counts)
+        self.wait_signaled = wait_signaled
+        self.events: list[str] = []
+        self.open_handles = {"process"}
+
+    def _record(self, operation: str) -> None:
+        self.events.append(operation)
+        if operation in self.failures:
+            self.failures.remove(operation)
+            raise RuntimeError(f"{operation} injected failure")
+
+    def create_job(self):
+        self._record("CreateJobObjectW")
+        self.open_handles.add("job")
+        return "job"
+
+    def set_kill_on_job_close(self, job) -> None:
+        self._record("SetInformationJobObject")
+
+    def assign_process(self, job, process_handle) -> None:
+        self._record("AssignProcessToJobObject")
+
+    def create_thread_snapshot(self):
+        self._record("CreateToolhelp32Snapshot")
+        self.open_handles.add("snapshot")
+        return "snapshot"
+
+    def open_primary_thread(self, snapshot, pid):
+        self._record("OpenThread")
+        self.open_handles.add("thread")
+        return "thread"
+
+    def resume_thread(self, thread) -> int:
+        self._record("ResumeThread")
+        return 1
+
+    def terminate_process(self, process_handle) -> None:
+        self._record("TerminateProcess")
+
+    def terminate_job(self, job) -> None:
+        self._record("TerminateJobObject")
+
+    def wait_for_single_object(self, handle, timeout_seconds: float) -> bool:
+        self._record("WaitForSingleObject")
+        return self.wait_signaled
+
+    def close_popen_handle(self, process) -> None:
+        self._record("CloseHandle(process)")
+        self.open_handles.remove("process")
+        process._handle = None
+        if process.returncode is None:
+            process.returncode = 1
+
+    def close_handle(self, handle) -> None:
+        operation = f"CloseHandle({handle})"
+        self._record(operation)
+        self.open_handles.remove(handle)
+
+    def active_process_count(self, job) -> int:
+        self._record("QueryInformationJobObject")
+        if len(self.active_counts) > 1:
+            return self.active_counts.pop(0)
+        return self.active_counts[0]
+
+
 class SmokeUnicaMcpTests(unittest.TestCase):
     def expected_tools(self) -> set[str]:
         module = load_module()
@@ -62,6 +148,31 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             publisher.join(timeout=1.0)
 
         self.assertLess(elapsed, 0.15, "notifications restarted the request deadline")
+
+    def test_request_records_the_response_kind_for_shared_wire_diagnostics(self) -> None:
+        module = load_module()
+
+        class Process:
+            stdin = io.StringIO()
+
+        session = module.McpSession.__new__(module.McpSession)
+        session.process = Process()
+        session.timeout_seconds = 0.05
+        session.deadline = time.monotonic() + 0.05
+        session.lines = module.queue.Queue()
+        session.diagnostics = []
+        session.response_kinds = []
+        session.lines.put('{"jsonrpc":"2.0","id":41,"result":{"tools":[]}}\n')
+
+        response = session.request(
+            {"jsonrpc": "2.0", "id": 41, "method": "tools/list", "params": {}}
+        )
+
+        self.assertEqual(response["result"], {"tools": []})
+        self.assertEqual(
+            session.response_kinds,
+            [{"kind": "result", "method": "tools/list"}],
+        )
 
     def test_whole_smoke_has_a_hard_aggregate_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -484,81 +595,632 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertFalse(module._process_is_running(public.pid))
         self.assertFalse(module._process_is_running(child_pid))
 
-    def test_posix_timeout_tree_does_not_claim_a_reused_public_pid(self) -> None:
+    def test_smoke_uses_the_shared_wire_process_ownership_boundary(self) -> None:
         module = load_module()
-        snapshot = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="999 1\n1001 1\n",
-            stderr="",
-        )
 
-        with mock.patch.object(module.subprocess, "run", return_value=snapshot):
-            owned = module._posix_owned_process_pids(
-                999, set(), public_running=False
+        self.assertIs(module.ProcessOwnership, module._WIRE_PROBE.ProcessOwnership)
+        self.assertTrue(issubclass(module.McpSession, module._WIRE_PROBE.JsonRpcSession))
+
+    def test_windows_liveness_probe_never_calls_os_kill(self) -> None:
+        module = load_module()
+        identity = module.ProcessIdentity(41, None, None, "start-41")
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE,
+            "_windows_process_state",
+            return_value=(identity, True, None),
+            create=True,
+        ), mock.patch.object(
+            module._WIRE_PROBE.os,
+            "kill",
+            side_effect=AssertionError("Windows liveness probe called os.kill"),
+        ):
+            running = module._WIRE_PROBE._process_is_running(identity.pid)
+
+        self.assertTrue(running)
+
+    def test_windows_session_starts_suspended_before_ownership_capture(self) -> None:
+        module = load_module()
+        creation_flags: list[int] = []
+
+        class Process:
+            pid = 99
+            stdin = io.StringIO()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+        class Reader:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self) -> None:
+                pass
+
+        process = Process()
+
+        def popen(*args, **kwargs):
+            creation_flags.append(kwargs["creationflags"])
+            return process
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE.subprocess,
+            "CREATE_NEW_PROCESS_GROUP",
+            0x200,
+            create=True,
+        ), mock.patch.object(
+            module._WIRE_PROBE.subprocess, "Popen", side_effect=popen
+        ), mock.patch.object(
+            module._WIRE_PROBE.ProcessOwnership,
+            "capture",
+            return_value=object(),
+        ), mock.patch.object(
+            module._WIRE_PROBE.threading, "Thread", Reader
+        ):
+            module._WIRE_PROBE.JsonRpcSession(
+                ["unica"], {}, cwd=Path("."), deadline=1.0
             )
 
-        self.assertEqual(owned, set())
+        self.assertEqual(creation_flags, [0x204])
 
-    def test_windows_tree_cleanup_continues_after_one_taskkill_timeout(self) -> None:
+    def test_windows_capture_attaches_the_suspended_process_to_a_job_handle(self) -> None:
+        module = load_module()
+        identity = module.ProcessIdentity(99, None, None, "start-99")
+        job = object()
+
+        class Process:
+            pid = 99
+            _handle = object()
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=identity,
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_attach_windows_process_job",
+            return_value=job,
+            create=True,
+        ) as attach:
+            ownership = module.ProcessOwnership.capture(Process())
+
+        attach.assert_called_once()
+        self.assertIs(ownership.windows_job, job)
+
+    def test_windows_job_attach_rolls_back_every_acquired_handle(self) -> None:
+        module = load_module()
+        failure_cases = (
+            "CreateJobObjectW",
+            "SetInformationJobObject",
+            "AssignProcessToJobObject",
+            "CreateToolhelp32Snapshot",
+            "OpenThread",
+            "ResumeThread",
+        )
+
+        for failed_operation in failure_cases:
+            with self.subTest(failed_operation=failed_operation):
+                process = FakeWindowsProcess()
+                api = FakeWindowsApi(failed_operation)
+
+                with self.assertRaisesRegex(RuntimeError, failed_operation):
+                    module._WIRE_PROBE._attach_windows_process_job(
+                        process,
+                        deadline=time.monotonic() + 0.5,
+                        api=api,
+                    )
+
+                self.assertEqual(api.open_handles, set(), api.events)
+                self.assertLess(
+                    api.events.index("TerminateProcess"),
+                    api.events.index("WaitForSingleObject"),
+                    api.events,
+                )
+                self.assertLess(
+                    api.events.index("WaitForSingleObject"),
+                    api.events.index("CloseHandle(process)"),
+                    api.events,
+                )
+                for handle in ("thread", "snapshot", "job"):
+                    if handle in {
+                        event.removeprefix("CloseHandle(").removesuffix(")")
+                        for event in api.events
+                        if event.startswith("CloseHandle(")
+                    }:
+                        self.assertNotIn(handle, api.open_handles)
+
+    def test_windows_job_attach_reports_cleanup_failures_without_skipping_later_cleanup(
+        self,
+    ) -> None:
+        module = load_module()
+        cleanup_failures = (
+            "TerminateProcess",
+            "TerminateJobObject",
+            "WaitForSingleObject",
+            "CloseHandle(process)",
+            "CloseHandle(thread)",
+            "CloseHandle(snapshot)",
+            "CloseHandle(job)",
+        )
+
+        for cleanup_failure in cleanup_failures:
+            with self.subTest(cleanup_failure=cleanup_failure):
+                process = FakeWindowsProcess()
+                primary_failure = (
+                    "ResumeThread"
+                    if cleanup_failure == "CloseHandle(thread)"
+                    else "OpenThread"
+                )
+                api = FakeWindowsApi(primary_failure, cleanup_failure)
+
+                with self.assertRaises(RuntimeError) as raised:
+                    module._WIRE_PROBE._attach_windows_process_job(
+                        process,
+                        deadline=time.monotonic() + 0.5,
+                        api=api,
+                    )
+
+                self.assertIn(cleanup_failure, str(raised.exception))
+
+                self.assertIn("TerminateProcess", api.events)
+                self.assertIn("WaitForSingleObject", api.events)
+                self.assertIn("CloseHandle(process)", api.events)
+                self.assertIn("CloseHandle(snapshot)", api.events)
+                self.assertIn("CloseHandle(job)", api.events)
+                expected_leaks = {
+                    event.removeprefix("CloseHandle(").removesuffix(")")
+                    for event in (cleanup_failure,)
+                    if event.startswith("CloseHandle(")
+                }
+                self.assertEqual(api.open_handles, expected_leaks, api.events)
+
+    def test_windows_job_attach_cleanup_uses_the_passed_deadline(self) -> None:
+        module = load_module()
+
+        class ClockedApi(FakeWindowsApi):
+            def wait_for_single_object(self, handle, timeout_seconds: float) -> bool:
+                self._record("WaitForSingleObject")
+                Clock.now += timeout_seconds
+                return False
+
+        class Clock:
+            now = 10.0
+
+            @classmethod
+            def monotonic(cls) -> float:
+                return cls.now
+
+        process = FakeWindowsProcess()
+        api = ClockedApi("OpenThread")
+        with mock.patch.object(
+            module._WIRE_PROBE.time, "monotonic", side_effect=Clock.monotonic
+        ):
+            with self.assertRaisesRegex(RuntimeError, "WaitForSingleObject timed out"):
+                module._WIRE_PROBE._attach_windows_process_job(
+                    process,
+                    deadline=10.125,
+                    api=api,
+                )
+
+        self.assertEqual(Clock.now, 10.125)
+        self.assertEqual(api.open_handles, set())
+
+    def test_windows_job_attach_failure_closes_suspended_process_pipes(self) -> None:
         module = load_module()
 
         class Process:
             pid = 99
+            _handle = object()
 
-            def poll(self):
-                return 0
+            def __init__(self) -> None:
+                self.stdin = io.StringIO()
+                self.stdout = io.StringIO()
+                self.stderr = io.StringIO()
+                self.terminated = False
 
-            def wait(self, timeout):
-                return 0
+            def terminate(self) -> None:
+                self.terminated = True
 
-        session = module.McpSession.__new__(module.McpSession)
-        session.process = Process()
-        calls: list[int] = []
+            @staticmethod
+            def wait(timeout):
+                return 1
 
-        def taskkill(command, **kwargs):
-            calls.append(int(command[2]))
-            if len(calls) == 1:
-                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
-            return subprocess.CompletedProcess(command, 0)
-
-        with mock.patch.object(module.os, "name", "nt"), mock.patch.object(
-            module, "_workspace_service_pids", return_value={41, 42}
-        ), mock.patch.object(module.subprocess, "run", side_effect=taskkill), mock.patch.object(
-            module, "_wait_for_process_pids"
+        process = Process()
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE.subprocess, "Popen", return_value=process
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_attach_windows_process_job",
+            side_effect=RuntimeError("job attach failed"),
         ):
-            session.terminate_tree(Path("cache"))
+            with self.assertRaisesRegex(RuntimeError, "job attach failed"):
+                module._WIRE_PROBE.JsonRpcSession(
+                    ["unica"], {}, cwd=Path("."), deadline=1.0
+                )
 
-        self.assertEqual(calls, [41, 42, 99])
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+        self.assertTrue(process.terminated)
+
+    def test_windows_job_cleanup_waits_and_closes_exact_root_before_job_zero(self) -> None:
+        module = load_module()
+        process = FakeWindowsProcess()
+        api = FakeWindowsApi(active_counts=(0,))
+        job = module._WIRE_PROBE._WindowsProcessJob("job", api, process)
+        api.open_handles.add("job")
+        identity = module.ProcessIdentity(99, None, None, "start-99")
+        ownership = module.ProcessOwnership(process, identity, None, job)
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=None,
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_process_is_running",
+            return_value=False,
+        ):
+            result = ownership.quiesce({identity}, 0.5)
+
+        self.assertTrue(result.complete, result.incomplete)
+        self.assertEqual(result.active_processes, 0)
+        self.assertEqual(api.open_handles, set())
+        self.assertLess(
+            api.events.index("TerminateJobObject"),
+            api.events.index("WaitForSingleObject"),
+            api.events,
+        )
+        self.assertLess(
+            api.events.index("WaitForSingleObject"),
+            api.events.index("CloseHandle(process)"),
+            api.events,
+        )
+        self.assertLess(
+            api.events.index("CloseHandle(process)"),
+            api.events.index("QueryInformationJobObject"),
+            api.events,
+        )
+        self.assertLess(
+            api.events.index("QueryInformationJobObject"),
+            api.events.index("CloseHandle(job)"),
+            api.events,
+        )
+
+    def test_windows_job_cleanup_is_handle_bound_and_uses_one_deadline(self) -> None:
+        module = load_module()
+
+        class Clock:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls) -> float:
+                return cls.now
+
+            @classmethod
+            def sleep(cls, duration: float) -> None:
+                cls.now += duration
+
+        class Api(FakeWindowsApi):
+            def terminate_job(self, job) -> None:
+                super().terminate_job(job)
+                Clock.sleep(0.3)
+
+            def wait_for_single_object(
+                self, handle, timeout_seconds: float
+            ) -> bool:
+                self._record("WaitForSingleObject")
+                Clock.sleep(timeout_seconds)
+                return False
+
+            def active_process_count(self, job) -> int:
+                self._record("QueryInformationJobObject")
+                return 0 if Clock.now >= 0.58 else 1
+
+        original = module.ProcessIdentity(99, None, None, "original-start")
+        replacement = module.ProcessIdentity(99, None, None, "replacement-start")
+        process = FakeWindowsProcess()
+        api = Api()
+        api.open_handles.add("job")
+        job = module._WIRE_PROBE._WindowsProcessJob("job", api, process)
+        ownership = module.ProcessOwnership(process, original, None, job)
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=replacement,
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_process_is_running",
+            return_value=True,
+        ), mock.patch.object(
+            module._WIRE_PROBE.time, "monotonic", side_effect=Clock.monotonic
+        ), mock.patch.object(
+            module._WIRE_PROBE.time, "sleep", side_effect=Clock.sleep
+        ):
+            result = ownership.quiesce({original}, 0.5)
+
+        self.assertIn("TerminateJobObject", api.events)
+        self.assertFalse(result.complete)
+        self.assertEqual(result.survivors, set())
+        self.assertEqual(result.active_processes, 1)
+        self.assertTrue(
+            any("1 active process" in detail for detail in result.incomplete),
+            result.incomplete,
+        )
+        self.assertLessEqual(Clock.now, 0.5)
+
+    def test_windows_job_timeout_reports_incomplete_descendant_evidence(self) -> None:
+        module = load_module()
+
+        class Clock:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls) -> float:
+                return cls.now
+
+            @classmethod
+            def sleep(cls, duration: float) -> None:
+                cls.now += duration
+
+        original = module.ProcessIdentity(99, None, None, "original-start")
+        process = FakeWindowsProcess()
+        api = FakeWindowsApi(active_counts=(1,))
+        api.open_handles.add("job")
+        job = module._WIRE_PROBE._WindowsProcessJob("job", api, process)
+        ownership = module.ProcessOwnership(process, original, None, job)
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=None,
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_process_is_running",
+            return_value=False,
+        ), mock.patch.object(
+            module._WIRE_PROBE.time, "monotonic", side_effect=Clock.monotonic
+        ), mock.patch.object(
+            module._WIRE_PROBE.time, "sleep", side_effect=Clock.sleep
+        ):
+            result = ownership.quiesce({original}, 0.5)
+
+        self.assertFalse(result.complete)
+        self.assertEqual(result.survivors, set())
+        self.assertEqual(result.active_processes, 1)
+        self.assertTrue(
+            any("1 active process" in detail for detail in result.incomplete),
+            result.incomplete,
+        )
+        self.assertLessEqual(Clock.now, 0.5)
+
+    def test_windows_job_api_errors_remain_incomplete_after_root_exit(self) -> None:
+        module = load_module()
+
+        original = module.ProcessIdentity(99, None, None, "original-start")
+        for expected in ("TerminateJobObject", "QueryInformationJobObject"):
+            with self.subTest(expected=expected):
+                process = FakeWindowsProcess()
+                api = FakeWindowsApi(expected)
+                api.open_handles.add("job")
+                job = module._WIRE_PROBE._WindowsProcessJob(
+                    "job", api, process
+                )
+                ownership = module.ProcessOwnership(
+                    process, original, None, job
+                )
+                with mock.patch.object(
+                    module._WIRE_PROBE.os, "name", "nt"
+                ), mock.patch.object(
+                    module._WIRE_PROBE,
+                    "_current_process_identity",
+                    return_value=None,
+                ), mock.patch.object(
+                    module._WIRE_PROBE,
+                    "_process_is_running",
+                    return_value=False,
+                ):
+                    result = ownership.quiesce({original}, 0.5)
+
+                self.assertFalse(result.complete)
+                self.assertTrue(
+                    any(expected in detail for detail in result.incomplete),
+                    result.incomplete,
+                )
+
+    def test_smoke_rejects_incomplete_job_cleanup_evidence(self) -> None:
+        module = load_module()
+
+        class Result:
+            survivors = set()
+            incomplete = ("Windows Job Object still owns 1 active process",)
+            active_processes = 1
+
+        class Ownership:
+            @staticmethod
+            def quiesce(identities, timeout):
+                return Result()
+
+        with self.assertRaisesRegex(
+            SystemExit, "cleanup evidence is incomplete.*1 active process"
+        ):
+            module._quiesce_owned_processes(
+                Ownership(),
+                {module.ProcessIdentity(99, None, None, "start-99")},
+                0.5,
+            )
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object integration")
+    def test_windows_job_object_reaps_root_and_child(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pid_path = root / "job-pids.txt"
+            server = root / "job-root.py"
+            server.write_text(
+                textwrap.dedent(
+                    """
+                    import os
+                    import subprocess
+                    import sys
+                    import time
+                    from pathlib import Path
+
+                    child = subprocess.Popen(
+                        [sys.executable, "-c", "import time; time.sleep(60)"]
+                    )
+                    Path(sys.argv[1]).write_text(
+                        f"{os.getpid()} {child.pid}", encoding="utf-8"
+                    )
+                    time.sleep(60)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            session = module.McpSession(
+                [sys.executable, str(server), str(pid_path)],
+                os.environ.copy(),
+                2.0,
+                cwd=root,
+            )
+            try:
+                deadline = time.monotonic() + 2.0
+                while not pid_path.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(pid_path.exists(), "job fixture did not start")
+                pids = {
+                    int(value)
+                    for value in pid_path.read_text(encoding="utf-8").split()
+                }
+
+                result = session.process_ownership.terminate(timeout_seconds=1.0)
+
+                self.assertTrue(result.complete, result.incomplete)
+                self.assertEqual(result.active_processes, 0)
+                self.assertFalse(
+                    any(module._WIRE_PROBE._process_is_running(pid) for pid in pids)
+                )
+            finally:
+                session.terminate_tree(root)
 
     def test_posix_tree_cleanup_continues_after_one_signal_error(self) -> None:
         module = load_module()
         calls: list[int] = []
+        identities = {
+            module.ProcessIdentity(pid, 1, 99, f"start-{pid}")
+            for pid in (41, 42, 99)
+        }
+
+        class Process:
+            pid = 99
+
+        ownership = module.ProcessOwnership(Process(), None, 99)
 
         def signal_process(pid, signal_number):
             calls.append(pid)
             if len(calls) == 1:
                 raise PermissionError("signal denied")
 
-        with mock.patch.object(module.os, "kill", side_effect=signal_process):
-            module._signal_processes({41, 42, 99}, module.signal.SIGTERM)
+        with mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            side_effect=lambda pid: next(
+                identity for identity in identities if identity.pid == pid
+            ),
+        ), mock.patch.object(
+            module._WIRE_PROBE.os, "kill", side_effect=signal_process
+        ):
+            ownership.signal(identities, signal.SIGTERM)
 
         self.assertEqual(calls, [99, 42, 41])
 
-    def test_requires_all_logical_source_tools(self) -> None:
-        expected = self.expected_tools()
+    def test_workspace_service_observation_preserves_the_first_identity(self) -> None:
+        module = load_module()
+        original = module.ProcessIdentity(41, 1, 99, "original-start")
+        replacement = module.ProcessIdentity(41, 1, 99, "replacement-start")
 
-        self.assertTrue(
-            {
-                "unica.source.resolve",
-                "unica.source.children",
-                "unica.source.resources",
-                "unica.source.read",
-            }.issubset(expected)
+        class Process:
+            pid = 99
+
+        session = module.McpSession.__new__(module.McpSession)
+        session.process = Process()
+        session.process_ownership = module.ProcessOwnership(
+            session.process, None, None
         )
-        # The bounded resource surface is read-only; BSL mutation belongs to
-        # unica.code.patch, so the smoke must not demand a writer.
-        self.assertNotIn("unica.source.apply", expected)
+        session._service_identities = {}
+        self.assertTrue(
+            hasattr(session, "observe_workspace_services"),
+            "smoke session does not capture a service identity when first observed",
+        )
+
+        with mock.patch.object(
+            module, "_workspace_service_pids", return_value={41}
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=original,
+        ):
+            session.observe_workspace_services(Path("cache"))
+        with mock.patch.object(
+            module, "_workspace_service_pids", return_value={41}
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=replacement,
+        ):
+            session.observe_workspace_services(Path("cache"))
+
+        self.assertEqual(session.observed_service_identities(), {original})
+
+    def test_stale_recorded_service_pid_is_not_promoted_at_cleanup(self) -> None:
+        module = load_module()
+        original = module.ProcessIdentity(41, 1, 99, "original-start")
+        replacement = module.ProcessIdentity(41, 1, 99, "replacement-start")
+
+        class Process:
+            pid = 99
+            stdin = None
+            stdout = None
+            stderr = None
+
+            @staticmethod
+            def wait(timeout):
+                return 0
+
+        session = module.McpSession.__new__(module.McpSession)
+        session.process = Process()
+        session.process_ownership = module.ProcessOwnership(
+            session.process, None, None
+        )
+        session._service_identities = {41: original}
+        signalled: list[int] = []
+
+        with mock.patch.object(
+            module, "_workspace_service_pids", return_value={41}
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_posix_process_snapshot",
+            return_value={41: replacement},
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=replacement,
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_process_is_running",
+            return_value=True,
+        ), mock.patch.object(
+            module._WIRE_PROBE.os,
+            "kill",
+            side_effect=lambda pid, signal_number: signalled.append(pid),
+        ):
+            session.terminate_tree(Path("cache"))
+
+        self.assertNotIn(
+            41,
+            signalled,
+            "cleanup promoted a stale recorded PID into a replacement identity",
+        )
 
     def test_waits_for_short_lived_workspace_service_before_temp_cleanup(self) -> None:
         module = load_module()
@@ -669,9 +1331,9 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 raise SystemExit("MCP close failed")
 
             def terminate_tree(
-                self, root: Path, known_service_pids: set[int]
+                self, root: Path, known_service_identities: set[object]
             ) -> None:
-                events.append(("terminate", root, known_service_pids))
+                events.append(("terminate", root, known_service_identities))
 
         cache_root = Path("cache")
         module._shutdown_workspace_services = lambda root, timeout: (
@@ -692,7 +1354,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 ("shutdown", cache_root, 7.0),
                 "close",
                 ("wait", cache_root, 7.0, {41}),
-                ("terminate", cache_root, {41}),
+                ("terminate", cache_root, set()),
             ],
         )
 
@@ -739,36 +1401,41 @@ class SmokeUnicaMcpTests(unittest.TestCase):
     def test_successful_close_reaps_captured_provider_descendants(self) -> None:
         module = load_module()
         events: list[object] = []
-        running = {42}
+        identities = {
+            module.ProcessIdentity(pid, 1, 99, f"start-{pid}")
+            for pid in (41, 42, 99)
+        }
 
-        class Process:
-            pid = 99
+        class Ownership:
+            def snapshot(self, service_pids: set[int]):
+                events.append(("capture", service_pids))
+                return identities
 
-            @staticmethod
-            def poll() -> None:
-                return None
+            def quiesce(self, owned, timeout):
+                events.append(("quiesce", owned, timeout))
+                return module.ProcessCleanupResult(set())
+
+        ownership = Ownership()
 
         class Session:
-            process = Process()
+            @staticmethod
+            def _process_ownership():
+                return ownership
 
             @staticmethod
             def close() -> None:
                 events.append("close")
 
+            @staticmethod
+            def observed_service_identities():
+                return {
+                    identity for identity in identities if identity.pid == 41
+                }
+
         cache_root = Path("cache")
 
-        def capture(public_pid: int, service_pids: set[int], *, public_running: bool):
-            events.append(("capture", public_pid, service_pids, public_running))
-            return {99, 41, 42}
-
-        def signal_processes(pids: set[int], signal_number: int) -> None:
-            events.append(("signal", pids, signal_number))
-            running.difference_update(pids)
-
-        with mock.patch.object(module.os, "name", "posix"), mock.patch.object(
+        with mock.patch.object(
             module, "_workspace_service_pids", return_value={41}
-        ), mock.patch.object(
-            module, "_posix_owned_process_pids", side_effect=capture
         ), mock.patch.object(
             module,
             "_shutdown_workspace_services",
@@ -782,26 +1449,21 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             side_effect=lambda root, timeout, pids: events.append(
                 ("wait-services", root, timeout, pids)
             ),
-        ), mock.patch.object(
-            module,
-            "_wait_for_process_pids",
-            side_effect=lambda pids, timeout: events.append(
-                ("wait-owned", pids, timeout)
-            ),
-        ), mock.patch.object(
-            module, "_process_is_running", side_effect=lambda pid: pid in running
-        ), mock.patch.object(
-            module, "_signal_processes", side_effect=signal_processes
         ):
             module._close_session_and_workspace_services(
                 Session(), cache_root, 7.0
             )
 
-        self.assertEqual(events[0], ("capture", 99, {41}, True))
-        self.assertIn(("signal", {42}, module.signal.SIGTERM), events)
-        self.assertEqual(events[-1], ("wait-owned", {42}, 1.0))
+        self.assertEqual(
+            events[0],
+            ("capture", {identity for identity in identities if identity.pid == 41}),
+        )
+        self.assertEqual(
+            events[-1],
+            ("quiesce", identities, module._WIRE_PROBE._CLEANUP_GRACE_SECONDS),
+        )
 
-    def test_shutdown_failure_emergency_cleanup_kills_recorded_service_pid(self) -> None:
+    def test_shutdown_failure_does_not_claim_unobserved_recorded_service_pid(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             cache_root = Path(directory) / "cache"
@@ -832,27 +1494,14 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "wait failed"):
                     module._close_session_and_workspace_services(
                         session, cache_root, 0.1
-                    )
+                )
                 self.assertFalse(module._process_is_running(public.pid))
-                self.assertFalse(module._process_is_running(service.pid))
+                self.assertTrue(module._process_is_running(service.pid))
             finally:
                 for process in (service, public):
                     if process.poll() is None:
                         process.kill()
                     process.wait(timeout=2.0)
-
-    def test_expected_tools_are_the_canonical_review_ledger_exact_set(self) -> None:
-        review = json.loads(
-            (REPO_ROOT / "spec/architecture/tool-surface-review.json").read_text(
-                encoding="utf-8"
-            )
-        )
-
-        self.assertEqual(self.expected_tools(), set(review))
-        self.assertEqual(
-            {name for name in self.expected_tools() if name.startswith("unica.xdto.")},
-            {"unica.xdto.info", "unica.xdto.edit"},
-        )
 
     def test_review_ledger_resolution_handles_source_and_packaged_plugin_roots(self) -> None:
         module = load_module()
@@ -862,7 +1511,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             manifest = root / "plugins/unica/.codex-plugin/plugin.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text("{}\n", encoding="utf-8")
-            review_path = root / "spec/architecture/tool-surface-review.json"
+            review_path = root / "arch/tool-surface-review.json"
             review_path.parent.mkdir(parents=True)
             review_path.write_text(
                 json.dumps({"unica.xdto.info": {}, "unica.xdto.edit": {}}),
@@ -884,7 +1533,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             outer = Path(directory)
-            unrelated = outer / "spec/architecture/tool-surface-review.json"
+            unrelated = outer / "arch/tool-surface-review.json"
             unrelated.parent.mkdir(parents=True)
             unrelated.write_text(
                 json.dumps({"unica.source.read": {}}),
@@ -1169,7 +1818,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             root = Path(directory)
             server = root / "server.py"
             server.write_text(server_source, encoding="utf-8")
-            review_path = root / "spec/architecture/tool-surface-review.json"
+            review_path = root / "arch/tool-surface-review.json"
             review_path.parent.mkdir(parents=True)
             review_path.write_text(
                 json.dumps({name: {} for name in sorted(expected_tools)}),
@@ -1199,67 +1848,65 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 check=False,
             )
 
-    def test_accepts_initialize_and_required_tool_responses(self) -> None:
-        result = self.run_smoke(self.tool_entries())
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("verified packaged Unica MCP source-resource flow", result.stdout)
-
-    def test_rejects_runtime_missing_a_required_tool(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(self.expected_tools() - {"unica.xdto.edit"})
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("missing", result.stderr)
-        self.assertIn("unica.xdto.edit", result.stderr)
-
-    def test_reports_source_tool_missing_from_ledger_before_projection(self) -> None:
+    def test_accepts_exact_v13_compatibility_surface(self) -> None:
         module = load_module()
-        expected = self.expected_tools() - {"unica.source.read"}
+        expected = module.V13_COMPATIBILITY_TOOL_NAMES
 
-        with self.assertRaisesRegex(
-            SystemExit,
-            "source tools.*unica.source.read",
-        ):
-            module._stable_tool_contract(self.tool_entries(expected), expected)
+        module._stable_tool_contract(self.tool_entries(expected), expected)
 
-    def test_rejects_runtime_exposing_an_unexpected_tool(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(self.expected_tools() | {"unica.xdto.validate"})
+    def test_rejects_v13_surface_missing_a_canonical_tool(self) -> None:
+        module = load_module()
+        expected = module.V13_COMPATIBILITY_TOOL_NAMES
+
+        with self.assertRaisesRegex(SystemExit, "missing: unica.search"):
+            module._stable_tool_contract(
+                self.tool_entries(expected - {"unica.search"}),
+                expected,
+            )
+
+    def test_v13_payload_uses_structured_content_without_text_duplication(self) -> None:
+        module = load_module()
+        payload = {
+            "ok": True,
+            "summary": "workspace source sets are admitted",
+            "data": {"status": "admitted", "sources": ["main"]},
+            "rev": "unica-read-set-sha256-v1:test",
+        }
+
+        self.assertEqual(
+            module._v13_tool_payload(
+                {
+                    "result": {
+                        "content": [],
+                        "structuredContent": payload,
+                        "isError": False,
+                    }
+                }
+            ),
+            payload,
         )
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unexpected", result.stderr)
-        self.assertIn("unica.xdto.validate", result.stderr)
+    def test_source_snapshot_excludes_only_the_canonical_internal_cache(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".build/unica/source-revisions").mkdir(parents=True)
+            (root / ".build/other").mkdir(parents=True)
+            (root / "src").mkdir()
+            (root / ".build/unica/source-revisions/revision.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            (root / ".build/other/evidence.txt").write_text(
+                "visible", encoding="utf-8"
+            )
+            (root / "src/Configuration.xml").write_text(
+                "<Configuration/>", encoding="utf-8"
+            )
 
-    def test_reports_missing_and_unexpected_tools_together(self) -> None:
-        tools = self.expected_tools() - {"unica.xdto.edit"}
-        tools.add("unica.xdto.validate")
-        result = self.run_smoke(self.tool_entries(tools))
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("missing", result.stderr)
-        self.assertIn("unica.xdto.edit", result.stderr)
-        self.assertIn("unexpected", result.stderr)
-        self.assertIn("unica.xdto.validate", result.stderr)
-
-    def test_decodes_mcp_json_as_utf8_independently_of_windows_locale(self) -> None:
-        # The server name is fixed by INV-MCP-SERVER-NAME, so it cannot carry
-        # the non-ASCII payload this case is about. `instructions` is a
-        # documented initialize field and carries it instead, serialized with
-        # `ensure_ascii=False` and written as raw UTF-8 bytes.
-        result = self.run_smoke(
-            self.tool_entries(),
-            instructions="Уника читает выгрузку конфигуратора",
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_accepts_the_invariant_server_name(self) -> None:
-        result = self.run_smoke(self.tool_entries(), server_name="unica")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                set(module._source_snapshot(root)),
+                {".build/other/evidence.txt", "src/Configuration.xml"},
+            )
 
     def test_rejects_a_server_name_other_than_unica(self) -> None:
         # INV-MCP-SERVER-NAME fixes the published identity of the server. A
@@ -1270,49 +1917,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("serverInfo", result.stderr)
         self.assertIn("Уника", result.stderr)
-
-    def test_rejects_incomplete_source_schema(self) -> None:
-        entries = self.tool_entries()
-        source_read = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.source.read"
-        )
-        source_read["inputSchema"]["required"].remove("resourceId")
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("schema", result.stderr)
-
-    def test_rejects_missing_meta_output_schema(self) -> None:
-        entries = self.tool_entries()
-        meta_info = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.meta.info"
-        )
-        meta_info.pop("outputSchema")
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Meta output schema", result.stderr)
-        self.assertIn("unica.meta.info", result.stderr)
-
-    def test_rejects_output_schema_on_non_meta_tool(self) -> None:
-        entries = self.tool_entries()
-        project_status = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.project.status"
-        )
-        project_status["outputSchema"] = load_module().EXPECTED_META_OUTPUT_SCHEMA
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("non-Meta tool", result.stderr)
-        self.assertIn("unica.project.status", result.stderr)
 
     @staticmethod
     def typed_code_search_output_schema() -> dict[str, object]:
@@ -1400,221 +2004,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             },
             "required": ["data"],
         }
-
-    def test_accepts_typed_code_search_output_schema(self) -> None:
-        entries = self.tool_entries()
-        code_search = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
-        )
-        code_search["outputSchema"] = self.typed_code_search_output_schema()
-
-        result = self.run_smoke(entries)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_rejects_code_search_schema_without_terminal_reason(self) -> None:
-        entries = self.tool_entries()
-        code_search = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
-        )
-        schema = self.typed_code_search_output_schema()
-        section = schema["properties"]["data"]["properties"]["sections"]["items"]
-        section["properties"].pop("termination")
-        section["required"].remove("termination")
-        code_search["outputSchema"] = schema
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("provider-neutral role-section fields", result.stderr)
-
-    def test_rejects_code_search_output_schema_that_does_not_require_data(self) -> None:
-        entries = self.tool_entries()
-        code_search = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
-        )
-        schema = self.typed_code_search_output_schema()
-        schema["required"] = []
-        code_search["outputSchema"] = schema
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must require data", result.stderr)
-
-    def test_rejects_xdto_info_schema_missing_required_target(self) -> None:
-        entries = self.tool_entries()
-        xdto_info = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.info"
-        )
-        xdto_info["inputSchema"]["required"].remove("metadataPath")
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("XDTO input schema", result.stderr)
-
-    def test_rejects_xdto_edit_schema_missing_operation_branch_requirement(self) -> None:
-        entries = self.tool_entries()
-        xdto_edit = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.edit"
-        )
-        add_value_type = next(
-            variant
-            for variant in xdto_edit["inputSchema"]["properties"]["operations"][
-                "items"
-            ]["oneOf"]
-            if variant["properties"]["op"]["enum"] == ["addValueType"]
-        )
-        add_value_type["required"].remove("base")
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("XDTO input schema", result.stderr)
-
-    def test_rejects_expected_xdto_tool_without_input_schema(self) -> None:
-        entries = self.tool_entries()
-        xdto_info = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.info"
-        )
-        xdto_info.pop("inputSchema")
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("input schema", result.stderr)
-        self.assertIn("unica.xdto.info", result.stderr)
-
-    def test_rejects_expected_xdto_tool_with_non_object_input_schema(self) -> None:
-        entries = self.tool_entries()
-        xdto_edit = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.edit"
-        )
-        xdto_edit["inputSchema"] = []
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("input schema", result.stderr)
-        self.assertIn("unica.xdto.edit", result.stderr)
-
-    def test_rejects_expected_xdto_schema_not_declaring_an_object(self) -> None:
-        entries = self.tool_entries()
-        xdto_edit = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.edit"
-        )
-        xdto_edit["inputSchema"] = {
-            "type": "array",
-            "properties": {},
-            "required": [],
-            "additionalProperties": False,
-        }
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("type object", result.stderr)
-        self.assertIn("unica.xdto.edit", result.stderr)
-
-    def test_rejects_duplicate_expected_tool_name(self) -> None:
-        entries = self.tool_entries()
-        duplicate = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.info"
-        )
-        entries.append(json.loads(json.dumps(duplicate)))
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("duplicate", result.stderr)
-        self.assertIn("unica.xdto.info", result.stderr)
-
-    def test_rejects_malformed_non_object_tool_entry(self) -> None:
-        entries = self.tool_entries()
-        entries.append("not-a-tool")
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("malformed entries", result.stderr)
-
-    def test_rejects_empty_tool_name_as_malformed(self) -> None:
-        entries = self.tool_entries()
-        entries.append(
-            {
-                "name": "",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                    "additionalProperties": False,
-                },
-            }
-        )
-
-        result = self.run_smoke(entries)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("malformed entries", result.stderr)
-
-    def test_rejects_stable_source_result_drift(self) -> None:
-        result = self.run_smoke(self.tool_entries(), result_drift=True)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("stable", result.stderr)
-
-    def test_rejects_provider_revision_leakage(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(),
-            provider_revision=True,
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("providerRevision", result.stderr)
-
-    def test_rejects_a_read_that_writes(self) -> None:
-        """The whole source surface is read-only, so any byte it changes fails."""
-        result = self.run_smoke(self.tool_entries(), read_writes=True)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("read-only", result.stderr)
-
-    def test_rejects_failed_bsl_analyzer_section_in_packaged_search(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(),
-            code_search_status="failed",
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("bsl-analyzer", result.stderr)
-
-    def test_rejects_failed_code_search_even_when_bsl_section_has_a_hit(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(),
-            code_search_ok=False,
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("inconsistent success state", result.stderr)
 
     def test_unavailable_bsl_analyzer_is_terminal_even_with_building_prose(self) -> None:
         """`unavailable` is permanent; prose in the diagnostics cannot soften it.
@@ -1744,15 +2133,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertEqual(next_id, 19)
         self.assertEqual(session.request_ids, [17, 18])
         self.assertEqual(sleeps, [0.5])
-
-    def test_rejects_upstream_root_identity_leaking_from_packaged_search(self) -> None:
-        result = self.run_smoke(
-            self.tool_entries(),
-            code_search_root_field="rootId",
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("rootId", result.stderr)
 
 
 if __name__ == "__main__":

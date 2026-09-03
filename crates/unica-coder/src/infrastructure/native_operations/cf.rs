@@ -939,11 +939,23 @@ pub(crate) struct CfHomePageRoleData {
     pub(crate) visible: bool,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfRegisteredObject {
+    pub(crate) kind: String,
+    pub(crate) name: String,
+}
+
+pub(crate) struct ParsedCfInfo {
+    pub(crate) data: CfInfoData,
+    pub(crate) registered_objects: Vec<CfRegisteredObject>,
+}
+
 fn optional(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-fn cf_home_page_item_data(items: &[CfHomePageItem]) -> Vec<CfHomePageItemData> {
+pub(crate) fn cf_home_page_item_data(items: &[CfHomePageItem]) -> Vec<CfHomePageItemData> {
     items
         .iter()
         .map(|item| CfHomePageItemData {
@@ -962,101 +974,125 @@ fn cf_home_page_item_data(items: &[CfHomePageItem]) -> Vec<CfHomePageItemData> {
         .collect()
 }
 
+pub(crate) fn parse_cf_info_xml(
+    text: &str,
+    support: ConfigurationSupportData,
+    home_page: Option<CfHomePageData>,
+) -> Result<ParsedCfInfo, String> {
+    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("Configuration XML parse error: {err}"))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "MetaDataObject" {
+        return Err(
+            "[ERROR] Not a valid 1C metadata XML file (no MetaDataObject root)".to_string(),
+        );
+    }
+    let Some(cfg) = root
+        .children()
+        .find(|node| role_info_element(*node, "Configuration", Some(MD_NS)))
+    else {
+        return Err("[ERROR] No <Configuration> element found".to_string());
+    };
+    let Some(props) = cfg
+        .children()
+        .find(|node| role_info_element(*node, "Properties", Some(MD_NS)))
+    else {
+        return Err("[ERROR] No <Configuration>/<Properties> element found".to_string());
+    };
+
+    let version = root.attribute("version").unwrap_or("");
+    let extension_purpose = optional(cf_prop_text(props, "ConfigurationExtensionPurpose"));
+    let counts = cf_child_object_counts(cfg);
+    let total_objects = counts.iter().map(|(_, count)| *count).sum::<usize>();
+    let registered_objects = cfg
+        .children()
+        .find(|node| role_info_element(*node, "ChildObjects", Some(MD_NS)))
+        .into_iter()
+        .flat_map(|children| children.children().filter(|node| node.is_element()))
+        .filter_map(|child| {
+            child
+                .text()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(|name| CfRegisteredObject {
+                    kind: child.tag_name().name().to_string(),
+                    name: name.to_string(),
+                })
+        })
+        .collect();
+    let data = CfInfoData {
+        format: version.to_string(),
+        name: cf_prop_text(props, "Name"),
+        synonym: optional(cf_prop_ml(props, "Synonym")),
+        version: optional(cf_prop_text(props, "Version")),
+        vendor: optional(cf_prop_text(props, "Vendor")),
+        support,
+        extension_purpose,
+        properties: CfInfoProperties {
+            compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
+            default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
+            script_variant: optional(cf_prop_text(props, "ScriptVariant")),
+            default_language: optional(cf_prop_text(props, "DefaultLanguage")),
+            data_lock_control_mode: optional(cf_prop_text(props, "DataLockControlMode")),
+            modality_use_mode: optional(cf_prop_text(props, "ModalityUseMode")),
+            interface_compatibility_mode: optional(cf_prop_text(
+                props,
+                "InterfaceCompatibilityMode",
+            )),
+            extension_compatibility_mode: optional(cf_prop_text(
+                props,
+                "ConfigurationExtensionCompatibilityMode",
+            )),
+            object_autonumeration_mode: optional(cf_prop_text(props, "ObjectAutonumerationMode")),
+            synchronous_call_use_mode: optional(cf_prop_text(
+                props,
+                "SynchronousPlatformExtensionAndAddInCallUseMode",
+            )),
+            database_tablespaces_use_mode: optional(cf_prop_text(
+                props,
+                "DatabaseTablespacesUseMode",
+            )),
+            main_window_mode: optional(cf_prop_text(props, "MainClientApplicationWindowMode")),
+            comment: optional(cf_prop_text(props, "Comment")),
+            name_prefix: optional(cf_prop_text(props, "NamePrefix")),
+            update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
+        },
+        child_objects: counts
+            .into_iter()
+            .map(|(kind, count)| CfChildObjectCount { kind, count })
+            .collect(),
+        total_objects,
+        home_page,
+    };
+    Ok(ParsedCfInfo {
+        data,
+        registered_objects,
+    })
+}
+
 pub(crate) fn analyze_cf_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     support_reader: &dyn SupportStateReader,
 ) -> CfInfoExecution {
-    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-
     let result = (|| -> Result<(CfInfoData, PathBuf), String> {
         let selection = resolve_cf_info_target(args, context)?;
         let config_path = selection.resource_path;
-
         let text = fs::read_to_string(&config_path)
             .map_err(|err| format!("failed to read {}: {err}", config_path.display()))?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", config_path.display()))?;
-        let root = doc.root_element();
-        if root.tag_name().name() != "MetaDataObject" {
-            return Err(
-                "[ERROR] Not a valid 1C metadata XML file (no MetaDataObject root)".to_string(),
-            );
-        }
-        let Some(cfg) = root
-            .children()
-            .find(|node| role_info_element(*node, "Configuration", Some(MD_NS)))
-        else {
-            return Err("[ERROR] No <Configuration> element found".to_string());
-        };
-        let Some(props) = cfg
-            .children()
-            .find(|node| role_info_element(*node, "Properties", Some(MD_NS)))
-        else {
-            return Err("[ERROR] No <Configuration>/<Properties> element found".to_string());
-        };
-
-        let version = root.attribute("version").unwrap_or("");
         let config_dir = config_path.parent().unwrap_or(context.cwd.as_path());
-        let extension_purpose = optional(cf_prop_text(props, "ConfigurationExtensionPurpose"));
-        let counts = cf_child_object_counts(cfg);
-        let total_objects = counts.iter().map(|(_, count)| *count).sum::<usize>();
-        // Every mode used to trade completeness for printed size. Typed data
-        // needs no such lever: the caller keeps the fields it wants.
-        let data = CfInfoData {
-            format: version.to_string(),
-            name: cf_prop_text(props, "Name"),
-            synonym: optional(cf_prop_ml(props, "Synonym")),
-            version: optional(cf_prop_text(props, "Version")),
-            vendor: optional(cf_prop_text(props, "Vendor")),
-            support: support_reader
-                .configuration_support(&selection.target)
-                .map_err(|error| error.to_string())?,
-            extension_purpose,
-            properties: CfInfoProperties {
-                compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
-                default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
-                script_variant: optional(cf_prop_text(props, "ScriptVariant")),
-                default_language: optional(cf_prop_text(props, "DefaultLanguage")),
-                data_lock_control_mode: optional(cf_prop_text(props, "DataLockControlMode")),
-                modality_use_mode: optional(cf_prop_text(props, "ModalityUseMode")),
-                interface_compatibility_mode: optional(cf_prop_text(
-                    props,
-                    "InterfaceCompatibilityMode",
-                )),
-                extension_compatibility_mode: optional(cf_prop_text(
-                    props,
-                    "ConfigurationExtensionCompatibilityMode",
-                )),
-                object_autonumeration_mode: optional(cf_prop_text(
-                    props,
-                    "ObjectAutonumerationMode",
-                )),
-                synchronous_call_use_mode: optional(cf_prop_text(
-                    props,
-                    "SynchronousPlatformExtensionAndAddInCallUseMode",
-                )),
-                database_tablespaces_use_mode: optional(cf_prop_text(
-                    props,
-                    "DatabaseTablespacesUseMode",
-                )),
-                main_window_mode: optional(cf_prop_text(props, "MainClientApplicationWindowMode")),
-                comment: optional(cf_prop_text(props, "Comment")),
-                name_prefix: optional(cf_prop_text(props, "NamePrefix")),
-                update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
-            },
-            child_objects: counts
-                .into_iter()
-                .map(|(kind, count)| CfChildObjectCount { kind, count })
-                .collect(),
-            total_objects,
-            home_page: cf_read_home_page(config_dir).map(|layout| CfHomePageData {
-                template: layout.template,
-                left: cf_home_page_item_data(&layout.left),
-                right: cf_home_page_item_data(&layout.right),
-            }),
-        };
-        Ok((data, config_path))
+        let support = support_reader
+            .configuration_support(&selection.target)
+            .map_err(|error| error.to_string())?;
+        let home_page = cf_read_home_page(config_dir).map(|layout| CfHomePageData {
+            template: layout.template,
+            left: cf_home_page_item_data(&layout.left),
+            right: cf_home_page_item_data(&layout.right),
+        });
+        let parsed = parse_cf_info_xml(&text, support, home_page)?;
+        Ok((parsed.data, config_path))
     })();
 
     match result {
@@ -1406,8 +1442,26 @@ pub(crate) fn cf_append_full_panel_layout(lines: &mut Vec<String>, config_dir: &
 pub(crate) fn cf_read_home_page(config_dir: &Path) -> Option<CfHomePageLayout> {
     let path = config_dir.join("Ext").join("HomePageWorkArea.xml");
     let text = read_utf8_sig(&path).ok()?;
+    parse_cf_home_page_xml(&text)
+}
+
+pub(crate) fn parse_cf_home_page_xml(text: &str) -> Option<CfHomePageLayout> {
     let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    Some(cf_home_page_layout(doc.root_element()))
+}
+
+pub(crate) fn parse_cf_home_page_xml_strict(text: &str) -> Result<CfHomePageLayout, String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("HomePageWorkArea.xml is malformed: {error}"))?;
     let root = doc.root_element();
+    if root.tag_name().name() != "HomePageWorkArea" || root.tag_name().namespace() != Some(CF_HP_NS)
+    {
+        return Err("HomePageWorkArea.xml has a wrong root element".to_string());
+    }
+    Ok(cf_home_page_layout(root))
+}
+
+fn cf_home_page_layout(root: roxmltree::Node<'_, '_>) -> CfHomePageLayout {
     let template = child_text(root, "WorkingAreaTemplate", Some(CF_HP_NS))
         .trim()
         .to_string();
@@ -1428,11 +1482,11 @@ pub(crate) fn cf_read_home_page(config_dir: &Path) -> Option<CfHomePageLayout> {
             cf_home_page_items(columns.get(1).copied()),
         )
     };
-    Some(CfHomePageLayout {
+    CfHomePageLayout {
         template,
         left,
         right,
-    })
+    }
 }
 
 pub(crate) fn cf_home_page_named_column(
@@ -1755,6 +1809,19 @@ pub(crate) fn cf_type_ru_name(type_name: &str) -> &'static str {
 mod metadata_kind_consumer_tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn legacy_home_page_wrapper_keeps_well_formed_wrong_root_compatibility() {
+        let wrong_root =
+            r#"<NotHomePage xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#;
+        let legacy = parse_cf_home_page_xml(wrong_root)
+            .expect("the V12 wrapper historically treated any well-formed root as an empty layout");
+        assert!(legacy.template.is_empty());
+        assert!(legacy.left.is_empty());
+        assert!(legacy.right.is_empty());
+        assert!(parse_cf_home_page_xml_strict(wrong_root).is_err());
+        assert!(parse_cf_home_page_xml("<broken>").is_none());
+    }
 
     #[test]
     fn cf_edit_home_page_uses_active_format() {
@@ -2502,7 +2569,7 @@ fn cf_edit_transaction_error(error: String) -> String {
 }
 
 #[cfg(test)]
-mod cf_edit_transaction_tests {
+pub(crate) mod cf_edit_transaction_tests {
     use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
     use super::super::single_file_publisher::with_before_commit_hook;
     use super::*;
@@ -2649,7 +2716,7 @@ mod cf_edit_transaction_tests {
     }
 
     #[test]
-    fn cf_edit_external_only_change_rejects_concurrent_format_owner_change() {
+    pub(crate) fn cf_edit_external_only_change_rejects_concurrent_format_owner_change() {
         let fixture = BooleanEditFixture::new("external-owner-guard");
         let config_before = fs::read(&fixture.config_path).unwrap();
         let concurrent_config = String::from_utf8(config_before)
@@ -4814,7 +4881,7 @@ fn cf_init_execute(
 }
 
 #[cfg(test)]
-mod cf_init_transaction_tests {
+pub(crate) mod cf_init_transaction_tests {
     use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
     use super::super::single_file_publisher::with_before_commit_hook;
     use super::*;
@@ -5032,7 +5099,7 @@ mod cf_init_transaction_tests {
     }
 
     #[test]
-    fn cf_init_reauthorizes_containing_owner_immediately_before_publication() {
+    pub(crate) fn cf_init_reauthorizes_containing_owner_immediately_before_publication() {
         let (root, context) = init_test_context("owner-race");
         fs::write(
             root.join("v8project.yaml"),
@@ -5272,7 +5339,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod cf_read_selector_bridge_tests {
+pub(super) mod cf_read_selector_bridge_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -5306,7 +5373,7 @@ mod cf_read_selector_bridge_tests {
     }
 
     #[test]
-    fn cf_info_answers_identically_for_a_source_set_and_a_config_path() {
+    pub(crate) fn cf_info_answers_identically_for_a_source_set_and_a_config_path() {
         let context = workspace("info");
 
         let physical = analyze_cf_info(
@@ -5355,7 +5422,7 @@ mod cf_read_selector_bridge_tests {
     }
 
     #[test]
-    fn cf_validate_answers_identically_for_a_source_set_and_a_config_path() {
+    pub(crate) fn cf_validate_answers_identically_for_a_source_set_and_a_config_path() {
         let context = workspace("validate");
 
         let physical = validate_cf(

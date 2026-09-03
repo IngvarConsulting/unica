@@ -61,6 +61,46 @@ pub(crate) fn evaluate_format_guard(
     let ToolHandler::NativeOperation { operation, .. } = spec.handler else {
         return Ok(FormatGuardCheck::Allow);
     };
+    evaluate_operation_format_guard(
+        spec.name,
+        spec.execution.is_mutating(),
+        operation,
+        args,
+        context,
+    )
+}
+
+/// Read-only format guard of one native validator, addressed by its operation
+/// name rather than a public v0.12 tool record. The canonical `check` profiles
+/// run the same owner resolution the retired `*.validate` tools ran before
+/// their handler: a root outside the active profile answers a warning
+/// diagnostic, never a silent pass (`DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE`).
+pub(crate) fn evaluate_read_format_guard(
+    operation: &str,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<FormatGuardCheck, FormatGuardError> {
+    evaluate_operation_format_guard(operation, false, operation, args, context)
+}
+
+/// Mutation-side guard by operation name, for tests that prove a writer
+/// refuses before its handler without a public v0.12 tool record.
+#[cfg(test)]
+pub(crate) fn evaluate_mutation_format_guard(
+    operation: &str,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<FormatGuardCheck, FormatGuardError> {
+    evaluate_operation_format_guard(operation, true, operation, args, context)
+}
+
+fn evaluate_operation_format_guard(
+    tool_name: &str,
+    mutating: bool,
+    operation: &str,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<FormatGuardCheck, FormatGuardError> {
     let Some(descriptor) = native_operation_descriptor(operation) else {
         return Ok(FormatGuardCheck::Allow);
     };
@@ -120,7 +160,7 @@ pub(crate) fn evaluate_format_guard(
                         "compatibility": "invalid",
                         "root": error.path.display().to_string(),
                     });
-                    return Ok(format_check(spec, warning, diagnostic));
+                    return Ok(format_check(tool_name, mutating, warning, diagnostic));
                 }
             };
             for owner in resolved_owners {
@@ -130,7 +170,7 @@ pub(crate) fn evaluate_format_guard(
             }
         }
     }
-    evaluate_resolved_format_owners(spec, owners, invalid_expected_root)
+    evaluate_resolved_format_owners(tool_name, mutating, owners, invalid_expected_root)
 }
 
 pub(crate) fn evaluate_prepared_subsystem_info_format_guard(
@@ -164,7 +204,12 @@ pub(crate) fn evaluate_prepared_subsystem_info_format_guard(
                     "compatibility": "invalid",
                     "root": document.path.display().to_string(),
                 });
-                return Ok(format_check(spec, warning, diagnostic));
+                return Ok(format_check(
+                    spec.name,
+                    spec.execution.is_mutating(),
+                    warning,
+                    diagnostic,
+                ));
             }
         };
         let root = parsed.root_element();
@@ -181,11 +226,12 @@ pub(crate) fn evaluate_prepared_subsystem_info_format_guard(
             raw: document.bytes.clone(),
         });
     }
-    evaluate_resolved_format_owners(spec, owners, None)
+    evaluate_resolved_format_owners(spec.name, spec.execution.is_mutating(), owners, None)
 }
 
 fn evaluate_resolved_format_owners(
-    spec: ToolSpec,
+    tool_name: &str,
+    mutating: bool,
     owners: Vec<PlatformXmlOwner>,
     invalid_expected_root: Option<crate::infrastructure::platform_xml_owner::PlatformXmlOwnerError>,
 ) -> Result<FormatGuardCheck, FormatGuardError> {
@@ -205,7 +251,8 @@ fn evaluate_resolved_format_owners(
                     "ownerKind": owner.kind.label(),
                 });
                 return Ok(format_check(
-                    spec,
+                    tool_name,
+                    mutating,
                     format!(
                         "Некорректная версия формата выгрузки в {}",
                         owner.path.display()
@@ -229,7 +276,7 @@ fn evaluate_resolved_format_owners(
         let actual = compatibility.actual().to_string();
         let (code, warning) = match compatibility {
             FormatCompatibility::Older { .. } => {
-                let access = if spec.execution.is_mutating() {
+                let access = if mutating {
                     "Изменение отменено."
                 } else {
                     "Доступен только режим чтения."
@@ -258,7 +305,7 @@ fn evaluate_resolved_format_owners(
             "root": owner.path.display().to_string(),
             "ownerKind": owner.kind.label(),
         });
-        return Ok(format_check(spec, warning, diagnostic));
+        return Ok(format_check(tool_name, mutating, warning, diagnostic));
     }
     if let Some(error) = invalid_expected_root {
         let warning = format!(
@@ -274,7 +321,7 @@ fn evaluate_resolved_format_owners(
             "compatibility": "invalid",
             "root": error.path.display().to_string(),
         });
-        return Ok(format_check(spec, warning, diagnostic));
+        return Ok(format_check(tool_name, mutating, warning, diagnostic));
     }
     Ok(FormatGuardCheck::Allow)
 }
@@ -308,8 +355,13 @@ fn output_path_arg(args: &Map<String, Value>, context: &WorkspaceContext) -> Opt
         .map(|path| absolutize(path, &context.cwd))
 }
 
-fn format_check(spec: ToolSpec, warning: String, diagnostic: Value) -> FormatGuardCheck {
-    if !spec.execution.is_mutating() {
+fn format_check(
+    tool_name: &str,
+    mutating: bool,
+    warning: String,
+    diagnostic: Value,
+) -> FormatGuardCheck {
+    if !mutating {
         return FormatGuardCheck::Warn {
             warning,
             diagnostic,
@@ -318,7 +370,7 @@ fn format_check(spec: ToolSpec, warning: String, diagnostic: Value) -> FormatGua
     FormatGuardCheck::Block {
         outcome: AdapterOutcome {
             ok: false,
-            summary: format!("{} blocked by export format guard", spec.name),
+            summary: format!("{tool_name} blocked by export format guard"),
             changes: Vec::new(),
             warnings: vec![warning.clone()],
             errors: vec![warning.clone()],
@@ -328,6 +380,91 @@ fn format_check(spec: ToolSpec, warning: String, diagnostic: Value) -> FormatGua
             command: None,
         },
         diagnostic,
+    }
+}
+
+/// One platform XML root that a staged v0.13 apply loaded outside the active
+/// writable profile. The finding carries the same closed codes the v0.12
+/// mutator guard published, so the refusal stays comparable across releases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StagedRootFormatFinding {
+    pub(crate) code: &'static str,
+    pub(crate) actual: Option<String>,
+    pub(crate) message: String,
+}
+
+const LOGFORM_NS: &str = "http://v8.1c.ru/8.3/xcf/logform";
+const ROLES_NS: &str = "http://v8.1c.ru/8.2/roles";
+const EXTRNPROPS_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
+const SCHEME_NS: &str = "http://v8.1c.ru/8.3/xcf/scheme";
+const SPREADSHEET_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+const MD_CLASSES_NS_GATE: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+/// Classifies the root of one staged platform XML document against the active
+/// writable profile. Versioned roots (`MetaDataObject`, managed `Form`,
+/// `Rights`, `CommandInterface`, `GraphicalSchema`) must carry exactly the
+/// active export format; the spreadsheet `document` root must stay
+/// versionless. Any other root, or a document that does not parse, is not a
+/// finding: the family planner reports those on its own terms.
+pub(crate) fn classify_staged_platform_xml_root(
+    relative: &Path,
+    bytes: &[u8],
+) -> Option<StagedRootFormatFinding> {
+    let text = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).ok()?;
+    let document = Document::parse(text).ok()?;
+    let root = document.root_element();
+    let namespace = root.tag_name().namespace()?;
+    let name = root.tag_name().name();
+    let version = root_version_literal(text, root);
+    let relative = relative.display();
+    let versioned = matches!(
+        (namespace, name),
+        (MD_CLASSES_NS_GATE, "MetaDataObject")
+            | (LOGFORM_NS, "Form")
+            | (ROLES_NS, "Rights")
+            | (EXTRNPROPS_NS, "CommandInterface")
+            | (SCHEME_NS, "GraphicalSchema")
+    );
+    if (namespace, name) == (SPREADSHEET_NS, "document") {
+        return version.map(|actual| StagedRootFormatFinding {
+            code: "formatVersionInvalid",
+            message: format!(
+                "{relative}: the spreadsheet document root must not carry a version attribute (found {actual}); the active platform XML profile is {} for 1C {}",
+                ACTIVE_FORMAT_PROFILE.export_format, ACTIVE_FORMAT_PROFILE.platform_line
+            ),
+            actual: Some(actual),
+        });
+    }
+    if !versioned {
+        return None;
+    }
+    match classify_root_version(version.as_deref()) {
+        Ok(FormatCompatibility::Supported { .. }) => None,
+        Ok(FormatCompatibility::Older { actual }) => Some(StagedRootFormatFinding {
+            code: "formatMigrationAvailable",
+            message: format!(
+                "{relative}: export format {actual} is older than the writable profile {} for 1C {}; re-export the sources with the platform before editing them",
+                ACTIVE_FORMAT_PROFILE.export_format, ACTIVE_FORMAT_PROFILE.platform_line
+            ),
+            actual: Some(actual.to_string()),
+        }),
+        Ok(FormatCompatibility::Newer { actual }) => Some(StagedRootFormatFinding {
+            code: "platformVersionUnsupported",
+            message: format!(
+                "{relative}: export format {actual} is newer than the writable profile {} for 1C {}; Unica does not edit this export yet",
+                ACTIVE_FORMAT_PROFILE.export_format, ACTIVE_FORMAT_PROFILE.platform_line
+            ),
+            actual: Some(actual.to_string()),
+        }),
+        Err(error) => Some(StagedRootFormatFinding {
+            code: error.code(),
+            message: format!(
+                "{relative}: export format version {} is invalid for the writable profile {}",
+                version.clone().unwrap_or_default(),
+                ACTIVE_FORMAT_PROFILE.export_format
+            ),
+            actual: version,
+        }),
     }
 }
 
@@ -1007,15 +1144,16 @@ fn absolutize(raw: &str, cwd: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_format_paths, evaluate_format_guard,
-        evaluate_prepared_subsystem_info_format_guard,
+        effective_format_paths, evaluate_format_guard, evaluate_mutation_format_guard,
+        evaluate_prepared_subsystem_info_format_guard, evaluate_read_format_guard,
     };
     use crate::application::operation_descriptors::native_operation_descriptor;
-    use crate::application::ports::{FormatGuardCheck, XdtoPublicErrorCode};
-    use crate::application::tools;
+    use crate::application::ports::{ApplicationPorts, FormatGuardCheck, XdtoPublicErrorCode};
+    use crate::application::{tools, InvocationMode, ToolHandler};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
     use crate::infrastructure::native_operations::cfe::cfe_borrow_format_dependency_inspection;
     use crate::infrastructure::native_operations::dcs::analyze_dcs_info;
     use crate::infrastructure::native_operations::subsystem::prepare_subsystem_info;
@@ -1201,8 +1339,9 @@ mod tests {
     #[test]
     fn cfe_validate_warns_for_newer_registered_form_wrapper() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-cfe-validate-form-wrapper-{}",
-            std::process::id()
+            "unica-format-guard-cfe-validate-form-wrapper-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let graph = cfe_read_graph(&root, "2.20", "2.20", "2.21", "2.20", "2.21");
         let args = Map::from_iter([(
@@ -1210,8 +1349,7 @@ mod tests {
             Value::String(graph.extension.display().to_string()),
         )]);
 
-        let check =
-            evaluate_format_guard(spec("unica.cfe.validate"), &args, &context(&root)).unwrap();
+        let check = evaluate_read_format_guard("cfe-validate", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("full CFE validation must warn for a newer registered form wrapper");
         };
@@ -1227,8 +1365,9 @@ mod tests {
     #[test]
     fn cfe_diff_mode_a_warns_for_newer_registered_form_content() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-cfe-diff-mode-a-form-{}",
-            std::process::id()
+            "unica-format-guard-cfe-diff-mode-a-form-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let base = config(&root, Some("2.20"));
         let graph = cfe_read_graph(&root, "2.20", "2.20", "2.20", "2.21", "2.21");
@@ -1260,8 +1399,9 @@ mod tests {
     #[test]
     fn cfe_diff_ignores_only_newer_unregistered_neighbor() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-cfe-diff-unregistered-{}",
-            std::process::id()
+            "unica-format-guard-cfe-diff-unregistered-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let base = config(&root, Some("2.20"));
         let graph = cfe_read_graph(&root, "2.20", "2.20", "2.20", "2.20", "2.21");
@@ -1300,8 +1440,9 @@ mod tests {
     #[test]
     fn cfe_diff_mode_b_warns_for_newer_registered_form_content() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-cfe-diff-mode-b-form-{}",
-            std::process::id()
+            "unica-format-guard-cfe-diff-mode-b-form-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let base = config(&root, Some("2.20"));
         let graph = cfe_read_graph(&root, "2.20", "2.20", "2.20", "2.21", "2.21");
@@ -1431,8 +1572,7 @@ mod tests {
             ("Set".to_string(), Value::String("editable".to_string())),
         ]);
 
-        let check =
-            evaluate_format_guard(spec("unica.support.edit"), &args, &context(&root)).unwrap();
+        let check = evaluate_mutation_format_guard("support-edit", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Block {
             outcome,
             diagnostic,
@@ -1457,11 +1597,9 @@ mod tests {
         let root = test_root("cf-init-home-page");
         let home_page = root.join("src/Ext/HomePageWorkArea.xml");
         std::fs::create_dir_all(home_page.parent().unwrap()).unwrap();
-        std::fs::write(
-            &home_page,
-            r#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#,
-        )
-        .unwrap();
+        let original =
+            r#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#;
+        std::fs::write(&home_page, original).unwrap();
         let args = Map::from_iter([
             ("Name".to_string(), Value::String("Demo".to_string())),
             ("OutputDir".to_string(), Value::String("src".to_string())),
@@ -1479,6 +1617,7 @@ mod tests {
             normalized_path(&home_page).display().to_string()
         );
         assert!(!root.join("src/Configuration.xml").exists());
+        assert_eq!(std::fs::read_to_string(&home_page).unwrap(), original);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1507,8 +1646,7 @@ mod tests {
             ("Set".to_string(), Value::String("editable".to_string())),
         ]);
 
-        let check =
-            evaluate_format_guard(spec("unica.support.edit"), &args, &context(&root)).unwrap();
+        let check = evaluate_mutation_format_guard("support-edit", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("every XML read used for UUID resolution must be format-authorized");
         };
@@ -1548,7 +1686,7 @@ mod tests {
         ]);
 
         assert!(matches!(
-            evaluate_format_guard(spec("unica.support.edit"), &args, &context(&root)).unwrap(),
+            evaluate_mutation_format_guard("support-edit", &args, &context(&root)).unwrap(),
             FormatGuardCheck::Allow
         ));
         let _ = std::fs::remove_dir_all(root);
@@ -1577,7 +1715,7 @@ mod tests {
         ]);
 
         assert!(matches!(
-            evaluate_format_guard(spec("unica.support.edit"), &args, &context(&root)).unwrap(),
+            evaluate_mutation_format_guard("support-edit", &args, &context(&root)).unwrap(),
             FormatGuardCheck::Allow
         ));
         let _ = std::fs::remove_dir_all(root);
@@ -1614,8 +1752,7 @@ mod tests {
             ("Set".to_string(), Value::String("editable".to_string())),
         ]);
 
-        let check =
-            evaluate_format_guard(spec("unica.support.edit"), &args, &context(&root)).unwrap();
+        let check = evaluate_mutation_format_guard("support-edit", &args, &context(&root)).unwrap();
 
         assert!(matches!(check, FormatGuardCheck::Allow));
         assert_eq!(std::fs::read(&bin).unwrap(), bin_before);
@@ -1698,12 +1835,16 @@ mod tests {
             assert_eq!(diagnostic["code"], "platformVersionUnsupported", "{tool}");
             assert_eq!(diagnostic["actualFormat"], "2.21", "{tool}");
         }
-        for tool in ["unica.role.info", "unica.role.validate"] {
+        for tool in ["unica.role.info", "role-validate"] {
             let args = Map::from_iter([(
                 "RightsPath".to_string(),
                 Value::String(rights_content.display().to_string()),
             )]);
-            let check = evaluate_format_guard(spec(tool), &args, &context(&root)).unwrap();
+            let check = if tool == "role-validate" {
+                evaluate_read_format_guard(tool, &args, &context(&root)).unwrap()
+            } else {
+                evaluate_format_guard(spec(tool), &args, &context(&root)).unwrap()
+            };
             let FormatGuardCheck::Warn { diagnostic, .. } = check else {
                 panic!("{tool} must warn on its newer exact role wrapper");
             };
@@ -1770,8 +1911,7 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Configuration/></MetaDataObject>"#,
         )
         .unwrap();
-        let check =
-            evaluate_format_guard(spec("unica.role.validate"), &args, &context(&root)).unwrap();
+        let check = evaluate_read_format_guard("role-validate", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("role.validate must warn on the newer detached Configuration.xml it reads");
         };
@@ -2216,10 +2356,10 @@ mod tests {
             Value::String("XDTOPackage.Sample".to_string()),
         );
 
-        let check = evaluate_format_guard(spec("unica.xdto.edit"), &args, &context(&root))
+        let check = evaluate_format_guard(spec("unica.xdto.info"), &args, &context(&root))
             .expect("XDTO handler-resolved format path must resolve");
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("XDTO mutation inside an older source set must block");
+        let FormatGuardCheck::Warn { diagnostic, .. } = check else {
+            panic!("XDTO read inside an older source set must warn");
         };
 
         assert_eq!(diagnostic["code"], "formatMigrationAvailable");
@@ -2302,17 +2442,6 @@ mod tests {
         assert_eq!(read_diagnostic["code"], expected_code);
         assert_eq!(read_diagnostic["actualFormat"], expected_actual_format);
 
-        let mutation = evaluate_format_guard(spec("unica.xdto.edit"), &args, &context(&root))
-            .expect("logical mutation target must reach format policy");
-        let FormatGuardCheck::Block {
-            diagnostic: mutation_diagnostic,
-            ..
-        } = mutation
-        else {
-            panic!("logical mutation target must block");
-        };
-        assert_eq!(mutation_diagnostic["code"], expected_code);
-        assert_eq!(mutation_diagnostic["actualFormat"], expected_actual_format);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2332,7 +2461,7 @@ mod tests {
             Value::String("XDTOPackage.Missing".to_string()),
         );
 
-        let error = match evaluate_format_guard(spec("unica.xdto.edit"), &args, &context(&root)) {
+        let error = match evaluate_format_guard(spec("unica.xdto.info"), &args, &context(&root)) {
             Ok(_) => panic!("an unresolved XDTO HandlerResolved path must not degrade to Allow"),
             Err(error) => error,
         };
@@ -2347,8 +2476,11 @@ mod tests {
 
     #[test]
     fn older_extension_dump_recommends_platform_reexport() {
-        let root =
-            std::env::temp_dir().join(format!("unica-format-guard-old-cfe-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "unica-format-guard-old-cfe-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
         let src = root.join("src");
         std::fs::create_dir_all(&src).unwrap();
         let path = src.join("Configuration.xml");
@@ -2376,8 +2508,9 @@ mod tests {
     #[test]
     fn cfe_init_preflights_its_optional_cf_base_with_platform_reexport() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-cfe-init-{}",
-            std::process::id()
+            "unica-format-guard-cfe-init-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let path = config(&root, Some("2.19"));
         let mut args = Map::new();
@@ -2402,8 +2535,7 @@ mod tests {
 
     #[test]
     fn supported_dump_allows_mutation_preflight() {
-        let root =
-            std::env::temp_dir().join(format!("unica-format-guard-ok-{}", std::process::id()));
+        let root = test_root("ok");
         let path = config(&root, Some("2.20"));
         let mut args = Map::new();
         args.insert(
@@ -2419,15 +2551,14 @@ mod tests {
 
     #[test]
     fn newer_dump_warns_for_read_only_with_roadmap_copy() {
-        let root =
-            std::env::temp_dir().join(format!("unica-format-guard-new-{}", std::process::id()));
+        let root = test_root("new");
         let path = config(&root, Some("2.21"));
         let mut args = Map::new();
         args.insert(
-            "ConfigPath".into(),
+            "RightsPath".into(),
             Value::String(path.display().to_string()),
         );
-        let check = evaluate_format_guard(spec("unica.cf.info"), &args, &context(&root)).unwrap();
+        let check = evaluate_format_guard(spec("unica.role.info"), &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn {
             warning,
             diagnostic,
@@ -2442,16 +2573,14 @@ mod tests {
 
     #[test]
     fn missing_root_version_is_classified_as_1_0() {
-        let root =
-            std::env::temp_dir().join(format!("unica-format-guard-v1-{}", std::process::id()));
+        let root = test_root("v1");
         let path = config(&root, None);
         let mut args = Map::new();
         args.insert(
             "ConfigPath".into(),
             Value::String(path.display().to_string()),
         );
-        let check =
-            evaluate_format_guard(spec("unica.cf.validate"), &args, &context(&root)).unwrap();
+        let check = evaluate_read_format_guard("cf-validate", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("missing root version must be old-format warning");
         };
@@ -2461,10 +2590,7 @@ mod tests {
 
     #[test]
     fn versionless_known_standalone_form_is_classified_as_1_0_owner() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-versionless-standalone-form-{}",
-            std::process::id()
-        ));
+        let root = test_root("versionless-standalone-form");
         std::fs::create_dir_all(&root).unwrap();
         let target = root.join("Form.xml");
         std::fs::write(
@@ -2490,8 +2616,9 @@ mod tests {
     #[test]
     fn effective_format_paths_match_mutating_handler_directory_and_alias_resolution() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-handler-paths-{}",
-            std::process::id()
+            "unica-format-guard-handler-paths-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let config_path = config(&root, Some("2.19"));
         let src = config_path.parent().unwrap();
@@ -2533,12 +2660,6 @@ mod tests {
                 "path",
                 src.to_path_buf(),
                 vec![config_path.clone()],
-            ),
-            (
-                "form-add",
-                "path",
-                object_dir,
-                vec![object_xml.canonicalize().unwrap()],
             ),
             (
                 "subsystem-edit",
@@ -2586,8 +2707,9 @@ mod tests {
     #[test]
     fn specialized_format_path_policies_resolve_representative_defaults() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-specialized-paths-{}",
-            std::process::id()
+            "unica-format-guard-specialized-paths-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let context = context(&root);
@@ -2642,8 +2764,9 @@ mod tests {
     #[test]
     fn read_only_path_aliases_still_reach_the_format_warning() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-read-aliases-{}",
-            std::process::id()
+            "unica-format-guard-read-aliases-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let config_path = config(&root, Some("2.19"));
         let src = config_path.parent().unwrap().canonicalize().unwrap();
@@ -2726,8 +2849,9 @@ mod tests {
     #[test]
     fn read_only_handler_resolved_paths_match_directory_inputs() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-read-handler-paths-{}",
-            std::process::id()
+            "unica-format-guard-read-handler-paths-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let configuration = config(&root, Some("2.19"));
         let src = configuration.parent().unwrap().to_path_buf();
@@ -2911,17 +3035,17 @@ mod tests {
         .unwrap();
 
         for (tool, argument, directory) in [
-            ("unica.form.info", "FormPath", form_dir.clone()),
-            ("unica.form.validate", "FormPath", form_dir),
-            ("unica.dcs.validate", "TemplatePath", dcs_dir),
-            ("unica.mxl.validate", "TemplatePath", mxl_dir),
-            ("unica.interface.validate", "CIPath", interface_dir),
+            ("form-info", "FormPath", form_dir.clone()),
+            ("form-validate", "FormPath", form_dir),
+            ("dcs-validate", "TemplatePath", dcs_dir),
+            ("mxl-validate", "TemplatePath", mxl_dir),
+            ("interface-validate", "CIPath", interface_dir),
         ] {
             let args = Map::from_iter([(
                 argument.to_string(),
                 Value::String(directory.display().to_string()),
             )]);
-            let check = evaluate_format_guard(spec(tool), &args, &context(&root)).unwrap();
+            let check = evaluate_read_format_guard(tool, &args, &context(&root)).unwrap();
             let FormatGuardCheck::Warn { diagnostic, .. } = check else {
                 panic!("{tool} must warn for the newer XML resolved from its directory input");
             };
@@ -2952,10 +3076,10 @@ mod tests {
             .unwrap();
         }
         for (tool, argument, exact) in [
-            ("unica.form.info", "FormPath", form_xml),
-            ("unica.dcs.validate", "TemplatePath", dcs_xml),
-            ("unica.mxl.validate", "TemplatePath", mxl_xml),
-            ("unica.interface.validate", "CIPath", interface_xml),
+            ("form-info", "FormPath", form_xml),
+            ("dcs-validate", "TemplatePath", dcs_xml),
+            ("mxl-validate", "TemplatePath", mxl_xml),
+            ("interface-validate", "CIPath", interface_xml),
         ] {
             let args = Map::from_iter([(
                 argument.to_string(),
@@ -2963,7 +3087,7 @@ mod tests {
             )]);
             assert!(
                 matches!(
-                    evaluate_format_guard(spec(tool), &args, &context(&root)).unwrap(),
+                    evaluate_read_format_guard(tool, &args, &context(&root)).unwrap(),
                     FormatGuardCheck::Allow
                 ),
                 "{tool} must allow an exact 2.20 root"
@@ -2974,10 +3098,7 @@ mod tests {
 
     #[test]
     fn dcs_edit_blocks_old_external_source_set_via_owner_descriptor() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-old-external-dcs-{}",
-            std::process::id()
-        ));
+        let root = test_root("old-external-dcs");
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(
             &root,
@@ -2988,7 +3109,8 @@ mod tests {
         );
         let target = source_root.join("PriceLoader/Templates/Main/Ext/Template.xml");
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(&target, "<DataCompositionSchema/>").unwrap();
+        let original = "<DataCompositionSchema/>";
+        std::fs::write(&target, original).unwrap();
         let mut args = Map::new();
         args.insert(
             "TemplatePath".into(),
@@ -3005,6 +3127,7 @@ mod tests {
         };
         assert_eq!(diagnostic["actualFormat"], "2.19");
         assert_platform_reexport_warning(&outcome.warnings.join("\n"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), original);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3064,8 +3187,7 @@ mod tests {
             Value::String(root.join("Template").display().to_string()),
         )]);
 
-        let check =
-            evaluate_format_guard(spec("unica.mxl.validate"), &args, &context(&root)).unwrap();
+        let check = evaluate_read_format_guard("mxl-validate", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn {
             warning,
             diagnostic,
@@ -3083,10 +3205,7 @@ mod tests {
 
     #[test]
     fn mxl_info_warns_old_external_source_set_via_owner_descriptor() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-old-external-mxl-info-{}",
-            std::process::id()
-        ));
+        let root = test_root("old-external-mxl-info");
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(&root, "EXTERNAL_REPORTS", "erf", "Sales", "2.19");
         let target = source_root.join("Sales/Templates/Print/Ext/Template.xml");
@@ -3119,8 +3238,9 @@ mod tests {
     #[test]
     fn standalone_owner_warning_recommends_platform_reexport_without_tool_name() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-old-standalone-{}",
-            std::process::id()
+            "unica-format-guard-old-standalone-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let form = root.join("Form.xml");
@@ -3141,27 +3261,11 @@ mod tests {
     }
 
     #[test]
-    fn form_remove_default_src_blocks_older_dump() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-default-form-remove-{}",
-            std::process::id()
-        ));
-        config(&root, Some("2.19"));
-        let mut args = Map::new();
-        args.insert("ObjectName".into(), Value::String("Catalogs/Items".into()));
-
-        assert!(matches!(
-            evaluate_format_guard(spec("unica.form.remove"), &args, &context(&root)).unwrap(),
-            FormatGuardCheck::Block { .. }
-        ));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn format_guard_normalizes_parent_segments_before_owner_lookup() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-normalized-parent-{}",
-            std::process::id()
+            "unica-format-guard-normalized-parent-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(
@@ -3188,8 +3292,9 @@ mod tests {
     #[test]
     fn standalone_compile_does_not_inherit_unrelated_workspace_configuration() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-standalone-output-{}",
-            std::process::id()
+            "unica-format-guard-standalone-output-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         config(&root, Some("2.19"));
         let standalone = root.join("generated/report.xml");
@@ -3209,8 +3314,9 @@ mod tests {
     #[test]
     fn mxl_compile_blocks_write_inside_older_dump() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-mxl-compile-old-{}",
-            std::process::id()
+            "unica-format-guard-mxl-compile-old-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         config(&root, Some("2.19"));
         let output = root.join("src/Reports/Sales/Templates/Print/Ext/Template.xml");
@@ -3234,8 +3340,9 @@ mod tests {
     #[test]
     fn form_compile_blocks_old_external_source_set_before_create() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-form-compile-old-external-{}",
-            std::process::id()
+            "unica-format-guard-form-compile-old-external-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(
@@ -3263,8 +3370,9 @@ mod tests {
     #[test]
     fn form_compile_from_object_checks_input_and_output_formats() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-form-compile-input-output-{}",
-            std::process::id()
+            "unica-format-guard-form-compile-input-output-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(root.join("old")).unwrap();
         std::fs::create_dir_all(root.join("active")).unwrap();
@@ -3311,8 +3419,9 @@ mod tests {
     #[test]
     fn malformed_existing_standalone_xml_is_invalid_not_new_output() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-malformed-standalone-{}",
-            std::process::id()
+            "unica-format-guard-malformed-standalone-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let output = root.join("standalone.xml");
@@ -3334,10 +3443,7 @@ mod tests {
 
     #[test]
     fn valid_standalone_mxl_without_owner_version_is_not_an_old_dump() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-valid-standalone-mxl-{}",
-            std::process::id()
-        ));
+        let root = test_root("valid-standalone-mxl");
         std::fs::create_dir_all(&root).unwrap();
         let document = root.join("standalone.xml");
         std::fs::write(
@@ -3361,8 +3467,9 @@ mod tests {
     #[test]
     fn external_source_root_with_one_descriptor_resolves_that_owner() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-external-root-owner-{}",
-            std::process::id()
+            "unica-format-guard-external-root-owner-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(&root, "EXTERNAL_REPORTS", "erf", "Sales", "2.19");
@@ -3385,11 +3492,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_version_bearing_standalone_root_is_invalid() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-unknown-standalone-root-{}",
-            std::process::id()
-        ));
+    fn unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog() {
+        let root = test_root("unknown-standalone-root");
         std::fs::create_dir_all(&root).unwrap();
         let target = root.join("unknown.xml");
         std::fs::write(&target, r#"<garbage version="2.20"/>"#).unwrap();
@@ -3408,10 +3512,166 @@ mod tests {
     }
 
     #[test]
+    fn single_writable_platform_xml_profile_is_exact() {
+        assert_eq!(
+            crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.platform_line,
+            "8.3.27"
+        );
+        assert_eq!(
+            crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
+            "2.20"
+        );
+        older_dump_blocks_mutation_and_recommends_platform_reexport();
+        supported_dump_allows_mutation_preflight();
+    }
+
+    #[test]
+    fn owner_version_read_write_gate_is_complete() {
+        newer_dump_warns_for_read_only_with_roadmap_copy();
+        mxl_info_warns_old_external_source_set_via_owner_descriptor();
+        missing_root_version_is_classified_as_1_0();
+        versionless_known_standalone_form_is_classified_as_1_0_owner();
+        dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
+        version_owning_target_cannot_hide_behind_supported_source_set_owner();
+        xdto_guard_empty_handler_resolution_is_a_contract_error();
+        valid_standalone_mxl_without_owner_version_is_not_an_old_dump();
+        unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog();
+        crate::infrastructure::platform_xml_owner::tests::equal_depth_source_set_owners_are_ambiguous_for_existing_and_new_outputs();
+    }
+
+    #[test]
+    fn aggregated_format_evidence_is_reentrant_under_parallel_test_execution() {
+        let workers = (0..8)
+            .map(|_| {
+                std::thread::spawn(single_writable_platform_xml_profile_decision_is_fully_realized)
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            worker
+                .join()
+                .expect("aggregate format evidence must not share temporary roots");
+        }
+    }
+
+    #[test]
+    fn public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal() {
+        let expected = std::collections::BTreeSet::from([
+            "unica.cf.edit",
+            "unica.cf.init",
+            "unica.cfe.borrow",
+            "unica.cfe.init",
+            "unica.cfe.patch_method",
+            "unica.code.patch",
+            "unica.dcs.compile",
+            "unica.dcs.edit",
+            "unica.epf.init",
+            "unica.erf.init",
+            "unica.form.compile",
+            "unica.form.edit",
+            "unica.interface.edit",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.mxl.compile",
+            "unica.role.compile",
+            "unica.role.edit",
+            "unica.subsystem.compile",
+            "unica.subsystem.edit",
+        ]);
+        let actual = tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+            .filter(|tool| {
+                matches!(
+                    tool.handler,
+                    ToolHandler::NativeOperation { .. } | ToolHandler::Metadata { .. }
+                )
+            })
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, expected);
+
+        let concrete_ports = InfrastructureApplicationPorts::new();
+        let workspace_root = test_root("native-common-format-route");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace_root.clone(),
+            workspace_root: workspace_root.clone(),
+            cache_root: workspace_root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let mut metadata_tools = std::collections::BTreeSet::new();
+        for tool in tools()
+            .into_iter()
+            .filter(|tool| expected.contains(tool.name))
+        {
+            match tool.handler {
+                ToolHandler::NativeOperation { operation, .. } => {
+                    assert!(
+                        native_operation_descriptor(operation).is_some(),
+                        "{} could bypass the common format gate because {operation} has no descriptor",
+                        tool.name
+                    );
+                    let prepared = concrete_ports
+                        .prepare_tool_invocation(
+                            tool,
+                            &Map::new(),
+                            &context,
+                            InvocationMode::Apply,
+                            &CancellationToken::new(),
+                            ProviderDeadline::from_budget(Duration::from_secs(1)),
+                        )
+                        .expect("native mutator preparation succeeds without preempting its gate");
+                    assert!(
+                        prepared.format_guard.is_none() && prepared.handler.is_none(),
+                        "{} could replace the common pre-handler format gate during preparation",
+                        tool.name
+                    );
+                }
+                ToolHandler::Metadata { .. } => {
+                    metadata_tools.insert(tool.name);
+                }
+                _ => panic!("{} left the closed XML mutation handlers", tool.name),
+            }
+        }
+        assert_eq!(
+            metadata_tools,
+            std::collections::BTreeSet::from(["unica.meta.add", "unica.meta.edit"])
+        );
+
+        // Every native descriptor enters the unconditional application
+        // format-guard branch before its handler match: the concrete production
+        // preparation port above proves that no native mutator substitutes a
+        // prepared guard or handler. Typed metadata keeps its provider-neutral
+        // diagnostic route, so exercise all three of those public calls
+        // separately. Together these close the exact two handler variants
+        // without pretending their public diagnostics match.
+        crate::application::tests::incompatible_format_blocks_before_native_handler();
+        crate::application::tests::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
+        std::fs::remove_dir_all(workspace_root).unwrap();
+    }
+
+    #[test]
+    fn native_mutation_surface_and_format_refusal_are_exact() {
+        crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
+        public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
+        dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
+        cf_init_public_guard_blocks_newer_existing_post_validation_dependency();
+    }
+
+    #[test]
+    fn single_writable_platform_xml_profile_decision_is_fully_realized() {
+        single_writable_platform_xml_profile_is_exact();
+        owner_version_read_write_gate_is_complete();
+        native_mutation_surface_and_format_refusal_are_exact();
+    }
+
+    #[test]
     fn known_standalone_form_root_remains_supported() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-known-standalone-form-{}",
-            std::process::id()
+            "unica-format-guard-known-standalone-form-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let target = root.join("Form.xml");
@@ -3436,8 +3696,9 @@ mod tests {
     #[test]
     fn subsystem_validate_warns_for_newer_direct_command_interface() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-subsystem-validate-ci-{}",
-            std::process::id()
+            "unica-format-guard-subsystem-validate-ci-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         let subsystem = root.join("Subsystems/Sales.xml");
         std::fs::create_dir_all(subsystem.parent().unwrap()).unwrap();
@@ -3460,8 +3721,8 @@ mod tests {
             Value::String(subsystem.display().to_string()),
         )]);
 
-        let check = evaluate_format_guard(spec("unica.subsystem.validate"), &args, &context(&root))
-            .unwrap();
+        let check =
+            evaluate_read_format_guard("subsystem-validate", &args, &context(&root)).unwrap();
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("newer direct command interface must produce a read-only warning");
         };
@@ -3478,8 +3739,9 @@ mod tests {
     #[test]
     fn subsystem_tree_warns_for_newer_registered_child_descriptor() {
         let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-subsystem-tree-child-{}",
-            std::process::id()
+            "unica-format-guard-subsystem-tree-child-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let physical_root = root.canonicalize().unwrap();
@@ -3541,6 +3803,142 @@ mod tests {
             )),
             normalized_path(&child)
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod staged_root_tests {
+    use super::{classify_staged_platform_xml_root, evaluate_read_format_guard};
+    use crate::application::ports::FormatGuardCheck;
+    use crate::domain::workspace::WorkspaceContext;
+    use serde_json::{Map, Value};
+    use std::path::Path;
+
+    #[test]
+    fn newer_metadata_root_is_a_platform_version_finding() {
+        let finding = classify_staged_platform_xml_root(
+            Path::new("Catalogs/Goods.xml"),
+            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Catalog/></MetaDataObject>"#,
+        )
+        .expect("a 2.21 owner is outside the writable profile");
+        assert_eq!(finding.code, "platformVersionUnsupported");
+        assert_eq!(finding.actual.as_deref(), Some("2.21"));
+        assert!(
+            finding.message.starts_with("Catalogs/Goods.xml: "),
+            "{}",
+            finding.message
+        );
+    }
+
+    #[test]
+    fn versionless_metadata_root_is_the_old_format_finding() {
+        let finding = classify_staged_platform_xml_root(
+            Path::new("Configuration.xml"),
+            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration/></MetaDataObject>"#,
+        )
+        .expect("a versionless owner is format 1.0");
+        assert_eq!(finding.code, "formatMigrationAvailable");
+        assert_eq!(finding.actual.as_deref(), Some("1.0"));
+    }
+
+    #[test]
+    fn exact_profile_roots_and_versionless_content_roots_are_not_findings() {
+        for (relative, bytes) in [
+            (
+                "Configuration.xml",
+                br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#.as_slice(),
+            ),
+            (
+                "Catalogs/Goods/Forms/Main/Ext/Form.xml",
+                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.as_slice(),
+            ),
+            (
+                "Reports/Sales/Templates/Schema/Ext/Template.xml",
+                br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#.as_slice(),
+            ),
+            (
+                "Reports/Sales/Templates/Print/Ext/Template.xml",
+                br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet"/>"#.as_slice(),
+            ),
+            ("Catalogs/Goods/Ext/ObjectModule.bsl", "Процедура Тест()\nКонецПроцедуры".as_bytes()),
+        ] {
+            assert!(
+                classify_staged_platform_xml_root(Path::new(relative), bytes).is_none(),
+                "{relative} must stay inside the writable profile"
+            );
+        }
+    }
+
+    #[test]
+    fn versioned_spreadsheet_root_is_an_invalid_format_finding() {
+        let finding = classify_staged_platform_xml_root(
+            Path::new("Reports/Sales/Templates/Print/Ext/Template.xml"),
+            br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#,
+        )
+        .expect("a versioned spreadsheet root is invalid");
+        assert_eq!(finding.code, "formatVersionInvalid");
+    }
+
+    /// The canonical `check` profiles for templates run the same read guard
+    /// the retired `dcs.validate`/`mxl.validate` ran before their handler: a
+    /// 2.21 wrapper warns instead of passing silently.
+    #[test]
+    fn read_guard_warns_for_template_validators_under_a_newer_wrapper() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-read-guard-templates-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let catalog_dir = root.join("detached/Catalogs/Goods");
+        let dcs_dir = catalog_dir.join("Templates/Schema");
+        let mxl_dir = catalog_dir.join("Templates/Print");
+        for (wrapper, content, body) in [
+            (
+                root.join("detached/Catalogs/Goods/Templates/Schema.xml"),
+                dcs_dir.join("Ext/Template.xml"),
+                r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#,
+            ),
+            (
+                root.join("detached/Catalogs/Goods/Templates/Print.xml"),
+                mxl_dir.join("Ext/Template.xml"),
+                r#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet"/>"#,
+            ),
+        ] {
+            std::fs::create_dir_all(content.parent().unwrap()).unwrap();
+            std::fs::write(
+                &wrapper,
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Template/></MetaDataObject>"#,
+            )
+            .unwrap();
+            std::fs::write(&content, body).unwrap();
+        }
+        std::fs::write(
+            root.join("detached/Catalogs/Goods.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Catalog/></MetaDataObject>"#,
+        )
+        .unwrap();
+        for (operation, directory) in [("dcs-validate", &dcs_dir), ("mxl-validate", &mxl_dir)] {
+            let args = Map::from_iter([(
+                "TemplatePath".to_string(),
+                Value::String(directory.display().to_string()),
+            )]);
+            let check = evaluate_read_format_guard(operation, &args, &context).unwrap();
+            let FormatGuardCheck::Warn { diagnostic, .. } = check else {
+                panic!("{operation} must warn for the newer wrapper");
+            };
+            assert_eq!(
+                diagnostic["code"], "platformVersionUnsupported",
+                "{operation}"
+            );
+            assert_eq!(diagnostic["actualFormat"], "2.21", "{operation}");
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 }

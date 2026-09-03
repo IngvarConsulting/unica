@@ -1,4 +1,4 @@
-use crate::domain::cache::{path_for_report, CacheAccess, CacheImpact, CacheReport};
+use crate::domain::cache::{path_for_report, CacheAccess, CacheImpact, CacheReport, EagerCacheKey};
 use crate::domain::events::DomainEvent;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{ErrorKind, Write};
+use std::path::Path;
 use std::path::PathBuf;
+
+use crate::infrastructure::native_operations::apply::{ApplyStagedState, ApplyStagingError};
 
 pub(crate) const CACHE_STATE_CONFLICT_RETRIES: usize = 64;
 
@@ -148,6 +151,66 @@ impl WorkspaceStateRepository {
             .stage(transaction)
     }
 
+    pub(crate) fn stage_report_in_retained_apply(
+        &self,
+        state: &mut ApplyStagedState,
+        cache_prefix: &Path,
+        context: &WorkspaceContext,
+        events: &[DomainEvent],
+        dry_run: bool,
+        cache_access: CacheAccess,
+    ) -> Result<CacheReport, ApplyStagingError> {
+        let state_relative = cache_prefix.join("state.json");
+        let state_preimage = state.read(&state_relative)?;
+        let impact = CacheImpact::from_events(events);
+        let mut metadata_preimages = BTreeMap::new();
+        for name in &impact.eager_refresh {
+            let key = EagerCacheKey::from_name(name).ok_or_else(|| {
+                ApplyStagingError::new(
+                    crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Invariant,
+                    format!("eager cache key is outside the closed catalog: {name}"),
+                )
+            })?;
+            let relative = cache_prefix
+                .join("caches")
+                .join(format!("{}.json", key.as_str()));
+            metadata_preimages.insert(name.clone(), state.read(&relative)?);
+        }
+        let plan = self
+            .plan_report_from_preimages(
+                context,
+                events,
+                dry_run,
+                cache_access,
+                state_preimage,
+                metadata_preimages,
+            )
+            .map_err(|error| {
+                ApplyStagingError::new(
+                    crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Invariant,
+                    error,
+                )
+            })?;
+        let report = plan.report.clone();
+        for file in plan.metadata.into_iter().chain(plan.state) {
+            let relative = file
+                .path
+                .strip_prefix(&context.cache_root)
+                .map_err(|_| {
+                    ApplyStagingError::new(
+                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ContainmentIdentity,
+                        "cache artifact escaped the actor-owned cache root",
+                    )
+                })?;
+            let relative = cache_prefix.join(relative);
+            match file.preimage {
+                Some(preimage) => state.replace(relative, preimage, file.postimage)?,
+                None => state.create(relative, file.postimage)?,
+            }
+        }
+        Ok(report)
+    }
+
     fn plan_report(
         &self,
         context: &WorkspaceContext,
@@ -155,8 +218,59 @@ impl WorkspaceStateRepository {
         dry_run: bool,
         cache_access: CacheAccess,
     ) -> Result<PlannedWorkspaceReport, String> {
+        let (_, state_preimage) = self.load_snapshot(context)?;
         let impact = CacheImpact::from_events(events);
-        let (mut state, state_preimage) = self.load_snapshot(context)?;
+        let mut metadata_preimages = BTreeMap::new();
+        let mut retained_metadata = impact.eager_refresh.clone();
+        retained_metadata.extend(
+            cache_access
+                .reads
+                .iter()
+                .copied()
+                .filter(|name| is_lazy_cache(name))
+                .map(str::to_string),
+        );
+        for name in &retained_metadata {
+            let path = context
+                .cache_root
+                .join("caches")
+                .join(format!("{name}.json"));
+            let preimage = match fs::read(&path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(format!(
+                        "failed to read Unica cache metadata {}: {error}",
+                        path.display()
+                    ))
+                }
+            };
+            metadata_preimages.insert(name.clone(), preimage);
+        }
+        self.plan_report_from_preimages(
+            context,
+            events,
+            dry_run,
+            cache_access,
+            state_preimage,
+            metadata_preimages,
+        )
+    }
+
+    fn plan_report_from_preimages(
+        &self,
+        context: &WorkspaceContext,
+        events: &[DomainEvent],
+        dry_run: bool,
+        cache_access: CacheAccess,
+        state_preimage: Option<Vec<u8>>,
+        metadata_preimages: BTreeMap<String, Option<Vec<u8>>>,
+    ) -> Result<PlannedWorkspaceReport, String> {
+        let impact = CacheImpact::from_events(events);
+        let mut state = state_preimage
+            .as_deref()
+            .and_then(|bytes| serde_json::from_slice(bytes).ok())
+            .unwrap_or_else(|| default_state(context));
         let mut invalidated = sorted(impact.invalidated);
         let mut refreshed = sorted(impact.eager_refresh);
         let mut lazy_rebuilt = Vec::new();
@@ -181,7 +295,12 @@ impl WorkspaceStateRepository {
                         epoch: context.workspace_epoch,
                     },
                 );
-                metadata.push(self.plan_cache_metadata(context, name, "eager")?);
+                metadata.push(self.plan_cache_metadata(
+                    context,
+                    name,
+                    "eager",
+                    metadata_preimages.get(name).cloned().flatten(),
+                )?);
             }
             state.workspace_epoch = context.workspace_epoch;
             write_state = true;
@@ -224,7 +343,12 @@ impl WorkspaceStateRepository {
                             epoch: context.workspace_epoch,
                         },
                     );
-                    metadata.push(self.plan_cache_metadata(context, name, "lazy")?);
+                    metadata.push(self.plan_cache_metadata(
+                        context,
+                        name,
+                        "lazy",
+                        metadata_preimages.get(*name).cloned().flatten(),
+                    )?);
                     lazy_rebuilt.push((*name).to_string());
                 }
             }
@@ -306,6 +430,7 @@ impl WorkspaceStateRepository {
         context: &WorkspaceContext,
         name: &str,
         mode: &str,
+        preimage: Option<Vec<u8>>,
     ) -> Result<PlannedWorkspaceStateFile, String> {
         let path = context
             .cache_root
@@ -318,16 +443,6 @@ impl WorkspaceStateRepository {
         });
         let mut postimage = serde_json::to_vec_pretty(&text).map_err(|error| error.to_string())?;
         postimage.push(b'\n');
-        let preimage = match fs::read(&path) {
-            Ok(bytes) => Some(bytes),
-            Err(error) if error.kind() == ErrorKind::NotFound => None,
-            Err(error) => {
-                return Err(format!(
-                    "failed to read Unica cache metadata {}: {error}",
-                    path.display()
-                ));
-            }
-        };
         Ok(PlannedWorkspaceStateFile {
             path,
             preimage,
@@ -503,6 +618,48 @@ mod tests {
         assert!(reported.stale.contains(&"bsl_index".to_string()));
         assert!(!reported.lazy_rebuilt.contains(&"bsl_index".to_string()));
         assert_eq!(fs::read(&legacy_status).unwrap(), legacy_bytes);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lazy_cache_rebuild_replaces_an_existing_exact_preimage() {
+        let root = temp_root("unica-cache-lazy-existing");
+        fs::create_dir_all(&root).unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".cache"),
+            workspace_epoch: 1,
+        };
+        let repo = WorkspaceStateRepository::new(&context);
+        repo.report(
+            &context,
+            &[DomainEvent::new(
+                DomainEventKind::ModuleChanged,
+                "Module.bsl",
+            )],
+            false,
+            CacheAccess::default(),
+        )
+        .unwrap();
+        let metadata = context.cache_root.join("caches/bsl_diagnostics.json");
+        fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+        fs::write(&metadata, b"existing-lazy-preimage").unwrap();
+
+        let report = repo
+            .report(
+                &context,
+                &[],
+                false,
+                CacheAccess {
+                    reads: &["bsl_diagnostics"],
+                    writes: &[],
+                },
+            )
+            .unwrap();
+
+        assert_eq!(report.lazy_rebuilt, vec!["bsl_diagnostics"]);
+        assert_ne!(fs::read(&metadata).unwrap(), b"existing-lazy-preimage");
         let _ = fs::remove_dir_all(root);
     }
 

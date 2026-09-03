@@ -1,26 +1,40 @@
 use crate::application::AdapterOutcome;
 use crate::application::SupportGuardRequirement;
+use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{ResolvedTarget, TargetKind};
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::logical_event_source::{module_relative, module_source_address};
+use crate::infrastructure::native_operations::apply::{
+    ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, ApplyStagingError, PlannedApplyEffects,
+};
+use crate::infrastructure::platform_xml_owner::{
+    prove_already_read_metadata_owner, prove_already_read_source_set_owner,
+    PlatformXmlSourceSetOwnerEvidence,
+};
 use crate::infrastructure::platform_xml_source_targets::{
-    resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
-    TargetKindPolicy,
+    platform_xml_module_identity, resolve_platform_xml_target, revalidate_platform_xml_target,
+    ClosedPlatformXmlTarget, PlatformXmlModuleIdentity, TargetKindPolicy,
 };
 use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
 };
+use crate::infrastructure::workspace_actor::{CodeApplyAuthority, ProviderRootBinding};
 use bsl_syntax::ast::{AstNode, FunctionDef, ProcedureDef};
 use diffy::{apply, DiffOptions, Patch};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use crate::infrastructure::platform_xml_source_targets::platform_xml_module_identity as module_identity;
 
-use super::common::{code_patch_source_target, guard_code_patch_resolved_target};
+use super::common::{
+    code_patch_source_target, guard_code_patch_resolved_target, parse_support_state_compat_bytes,
+    support_root_uuid_from_bytes,
+};
 use super::compile_transaction::CompileTransaction;
 use super::text_snapshot::{
     resolve_observed_line_ending, LineEnding, LineEndingProfile, SourceTextSnapshot,
@@ -145,6 +159,59 @@ enum Selector {
     Anchor(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectorResolutionCause {
+    ZeroMatches,
+    MultipleMatches,
+    InvalidSource,
+}
+
+#[derive(Debug)]
+struct SelectorResolutionError {
+    cause: SelectorResolutionCause,
+    legacy_message: String,
+}
+
+impl SelectorResolutionError {
+    fn zero_matches(selector: &Selector) -> Self {
+        Self::match_count(selector, 0, SelectorResolutionCause::ZeroMatches)
+    }
+
+    fn multiple_matches(selector: &Selector, count: usize) -> Self {
+        Self::match_count(selector, count, SelectorResolutionCause::MultipleMatches)
+    }
+
+    fn match_count(selector: &Selector, count: usize, cause: SelectorResolutionCause) -> Self {
+        let name = match selector {
+            Selector::Method(_) => "method",
+            Selector::Anchor(_) => "anchor",
+        };
+        Self {
+            cause,
+            legacy_message: format!(
+                "{name} selector must match exactly once; matched {count} times"
+            ),
+        }
+    }
+
+    fn invalid_source(message: impl Into<String>) -> Self {
+        Self {
+            cause: SelectorResolutionCause::InvalidSource,
+            legacy_message: message.into(),
+        }
+    }
+
+    const fn cause(&self) -> SelectorResolutionCause {
+        self.cause
+    }
+}
+
+impl std::fmt::Display for SelectorResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.legacy_message.fmt(formatter)
+    }
+}
+
 impl Selector {
     /// `insert` names a place only when it has one to name. An absent selector
     /// is not an error: it means the end of the module, which is the one place
@@ -187,6 +254,633 @@ enum LeadingSeparator {
 enum PatchOperation {
     Insert,
     Replace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodePosition {
+    Before,
+    After,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodeSelector {
+    Method(String),
+    Anchor(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodeInsertArgs {
+    pub(crate) at: crate::domain::address::QualifiedAddress,
+    pub(crate) text: String,
+    pub(crate) selector: Option<CodeSelector>,
+    pub(crate) position: Option<CodePosition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodeReplaceArgs {
+    pub(crate) at: crate::domain::address::QualifiedAddress,
+    pub(crate) text: String,
+    pub(crate) selector: CodeSelector,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodePlanOperation {
+    Insert(CodeInsertArgs),
+    Replace(CodeReplaceArgs),
+}
+
+pub(crate) fn parse_code_plan_operation(
+    operation: &str,
+    value: &Value,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<CodePlanOperation, ApplyPlanError> {
+    let base = format!("ops[{op_index}].args");
+    let object = value
+        .as_object()
+        .ok_or_else(|| bad_code_arg(&base, "code operation args must be an object"))?;
+    let allowed = match operation {
+        "code.insert" => &["at", "text", "selector", "position"][..],
+        "code.replace" => &["at", "text", "selector"][..],
+        _ => {
+            return Err(bad_code_arg(
+                &base,
+                "code planner accepts only the closed code.insert/code.replace catalog",
+            ))
+        }
+    };
+    if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(bad_code_arg(
+            format!("{base}.{unknown}"),
+            "unknown staged code argument",
+        ));
+    }
+    let at_path = format!("{base}.at");
+    let at_raw = non_empty_code_string(object.get("at"), &at_path, "at")?;
+    let at = crate::domain::address::QualifiedAddress::parse(at_raw)
+        .map_err(|_| bad_code_arg(&at_path, "at must be a qualified logical address"))?;
+    if at.source_set() != binding.source_set_name() {
+        return Err(bad_code_arg(
+            &at_path,
+            "at belongs to another actor-admitted source set",
+        ));
+    }
+    let text_path = format!("{base}.text");
+    let text = non_empty_code_string(object.get("text"), &text_path, "text")?.to_string();
+
+    match operation {
+        "code.insert" => {
+            let selector = object
+                .get("selector")
+                .map(|value| parse_code_selector(value, &format!("{base}.selector")))
+                .transpose()?;
+            let position_path = format!("{base}.position");
+            let position = match (selector.is_some(), object.get("position")) {
+                (true, Some(value)) => Some(parse_code_position(value, &position_path)?),
+                (true, None) => {
+                    return Err(bad_code_arg(
+                        position_path,
+                        "position is required when selector is present",
+                    ))
+                }
+                (false, Some(_)) => {
+                    return Err(bad_code_arg(
+                        position_path,
+                        "position is unavailable without selector",
+                    ))
+                }
+                (false, None) => None,
+            };
+            Ok(CodePlanOperation::Insert(CodeInsertArgs {
+                at,
+                text,
+                selector,
+                position,
+            }))
+        }
+        "code.replace" => {
+            let selector_path = format!("{base}.selector");
+            let selector = object
+                .get("selector")
+                .ok_or_else(|| bad_code_arg(&selector_path, "selector is required"))
+                .and_then(|value| parse_code_selector(value, &selector_path))?;
+            Ok(CodePlanOperation::Replace(CodeReplaceArgs {
+                at,
+                text,
+                selector,
+            }))
+        }
+        _ => unreachable!("closed operation checked above"),
+    }
+}
+
+fn non_empty_code_string<'a>(
+    value: Option<&'a Value>,
+    path: &str,
+    name: &str,
+) -> Result<&'a str, ApplyPlanError> {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| bad_code_arg(path, format!("{name} must be a non-empty string")))
+}
+
+fn parse_code_selector(value: &Value, path: &str) -> Result<CodeSelector, ApplyPlanError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| bad_code_arg(path, "selector must be an object"))?;
+    if object.len() != 1 {
+        return Err(bad_code_arg(
+            path,
+            "selector must contain exactly one method or anchor",
+        ));
+    }
+    let (name, value) = object.iter().next().expect("one selector field");
+    let field_path = format!("{path}.{name}");
+    let value = value
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| bad_code_arg(&field_path, "selector value must be a non-empty string"))?;
+    match name.as_str() {
+        "method" => Ok(CodeSelector::Method(value.to_string())),
+        "anchor" => Ok(CodeSelector::Anchor(canonicalize_eol(value))),
+        _ => Err(bad_code_arg(
+            field_path,
+            "selector accepts only method or anchor",
+        )),
+    }
+}
+
+fn parse_code_position(value: &Value, path: &str) -> Result<CodePosition, ApplyPlanError> {
+    match value.as_str() {
+        Some("before") => Ok(CodePosition::Before),
+        Some("after") => Ok(CodePosition::After),
+        _ => Err(bad_code_arg(path, "position must be before or after")),
+    }
+}
+
+fn bad_code_arg(path: impl Into<String>, message: impl Into<String>) -> ApplyPlanError {
+    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(path)
+}
+
+pub(crate) fn plan_code_batch(
+    mut staged: ApplyStagedState,
+    authority: CodeApplyAuthority<'_>,
+    operations: &[CodePlanOperation],
+) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    if !authority.owns_staged_state(&staged) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            "staged source belongs to another apply admission",
+        ));
+    }
+    let mut provisional_effects = Vec::new();
+    for (op_index, operation) in operations.iter().enumerate() {
+        plan_one_code_operation(
+            &mut staged,
+            &mut provisional_effects,
+            &authority,
+            operation,
+            op_index,
+        )?;
+    }
+    let final_changes = staged.planned_changes();
+    let mut effects = PlannedApplyEffects::default();
+    for (relative, event) in provisional_effects {
+        if final_changes
+            .iter()
+            .any(|change| change.relative_path == relative)
+        {
+            effects.append_at(event, vec![relative]);
+        }
+    }
+    Ok((staged, effects))
+}
+
+fn plan_one_code_operation(
+    staged: &mut ApplyStagedState,
+    effects: &mut Vec<(PathBuf, DomainEvent)>,
+    authority: &CodeApplyAuthority<'_>,
+    operation: &CodePlanOperation,
+    op_index: usize,
+) -> Result<(), ApplyPlanError> {
+    let at = code_operation_at(operation);
+    let at_path = format!("ops[{op_index}].args.at");
+    if at.source_set() != authority.source_set_name() {
+        return Err(bad_code_arg(
+            &at_path,
+            "at belongs to another actor-admitted source set",
+        ));
+    }
+    let capability = authority.profile().module_capability(at).ok_or_else(|| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "at does not identify one exact writable module terminal",
+        )
+        .at_path(&at_path)
+    })?;
+    let target = module_source_address(at, capability).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::ProviderUnavailable,
+            "module layout is unavailable for the actor-issued profile",
+        )
+        .at_path(&at_path)
+    })?;
+    let relative = module_relative(&target, authority.source_kind()).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::ProviderUnavailable,
+            "module source layout is unavailable for the actor-issued source kind",
+        )
+        .at_path(&at_path)
+    })?;
+    let identity = platform_xml_module_identity(&relative).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "module layout does not round-trip through the Platform XML mapper",
+        )
+        .at_path(&at_path)
+    })?;
+    if identity.address != target {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::Postcondition,
+            "module layout identity does not match its logical target",
+        )
+        .at_path(&at_path));
+    }
+
+    let owner_bytes = prove_staged_code_owner(
+        staged,
+        authority.source_kind(),
+        authority.expected_format(),
+        &identity,
+        &at_path,
+    )?;
+    prove_staged_code_support(
+        staged,
+        authority.support_policy_mode(),
+        &owner_bytes,
+        &at_path,
+    )?;
+    let before = staged
+        .read(&relative)
+        .map_err(|error| staged_code_error(error, &at_path))?;
+    let postimage =
+        plan_code_postimage(before.as_deref().unwrap_or_default(), operation, op_index)?;
+    if postimage.no_op {
+        return Ok(());
+    }
+    match before.as_deref() {
+        Some(before) => staged
+            .replace(&relative, before, postimage.after.clone())
+            .map_err(|error| staged_code_error(error, &at_path))?,
+        None => staged
+            .create_leaf_below_retained_parent(&relative, postimage.after.clone())
+            .map_err(|error| staged_code_error(error, &at_path))?,
+    }
+    if staged
+        .read(&relative)
+        .map_err(|error| staged_code_error(error, &at_path))?
+        .as_deref()
+        != Some(postimage.after.as_slice())
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::Postcondition,
+            "staged module postimage did not remain exact",
+        )
+        .at_path(at_path));
+    }
+    effects.push((
+        relative,
+        DomainEvent::new(DomainEventKind::ModuleChanged, at.to_string()),
+    ));
+    Ok(())
+}
+
+fn code_operation_at(operation: &CodePlanOperation) -> &crate::domain::address::QualifiedAddress {
+    match operation {
+        CodePlanOperation::Insert(args) => &args.at,
+        CodePlanOperation::Replace(args) => &args.at,
+    }
+}
+
+fn prove_staged_code_owner(
+    staged: &mut ApplyStagedState,
+    source_kind: SourceSetKind,
+    expected_format: &str,
+    identity: &PlatformXmlModuleIdentity,
+    at_path: &str,
+) -> Result<Vec<Vec<u8>>, ApplyPlanError> {
+    let root_relative = Path::new("Configuration.xml");
+    let root = staged
+        .read(root_relative)
+        .map_err(|error| staged_code_error(error, at_path))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "source-set owner descriptor is absent",
+            )
+            .at_path(at_path)
+        })?;
+    let mut evidence = prove_already_read_source_set_owner(root_relative, &root, source_kind)
+        .map_err(|_| invalid_code_owner(at_path))?;
+    require_code_owner_format(&evidence, expected_format, at_path)?;
+    let mut owner_bytes = vec![root];
+    let owner_parts = identity.address.as_str().split('.').collect::<Vec<_>>();
+    let (owner_pairs, remainder) =
+        owner_parts[..owner_parts.len().saturating_sub(1)].as_chunks::<2>();
+    if !remainder.is_empty() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::Postcondition,
+            "module logical owner has an incomplete kind/name pair",
+        )
+        .at_path(at_path));
+    }
+    let mut owner_index = 0usize;
+    for relative in &identity.descriptors {
+        if relative == root_relative {
+            continue;
+        }
+        let expected = owner_pairs.get(owner_index).ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::Postcondition,
+                "module descriptor depth exceeds its logical owner",
+            )
+            .at_path(at_path)
+        })?;
+        if !evidence.registers(expected[0], expected[1]) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "logical module owner is not registered by its parent descriptor",
+            )
+            .at_path(at_path));
+        }
+        let bytes = staged
+            .read(relative)
+            .map_err(|error| staged_code_error(error, at_path))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "logical module owner descriptor is absent",
+                )
+                .at_path(at_path)
+            })?;
+        let current = prove_already_read_metadata_owner(relative, &bytes)
+            .map_err(|_| invalid_code_owner(at_path))?;
+        require_code_owner_format(&current, expected_format, at_path)?;
+        if current.artifact_kind() != expected[0] || current.artifact_name() != Some(expected[1]) {
+            return Err(invalid_code_owner(at_path));
+        }
+        owner_bytes.push(bytes);
+        evidence = current;
+        owner_index += 1;
+    }
+    if owner_index != owner_pairs.len() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::Postcondition,
+            "module descriptor chain is incomplete for its logical owner",
+        )
+        .at_path(at_path));
+    }
+    Ok(owner_bytes)
+}
+
+fn require_code_owner_format(
+    evidence: &PlatformXmlSourceSetOwnerEvidence,
+    expected_format: &str,
+    at_path: &str,
+) -> Result<(), ApplyPlanError> {
+    if evidence.version() == Some(expected_format) {
+        Ok(())
+    } else {
+        Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "module owner does not match the actor-issued serialization profile",
+        )
+        .at_path(at_path))
+    }
+}
+
+fn invalid_code_owner(at_path: &str) -> ApplyPlanError {
+    ApplyPlanError::new(
+        ApplyPlanErrorKind::InvalidSource,
+        "logical module owner evidence is invalid",
+    )
+    .at_path(at_path)
+}
+
+fn prove_staged_code_support(
+    staged: &mut ApplyStagedState,
+    support_policy: crate::infrastructure::support_policy_evidence::SupportPolicyMode,
+    owner_bytes: &[Vec<u8>],
+    at_path: &str,
+) -> Result<(), ApplyPlanError> {
+    let marker = staged
+        .read(Path::new("Ext/ParentConfigurations.bin"))
+        .map_err(|error| staged_code_error(error, at_path))?;
+    if support_policy != crate::infrastructure::support_policy_evidence::SupportPolicyMode::Deny {
+        return Ok(());
+    }
+    let state = parse_support_state_compat_bytes(marker.as_deref());
+    let Some(state) = state else {
+        return Ok(());
+    };
+    if state.removed() {
+        return Ok(());
+    }
+    if !state.global_editing_enabled() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            "actor support policy denies editing this protected source",
+        )
+        .at_path(at_path));
+    }
+    let owner_uuid = owner_bytes
+        .iter()
+        .rev()
+        .find_map(|bytes| support_root_uuid_from_bytes(bytes));
+    if owner_uuid
+        .as_deref()
+        .and_then(|uuid| state.object_rule(uuid))
+        == Some(0)
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            "actor support policy denies editing this protected module owner",
+        )
+        .at_path(at_path));
+    }
+    Ok(())
+}
+
+fn staged_code_error(error: ApplyStagingError, path: &str) -> ApplyPlanError {
+    ApplyPlanError::staging(error, path)
+}
+
+struct StagedCodePostimage {
+    after: Vec<u8>,
+    no_op: bool,
+}
+
+fn plan_code_postimage(
+    before: &[u8],
+    operation: &CodePlanOperation,
+    op_index: usize,
+) -> Result<StagedCodePostimage, ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let text_path = format!("ops[{op_index}].args.text");
+    let snapshot = SourceTextSnapshot::from_bytes(before).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "original BSL module is not a supported text snapshot",
+        )
+        .at_path(&at_path)
+    })?;
+    let indexed = analyze_module(snapshot.decoded_text()).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "original BSL module cannot be analyzed",
+        )
+        .at_path(&at_path)
+    })?;
+    if !indexed.diagnostics.is_empty() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "original BSL module contains syntax errors",
+        )
+        .at_path(&at_path));
+    }
+    let (selector, content, site, no_op, after) = match operation {
+        CodePlanOperation::Insert(args) => {
+            if args.text.is_empty() {
+                return Err(bad_code_arg(&text_path, "text must be a non-empty string"));
+            }
+            let selector = args.selector.as_ref().map(legacy_selector);
+            let site = match (&selector, args.position) {
+                (Some(selector), Some(position)) => locate_selector_typed(
+                    &snapshot,
+                    legacy_position(position),
+                    selector,
+                    &indexed.methods,
+                )
+                .map_err(|error| code_selector_error(error, op_index, selector))?,
+                (Some(_), None) => {
+                    return Err(bad_code_arg(
+                        format!("ops[{op_index}].args.position"),
+                        "position is required when selector is present",
+                    ))
+                }
+                (None, Some(_)) => {
+                    return Err(bad_code_arg(
+                        format!("ops[{op_index}].args.position"),
+                        "position is unavailable without selector",
+                    ))
+                }
+                (None, None) => locate_module_tail(&snapshot).map_err(|_| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::InvalidSource,
+                        "module tail cannot be resolved from the observed source",
+                    )
+                    .at_path(&at_path)
+                })?,
+            };
+            let insertion = normalized_content(&args.text, site.eol, site.leading_separator);
+            let no_op = insertion_is_present(snapshot.raw(), site, &insertion);
+            let mut after = snapshot.raw().to_vec();
+            if !no_op {
+                after.splice(site.offset..site.offset, insertion.iter().copied());
+            }
+            (
+                selector,
+                args.text.as_str(),
+                PatchSite::Insertion(site),
+                no_op,
+                after,
+            )
+        }
+        CodePlanOperation::Replace(args) => {
+            if args.text.is_empty() {
+                return Err(bad_code_arg(&text_path, "text must be a non-empty string"));
+            }
+            let selector = legacy_selector(&args.selector);
+            let site = locate_replacement_typed(&snapshot, &selector, &indexed.methods)
+                .map_err(|error| code_selector_error(error, op_index, &selector))?;
+            let replacement = normalized_replacement(&args.text, site.eol, site.trailing_eol);
+            let no_op = snapshot.raw().get(site.start..site.end) == Some(replacement.as_slice());
+            let mut after = snapshot.raw().to_vec();
+            if !no_op {
+                after.splice(site.start..site.end, replacement.iter().copied());
+            }
+            (
+                Some(selector),
+                args.text.as_str(),
+                PatchSite::Replacement(site),
+                no_op,
+                after,
+            )
+        }
+    };
+    let postimage = std::str::from_utf8(&after).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::Postcondition,
+            "patched BSL module is not UTF-8",
+        )
+        .at_path(&text_path)
+    })?;
+    let post = analyze_module(postimage).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::Postcondition,
+            "patched BSL module cannot be analyzed",
+        )
+        .at_path(&text_path)
+    })?;
+    if !post.diagnostics.is_empty() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::Postcondition,
+            "patched BSL module contains syntax errors",
+        )
+        .at_path(&text_path));
+    }
+    prove_repeat_is_noop_parts(postimage, selector.as_ref(), content, site, &post.methods)
+        .map_err(|_| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::Postcondition,
+                "patched BSL module does not prove repeat-noop behavior",
+            )
+            .at_path(&text_path)
+        })?;
+    Ok(StagedCodePostimage { after, no_op })
+}
+
+fn legacy_selector(selector: &CodeSelector) -> Selector {
+    match selector {
+        CodeSelector::Method(value) => Selector::Method(value.clone()),
+        CodeSelector::Anchor(value) => Selector::Anchor(value.clone()),
+    }
+}
+
+const fn legacy_position(position: CodePosition) -> Position {
+    match position {
+        CodePosition::Before => Position::Before,
+        CodePosition::After => Position::After,
+    }
+}
+
+fn code_selector_error(
+    error: SelectorResolutionError,
+    op_index: usize,
+    selector: &Selector,
+) -> ApplyPlanError {
+    let kind = match error.cause() {
+        SelectorResolutionCause::ZeroMatches => ApplyPlanErrorKind::NotFound,
+        SelectorResolutionCause::MultipleMatches => ApplyPlanErrorKind::InvalidState,
+        SelectorResolutionCause::InvalidSource => ApplyPlanErrorKind::InvalidSource,
+    };
+    let field = match selector {
+        Selector::Method(_) => "method",
+        Selector::Anchor(_) => "anchor",
+    };
+    ApplyPlanError::new(kind, "code selector cannot identify one stable BSL site")
+        .at_path(format!("ops[{op_index}].args.selector.{field}"))
 }
 
 impl PatchOperation {
@@ -605,13 +1299,13 @@ fn locate_insertion(text: &str, args: &Map<String, Value>) -> Result<InsertionSi
     locate_selector(&snapshot, position, &selector, &indexed.methods)
 }
 
-fn locate_selector(
+fn locate_selector_typed(
     snapshot: &SourceTextSnapshot,
     position: Position,
     selector: &Selector,
     methods: &[Method],
-) -> Result<InsertionSite, String> {
-    reject_lone_cr_line_endings(snapshot)?;
+) -> Result<InsertionSite, SelectorResolutionError> {
+    reject_lone_cr_line_endings(snapshot).map_err(SelectorResolutionError::invalid_source)?;
     let text = snapshot.decoded_text();
     let offset = match selector {
         Selector::Method(name) => {
@@ -622,10 +1316,11 @@ fn locate_selector(
                 .collect::<Vec<_>>();
             let method = match found.as_slice() {
                 [method] => *method,
+                [] => return Err(SelectorResolutionError::zero_matches(selector)),
                 _ => {
-                    return Err(format!(
-                        "method selector must match exactly once; matched {} times",
-                        found.len()
+                    return Err(SelectorResolutionError::multiple_matches(
+                        selector,
+                        found.len(),
                     ))
                 }
             };
@@ -638,10 +1333,11 @@ fn locate_selector(
             let found = anchor_occurrences(text, anchor, methods);
             let selected = match found.as_slice() {
                 [selected] => *selected,
+                [] => return Err(SelectorResolutionError::zero_matches(selector)),
                 _ => {
-                    return Err(format!(
-                        "anchor selector must match exactly once; matched {} times",
-                        found.len()
+                    return Err(SelectorResolutionError::multiple_matches(
+                        selector,
+                        found.len(),
                     ))
                 }
             };
@@ -652,8 +1348,9 @@ fn locate_selector(
         }
     };
     let local = local_line_ending_at(text, offset, position);
-    let eol = resolve_observed_line_ending(snapshot, local)
-        .map_err(|error| format!("resolve code.patch EOL: {error}"))?;
+    let eol = resolve_observed_line_ending(snapshot, local).map_err(|error| {
+        SelectorResolutionError::invalid_source(format!("resolve code.patch EOL: {error}"))
+    })?;
     let leading_separator = if position == Position::After
         && offset == text.len()
         && !text.is_empty()
@@ -669,6 +1366,15 @@ fn locate_selector(
         eol,
         leading_separator,
     })
+}
+
+fn locate_selector(
+    snapshot: &SourceTextSnapshot,
+    position: Position,
+    selector: &Selector,
+    methods: &[Method],
+) -> Result<InsertionSite, String> {
+    locate_selector_typed(snapshot, position, selector, methods).map_err(|error| error.to_string())
 }
 
 /// Resolves the one place every module has: its end.
@@ -708,12 +1414,12 @@ fn locate_module_tail(snapshot: &SourceTextSnapshot) -> Result<InsertionSite, St
 /// Resolves the span a replacement overwrites. A method selector takes the whole
 /// method including the line it starts and ends on; an anchor selector takes the
 /// exact occurrence, so an inline edit stays inline.
-fn locate_replacement(
+fn locate_replacement_typed(
     snapshot: &SourceTextSnapshot,
     selector: &Selector,
     methods: &[Method],
-) -> Result<ReplacementSite, String> {
-    reject_lone_cr_line_endings(snapshot)?;
+) -> Result<ReplacementSite, SelectorResolutionError> {
+    reject_lone_cr_line_endings(snapshot).map_err(SelectorResolutionError::invalid_source)?;
     let text = snapshot.decoded_text();
     let (start, end) = match selector {
         Selector::Method(name) => {
@@ -722,11 +1428,15 @@ fn locate_replacement(
                 .iter()
                 .filter(|method| method.name.to_lowercase() == folded_name)
                 .collect::<Vec<_>>();
-            let [method] = found.as_slice() else {
-                return Err(format!(
-                    "method selector must match exactly once; matched {} times",
-                    found.len()
-                ));
+            let method = match found.as_slice() {
+                [method] => *method,
+                [] => return Err(SelectorResolutionError::zero_matches(selector)),
+                _ => {
+                    return Err(SelectorResolutionError::multiple_matches(
+                        selector,
+                        found.len(),
+                    ))
+                }
             };
             (
                 safe_line_start(text, method.start),
@@ -735,18 +1445,23 @@ fn locate_replacement(
         }
         Selector::Anchor(anchor) => {
             let found = anchor_occurrences(text, anchor, methods);
-            let [selected] = found.as_slice() else {
-                return Err(format!(
-                    "anchor selector must match exactly once; matched {} times",
-                    found.len()
-                ));
+            let selected = match found.as_slice() {
+                [selected] => *selected,
+                [] => return Err(SelectorResolutionError::zero_matches(selector)),
+                _ => {
+                    return Err(SelectorResolutionError::multiple_matches(
+                        selector,
+                        found.len(),
+                    ))
+                }
             };
             (selected.start, selected.end)
         }
     };
     let local = local_line_ending_at(text, start, Position::Before);
-    let eol = resolve_observed_line_ending(snapshot, local)
-        .map_err(|error| format!("resolve code.patch EOL: {error}"))?;
+    let eol = resolve_observed_line_ending(snapshot, local).map_err(|error| {
+        SelectorResolutionError::invalid_source(format!("resolve code.patch EOL: {error}"))
+    })?;
     // The replacement keeps a trailing newline only where the span it overwrites
     // had one, so replacing an inline anchor does not break the line.
     let trailing_eol = text
@@ -758,6 +1473,14 @@ fn locate_replacement(
         eol,
         trailing_eol,
     })
+}
+
+fn locate_replacement(
+    snapshot: &SourceTextSnapshot,
+    selector: &Selector,
+    methods: &[Method],
+) -> Result<ReplacementSite, String> {
+    locate_replacement_typed(snapshot, selector, methods).map_err(|error| error.to_string())
 }
 
 fn normalized_replacement(content: &str, eol: LineEnding, trailing_eol: bool) -> Vec<u8> {
@@ -847,13 +1570,29 @@ fn prove_repeat_is_noop(
     plan: &CodePatchPlan,
     methods: &[Method],
 ) -> Result<(), String> {
+    prove_repeat_is_noop_parts(
+        postimage,
+        plan.selector.as_ref(),
+        &plan.content,
+        plan.site,
+        methods,
+    )
+}
+
+fn prove_repeat_is_noop_parts(
+    postimage: &str,
+    selector: Option<&Selector>,
+    content: &str,
+    site: PatchSite,
+    methods: &[Method],
+) -> Result<(), String> {
     let snapshot = SourceTextSnapshot::from_bytes(postimage.as_bytes())
         .map_err(|error| format!("patched BSL module snapshot: {error}"))?;
     let stale =
         |error: String| format!("patch cannot be applied idempotently on the next call: {error}");
-    let repeated_is_noop = match plan.site {
+    let repeated_is_noop = match site {
         PatchSite::Insertion(site) => {
-            let repeat_site = match plan.selector.as_ref() {
+            let repeat_site = match selector {
                 Some(selector) => {
                     locate_selector(&snapshot, site.position, selector, methods).map_err(stale)?
                 }
@@ -861,16 +1600,13 @@ fn prove_repeat_is_noop(
                 // repeat resolves; whether it writes is decided just below.
                 None => locate_module_tail(&snapshot).map_err(stale)?,
             };
-            let repeat_insertion = normalized_content(
-                &plan.content,
-                repeat_site.eol,
-                repeat_site.leading_separator,
-            );
+            let repeat_insertion =
+                normalized_content(content, repeat_site.eol, repeat_site.leading_separator);
             insertion_is_present(postimage.as_bytes(), repeat_site, &repeat_insertion)
         }
         PatchSite::Replacement(_) => match locate_replacement(
             &snapshot,
-            plan.selector.as_ref().expect("replacement has a selector"),
+            selector.expect("replacement has a selector"),
             methods,
         ) {
             // The edit consumed its own selector — an anchor rewritten to new
@@ -879,11 +1615,8 @@ fn prove_repeat_is_noop(
             // double application the guard exists to prevent.
             Err(_) => true,
             Ok(repeat_site) => {
-                let repeat_replacement = normalized_replacement(
-                    &plan.content,
-                    repeat_site.eol,
-                    repeat_site.trailing_eol,
-                );
+                let repeat_replacement =
+                    normalized_replacement(content, repeat_site.eol, repeat_site.trailing_eol);
                 snapshot.raw().get(repeat_site.start..repeat_site.end)
                     == Some(repeat_replacement.as_slice())
             }
@@ -1141,28 +1874,45 @@ fn unified_diff(path: &str, before: &str, after: &str) -> Result<String, String>
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::{
         analyze_module, hash, insertion_is_present, line_column, local_line_ending_at,
-        locate_insertion, module_identity, normalized_content, patch_inner, unified_diff,
-        LeadingSeparator, PatchMode, Position, ValidationStatus,
+        locate_insertion, module_identity, normalized_content, parse_code_plan_operation,
+        patch_inner, plan_code_batch, unified_diff, CodeInsertArgs, CodePlanOperation,
+        CodePosition, CodeReplaceArgs, CodeSelector, LeadingSeparator, PatchMode, Position,
+        ValidationStatus,
     };
     use crate::application::SupportGuardRequirement;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::domain::{
+        events::{DomainEvent, DomainEventKind},
+        project_sources::{SourceFormat, SourceProfile, SourceSetKind},
+    };
+    use crate::infrastructure::native_operations::apply::{
+        ApplyPlanError, ApplyPlanErrorKind, ApplyStagingErrorKind, StagedFileState,
+    };
     use crate::infrastructure::native_operations::common::support_guard_violation;
     use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use crate::infrastructure::native_operations::text_snapshot::{
         resolve_line_ending, EolPolicy, LineEnding, SourceTextSnapshot,
     };
     use crate::infrastructure::platform::testing::{
-        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        attempt_retained_directory_replacement_for_test, create_file_link_fixture_for_test,
+        path_identity_for_test, FileLinkFixtureOutcome, RetainedDirectoryReplacementOutcome,
+    };
+    use crate::infrastructure::support_policy_evidence::SupportPolicyMode;
+    use crate::infrastructure::workspace_actor::{
+        ApplyEffectDisposition, ProviderRootBinding, WorkspaceActor, WorkspaceIdentity,
+        WorkspaceSourceSetInput,
     };
     use diffy::{apply, Patch};
     use serde_json::{json, Map, Value};
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const MODULE: &str = "Процедура Первая()\n    Сообщить(\"один\");\nКонецПроцедуры\n\nФункция Вторая()\n    Возврат Истина;\nКонецФункции\n";
@@ -1441,7 +2191,10 @@ mod tests {
     }
 
     #[test]
-    fn applied_patch_returns_typed_data_and_repeated_apply_is_noop() {
+    pub(crate) fn applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_stable_identity()
+    {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("applied-patch");
         let module = context
             .workspace_root
@@ -1473,10 +2226,12 @@ mod tests {
         assert_eq!(data.validation.validated_post_hash, data.post_hash);
         assert_eq!(data.changed_ranges[0].start_line, 3);
         assert!(data.diff.starts_with("--- a/"));
+        let identity = file_identity_for_test(&module).unwrap();
 
         let repeated = patch_inner(&args, &context, PatchMode::Apply);
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
         assert_eq!(fs::read(&module).unwrap(), expected);
+        assert_eq!(file_identity_for_test(&module).unwrap(), identity);
         assert!(repeated.outcome.changes.is_empty());
         let data = repeated.data.unwrap();
         assert_eq!(data.pre_hash, data.post_hash);
@@ -1993,6 +2748,14 @@ mod tests {
     }
 
     #[test]
+    fn code_patch_observed_eol_policy_is_closed() {
+        code_patch_rejects_lone_cr_instead_of_inventing_or_gaining_an_eol_policy();
+        code_patch_without_any_source_eol_uses_lf_for_preview_apply_and_repeat_noop();
+        mixed_eol_apply_preserves_untouched_bytes_and_uses_target_eol();
+        unified_diff_round_trips_crlf_and_missing_terminal_eol();
+    }
+
+    #[test]
     fn object_and_manager_modules_report_owner_and_role() {
         let context = temp_context("module-roles");
         fs::create_dir_all(context.workspace_root.join("src/Catalogs")).unwrap();
@@ -2446,7 +3209,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat() {
+    pub(crate) fn code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat() {
         let context = temp_context("tail-append");
         let module = context
             .workspace_root
@@ -2479,7 +3242,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_creates_a_module_file_the_platform_never_exported() {
+    pub(crate) fn code_patch_creates_a_module_file_the_platform_never_exported() {
         let context = temp_context("tail-absent");
         let module = context
             .workspace_root
@@ -2518,7 +3281,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_refuses_a_module_role_the_metadata_kind_never_owns() {
+    pub(crate) fn code_patch_refuses_a_module_role_the_metadata_kind_never_owns() {
         let context = temp_context("tail-absent-role");
         // A common module owns `Module`; it never owns an object module, so the
         // absent file is not an omitted empty one and must stay unaddressable.
@@ -2537,7 +3300,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_writes_the_first_body_of_an_empty_or_bom_only_module() {
+    pub(crate) fn code_patch_writes_the_first_body_of_an_empty_or_bom_only_module() {
         for (label, before, expected) in [
             (
                 "bom-only",
@@ -2755,7 +3518,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_rolls_back_if_owner_descriptor_changes_before_commit() {
+    pub(crate) fn code_patch_rolls_back_if_owner_descriptor_changes_before_commit() {
         let context = temp_context("owner-descriptor-race");
         let module = context
             .workspace_root
@@ -2862,6 +3625,1783 @@ mod tests {
             support_guard_violation(&module, SupportGuardRequirement::Editable).unwrap();
         assert_eq!(violation.code, "locked");
         fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn staged_code_insert_then_replace_reads_prior_postimage() {
+        let fixture =
+            staged_code_fixture("insert-then-replace", b"Procedure Base()\nEndProcedure\n");
+        let operations = vec![
+            staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                Some(CodeSelector::Method("Base".to_string())),
+                Some(CodePosition::After),
+            ),
+            staged_replace(
+                "main:CommonModule.Sample",
+                "Procedure Final()\nEndProcedure",
+                CodeSelector::Method("Added".to_string()),
+            ),
+        ];
+        let admitted = staged_code_admission(&fixture, true);
+        let (mut state, effects) = plan_admitted_code(&admitted, &fixture.binding, &operations)
+            .expect("placeholder cannot compose the staged insert and replace postimages");
+
+        assert_eq!(
+            state
+                .read(Path::new("CommonModules/Sample/Ext/Module.bsl"))
+                .unwrap()
+                .unwrap(),
+            b"Procedure Base()\nEndProcedure\nProcedure Final()\nEndProcedure\n"
+        );
+        assert_eq!(
+            effects.events(),
+            &[DomainEvent::new(
+                DomainEventKind::ModuleChanged,
+                "main:CommonModule.Sample",
+            )]
+        );
+
+        let reverse = vec![operations[1].clone(), operations[0].clone()];
+        let reverse_admission = staged_code_admission(&fixture, true);
+        let error = plan_admitted_code(&reverse_admission, &fixture.binding, &reverse)
+            .expect_err("reverse order unexpectedly resolved an unstaged method");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_code_poisoned_second_op_publishes_nothing() {
+        for dry_run in [true, false] {
+            let fixture = staged_code_fixture(
+                if dry_run { "poison-dry" } else { "poison-real" },
+                b"Procedure Base()\nEndProcedure\n",
+            );
+            let service = fixture
+                .actor
+                .source_revision_service(&fixture.binding)
+                .unwrap();
+            let source_before = snapshot_staged_code_tree(&fixture.source);
+            let cache = fixture.root.join(".build/unica");
+            let cache_before = snapshot_staged_code_tree(&cache);
+            let machine_before = service.machine_state_for_test();
+            let admitted = fixture
+                .actor
+                .admit_apply(
+                    &fixture.binding,
+                    None,
+                    dry_run,
+                    crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                        Duration::from_secs(5),
+                    ),
+                    &crate::domain::cancellation::CancellationToken::new(),
+                )
+                .unwrap();
+            let operations = vec![
+                staged_insert(
+                    "main:CommonModule.Sample",
+                    "Procedure Added()\nEndProcedure",
+                    None,
+                    None,
+                ),
+                staged_replace(
+                    "main:CommonModule.Sample",
+                    "Procedure Never()\nEndProcedure",
+                    CodeSelector::Method("Missing".to_string()),
+                ),
+            ];
+
+            let error = plan_admitted_code(&admitted, &fixture.binding, &operations)
+                .expect_err("poisoned staged code batch unexpectedly returned effects");
+
+            assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound);
+            assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
+            assert_eq!(snapshot_staged_code_tree(&cache), cache_before);
+            assert_eq!(service.machine_state_for_test(), machine_before);
+            assert!(!cache.join("state.json").exists());
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn staged_code_dry_run_and_real_apply_share_postimages_and_effect_receipt() {
+        let dry = staged_code_fixture("dry-real-dry", b"Procedure Base()\nEndProcedure\n");
+        let real = staged_code_fixture("dry-real-real", b"Procedure Base()\nEndProcedure\n");
+        let operation = [staged_insert(
+            "main:CommonModule.Sample",
+            "Procedure Added()\nEndProcedure",
+            None,
+            None,
+        )];
+        let dry_admission = staged_code_admission(&dry, true);
+        let real_admission = staged_code_admission(&real, false);
+        let admitted_rev = real_admission.revision_identity();
+        let (mut dry_state, dry_effects) =
+            plan_admitted_code(&dry_admission, &dry.binding, &operation)
+                .expect("dry staged code planning is unavailable");
+        let (mut real_state, real_effects) =
+            plan_admitted_code(&real_admission, &real.binding, &operation)
+                .expect("real staged code planning is unavailable");
+        let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+        assert_eq!(
+            dry_state.read(relative).unwrap(),
+            real_state.read(relative).unwrap()
+        );
+        assert_eq!(dry_effects.events(), real_effects.events());
+        let dry_result = dry
+            .actor
+            .publish_prepared_apply(
+                dry_admission
+                    .prepare_with_effects(dry_state, dry_effects)
+                    .unwrap(),
+            )
+            .unwrap();
+        let real_result = real
+            .actor
+            .publish_prepared_apply(
+                real_admission
+                    .prepare_with_effects(real_state, real_effects)
+                    .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            dry_result.effects().disposition(),
+            ApplyEffectDisposition::Projected
+        );
+        assert_eq!(dry_result.commit_count_for_test(), 0);
+        assert_eq!(
+            fs::read(dry.source.join(relative)).unwrap(),
+            b"Procedure Base()\nEndProcedure\n"
+        );
+        assert_eq!(
+            real_result.effects().disposition(),
+            ApplyEffectDisposition::Committed
+        );
+        assert_eq!(real_result.commit_count_for_test(), 1);
+        assert_ne!(real_result.rev(), admitted_rev);
+        assert_eq!(
+            dry_result.effects().events(),
+            real_result.effects().events()
+        );
+        dry.cleanup();
+        real.cleanup();
+    }
+
+    #[test]
+    fn staged_code_reuses_actor_revision_and_race_fences() {
+        use crate::infrastructure::workspace_actor::ApplyPublicationErrorKind;
+
+        let fixture = staged_code_fixture("actor-fences", b"Procedure Base()\nEndProcedure\n");
+        let observed = staged_code_admission(&fixture, true);
+        let rev = observed.revision_identity();
+        let exact = fixture
+            .actor
+            .admit_apply(
+                &fixture.binding,
+                Some(&rev),
+                true,
+                crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                    Duration::from_secs(5),
+                ),
+                &crate::domain::cancellation::CancellationToken::new(),
+            )
+            .unwrap();
+        let operation = [staged_insert(
+            "main:CommonModule.Sample",
+            "Procedure Added()\nEndProcedure",
+            None,
+            None,
+        )];
+        let (state, effects) = plan_admitted_code(&exact, &fixture.binding, &operation)
+            .expect("planner did not reuse the actor-admitted revision");
+        let prepared = exact.prepare_with_effects(state, effects).unwrap();
+
+        let stale = fixture.actor.admit_apply(
+            &fixture.binding,
+            Some("sha256:999:stale"),
+            true,
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &crate::domain::cancellation::CancellationToken::new(),
+        );
+        assert!(stale.unwrap_err().to_string().contains("ifRev is stale"));
+
+        fs::write(
+            fixture.source.join("CommonModules/Sample/Ext/Module.bsl"),
+            b"Procedure Foreign()\nEndProcedure\n",
+        )
+        .unwrap();
+        let raced = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert_eq!(raced.kind(), ApplyPublicationErrorKind::ConcurrentRevision);
+
+        let cancelled = crate::domain::cancellation::CancellationToken::new();
+        cancelled.cancel();
+        assert!(fixture
+            .actor
+            .admit_apply(
+                &fixture.binding,
+                None,
+                true,
+                crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                    Duration::from_secs(5),
+                ),
+                &cancelled,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled"));
+        assert!(fixture
+            .actor
+            .admit_apply(
+                &fixture.binding,
+                None,
+                true,
+                crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::ZERO),
+                &crate::domain::cancellation::CancellationToken::new(),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("deadline"));
+        assert!(!fixture.root.join(".build/unica/state.json").exists());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_code_args_report_exact_paths_and_reject_legacy_fields() {
+        let fixture = staged_code_fixture("args", b"Procedure Base()\nEndProcedure\n");
+        let valid = parse_code_plan_operation(
+            "code.insert",
+            &json!({
+                "at": "main:CommonModule.Sample",
+                "text": "Procedure Added()\nEndProcedure"
+            }),
+            0,
+            &fixture.binding,
+        )
+        .expect("placeholder parser rejected the valid closed code.insert shape");
+        assert!(matches!(valid, CodePlanOperation::Insert(_)));
+
+        let cases = [
+            ("code.insert", json!(null), "ops[1].args"),
+            ("code.insert", json!({"text": "x"}), "ops[1].args.at"),
+            (
+                "code.insert",
+                json!({"at": "", "text": "x"}),
+                "ops[1].args.at",
+            ),
+            (
+                "code.insert",
+                json!({"at": 42, "text": "x"}),
+                "ops[1].args.at",
+            ),
+            (
+                "code.insert",
+                json!({"at": "not-an-address", "text": "x"}),
+                "ops[1].args.at",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample"}),
+                "ops[1].args.text",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": ""}),
+                "ops[1].args.text",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": 1}),
+                "ops[1].args.text",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": "Run"}),
+                "ops[1].args.selector",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {}}),
+                "ops[1].args.selector",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run", "anchor": "x"}, "position": "after"}),
+                "ops[1].args.selector",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": ""}, "position": "after"}),
+                "ops[1].args.selector.method",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"unknown": "Run"}, "position": "after"}),
+                "ops[1].args.selector.unknown",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}}),
+                "ops[1].args.position",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "position": "after"}),
+                "ops[1].args.position",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}, "position": 1}),
+                "ops[1].args.position",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}, "position": "middle"}),
+                "ops[1].args.position",
+            ),
+            (
+                "code.replace",
+                json!({"at": "main:CommonModule.Sample", "text": "x"}),
+                "ops[1].args.selector",
+            ),
+            (
+                "code.replace",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}, "position": "after"}),
+                "ops[1].args.position",
+            ),
+            (
+                "code.insert",
+                json!({"at": "foreign:CommonModule.Sample", "text": "x"}),
+                "ops[1].args.at",
+            ),
+        ];
+        for (operation, args, expected_path) in cases {
+            let error = parse_code_plan_operation(operation, &args, 1, &fixture.binding)
+                .expect_err("invalid staged code arguments were accepted");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{args}");
+            assert_eq!(error.path(), Some(expected_path), "{args}");
+        }
+        for legacy in [
+            "operation",
+            "content",
+            "sourceSet",
+            "sourceKind",
+            "path",
+            "metadataPath",
+            "targetPath",
+            "jsonPath",
+            "provider",
+            "providerIdentity",
+            "providerProfile",
+        ] {
+            let mut args = json!({
+                "at": "main:CommonModule.Sample",
+                "text": "Procedure Added()\nEndProcedure"
+            });
+            args.as_object_mut()
+                .unwrap()
+                .insert(legacy.to_string(), json!("legacy"));
+            let error = parse_code_plan_operation("code.insert", &args, 2, &fixture.binding)
+                .expect_err("legacy/physical code argument was accepted");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+            assert_eq!(error.path(), Some(format!("ops[2].args.{legacy}").as_str()));
+        }
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_code_rejects_raw_policy_and_same_root_foreign_binding_substitution() {
+        let locked = staged_code_fixture(
+            "authority-policy-substitution",
+            b"Procedure Base()\nEndProcedure\n",
+        );
+        write_locked_support_state(&locked.source);
+        let denied = staged_code_admission(&locked, true);
+        assert_eq!(denied.support_policy_mode(), SupportPolicyMode::Deny);
+        fs::write(
+            locked.root.join(".v8-project.json"),
+            br#"{"editingAllowedCheck":"off"}"#,
+        )
+        .unwrap();
+        let operation = [staged_insert(
+            "main:CommonModule.Sample",
+            "Procedure Added()\nEndProcedure",
+            None,
+            None,
+        )];
+        let source_before = snapshot_staged_code_tree(&locked.source);
+        let cache_before = snapshot_staged_code_tree(&locked.root.join(".build/unica"));
+
+        let authority = denied
+            .code_planning_authority(&locked.binding)
+            .expect("the original actor binding must remain admitted");
+        let substituted = plan_code_batch(denied.staged_state().unwrap(), authority, &operation);
+
+        let error = substituted.expect_err(
+            "a Deny admission followed ambient Off policy instead of its sealed evidence",
+        );
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+        assert_eq!(snapshot_staged_code_tree(&locked.source), source_before);
+        assert_eq!(
+            snapshot_staged_code_tree(&locked.root.join(".build/unica")),
+            cache_before
+        );
+        assert!(!locked.root.join(".build/unica/state.json").exists());
+        locked.cleanup();
+
+        let fixture = staged_code_fixture(
+            "authority-foreign-binding",
+            b"Procedure Base()\nEndProcedure\n",
+        );
+        let foreign_actor = staged_code_actor(&fixture.root, &fixture.source);
+        let foreign_binding = foreign_actor
+            .bind_provider_root("main", &fixture.source)
+            .unwrap();
+        let admission = staged_code_admission(&fixture, true);
+        let source_before = snapshot_staged_code_tree(&fixture.source);
+        let cache_before = snapshot_staged_code_tree(&fixture.root.join(".build/unica"));
+
+        let substituted = admission.code_planning_authority(&foreign_binding);
+
+        let error = substituted
+            .err()
+            .expect("same-root binding from another actor instance was accepted");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+        assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
+        assert_eq!(
+            snapshot_staged_code_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        assert!(!fixture.root.join(".build/unica/state.json").exists());
+        fixture.cleanup();
+
+        let writer = staged_code_fixture(
+            "authority-writer-substitution",
+            b"Procedure Base()\nEndProcedure\n",
+        );
+        let first = staged_code_admission(&writer, true);
+        let second = staged_code_admission(&writer, true);
+        let authority = first.code_planning_authority(&writer.binding).unwrap();
+        let error = plan_code_batch(second.staged_state().unwrap(), authority, &operation)
+            .expect_err("staged state from another admission writer was accepted");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+        assert!(!writer.root.join(".build/unica/state.json").exists());
+        writer.cleanup();
+    }
+
+    #[test]
+    fn staged_code_rejects_absent_leaf_below_missing_parent_topology() {
+        for (name, missing_parent) in [
+            ("missing-ext", "CommonModules/Sample/Ext"),
+            ("missing-owner-directory", "CommonModules/Sample"),
+        ] {
+            let fixture = staged_code_fixture(name, b"Procedure Base()\nEndProcedure\n");
+            fs::remove_dir_all(fixture.source.join(missing_parent)).unwrap();
+            let admission = staged_code_admission(&fixture, true);
+            let source_before = snapshot_staged_code_tree(&fixture.source);
+            let cache_before = snapshot_staged_code_tree(&fixture.root.join(".build/unica"));
+            let operation = [staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                None,
+                None,
+            )];
+
+            let result = plan_admitted_code(&admission, &fixture.binding, &operation);
+
+            let error = result.expect_err(&format!(
+                "planner returned effects for missing parent topology: {missing_parent}"
+            ));
+            assert_eq!(
+                error.kind(),
+                ApplyPlanErrorKind::Staging(ApplyStagingErrorKind::MissingParent)
+            );
+            assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
+            assert_eq!(
+                snapshot_staged_code_tree(&fixture.root.join(".build/unica")),
+                cache_before
+            );
+            assert!(!fixture.root.join(".build/unica/state.json").exists());
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn staged_code_support_guard_matches_v12_compatibility_for_all_marker_bytes() {
+        let cases: Vec<(&str, Option<Vec<u8>>, bool)> = vec![
+            ("absent", None, false),
+            ("empty", Some(Vec::new()), false),
+            ("short", Some(b"short marker".to_vec()), false),
+            ("malformed-non-utf8", Some(vec![0xff; 40]), false),
+            (
+                "malformed-header",
+                Some(b"not a support header but longer than thirty-two bytes".to_vec()),
+                false,
+            ),
+            (
+                "removed-zero-vendor",
+                Some(b"{6,0,0,dddddddd-dddd-dddd-dddd-dddddddddddd}".to_vec()),
+                false,
+            ),
+            (
+                "global-deny",
+                Some(b"{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd}".to_vec()),
+                true,
+            ),
+            (
+                "global-allow",
+                Some(b"{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd}".to_vec()),
+                false,
+            ),
+            (
+                "owner-deny",
+                Some(
+                    b"{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,0,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}"
+                        .to_vec(),
+                ),
+                true,
+            ),
+            (
+                "owner-allow",
+                Some(
+                    b"{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,1,0,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}"
+                        .to_vec(),
+                ),
+                false,
+            ),
+        ];
+        let operation = [staged_insert(
+            "main:CommonModule.Sample",
+            "Procedure Added()\nEndProcedure",
+            None,
+            None,
+        )];
+        for (name, marker, expected_blocked) in cases {
+            let fixture = staged_code_fixture(
+                &format!("support-compat-{name}"),
+                b"Procedure Base()\nEndProcedure\n",
+            );
+            let marker_path = fixture.source.join("Ext/ParentConfigurations.bin");
+            match marker {
+                Some(bytes) => fs::write(&marker_path, bytes).unwrap(),
+                None => assert!(!marker_path.exists()),
+            }
+            let module = fixture.source.join("CommonModules/Sample/Ext/Module.bsl");
+            let v12_blocked =
+                support_guard_violation(&module, SupportGuardRequirement::Editable).is_some();
+            assert_eq!(v12_blocked, expected_blocked, "invalid V12 oracle: {name}");
+            let v12_context = WorkspaceContext {
+                cwd: fixture.root.clone(),
+                workspace_root: fixture.root.clone(),
+                cache_root: fixture.root.join(".build/unica"),
+                workspace_epoch: 1,
+            };
+            let v12 = patch_inner(
+                &patch_args(
+                    "main",
+                    "CommonModule.Sample.Module",
+                    "Base",
+                    "Procedure Added()\nEndProcedure",
+                ),
+                &v12_context,
+                PatchMode::Preview,
+            );
+            assert_eq!(
+                !v12.outcome.ok, v12_blocked,
+                "V12 patch path disagrees with its support guard for {name}: {:?}",
+                v12.outcome.errors
+            );
+            let admission = staged_code_admission(&fixture, true);
+
+            let c1 = plan_admitted_code(&admission, &fixture.binding, &operation);
+
+            assert_eq!(c1.is_err(), v12_blocked, "V12/C1 mismatch for {name}");
+            if let Err(error) = c1 {
+                assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{name}");
+            }
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn staged_code_selector_kind_does_not_depend_on_error_message_words() {
+        let error = super::code_selector_error(
+            super::SelectorResolutionError::invalid_source(
+                "invalid source contains the word matched but has no match count",
+            ),
+            3,
+            &super::Selector::Method("Base".to_string()),
+        );
+
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+        assert_eq!(error.path(), Some("ops[3].args.selector.method"));
+
+        for (name, before, selector, expected) in [
+            (
+                "zero-method",
+                b"Procedure Base()\nEndProcedure\n".as_slice(),
+                CodeSelector::Method("Missing".to_string()),
+                ApplyPlanErrorKind::NotFound,
+            ),
+            (
+                "multiple-method",
+                b"Procedure Base()\nEndProcedure\nProcedure Base()\nEndProcedure\n".as_slice(),
+                CodeSelector::Method("Base".to_string()),
+                ApplyPlanErrorKind::InvalidState,
+            ),
+            (
+                "zero-anchor",
+                b"Procedure Base()\nEndProcedure\n".as_slice(),
+                CodeSelector::Anchor("// marker".to_string()),
+                ApplyPlanErrorKind::NotFound,
+            ),
+            (
+                "multiple-anchor",
+                b"Procedure Base()\n    // marker\n    // marker\nEndProcedure\n".as_slice(),
+                CodeSelector::Anchor("// marker".to_string()),
+                ApplyPlanErrorKind::InvalidState,
+            ),
+        ] {
+            for operation_kind in ["insert", "replace"] {
+                let fixture =
+                    staged_code_fixture(&format!("selector-cause-{operation_kind}-{name}"), before);
+                let admission = staged_code_admission(&fixture, true);
+                let operation = [match operation_kind {
+                    "insert" => staged_insert(
+                        "main:CommonModule.Sample",
+                        "Procedure Added()\nEndProcedure",
+                        Some(selector.clone()),
+                        Some(CodePosition::After),
+                    ),
+                    "replace" => staged_replace(
+                        "main:CommonModule.Sample",
+                        "Procedure Added()\nEndProcedure",
+                        selector.clone(),
+                    ),
+                    _ => unreachable!(),
+                }];
+                let failure = format!("{operation_kind} {name}");
+                let projected = plan_admitted_code(&admission, &fixture.binding, &operation)
+                    .expect_err(&failure);
+                assert_eq!(projected.kind(), expected, "{operation_kind} {name}");
+                fixture.cleanup();
+            }
+        }
+    }
+
+    #[test]
+    fn v12_selector_adapter_preserves_exact_zero_and_multiple_messages() {
+        let cases = [
+            (
+                "zero-method",
+                "Procedure Base()\nEndProcedure\n",
+                super::Selector::Method("Missing".to_string()),
+                "method selector must match exactly once; matched 0 times",
+            ),
+            (
+                "multiple-method",
+                "Procedure Base()\nEndProcedure\nProcedure Base()\nEndProcedure\n",
+                super::Selector::Method("Base".to_string()),
+                "method selector must match exactly once; matched 2 times",
+            ),
+            (
+                "zero-anchor",
+                "Procedure Base()\nEndProcedure\n",
+                super::Selector::Anchor("// marker".to_string()),
+                "anchor selector must match exactly once; matched 0 times",
+            ),
+            (
+                "multiple-anchor",
+                "Procedure Base()\n    // marker\n    // marker\nEndProcedure\n",
+                super::Selector::Anchor("// marker".to_string()),
+                "anchor selector must match exactly once; matched 2 times",
+            ),
+        ];
+        for (name, source, selector, expected) in cases {
+            let snapshot = SourceTextSnapshot::from_bytes(source.as_bytes()).unwrap();
+            let indexed = analyze_module(source).unwrap();
+            assert!(indexed.diagnostics.is_empty(), "{name}");
+            assert_eq!(
+                super::locate_selector(&snapshot, Position::After, &selector, &indexed.methods,)
+                    .unwrap_err(),
+                expected,
+                "insert {name}"
+            );
+            assert_eq!(
+                super::locate_replacement(&snapshot, &selector, &indexed.methods).unwrap_err(),
+                expected,
+                "replace {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
+        let valid = staged_code_fixture("guards-valid", b"Procedure Base()\nEndProcedure\n");
+        let operation = [staged_insert(
+            "main:CommonModule.Sample",
+            "Procedure Added()\nEndProcedure",
+            None,
+            None,
+        )];
+        let admission = staged_code_admission(&valid, true);
+        let (state, effects) = plan_admitted_code(&admission, &valid.binding, &operation)
+            .expect("valid actor-issued profile was rejected by the placeholder planner");
+        assert_eq!(effects.events().len(), 1);
+        drop(state);
+        drop(admission);
+
+        let descriptor_target = [staged_insert(
+            "main:CommonModule.Sample.Module",
+            "Procedure Added()\nEndProcedure",
+            None,
+            None,
+        )];
+        let admission = staged_code_admission(&valid, true);
+        assert_eq!(
+            plan_admitted_code(&admission, &valid.binding, &descriptor_target)
+                .unwrap_err()
+                .kind(),
+            ApplyPlanErrorKind::InvalidSource
+        );
+
+        fs::write(
+            valid.source.join("CommonModules/Sample/Ext/Module.bsl"),
+            b"Procedure Broken(\n",
+        )
+        .unwrap();
+        let malformed_admission = staged_code_admission(&valid, true);
+        assert_eq!(
+            plan_admitted_code(&malformed_admission, &valid.binding, &operation)
+                .unwrap_err()
+                .kind(),
+            ApplyPlanErrorKind::InvalidSource
+        );
+        valid.cleanup();
+
+        let locked = staged_code_fixture("guards-locked", b"Procedure Base()\nEndProcedure\n");
+        write_locked_support_state(&locked.source);
+        let denied = staged_code_admission(&locked, true);
+        assert_eq!(denied.support_policy_mode(), SupportPolicyMode::Deny);
+        assert_eq!(
+            plan_admitted_code(&denied, &locked.binding, &operation)
+                .unwrap_err()
+                .kind(),
+            ApplyPlanErrorKind::InvalidState
+        );
+        fs::write(
+            locked.root.join(".v8-project.json"),
+            br#"{"editingAllowedCheck":"warn"}"#,
+        )
+        .unwrap();
+        let warned = staged_code_admission(&locked, true);
+        assert_eq!(warned.support_policy_mode(), SupportPolicyMode::Warn);
+        assert!(plan_admitted_code(&warned, &locked.binding, &operation).is_ok());
+        fs::write(
+            locked.root.join(".v8-project.json"),
+            br#"{"editingAllowedCheck":"off"}"#,
+        )
+        .unwrap();
+        let off = staged_code_admission(&locked, true);
+        assert_eq!(off.support_policy_mode(), SupportPolicyMode::Off);
+        assert!(plan_admitted_code(&off, &locked.binding, &operation).is_ok());
+        locked.cleanup();
+
+        let absent = staged_code_fixture("guards-absent", b"Procedure Base()\nEndProcedure\n");
+        fs::remove_file(absent.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap();
+        let absent_admission = staged_code_admission(&absent, true);
+        let (state, _) = plan_admitted_code(&absent_admission, &absent.binding, &operation)
+            .expect("profile-permitted absent module was rejected");
+        assert!(matches!(
+            state.planned_changes()[0].original,
+            StagedFileState::Absent
+        ));
+        absent.cleanup();
+
+        let raced = staged_code_fixture("guards-owner-race", b"Procedure Base()\nEndProcedure\n");
+        let raced_admission = staged_code_admission(&raced, false);
+        let (state, effects) =
+            plan_admitted_code(&raced_admission, &raced.binding, &operation).unwrap();
+        fs::write(
+            raced.source.join("CommonModules/Sample.xml"),
+            b"<MetaDataObject concurrent=\"true\"/>",
+        )
+        .unwrap();
+        assert!(raced_admission
+            .prepare_with_effects(state, effects)
+            .is_err());
+        raced.cleanup();
+
+        let replaced_root =
+            staged_code_fixture("guards-root-race", b"Procedure Base()\nEndProcedure\n");
+        let root_admission = staged_code_admission(&replaced_root, false);
+        let (state, effects) =
+            plan_admitted_code(&root_admission, &replaced_root.binding, &operation).unwrap();
+        let prepared = root_admission.prepare_with_effects(state, effects).unwrap();
+        let retained_source = replaced_root.root.join("retained-source");
+        let retained_identity = path_identity_for_test(&replaced_root.source)
+            .unwrap()
+            .expect("source root identity must be available on supported CI platforms");
+        let replacement = attempt_retained_directory_replacement_for_test(
+            &replaced_root.source,
+            &retained_source,
+        )
+        .unwrap();
+        match replacement {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                fs::create_dir(&replaced_root.source).unwrap();
+                assert!(replaced_root
+                    .actor
+                    .publish_prepared_apply(prepared)
+                    .is_err());
+                assert_eq!(
+                    fs::read(retained_source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+                    b"Procedure Base()\nEndProcedure\n"
+                );
+                assert!(fs::read_dir(&replaced_root.source)
+                    .unwrap()
+                    .next()
+                    .is_none());
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&replaced_root.source)
+                        .unwrap()
+                        .as_deref(),
+                    Some(retained_identity.as_str())
+                );
+                assert!(!retained_source.exists());
+                let result = replaced_root
+                    .actor
+                    .publish_prepared_apply(prepared)
+                    .unwrap();
+                assert_eq!(result.effects().events().len(), 1);
+                let module = fs::read(
+                    replaced_root
+                        .source
+                        .join("CommonModules/Sample/Ext/Module.bsl"),
+                )
+                .unwrap();
+                assert!(module
+                    .windows(b"Procedure Added()".len())
+                    .any(|window| { window == b"Procedure Added()" }));
+            }
+        }
+        replaced_root.cleanup();
+
+        let linked = staged_code_fixture("guards-link", b"Procedure Base()\nEndProcedure\n");
+        let link_admission = staged_code_admission(&linked, true);
+        let module = linked.source.join("CommonModules/Sample/Ext/Module.bsl");
+        let real = linked
+            .source
+            .join("CommonModules/Sample/Ext/RealModule.bsl");
+        fs::rename(&module, &real).unwrap();
+        if create_file_link_fixture_for_test(&real, &module).unwrap()
+            == FileLinkFixtureOutcome::Created
+        {
+            let error =
+                plan_admitted_code(&link_admission, &linked.binding, &operation).unwrap_err();
+            assert!(
+                matches!(
+                    error.kind(),
+                    ApplyPlanErrorKind::Staging(
+                        ApplyStagingErrorKind::ContainmentIdentity
+                            | ApplyStagingErrorKind::UnsupportedProvider
+                    )
+                ),
+                "{error:?}"
+            );
+        }
+        linked.cleanup();
+
+        let linked_support =
+            staged_code_fixture("guards-support-link", b"Procedure Base()\nEndProcedure\n");
+        let support_admission = staged_code_admission(&linked_support, true);
+        let real_support = linked_support.root.join("retained-support-marker.bin");
+        fs::write(&real_support, b"short marker").unwrap();
+        let support_marker = linked_support.source.join("Ext/ParentConfigurations.bin");
+        if create_file_link_fixture_for_test(&real_support, &support_marker).unwrap()
+            == FileLinkFixtureOutcome::Created
+        {
+            let error = plan_admitted_code(&support_admission, &linked_support.binding, &operation)
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error.kind(),
+                    ApplyPlanErrorKind::Staging(
+                        ApplyStagingErrorKind::ContainmentIdentity
+                            | ApplyStagingErrorKind::UnsupportedProvider
+                    )
+                ),
+                "{error:?}"
+            );
+            assert!(!linked_support.root.join(".build/unica/state.json").exists());
+        }
+        linked_support.cleanup();
+
+        let generated =
+            staged_code_fixture("guards-generated", b"Procedure Base()\nEndProcedure\n");
+        let mut staged = staged_code_admission(&generated, true)
+            .staged_state()
+            .unwrap();
+        assert_eq!(
+            staged
+                .read(Path::new(".build/unica/foreign"))
+                .unwrap_err()
+                .kind(),
+            ApplyStagingErrorKind::ContainmentIdentity
+        );
+        generated.cleanup();
+    }
+
+    #[test]
+    fn staged_code_v12_parity_preserves_bytes_errors_and_noop() {
+        let before = b"\xef\xbb\xbfProcedure Base()\r\nEndProcedure\r\n// untouched\r\n";
+        let v12 = staged_code_fixture("v12-parity-v12", before);
+        let staged = staged_code_fixture("v12-parity-v13", before);
+        let v12_context = WorkspaceContext {
+            cwd: v12.root.clone(),
+            workspace_root: v12.root.clone(),
+            cache_root: v12.root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let v12_args = patch_args(
+            "main",
+            "CommonModule.Sample.Module",
+            "Base",
+            "Procedure Added()\nEndProcedure",
+        );
+        let v12_result = patch_inner(&v12_args, &v12_context, PatchMode::Apply);
+        assert!(v12_result.outcome.ok, "{:?}", v12_result.outcome.errors);
+        let operation = [staged_insert(
+            "main:CommonModule.Sample",
+            "Procedure Added()\nEndProcedure",
+            Some(CodeSelector::Method("Base".to_string())),
+            Some(CodePosition::After),
+        )];
+        let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+        {
+            let admission = staged_code_admission(&staged, true);
+            let (mut state, effects) = plan_admitted_code(&admission, &staged.binding, &operation)
+                .expect("placeholder planner cannot produce the V12 parity postimage");
+            assert_eq!(
+                state.read(relative).unwrap().unwrap(),
+                fs::read(v12.source.join(relative)).unwrap()
+            );
+            assert_eq!(effects.events().len(), 1);
+        }
+
+        let invalid_v12 = patch_inner(
+            &patch_args(
+                "main",
+                "CommonModule.Sample.Module",
+                "Missing",
+                "Procedure Added()\nEndProcedure",
+            ),
+            &v12_context,
+            PatchMode::Preview,
+        );
+        assert!(!invalid_v12.outcome.ok);
+        let invalid_operation = [staged_insert(
+            "main:CommonModule.Sample",
+            "Procedure Added()\nEndProcedure",
+            Some(CodeSelector::Method("Missing".to_string())),
+            Some(CodePosition::After),
+        )];
+        {
+            let invalid_admission = staged_code_admission(&staged, true);
+            assert_eq!(
+                plan_admitted_code(&invalid_admission, &staged.binding, &invalid_operation)
+                    .unwrap_err()
+                    .kind(),
+                ApplyPlanErrorKind::NotFound
+            );
+        }
+
+        let repeated_v12 = patch_inner(&v12_args, &v12_context, PatchMode::Apply);
+        assert!(repeated_v12.outcome.ok);
+        assert!(repeated_v12.data.unwrap().no_op);
+        let real_admission = staged_code_admission(&staged, false);
+        let (state, effects) = plan_admitted_code(&real_admission, &staged.binding, &operation)
+            .expect("first staged parity publication planning failed");
+        staged
+            .actor
+            .publish_prepared_apply(real_admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        let repeat_admission = staged_code_admission(&staged, true);
+        let (repeat_state, repeat_effects) =
+            plan_admitted_code(&repeat_admission, &staged.binding, &operation).unwrap();
+        assert!(repeat_state.planned_changes().is_empty());
+        assert!(repeat_effects.events().is_empty());
+
+        let malformed_v12 = staged_code_fixture("v12-malformed", b"Procedure Broken(\n");
+        let malformed_context = WorkspaceContext {
+            cwd: malformed_v12.root.clone(),
+            workspace_root: malformed_v12.root.clone(),
+            cache_root: malformed_v12.root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let malformed_result = patch_inner(&v12_args, &malformed_context, PatchMode::Preview);
+        assert!(!malformed_result.outcome.ok);
+        let malformed_admission = staged_code_admission(&malformed_v12, true);
+        assert_eq!(
+            plan_admitted_code(&malformed_admission, &malformed_v12.binding, &operation)
+                .unwrap_err()
+                .kind(),
+            ApplyPlanErrorKind::InvalidSource
+        );
+        malformed_v12.cleanup();
+        v12.cleanup();
+        staged.cleanup();
+    }
+
+    #[test]
+    fn staged_code_v12_parity_covers_insert_replace_method_and_anchor() {
+        assert_v12_c1_operation_parity(
+            "insert-method",
+            b"Procedure Base()\nEndProcedure\n",
+            patch_args(
+                "main",
+                "CommonModule.Sample.Module",
+                "Base",
+                "Procedure Added()\nEndProcedure",
+            ),
+            staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                Some(CodeSelector::Method("Base".to_string())),
+                Some(CodePosition::After),
+            ),
+            true,
+        );
+        assert_v12_c1_operation_parity(
+            "insert-anchor",
+            b"Procedure Base()\n    // marker\nEndProcedure\n",
+            patch_args_for_selector(
+                "main",
+                "CommonModule.Sample.Module",
+                json!({"anchor": "// marker"}),
+                "after",
+                "Message(\"added\");",
+            ),
+            staged_insert(
+                "main:CommonModule.Sample",
+                "Message(\"added\");",
+                Some(CodeSelector::Anchor("// marker".to_string())),
+                Some(CodePosition::After),
+            ),
+            true,
+        );
+        assert_v12_c1_operation_parity(
+            "replace-method",
+            b"Procedure Base()\nEndProcedure\n",
+            replace_args(
+                "CommonModule.Sample.Module",
+                json!({"method": "Base"}),
+                "Procedure Base()\n    Message(\"changed\");\nEndProcedure",
+            ),
+            staged_replace(
+                "main:CommonModule.Sample",
+                "Procedure Base()\n    Message(\"changed\");\nEndProcedure",
+                CodeSelector::Method("Base".to_string()),
+            ),
+            true,
+        );
+        assert_v12_c1_operation_parity(
+            "replace-anchor",
+            "Procedure Base()\n    Значение = 1;\nEndProcedure\n".as_bytes(),
+            replace_args(
+                "CommonModule.Sample.Module",
+                json!({"anchor": "Значение = 1;"}),
+                "Значение = 2;",
+            ),
+            staged_replace(
+                "main:CommonModule.Sample",
+                "Значение = 2;",
+                CodeSelector::Anchor("Значение = 1;".to_string()),
+            ),
+            false,
+        );
+    }
+
+    #[test]
+    fn staged_code_v12_parity_rejects_malformed_postimage_and_owner_evidence() {
+        let malformed_v12 =
+            staged_code_fixture("parity-post-v12", b"Procedure Base()\nEndProcedure\n");
+        let malformed_c1 =
+            staged_code_fixture("parity-post-c1", b"Procedure Base()\nEndProcedure\n");
+        let context = WorkspaceContext {
+            cwd: malformed_v12.root.clone(),
+            workspace_root: malformed_v12.root.clone(),
+            cache_root: malformed_v12.root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let v12 = patch_inner(
+            &patch_args(
+                "main",
+                "CommonModule.Sample.Module",
+                "Base",
+                "Procedure Broken(",
+            ),
+            &context,
+            PatchMode::Preview,
+        );
+        assert!(!v12.outcome.ok);
+        let admission = staged_code_admission(&malformed_c1, true);
+        let c1 = plan_admitted_code(
+            &admission,
+            &malformed_c1.binding,
+            &[staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Broken(",
+                Some(CodeSelector::Method("Base".to_string())),
+                Some(CodePosition::After),
+            )],
+        )
+        .unwrap_err();
+        assert_eq!(c1.kind(), ApplyPlanErrorKind::Postcondition);
+        malformed_v12.cleanup();
+        malformed_c1.cleanup();
+
+        for case in ["absent", "malformed", "wrong-format"] {
+            let v12 = staged_code_fixture(
+                &format!("owner-{case}-v12"),
+                b"Procedure Base()\nEndProcedure\n",
+            );
+            let c1 = staged_code_fixture(
+                &format!("owner-{case}-c1"),
+                b"Procedure Base()\nEndProcedure\n",
+            );
+            for fixture in [&v12, &c1] {
+                let descriptor = fixture.source.join("CommonModules/Sample.xml");
+                match case {
+                    "absent" => fs::remove_file(descriptor).unwrap(),
+                    "malformed" => fs::write(descriptor, b"<not-xml").unwrap(),
+                    "wrong-format" => {
+                        let before = fs::read_to_string(&descriptor).unwrap();
+                        fs::write(descriptor, before.replace("2.20", "2.21")).unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            let context = WorkspaceContext {
+                cwd: v12.root.clone(),
+                workspace_root: v12.root.clone(),
+                cache_root: v12.root.join(".build/unica"),
+                workspace_epoch: 1,
+            };
+            let v12_result = patch_inner(
+                &patch_args(
+                    "main",
+                    "CommonModule.Sample.Module",
+                    "Base",
+                    "Procedure Added()\nEndProcedure",
+                ),
+                &context,
+                PatchMode::Preview,
+            );
+            assert!(!v12_result.outcome.ok, "V12 accepted owner case {case}");
+            let admission = staged_code_admission(&c1, true);
+            assert!(
+                plan_admitted_code(
+                    &admission,
+                    &c1.binding,
+                    &[staged_insert(
+                        "main:CommonModule.Sample",
+                        "Procedure Added()\nEndProcedure",
+                        Some(CodeSelector::Method("Base".to_string())),
+                        Some(CodePosition::After),
+                    )],
+                )
+                .is_err(),
+                "C1 accepted owner case {case}"
+            );
+            v12.cleanup();
+            c1.cleanup();
+        }
+    }
+
+    #[test]
+    fn staged_code_effects_track_changed_modules_only_in_stable_order() {
+        use crate::infrastructure::native_operations::compile_transaction::{
+            set_retained_apply_failpoint, RetainedApplyFailpoint,
+        };
+
+        let fixture = staged_code_fixture("effects", b"Procedure Base()\nEndProcedure\n");
+        let operations = [
+            staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                None,
+                None,
+            ),
+            staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                None,
+                None,
+            ),
+            staged_insert(
+                "main:CommonModule.Other",
+                "Procedure OtherAdded()\nEndProcedure",
+                None,
+                None,
+            ),
+        ];
+        let admission = staged_code_admission(&fixture, false);
+        let (state, effects) = plan_admitted_code(&admission, &fixture.binding, &operations)
+            .expect("placeholder planner cannot produce stable changed-module effects");
+        assert_eq!(
+            effects.events(),
+            &[
+                DomainEvent::new(DomainEventKind::ModuleChanged, "main:CommonModule.Sample"),
+                DomainEvent::new(DomainEventKind::ModuleChanged, "main:CommonModule.Other"),
+            ]
+        );
+        let prepared = admission.prepare_with_effects(state, effects).unwrap();
+        let source_before = snapshot_staged_code_tree(&fixture.source);
+        let cache_before = snapshot_staged_code_tree(&fixture.root.join(".build/unica"));
+        set_retained_apply_failpoint(RetainedApplyFailpoint::AfterAllPostimages);
+        assert!(fixture.actor.publish_prepared_apply(prepared).is_err());
+        assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
+        assert_eq!(
+            snapshot_staged_code_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+
+        let poisoned = staged_code_admission(&fixture, true);
+        let poisoned_ops = [
+            operations[0].clone(),
+            staged_replace(
+                "main:CommonModule.Sample",
+                "Procedure Never()\nEndProcedure",
+                CodeSelector::Method("Missing".to_string()),
+            ),
+        ];
+        assert!(plan_admitted_code(&poisoned, &fixture.binding, &poisoned_ops).is_err());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_code_effects_omit_a_module_restored_to_its_original_preimage() {
+        let fixture = staged_code_fixture(
+            "effects-restored-preimage",
+            b"Procedure Base()\nEndProcedure\n",
+        );
+        let admission = staged_code_admission(&fixture, true);
+        let operations = [
+            staged_replace(
+                "main:CommonModule.Sample",
+                "Procedure Base()\n    Message(\"changed\");\nEndProcedure",
+                CodeSelector::Method("Base".to_string()),
+            ),
+            staged_replace(
+                "main:CommonModule.Sample",
+                "Procedure Base()\nEndProcedure",
+                CodeSelector::Method("Base".to_string()),
+            ),
+        ];
+
+        let (state, effects) =
+            plan_admitted_code(&admission, &fixture.binding, &operations).unwrap();
+
+        assert!(state.planned_changes().is_empty());
+        assert!(effects.events().is_empty());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn shared_apply_plan_error_and_effect_contract_is_complete() {
+        let fixture = staged_code_fixture("error-projections", b"Procedure Base()\nEndProcedure\n");
+        let bad_value =
+            parse_code_plan_operation("code.insert", &json!({"text": "x"}), 0, &fixture.binding)
+                .unwrap_err();
+        assert_closed_code_error(
+            &bad_value,
+            ApplyPlanErrorKind::BadValue,
+            Some("ops[0].args.at"),
+            &fixture.root,
+        );
+
+        let missing = [staged_replace(
+            "main:CommonModule.Sample",
+            "Procedure Added()\nEndProcedure",
+            CodeSelector::Method("Missing".to_string()),
+        )];
+        let admission = staged_code_admission(&fixture, true);
+        let not_found = plan_admitted_code(&admission, &fixture.binding, &missing).unwrap_err();
+        assert_closed_code_error(
+            &not_found,
+            ApplyPlanErrorKind::NotFound,
+            Some("ops[0].args.selector.method"),
+            &fixture.root,
+        );
+
+        write_locked_support_state(&fixture.source);
+        let admission = staged_code_admission(&fixture, true);
+        let invalid_state = plan_admitted_code(
+            &admission,
+            &fixture.binding,
+            &[staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                None,
+                None,
+            )],
+        )
+        .unwrap_err();
+        assert_closed_code_error(
+            &invalid_state,
+            ApplyPlanErrorKind::InvalidState,
+            Some("ops[0].args.at"),
+            &fixture.root,
+        );
+        fs::remove_file(fixture.source.join("Ext/ParentConfigurations.bin")).unwrap();
+
+        fs::write(
+            fixture.source.join("CommonModules/Sample/Ext/Module.bsl"),
+            b"Procedure Broken(\n",
+        )
+        .unwrap();
+        let admission = staged_code_admission(&fixture, true);
+        let invalid_source = plan_admitted_code(
+            &admission,
+            &fixture.binding,
+            &[staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                None,
+                None,
+            )],
+        )
+        .unwrap_err();
+        assert_closed_code_error(
+            &invalid_source,
+            ApplyPlanErrorKind::InvalidSource,
+            Some("ops[0].args.at"),
+            &fixture.root,
+        );
+
+        fs::write(
+            fixture.source.join("CommonModules/Sample/Ext/Module.bsl"),
+            b"Procedure Base()\nEndProcedure\n",
+        )
+        .unwrap();
+        let admission = staged_code_admission(&fixture, true);
+        let postcondition = plan_admitted_code(
+            &admission,
+            &fixture.binding,
+            &[staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Base()\nEndProcedure",
+                Some(CodeSelector::Method("Base".to_string())),
+                Some(CodePosition::After),
+            )],
+        )
+        .unwrap_err();
+        assert_closed_code_error(
+            &postcondition,
+            ApplyPlanErrorKind::Postcondition,
+            Some("ops[0].args.text"),
+            &fixture.root,
+        );
+
+        fs::remove_dir_all(fixture.source.join("CommonModules/Sample/Ext")).unwrap();
+        let admission = staged_code_admission(&fixture, true);
+        let staging = plan_admitted_code(
+            &admission,
+            &fixture.binding,
+            &[staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                None,
+                None,
+            )],
+        )
+        .unwrap_err();
+        assert_closed_code_error(
+            &staging,
+            ApplyPlanErrorKind::Staging(ApplyStagingErrorKind::MissingParent),
+            Some("ops[0].args.at"),
+            &fixture.root,
+        );
+        fixture.cleanup();
+
+        let unsupported = staged_code_fixture(
+            "error-provider-unavailable",
+            b"Procedure Base()\nEndProcedure\n",
+        );
+        fs::write(
+            unsupported.root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: unsupported.root.clone(),
+            workspace_root: unsupported.root.clone(),
+            cache_root: unsupported.root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let identity = WorkspaceIdentity::new(
+            &context,
+            [WorkspaceSourceSetInput::new(
+                "main",
+                &unsupported.source,
+                SourceSetKind::ExternalProcessor,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            )],
+            "staged-code-test-provider",
+        )
+        .unwrap();
+        let actor = WorkspaceActor::new(identity, context).unwrap();
+        let binding = actor
+            .bind_provider_root("main", &unsupported.source)
+            .unwrap();
+        let admission = actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                    Duration::from_secs(5),
+                ),
+                &crate::domain::cancellation::CancellationToken::new(),
+            )
+            .unwrap();
+        let provider = admission
+            .code_planning_authority(&binding)
+            .err()
+            .expect("unsupported admitted source unexpectedly issued Code planning authority");
+        assert_closed_code_error(
+            &provider,
+            ApplyPlanErrorKind::ProviderUnavailable,
+            None,
+            &unsupported.root,
+        );
+        unsupported.cleanup();
+
+        let mut effects =
+            crate::infrastructure::native_operations::apply::PlannedApplyEffects::default();
+        effects.append(DomainEvent::new(
+            DomainEventKind::ModuleChanged,
+            "main:CommonModule.Sample",
+        ));
+        effects.append(DomainEvent::new(
+            DomainEventKind::FormChanged,
+            "main:CommonForm.Main",
+        ));
+        effects.append(DomainEvent::new(
+            DomainEventKind::ModuleChanged,
+            "main:CommonModule.Sample",
+        ));
+        assert_eq!(
+            effects.into_events(),
+            vec![
+                DomainEvent::new(DomainEventKind::ModuleChanged, "main:CommonModule.Sample"),
+                DomainEvent::new(DomainEventKind::FormChanged, "main:CommonForm.Main"),
+            ]
+        );
+    }
+
+    fn assert_closed_code_error(
+        error: &ApplyPlanError,
+        kind: ApplyPlanErrorKind,
+        path: Option<&str>,
+        physical_root: &Path,
+    ) {
+        assert_eq!(error.kind(), kind);
+        assert_eq!(error.path(), path);
+        let rendered = error.to_string();
+        let canonical_root = fs::canonicalize(physical_root).unwrap();
+        for forbidden in [
+            physical_root.display().to_string(),
+            canonical_root.display().to_string(),
+            "staged-code-test-provider".to_owned(),
+            "unica.code.patch".to_owned(),
+            "provider profile".to_owned(),
+        ] {
+            assert!(
+                !rendered.contains(&forbidden),
+                "closed error leaked `{forbidden}`: {rendered}"
+            );
+        }
+    }
+
+    struct StagedCodeFixture {
+        root: PathBuf,
+        source: PathBuf,
+        actor: Arc<WorkspaceActor>,
+        binding: ProviderRootBinding,
+    }
+
+    impl StagedCodeFixture {
+        fn cleanup(self) {
+            let _ = fs::remove_dir_all(self.root);
+        }
+    }
+
+    fn staged_code_fixture(name: &str, sample_module: &[u8]) -> StagedCodeFixture {
+        const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+        let root = temp_root(&format!("staged-code-{name}"));
+        let source = root.join("src");
+        fs::create_dir_all(source.join("Ext")).unwrap();
+        fs::create_dir_all(source.join("CommonModules/Sample/Ext")).unwrap();
+        fs::create_dir_all(source.join("CommonModules/Other/Ext")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            source.join("Configuration.xml"),
+            format!(
+                "<MetaDataObject xmlns=\"{MD}\" version=\"2.20\"><Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Sample</CommonModule><CommonModule>Other</CommonModule></ChildObjects></Configuration></MetaDataObject>"
+            ),
+        )
+        .unwrap();
+        for (module, uuid) in [
+            ("Sample", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            ("Other", "cccccccc-cccc-cccc-cccc-cccccccccccc"),
+        ] {
+            fs::write(
+                source.join(format!("CommonModules/{module}.xml")),
+                format!(
+                    "<MetaDataObject xmlns=\"{MD}\" version=\"2.20\"><CommonModule uuid=\"{uuid}\"><Properties><Name>{module}</Name></Properties></CommonModule></MetaDataObject>"
+                ),
+            )
+            .unwrap();
+        }
+        fs::write(
+            source.join("CommonModules/Sample/Ext/Module.bsl"),
+            sample_module,
+        )
+        .unwrap();
+        fs::write(
+            source.join("CommonModules/Other/Ext/Module.bsl"),
+            b"Procedure Other()\nEndProcedure\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let identity = WorkspaceIdentity::new(
+            &context,
+            [WorkspaceSourceSetInput::new(
+                "main",
+                &source,
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            )],
+            "staged-code-test-provider",
+        )
+        .unwrap();
+        let actor = Arc::new(WorkspaceActor::new(identity, context).unwrap());
+        let binding = actor.bind_provider_root("main", &source).unwrap();
+        StagedCodeFixture {
+            root,
+            source,
+            actor,
+            binding,
+        }
+    }
+
+    fn staged_code_actor(root: &Path, source: &Path) -> Arc<WorkspaceActor> {
+        let context = WorkspaceContext {
+            cwd: root.to_path_buf(),
+            workspace_root: root.to_path_buf(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let identity = WorkspaceIdentity::new(
+            &context,
+            [WorkspaceSourceSetInput::new(
+                "main",
+                source,
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            )],
+            "staged-code-test-provider",
+        )
+        .unwrap();
+        Arc::new(WorkspaceActor::new(identity, context).unwrap())
+    }
+
+    fn staged_code_admission(
+        fixture: &StagedCodeFixture,
+        dry_run: bool,
+    ) -> crate::infrastructure::workspace_actor::ApplyAdmission {
+        fixture
+            .actor
+            .admit_apply(
+                &fixture.binding,
+                None,
+                dry_run,
+                crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                    Duration::from_secs(5),
+                ),
+                &crate::domain::cancellation::CancellationToken::new(),
+            )
+            .unwrap()
+    }
+
+    fn plan_admitted_code(
+        admission: &crate::infrastructure::workspace_actor::ApplyAdmission,
+        binding: &ProviderRootBinding,
+        operations: &[CodePlanOperation],
+    ) -> Result<
+        (
+            crate::infrastructure::native_operations::apply::ApplyStagedState,
+            crate::infrastructure::native_operations::apply::PlannedApplyEffects,
+        ),
+        ApplyPlanError,
+    > {
+        let staged = admission.staged_state().unwrap();
+        let authority = admission.code_planning_authority(binding)?;
+        plan_code_batch(staged, authority, operations)
+    }
+
+    fn assert_v12_c1_operation_parity(
+        name: &str,
+        before: &[u8],
+        v12_args: Map<String, Value>,
+        operation: CodePlanOperation,
+        repeat_is_noop: bool,
+    ) {
+        let v12 = staged_code_fixture(&format!("parity-{name}-v12"), before);
+        let c1 = staged_code_fixture(&format!("parity-{name}-c1"), before);
+        let context = WorkspaceContext {
+            cwd: v12.root.clone(),
+            workspace_root: v12.root.clone(),
+            cache_root: v12.root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let v12_first = patch_inner(&v12_args, &context, PatchMode::Apply);
+        assert!(
+            v12_first.outcome.ok,
+            "{name}: {:?}",
+            v12_first.outcome.errors
+        );
+        assert!(!v12_first.data.as_ref().unwrap().no_op, "{name}");
+
+        let admission = staged_code_admission(&c1, false);
+        let (mut state, effects) =
+            plan_admitted_code(&admission, &c1.binding, std::slice::from_ref(&operation))
+                .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+        assert_eq!(
+            state.read(relative).unwrap().unwrap(),
+            fs::read(v12.source.join(relative)).unwrap(),
+            "{name}"
+        );
+        assert_eq!(effects.events().len(), 1, "{name}");
+        c1.actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+
+        let v12_repeat = patch_inner(&v12_args, &context, PatchMode::Apply);
+        let repeat_admission = staged_code_admission(&c1, true);
+        let c1_repeat = plan_admitted_code(
+            &repeat_admission,
+            &c1.binding,
+            std::slice::from_ref(&operation),
+        );
+        if repeat_is_noop {
+            assert!(
+                v12_repeat.outcome.ok,
+                "{name}: {:?}",
+                v12_repeat.outcome.errors
+            );
+            assert!(v12_repeat.data.unwrap().no_op, "{name}");
+            let (state, effects) = c1_repeat.unwrap_or_else(|error| panic!("{name}: {error:?}"));
+            assert!(state.planned_changes().is_empty(), "{name}");
+            assert!(effects.events().is_empty(), "{name}");
+        } else {
+            assert!(!v12_repeat.outcome.ok, "{name}");
+            assert_eq!(
+                c1_repeat.unwrap_err().kind(),
+                ApplyPlanErrorKind::NotFound,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            fs::read(v12.source.join(relative)).unwrap(),
+            fs::read(c1.source.join(relative)).unwrap(),
+            "{name}"
+        );
+        v12.cleanup();
+        c1.cleanup();
+    }
+
+    fn staged_insert(
+        at: &str,
+        text: &str,
+        selector: Option<CodeSelector>,
+        position: Option<CodePosition>,
+    ) -> CodePlanOperation {
+        CodePlanOperation::Insert(CodeInsertArgs {
+            at: crate::domain::address::QualifiedAddress::parse(at).unwrap(),
+            text: text.to_string(),
+            selector,
+            position,
+        })
+    }
+
+    fn staged_replace(at: &str, text: &str, selector: CodeSelector) -> CodePlanOperation {
+        CodePlanOperation::Replace(CodeReplaceArgs {
+            at: crate::domain::address::QualifiedAddress::parse(at).unwrap(),
+            text: text.to_string(),
+            selector,
+        })
+    }
+
+    fn write_locked_support_state(source: &Path) {
+        fs::create_dir_all(source.join("Ext")).unwrap();
+        fs::write(
+            source.join("Ext/ParentConfigurations.bin"),
+            concat!(
+                "\u{feff}{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                "\"VendorConf\",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,0,0,",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,2,0,",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc,",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc}"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn snapshot_staged_code_tree(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        if !root.exists() {
+            return Vec::new();
+        }
+        let mut pending = vec![root.to_path_buf()];
+        let mut observed = Vec::new();
+        while let Some(path) = pending.pop() {
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            if metadata.is_dir() {
+                observed.push((relative, None));
+                let mut children = fs::read_dir(&path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect::<Vec<_>>();
+                children.sort();
+                pending.extend(children.into_iter().rev());
+            } else {
+                observed.push((relative, Some(fs::read(path).unwrap())));
+            }
+        }
+        observed
     }
 
     #[test]

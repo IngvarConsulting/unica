@@ -11,6 +11,7 @@ import os
 import platform
 import queue
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -28,26 +29,51 @@ BSP_REPO = "https://github.com/1c-syntax/ssl_3_2"
 BSP_REF = "3.2.1.446"
 SOURCE_DIR = "src/cf"
 EXPECTED_PUBLIC_TOOLS = {
-    "unica.project.status",
-    "unica.project.map",
-    "unica.cf.info",
-    "unica.cf.validate",
-    "unica.code.diagnostics",
-    "unica.code.search",
-    "unica.code.outline",
-    "unica.meta.info",
-    "unica.meta.add",
-    "unica.meta.edit",
-    "unica.meta.remove",
-    "unica.standards.explain",
+    "unica.view",
+    "unica.apply",
+    "unica.find",
+    "unica.search",
+    "unica.check",
+    "unica.diff",
+    "unica.run",
+    "unica.docs",
+    "unica.task.get",
+    "unica.task.result",
+    "unica.task.cancel",
 }
 INDEX_WAIT_TIMEOUT_SECONDS = 300
 INDEX_POLL_INTERVAL_SECONDS = 1
 INDEXED_SEARCH_ROLES = ("semantic", "symbol")
+P0_LIFECYCLE_SCENARIOS = (
+    "fresh_install",
+    "upgrade",
+    "offline_prefetch",
+    "restart",
+    "rollback",
+)
+SAFE_V13_AT_LEAST_ONCE_REPLAY_TOOLS = frozenset(
+    {"unica.check", "unica.view", "unica.find", "unica.search", "unica.diff"}
+)
+LOST_DAEMON_SUBMIT_RESPONSE_CODE = -32000
+LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE = (
+    "daemon deadline expired during invocation submit response"
+)
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def dry_lifecycle_outcomes() -> dict[str, dict[str, Any]]:
+    """Name lifecycle evidence that is intentionally deferred outside RC joins."""
+    return {
+        name: {
+            "status": "deferred",
+            "supported": False,
+            "evidence": [f"release-assessment:{name}:not-run"],
+        }
+        for name in P0_LIFECYCLE_SCENARIOS
+    }
 
 
 def json_digest(value: Any) -> str:
@@ -155,9 +181,92 @@ def plugin_root_for(run_unica: Path) -> Path:
     return run_unica.parent
 
 
+def overlay_runtime_files(run_unica: Path, overlay_root: Path) -> list[str]:
+    """Add explicitly staged engines to a thin runtime assessment.
+
+    The candidate archive remains the byte-identical thin core. The overlay is
+    test input for scenarios that intentionally exercise an engine; it may add
+    regular files but may not replace anything from the candidate.
+    """
+    if not overlay_root.is_dir():
+        raise SystemExit(f"runtime assessment engine overlay is missing: {overlay_root}")
+    runtime_root = plugin_root_for(run_unica)
+    tool_manifest = read_json(runtime_root / "third-party" / "manifest.json")
+    required_executables = {
+        str(tool.get("deliveredPath"))
+        for tool in tool_manifest.get("tools", [])
+        if tool.get("artifact") not in (None, "unica") and tool.get("deliveredPath")
+    }
+    copied: list[str] = []
+    for source in sorted(overlay_root.rglob("*")):
+        if source.is_symlink():
+            raise SystemExit(f"runtime assessment overlay contains a symlink: {source}")
+        if not source.is_file():
+            continue
+        relative = source.relative_to(overlay_root)
+        if relative.as_posix() in required_executables and not (
+            stat.S_IMODE(source.stat().st_mode) & 0o111
+        ):
+            raise SystemExit(
+                f"runtime assessment engine entrypoint is not executable: {relative.as_posix()}"
+            )
+        destination = runtime_root / relative
+        if destination.exists():
+            raise SystemExit(
+                f"runtime assessment overlay would replace candidate file: {relative.as_posix()}"
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        copied.append(relative.as_posix())
+    if not copied:
+        raise SystemExit(f"runtime assessment engine overlay is empty: {overlay_root}")
+    return copied
+
+
+def prepare_runtime_overlay(overlay_input: Path, extract_dir: Path) -> Path:
+    """Restore an engine overlay without trusting artifact file modes.
+
+    GitHub's zipped artifact transport normalizes ordinary files to 0644. The
+    engine layer therefore crosses the job boundary as a tar archive whose
+    member modes are part of the verified input.
+    """
+    if overlay_input.is_dir():
+        return overlay_input
+    if not overlay_input.is_file() or not tarfile.is_tarfile(overlay_input):
+        raise SystemExit(f"unsupported runtime assessment engine overlay: {overlay_input}")
+    if extract_dir.exists():
+        shutil.rmtree(extract_dir)
+    extract_dir.mkdir(parents=True)
+    safe_extract_tar(overlay_input, extract_dir)
+    return extract_dir
+
+
 def unica_version(run_unica: Path) -> str:
-    plugin_json = read_json(plugin_root_for(run_unica) / ".codex-plugin" / "plugin.json")
-    return str(plugin_json.get("version", "unknown"))
+    plugin_root = plugin_root_for(run_unica)
+    tool_manifest_path = plugin_root / "third-party" / "manifest.json"
+    if tool_manifest_path.is_file():
+        tool_manifest = read_json(tool_manifest_path)
+        candidates = [
+            tool
+            for tool in tool_manifest.get("tools", [])
+            if isinstance(tool, dict) and tool.get("name") == "unica"
+        ]
+        if len(candidates) != 1:
+            raise SystemExit("candidate runtime manifest must contain exactly one unica tool")
+        version = candidates[0].get("version")
+        if not isinstance(version, str) or not version:
+            raise SystemExit("candidate runtime manifest unica version is missing")
+        plugin_json = read_json(plugin_root / ".codex-plugin" / "plugin.json")
+        host_version = plugin_json.get("version")
+        if host_version is not None and host_version != version:
+            raise SystemExit("candidate runtime and host manifest versions differ")
+        return version
+
+    plugin_json = read_json(plugin_root / ".codex-plugin" / "plugin.json")
+    version = plugin_json.get("version")
+    if not isinstance(version, str) or not version:
+        raise SystemExit("candidate package unica version is missing")
+    return version
 
 
 def call_mcp(
@@ -416,6 +525,14 @@ def parse_tool_payload(response: dict[str, Any]) -> tuple[dict[str, Any] | None,
     if "error" in response:
         error = response["error"]
         return None, [str(error.get("message", error))]
+    result = response.get("result")
+    if isinstance(result, dict) and "structuredContent" in result:
+        payload = result.get("structuredContent")
+        if not isinstance(payload, dict):
+            return None, ["tool structuredContent is not a JSON object"]
+        if result.get("content") not in (None, []):
+            return None, ["canonical v0.13 tool response duplicates structuredContent"]
+        return payload, []
     try:
         text = response["result"]["content"][0]["text"]
     except (KeyError, IndexError, TypeError):
@@ -514,8 +631,11 @@ def run_tools_list_scenario(run_unica: Path, bsp_root: Path, cache_dir: Path, ti
             errors.append(f"expected serverInfo.name=unica, got {server_name!r}")
         tools = {tool.get("name", "") for tool in responses[1].get("result", {}).get("tools", [])}
         missing = sorted(EXPECTED_PUBLIC_TOOLS - tools)
+        unexpected = sorted(tools - EXPECTED_PUBLIC_TOOLS)
         if missing:
             errors.append(f"missing expected public tools: {', '.join(missing)}")
+        if unexpected:
+            errors.append(f"unexpected public tools: {', '.join(unexpected)}")
     metrics = {
         "toolsCount": len(tools),
         "outputBytes": response_output_size(stdout, stderr, None),
@@ -624,6 +744,168 @@ def run_tool_scenario(
         artifacts=[str(item) for item in payload.get("artifacts", [])] if payload else [],
     )
     return result, payload
+
+
+def pending_v13_task(payload: dict[str, Any] | None) -> tuple[str, int] | None:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    task = data.get("task") if isinstance(data, dict) else None
+    if not isinstance(task, dict) or task.get("status") not in {"submitted", "working"}:
+        return None
+    task_id = task.get("taskId")
+    poll_interval_ms = task.get("pollIntervalMs", 250)
+    if not isinstance(task_id, str) or not task_id:
+        return None
+    if not isinstance(poll_interval_ms, int) or isinstance(poll_interval_ms, bool):
+        poll_interval_ms = 250
+    return task_id, max(1, min(poll_interval_ms, 1_000))
+
+
+def run_v13_tool_scenario(
+    run_unica: Path,
+    *,
+    bsp_root: Path,
+    cache_dir: Path,
+    scenario_id: str,
+    title: str,
+    tool: str,
+    arguments: dict[str, Any],
+    timeout_seconds: float,
+    blocking: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    deadline = time.monotonic() + timeout_seconds
+    payload: dict[str, Any] | None = None
+    errors: list[str] = []
+    total_duration_ms = 0
+    total_output_bytes = 0
+    task_polls = 0
+    submit_retries = 0
+    next_tool = tool
+    next_arguments = dict(arguments)
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            errors.append(f"{tool} did not reach a terminal result within {timeout_seconds:g}s")
+            break
+        responses, duration_ms, stdout, stderr, returncode = call_mcp(
+            run_unica,
+            [tool_call_message(task_polls + 1, next_tool, next_arguments)],
+            cwd=bsp_root,
+            cache_dir=cache_dir,
+            timeout_seconds=remaining,
+        )
+        total_duration_ms += duration_ms
+        if (
+            submit_retries == 0
+            and next_tool == tool
+            and tool in SAFE_V13_AT_LEAST_ONCE_REPLAY_TOOLS
+            and returncode == 0
+            and len(responses) == 1
+            and responses[0].get("error")
+            == {
+                "code": LOST_DAEMON_SUBMIT_RESPONSE_CODE,
+                "message": LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE,
+            }
+        ):
+            # The daemon may have accepted this read before its bounded submit
+            # response was lost. V3 has no stable recovery identity, so replay
+            # is explicitly at-least-once and may execute the read twice. Keep
+            # it to read-only tools, one replay and the original scenario budget.
+            total_output_bytes += response_output_size(stdout, stderr, None)
+            submit_retries += 1
+            continue
+        if returncode != 0:
+            errors.append(f"unica exited with {returncode}: {stderr.strip()}")
+        if len(responses) != 1:
+            errors.append(f"expected 1 JSON-RPC response, got {len(responses)}")
+            payload = None
+        elif not errors:
+            payload, payload_errors = parse_tool_payload(responses[0])
+            errors.extend(payload_errors)
+        total_output_bytes += response_output_size(stdout, stderr, payload)
+        if errors:
+            break
+        pending = pending_v13_task(payload)
+        if pending is None:
+            break
+        task_id, poll_interval_ms = pending
+        task_polls += 1
+        next_tool = "unica.task.result"
+        next_arguments = {"taskId": task_id, "waitMs": poll_interval_ms}
+
+    if payload is not None and payload.get("ok") is not True:
+        code = payload.get("data", {}).get("code")
+        summary = str(payload.get("summary", f"{tool} reported ok=false"))
+        errors.append(f"{code}: {summary}" if code else summary)
+
+    metrics: dict[str, Any] = {
+        "outputBytes": total_output_bytes,
+        "taskPolls": task_polls,
+        "submitRetries": submit_retries,
+        "submitReplaySemantics": "at-least-once" if submit_retries else "none",
+        "warningsCount": len(payload.get("warnings", [])) if payload else 0,
+        "errorsCount": len(errors),
+    }
+    result = scenario_result(
+        scenario_id=scenario_id,
+        title=title,
+        tool=tool,
+        arguments=arguments,
+        status="failed" if errors else "passed",
+        duration_ms=total_duration_ms,
+        blocking=blocking,
+        metrics=metrics,
+        errors=errors,
+    )
+    return result, payload
+
+
+def fail_v13_scenario(scenario: dict[str, Any], message: str) -> None:
+    scenario["status"] = "failed"
+    scenario["errors"].append(message)
+
+
+def validate_v13_scenario(
+    scenario: dict[str, Any], payload: dict[str, Any] | None
+) -> None:
+    if payload is None or scenario["status"] == "failed":
+        return
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        fail_v13_scenario(scenario, "canonical v0.13 result does not contain object data")
+        return
+    scenario_id = scenario["id"]
+    if scenario_id == "workspace-check":
+        sources = data.get("sources")
+        if data.get("status") != "admitted" or not isinstance(sources, list) or "main" not in sources:
+            fail_v13_scenario(scenario, "check did not admit the BSP main source set")
+    elif scenario_id == "configuration-view":
+        if data.get("kind") != "Configuration" or not isinstance(data.get("branches"), list):
+            fail_v13_scenario(scenario, "view did not return the BSP Configuration projection")
+    elif scenario_id == "logical-find":
+        candidates = data.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            fail_v13_scenario(scenario, "find did not return a BSP logical address")
+        elif any(
+            not isinstance(candidate, dict)
+            or not str(candidate.get("at", "")).startswith("main:")
+            for candidate in candidates
+        ):
+            fail_v13_scenario(scenario, "find returned a non-logical BSP candidate")
+    elif scenario_id == "literal-search":
+        matches = data.get("matches")
+        if data.get("mode") != "literal" or not isinstance(matches, list) or not matches:
+            fail_v13_scenario(scenario, "search did not return a literal BSP match")
+        elif any(
+            not isinstance(match, dict)
+            or match.get("scope") != "main:Configuration"
+            or any(key in match for key in ("path", "root", "cwd", "sourceDir"))
+            for match in matches
+        ):
+            fail_v13_scenario(scenario, "search escaped the BSP logical scope")
+    elif scenario_id == "identity-diff":
+        if data.get("equal") is not True or data.get("changes") != []:
+            fail_v13_scenario(scenario, "diff did not prove the BSP projection equal to itself")
 
 
 def validate_project_map(scenario: dict[str, Any], payload: dict[str, Any] | None) -> None:
@@ -932,39 +1214,6 @@ def template_kind(path: Path) -> str:
     return "unknown"
 
 
-def optional_sample_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[str, Any], bool]]:
-    scenarios: list[tuple[str, str, str, dict[str, Any], bool]] = []
-    form = first_existing(bsp_root, [f"{SOURCE_DIR}/**/Forms/*/Ext/Form.xml"])
-    if form:
-        scenarios.append(("form-info-sample", "Sample managed form info", "unica.form.info", {"FormPath": form, "Limit": 80}, True))
-        scenarios.append(
-            ("form-validate-sample", "Sample managed form validation", "unica.form.validate", {"FormPath": form, "MaxErrors": 30}, False)
-        )
-
-    role = first_existing(bsp_root, [f"{SOURCE_DIR}/Roles/*/Ext/Rights.xml"])
-    if role:
-        scenarios.append(("role-info-sample", "Sample role info", "unica.role.info", {"RightsPath": role, "Limit": 80}, True))
-        scenarios.append(
-            ("role-validate-sample", "Sample role validation", "unica.role.validate", {"RightsPath": role, "MaxErrors": 30}, False)
-        )
-
-    templates = sorted(bsp_root.glob(f"{SOURCE_DIR}/**/Templates/*/Ext/Template.xml"))
-    dcs = next((path for path in templates if template_kind(path) == "dcs"), None)
-    mxl = next((path for path in templates if template_kind(path) == "mxl"), None)
-    if dcs:
-        dcs_rel = relpath(dcs, bsp_root)
-        scenarios.append(("dcs-info-sample", "Sample DCS info", "unica.dcs.info", {"TemplatePath": dcs_rel, "Limit": 80}, True))
-        scenarios.append(
-            ("dcs-validate-sample", "Sample DCS validation", "unica.dcs.validate", {"TemplatePath": dcs_rel, "MaxErrors": 30}, False)
-        )
-    if mxl:
-        mxl_rel = relpath(mxl, bsp_root)
-        scenarios.append(("mxl-info-sample", "Sample MXL info", "unica.mxl.info", {"TemplatePath": mxl_rel, "Limit": 80}, True))
-        scenarios.append(
-            ("mxl-validate-sample", "Sample MXL validation", "unica.mxl.validate", {"TemplatePath": mxl_rel, "MaxErrors": 30}, False)
-        )
-    return scenarios
-
 
 def sample_bsl_path(bsp_root: Path) -> str | None:
     matches = sorted(bsp_root.glob(f"{SOURCE_DIR}/**/*.bsl"))
@@ -982,7 +1231,7 @@ def sample_bsl_search(bsp_root: Path) -> tuple[str, str] | None:
 
 def project_probe_scenarios() -> list[tuple[str, str, str, dict[str, Any], bool, bool]]:
     return [
-        ("project-status", "Workspace status", "unica.project.status", {}, True, True),
+        ("project-status", "Workspace status", "unica.view", {}, True, True),
         ("project-map", "Workspace source-set map", "unica.project.map", {}, True, True),
     ]
 
@@ -1000,8 +1249,7 @@ def base_tool_scenarios(
         code_search_args = {"sourceSet": source_set, "query": query, "limit": 20}
 
     scenarios: list[tuple[str, str, str, dict[str, Any], bool, bool]] = [
-        ("cf-info", "BSP Configuration.xml overview", "unica.cf.info", {"ConfigPath": SOURCE_DIR}, True, True),
-        ("cf-validate", "BSP Configuration.xml validation", "unica.cf.validate", {"ConfigPath": SOURCE_DIR, "MaxErrors": 50}, False, False),
+        ("cf-info", "BSP Configuration.xml overview", "unica.view", {"at": f"{source_set}:Configuration"}, True, True),
         (
             "code-diagnostics-analyze",
             "BSL diagnostics source-set analysis",
@@ -1019,18 +1267,6 @@ def base_tool_scenarios(
             True,
         ),
     ]
-    bsl_path = sample_bsl_path(bsp_root)
-    if bsl_path:
-        scenarios.append(
-            (
-                "code-outline-sample",
-                "Sample BSL module outline",
-                "unica.code.outline",
-                {"sourceDir": SOURCE_DIR, "path": bsl_path, "includeMethods": True},
-                False,
-                True,
-            )
-        )
     return scenarios
 
 
@@ -1089,12 +1325,15 @@ def build_summary(scenarios: list[dict[str, Any]], diagnostic_codes: list[str], 
     }
 
 
-def environment_metadata(run_unica: Path) -> dict[str, Any]:
+def environment_metadata(
+    run_unica: Path, runtime_overlay: list[str] | None = None
+) -> dict[str, Any]:
     return {
         "os": platform.platform(),
         "python": platform.python_version(),
         "machine": platform.machine(),
         "runUnica": str(run_unica),
+        "runtimeOverlay": runtime_overlay or [],
         "generatedAt": utc_now(),
     }
 
@@ -1111,15 +1350,51 @@ def build_assessment_report(
     bsp_commit: str,
     timeout_seconds: int,
     bsp_ref: str = BSP_REF,
+    runtime_overlay: list[str] | None = None,
 ) -> dict[str, Any]:
     scenarios: list[dict[str, Any]] = []
     diagnostic_codes: list[str] = []
 
     scenarios.append(run_tools_list_scenario(run_unica, bsp_root, cache_dir, timeout_seconds))
-
-    project_map_payload: dict[str, Any] | None = None
-    for scenario_id, title, tool, arguments, blocking, require_payload_ok in project_probe_scenarios():
-        scenario, payload = run_tool_scenario(
+    v13_scenarios = [
+        (
+            "workspace-check",
+            "Admit the BSP workspace",
+            "unica.check",
+            {},
+            True,
+        ),
+        (
+            "configuration-view",
+            "Read the BSP Configuration projection",
+            "unica.view",
+            {"at": "main:Configuration"},
+            True,
+        ),
+        (
+            "logical-find",
+            "Resolve a BSP common module by logical identity",
+            "unica.find",
+            {"query": "ОбщегоНазначения", "kind": "CommonModule", "limit": 10},
+            False,
+        ),
+        (
+            "literal-search",
+            "Search BSP BSL inside a logical scope",
+            "unica.search",
+            {"query": "Процедура", "scope": "main:Configuration", "limit": 20},
+            True,
+        ),
+        (
+            "identity-diff",
+            "Compare the BSP Configuration projection with itself",
+            "unica.diff",
+            {"left": "main:Configuration", "right": "main:Configuration"},
+            True,
+        ),
+    ]
+    for scenario_id, title, tool, arguments, blocking in v13_scenarios:
+        scenario, payload = run_v13_tool_scenario(
             run_unica,
             bsp_root=bsp_root,
             cache_dir=cache_dir,
@@ -1129,91 +1404,8 @@ def build_assessment_report(
             arguments=arguments,
             timeout_seconds=timeout_seconds,
             blocking=blocking,
-            require_payload_ok=require_payload_ok,
         )
-        if scenario_id == "project-map":
-            validate_project_map(scenario, payload)
-            project_map_payload = payload
-        scenarios.append(scenario)
-        diagnostic_codes.extend(extract_diagnostic_codes(payload))
-
-    try:
-        base_scenarios = base_tool_scenarios(bsp_root, project_map_payload or {})
-    except ValueError as error:
-        scenarios.append(
-            scenario_result(
-                scenario_id="logical-source-set-resolution",
-                title="Resolve BSP logical source set",
-                tool="unica.project.map",
-                arguments={"path": SOURCE_DIR},
-                status="failed",
-                duration_ms=0,
-                blocking=True,
-                errors=[str(error)],
-            )
-        )
-        base_scenarios = []
-
-    for scenario_id, title, tool, arguments, blocking, require_payload_ok in base_scenarios:
-        def run_attempt(attempt_timeout_seconds: float) -> tuple[dict[str, Any], dict[str, Any] | None]:
-            return run_tool_scenario(
-                run_unica,
-                bsp_root=bsp_root,
-                cache_dir=cache_dir,
-                scenario_id=scenario_id,
-                title=title,
-                tool=tool,
-                arguments=arguments,
-                timeout_seconds=attempt_timeout_seconds,
-                blocking=blocking,
-                require_payload_ok=require_payload_ok,
-            )
-
-        # A fresh BSP has no index yet, so the search scenario is allowed to
-        # retry until one indexed role is ready. Every attempt draws from the
-        # one readiness deadline, so retrying cannot extend the assessment by
-        # another full per-attempt timeout.
-        if scenario_id == "code-search":
-            scenario, payload = wait_for_indexed_code_search(
-                run_attempt,
-                timeout_seconds=min(timeout_seconds, INDEX_WAIT_TIMEOUT_SECONDS),
-            )
-            validate_code_search(scenario, payload)
-        else:
-            scenario, payload = run_attempt(float(timeout_seconds))
-        scenarios.append(scenario)
-        diagnostic_codes.extend(extract_diagnostic_codes(payload))
-
-    for scenario_id, title, tool, arguments, require_payload_ok in optional_sample_scenarios(bsp_root):
-        scenario, payload = run_tool_scenario(
-            run_unica,
-            bsp_root=bsp_root,
-            cache_dir=cache_dir,
-            scenario_id=scenario_id,
-            title=title,
-            tool=tool,
-            arguments=arguments,
-            timeout_seconds=timeout_seconds,
-            blocking=False,
-            require_payload_ok=require_payload_ok,
-        )
-        scenarios.append(scenario)
-        diagnostic_codes.extend(extract_diagnostic_codes(payload))
-
-    diagnostic_codes = sorted(set(diagnostic_codes))[:20]
-    if diagnostic_codes:
-        scenario, _payload = run_tool_scenario(
-            run_unica,
-            bsp_root=bsp_root,
-            cache_dir=cache_dir,
-            scenario_id="standards-explain-diagnostics",
-            title="Explain top diagnostic codes through standards adapter",
-            tool="unica.standards.explain",
-            arguments={"codes": diagnostic_codes[:10]},
-            timeout_seconds=timeout_seconds,
-            blocking=False,
-            require_payload_ok=True,
-        )
+        validate_v13_scenario(scenario, payload)
         scenarios.append(scenario)
 
     description = read_json(bsp_root / "description.json")
@@ -1231,8 +1423,9 @@ def build_assessment_report(
             "descriptionVersion": description.get("Версия"),
             "descriptionDate": description.get("Дата"),
         },
-        "environment": environment_metadata(run_unica),
+        "environment": environment_metadata(run_unica, runtime_overlay),
         "scenarios": scenarios,
+        "lifecycle": dry_lifecycle_outcomes(),
         "summary": build_summary(scenarios, diagnostic_codes, cache_dir),
     }
     write_report_files(report, out_dir)
@@ -1373,11 +1566,23 @@ def main() -> None:
     parser.add_argument("--github-run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
     parser.add_argument("--bsp-ref", default=BSP_REF)
     parser.add_argument("--timeout-seconds", type=int, default=600)
+    parser.add_argument("--engine-overlay", type=Path)
     args = parser.parse_args()
 
     work_dir = args.work_dir.resolve()
     package_archive = args.package_archive.resolve()
     run_unica = extract_marketplace_archive(package_archive, work_dir / "marketplace")
+    runtime_overlay = (
+        overlay_runtime_files(
+            run_unica,
+            prepare_runtime_overlay(
+                args.engine_overlay.resolve(),
+                work_dir / "engine-overlay",
+            ),
+        )
+        if args.engine_overlay
+        else []
+    )
     bsp_root, bsp_commit = download_bsp(work_dir / "bsp", ref=args.bsp_ref)
     report = build_assessment_report(
         run_unica=run_unica,
@@ -1390,6 +1595,7 @@ def main() -> None:
         bsp_commit=bsp_commit,
         bsp_ref=args.bsp_ref,
         timeout_seconds=args.timeout_seconds,
+        runtime_overlay=runtime_overlay,
     )
     if args.pages_root:
         copy_versioned_pages(args.out_dir, args.pages_root, args.release_tag)

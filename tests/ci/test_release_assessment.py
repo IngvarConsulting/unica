@@ -32,6 +32,51 @@ def load_bsp_harvest_module():
 
 
 class ReleaseAssessmentTests(unittest.TestCase):
+    def test_runtime_version_comes_from_the_candidate_tool_manifest(self) -> None:
+        module = load_assessment_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        runtime = root / "runtime"
+        manifest = runtime / "third-party" / "manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "tools": [
+                        {"name": "unica", "version": "0.12.0"},
+                        {"name": "bsl-analyzer", "version": "0.2.67"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        run_unica = runtime / "bin" / "linux-x64" / "unica"
+        run_unica.parent.mkdir(parents=True)
+        run_unica.write_bytes(b"unica")
+
+        self.assertEqual(module.unica_version(run_unica), "0.12.0")
+
+    def test_dry_assessment_declares_separate_p0_lifecycle_outcomes(self) -> None:
+        module = load_assessment_module()
+
+        self.assertEqual(
+            module.dry_lifecycle_outcomes(),
+            {
+                name: {
+                    "status": "deferred",
+                    "supported": False,
+                    "evidence": [f"release-assessment:{name}:not-run"],
+                }
+                for name in (
+                    "fresh_install",
+                    "upgrade",
+                    "offline_prefetch",
+                    "restart",
+                    "rollback",
+                )
+            },
+        )
+
     def building_section(self, role: str, provider: str) -> dict:
         """A role whose index is still being built: retryable, not broken."""
         return {
@@ -98,32 +143,24 @@ class ReleaseAssessmentTests(unittest.TestCase):
             errors=errors,
         )
 
-    def test_release_gate_requires_only_the_four_current_meta_tools(self) -> None:
+    def test_release_gate_requires_exact_v13_compatibility_surface(self) -> None:
         module = load_assessment_module()
-        meta_tools = {
-            name
-            for name in module.EXPECTED_PUBLIC_TOOLS
-            if name.startswith("unica.meta.")
-        }
 
         self.assertEqual(
-            meta_tools,
+            module.EXPECTED_PUBLIC_TOOLS,
             {
-                "unica.meta.info",
-                "unica.meta.add",
-                "unica.meta.edit",
-                "unica.meta.remove",
+                "unica.view",
+                "unica.apply",
+                "unica.find",
+                "unica.search",
+                "unica.check",
+                "unica.diff",
+                "unica.run",
+                "unica.docs",
+                "unica.task.get",
+                "unica.task.result",
+                "unica.task.cancel",
             },
-        )
-        self.assertTrue(
-            all(
-                name not in module.EXPECTED_PUBLIC_TOOLS
-                for name in (
-                    "unica.meta.compile",
-                    "unica.meta.profile",
-                    "unica.meta.validate",
-                )
-            )
         )
 
     def write_response_id_mcp(self, path: Path, response_ids: list[int]) -> None:
@@ -243,18 +280,17 @@ import json
 import sys
 
 TOOLS = [
-    "unica.project.status",
-    "unica.project.map",
-    "unica.cf.info",
-    "unica.cf.validate",
-    "unica.code.diagnostics",
-    "unica.code.search",
-    "unica.code.outline",
-    "unica.meta.info",
-    "unica.meta.add",
-    "unica.meta.edit",
-    "unica.meta.remove",
-    "unica.standards.explain",
+    "unica.view",
+    "unica.apply",
+    "unica.find",
+    "unica.search",
+    "unica.check",
+    "unica.diff",
+    "unica.run",
+    "unica.docs",
+    "unica.task.get",
+    "unica.task.result",
+    "unica.task.cancel",
 ]
 
 for raw in sys.stdin:
@@ -274,74 +310,47 @@ for raw in sys.stdin:
         payload = {
             "ok": True,
             "summary": f"{name} completed",
-            "stdout": "",
             "warnings": [],
             "errors": [],
             "artifacts": [],
         }
-        if name == "unica.project.map":
-            # ADR-0023: the map is typed data, not a JSON string in stdout.
-            payload.pop("stdout")
-            payload["data"] = {
-                "sourceSets": [
-                    {"name": "main", "path": "src/cf", "sourceFormat": "platform_xml"}
-                ]
+        if name == "unica.check":
+            payload = {
+                "ok": True,
+                "summary": "Task is still working",
+                "data": {"task": {
+                    "taskId": "check-task",
+                    "status": "working",
+                    "pollIntervalMs": 1,
+                }},
             }
-        elif name == "unica.code.diagnostics" and arguments.get("action") == "analyze":
-            payload.pop("stdout")
+        elif name == "unica.task.result":
+            payload = {
+                "ok": True,
+                "summary": "workspace source sets are admitted",
+                "data": {"status": "admitted", "sources": ["main"]},
+            }
+        elif name == "unica.view":
+            payload["data"] = {"kind": "Configuration", "branches": []}
+        elif name == "unica.find":
+            payload["data"] = {"candidates": [{"at": "main:CommonModule.Shared"}]}
+        elif name == "unica.search":
             payload["data"] = {
-                "action": "analyze",
-                "state": "completed",
-                "complete": True,
-                "providers": [],
-                "itemsTotal": 1,
-                "itemsReturned": 1,
-                "truncated": False,
-                "items": [{
-                    "kind": "diagnostic",
-                    "provider": "bsl-analyzer",
-                    "location": {
-                        "kind": "addressed",
-                        "sourceSet": "main",
-                        "targetKind": "sourceRoot",
-                    },
-                    "focus": {"kind": "target"},
-                    "code": "UnusedLocalVariable",
-                    "severity": "warning",
-                    "message": "fixture",
-                    "tags": [],
+                "mode": "literal",
+                "matches": [{
+                    "scope": "main:Configuration",
+                    "line": 1,
+                    "column": 1,
+                    "snippet": "Процедура Smoke()",
                 }],
             }
-        elif name == "unica.code.search":
-            print(json.dumps({
-                "jsonrpc": "2.0",
-                "method": "notifications/progress",
-                "params": {
-                    "progressToken": "release-assessment-code-search",
-                    "progress": 3,
-                    "total": 3,
-                    "_meta": {"io.unica/searchProgress": {
-                        "schemaVersion": 1,
-                        "providers": [
-                            {"role": "semantic", "provider": "rlm", "state": "completed", "phase": "searching", "resultsFound": 0},
-                            {"role": "symbol", "provider": "bsl-analyzer", "state": "completed", "phase": "searching", "resultsFound": 0},
-                            {"role": "lexical", "provider": "git-grep", "state": "completed", "phase": "searching", "resultsFound": 0},
-                        ],
-                    }},
-                },
-            }), flush=True)
-            payload["data"] = {
-                "coverage": "complete",
-                "elapsedMs": 1,
-                "sections": [
-                    {"role": "semantic", "provider": "rlm", "status": "empty", "termination": None, "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
-                    {"role": "symbol", "provider": "bsl-analyzer", "status": "empty", "termination": None, "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
-                    {"role": "lexical", "provider": "git-grep", "status": "empty", "termination": None, "searchComplete": True, "ranking": "none", "ordering": "providerTraversal", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
-                ]
-            }
-        elif name == "unica.standards.explain":
-            payload["stdout"] = "UnusedLocalVariable: standard explanation"
-        response["result"] = {"content": [{"type": "text", "text": json.dumps(payload)}]}
+        elif name == "unica.diff":
+            payload["data"] = {"equal": True, "changes": [], "truncated": False}
+        response["result"] = {
+            "content": [],
+            "structuredContent": payload,
+            "isError": False,
+        }
     else:
         response["error"] = {"code": -32601, "message": f"unsupported {method}"}
     print(json.dumps(response), flush=True)
@@ -350,13 +359,18 @@ for raw in sys.stdin:
         )
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
-    def test_scenario_runner_records_success_metrics_and_json_lines(self) -> None:
+    def test_non_default_bsp_ref_is_recorded_in_actual_report(self) -> None:
         module = load_assessment_module()
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
             self.write_fake_mcp(fake_mcp)
+            (root / ".codex-plugin").mkdir()
+            (root / ".codex-plugin" / "plugin.json").write_text(
+                json.dumps({"name": "unica", "version": "9.9.9"}),
+                encoding="utf-8",
+            )
             bsp_root = root / "bsp"
             (bsp_root / "src" / "cf").mkdir(parents=True)
             (bsp_root / "src" / "cf" / "Module.bsl").write_text("Процедура Smoke()\nКонецПроцедуры\n", encoding="utf-8")
@@ -376,21 +390,60 @@ for raw in sys.stdin:
                 candidate_package="unica-codex-marketplace-linux-x64.tar.gz",
                 bsp_commit="abc123",
                 timeout_seconds=10,
+                bsp_ref="review/non-default-ref",
             )
 
             self.assertEqual(report["schemaVersion"], 1)
             self.assertEqual(report["summary"]["status"], "passed")
             self.assertEqual(report["bsp"]["commit"], "abc123")
-            self.assertEqual(report["bsp"]["ref"], module.BSP_REF)
-            self.assertEqual(report["bsp"]["requestedRef"], module.BSP_REF)
+            self.assertEqual(report["bsp"]["ref"], "review/non-default-ref")
+            self.assertEqual(report["bsp"]["requestedRef"], "review/non-default-ref")
+            persisted = json.loads(
+                (out_dir / "assessment.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                persisted["bsp"]["requestedRef"], "review/non-default-ref"
+            )
             self.assertTrue(all(scenario["durationMs"] >= 0 for scenario in report["scenarios"]))
-            self.assertIn("UnusedLocalVariable", report["summary"]["qualityFindings"]["diagnosticCodes"])
+            self.assertEqual(
+                report["summary"]["qualityFindings"]["diagnosticCodes"], []
+            )
+            self.assertEqual(
+                [scenario["id"] for scenario in report["scenarios"]],
+                [
+                    "mcp-tools-list",
+                    "workspace-check",
+                    "configuration-view",
+                    "logical-find",
+                    "literal-search",
+                    "identity-diff",
+                ],
+            )
+            self.assertGreater(
+                next(
+                    scenario["metrics"]["taskPolls"]
+                    for scenario in report["scenarios"]
+                    if scenario["id"] == "workspace-check"
+                ),
+                0,
+            )
+            self.assertFalse(
+                next(
+                    scenario["blocking"]
+                    for scenario in report["scenarios"]
+                    if scenario["id"] == "logical-find"
+                )
+            )
             self.assertTrue((out_dir / "assessment.json").is_file())
             self.assertTrue((out_dir / "assessment.ndjson").is_file())
             lines = (out_dir / "assessment.ndjson").read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), len(report["scenarios"]))
             self.assertTrue((out_dir / "index.html").read_text(encoding="utf-8").startswith("<!doctype html>"))
             self.assertIn("v9.9.9", (out_dir / "summary.md").read_text(encoding="utf-8"))
+
+    def test_scenario_runner_records_success_metrics_and_json_lines(self) -> None:
+        """Keep the report-shape architecture check on the same real scenario run."""
+        self.test_non_default_bsp_ref_is_recorded_in_actual_report()
 
     def test_mcp_client_keeps_stdin_open_until_delayed_response(self) -> None:
         module = load_assessment_module()
@@ -411,6 +464,73 @@ for raw in sys.stdin:
             self.assertEqual(returncode, 0, stderr)
             self.assertEqual(len(responses), 1)
             self.assertNotIn("error", responses[0])
+
+    def test_v13_read_replays_one_lost_submit_response_as_at_least_once(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
+            fake_mcp.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+for raw in sys.stdin:
+    message = json.loads(raw)
+    if "id" not in message:
+        continue
+    response = {"jsonrpc": "2.0", "id": message["id"]}
+    if message["method"] == "initialize":
+        response["result"] = {"serverInfo": {"name": "unica"}}
+    elif message["method"] == "tools/call":
+        executions = Path(os.environ["UNICA_CACHE_DIR"]) / "view-executions"
+        count = int(executions.read_text(encoding="utf-8")) + 1 if executions.exists() else 1
+        executions.write_text(str(count), encoding="utf-8")
+        if count == 1:
+            response["error"] = {
+                "code": -32000,
+                "message": "daemon deadline expired during invocation submit response",
+            }
+        else:
+            response["result"] = {
+                "content": [],
+                "structuredContent": {
+                    "ok": True,
+                    "summary": "view completed",
+                    "warnings": [],
+                    "errors": [],
+                    "artifacts": [],
+                    "data": {"kind": "Configuration", "branches": []},
+                },
+                "isError": False,
+            }
+    print(json.dumps(response), flush=True)
+""",
+                encoding="utf-8",
+            )
+            fake_mcp.chmod(fake_mcp.stat().st_mode | stat.S_IXUSR)
+
+            scenario, payload = module.run_v13_tool_scenario(
+                fake_mcp,
+                bsp_root=root,
+                cache_dir=root / "cache",
+                scenario_id="configuration-view",
+                title="view",
+                tool="unica.view",
+                arguments={"at": "main:Configuration"},
+                timeout_seconds=2,
+            )
+
+            self.assertEqual(scenario["status"], "passed", scenario)
+            self.assertEqual(scenario["metrics"]["submitRetries"], 1)
+            self.assertEqual(
+                scenario["metrics"]["submitReplaySemantics"], "at-least-once"
+            )
+            self.assertEqual((root / "cache" / "view-executions").read_text(), "2")
+            self.assertEqual(payload["data"]["kind"], "Configuration")
 
     def test_mcp_client_surfaces_injected_handshake_error(self) -> None:
         module = load_assessment_module()
@@ -663,6 +783,26 @@ for raw in sys.stdin:
         self.assertEqual(summary["status"], "passed")
         self.assertEqual(summary["blockingFailures"], 0)
         self.assertEqual(summary["qualityFindings"]["nonBlockingFailures"], 1)
+
+    def test_a_failed_blocking_scenario_fails_the_assessment_summary(self) -> None:
+        module = load_assessment_module()
+        scenarios = [
+            module.scenario_result(
+                scenario_id="blocking-smoke",
+                title="Blocking smoke",
+                tool="unica.code.search",
+                arguments={},
+                status="failed",
+                duration_ms=7,
+                blocking=True,
+                errors=["contract mismatch"],
+            )
+        ]
+
+        summary = module.build_summary(scenarios, [], Path("/tmp/unica-no-cache"))
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["blockingFailures"], 1)
 
     def test_code_search_is_blocking_and_requires_fixed_role_sections(self) -> None:
         module = load_assessment_module()
@@ -1038,7 +1178,7 @@ for raw in sys.stdin:
             scenario,
         )
 
-    def test_default_bsp_ref_is_pinned_and_report_records_requested_ref(self) -> None:
+    def test_default_bsp_ref_is_pinned(self) -> None:
         module = load_assessment_module()
 
         self.assertNotEqual(module.BSP_REF, "master")
@@ -1539,6 +1679,127 @@ for raw in sys.stdin:
             extracted = module.extract_marketplace_archive(archive, root / "extract")
 
             self.assertEqual(extracted.relative_to(module.plugin_root_for(extracted)).as_posix(), "bin/linux-x64/unica")
+
+    def test_runtime_assessment_overlay_adds_only_regular_engine_files(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = root / "runtime"
+            (runtime / "third-party").mkdir(parents=True)
+            (runtime / "third-party/manifest.json").write_text(
+                json.dumps(
+                    {
+                        "tools": [
+                            {
+                                "name": "bsl-analyzer",
+                                "artifact": "bsl-analyzer",
+                                "deliveredPath": "bin/linux-x64/bsl-analyzer",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_unica = runtime / "bin/linux-x64/unica"
+            run_unica.parent.mkdir(parents=True)
+            run_unica.write_bytes(b"unica")
+            overlay = root / "overlay"
+            engine = overlay / "bin/linux-x64/bsl-analyzer"
+            engine.parent.mkdir(parents=True)
+            engine.write_bytes(b"analyzer")
+            engine.chmod(0o755)
+
+            copied = module.overlay_runtime_files(run_unica, overlay)
+
+            self.assertEqual(copied, ["bin/linux-x64/bsl-analyzer"])
+            self.assertEqual(
+                (runtime / "bin/linux-x64/bsl-analyzer").read_bytes(),
+                b"analyzer",
+            )
+
+    def test_directory_overlay_rejects_a_non_executable_engine_entrypoint(self) -> None:
+        module = load_assessment_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        runtime = root / "runtime"
+        (runtime / "third-party").mkdir(parents=True)
+        (runtime / "third-party/manifest.json").write_text(
+            json.dumps(
+                {
+                    "tools": [
+                        {
+                            "name": "bsl-analyzer",
+                            "artifact": "bsl-analyzer",
+                            "deliveredPath": "bin/linux-x64/bsl-analyzer",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        run_unica = runtime / "bin/linux-x64/unica"
+        run_unica.parent.mkdir(parents=True)
+        run_unica.write_bytes(b"unica")
+        overlay = root / "overlay"
+        engine = overlay / "bin/linux-x64/bsl-analyzer"
+        engine.parent.mkdir(parents=True)
+        engine.write_bytes(b"analyzer")
+        engine.chmod(0o644)
+
+        with self.assertRaisesRegex(SystemExit, "not executable"):
+            module.overlay_runtime_files(run_unica, overlay)
+
+    def test_runtime_overlay_guards_symlink_replacement_and_empty_input(self) -> None:
+        module = load_assessment_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        runtime = root / "runtime"
+        (runtime / "third-party").mkdir(parents=True)
+        (runtime / "third-party/manifest.json").write_text("{}", encoding="utf-8")
+        run_unica = runtime / "bin/linux-x64/unica"
+        run_unica.parent.mkdir(parents=True)
+        run_unica.write_bytes(b"unica")
+
+        empty = root / "empty"
+        empty.mkdir()
+        with self.assertRaisesRegex(SystemExit, "empty"):
+            module.overlay_runtime_files(run_unica, empty)
+
+        replacement = root / "replacement"
+        candidate = runtime / "bin/linux-x64/existing"
+        candidate.write_bytes(b"candidate")
+        source = replacement / "bin/linux-x64/existing"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"overlay")
+        with self.assertRaisesRegex(SystemExit, "replace candidate"):
+            module.overlay_runtime_files(run_unica, replacement)
+
+        if hasattr(os, "symlink"):
+            symlinked = root / "symlinked"
+            symlinked.mkdir()
+            os.symlink(candidate, symlinked / "engine")
+            with self.assertRaisesRegex(SystemExit, "symlink"):
+                module.overlay_runtime_files(run_unica, symlinked)
+
+    def test_runtime_assessment_extracts_an_overlay_archive_with_executable_modes(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "rlm-bsl-mcp"
+            source.write_bytes(b"rlm")
+            source.chmod(0o755)
+            archive = root / "engine.tar.gz"
+            with tarfile.open(archive, "w:gz") as packaged:
+                packaged.add(source, arcname="bin/linux-x64/rlm-bsl-mcp")
+
+            overlay = module.prepare_runtime_overlay(
+                archive,
+                root / "extracted-overlay",
+            )
+
+            engine = overlay / "bin/linux-x64/rlm-bsl-mcp"
+            self.assertEqual(engine.read_bytes(), b"rlm")
+            self.assertEqual(stat.S_IMODE(engine.stat().st_mode), 0o755)
 
 
 if __name__ == "__main__":

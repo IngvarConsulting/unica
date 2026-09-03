@@ -5,7 +5,7 @@ use crate::application::{
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::operational_config::OperationalConfig;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bundled_tools::resolve_bundled_tool;
+use crate::infrastructure::bundled_tools::{resolve_bundled_tool, BundledTool};
 use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
 use crate::infrastructure::diagnostics_jsonl::{
     AnalyzerDiagnosticsBatch, DiagnosticsJsonlParser, MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
@@ -155,7 +155,7 @@ pub trait BslMcpRunner {
     fn call(&self, command: &BslMcpCommand) -> Result<BslMcpOutput, String>;
 }
 
-struct SystemProcessRunner;
+pub(crate) struct SystemProcessRunner;
 struct SystemBslMcpRunner;
 
 static SYSTEM_PROCESS_RUNNER: SystemProcessRunner = SystemProcessRunner;
@@ -180,6 +180,52 @@ pub struct RuntimeAdapter<'a> {
 pub struct RuntimeAdapterOutcome {
     pub outcome: AdapterOutcome,
     pub data: Option<Value>,
+}
+
+/// Что показывает предпросмотр.
+///
+/// Если движка на диске нет, план не выдаёт себя за исполнимый: `ok` ложно, а
+/// отказ назван кодом и следующим шагом. Команда при этом остаётся в ответе —
+/// она объясняет, что было бы запущено, но уже не читается как готовая.
+fn dry_run_outcome(
+    tool_name: &str,
+    label: &str,
+    mutating: bool,
+    bundled_tool: BundledTool,
+    command: Vec<String>,
+) -> AdapterOutcome {
+    let changes = if mutating {
+        vec!["no files changed because dryRun is true".to_string()]
+    } else {
+        Vec::new()
+    };
+    match bundled_tool.missing {
+        Some(missing) => AdapterOutcome {
+            ok: false,
+            summary: format!(
+                "dry run: {tool_name} cannot call internal {label} adapter — {} is not on this machine",
+                missing.tool
+            ),
+            changes,
+            warnings: bundled_tool.warnings,
+            errors: vec![missing.message()],
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: Some(command),
+        },
+        None => AdapterOutcome {
+            ok: true,
+            summary: format!("dry run: {tool_name} would call internal {label} adapter"),
+            changes,
+            warnings: bundled_tool.warnings,
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: Some(command),
+        },
+    }
 }
 
 impl RuntimeAdapterOutcome {
@@ -285,24 +331,13 @@ impl<'a> CliAdapter<'a> {
         command.extend(reported_args);
 
         if dry_run {
-            return Ok(AdapterOutcome {
-                ok: true,
-                summary: format!(
-                    "dry run: {tool_name} would call internal {} adapter",
-                    self.label
-                ),
-                changes: if mutating {
-                    vec!["no files changed because dryRun is true".to_string()]
-                } else {
-                    Vec::new()
-                },
-                warnings: bundled_tool.warnings,
-                errors: Vec::new(),
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: None,
-                command: Some(command),
-            });
+            return Ok(dry_run_outcome(
+                tool_name,
+                self.label,
+                mutating,
+                bundled_tool,
+                command,
+            ));
         }
 
         let mut process_args = self
@@ -453,6 +488,16 @@ impl<'a> RuntimeAdapter<'a> {
         invocation: RuntimeInvocation<'_>,
         cancellation: &CancellationToken,
     ) -> Result<RuntimeAdapterOutcome, String> {
+        self.invoke_cancellable_with_limits(invocation, cancellation, None, None)
+    }
+
+    fn invoke_cancellable_with_limits(
+        &self,
+        invocation: RuntimeInvocation<'_>,
+        cancellation: &CancellationToken,
+        process_timeout: Option<Duration>,
+        capture_limits: Option<(usize, usize)>,
+    ) -> Result<RuntimeAdapterOutcome, String> {
         let RuntimeInvocation {
             tool_name,
             args,
@@ -486,23 +531,15 @@ impl<'a> RuntimeAdapter<'a> {
         command.extend(report_args.iter().cloned());
 
         if dry_run {
-            return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome {
-                ok: true,
-                summary: format!(
-                    "dry run: {tool_name} would call internal v8-runner runtime adapter"
-                ),
-                changes: if mutating {
-                    vec!["no files changed because dryRun is true".to_string()]
-                } else {
-                    Vec::new()
-                },
-                warnings: merge_warnings(invocation.warnings, bundled_tool.warnings),
-                errors: Vec::new(),
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: None,
-                command: Some(command),
-            }));
+            let mut outcome = dry_run_outcome(
+                tool_name,
+                "v8-runner runtime",
+                mutating,
+                bundled_tool,
+                command,
+            );
+            outcome.warnings = merge_warnings(invocation.warnings, outcome.warnings);
+            return Ok(RuntimeAdapterOutcome::plain(outcome));
         }
 
         if cancellation.is_cancelled() {
@@ -511,14 +548,13 @@ impl<'a> RuntimeAdapter<'a> {
             )));
         }
 
-        let process_timeout = None;
         let process_command = ProcessCommand {
             program: bundled_tool.program.clone(),
             args: execution_args,
             cwd: context.cwd.clone(),
             env: Vec::new(),
             env_remove: Vec::new(),
-            capture_limits: None,
+            capture_limits,
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         };
@@ -1087,24 +1123,21 @@ impl RuntimeJobAdapter {
         let bundled_tool = resolve_bundled_tool(&plugin_root, "v8-runner", !dry_run)?;
         let mut command = vec![bundled_tool.program.display().to_string()];
         command.extend(reported_args);
-        let warnings = merge_warnings(invocation.warnings, bundled_tool.warnings);
 
         if dry_run {
-            return Ok(RuntimeJobAdapterOutcome {
-                outcome: AdapterOutcome {
-                    ok: true,
-                    summary: format!("dry run: {tool_name} would start a durable runtime job"),
-                    changes: vec!["no runtime job started because dryRun is true".to_string()],
-                    warnings,
-                    errors: Vec::new(),
-                    artifacts: Vec::new(),
-                    stdout: None,
-                    stderr: None,
-                    command: Some(command),
-                },
-                job: None,
-            });
+            let mut outcome = dry_run_outcome(
+                tool_name,
+                "v8-runner durable runtime job",
+                true,
+                bundled_tool,
+                command,
+            );
+            outcome.changes = vec!["no runtime job started because dryRun is true".to_string()];
+            outcome.warnings = merge_warnings(invocation.warnings, outcome.warnings);
+            return Ok(RuntimeJobAdapterOutcome { outcome, job: None });
         }
+
+        let warnings = merge_warnings(invocation.warnings, bundled_tool.warnings);
 
         if cancellation.is_cancelled() {
             return Ok(RuntimeJobAdapterOutcome {
@@ -1558,17 +1591,15 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         reported_command.extend(command.args.clone());
 
         if dry_run {
-            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome {
-                ok: true,
-                summary: format!("dry run: {tool_name} would call typed bsl-analyzer MCP adapter"),
-                changes: Vec::new(),
-                warnings: bundled_tool.warnings,
-                errors: Vec::new(),
-                artifacts: vec![source_dir.display().to_string()],
-                stdout: None,
-                stderr: None,
-                command: Some(reported_command),
-            }));
+            let mut outcome = dry_run_outcome(
+                tool_name,
+                "typed bsl-analyzer MCP",
+                false,
+                bundled_tool,
+                reported_command,
+            );
+            outcome.artifacts = vec![source_dir.display().to_string()];
+            return Ok(BslAnalyzerOutcome::plain(outcome));
         }
 
         let output = self.runner.call(&command)?;
@@ -1650,17 +1681,15 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         reported_command.extend(reported_args);
 
         if dry_run {
-            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome {
-                ok: true,
-                summary: format!("dry run: {tool_name} would call internal code analysis adapter"),
-                changes: Vec::new(),
-                warnings: bundled_tool.warnings,
-                errors: Vec::new(),
-                artifacts: vec![source_dir.display().to_string()],
-                stdout: None,
-                stderr: None,
-                command: Some(reported_command),
-            }));
+            let mut outcome = dry_run_outcome(
+                tool_name,
+                "bsl-analyzer code analysis",
+                false,
+                bundled_tool,
+                reported_command,
+            );
+            outcome.artifacts = vec![source_dir.display().to_string()];
+            return Ok(BslAnalyzerOutcome::plain(outcome));
         }
 
         let mut process_args = vec!["analyze".to_string()];
@@ -3180,6 +3209,25 @@ mod tests {
     }
 
     #[test]
+    fn runtime_execute_preview_fails_honestly_when_v8_runner_is_missing() {
+        let context = temp_context("runtime-preview-missing-v8-runner");
+        remove_fake_tool_binaries(&context, "v8-runner");
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+
+        let outcome = RuntimeAdapter::new()
+            .invoke("unica.runtime.execute", &args, &context, true, true)
+            .expect("preview remains structured");
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn runtime_adapter_maps_build_to_allowlisted_v8_runner_argv() {
         let context = temp_context("runtime-build-argv");
         let runner = RecordingProcessRunner {
@@ -3371,6 +3419,31 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("retry once")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_job_preview_fails_honestly_when_v8_runner_is_missing() {
+        let context = temp_context("runtime-job-preview-missing-v8-runner");
+        remove_fake_tool_binaries(&context, "v8-runner");
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+
+        let outcome = RuntimeJobAdapter::invoke(
+            RuntimeJobAction::Start,
+            "unica.runtime.job.start",
+            &args,
+            &context,
+            true,
+        )
+        .expect("preview remains structured")
+        .outcome;
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
         cleanup_context(&context);
     }
 
@@ -4770,6 +4843,22 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_preview_fails_honestly_when_bsl_analyzer_is_missing() {
+        let context = temp_context("diagnostics-preview-missing-analyzer");
+        remove_fake_tool_binaries(&context, "bsl-analyzer");
+        let args = Map::new();
+
+        let outcome = invoke_analyze(&BslAnalyzerMcpAdapter::new(), &args, &context, true).outcome;
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn multi_source_set_resolve_source_dir_selects_main_configuration_root() {
         let context = temp_context("multi-source-set");
         fs::write(
@@ -5121,6 +5210,27 @@ analyze_timeout_seconds = 900
             runner.commands.borrow().is_empty(),
             "an absent provider is never invoked"
         );
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn bsl_graph_preview_fails_honestly_when_the_analyzer_binary_is_missing() {
+        let context = temp_context("graph-preview-missing-analyzer");
+        remove_fake_tool_binaries(&context, "bsl-analyzer");
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("resolve"));
+        args.insert("query".to_string(), json!("ВидыНоменклатуры"));
+
+        let outcome = BslAnalyzerMcpAdapter::new()
+            .invoke("unica.code.graph", &args, &context, true)
+            .expect("preview remains structured")
+            .outcome;
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
         cleanup_context(&context);
     }
 
@@ -6034,6 +6144,36 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
+    fn production_secret_redaction_surfaces_are_closed() {
+        assert_eq!(
+            crate::infrastructure::redaction::production_secret_key_matrix(),
+            ["connection", "pwd", "password", "token", "secret"]
+        );
+        assert_eq!(
+            crate::infrastructure::runtime_jobs::production_runtime_secret_flags(),
+            ["password", "pwd", "token", "secret", "connection", "c"]
+        );
+        assert_eq!(
+            crate::infrastructure::runtime_jobs::production_runtime_connection_markers(),
+            ["file=", "srvr=", "ref=", "usr=", "pwd=", "dbsrvr=", "dbname="]
+        );
+
+        cli_adapter_redacts_secret_values_from_reported_command();
+        runtime_adapter_redacts_connection_string_from_reported_command();
+        runtime_adapter_redacts_non_zero_process_output();
+        runtime_adapter_returns_failure_outcome_for_spawn_failure();
+        crate::infrastructure::redaction::tests::stream_redactor_covers_production_secret_keys_at_every_chunk_boundary();
+        crate::infrastructure::runtime_jobs::tests::production_secret_key_matrix_is_redacted_from_runtime_surfaces();
+        crate::infrastructure::runtime_jobs::tests::terminal_snapshot_and_persistence_are_redacted_and_keep_log_artifacts();
+        crate::infrastructure::runtime_jobs::tests::persisted_command_redacts_a_launch_connection_string_completely();
+        crate::infrastructure::runtime_jobs::tests::worker_handoff_never_persists_actual_argv_or_output_secrets();
+        crate::infrastructure::runtime_jobs::tests::direct_status_rejects_corrupt_unknown_schema_and_non_uuid_without_touching_active_lock();
+        crate::infrastructure::runtime_jobs::tests::list_skips_a_corrupt_record_and_redacts_its_warning();
+        crate::infrastructure::operational_config::tests::diagnostics_never_expose_absolute_paths_raw_toml_or_values();
+        crate::infrastructure::operational_config::tests::read_errors_are_redacted_to_the_fixed_basename();
+    }
+
+    #[test]
     #[ignore = "helper process invoked by system_process_runner_drains_large_stderr_while_running"]
     fn system_process_runner_large_stderr_helper() {
         let chunk = [b'e'; 64 * 1024];
@@ -6550,6 +6690,19 @@ analyze_timeout_seconds = 900
         fs::write(&manifest_path, serde_json::to_string(&manifest).unwrap()).unwrap();
     }
 
+    fn remove_fake_tool_binaries(context: &WorkspaceContext, tool_name: &str) {
+        let plugin_root = context.cwd.join("plugins/unica");
+        for target in ["darwin-arm64", "linux-x64", "win-x64"] {
+            let suffix = if target == "win-x64" { ".exe" } else { "" };
+            let _ = fs::remove_file(
+                plugin_root
+                    .join("bin")
+                    .join(target)
+                    .join(format!("{tool_name}{suffix}")),
+            );
+        }
+    }
+
     fn create_fake_plugin_root(root: &Path) {
         let plugin_root = root.join("plugins").join("unica");
         fs::create_dir_all(plugin_root.join("skills")).unwrap();
@@ -6659,4 +6812,71 @@ fn managed_truncation_is_visible_at_process_adapter_boundary() {
     assert!(output.stderr_truncated);
     assert!(output.stdout_had_invalid_utf8);
     assert!(output.stderr_had_invalid_utf8);
+}
+
+#[cfg(test)]
+mod dry_run_honesty_tests {
+    use super::*;
+    use crate::domain::engine::{InstallMode, MissingEngine};
+
+    fn tool(missing: Option<MissingEngine>) -> BundledTool {
+        BundledTool {
+            program: PathBuf::from("/plugins/unica/bin/darwin-arm64/v8-runner"),
+            warnings: Vec::new(),
+            missing,
+        }
+    }
+
+    #[test]
+    fn a_preview_without_the_binary_is_not_a_runnable_plan() {
+        // #549: `ok` и `command` вместе выглядели готовым к запуску планом,
+        // хотя файла по этому пути нет. Худший из возможных ответов.
+        let outcome = dry_run_outcome(
+            "unica.build.load",
+            "build/runtime",
+            true,
+            tool(Some(MissingEngine::new(
+                "v8-runner",
+                "darwin-arm64",
+                "/plugins/unica/bin/darwin-arm64/v8-runner",
+                Some("0.5.1".to_string()),
+                InstallMode::Source,
+            ))),
+            vec!["/plugins/unica/bin/darwin-arm64/v8-runner".to_string()],
+        );
+
+        assert!(!outcome.ok, "план без бинаря не выдаёт себя за исполнимый");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING)),
+            "отказ назван кодом: {:?}",
+            outcome.errors
+        );
+        assert!(
+            outcome.summary.contains("v8-runner"),
+            "чего не хватает, видно в сводке: {}",
+            outcome.summary
+        );
+    }
+
+    #[test]
+    fn a_preview_with_the_binary_in_place_still_describes_the_plan() {
+        let outcome = dry_run_outcome(
+            "unica.build.load",
+            "build/runtime",
+            true,
+            tool(None),
+            vec!["/plugins/unica/bin/darwin-arm64/v8-runner".to_string()],
+        );
+
+        assert!(outcome.ok);
+        assert!(outcome.errors.is_empty());
+        assert!(outcome.command.is_some());
+        assert_eq!(
+            outcome.changes,
+            vec!["no files changed because dryRun is true".to_string()]
+        );
+    }
 }

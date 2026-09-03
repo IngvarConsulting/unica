@@ -5,6 +5,10 @@
 mod descriptor;
 mod plugin_manifest;
 mod runtime_cache;
+mod skill_package;
+mod tool_deadline;
 
 pub use plugin_manifest::verify_installed_plugin_metadata;
 pub use runtime_cache::{provider_state_root, runtime_cache_root};
+pub use skill_package::verify_installed_skill_package;
+pub use tool_deadline::host_tool_deadline;

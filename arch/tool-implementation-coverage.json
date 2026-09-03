@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "surfaceRelease": "v0.13",
+  "subjectTools": {
+    "unica.view": {
+      "status": "partial",
+      "reason": "Base logical-node projection with closed props/branches/items sections is implemented; the requested can section is computed for metadata kinds and the Configuration root from the closed operation registry, while uncomputed can kinds and the limits section answer typed unsupported_section; richer domain projections remain incomplete.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }]
+    },
+    "unica.apply": {
+      "status": "partial",
+      "reason": "Retained atomic publication is proven for props.set, the metadata member collections, predefined items and relations; the code planner (code.insert/code.replace) and the XDTO planner (valueType/objectType/property/type operations) plan through the same staged state; object.create, object.remove and help.create stage the template files, the owner registration and the embedded help facet through the same state; the DCS planner runs the schema text transforms (fields, parameters, filters, selection, queries, calculated fields, totals, variants, structure) over the staged template; roles (right.set with restrictions, role.create), subsystems (create, content, child subsystems) and vendor-support switches plan over the staged files too; forms (form.add/create/set/remove and the definition-driven element, attribute, command and event edits) plan through the form engine's shared definition core; mxl.set decompiles, edits and recompiles the spreadsheet through the shared cores; event.implement plans through the event planner with developer-style event addresses; templates are staged as their own descriptors with owner registration.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs",
+        "test": "metadata_planner_preserves_operation_order_in_one_staged_postimage_without_disk_mutation"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "public_metadata_apply_keeps_dry_run_and_real_plans_identical_for_four_supported_ops"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/code.rs",
+        "test": "staged_code_dry_run_and_real_apply_share_postimages_and_effect_receipt"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
+        "test": "xdto_operations_apply_in_order_within_one_transaction"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
+        "test": "staged_xdto_dry_and_real_share_postimage_effects_and_revision"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs",
+        "test": "object_create_stages_the_template_files_and_registers_the_child"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs",
+        "test": "object_remove_stages_descriptor_removal_and_owner_deregistration"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl.rs",
+        "test": "dcs_operations_transform_the_staged_schema_and_keep_its_byte_order_mark"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs",
+        "test": "form_add_then_element_and_event_edits_compose_in_one_batch"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs",
+        "test": "right_set_grants_lists_and_restricts_rights_on_the_staged_document"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/source_selection_evidence.rs",
+        "test": "published_replacement_of_a_retained_source_map_file_passes_the_final_gate"
+      }]
+    },
+    "unica.find": {
+      "status": "partial",
+      "reason": "Qualified logical address candidates are implemented, while additional closed find kinds remain incomplete.",
+      "evidence": []
+    },
+    "unica.search": {
+      "status": "partial",
+      "reason": "Bounded literal BSL search supports Configuration and resolved metadata-object subtrees; regex and symbol search remain incomplete.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }]
+    },
+    "unica.check": {
+      "status": "partial",
+      "reason": "Workspace admission and logical readability are implemented; the closed validation profiles (cf, cfe, form, dcs, mxl, role, subsystem, interface) run the native validators over the logical node and the meta profile runs the typed metadata validator, with the verdict returned in data.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }]
+    },
+    "unica.diff": {
+      "status": "partial",
+      "reason": "Same-kind bounded structural JSON diff supports closed paths/sections filters; revision-bound pagination remains incomplete.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }]
+    },
+    "unica.run": {
+      "status": "partial",
+      "reason": "The closed directional twelve-operation dictionary, workspace.initialize, configuration-package export, and DT export are implemented through non-executing preview and revision-fenced apply; the other nine run operations remain unsupported.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }]
+    },
+    "unica.docs": {
+      "status": "partial",
+      "reason": "Platform-help and development-standard search are implemented, while configuration documentation remains unsupported.",
+      "evidence": []
+    }
+  },
+  "runOperations": {
+    "workspace.initialize": {
+      "status": "supported",
+      "reason": "Autodetected uniform-format source sets can be previewed without writes and initialized through create-only v8project.yaml publication guarded by the preview revision; infobase-only and mixed-format initialization remain refused.",
+      "evidence": [{
+        "file": "crates/unica-coder/tests/v13_workspace_bootstrap.rs",
+        "test": "canonical_stdio_previews_and_applies_workspace_initialization_before_admission"
+      }, {
+        "file": "crates/unica-coder/tests/v13_workspace_bootstrap.rs",
+        "test": "canonical_workspace_initialization_refuses_mixed_designer_and_edt_discovery"
+      }]
+    },
+    "source.create": {
+      "status": "unsupported",
+      "reason": "Source creation execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "infobase.create": {
+      "status": "unsupported",
+      "reason": "Infobase creation execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "infobase.build": {
+      "status": "unsupported",
+      "reason": "Infobase build execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "source.dump": {
+      "status": "unsupported",
+      "reason": "Source dump execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "source.convert": {
+      "status": "unsupported",
+      "reason": "Source conversion execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "artifact.build": {
+      "status": "unsupported",
+      "reason": "Artifact build execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "infobase.configuration.export": {
+      "status": "supported",
+      "reason": "Working/database main configuration and named extension export use v8-runner provider selection, non-executing preview, revision-fenced apply, and independent artifact verification.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+        "test": "apply_repeats_preflight_and_returns_an_independent_file_receipt"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+        "test": "cfe_and_dt_invocations_use_only_their_closed_runner_arguments"
+      }]
+    },
+    "infobase.configuration.load": {
+      "status": "unsupported",
+      "reason": "Configuration package loading has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "infobase.dump": {
+      "status": "supported",
+      "reason": "Full DT export uses v8-runner provider selection, non-executing preview, revision-fenced apply, and independent artifact verification.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+        "test": "cfe_and_dt_invocations_use_only_their_closed_runner_arguments"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "infobase_export_is_task_admitted_without_platform_xml_source_sets"
+      }]
+    },
+    "infobase.restore": {
+      "status": "unsupported",
+      "reason": "Full infobase DT restore has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    },
+    "client.run": {
+      "status": "unsupported",
+      "reason": "Interactive client execution has not been connected to the v0.13 run adapter.",
+      "evidence": []
+    }
+  },
+  "compatibilityTools": {
+    "unica.task.get": {
+      "status": "supported",
+      "reason": "Durable compatibility Task state projection is implemented.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/interfaces/mcp.rs",
+          "test": "v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free"
+        }
+      ]
+    },
+    "unica.task.result": {
+      "status": "supported",
+      "reason": "Bounded durable compatibility Task result projection is implemented.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/interfaces/mcp.rs",
+          "test": "v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free"
+        }
+      ]
+    },
+    "unica.task.cancel": {
+      "status": "supported",
+      "reason": "Idempotent durable compatibility Task cancellation is implemented.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/interfaces/mcp.rs",
+          "test": "v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free"
+        }
+      ]
+    }
+  }
+}

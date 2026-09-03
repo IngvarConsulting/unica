@@ -641,6 +641,7 @@ pub(crate) fn borrow_cfe_with_data(
             mut created,
             mut updated,
             cleanup_warnings,
+            retained_apply_cleanup_diagnostics: _,
         } = write_plan.commit_with_post_validation(&format_owner_targets, context, || {
             cfe_borrow_validate_extension(&ext_path, context)
         })?;
@@ -6853,7 +6854,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::domain::workspace::WorkspaceContext;
@@ -8271,7 +8272,7 @@ mod tests {
     }
 
     #[test]
-    fn borrow_cfe_rejects_concurrent_base_format_owner_change() {
+    pub(crate) fn borrow_cfe_rejects_concurrent_base_format_owner_change() {
         let context = temp_context("borrow-base-owner-guard");
         let init = create_extension_scaffold(
             &Map::from_iter([
@@ -8429,7 +8430,7 @@ mod tests {
     /// to the write plan, so it is proven there: planning a file with exactly
     /// the bytes it already holds must leave the commit report empty.
     #[test]
-    fn cfe_write_plan_identical_bytes_publish_no_created_or_updated_entry() {
+    pub(crate) fn cfe_write_plan_identical_bytes_publish_no_created_or_updated_entry() {
         let context = temp_context("borrow-noop-plan");
         let owner = context.cwd.join("Configuration.xml");
         let image = "<Owner><State>stable</State></Owner>\n";
@@ -8458,7 +8459,9 @@ mod tests {
     /// described was still open as #435: the report was truthful about a
     /// rewrite that should never have happened.
     #[test]
-    fn borrow_cfe_preserves_object_identity_on_repeated_borrow() {
+    pub(crate) fn borrow_cfe_preserves_object_and_file_identity_on_repeated_borrow() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("borrow-repeat-identity");
         write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
         let target = context.cwd.join("ext/Catalogs/Items.xml");
@@ -8466,6 +8469,7 @@ mod tests {
         let first = borrow_cfe_with_data(&minimal_borrow_args(), &context);
         assert!(first.outcome.ok, "{:?}", first.outcome);
         let after_first = fs::read(&target).unwrap();
+        let file_identity = file_identity_for_test(&target).unwrap();
 
         let second = borrow_cfe_with_data(&minimal_borrow_args(), &context);
 
@@ -8475,6 +8479,7 @@ mod tests {
             after_first,
             "a repeated borrow must not reissue the descriptor identity"
         );
+        assert_eq!(file_identity_for_test(&target).unwrap(), file_identity);
         let mutation = &second
             .data
             .as_ref()
@@ -10482,7 +10487,7 @@ mod tests {
     }
 
     #[test]
-    fn cfe_patch_method_binds_exact_existing_bsl_preimage() {
+    pub(crate) fn cfe_patch_method_binds_exact_existing_bsl_preimage() {
         let context = temp_context("patch-bsl-preimage");
         write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
         register_borrowed_patch_object(&context, "CommonModule", "GuardedModule", "");
@@ -10601,7 +10606,7 @@ mod tests {
     }
 
     #[test]
-    fn cfe_init_rejects_concurrent_base_format_owner_change() {
+    pub(crate) fn cfe_init_rejects_concurrent_base_format_owner_change() {
         let context = temp_context("init-base-owner-guard");
         let base_owner = context.cwd.join("src/Configuration.xml");
         write_file(

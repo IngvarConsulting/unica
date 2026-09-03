@@ -30,19 +30,41 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
         bootstrap = plugin / "bootstrap" / "bin" / "linux-x64" / "unica-bootstrap"
         bootstrap.parent.mkdir(parents=True)
         bootstrap.write_bytes(b"bootstrap")
+        # Форма та же, что пишет упаковщик: артефакты по отдельности, у
+        # каждого свои цели. Замороженная здесь схема 1 делала зонд
+        # холостым — манифест такой формы он просто не находил.
         (plugin / "runtime-manifest.json").write_text(
             json.dumps(
                 {
-                    "schemaVersion": 1,
+                    "schemaVersion": 2,
                     "pluginVersion": "0.9.1",
+                    "development": False,
                     "release": {"tag": "v0.9.1"},
-                    "targets": {
-                        "linux-x64": {
-                            "asset": {
-                                "name": "unica-runtime-linux-x64.tar.gz",
-                                "sha256": self.PUBLISHED_SHA,
-                            }
-                        }
+                    "artifacts": {
+                        "unica": {
+                            "version": "0.9.1",
+                            "role": "core",
+                            "targets": {
+                                "linux-x64": {
+                                    "asset": {
+                                        "name": "unica-runtime-linux-x64.tar.gz",
+                                        "sha256": self.PUBLISHED_SHA,
+                                    }
+                                }
+                            },
+                        },
+                        "rlm-tools-bsl": {
+                            "version": "1.33.0",
+                            "role": "engine",
+                            "targets": {
+                                "linux-x64": {
+                                    "asset": {
+                                        "name": "rlm-tools-bsl-linux-x64.tar.gz",
+                                        "sha256": self.PUBLISHED_SHA,
+                                    }
+                                }
+                            },
+                        },
                     },
                 }
             ),
@@ -50,11 +72,18 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
         )
         return plugin
 
-    def manifest_sha(self, plugin: Path) -> str:
+    def manifest_shas(self, plugin: Path) -> "list[str]":
         manifest = json.loads(
             (plugin / "runtime-manifest.json").read_text(encoding="utf-8")
         )
-        return manifest["targets"]["linux-x64"]["asset"]["sha256"]
+        return [
+            target["asset"]["sha256"]
+            for artifact in manifest["artifacts"].values()
+            for target in artifact["targets"].values()
+        ]
+
+    def manifest_sha(self, plugin: Path) -> str:
+        return self.manifest_shas(plugin)[0]
 
     def test_probe_accepts_controlled_download_failure(self) -> None:
         module = load_module()
@@ -105,6 +134,7 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
 
             def fake_run(*args, **kwargs):
                 observed["sha"] = self.manifest_sha(plugin)
+                observed["all"] = self.manifest_shas(plugin)
                 return subprocess.CompletedProcess(
                     args=[],
                     returncode=1,
@@ -119,8 +149,32 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
             # match, otherwise the probe's outcome depends on whether this version
             # is already released and whether the host builds reproducibly.
             self.assertEqual(observed["sha"], module.UNMATCHABLE_SHA256)
+            # Все артефакты, а не только ядро: манифест обязан описывать байты,
+            # которых не существует нигде.
+            self.assertEqual(
+                observed["all"], [module.UNMATCHABLE_SHA256] * 2, observed["all"]
+            )
             # Later jobs consume the same artifact and need the manifest back.
             self.assertEqual(self.manifest_sha(plugin), self.PUBLISHED_SHA)
+
+    def test_a_manifest_the_probe_cannot_neutralise_is_refused(self) -> None:
+        """Форма манифеста менялась, зонд — нет, и он молча стал холостым.
+
+        Тогда он проверял не «управляем ли отказ», а «доехали ли уже
+        опубликованные байты»: на неопубликованной версии проходил из-за 404,
+        на опубликованной — из-за расхождения сумм. Отказ вслух дешевле.
+        """
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self.plugin(Path(directory))
+            manifest_path = plugin / "runtime-manifest.json"
+            manifest_path.write_text(
+                json.dumps({"schemaVersion": 3, "pluginVersion": "0.9.1"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(SystemExit, "declares no artifact assets"):
+                module.neutralise_published_checksums(manifest_path)
 
     def test_probe_rejects_a_runtime_accepted_despite_the_neutralised_checksum(self) -> None:
         module = load_module()

@@ -7,7 +7,7 @@ description: "Диагностика BSL и объяснение отключе�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.diagnostics`, `unica.source.locate`, `unica.project.map`, `unica.code.graph`, `unica.code.definition`, `unica.code.outline`, `unica.code.search`, `unica.standards.explain`, `unica.standards.search`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.code.diagnostics`, `unica.source.locate`, `unica.view {}`, `unica.code.graph`, `unica.code.definition`, `unica.code.search`, `unica.standards.explain`, `unica.standards.search`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -17,7 +17,7 @@ description: "Диагностика BSL и объяснение отключе�
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Every diagnostics call names an exact `sourceSet`; `cwd` selects the workspace only and never identifies the target. Use `unica.project.map` when the source-set name is unknown.
+- Every diagnostics call names an exact `sourceSet`; `cwd` selects the workspace only and never identifies the target. Use `unica.view {}` when the source-set name is unknown.
 - Use `action=status` before resident `findings` when readiness is uncertain. A completed status request is not proof that a provider is ready: read each `providers[].readiness.state` and call `findings` only for `ready`; `building`, `notStarted`, and `stale` are not clean results.
 - Use `action=findings` with a logical `metadataPath` for one module or metadata object, `action=analyze` for a complete one-shot source-set scan, and `action=catalog` to discover provider-qualified rules. Provider execution is routed internally; do not pass a provider selector. The current live provider `bsl-analyzer` supports module findings only. Until a metadata provider is registered, a metadata-object request fails at request level with `no_applicable_provider`; this means neither clean metadata nor a bad logical address.
 - `action=analyze` may set `timeoutSeconds` from 30 to 3600. Without it the call uses `operational.code_diagnostics.analyze_timeout_seconds` from `<workspaceRoot>/unica.local.toml`, then `unica.toml`, then the compiled 120-second fallback. `findings`, `status`, and `catalog` do not read this operational config, do not accept `timeoutSeconds`, and run on that same compiled 120-second budget.
@@ -33,7 +33,7 @@ description: "Диагностика BSL и объяснение отключе�
 1. Resolve the exact `sourceSet`. If the starting point is a physical file, use `unica.source.locate` to obtain its logical `metadataPath`.
 2. Call `status` when resident readiness matters and `catalog` when rule ids need classification. Use `findings` for one logical target or `analyze` for the whole source set.
 3. Group diagnostics by logical `location`, provider-qualified code, and root cause. Follow `focus` for the exact source range or metadata element.
-4. Inspect the target with `unica.code.outline`, `unica.code.definition`, or `unica.code.search`. Use `unica.code.graph` before changing shared or exported behavior.
+4. Inspect the target with `unica.view` on the module node (its `Method` branch lists the methods), `unica.code.definition`, or `unica.code.search`. Use `unica.code.graph` before changing shared or exported behavior.
 5. Call `unica.standards.explain` with explicit codes; otherwise use `unica.standards.search` by diagnostic name, АПК/EDT/BSL LS token, or nearby snippet.
 6. Report source cause, impacted diagnostics, logical target and focus, standard evidence, and verification result.
 

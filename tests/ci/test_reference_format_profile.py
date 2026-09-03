@@ -20,15 +20,6 @@ UNICA_REFERENCE_MODELS = ROOT / "tests/fixtures/unica_mcp_script_parity/unica_re
 SUBSYSTEM_EDIT = UNICA_REFERENCE_MODELS / "subsystem-edit/scripts/subsystem-edit.py"
 MXL_COMPILE = UNICA_REFERENCE_MODELS / "mxl-compile/scripts/mxl-compile.py"
 DCS_COMPILE = UNICA_REFERENCE_MODELS / "dcs-compile/scripts/dcs-compile.py"
-VALIDATOR_SCRIPTS = tuple(
-    UNICA_REFERENCE_MODELS / relative
-    for relative in (
-        "cf-validate/scripts/cf-validate.py",
-        "cfe-validate/scripts/cfe-validate.py",
-        "form-validate/scripts/form-validate.py",
-        "subsystem-validate/scripts/subsystem-validate.py",
-    )
-)
 MD_NS = "http://v8.1c.ru/8.3/MDClasses"
 MXL_NS = "http://v8.1c.ru/8.2/data/spreadsheet"
 XDTO_NS = "http://v8.1c.ru/8.1/xdto"
@@ -533,13 +524,6 @@ class ReferenceFormatProfileTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 1)
             self.assertEqual(subsystem.read_bytes(), before)
             self.assertFalse((root / "Sales").exists())
-
-    def test_reference_validators_reject_malformed_and_numeric_equivalent_versions(self) -> None:
-        for script in VALIDATOR_SCRIPTS:
-            with self.subTest(script=script):
-                source = script.read_text(encoding="utf-8")
-                self.assertIn("re.fullmatch", source)
-                self.assertRegex(source, r"actual == ['\"]2\.20['\"]")
 
     def test_reference_mxl_writer_uses_span_for_implicit_next_column(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -110,7 +110,7 @@ class SkillProvenanceTests(unittest.TestCase):
         return Path(__file__).resolve().parents[2]
 
     def provenance_path(self) -> Path:
-        return self.repo_root() / "spec" / "provenance" / "skill-upstreams.json"
+        return self.repo_root() / "docs" / "provenance" / "skill-upstreams.json"
 
     def reviews_dir(self) -> Path:
         return self.repo_root() / "docs" / "provenance" / "reviews"
@@ -288,7 +288,7 @@ class SkillProvenanceTests(unittest.TestCase):
         path = self.provenance_path()
 
         self.assertTrue(path.is_file())
-        self.assertIn("spec/provenance", path.as_posix())
+        self.assertIn("docs/provenance", path.as_posix())
         self.assertNotIn("plugins/unica", path.as_posix())
         self.assertFalse((self.repo_root() / "plugins" / "unica" / "provenance").exists())
 
@@ -626,7 +626,7 @@ class SkillProvenanceTests(unittest.TestCase):
             with self.subTest(excluded_route=excluded_route):
                 self.assertIn(excluded_route, notes)
 
-    def test_tool_lock_ref_uses_tools_lock_as_single_binary_baseline(self) -> None:
+    def test_v8_runner_tool_lock_ref_resolves_to_locked_baseline(self) -> None:
         data = self.load_provenance()
         tool_lock = json.loads(
             (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
@@ -639,10 +639,10 @@ class SkillProvenanceTests(unittest.TestCase):
 
         self.assertEqual(runtime_source["toolLockRef"], "v8-runner")
         self.assertIn(runtime_source["toolLockRef"], locked_tools)
-        self.assertEqual(locked_tools["v8-runner"]["sourceTag"], "master")
+        self.assertEqual(locked_tools["v8-runner"]["sourceTag"], "v0.7.1")
         self.assertEqual(
             locked_tools["v8-runner"]["sourceCommit"],
-            "7ce1b062843d86644fe55741dbe0ee79f7ca767d",
+            "d081dfcdc10a63dcff4cb6a854e19f7ea22243c4",
         )
 
     def test_historical_rlm_build_2_review_is_immutable(self) -> None:

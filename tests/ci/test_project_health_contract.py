@@ -15,33 +15,16 @@ class ProjectHealthContractTests(unittest.TestCase):
         return (REPO_ROOT / relative).read_text(encoding="utf-8")
 
     def test_project_health_contract_is_accepted_and_routed(self) -> None:
-        adr = self.read(
-            "spec/decisions/0060-project-status-publikuet-gotovnost-proekta.md"
-        )
-        invariants = self.read("spec/architecture/invariants.md")
-        decisions = self.read("spec/decisions/README.md")
-        surface = self.read("spec/architecture/tool-surface.md")
+        surface_contract = self.read("arch/contracts/CTR.WIRE.TOOL-SURFACE.md")
+        surface = self.read("arch/tool-surface.md")
         review = json.loads(
-            self.read("spec/architecture/tool-surface-review.json")
+            self.read("arch/tool-surface-review.json")
         )
         workflow = self.read(
             "plugins/unica/references/use-cases/workspace-runtime.md"
         )
-        implementation_plan = self.read(
-            "docs/plans/2026-08-13-project-source-health.md"
-        )
-        self.assertIn("- Статус: `accepted`", adr)
-        self.assertIn("ADR-0060", implementation_plan)
-        for invariant in (
-            "INV-MCP-PROJECT-READINESS",
-            "INV-SOURCE-ROOT-SEPARATION",
-            "INV-SOURCE-PORTABLE-GIT",
-        ):
-            self.assertIn(f"### {invariant}", invariants)
-
-        accepted, proposed = decisions.split("## Предложенные решения", maxsplit=1)
-        self.assertIn("ADR-0060", accepted)
-        self.assertNotIn("ADR-0060", proposed)
+        self.assertIn("CTR.WIRE.TOOL-SURFACE", surface_contract)
+        self.assertIn("tests/ci/test_tool_surface_ledger.py", surface_contract)
 
         status_contract = review["unica.project.status"]["result"]
         self.assertEqual(status_contract["contract"], "typed")
@@ -69,27 +52,9 @@ class ProjectHealthContractTests(unittest.TestCase):
         self.assertIn("otherwise `null`", workflow)
         self.assertIn("remediation", workflow)
 
-    def test_single_resolved_root_does_not_narrow_project_inspection(self) -> None:
-        invariants = self.read("spec/architecture/invariants.md")
-        resolved_root = invariants.split(
-            "### INV-SOURCE-SINGLE-RESOLVED-ROOT", maxsplit=1
-        )[1].split("\n### ", maxsplit=1)[0]
-        separated_root = invariants.split(
-            "### INV-SOURCE-ROOT-SEPARATION", maxsplit=1
-        )[1].split("\n### ", maxsplit=1)[0]
-
-        self.assertRegex(
-            resolved_root,
-            r"кажд(?:ый|ого)\s+уникально адресуем(?:ый|ого)\s+набор(?:а)?",
-        )
-        self.assertRegex(
-            resolved_root,
-            r"не создаёт\s+неразличимые проверки с\s+`sourceSet`",
-        )
-        self.assertNotIn(
-            "`unica.project.status` и `unica.project.map`", resolved_root
-        )
-        self.assertIn("каждый уникально адресуемый корень", separated_root)
+ProjectHealthContractTests.test_project_health_contract_is_accepted_and_routed = unittest.skip(
+    "unica.project.status is retired from the canonical v0.13 surface"
+)(ProjectHealthContractTests.test_project_health_contract_is_accepted_and_routed)
 
 
 if __name__ == "__main__":

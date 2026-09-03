@@ -44,9 +44,11 @@ Unica поставляет LSP-бинарник `bsl-analyzer`. Его лице�
 
 <!-- unica-attribution: tool v8-runner -->
 
-- Репозиторий: [alkoleft/v8-runner-rust](https://github.com/alkoleft/v8-runner-rust)
+- Репозиторий: [IngvarConsulting/v8-runner-rust](https://github.com/IngvarConsulting/v8-runner-rust)
 - Автор: [v8-runner contributors](https://github.com/alkoleft/v8-runner-rust/graphs/contributors)
-- Закреплённая версия: `0.5.1`, commit `ad72f64222ab0a7e6dfd391adb437a956c0a2428`
+- Исходный проект: [alkoleft/v8-runner-rust](https://github.com/alkoleft/v8-runner-rust)
+- Закреплённая версия: `0.7.1`, source tag и asset tag `v0.7.1`,
+  commit `d081dfcdc10a63dcff4cb6a854e19f7ea22243c4`
 - Лицензия: [AGPL-3.0-only](third-party/licenses/v8-runner/LICENSE)
 
 `v8-runner` запускается Unica как отдельный внутренний процесс. На его
@@ -148,8 +150,9 @@ Unica адаптирует из чек-листа TemplatesNewObject1C согл�
 
 <!-- unica-attribution: upstream v8-runner-rust -->
 
-- Репозиторий: [alkoleft/v8-runner-rust](https://github.com/alkoleft/v8-runner-rust)
+- Репозиторий: [IngvarConsulting/v8-runner-rust](https://github.com/IngvarConsulting/v8-runner-rust)
 - Автор: [v8-runner contributors](https://github.com/alkoleft/v8-runner-rust/graphs/contributors)
+- Исходный проект: [alkoleft/v8-runner-rust](https://github.com/alkoleft/v8-runner-rust)
 - Проверенный baseline: версия и commit берутся из `third-party/tools.lock.json`
 - Лицензия: [AGPL-3.0-only](third-party/licenses/v8-runner/LICENSE)
 

@@ -1447,7 +1447,7 @@ pub(crate) fn validate_subsystem_owner_path(
 }
 
 #[cfg(test)]
-mod subsystem_info_typed_result_tests {
+pub(crate) mod subsystem_info_typed_result_tests {
     use super::*;
     use crate::infrastructure::platform::secure_read::{
         with_secure_tree_test_hook, SecureTreePhase,
@@ -2184,6 +2184,26 @@ mod subsystem_info_typed_result_tests {
         assert!(data.command_interface.is_none());
         let _ = fs::remove_dir_all(root);
     }
+
+    /// Registry-facing falsifier for the typed public subsystem projection.
+    #[test]
+    pub(crate) fn subsystem_projection_contract_is_complete() {
+        pointing_at_the_subsystems_folder_answers_only_with_tree();
+        concrete_subsystem_contains_its_root_chain_and_complete_descendant_tree();
+        unregistered_alias_keeps_local_data_without_borrowing_a_registered_tree();
+        root_subsystems_symlink_is_not_followed_for_a_tree_answer();
+        nested_subsystems_symlink_is_not_followed_for_a_tree_answer();
+        subsystem_info_answers_content_and_command_interface_at_once();
+        a_missing_command_interface_is_null_not_an_empty_interface();
+    }
+
+    #[test]
+    pub(crate) fn public_subsystem_projection_and_mode_absence_contract_is_complete() {
+        crate::application::tests::public_subsystem_info_registration_address_and_schema_contract_is_complete();
+        crate::application::tests::public_subsystem_info_projects_registered_dependency_errors_as_typed_failures();
+        crate::application::tests::public_subsystem_info_deadline_returns_no_data();
+        subsystem_projection_contract_is_complete();
+    }
 }
 
 #[cfg(test)]
@@ -2473,7 +2493,30 @@ fn prepare_subsystem_info_with_checkpoint(
         },
     };
     checkpoint().map_err(subsystem_info_checkpoint_message)?;
-    let result = SubsystemInfoResult {
+    let result = build_subsystem_info_result(data, tree, command_interface, support);
+    let summary = format!(
+        "unica.subsystem.info described {} with {} content item(s)",
+        result.name,
+        result.content.len()
+    );
+    checkpoint().map_err(subsystem_info_checkpoint_message)?;
+    Ok(PreparedSubsystemInfo {
+        execution: subsystem_info_success(
+            SubsystemInfoAnswer::Subsystem(Box::new(result)),
+            xml_path,
+            summary,
+        ),
+        format_documents,
+    })
+}
+
+pub(crate) fn build_subsystem_info_result(
+    data: SubsystemInfoData,
+    tree: Option<Vec<SubsystemTreeNode>>,
+    command_interface: Option<SubsystemCommandInterfaceData>,
+    support: DomainObjectSupportData,
+) -> SubsystemInfoResult {
+    SubsystemInfoResult {
         name: data.name,
         synonym: subsystem_optional(data.synonym),
         comment: subsystem_optional(data.comment),
@@ -2491,21 +2534,7 @@ fn prepare_subsystem_info_with_checkpoint(
         children: data.child_names,
         tree,
         command_interface,
-    };
-    let summary = format!(
-        "unica.subsystem.info described {} with {} content item(s)",
-        result.name,
-        result.content.len()
-    );
-    checkpoint().map_err(subsystem_info_checkpoint_message)?;
-    Ok(PreparedSubsystemInfo {
-        execution: subsystem_info_success(
-            SubsystemInfoAnswer::Subsystem(Box::new(result)),
-            xml_path,
-            summary,
-        ),
-        format_documents,
-    })
+    }
 }
 
 fn subsystem_info_success(
@@ -2893,12 +2922,19 @@ fn subsystem_tree_scope(
         .collect::<Result<Vec<_>, _>>()?;
     if parts.len() % 2 != 0
         || parts
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .any(|pair| pair.get(1).map(String::as_str) != Some("Subsystems"))
     {
         return Err("subsystem scope does not follow the nested Subsystems layout".to_string());
     }
-    let parent_address = parts.chunks_exact(2).map(|pair| pair[0].clone()).collect();
+    let parent_address = parts
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| pair[0].clone())
+        .collect();
     Ok(Some((source_root, parent_address)))
 }
 
@@ -2916,7 +2952,7 @@ pub(crate) fn subsystem_command_interface_data(
     parse_subsystem_command_interface_data(&ci_path, &text).map(Some)
 }
 
-fn parse_subsystem_command_interface_data(
+pub(crate) fn parse_subsystem_command_interface_data(
     ci_path: &Path,
     text: &str,
 ) -> Result<SubsystemCommandInterfaceData, String> {
@@ -3905,7 +3941,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::domain::workspace::WorkspaceContext;
@@ -4118,7 +4154,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_subsystem_compile_rolls_back_if_format_owner_changes_during_publication() {
+    pub(crate) fn nested_subsystem_compile_rolls_back_if_format_owner_changes_during_publication() {
         let context = temp_context("nested-format-owner-race");
         let source = context.cwd.join("src");
         fs::create_dir_all(&source).unwrap();
@@ -4340,7 +4376,7 @@ mod tests {
     }
 
     #[test]
-    fn subsystem_compile_exact_binds_a_reused_existing_child() {
+    pub(crate) fn subsystem_compile_exact_binds_a_reused_existing_child() {
         let context = temp_context("compile-reused-child-race");
         let config_before = write_configuration(&context.cwd);
         let child_path = context
@@ -4382,7 +4418,7 @@ mod tests {
     }
 
     #[test]
-    fn subsystem_edit_exact_binds_a_reused_existing_child() {
+    pub(crate) fn subsystem_edit_exact_binds_a_reused_existing_child() {
         let context = temp_context("edit-reused-child-race");
         let subsystem = create_edit_fixture(&context, "Parent");
         let subsystem_before = fs::read(&subsystem).unwrap();
@@ -5051,7 +5087,9 @@ mod tests {
     }
 
     #[test]
-    fn repeated_subsystem_compile_does_not_overwrite_or_report_changes() {
+    pub(crate) fn repeated_subsystem_compile_preserves_file_identities_and_reports_no_changes() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("repeat-noop");
         let args = compile_args(
             &context.cwd,
@@ -5069,6 +5107,8 @@ mod tests {
             .join("Subsystems/StableArea/Subsystems/StableChild.xml");
         let object_before = fs::read(&object_path).unwrap();
         let child_before = fs::read(&child_path).unwrap();
+        let object_identity = file_identity_for_test(&object_path).unwrap();
+        let child_identity = file_identity_for_test(&child_path).unwrap();
 
         let repeated = compile_subsystem(&args, &context);
 
@@ -5077,6 +5117,11 @@ mod tests {
         assert!(repeated.artifacts.is_empty(), "{:?}", repeated.artifacts);
         assert_eq!(fs::read(&object_path).unwrap(), object_before);
         assert_eq!(fs::read(&child_path).unwrap(), child_before);
+        assert_eq!(
+            file_identity_for_test(&object_path).unwrap(),
+            object_identity
+        );
+        assert_eq!(file_identity_for_test(&child_path).unwrap(), child_identity);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -5111,7 +5156,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod subsystem_read_selector_bridge_tests {
+pub(super) mod subsystem_read_selector_bridge_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -5161,7 +5206,7 @@ mod subsystem_read_selector_bridge_tests {
     }
 
     #[test]
-    fn subsystem_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn subsystem_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("info");
 
         let physical = analyze_subsystem_info(
@@ -5295,7 +5340,7 @@ mod subsystem_read_selector_bridge_tests {
     }
 
     #[test]
-    fn subsystem_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn subsystem_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("validate");
 
         let physical = validate_subsystem(

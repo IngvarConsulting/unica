@@ -15,6 +15,7 @@ use crate::domain::diagnostics::{
     DiagnosticContext, DiagnosticItem, DiagnosticMapError, DiagnosticObservation,
     DiagnosticProviderRegistry, DiagnosticRequest, DiagnosticRequestError,
 };
+use crate::domain::engine::MissingEngine;
 use crate::domain::events::DomainEvent;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaInfoDeclarations,
@@ -23,7 +24,7 @@ use crate::domain::metadata::{
     MetadataKind,
 };
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
-use crate::domain::project_health::{ProjectHealthInspectionError, ProjectHealthSnapshot};
+use crate::domain::progress::ProgressSink;
 use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
 };
@@ -33,6 +34,22 @@ use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 use std::fmt;
 use std::path::PathBuf;
+use std::time::Instant;
+
+#[allow(dead_code)] // The v0.13 invocation seam consumes this after the hidden phase.
+pub(crate) trait Clock: Send + Sync {
+    fn now(&self) -> Instant;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+#[allow(dead_code)] // Production implementation for the hidden v0.13 clock port.
+pub(crate) struct TokioClock;
+
+impl Clock for TokioClock {
+    fn now(&self) -> Instant {
+        tokio::time::Instant::now().into_std()
+    }
+}
 
 pub(crate) struct HandlerOutcome {
     pub(crate) adapter: AdapterOutcome,
@@ -148,6 +165,13 @@ pub(crate) enum MetadataTemplateType {
     SpreadsheetDocument,
     BinaryData,
     DataCompositionSchema,
+    /// External component archive. Same opaque payload as `BinaryData`; the
+    /// dedicated type exists so mobile builds can mark components. Logical
+    /// addressing stops at the template and never reads the payload.
+    AddIn,
+    /// Data composition appearance template: an opaque XML body whose
+    /// internals are not addressed.
+    DataCompositionAppearanceTemplate,
 }
 
 impl MetadataTemplateType {
@@ -158,7 +182,22 @@ impl MetadataTemplateType {
             "SpreadsheetDocument" => Some(Self::SpreadsheetDocument),
             "BinaryData" => Some(Self::BinaryData),
             "DataCompositionSchema" => Some(Self::DataCompositionSchema),
+            "AddIn" => Some(Self::AddIn),
+            "DataCompositionAppearanceTemplate" => Some(Self::DataCompositionAppearanceTemplate),
             _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn descriptor_value(self) -> &'static str {
+        match self {
+            Self::HtmlDocument => "HTMLDocument",
+            Self::TextDocument => "TextDocument",
+            Self::SpreadsheetDocument => "SpreadsheetDocument",
+            Self::BinaryData => "BinaryData",
+            Self::DataCompositionSchema => "DataCompositionSchema",
+            Self::AddIn => "AddIn",
+            Self::DataCompositionAppearanceTemplate => "DataCompositionAppearanceTemplate",
         }
     }
 }
@@ -486,17 +525,6 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         Ok(OperationalConfig::compiled_defaults())
     }
 
-    fn inspect_project_health(
-        &self,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-        _deadline: ProviderDeadline,
-    ) -> Result<ProjectHealthSnapshot, ProjectHealthInspectionError> {
-        Err(ProjectHealthInspectionError::Fatal(
-            "project health inspector is not configured".into(),
-        ))
-    }
-
     fn prepare_tool_invocation(
         &self,
         _spec: ToolSpec,
@@ -507,6 +535,32 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _deadline: ProviderDeadline,
     ) -> Result<PreparedToolInvocation, String> {
         Ok(PreparedToolInvocation::empty())
+    }
+
+    /// Чего не хватает инструменту, чтобы запуститься. `None` — всё на месте.
+    ///
+    /// Спрашивается там, где вызов и так отказывает: отказ, назвавший одну
+    /// причину из двух, уводит диагностику в заведомо неверную сторону.
+    fn missing_engine(
+        &self,
+        _spec: ToolSpec,
+        _cwd: Option<&std::path::Path>,
+    ) -> Option<MissingEngine> {
+        None
+    }
+
+    /// Дождаться движка, которого инструменту не хватает.
+    ///
+    /// Возвращает состояние exact SharedWork. `NotRequired`/`Ready` продолжают
+    /// вызов; `Working`/`Failed` V12-адаптер проецирует в прежний `WorkState`.
+    fn deliver_engine_if_missing(
+        &self,
+        _spec: ToolSpec,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+        _progress: &dyn ProgressSink,
+    ) -> crate::application::shared_work::EngineDeliveryState {
+        crate::application::shared_work::EngineDeliveryState::NotRequired
     }
 
     fn read_metadata_local(

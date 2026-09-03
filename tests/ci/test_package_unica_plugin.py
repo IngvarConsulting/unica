@@ -13,6 +13,9 @@ import unittest
 from pathlib import Path
 
 
+TOOLCHAIN_REPOSITORY = "https://github.com/IngvarConsulting/unica-toolchain"
+
+
 def load_package_module():
     module_path = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "package-unica-plugin.py"
     spec = importlib.util.spec_from_file_location("package_unica_plugin", module_path)
@@ -24,6 +27,55 @@ def load_package_module():
 
 
 class PackageUnicaPluginTests(unittest.TestCase):
+    def test_package_tree_hash_frames_path_and_content_boundaries(self) -> None:
+        module = load_package_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        first = root / "first"
+        second = root / "second"
+        first.mkdir()
+        second.mkdir()
+        (first / "a").write_bytes(b"x\0y")
+        (first / "z").write_bytes(b"w")
+        (second / "a").write_bytes(b"x\0yz\0w")
+
+        first_digest = module.package_tree_sha256(first)
+        self.assertEqual(
+            first_digest,
+            "5188569041dcc3e6e365f6a5b95d375ba69964b3cd93a8f28c198a521c30bda2",
+        )
+        self.assertNotEqual(first_digest, module.package_tree_sha256(second))
+
+    def test_runtime_metadata_asset_must_be_an_object(self) -> None:
+        module = load_package_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata_root = Path(tmp)
+            (metadata_root / "unica-runtime-linux-x64.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "artifact": "unica",
+                        "role": "core",
+                        "version": "0.12.0",
+                        "pluginVersion": "0.12.0",
+                        "target": "linux-x64",
+                        "targetTriple": "x86_64-unknown-linux-gnu",
+                        "asset": None,
+                        "files": [
+                            {
+                                "path": "bin/linux-x64/unica",
+                                "sha256": "a" * 64,
+                                "executable": True,
+                            }
+                        ],
+                        "entrypoint": "bin/linux-x64/unica",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(SystemExit, "asset.*object"):
+                module.load_runtime_metadata(metadata_root, plugin_version="0.12.0")
+
     def make_lock(self) -> dict:
         return {
             "schemaVersion": 1,
@@ -439,7 +491,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         delivered = set(host_versions.values())
         self.assertEqual(len(delivered), 1, host_versions)
         version = next(iter(delivered))
-        self.assertRegex(version, r"^0\.12\.\d+$")
+        self.assertRegex(version, r"^0\.12\.\d+(?:-[0-9A-Za-z.]+)?$")
         self.assertEqual(unica_versions, [version])
 
     def test_claude_contracts_avoid_keys_older_clients_reject(self) -> None:
@@ -572,12 +624,12 @@ class PackageUnicaPluginTests(unittest.TestCase):
             repo_root / "README.md",
             repo_root / "plugins" / "unica" / "README.md",
             repo_root / "docs" / "internal-package.md",
-            repo_root / "spec" / "acceptance" / "unica-mcp-validation.md",
-            repo_root / "spec" / "architecture" / "runtime.md",
-            repo_root / "spec" / "architecture" / "deployment.md",
-            repo_root / "spec" / "architecture" / "change-checklist.md",
-            repo_root / "spec" / "decisions" / "0001-edinyy-publichnyy-mcp-unica.md",
-            repo_root / "spec" / "decisions" / "0004-legacy-skill-scripts-are-migration-debt.md",
+            repo_root / "docs" / "arch-v1" / "acceptance" / "unica-mcp-validation.md",
+            repo_root / "docs" / "arch-v1" / "architecture" / "runtime.md",
+            repo_root / "docs" / "arch-v1" / "architecture" / "deployment.md",
+            repo_root / "docs" / "arch-v1" / "architecture" / "change-checklist.md",
+            repo_root / "docs" / "arch-v1" / "decisions" / "0001-edinyy-publichnyy-mcp-unica.md",
+            repo_root / "docs" / "arch-v1" / "decisions" / "0004-legacy-skill-scripts-are-migration-debt.md",
         ]
         forbidden = ("run-unica.sh", "run-tool.sh", "run-tool.ps1", "run-bsl-analyzer.sh", "run-v8-runner.sh")
 
@@ -817,7 +869,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             for link in local_license_links:
                 self.assertTrue((destination / link).is_file(), link)
 
-    def test_documented_resources_are_packaged(self) -> None:
+    def test_all_active_packaged_documentation_links_are_relative_and_resolve(self) -> None:
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
         plugin_src = repo_root / "plugins" / "unica"
@@ -839,11 +891,17 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 text = doc.read_text(encoding="utf-8")
                 for link in [m for p in patterns for m in p.findall(text)]:
                     checked += 1
+                    self.assertFalse(Path(link).is_absolute(), f"{relative_doc}: {link}")
+                    resolved = (doc.parent / link).resolve()
+                    self.assertTrue(
+                        resolved.is_relative_to(destination.resolve()),
+                        f"{relative_doc}: {link} escapes the package",
+                    )
                     # The package has no repository root and no knowable
                     # plugin root, so a link only survives packaging when it
                     # resolves from the document that carries it.
                     self.assertTrue(
-                        (doc.parent / link).is_file(),
+                        resolved.is_file(),
                         f"{relative_doc}: {link}",
                     )
 
@@ -1057,10 +1115,15 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 )
                 bootstrap.parent.mkdir(parents=True)
                 bootstrap.write_bytes(f"bootstrap {target}".encode())
+                # Ядро и один движок: манифест обязан нести оба, иначе
+                # разрезанная поставка не доедет до потребителя целиком.
                 (metadata_root / f"unica-runtime-{target}.json").write_text(
                     json.dumps(
                         {
-                            "schemaVersion": 1,
+                            "schemaVersion": 2,
+                            "artifact": "unica",
+                            "version": version,
+                            "role": "core",
                             "target": target,
                             "targetTriple": target_triple,
                             "pluginVersion": version,
@@ -1077,6 +1140,36 @@ class PackageUnicaPluginTests(unittest.TestCase):
                                 }
                             ],
                             "entrypoint": f"bin/{target}/unica{exe}",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (metadata_root / f"bsl-analyzer-runtime-{target}.json").write_text(
+                    json.dumps(
+                        {
+                            "schemaVersion": 2,
+                            "artifact": "bsl-analyzer",
+                            "version": "0.2.67",
+                            "role": "engine",
+                            "target": target,
+                            "targetTriple": target_triple,
+                            "pluginVersion": version,
+                            "asset": {
+                                "name": f"bsl-analyzer-{target}{exe}",
+                                "mediaType": "application/octet-stream",
+                                "sha256": "3" * 64,
+                            },
+                            "assetOrigin": {
+                                "repository": TOOLCHAIN_REPOSITORY,
+                                "tag": "bsl-analyzer-v0.2.67-build.1",
+                            },
+                            "files": [
+                                {
+                                    "path": f"bsl-analyzer{exe}",
+                                    "sha256": "4" * 64,
+                                    "executable": True,
+                                }
+                            ],
                         }
                     ),
                     encoding="utf-8",
@@ -1148,12 +1241,44 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertFalse(runtime_manifest["development"])
             self.assertEqual(runtime_manifest["source"]["commit"], "a" * 40)
             self.assertEqual(runtime_manifest["release"]["tag"], release_tag)
-            self.assertEqual(sorted(runtime_manifest["targets"]), sorted(target_triples))
-            for target, target_data in runtime_manifest["targets"].items():
+            self.assertEqual(
+            sorted(runtime_manifest["artifacts"]["unica"]["targets"]),
+            sorted(target_triples),
+        )
+            self.assertEqual(
+                sorted(runtime_manifest["artifacts"]),
+                ["bsl-analyzer", "unica"],
+                "манифест несёт и ядро, и движок",
+            )
+            self.assertEqual(runtime_manifest["artifacts"]["bsl-analyzer"]["version"], "0.2.67")
+            self.assertEqual(runtime_manifest["artifacts"]["bsl-analyzer"]["role"], "engine")
+            self.assertEqual(
+                sorted(runtime_manifest["artifacts"]["bsl-analyzer"]["targets"]),
+                sorted(target_triples),
+                "манифест несёт движок на все цели хоста",
+            )
+            for target_data in runtime_manifest["artifacts"]["bsl-analyzer"]["targets"].values():
+                # Движок запускает рантайм, а не bootstrap: точки входа нет.
+                self.assertNotIn("entrypoint", target_data)
+            for target, target_data in runtime_manifest["artifacts"]["unica"]["targets"].items():
                 self.assertEqual(
                     target_data["asset"]["url"],
                     "https://github.com/IngvarConsulting/unica/releases/download/"
                     f"{release_tag}/unica-runtime-{target}.tar.gz",
+                )
+            # Движок едет из тулчейна по своему тегу: выпуск плагина его не
+            # перепубликует, и версия движка от темпа выпусков не зависит.
+            for target, target_data in runtime_manifest["artifacts"]["bsl-analyzer"][
+                "targets"
+            ].items():
+                exe = ".exe" if target == "win-x64" else ""
+                self.assertEqual(
+                    target_data["asset"]["url"],
+                    f"{TOOLCHAIN_REPOSITORY}/releases/download/"
+                    f"bsl-analyzer-v0.2.67-build.1/bsl-analyzer-{target}{exe}",
+                )
+                self.assertEqual(
+                    target_data["asset"]["mediaType"], "application/octet-stream"
                 )
 
             catalog = json.loads(
@@ -1168,6 +1293,19 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertNotIn("source\": \"local", json.dumps(catalog))
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
             self.assertEqual(list(out_dir.glob("*.zip")), [])
+            package_evidence = json.loads(
+                (out_dir / "p0-package-evidence.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(package_evidence["schemaVersion"], 1)
+            self.assertEqual(
+                package_evidence["packageHashFormat"],
+                "sha256-u64be-path-content-v1",
+            )
+            self.assertEqual(package_evidence["pluginVersion"], version)
+            self.assertEqual(package_evidence["sourceCommit"], "a" * 40)
+            self.assertFalse(package_evidence["versionBumped"])
+            self.assertFalse(package_evidence["published"])
+            self.assertIsNone(package_evidence["tag"])
 
             # Maintainer material stays in the source tree. The donor index and
             # the dated review records answer questions a consumer never asks,

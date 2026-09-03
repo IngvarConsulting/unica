@@ -1,0 +1,234 @@
+{
+  "profile": "8.3.27",
+  "validAddresses": [
+    {
+      "case": "configuration-root",
+      "input": "main:Configuration",
+      "canonical": "main:Configuration",
+      "terminalKind": "Configuration",
+      "route": "configuration"
+    },
+    {
+      "case": "configuration-root-russian-alias",
+      "input": "main:Конфигурация",
+      "canonical": "main:Configuration",
+      "terminalKind": "Configuration",
+      "route": "configuration"
+    },
+    {
+      "case": "metadata-branch-russian-alias",
+      "input": "main:Документ",
+      "canonical": "main:Document",
+      "terminalKind": "Document",
+      "route": "metadata"
+    },
+    {
+      "case": "metadata-object",
+      "input": "main:Document.Заказ",
+      "canonical": "main:Document.Заказ",
+      "terminalKind": "Document",
+      "route": "metadata"
+    },
+    {
+      "case": "metadata-attribute-structural-alias",
+      "input": "main:Document.Заказ.Реквизит.Контрагент",
+      "canonical": "main:Document.Заказ.Attribute.Контрагент",
+      "terminalKind": "Attribute",
+      "route": "metadata"
+    },
+    {
+      "case": "nested-tabular-section-attribute",
+      "input": "main:Document.Заказ.ТабличнаяЧасть.Товары.Реквизит.Количество",
+      "canonical": "main:Document.Заказ.TabularSection.Товары.Attribute.Количество",
+      "terminalKind": "Attribute",
+      "route": "metadata"
+    },
+    {
+      "case": "form-attribute",
+      "input": "main:Document.Заказ.Form.ФормаДокумента.Attribute.Объект",
+      "canonical": "main:Document.Заказ.Form.ФормаДокумента.Attribute.Объект",
+      "terminalKind": "Attribute",
+      "route": "form"
+    },
+    {
+      "case": "form-parameter",
+      "input": "main:Document.Заказ.Form.ФормаДокумента.Parameter.Режим",
+      "canonical": "main:Document.Заказ.Form.ФормаДокумента.Parameter.Режим",
+      "terminalKind": "Parameter",
+      "route": "form"
+    },
+    {
+      "case": "form-command",
+      "input": "main:Document.Заказ.Form.ФормаДокумента.Command.Пересчитать",
+      "canonical": "main:Document.Заказ.Form.ФормаДокумента.Command.Пересчитать",
+      "terminalKind": "Command",
+      "route": "form"
+    },
+    {
+      "case": "form-element",
+      "input": "main:Document.Заказ.Form.ФормаДокумента.Item.Склад",
+      "canonical": "main:Document.Заказ.Form.ФормаДокумента.Item.Склад",
+      "terminalKind": "Item",
+      "route": "form"
+    },
+    {
+      "case": "form-table",
+      "input": "main:Document.Заказ.Form.ФормаДокумента.Item.Товары",
+      "canonical": "main:Document.Заказ.Form.ФормаДокумента.Item.Товары",
+      "terminalKind": "Item",
+      "route": "form"
+    },
+    {
+      "case": "form-table-column-arbitrary-depth",
+      "input": "main:Document.Заказ.Form.ФормаДокумента.Item.Товары.Item.Количество.Event.Change",
+      "canonical": "main:Document.Заказ.Form.ФормаДокумента.Item.Товары.Item.Количество.Event.Change",
+      "terminalKind": "Event",
+      "route": "form"
+    },
+    {
+      "case": "role-right",
+      "input": "main:Role.Кладовщик.Право.Catalog_Товары",
+      "canonical": "main:Role.Кладовщик.Right.Catalog_Товары",
+      "terminalKind": "Right",
+      "route": "role"
+    },
+    {
+      "case": "role-rls",
+      "input": "main:Role.Кладовщик.Right.Catalog_Товары.RLS.Read",
+      "canonical": "main:Role.Кладовщик.Right.Catalog_Товары.RLS.Read",
+      "terminalKind": "RLS",
+      "route": "role"
+    },
+    {
+      "case": "dcs-dataset",
+      "input": "main:Report.Продажи.Template.ОсновнаяСхема.НаборДанных.Продажи",
+      "canonical": "main:Report.Продажи.Template.ОсновнаяСхема.DataSet.Продажи",
+      "terminalKind": "DataSet",
+      "route": "dcs"
+    },
+    {
+      "case": "dcs-field",
+      "input": "main:Report.Продажи.Template.ОсновнаяСхема.DataSet.Продажи.Field.Сумма",
+      "canonical": "main:Report.Продажи.Template.ОсновнаяСхема.DataSet.Продажи.Field.Сумма",
+      "terminalKind": "Field",
+      "route": "dcs"
+    },
+    {
+      "case": "dcs-parameter",
+      "input": "main:Report.Продажи.Template.ОсновнаяСхема.DataSet.Продажи.Parameter.Период",
+      "canonical": "main:Report.Продажи.Template.ОсновнаяСхема.DataSet.Продажи.Parameter.Период",
+      "terminalKind": "Parameter",
+      "route": "dcs"
+    },
+    {
+      "case": "mxl-area",
+      "input": "main:Report.Продажи.Template.Печать.Область.Шапка",
+      "canonical": "main:Report.Продажи.Template.Печать.Area.Шапка",
+      "terminalKind": "Area",
+      "route": "mxl"
+    },
+    {
+      "case": "mxl-parameter",
+      "input": "main:Report.Продажи.Template.Печать.Area.Шапка.Parameter.Заголовок",
+      "canonical": "main:Report.Продажи.Template.Печать.Area.Шапка.Parameter.Заголовок",
+      "terminalKind": "Parameter",
+      "route": "mxl"
+    }
+  ],
+  "contextualInputs": [
+    {
+      "case": "single-source-set-qualifies-unqualified-input",
+      "input": "Document.Заказ",
+      "availableSourceSets": ["main"],
+      "canonical": "main:Document.Заказ",
+      "error": null
+    },
+    {
+      "case": "multiple-source-sets-make-unqualified-input-ambiguous",
+      "input": "Document.Заказ",
+      "availableSourceSets": ["main", "extension"],
+      "canonical": null,
+      "error": "ambiguous_address"
+    }
+  ],
+  "invalidAddresses": [
+    {
+      "case": "source-set-empty",
+      "input": ":Document.Заказ",
+      "error": "source_set_required"
+    },
+    {
+      "case": "address-empty",
+      "input": "main:",
+      "error": "address_empty"
+    },
+    {
+      "case": "empty-segment",
+      "input": "main:Document..Attribute.Код",
+      "error": "empty_segment"
+    },
+    {
+      "case": "kind-name-alternation",
+      "input": "main:Document.Заказ.Количество",
+      "error": "unknown_kind"
+    },
+    {
+      "case": "unknown-kind",
+      "input": "main:UnknownKind.Заказ",
+      "error": "unknown_kind"
+    },
+    {
+      "case": "metadata-collection-is-not-kind",
+      "input": "main:Документы.Заказ",
+      "error": "unknown_kind"
+    },
+    {
+      "case": "configuration-root-has-no-name",
+      "input": "main:Configuration.Main",
+      "error": "configuration_root_only"
+    },
+    {
+      "case": "configuration-root-has-no-children",
+      "input": "main:Configuration.Main.Attribute.Код",
+      "error": "configuration_root_only"
+    },
+    {
+      "case": "configuration-cannot-occur-below-metadata",
+      "input": "main:Document.Заказ.Configuration",
+      "error": "configuration_root_only"
+    }
+  ],
+  "moduleCapabilities": [
+    {"case": "object-module", "at": "main:Document.Заказ.Module.Object", "exists": true, "role": "Object"},
+    {"case": "manager-module", "at": "main:Document.Заказ.Module.Manager", "exists": true, "role": "Manager"},
+    {"case": "record-set-module", "at": "main:InformationRegister.Цены.Module.RecordSet", "exists": true, "role": "RecordSet"},
+    {"case": "value-manager-module", "at": "main:Constant.ОсновнаяВалюта.Module.ValueManager", "exists": true, "role": "ValueManager"},
+    {"case": "common-module", "at": "main:CommonModule.ЗаказыСервер", "exists": true, "role": "Common"},
+    {"case": "nested-form-module", "at": "main:Document.Заказ.Form.ФормаДокумента.Module.Form", "exists": true, "role": "Form"},
+    {"case": "common-form-module", "at": "main:CommonForm.Подбор.Module.Form", "exists": true, "role": "Form"},
+    {"case": "nested-command-module", "at": "main:Document.Заказ.Command.ПровестиИЗакрыть.Module.Command", "exists": true, "role": "Command"},
+    {"case": "common-command-module", "at": "main:CommonCommand.ОткрытьНастройки.Module.Command", "exists": true, "role": "Command"},
+    {"case": "managed-application-module", "at": "main:Module.ManagedApplication", "exists": true, "role": "ManagedApplication"},
+    {"case": "ordinary-application-module", "at": "main:Module.OrdinaryApplication", "exists": true, "role": "OrdinaryApplication"},
+    {"case": "session-module", "at": "main:Module.Session", "exists": true, "role": "Session"},
+    {"case": "external-connection-module", "at": "main:Module.ExternalConnection", "exists": true, "role": "ExternalConnection"},
+    {"case": "http-service-module", "at": "main:HTTPService.API.Module.HTTPService", "exists": true, "role": "HTTPService"},
+    {"case": "web-service-module", "at": "main:WebService.Обмен.Module.WebService", "exists": true, "role": "WebService"},
+    {"case": "integration-service-module", "at": "main:IntegrationService.Шина.Module.IntegrationService", "exists": true, "role": "IntegrationService"},
+    {"case": "bot-module", "at": "main:Bot.Помощник.Module.Bot", "exists": true, "role": "Bot"},
+    {"case": "websocket-client-module", "at": "main:WebSocketClient.Телефония.Module.WebSocketClient", "exists": true, "role": "WebSocketClient"},
+    {"case": "epf-object-module", "at": "epf:ExternalDataProcessor.Импорт.Module.Object", "exists": true, "role": "Object"},
+    {"case": "epf-form-module", "at": "epf:ExternalDataProcessor.Импорт.Form.Основная.Module.Form", "exists": true, "role": "Form"},
+    {"case": "epf-command-module", "at": "epf:ExternalDataProcessor.Импорт.Command.Выполнить.Module.Command", "exists": true, "role": "Command"},
+    {"case": "erf-object-module", "at": "erf:ExternalReport.Продажи.Module.Object", "exists": true, "role": "Object"},
+    {"case": "erf-form-module", "at": "erf:ExternalReport.Продажи.Form.Основная.Module.Form", "exists": true, "role": "Form"},
+    {"case": "erf-command-module", "at": "erf:ExternalReport.Продажи.Command.Сформировать.Module.Command", "exists": true, "role": "Command"},
+    {"case": "valid-missing-object-module", "at": "main:Document.ЕщеНеВыгружен.Module.Object", "exists": true, "role": "Object"},
+    {"case": "record-manager-does-not-exist", "at": "main:InformationRegister.Цены.Module.RecordManager", "exists": false, "role": null},
+    {"case": "generic-service-does-not-exist", "at": "main:HTTPService.API.Module.Service", "exists": false, "role": null},
+    {"case": "invalid-owner-role-is-not-found", "at": "main:Catalog.Товары.Module.RecordSet", "exists": false, "role": null},
+    {"case": "invalid-role-cannot-hide-behind-common-module-prefix", "at": "main:CommonModule.ЗаказыСервер.Module.Service", "exists": false, "role": null},
+    {"case": "invalid-role-cannot-hide-behind-valid-module-prefix", "at": "main:Document.Заказ.Module.Object.Module.Service", "exists": false, "role": null},
+    {"case": "deep-invalid-role-cannot-hide-below-method", "at": "main:Document.Заказ.Module.Object.Method.Проверить.Module.Service", "exists": false, "role": null}
+  ]
+}

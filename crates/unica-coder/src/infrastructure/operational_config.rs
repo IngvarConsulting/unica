@@ -209,7 +209,7 @@ fn parse_timeout(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
@@ -813,7 +813,7 @@ analyze_timeout_seconds = 7200
     }
 
     #[test]
-    fn diagnostics_never_expose_absolute_paths_raw_toml_or_values() {
+    pub(crate) fn diagnostics_never_expose_absolute_paths_raw_toml_or_values() {
         let workspace = tempdir().expect("workspace tempdir");
         let secret = "classified-timeout-value";
         write_config(
@@ -840,7 +840,7 @@ analyze_timeout_seconds = 7200
     }
 
     #[test]
-    fn read_errors_are_redacted_to_the_fixed_basename() {
+    pub(crate) fn read_errors_are_redacted_to_the_fixed_basename() {
         let workspace = tempdir().expect("workspace tempdir");
         fs::create_dir(workspace.path().join(SHARED_CONFIG_FILENAME))
             .expect("create unreadable-as-file config path");

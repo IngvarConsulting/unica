@@ -14,10 +14,10 @@ file is not located at `./v8project.yaml`.
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
 
-For a new repository with no workspace, use the `v8-runner` skill first. It
-can preview creation of `v8project.yaml` through MCP `unica.runtime.execute`.
-It does not create the file, prepare the default `src` source-set, check
-database access, or inspect a live license in the current contract.
+For a new repository with no workspace, call `unica.view {}` first. In v0.13,
+discover the runtime contract through `unica.run {}` and use
+`workspace.initialize` only when its dictionary entry says `implemented: true`.
+Do not infer arguments for an operation whose `argsSchema` is `null`.
 
 Preview the config-init arguments through MCP `unica.runtime.execute`:
 
@@ -105,7 +105,7 @@ new argument of `unica.runtime.execute`.
 
 ## Source-set format discovery
 
-Use MCP `unica.project.map` to inspect configured source-sets before choosing a
+Use MCP `unica.view {}` to inspect configured source-sets before choosing a
 metadata operation. It returns `sourceSets[]` where each entry has `kind`,
 `path`, `sourceFormat`, and `formatEvidence`.
 
@@ -122,10 +122,37 @@ Format discovery remains per source-set, but `unica.epf.init` and
 global value; use a separate Designer workspace/config when the active config
 has global `format: EDT`.
 
+## Autodetected source-sets
+
+A workspace without `v8project.yaml` still gets a source map. Autodetection
+looks only in a closed catalog of layouts (ADR-0075,
+`INV-SOURCE-AUTODETECT-CATALOG`) and never competes with the file: one declared
+source-set replaces autodetection entirely.
+
+| Layout | Source-set |
+| --- | --- |
+| `.`, `src` or `src/cf` carrying a configuration marker | `main`, kind `configuration` — first match wins |
+| `src/cfe` carrying a marker itself | `cfe`, kind `extension` — its children are that extension's objects, not siblings |
+| `src/cfe/<name>` | `<name>`, kind `extension` |
+| `src/extensions/<Name>` | `<Name>`, kind `extension` |
+
+A marker is `Configuration.xml`, `Configuration/Configuration.mdo` or
+`src/Configuration/Configuration.mdo`, in every layout alike.
+
+An autodetected source-set is named after the directory holding it, verbatim. A
+container may hold other things — `.gitkeep`, `README.md`, a symlink — and those
+are skipped, not reported and not treated as an error. The same holds for the
+container path itself: absent, a plain file or a symlink all mean "no extensions
+in this layout", while a container that could not be read at all (permissions) is
+reported rather than silently reported as empty. `main` stays with the base
+configuration while it exists; when nothing else claims the name, an extension
+directory named `main` keeps it.
+
 ## Command Mapping
 
-Use the `v8-runner` skill and MCP `unica.runtime.execute` only for previews of
-runtime operation arguments.
+Use the package-selected MCP runtime surface directly. In v0.13,
+`unica.run {}` is the source of operation names, implementation status and
+argument schemas.
 
 | Operation | MCP arguments |
 | --- | --- |

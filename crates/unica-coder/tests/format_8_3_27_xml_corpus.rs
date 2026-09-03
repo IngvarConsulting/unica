@@ -98,7 +98,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["bsl-only"],
     },
     MutatorRegistryEntry {
-        tool: "unica.xdto.edit",
+        tool: CANONICAL_APPLY_TOOL,
         operation: "xdto-edit",
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["xdto-add-nested-property"],
@@ -143,7 +143,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["managed-form"],
     },
     MutatorRegistryEntry {
-        tool: "unica.form.add",
+        tool: "unica.apply",
         operation: "form-add",
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["form-add-managed"],
@@ -164,7 +164,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["managed-form"],
     },
     MutatorRegistryEntry {
-        tool: "unica.form.remove",
+        tool: CANONICAL_APPLY_TOOL,
         operation: "form-remove",
         impact: XmlImpactClass::RemoveOrModify,
         case_ids: &["form-remove-managed"],
@@ -266,7 +266,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         ],
     },
     MutatorRegistryEntry {
-        tool: "unica.meta.remove",
+        tool: CANONICAL_APPLY_TOOL,
         operation: "meta-remove",
         impact: XmlImpactClass::RemoveOrModify,
         case_ids: &["meta-remove-object"],
@@ -308,7 +308,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["add-child"],
     },
     MutatorRegistryEntry {
-        tool: "unica.support.edit",
+        tool: "unica.apply",
         operation: "support-edit",
         impact: XmlImpactClass::None,
         case_ids: &["support-edit-bin-only"],
@@ -389,7 +389,7 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "xdto-add-nested-property",
-        tool: "unica.xdto.edit",
+        tool: "unica.apply",
         branch: "nested-property",
     },
     ExecutableCase {
@@ -429,7 +429,7 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "form-add-managed",
-        tool: "unica.form.add",
+        tool: "unica.apply",
         branch: "managed-form",
     },
     ExecutableCase {
@@ -444,7 +444,7 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "form-remove-managed",
-        tool: "unica.form.remove",
+        tool: "unica.apply",
         branch: "remove-managed-form",
     },
     ExecutableCase {
@@ -599,7 +599,7 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "meta-remove-object",
-        tool: "unica.meta.remove",
+        tool: "unica.apply",
         branch: "remove-object",
     },
     ExecutableCase {
@@ -629,7 +629,7 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "support-edit-bin-only",
-        tool: "unica.support.edit",
+        tool: "unica.apply",
         branch: "parent-configurations-bin-only",
     },
     ExecutableCase {
@@ -749,14 +749,146 @@ fn common_args(workspace: &Path) -> Map<String, Value> {
     ])
 }
 
+const CANONICAL_APPLY_TOOL: &str = "unica.apply";
+
+/// Runs one canonical `unica.apply` publication over the packaged stdio
+/// surface: the same production path a host uses, with the daemon state kept
+/// outside the case workspace so the platform checkpoint boundary stays clean.
+fn call_canonical_apply(args: &Map<String, Value>) -> Result<String, String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    static STATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let workspace = args
+        .get("cwd")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "canonical apply corpus call has no workspace".to_string())?;
+    let workspace = fs::canonicalize(workspace).map_err(|error| error.to_string())?;
+    let state = std::env::temp_dir().join(format!(
+        "unica-corpus-apply-state-{}-{}",
+        std::process::id(),
+        STATE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&state).map_err(|error| error.to_string())?;
+    let state = fs::canonicalize(&state).map_err(|error| error.to_string())?;
+    let mut request = args.clone();
+    request.remove("cwd");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
+        .current_dir(&workspace)
+        .env("UNICA_PROVIDER_STATE_DIR", &state)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|error| format!("cannot start canonical unica: {error}"))?;
+    let mut stdin = child.stdin.take().ok_or("canonical unica has no stdin")?;
+    let stdout = child.stdout.take().ok_or("canonical unica has no stdout")?;
+    let mut reader = BufReader::new(stdout);
+    fn exchange(
+        stdin: &mut std::process::ChildStdin,
+        reader: &mut BufReader<std::process::ChildStdout>,
+        request: Value,
+    ) -> Result<Value, String> {
+        let id = request["id"].clone();
+        serde_json::to_writer(&mut *stdin, &request).map_err(|error| error.to_string())?;
+        stdin.write_all(b"\n").map_err(|error| error.to_string())?;
+        stdin.flush().map_err(|error| error.to_string())?;
+        loop {
+            let mut line = String::new();
+            let read = reader
+                .read_line(&mut line)
+                .map_err(|error| error.to_string())?;
+            if read == 0 {
+                return Err("canonical unica closed stdout before answering".to_string());
+            }
+            let response: Value = match serde_json::from_str(line.trim()) {
+                Ok(response) => response,
+                Err(_) => continue,
+            };
+            if response.get("id") == Some(&id) {
+                return Ok(response);
+            }
+        }
+    }
+    exchange(
+        &mut stdin,
+        &mut reader,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "format-corpus", "version": "0"}
+            }
+        }),
+    )?;
+    serde_json::to_writer(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .map_err(|error| error.to_string())?;
+    stdin.write_all(b"\n").map_err(|error| error.to_string())?;
+    let response = exchange(
+        &mut stdin,
+        &mut reader,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": CANONICAL_APPLY_TOOL, "arguments": Value::Object(request)}
+        }),
+    )?;
+    drop(stdin);
+    let _ = child.wait();
+    let _ = fs::remove_dir_all(&state);
+    let structured = response
+        .get("result")
+        .and_then(|result| result.get("structuredContent"))
+        .cloned()
+        .ok_or_else(|| format!("canonical apply answered without structuredContent: {response}"))?;
+    let ok = structured["ok"].as_bool().unwrap_or(false);
+    let summary = structured["summary"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let errors = structured["diagnostics"]
+        .as_array()
+        .map(|diagnostics| {
+            diagnostics
+                .iter()
+                .map(|diagnostic| {
+                    format!(
+                        "{}: {}",
+                        diagnostic["code"].as_str().unwrap_or("?"),
+                        diagnostic["message"].as_str().unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !ok || !errors.is_empty() {
+        return Err(format!(
+            "{CANONICAL_APPLY_TOOL} failed: {summary}; errors={errors:?}"
+        ));
+    }
+    Ok(summary)
+}
+
 fn call_public_tool_result(
     tool: &str,
     args: &Map<String, Value>,
 ) -> Result<unica_coder::application::OperationResult, String> {
+    if tool == CANONICAL_APPLY_TOOL {
+        return Err(format!(
+            "{tool} answers through the canonical stdio surface; use call_public_tool"
+        ));
+    }
     let app = UnicaApplication::new();
     let result = if matches!(
         tool,
-        "unica.meta.add" | "unica.meta.edit" | "unica.meta.remove" | "unica.role.edit"
+        "unica.meta.add" | "unica.meta.edit" | "unica.role.edit"
     ) {
         static PROCESS_CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let _guard = PROCESS_CWD_LOCK
@@ -788,6 +920,9 @@ fn call_public_tool_result(
 
 fn call_public_tool(tool: &str, args: &Map<String, Value>) -> Result<String, String> {
     assert_eq!(args.get("dryRun"), Some(&Value::Bool(false)));
+    if tool == CANONICAL_APPLY_TOOL {
+        return call_canonical_apply(args);
+    }
     Ok(call_public_tool_result(tool, args)?.summary)
 }
 
@@ -1376,6 +1511,10 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     ))
 }
 
+fn remove_temp_tree(root: &Path) {
+    platform_support::remove_temp_tree(root);
+}
+
 fn write_designer_project(
     workspace: &Path,
     source_sets: &[(&str, &str, &str)],
@@ -1556,24 +1695,32 @@ fn seed_catalog(workspace: &Path) -> Result<(), String> {
     )
 }
 
-fn form_add_args(workspace: &Path) -> Map<String, Value> {
+/// Canonical `unica.apply` arguments that add one object form: the owner is
+/// addressed logically and the default-form property follows the purpose.
+fn canonical_form_add_args(
+    workspace: &Path,
+    owner_at: &str,
+    form_name: &str,
+) -> Map<String, Value> {
     let mut args = common_args(workspace);
+    args.insert("at".to_string(), Value::String(owner_at.to_string()));
     args.insert(
-        "ObjectPath".to_string(),
-        Value::String("src/Catalogs/CorpusCatalog.xml".to_string()),
+        "ops".to_string(),
+        json!([{
+            "op": "form.add",
+            "args": {"items": [{"name": form_name, "type": "ObjectForm"}]}
+        }]),
     );
-    args.insert(
-        "FormName".to_string(),
-        Value::String("CorpusForm".to_string()),
-    );
-    args.insert("Purpose".to_string(), Value::String("Object".to_string()));
-    args.insert("SetDefault".to_string(), Value::Bool(true));
     args
+}
+
+fn form_add_args(workspace: &Path) -> Map<String, Value> {
+    canonical_form_add_args(workspace, "main:Catalog.CorpusCatalog", "CorpusForm")
 }
 
 fn seed_catalog_form(workspace: &Path) -> Result<(), String> {
     seed_catalog(workspace)?;
-    call_public_tool("unica.form.add", &form_add_args(workspace))?;
+    call_public_tool(CANONICAL_APPLY_TOOL, &form_add_args(workspace))?;
     Ok(())
 }
 
@@ -1586,23 +1733,12 @@ fn seed_report(workspace: &Path) -> Result<(), String> {
 }
 
 fn report_form_add_args(workspace: &Path) -> Map<String, Value> {
-    let mut args = common_args(workspace);
-    args.insert(
-        "ObjectPath".to_string(),
-        Value::String("src/Reports/CorpusReport.xml".to_string()),
-    );
-    args.insert(
-        "FormName".to_string(),
-        Value::String("CorpusForm".to_string()),
-    );
-    args.insert("Purpose".to_string(), Value::String("Object".to_string()));
-    args.insert("SetDefault".to_string(), Value::Bool(true));
-    args
+    canonical_form_add_args(workspace, "main:Report.CorpusReport", "CorpusForm")
 }
 
 fn seed_report_form(workspace: &Path) -> Result<(), String> {
     seed_report(workspace)?;
-    call_public_tool("unica.form.add", &report_form_add_args(workspace))?;
+    call_public_tool(CANONICAL_APPLY_TOOL, &report_form_add_args(workspace))?;
     Ok(())
 }
 
@@ -2043,8 +2179,17 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
     if case.id == "support-edit-bin-only" {
         seed_platform_support_fixture(workspace)?;
         let mut args = common_args(workspace);
-        args.insert("Path".to_string(), Value::String("src".to_string()));
-        args.insert("Capability".to_string(), Value::String("off".to_string()));
+        args.insert(
+            "at".to_string(),
+            Value::String("main:DataProcessor.ТестHTML".to_string()),
+        );
+        args.insert(
+            "ops".to_string(),
+            json!([{
+                "op": "supportCapability.set",
+                "args": {"values": {"enabled": false}}
+            }]),
+        );
         return Ok(args);
     }
 
@@ -2057,22 +2202,22 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         copy_fixture_tree(&fixture, &workspace.join("src"))?;
         write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])?;
         let mut args = common_args(workspace);
-        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         args.insert(
-            "metadataPath".to_string(),
-            Value::String("XDTOPackage.EnterpriseData_1_17_3".to_string()),
+            "at".to_string(),
+            Value::String("main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка".to_string()),
         );
         args.insert(
-            "operations".to_string(),
+            "ops".to_string(),
             json!([{
-                "op": "addProperty",
-                "typeName": "ЛюбаяСсылка",
-                "propertyPath": "СсылкаНаОбъект",
-                "property": {
-                    "name": "Документ_Корпус",
-                    "type": "tns:Документ_ЗаказКлиента",
-                    "minOccurs": 0
-                }
+                "op": "property.add",
+                "args": {"values": {
+                    "propertyPath": "СсылкаНаОбъект",
+                    "property": {
+                        "name": "Документ_Корпус",
+                        "type": "tns:Документ_ЗаказКлиента",
+                        "minOccurs": 0
+                    }
+                }}
             }]),
         );
         return Ok(args);
@@ -2126,7 +2271,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
     if case.id.starts_with("cfe-borrow-") {
         seed_catalog(workspace)?;
         if case.id.ends_with("managed-form") {
-            call_public_tool("unica.form.add", &form_add_args(workspace))?;
+            call_public_tool(CANONICAL_APPLY_TOOL, &form_add_args(workspace))?;
         }
         seed_extension(workspace)?;
         let mut args = common_args(workspace);
@@ -2481,10 +2626,21 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         return Ok(args);
     }
 
-    if matches!(
-        case.id,
-        "meta-edit-predefined-items" | "meta-edit-property" | "meta-remove-object"
-    ) {
+    if case.id == "meta-remove-object" {
+        seed_catalog(workspace)?;
+        let mut args = common_args(workspace);
+        args.insert(
+            "at".to_string(),
+            Value::String("main:Catalog.CorpusCatalog".to_string()),
+        );
+        args.insert(
+            "ops".to_string(),
+            json!([{"op": "object.remove", "args": {"force": true}}]),
+        );
+        return Ok(args);
+    }
+
+    if matches!(case.id, "meta-edit-predefined-items" | "meta-edit-property") {
         seed_catalog(workspace)?;
         let mut args = common_args(workspace);
         args.insert("sourceSet".to_string(), Value::String("main".to_string()));
@@ -2518,9 +2674,6 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                 "operations".to_string(),
                 json!([{"op": "setProperties", "values": {"Comment": "Corpus edited"}}]),
             );
-        } else {
-            args.insert("force".to_string(), Value::Bool(true));
-            args.insert("confirm".to_string(), Value::Bool(true));
         }
         return Ok(args);
     }
@@ -2648,16 +2801,12 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
             );
         } else {
             args.insert(
-                "ObjectName".to_string(),
-                Value::String("CorpusCatalog".to_string()),
+                "at".to_string(),
+                Value::String("main:Catalog.CorpusCatalog.Form.CorpusForm".to_string()),
             );
             args.insert(
-                "FormName".to_string(),
-                Value::String("CorpusForm".to_string()),
-            );
-            args.insert(
-                "SrcDir".to_string(),
-                Value::String("src/Catalogs".to_string()),
+                "ops".to_string(),
+                json!([{"op": "form.remove", "args": {}}]),
             );
         }
         return Ok(args);
@@ -3893,7 +4042,6 @@ fn live_public_mutators() -> BTreeMap<&'static str, &'static str> {
                 ToolHandler::Metadata { .. } => match tool.name {
                     "unica.meta.add" => "meta-add",
                     "unica.meta.edit" => "meta-edit",
-                    "unica.meta.remove" => "meta-remove",
                     _ => return None,
                 },
                 _ => return None,
@@ -3910,14 +4058,19 @@ fn every_public_native_mutator_has_xml_impact_and_case_coverage() {
     let mut seen_operations = BTreeSet::new();
     for entry in MUTATOR_REGISTRY {
         assert!(
-            registry.insert(entry.tool, entry.operation).is_none(),
-            "duplicate registry tool: {}",
-            entry.tool
-        );
-        assert!(
             seen_operations.insert(entry.operation),
             "duplicate registry operation: {}",
             entry.operation
+        );
+        if entry.tool == CANONICAL_APPLY_TOOL {
+            // A writer that already left the v0.12 registry is driven through
+            // the canonical `unica.apply` surface; its row keys by operation.
+            continue;
+        }
+        assert!(
+            registry.insert(entry.tool, entry.operation).is_none(),
+            "duplicate registry tool: {}",
+            entry.tool
         );
     }
 
@@ -4036,7 +4189,7 @@ fn meta_edit_structural_resource_insertions_build_exact_platform_cases() {
             "{case_id}: {descriptor}"
         );
 
-        fs::remove_dir_all(root).unwrap();
+        remove_temp_tree(&root);
     }
 }
 
@@ -4188,7 +4341,7 @@ fn source_resource_reads_preserve_every_corpus_byte() {
         capture_workspace_payloads_for_source_test(&workspace),
         before
     );
-    fs::remove_dir_all(&root).unwrap();
+    remove_temp_tree(&root);
 }
 
 fn capture_workspace_payloads_for_source_test(root: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -4270,7 +4423,7 @@ fn cf_init_public_case_creates_real_xml() {
     let delta = enforce_xml_impact(entry.impact, &before, &after).unwrap();
     assert!(delta.created.contains(&"src/Configuration.xml".to_string()));
     assert_eq!(gate.completed_target_calls, 1);
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -4324,7 +4477,7 @@ fn managed_form_corpus_cases_mutate_content_without_overwriting_metadata_wrapper
     }
 
     assert_eq!(gate.completed_target_calls, 2);
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -4367,7 +4520,7 @@ fn pre_snapshot_materializes_only_immutable_pre_call_bytes() {
         require_xml_payloads_unchanged(&workspace, &captured_post, "post-workspace").unwrap_err();
     assert!(error.contains("changed after"), "{error}");
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -4450,7 +4603,7 @@ fn non_xml_manifest_inventory_binds_bsl_tampering_for_none_impact_case() {
         require_non_xml_payloads_unchanged(case, &workspace, &post_payloads, "tampered workspace")
             .unwrap_err();
     assert!(error.contains("changed after"), "{error}");
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 fn assert_platform_canonical_bsl(bytes: &[u8]) {
@@ -4509,7 +4662,7 @@ fn meta_reference_cases_seed_platform_canonical_event_handlers_bsl() {
             fs::read(workspace.join("src/CommonModules/EventHandlers/Ext/Module.bsl")).unwrap();
         assert_platform_canonical_bsl(&module);
         assert_eq!(module, expected, "{case_id}");
-        fs::remove_dir_all(root).unwrap();
+        remove_temp_tree(&root);
     }
 }
 
@@ -4544,7 +4697,7 @@ fn code_patch_case_seeds_and_preserves_platform_canonical_bsl_bytes() {
         "inserted code must use the surrounding platform CRLF convention"
     );
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -4611,7 +4764,7 @@ fn cfe_patch_method_case_seeds_a_registered_adopted_common_module() {
         "the borrowed interceptor target must exist in the base CommonModule"
     );
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -4676,7 +4829,7 @@ fn non_xml_inventory_covers_every_xml_none_impact_case() {
                 .unwrap(),
             );
         }
-        fs::remove_dir_all(root).unwrap();
+        remove_temp_tree(&root);
     }
 }
 
@@ -4721,7 +4874,7 @@ fn managed_form_cases_address_logform_content_and_spare_the_descriptor() {
             "{case_id} did not change exactly the managed form content"
         );
 
-        fs::remove_dir_all(root).unwrap();
+        remove_temp_tree(&root);
     }
 }
 
@@ -4898,7 +5051,7 @@ fn cfe_patch_method_inventory_covers_atomic_xml_and_bsl_change() {
         assert_platform_canonical_bsl(&fs::read(workspace.join(extension_module)).unwrap());
         assert_platform_canonical_bsl(&fs::read(workspace.join(base_module)).unwrap());
         assert_exact_extended_property_state(&workspace.join(descriptor), property);
-        fs::remove_dir_all(root).unwrap();
+        remove_temp_tree(&root);
     }
 }
 
@@ -5016,7 +5169,7 @@ fn meta_edit_event_source_case_executes_public_writer_and_binds_exact_delta() {
         "two isolated generations must have byte-identical auxiliary artifacts"
     );
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -5053,7 +5206,7 @@ fn html_template_case_inventories_the_platform_page_set_layout() {
     assert_eq!(page["seed"], false);
     assert_eq!(page["delta"], "created");
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -5083,7 +5236,7 @@ fn corpus_case_inventories_stable_files_outside_platform_boundaries() {
     );
     assert!(paths.iter().all(|path| !path.contains("/workspace/src/")));
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -5199,24 +5352,21 @@ fn tracked_xdto_package_fixture_executes_public_corpus_preview_apply_and_noop() 
     let before = hashes_for_xml_payloads(&captured);
     let mut preview_args = args.clone();
     preview_args.insert("dryRun".to_string(), Value::Bool(true));
-    let preview = UnicaApplication::new()
-        .call_tool(case.tool, &preview_args)
-        .unwrap();
-    assert!(preview.ok, "{preview:?}");
-    assert_eq!(preview.data.as_ref().unwrap()["noOp"], false);
+    assert_eq!(case.tool, CANONICAL_APPLY_TOOL);
+    let preview = call_canonical_apply(&preview_args).unwrap();
+    assert!(!preview.is_empty(), "{preview:?}");
     assert_eq!(fs::read(&package_path).unwrap(), package_before);
 
-    let applied = UnicaApplication::new().call_tool(case.tool, &args).unwrap();
-    assert!(applied.ok, "{applied:?}");
+    call_canonical_apply(&args).unwrap();
     let package_after = fs::read(&package_path).unwrap();
     assert_eq!(package_after, expected_package);
 
-    let repeated = UnicaApplication::new()
-        .call_tool(case.tool, &preview_args)
-        .unwrap();
-    assert!(repeated.ok, "{repeated:?}");
-    assert_eq!(repeated.data.as_ref().unwrap()["noOp"], true);
-    assert!(repeated.cache.events.is_empty());
+    // Replanning the same operation over the applied package is a noop: the
+    // preview succeeds, the publication writes nothing new, and the bytes stay
+    // exactly what the first apply produced.
+    call_canonical_apply(&preview_args).expect("replanning the applied operation previews");
+    assert_eq!(fs::read(&package_path).unwrap(), package_after);
+    call_canonical_apply(&args).expect("replanning the applied operation publishes");
     assert_eq!(fs::read(&package_path).unwrap(), package_after);
 
     let post_payloads = capture_xml_payloads(&workspace).unwrap();
@@ -5255,7 +5405,7 @@ fn tracked_xdto_package_fixture_executes_public_corpus_preview_apply_and_noop() 
         Some("cases/xdto-add-nested-property/workspace/src/Configuration.xml")
     );
 
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -5308,7 +5458,7 @@ fn output_directory_refusal_rules_are_fail_closed() {
         root.canonicalize().unwrap().join("explicit-absent-target")
     );
     assert!(!absent.exists());
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]
@@ -5327,7 +5477,7 @@ fn empty_directory_inventory_detects_added_and_removed_paths() {
 
     assert_eq!(after, vec!["added-empty"]);
     assert_ne!(before, after);
-    fs::remove_dir_all(root).unwrap();
+    remove_temp_tree(&root);
 }
 
 #[test]

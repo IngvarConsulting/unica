@@ -1,6 +1,30 @@
+use crate::application::invocation_store::InvocationStore;
 use crate::application::UnicaApplication;
 use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
+use crate::infrastructure::task_store::{
+    FileInvocationStore, RecoveryReport, SystemEpochMillisClock,
+};
+use std::fs::File;
 use std::sync::Arc;
+
+pub(crate) struct OpenedDaemonInvocationStore {
+    pub(crate) store: Arc<dyn InvocationStore>,
+    pub(crate) recovery: RecoveryReport,
+}
+
+pub(crate) fn open_daemon_invocation_store_from_directory(
+    private_store_root: File,
+) -> Result<OpenedDaemonInvocationStore, String> {
+    let (store, recovery) = FileInvocationStore::open_retained_directory(
+        private_store_root,
+        Arc::new(SystemEpochMillisClock),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(OpenedDaemonInvocationStore {
+        store: Arc::new(store),
+        recovery,
+    })
+}
 
 impl UnicaApplication {
     pub fn new() -> Self {
@@ -19,9 +43,9 @@ pub(crate) mod testing {
     pub(crate) use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
     pub(crate) use crate::infrastructure::native_operations::meta::{
         with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
-        with_meta_info_descriptor_image_hook, with_meta_remove_before_reauthorization_hook,
-        with_registrar_processing_hook, with_subsystem_evidence_processing_hook,
-        RegistrarProcessingPhase, SubsystemEvidenceProcessingPhase,
+        with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
+        with_subsystem_evidence_processing_hook, RegistrarProcessingPhase,
+        SubsystemEvidenceProcessingPhase,
     };
     pub(crate) use crate::infrastructure::native_operations::single_file_publisher::{
         with_publication_lock_contention_signal, with_publication_lock_pause,

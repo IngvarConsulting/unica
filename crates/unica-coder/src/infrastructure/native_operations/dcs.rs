@@ -2,12 +2,14 @@
 
 use crate::application::operation_descriptors::TEMPLATE_PATH;
 use crate::application::AdapterOutcome;
+use crate::domain::address::QualifiedAddress;
 use crate::domain::support_state::{
     ObjectSupportData as DomainObjectSupportData, SupportStateReader,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
+    logical_selection, physical_selection, typed_reader_metadata_target, AttachedResource,
+    ResolvedReadTarget,
 };
 use crate::infrastructure::native_operations::mxl::TEMPLATE_KINDS;
 use crate::infrastructure::platform_xml_owner::DCS_ROOT;
@@ -32,6 +34,12 @@ pub(crate) const DCS_CORE_NS: &str = "http://v8.1c.ru/8.1/data-composition-syste
 pub(crate) const DCS_COMMON_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/common";
 pub(crate) const V8_DATA_NS: &str = "http://v8.1c.ru/8.1/data/core";
 pub(crate) const XML_SCHEMA_INSTANCE_NS: &str = "http://www.w3.org/2001/XMLSchema-instance";
+
+pub(crate) fn typed_dcs_reader_target(
+    address: &QualifiedAddress,
+) -> Option<crate::domain::source_target::MetadataAddress> {
+    typed_reader_metadata_target(address, TEMPLATE_KINDS)
+}
 
 pub(crate) fn require_dcs_root(root: roxmltree::Node<'_, '_>) -> Result<(), String> {
     let local_name = root.tag_name().name();
@@ -499,6 +507,19 @@ fn dcs_info_collect(
     }
 }
 
+pub(crate) fn parse_dcs_info_xml(
+    text: &str,
+    support: DomainObjectSupportData,
+) -> Result<DcsInfoData, String> {
+    const NS_SCHEMA: &str = DCS_SCHEMA_NS;
+    const NS_SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("DCS XML parse error: {err}"))?;
+    let root = doc.root_element();
+    require_dcs_root(root)?;
+    Ok(dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS, support))
+}
+
 pub(crate) fn analyze_dcs_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -512,9 +533,6 @@ pub(crate) fn analyze_dcs_info_with_data(
     context: &WorkspaceContext,
     support_reader: &dyn SupportStateReader,
 ) -> DcsInfoExecution {
-    const NS_SCHEMA: &str = DCS_SCHEMA_NS;
-    const NS_SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
-
     let result = (|| -> Result<(DcsInfoData, PathBuf), String> {
         let selection = resolve_dcs_info_target(args, context)?;
         let template_path = selection.resource_path;
@@ -522,16 +540,10 @@ pub(crate) fn analyze_dcs_info_with_data(
             .canonicalize()
             .unwrap_or_else(|_| template_path.clone());
         let text = read_utf8_sig(&resolved_path)?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", resolved_path.display()))?;
-        let root = doc.root_element();
-        require_dcs_root(root)?;
-        // Eleven modes sliced one schema into eleven reports. Data answers
-        // with every section at once; a caller projects what it needs.
         let support = support_reader
             .object_support(&selection.target)
             .map_err(|error| error.to_string())?;
-        let data = dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS, support);
+        let data = parse_dcs_info_xml(&text, support)?;
         Ok((data, resolved_path))
     })();
 
@@ -5597,407 +5609,19 @@ pub(crate) fn edit_dcs_with_data(
             let before_text = xml_text.clone();
             let before_force_save = force_save;
             let item_value = value.clone();
-            match operation {
-                "add-field" => dcs_edit_add_field(
-                    &mut xml_text,
-                    data_set,
-                    variant,
-                    &value,
-                    no_selection,
-                    &mut stdout,
-                )?,
-                "add-total" => {
-                    let (key, expression) = value
-                        .split_once(':')
-                        .map(|(left, right)| (left.trim(), right.trim()))
-                        .unwrap_or((value.trim(), ""));
-                    let expression = dcs_edit_total_expression(key, expression);
-                    dcs_edit_add_top_level_fragment(
-                        &mut xml_text,
-                        "totalField",
-                        "dataPath",
-                        key,
-                        &dcs_edit_total_fragment(key, &expression),
-                        &format!("[OK] TotalField \"{key}\" = {expression} added\n"),
-                        &mut stdout,
-                    )?;
-                }
-                "add-calculated-field" => {
-                    let parsed = dcs_edit_parse_calc_field(&value);
-                    let fragment = dcs_edit_calc_field_fragment(&parsed, "\t")?;
-                    dcs_edit_add_top_level_fragment(
-                        &mut xml_text,
-                        "calculatedField",
-                        "dataPath",
-                        &parsed.data_path,
-                        &fragment,
-                        &format!(
-                            "[OK] CalculatedField \"{}\" = {} added\n",
-                            parsed.data_path, parsed.expression
-                        ),
-                        &mut stdout,
-                    )?;
-                    if !no_selection {
-                        let fragment = dcs_edit_selection_fragment(&parsed.data_path, "\t\t\t");
-                        if dcs_edit_insert_prefixed_item(
-                            &mut xml_text,
-                            variant,
-                            "dcsset:selection",
-                            &fragment,
-                        )
-                        .is_ok()
-                        {}
-                    }
-                }
-                "add-parameter" => {
-                    let parsed = dcs_edit_parse_parameter(&value);
-                    let fragment = dcs_edit_parameter_fragment(&parsed, "\t")?;
-                    dcs_edit_add_top_level_fragment(
-                        &mut xml_text,
-                        "parameter",
-                        "name",
-                        &parsed.name,
-                        &fragment,
-                        &format!("[OK] Parameter \"{}\" added\n", parsed.name),
-                        &mut stdout,
-                    )?;
-                    if parsed.auto_dates {
-                        for suffix in ["ДатаНачала", "ДатаОкончания"] {
-                            let auto = DcsEditParameter {
-                                name: suffix.to_string(),
-                                title: if suffix == "ДатаНачала" {
-                                    "Начало периода".to_string()
-                                } else {
-                                    "Конец периода".to_string()
-                                },
-                                type_name: "dateTime".to_string(),
-                                values: vec!["0001-01-01T00:00:00".to_string()],
-                                hidden: true,
-                                always: false,
-                                value_list_allowed: false,
-                                available_values: Vec::new(),
-                                auto_dates: false,
-                                expression: Some(format!("&{}.{}", parsed.name, suffix)),
-                                type_declared: true,
-                            };
-                            let auto_fragment = dcs_edit_parameter_fragment(&auto, "\t")?;
-                            let _ = dcs_edit_add_top_level_fragment(
-                                &mut xml_text,
-                                "parameter",
-                                "name",
-                                &auto.name,
-                                &auto_fragment,
-                                "",
-                                &mut String::new(),
-                            );
-                        }
-                    }
-                }
-                "add-filter" => {
-                    let parsed = dcs_edit_parse_filter(&value);
-                    dcs_edit_validate_filter_literal(&parsed)?;
-                    let indent = dcs_edit_settings_container_child_indent(
-                        &xml_text,
-                        variant,
-                        "dcsset:filter",
-                    )
-                    .unwrap_or_else(|_| "\t\t\t".to_string());
-                    let fragment = dcs_edit_filter_fragment(&parsed, &indent);
-                    dcs_edit_insert_or_create_settings_item(
-                        &mut xml_text,
-                        variant,
-                        "dcsset:filter",
-                        &fragment,
-                    )?;
-                }
-                "add-dataParameter" => {
-                    let parsed = dcs_edit_parse_data_parameter(&value);
-                    let indent = dcs_edit_settings_container_child_indent(
-                        &xml_text,
-                        variant,
-                        "dcsset:dataParameters",
-                    )
-                    .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                    let fragment = dcs_edit_data_parameter_fragment(&parsed, &indent)?;
-                    dcs_edit_insert_or_create_settings_item(
-                        &mut xml_text,
-                        variant,
-                        "dcsset:dataParameters",
-                        &fragment,
-                    )?;
-                }
-                "set-query" => {
-                    let query = dcs_compile_resolve_query_value_with_inputs(
-                        &value,
-                        base_dir,
-                        &context.cwd,
-                        &mut query_inputs,
-                    )?;
-                    dcs_edit_set_query(&mut xml_text, data_set, &query)?;
-                }
-                "patch-query" => {
-                    let (value, once) = dcs_edit_extract_once_marker(&value);
-                    let Some((old, new)) = value.split_once(" => ") else {
-                        return Err(
-                            "patch-query value must contain ' => ' separator: old => new"
-                                .to_string(),
-                        );
-                    };
-                    dcs_edit_patch_query(&mut xml_text, data_set, old, new, once)?;
-                }
-                "clear-selection" => {
-                    dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:selection")?;
-                }
-                "clear-order" => {
-                    dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:order")?;
-                }
-                "clear-filter" => {
-                    dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:filter")?;
-                }
-                "clear-conditionalAppearance" => {
-                    dcs_edit_clear_prefixed_container(
-                        &mut xml_text,
-                        variant,
-                        "dcsset:conditionalAppearance",
-                    )?;
-                }
-                "add-selection" => {
-                    let parsed = dcs_edit_parse_selection_value(&value);
-                    if let Some(group_name) = &parsed.group {
-                        if dcs_edit_insert_selection_into_group(
-                            &mut xml_text,
-                            variant,
-                            group_name,
-                            &parsed.field,
-                        )? {
-                        } else {
-                            let indent = dcs_edit_settings_container_child_indent(
-                                &xml_text,
-                                variant,
-                                "dcsset:selection",
-                            )
-                            .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                            let fragment = dcs_edit_selection_fragment(&parsed.field, &indent);
-                            dcs_edit_insert_or_create_settings_item(
-                                &mut xml_text,
-                                variant,
-                                "dcsset:selection",
-                                &fragment,
-                            )?;
-                        }
-                    } else {
-                        let indent = dcs_edit_settings_container_child_indent(
-                            &xml_text,
-                            variant,
-                            "dcsset:selection",
-                        )
-                        .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                        let fragment = dcs_edit_selection_fragment(&parsed.field, &indent);
-                        dcs_edit_insert_or_create_settings_item(
-                            &mut xml_text,
-                            variant,
-                            "dcsset:selection",
-                            &fragment,
-                        )?;
-                    }
-                }
-                "add-order" => {
-                    let indent = dcs_edit_settings_container_child_indent(
-                        &xml_text,
-                        variant,
-                        "dcsset:order",
-                    )
-                    .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                    let fragment = dcs_edit_order_fragment(&value, &indent);
-                    dcs_edit_insert_or_create_settings_item(
-                        &mut xml_text,
-                        variant,
-                        "dcsset:order",
-                        &fragment,
-                    )?;
-                }
-                "add-dataSetLink" => {
-                    let parsed = dcs_edit_parse_data_set_link(&value)?;
-                    let fragment = dcs_edit_data_set_link_fragment(&parsed, "\t");
-                    dcs_edit_insert_top_level_fragment(&mut xml_text, "dataSetLink", &fragment)?;
-                    let mut desc = format!(
-                        "{} > {} on {} = {}",
-                        parsed.source, parsed.dest, parsed.source_expr, parsed.dest_expr
-                    );
-                    if !parsed.parameter.is_empty() {
-                        desc.push_str(&format!(" [param {}]", parsed.parameter));
-                    }
-                }
-                "add-dataSet" => {
-                    let parsed = dcs_edit_parse_data_set_with_inputs(
-                        &value,
-                        base_dir,
-                        &context.cwd,
-                        &mut query_inputs,
-                    )?;
-                    if dcs_edit_top_level_contains(&xml_text, "dataSet", "name", &parsed.name) {
-                    } else {
-                        let source = dcs_edit_first_data_source(&xml_text)
-                            .unwrap_or_else(|| "ИсточникДанных1".to_string());
-                        let fragment = dcs_edit_data_set_fragment(&parsed, &source, "\t");
-                        dcs_edit_insert_top_level_fragment(&mut xml_text, "dataSet", &fragment)?;
-                    }
-                }
-                "add-variant" => {
-                    let parsed = dcs_edit_parse_variant(&value);
-                    if dcs_edit_variant_exists(&xml_text, &parsed.name) {
-                    } else {
-                        let fragment = dcs_edit_variant_fragment(&parsed, "\t");
-                        dcs_edit_insert_before_root_close(&mut xml_text, &fragment)?;
-                    }
-                }
-                "add-conditionalAppearance" => {
-                    let parsed = dcs_edit_parse_conditional_appearance(&value);
-                    for filter in &parsed.filters {
-                        dcs_edit_validate_filter_literal(filter)?;
-                    }
-                    let indent = dcs_edit_settings_container_child_indent(
-                        &xml_text,
-                        variant,
-                        "dcsset:conditionalAppearance",
-                    )
-                    .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                    let fragment = dcs_edit_conditional_appearance_fragment(&parsed, &indent);
-                    dcs_edit_insert_or_create_settings_item(
-                        &mut xml_text,
-                        variant,
-                        "dcsset:conditionalAppearance",
-                        &fragment,
-                    )?;
-                }
-                "add-drilldown" => {
-                    // Only a real insertion counts: forcing the save
-                    // unconditionally reported `applied` for a resource the
-                    // schema has no named template for.
-                    if matches!(
-                        dcs_edit_add_drilldown(&mut xml_text, &value),
-                        DcsEditDrilldownResult::Added
-                    ) {
-                        force_save = true;
-                    }
-                }
-                "set-outputParameter" => {
-                    let parsed = dcs_edit_parse_output_parameter(&value)?;
-                    if let Ok(range) = dcs_edit_prefixed_container_range(
-                        &xml_text,
-                        variant,
-                        "dcsset:outputParameters",
-                    ) {
-                        dcs_edit_remove_item_by_child(
-                            &mut xml_text,
-                            (range.start, range.end),
-                            "dcscor:item",
-                            "dcscor:parameter",
-                            &parsed.key,
-                        )?;
-                    }
-                    let indent = dcs_edit_settings_container_child_indent(
-                        &xml_text,
-                        variant,
-                        "dcsset:outputParameters",
-                    )
-                    .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                    let fragment = dcs_edit_output_parameter_fragment(&parsed, &indent)?;
-                    dcs_edit_insert_or_create_settings_item(
-                        &mut xml_text,
-                        variant,
-                        "dcsset:outputParameters",
-                        &fragment,
-                    )?;
-                }
-                "set-structure" => {
-                    let parsed = dcs_edit_parse_structure(&value);
-                    let fragments = dcs_edit_structure_fragments(&parsed, "\t\t\t");
-                    dcs_edit_replace_structure(&mut xml_text, variant, &fragments)?;
-                }
-                "modify-structure" => {
-                    let parsed = dcs_edit_parse_structure(&value);
-                    dcs_edit_modify_structure(&mut xml_text, variant, &parsed, &mut stdout)?;
-                }
-                "remove-field" => {
-                    dcs_edit_remove_dataset_item(
-                        &mut xml_text,
-                        data_set,
-                        "field",
-                        "dataPath",
-                        &value,
-                    )?;
-                    dcs_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)?;
-                }
-                "remove-parameter" => {
-                    dcs_edit_remove_top_level_item(&mut xml_text, "parameter", "name", &value)?;
-                }
-                "modify-field" => {
-                    let parsed = dcs_edit_parse_field(&value);
-                    dcs_edit_replace_dataset_field(&mut xml_text, data_set, &parsed)?;
-                }
-                "set-field-role" => {
-                    dcs_edit_set_field_role(&mut xml_text, data_set, &value, &mut stdout)?;
-                }
-                "modify-filter" => {
-                    let parsed = dcs_edit_parse_filter(&value);
-                    dcs_edit_validate_filter_literal(&parsed)?;
-                    force_save |=
-                        dcs_edit_modify_filter(&mut xml_text, variant, &parsed, &mut stdout)?;
-                }
-                "modify-dataParameter" => {
-                    let parsed = dcs_edit_parse_data_parameter(&value);
-                    force_save |= dcs_edit_modify_data_parameter(
-                        &mut xml_text,
-                        variant,
-                        &parsed,
-                        &mut stdout,
-                    )?;
-                }
-                "modify-parameter" => {
-                    let parsed = dcs_edit_parse_parameter_patch(&value);
-                    dcs_edit_modify_parameter(&mut xml_text, &parsed, &mut stdout)?;
-                }
-                "rename-parameter" => {
-                    dcs_edit_rename_parameter(&mut xml_text, &value, &mut stdout)?;
-                }
-                "reorder-parameters" => {
-                    dcs_edit_reorder_parameters(&mut xml_text, &value, &mut stdout)?;
-                }
-                "remove-total" => {
-                    dcs_edit_remove_top_level_item(
-                        &mut xml_text,
-                        "totalField",
-                        "dataPath",
-                        &value,
-                    )?;
-                }
-                "remove-calculated-field" => {
-                    dcs_edit_remove_top_level_item(
-                        &mut xml_text,
-                        "calculatedField",
-                        "dataPath",
-                        &value,
-                    )?;
-                    dcs_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)?;
-                }
-                "remove-filter" => {
-                    let filter_range =
-                        dcs_edit_prefixed_container_range(&xml_text, variant, "dcsset:filter")?;
-                    dcs_edit_remove_item_by_child(
-                        &mut xml_text,
-                        (filter_range.start, filter_range.end),
-                        "dcsset:item",
-                        "dcsset:left",
-                        &value,
-                    )?;
-                }
-                other => {
-                    return Err(format!(
-                        "native dcs-edit does not support Operation '{other}' yet"
-                    ));
-                }
-            }
+            dcs_edit_apply_operation(
+                &mut xml_text,
+                operation,
+                &value,
+                data_set,
+                variant,
+                no_selection,
+                base_dir,
+                &context.cwd,
+                &mut query_inputs,
+                &mut stdout,
+                &mut force_save,
+            )?;
             let applied = xml_text != before_text || force_save != before_force_save;
             items.push(DcsEditItemData {
                 value: item_value,
@@ -6102,6 +5726,406 @@ pub(crate) fn edit_dcs_with_data(
             data: None,
         },
     }
+}
+
+/// Applies one legacy `dcs-edit` operation to the schema text. This is the
+/// single source of the DCS transforms: the legacy adapter and the v0.13
+/// staged planner both route through it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dcs_edit_apply_operation(
+    xml_text_param: &mut String,
+    operation: &str,
+    value: &str,
+    data_set: &str,
+    variant: &str,
+    no_selection: bool,
+    base_dir: &Path,
+    cwd: &Path,
+    query_inputs: &mut Vec<ExactFileInput>,
+    stdout: &mut String,
+    force_save_param: &mut bool,
+) -> Result<(), String> {
+    let value = value.to_string();
+    let mut xml_text = std::mem::take(xml_text_param);
+    let mut force_save = *force_save_param;
+    let result = (|| -> Result<(), String> {
+        match operation {
+            "add-field" => dcs_edit_add_field(
+                &mut xml_text,
+                data_set,
+                variant,
+                &value,
+                no_selection,
+                stdout,
+            )?,
+            "add-total" => {
+                let (key, expression) = value
+                    .split_once(':')
+                    .map(|(left, right)| (left.trim(), right.trim()))
+                    .unwrap_or((value.trim(), ""));
+                let expression = dcs_edit_total_expression(key, expression);
+                dcs_edit_add_top_level_fragment(
+                    &mut xml_text,
+                    "totalField",
+                    "dataPath",
+                    key,
+                    &dcs_edit_total_fragment(key, &expression),
+                    &format!("[OK] TotalField \"{key}\" = {expression} added\n"),
+                    stdout,
+                )?;
+            }
+            "add-calculated-field" => {
+                let parsed = dcs_edit_parse_calc_field(&value);
+                let fragment = dcs_edit_calc_field_fragment(&parsed, "\t")?;
+                dcs_edit_add_top_level_fragment(
+                    &mut xml_text,
+                    "calculatedField",
+                    "dataPath",
+                    &parsed.data_path,
+                    &fragment,
+                    &format!(
+                        "[OK] CalculatedField \"{}\" = {} added\n",
+                        parsed.data_path, parsed.expression
+                    ),
+                    stdout,
+                )?;
+                if !no_selection {
+                    let fragment = dcs_edit_selection_fragment(&parsed.data_path, "\t\t\t");
+                    if dcs_edit_insert_prefixed_item(
+                        &mut xml_text,
+                        variant,
+                        "dcsset:selection",
+                        &fragment,
+                    )
+                    .is_ok()
+                    {}
+                }
+            }
+            "add-parameter" => {
+                let parsed = dcs_edit_parse_parameter(&value);
+                let fragment = dcs_edit_parameter_fragment(&parsed, "\t")?;
+                dcs_edit_add_top_level_fragment(
+                    &mut xml_text,
+                    "parameter",
+                    "name",
+                    &parsed.name,
+                    &fragment,
+                    &format!("[OK] Parameter \"{}\" added\n", parsed.name),
+                    stdout,
+                )?;
+                if parsed.auto_dates {
+                    for suffix in ["ДатаНачала", "ДатаОкончания"] {
+                        let auto = DcsEditParameter {
+                            name: suffix.to_string(),
+                            title: if suffix == "ДатаНачала" {
+                                "Начало периода".to_string()
+                            } else {
+                                "Конец периода".to_string()
+                            },
+                            type_name: "dateTime".to_string(),
+                            values: vec!["0001-01-01T00:00:00".to_string()],
+                            hidden: true,
+                            always: false,
+                            value_list_allowed: false,
+                            available_values: Vec::new(),
+                            auto_dates: false,
+                            expression: Some(format!("&{}.{}", parsed.name, suffix)),
+                            type_declared: true,
+                        };
+                        let auto_fragment = dcs_edit_parameter_fragment(&auto, "\t")?;
+                        let _ = dcs_edit_add_top_level_fragment(
+                            &mut xml_text,
+                            "parameter",
+                            "name",
+                            &auto.name,
+                            &auto_fragment,
+                            "",
+                            &mut String::new(),
+                        );
+                    }
+                }
+            }
+            "add-filter" => {
+                let parsed = dcs_edit_parse_filter(&value);
+                dcs_edit_validate_filter_literal(&parsed)?;
+                let indent =
+                    dcs_edit_settings_container_child_indent(&xml_text, variant, "dcsset:filter")
+                        .unwrap_or_else(|_| "\t\t\t".to_string());
+                let fragment = dcs_edit_filter_fragment(&parsed, &indent);
+                dcs_edit_insert_or_create_settings_item(
+                    &mut xml_text,
+                    variant,
+                    "dcsset:filter",
+                    &fragment,
+                )?;
+            }
+            "add-dataParameter" => {
+                let parsed = dcs_edit_parse_data_parameter(&value);
+                let indent = dcs_edit_settings_container_child_indent(
+                    &xml_text,
+                    variant,
+                    "dcsset:dataParameters",
+                )
+                .unwrap_or_else(|_| "\t\t\t\t".to_string());
+                let fragment = dcs_edit_data_parameter_fragment(&parsed, &indent)?;
+                dcs_edit_insert_or_create_settings_item(
+                    &mut xml_text,
+                    variant,
+                    "dcsset:dataParameters",
+                    &fragment,
+                )?;
+            }
+            "set-query" => {
+                let query = dcs_compile_resolve_query_value_with_inputs(
+                    &value,
+                    base_dir,
+                    cwd,
+                    query_inputs,
+                )?;
+                dcs_edit_set_query(&mut xml_text, data_set, &query)?;
+            }
+            "patch-query" => {
+                let (value, once) = dcs_edit_extract_once_marker(&value);
+                let Some((old, new)) = value.split_once(" => ") else {
+                    return Err(
+                        "patch-query value must contain ' => ' separator: old => new".to_string(),
+                    );
+                };
+                dcs_edit_patch_query(&mut xml_text, data_set, old, new, once)?;
+            }
+            "clear-selection" => {
+                dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:selection")?;
+            }
+            "clear-order" => {
+                dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:order")?;
+            }
+            "clear-filter" => {
+                dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:filter")?;
+            }
+            "clear-conditionalAppearance" => {
+                dcs_edit_clear_prefixed_container(
+                    &mut xml_text,
+                    variant,
+                    "dcsset:conditionalAppearance",
+                )?;
+            }
+            "add-selection" => {
+                let parsed = dcs_edit_parse_selection_value(&value);
+                if let Some(group_name) = &parsed.group {
+                    if dcs_edit_insert_selection_into_group(
+                        &mut xml_text,
+                        variant,
+                        group_name,
+                        &parsed.field,
+                    )? {
+                    } else {
+                        let indent = dcs_edit_settings_container_child_indent(
+                            &xml_text,
+                            variant,
+                            "dcsset:selection",
+                        )
+                        .unwrap_or_else(|_| "\t\t\t\t".to_string());
+                        let fragment = dcs_edit_selection_fragment(&parsed.field, &indent);
+                        dcs_edit_insert_or_create_settings_item(
+                            &mut xml_text,
+                            variant,
+                            "dcsset:selection",
+                            &fragment,
+                        )?;
+                    }
+                } else {
+                    let indent = dcs_edit_settings_container_child_indent(
+                        &xml_text,
+                        variant,
+                        "dcsset:selection",
+                    )
+                    .unwrap_or_else(|_| "\t\t\t\t".to_string());
+                    let fragment = dcs_edit_selection_fragment(&parsed.field, &indent);
+                    dcs_edit_insert_or_create_settings_item(
+                        &mut xml_text,
+                        variant,
+                        "dcsset:selection",
+                        &fragment,
+                    )?;
+                }
+            }
+            "add-order" => {
+                let indent =
+                    dcs_edit_settings_container_child_indent(&xml_text, variant, "dcsset:order")
+                        .unwrap_or_else(|_| "\t\t\t\t".to_string());
+                let fragment = dcs_edit_order_fragment(&value, &indent);
+                dcs_edit_insert_or_create_settings_item(
+                    &mut xml_text,
+                    variant,
+                    "dcsset:order",
+                    &fragment,
+                )?;
+            }
+            "add-dataSetLink" => {
+                let parsed = dcs_edit_parse_data_set_link(&value)?;
+                let fragment = dcs_edit_data_set_link_fragment(&parsed, "\t");
+                dcs_edit_insert_top_level_fragment(&mut xml_text, "dataSetLink", &fragment)?;
+                let mut desc = format!(
+                    "{} > {} on {} = {}",
+                    parsed.source, parsed.dest, parsed.source_expr, parsed.dest_expr
+                );
+                if !parsed.parameter.is_empty() {
+                    desc.push_str(&format!(" [param {}]", parsed.parameter));
+                }
+            }
+            "add-dataSet" => {
+                let parsed =
+                    dcs_edit_parse_data_set_with_inputs(&value, base_dir, cwd, query_inputs)?;
+                if dcs_edit_top_level_contains(&xml_text, "dataSet", "name", &parsed.name) {
+                } else {
+                    let source = dcs_edit_first_data_source(&xml_text)
+                        .unwrap_or_else(|| "ИсточникДанных1".to_string());
+                    let fragment = dcs_edit_data_set_fragment(&parsed, &source, "\t");
+                    dcs_edit_insert_top_level_fragment(&mut xml_text, "dataSet", &fragment)?;
+                }
+            }
+            "add-variant" => {
+                let parsed = dcs_edit_parse_variant(&value);
+                if dcs_edit_variant_exists(&xml_text, &parsed.name) {
+                } else {
+                    let fragment = dcs_edit_variant_fragment(&parsed, "\t");
+                    dcs_edit_insert_before_root_close(&mut xml_text, &fragment)?;
+                }
+            }
+            "add-conditionalAppearance" => {
+                let parsed = dcs_edit_parse_conditional_appearance(&value);
+                for filter in &parsed.filters {
+                    dcs_edit_validate_filter_literal(filter)?;
+                }
+                let indent = dcs_edit_settings_container_child_indent(
+                    &xml_text,
+                    variant,
+                    "dcsset:conditionalAppearance",
+                )
+                .unwrap_or_else(|_| "\t\t\t\t".to_string());
+                let fragment = dcs_edit_conditional_appearance_fragment(&parsed, &indent);
+                dcs_edit_insert_or_create_settings_item(
+                    &mut xml_text,
+                    variant,
+                    "dcsset:conditionalAppearance",
+                    &fragment,
+                )?;
+            }
+            "add-drilldown" => {
+                // Only a real insertion counts: forcing the save
+                // unconditionally reported `applied` for a resource the
+                // schema has no named template for.
+                if matches!(
+                    dcs_edit_add_drilldown(&mut xml_text, &value),
+                    DcsEditDrilldownResult::Added
+                ) {
+                    force_save = true;
+                }
+            }
+            "set-outputParameter" => {
+                let parsed = dcs_edit_parse_output_parameter(&value)?;
+                if let Ok(range) =
+                    dcs_edit_prefixed_container_range(&xml_text, variant, "dcsset:outputParameters")
+                {
+                    dcs_edit_remove_item_by_child(
+                        &mut xml_text,
+                        (range.start, range.end),
+                        "dcscor:item",
+                        "dcscor:parameter",
+                        &parsed.key,
+                    )?;
+                }
+                let indent = dcs_edit_settings_container_child_indent(
+                    &xml_text,
+                    variant,
+                    "dcsset:outputParameters",
+                )
+                .unwrap_or_else(|_| "\t\t\t\t".to_string());
+                let fragment = dcs_edit_output_parameter_fragment(&parsed, &indent)?;
+                dcs_edit_insert_or_create_settings_item(
+                    &mut xml_text,
+                    variant,
+                    "dcsset:outputParameters",
+                    &fragment,
+                )?;
+            }
+            "set-structure" => {
+                let parsed = dcs_edit_parse_structure(&value);
+                let fragments = dcs_edit_structure_fragments(&parsed, "\t\t\t");
+                dcs_edit_replace_structure(&mut xml_text, variant, &fragments)?;
+            }
+            "modify-structure" => {
+                let parsed = dcs_edit_parse_structure(&value);
+                dcs_edit_modify_structure(&mut xml_text, variant, &parsed, stdout)?;
+            }
+            "remove-field" => {
+                dcs_edit_remove_dataset_item(&mut xml_text, data_set, "field", "dataPath", &value)?;
+                dcs_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)?;
+            }
+            "remove-parameter" => {
+                dcs_edit_remove_top_level_item(&mut xml_text, "parameter", "name", &value)?;
+            }
+            "modify-field" => {
+                let parsed = dcs_edit_parse_field(&value);
+                dcs_edit_replace_dataset_field(&mut xml_text, data_set, &parsed)?;
+            }
+            "set-field-role" => {
+                dcs_edit_set_field_role(&mut xml_text, data_set, &value, stdout)?;
+            }
+            "modify-filter" => {
+                let parsed = dcs_edit_parse_filter(&value);
+                dcs_edit_validate_filter_literal(&parsed)?;
+                force_save |= dcs_edit_modify_filter(&mut xml_text, variant, &parsed, stdout)?;
+            }
+            "modify-dataParameter" => {
+                let parsed = dcs_edit_parse_data_parameter(&value);
+                force_save |=
+                    dcs_edit_modify_data_parameter(&mut xml_text, variant, &parsed, stdout)?;
+            }
+            "modify-parameter" => {
+                let parsed = dcs_edit_parse_parameter_patch(&value);
+                dcs_edit_modify_parameter(&mut xml_text, &parsed, stdout)?;
+            }
+            "rename-parameter" => {
+                dcs_edit_rename_parameter(&mut xml_text, &value, stdout)?;
+            }
+            "reorder-parameters" => {
+                dcs_edit_reorder_parameters(&mut xml_text, &value, stdout)?;
+            }
+            "remove-total" => {
+                dcs_edit_remove_top_level_item(&mut xml_text, "totalField", "dataPath", &value)?;
+            }
+            "remove-calculated-field" => {
+                dcs_edit_remove_top_level_item(
+                    &mut xml_text,
+                    "calculatedField",
+                    "dataPath",
+                    &value,
+                )?;
+                dcs_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)?;
+            }
+            "remove-filter" => {
+                let filter_range =
+                    dcs_edit_prefixed_container_range(&xml_text, variant, "dcsset:filter")?;
+                dcs_edit_remove_item_by_child(
+                    &mut xml_text,
+                    (filter_range.start, filter_range.end),
+                    "dcsset:item",
+                    "dcsset:left",
+                    &value,
+                )?;
+            }
+            other => {
+                return Err(format!(
+                    "native dcs-edit does not support Operation '{other}' yet"
+                ));
+            }
+        }
+        Ok(())
+    })();
+    *xml_text_param = xml_text;
+    *force_save_param = force_save;
+    result
 }
 
 pub(crate) fn dcs_edit_split_values(operation: &str, value: &str) -> Vec<String> {
@@ -10647,7 +10671,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
     use super::super::single_file_publisher::{
         with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
@@ -10767,7 +10791,7 @@ mod tests {
     }
 
     #[test]
-    fn dcs_edit_preserves_a_concurrent_replacement_instead_of_overwriting_it() {
+    pub(crate) fn dcs_edit_preserves_a_concurrent_replacement_instead_of_overwriting_it() {
         let context = temp_context("dcs-edit-concurrent-replacement");
         let template_path = context.cwd.join("Template.xml");
         fs::write(&template_path, exact_dcs_bytes(base_dcs_xml())).unwrap();
@@ -10919,7 +10943,7 @@ mod tests {
     }
 
     #[test]
-    fn dcs_compile_rolls_back_if_format_owner_changes_during_publication() {
+    pub(crate) fn dcs_compile_rolls_back_if_format_owner_changes_during_publication() {
         let context = temp_context("dcs-compile-format-owner-race");
         let source = context.cwd.join("src");
         let output = source.join("Templates/Guarded/Ext/Template.xml");
@@ -12715,11 +12739,14 @@ mod tests {
     }
 
     #[test]
-    fn native_dcs_edit_noop_leaves_file_untouched() {
+    pub(crate) fn native_dcs_edit_noop_leaves_file_bytes_and_identity_untouched() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("dcs-edit-noop");
         let template_path = context.cwd.join("Template.xml");
         fs::write(&template_path, base_dcs_xml()).unwrap();
         let before = fs::read(&template_path).unwrap();
+        let identity = file_identity_for_test(&template_path).unwrap();
 
         let mut args = Map::new();
         args.insert("TemplatePath".to_string(), json!("Template.xml"));
@@ -12738,6 +12765,7 @@ mod tests {
             data.items
         );
         assert_eq!(fs::read(&template_path).unwrap(), before);
+        assert_eq!(file_identity_for_test(&template_path).unwrap(), identity);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }

@@ -25,6 +25,7 @@ use crate::domain::diagnostics::{
 };
 use crate::domain::events::DomainEvent;
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
+use crate::domain::progress::ProgressSink;
 use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
 };
@@ -42,6 +43,7 @@ use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::platform::full_dump_publication::{
     FullDumpInvocation, VerifiedFullDumpAdapter,
 };
+use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::support_state::{
     SupportStateReaderFactory, WorkspaceSupportStateReaderFactory,
 };
@@ -64,9 +66,41 @@ fn adapter_dry_run(spec: ToolSpec, mode: InvocationMode) -> Result<bool, String>
     }
 }
 
+/// Какой движок инструмент запускает, если запускает.
+///
+/// Список повторяет диспетчеризацию `invoke_handler_with_operational_config`
+/// ниже: там движок называет `CliAdapter::new`, здесь — этот разбор. Ветки
+/// перечислены поимённо, без `_`, чтобы новый обработчик заставил ответить на
+/// вопрос, а не унаследовал молчание.
+///
+/// Поиска по коду здесь нет намеренно. Он опрашивает несколько поставщиков и на
+/// отсутствие одного отвечает разделом «недоступен» и рабочим результатом
+/// (ADR-0017); заставить его ждать доставку значит сломать быстрый ответ ради
+/// движка, без которого он умеет обойтись.
+pub(crate) fn engine_for(spec: ToolSpec) -> Option<&'static str> {
+    match spec.handler {
+        ToolHandler::BuildRuntime { .. }
+        | ToolHandler::RuntimeAdapter
+        | ToolHandler::RuntimeJob { .. } => Some("v8-runner"),
+        ToolHandler::CodeAdapter { .. } => Some("bsl-analyzer"),
+        ToolHandler::Metadata { .. }
+        | ToolHandler::NativeOperation { .. }
+        | ToolHandler::ProjectMap
+        | ToolHandler::CodeIntelligence { .. }
+        | ToolHandler::SourceNavigation { .. }
+        | ToolHandler::SourceResources { .. }
+        | ToolHandler::Diagnostics
+        | ToolHandler::StandardsAdapter { .. }
+        | ToolHandler::Documentation { .. } => None,
+    }
+}
+
 pub(crate) struct InfrastructureApplicationPorts {
     source_resources: crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider,
     support_state_readers: Arc<dyn SupportStateReaderFactory>,
+    /// Идущие доставки. Стол принадлежит серверу: доставка переживает вызов,
+    /// который её начал, и достаётся следующему.
+    deliveries: crate::infrastructure::engine_delivery::DeliveryDesk,
 }
 
 impl InfrastructureApplicationPorts {
@@ -75,6 +109,7 @@ impl InfrastructureApplicationPorts {
             source_resources:
                 crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider::new(),
             support_state_readers: Arc::new(WorkspaceSupportStateReaderFactory),
+            deliveries: Default::default(),
         }
     }
 
@@ -86,6 +121,7 @@ impl InfrastructureApplicationPorts {
             source_resources:
                 crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider::new(),
             support_state_readers,
+            deliveries: Default::default(),
         }
     }
 }
@@ -114,22 +150,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
     ) -> Result<OperationalConfig, OperationalConfigDiagnostic> {
         crate::infrastructure::operational_config::load_operational_config(&context.workspace_root)
-    }
-
-    fn inspect_project_health(
-        &self,
-        context: &WorkspaceContext,
-        cancellation: &CancellationToken,
-        deadline: ProviderDeadline,
-    ) -> Result<
-        crate::domain::project_health::ProjectHealthSnapshot,
-        crate::domain::project_health::ProjectHealthInspectionError,
-    > {
-        crate::infrastructure::project_health::inspect_project_health(
-            context,
-            cancellation,
-            deadline,
-        )
     }
 
     fn read_metadata_local(
@@ -476,6 +496,77 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         })
     }
 
+    fn missing_engine(
+        &self,
+        spec: ToolSpec,
+        cwd: Option<&std::path::Path>,
+    ) -> Option<crate::domain::engine::MissingEngine> {
+        let engine = engine_for(spec)?;
+        let plugin_root = find_plugin_root(cwd.unwrap_or_else(|| std::path::Path::new(".")))?;
+        crate::infrastructure::bundled_tools::missing_engine(&plugin_root, engine)
+    }
+
+    fn deliver_engine_if_missing(
+        &self,
+        spec: ToolSpec,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+        progress: &dyn ProgressSink,
+    ) -> crate::application::shared_work::EngineDeliveryState {
+        let Some(engine) = engine_for(spec) else {
+            return crate::application::shared_work::EngineDeliveryState::NotRequired;
+        };
+        let Some(plugin_root) = find_plugin_root(&context.cwd) else {
+            return crate::application::shared_work::EngineDeliveryState::NotRequired;
+        };
+        if crate::infrastructure::bundled_tools::installed_engine_path(&plugin_root, engine)
+            .is_some()
+        {
+            return crate::application::shared_work::EngineDeliveryState::NotRequired;
+        }
+        // Источник неизвестен: исходный чекаут инструменты не описывает.
+        // Сказать об этом — дело отказа, а не доставки.
+        let Some(order) = crate::infrastructure::engine_delivery::order_for(&plugin_root, engine)
+        else {
+            return crate::application::shared_work::EngineDeliveryState::NotRequired;
+        };
+        let artifact = order.artifact().to_owned();
+        let prepared = match order.prepare() {
+            Ok(prepared) => prepared,
+            Err(failure) => {
+                return crate::application::shared_work::EngineDeliveryState::Failed {
+                    artifact,
+                    failure: Arc::new(failure),
+                }
+            }
+        };
+        let identity = prepared.identity().clone();
+        // Срок хоста — знание фасада, а не этого места.
+        let window = crate::domain::long_work::sync_window(unica_bootstrap::host_tool_deadline());
+        match self.deliveries.request(
+            identity.clone(),
+            move |delivery| prepared.acquire(delivery),
+            window,
+            cancellation,
+            progress,
+        ) {
+            // Движок на месте — вызов идёт дальше и делает свою работу.
+            crate::application::shared_work::EngineDeliveryState::Ready(ready) => {
+                debug_assert_eq!(ready.identity(), &identity);
+                debug_assert!(ready.install_root().is_absolute());
+                crate::application::shared_work::EngineDeliveryState::Ready(ready)
+            }
+            // Отказ доставки называет причину сам: обработчик сказал бы про
+            // отсутствующий бинарь и посоветовал ждать поставку, которая только
+            // что не удалась.
+            state @ crate::application::shared_work::EngineDeliveryState::Failed { .. }
+            | state @ crate::application::shared_work::EngineDeliveryState::Working { .. } => state,
+            crate::application::shared_work::EngineDeliveryState::NotRequired => {
+                crate::application::shared_work::EngineDeliveryState::NotRequired
+            }
+        }
+    }
+
     fn invoke_handler(
         &self,
         spec: ToolSpec,
@@ -544,10 +635,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     handler
                 })
             }
-            ToolHandler::ProjectStatus => Err(
-                "unica.project.status must be dispatched through the project health coordinator"
-                    .into(),
-            ),
             ToolHandler::ProjectMap => {
                 let source_map =
                     crate::infrastructure::project_sources::discover_project_source_map(
@@ -1039,6 +1126,85 @@ fn documentation_registry(
     ])
 }
 
+/// Canonical v0.13 documentation search adapter.
+///
+/// `source` is deliberately one source-kind scalar because that is the v0.13
+/// wire contract.  Legacy locale, platform-version and result-limit knobs are
+/// not accepted here; the application request uses the canonical defaults and
+/// the workspace-selected platform context.
+pub(crate) fn canonical_v13_docs_search(
+    workspace: &WorkspaceContext,
+    query: &str,
+    source: Option<&str>,
+    cancellation: &CancellationToken,
+) -> crate::domain::invocation::DomainResult {
+    let source_kinds = match source {
+        None => vec![
+            crate::domain::documentation::SourceKind::PlatformHelp,
+            crate::domain::documentation::SourceKind::DevelopmentStandard,
+        ],
+        Some(source) => match crate::domain::documentation::SourceKind::parse(source) {
+            Some(crate::domain::documentation::SourceKind::ConfigurationDocumentation) => {
+                return crate::domain::invocation::DomainResult::canonical_rejection(
+                    None,
+                    "unsupported_source",
+                    "docs source `configuration-documentation` is not available until its workspace reader uses the actor-owned nofollow and cancellation boundary",
+                )
+            }
+            Some(source_kind) => vec![source_kind],
+            None => {
+                return crate::domain::invocation::DomainResult::canonical_rejection(
+                    None,
+                    "unsupported_source",
+                    format!(
+                        "docs source `{source}` is unsupported; allowed: platform-help, development-standard, configuration-documentation"
+                    ),
+                )
+            }
+        },
+    };
+    if query.trim().is_empty() {
+        return crate::domain::invocation::DomainResult::canonical_rejection(
+            None,
+            "bad_value",
+            "docs query must be non-blank",
+        );
+    }
+
+    let request = crate::domain::documentation::DocumentationSearchRequest {
+        query: query.to_string(),
+        source_kinds,
+        limit: 20,
+        language: "ru".to_string(),
+    };
+    let result = (|| {
+        let registry = documentation_registry(workspace, cancellation)?;
+        let context = documentation_context(
+            &crate::infrastructure::platform::full_dump_publication::default_platform_roots(),
+            None,
+            workspace,
+        );
+        crate::application::documentation::search(&registry, &request, &context)
+    })();
+    match result {
+        Ok(data) => {
+            let mut result =
+                crate::domain::invocation::DomainResult::success("unica.docs completed");
+            result.data = Some(data);
+            result
+        }
+        // No usable documentation provider is an environment condition, not a
+        // new failure vocabulary: it answers with the closed provider code so
+        // the caller's recovery (install help, restore network) stays the same
+        // as for every other unavailable engine.
+        Err(error) => crate::domain::invocation::DomainResult::canonical_rejection(
+            None,
+            "provider_unavailable",
+            error,
+        ),
+    }
+}
+
 /// Подмена реестра для тестов — та самая, которую допускает п.5 ADR-0029
 /// («реестр собирается в корне композиции и допускает внедрение подмен для
 /// тестов»). Без неё ветку диспетчера `unica.documentation.search` не
@@ -1049,6 +1215,36 @@ fn documentation_registry(
 static DOCUMENTATION_REGISTRY_STAND_IN: std::sync::Mutex<
     Option<std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>>,
 > = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+static DOCUMENTATION_REGISTRY_STAND_IN_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) struct DocumentationRegistryStandInGuard {
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for DocumentationRegistryStandInGuard {
+    fn drop(&mut self) {
+        *DOCUMENTATION_REGISTRY_STAND_IN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_documentation_registry_stand_in(
+    provider: std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>,
+) -> DocumentationRegistryStandInGuard {
+    let serial = DOCUMENTATION_REGISTRY_STAND_IN_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *DOCUMENTATION_REGISTRY_STAND_IN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(provider);
+    DocumentationRegistryStandInGuard { _serial: serial }
+}
 
 #[cfg(test)]
 fn documentation_registry_stand_in(
@@ -1308,13 +1504,16 @@ fn select_platform_version(
 #[cfg(test)]
 mod tests {
     use super::{
-        documentation_context, documentation_registry, normalize_code_intelligence_read_request,
-        project_platform_version, select_installation_root, select_platform_version,
-        verified_full_dump_invocation,
+        canonical_v13_docs_search, documentation_context, documentation_registry,
+        normalize_code_intelligence_read_request, project_platform_version,
+        select_installation_root, select_platform_version, verified_full_dump_invocation,
     };
     use crate::application::metadata::MetaInfoRequest;
     use crate::application::ports::ApplicationPorts;
-    use crate::application::{InvocationMode, RuntimeJobAction, ToolHandler, ToolSpec};
+    use crate::application::{
+        preview_strategy, tools, InvocationMode, PreviewStrategy, RuntimeJobAction, ToolHandler,
+        ToolSpec, UnicaApplication,
+    };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
         CodeIntelligenceContext, CodeIntelligenceReadRequest, ProviderDeadline,
@@ -1336,9 +1535,192 @@ mod tests {
     };
     use crate::infrastructure::support_state::SupportStateReaderFactory;
     use serde_json::{json, Map};
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct RecursiveStorageEntry {
+        kind: &'static str,
+        identity: Option<String>,
+        bytes: Option<Vec<u8>>,
+    }
+
+    fn recursive_storage_snapshot(root: &Path) -> BTreeMap<PathBuf, RecursiveStorageEntry> {
+        fn visit(
+            root: &Path,
+            path: &Path,
+            snapshot: &mut BTreeMap<PathBuf, RecursiveStorageEntry>,
+        ) {
+            let metadata = std::fs::symlink_metadata(path).expect("snapshot metadata");
+            let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+            let file_type = metadata.file_type();
+            let kind = if file_type.is_dir() {
+                "directory"
+            } else if file_type.is_file() {
+                "file"
+            } else if file_type.is_symlink() {
+                "symlink"
+            } else {
+                "other"
+            };
+            let identity = if file_type.is_symlink() {
+                None
+            } else {
+                crate::infrastructure::platform::testing::path_identity_for_test(path)
+                    .expect("snapshot identity")
+            };
+            let bytes = if file_type.is_file() {
+                Some(std::fs::read(path).expect("snapshot bytes"))
+            } else if file_type.is_symlink() {
+                Some(
+                    std::fs::read_link(path)
+                        .expect("snapshot link")
+                        .as_os_str()
+                        .to_string_lossy()
+                        .as_bytes()
+                        .to_vec(),
+                )
+            } else {
+                None
+            };
+            snapshot.insert(
+                relative,
+                RecursiveStorageEntry {
+                    kind,
+                    identity,
+                    bytes,
+                },
+            );
+            if file_type.is_dir() {
+                let mut children = std::fs::read_dir(path)
+                    .expect("snapshot directory")
+                    .map(|entry| entry.expect("snapshot child").path())
+                    .collect::<Vec<_>>();
+                children.sort();
+                for child in children {
+                    visit(root, &child, snapshot);
+                }
+            }
+        }
+
+        let mut snapshot = BTreeMap::new();
+        if root.exists() {
+            visit(root, root, &mut snapshot);
+        }
+        snapshot
+    }
+
+    #[test]
+    fn public_preview_strategies_are_real_and_recursively_write_free() {
+        let expected_post_image = [
+            "unica.cf.edit",
+            "unica.cf.init",
+            "unica.cfe.borrow",
+            "unica.cfe.init",
+            "unica.cfe.patch_method",
+            "unica.code.patch",
+            "unica.dcs.compile",
+            "unica.dcs.edit",
+            "unica.epf.init",
+            "unica.erf.init",
+            "unica.form.compile",
+            "unica.form.edit",
+            "unica.interface.edit",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.mxl.compile",
+            "unica.role.compile",
+            "unica.role.edit",
+            "unica.subsystem.compile",
+            "unica.subsystem.edit",
+        ];
+        let expected_planned_command = [
+            "unica.build.dump",
+            "unica.build.load",
+            "unica.build.make",
+            "unica.build.run",
+            "unica.build.update",
+            "unica.runtime.execute",
+            "unica.runtime.job.start",
+        ];
+        let mut post_image = Vec::new();
+        let mut planned_command = Vec::new();
+        for tool in tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+        {
+            match preview_strategy(&tool).expect("mutator preview strategy") {
+                PreviewStrategy::PostImage => post_image.push(tool.name),
+                PreviewStrategy::PlannedCommand => planned_command.push(tool.name),
+            }
+        }
+        post_image.sort_unstable();
+        planned_command.sort_unstable();
+        assert_eq!(post_image, expected_post_image);
+        assert_eq!(planned_command, expected_planned_command);
+
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let cache = workspace.join(".build/unica");
+        std::fs::create_dir_all(workspace.join("src/Ext")).unwrap();
+        std::fs::create_dir_all(cache.join("indexes/main")).unwrap();
+        std::fs::create_dir_all(cache.join("services/main")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.join("src/Configuration.xml"), b"source-sentinel").unwrap();
+        std::fs::write(cache.join("state.json"), b"state-sentinel").unwrap();
+        std::fs::write(cache.join("indexes/main/index.json"), b"index-sentinel").unwrap();
+        std::fs::write(
+            cache.join("services/main/service.json"),
+            b"service-sentinel",
+        )
+        .unwrap();
+        let absent = [
+            workspace.join("preview-src"),
+            cache.join("jobs"),
+            cache.join("caches"),
+            cache.join("services/preview-created"),
+        ];
+        assert!(absent.iter().all(|path| !path.exists()));
+        let before = recursive_storage_snapshot(&workspace);
+
+        let post_image_result = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.init",
+                json!({
+                    "cwd": workspace,
+                    "Name": "PreviewConfiguration",
+                    "OutputDir": "preview-src"
+                })
+                .as_object()
+                .unwrap(),
+            )
+            .expect("real post-image public preview");
+        assert!(post_image_result.ok, "{post_image_result:?}");
+        assert!(post_image_result.data.is_some(), "{post_image_result:?}");
+        assert!(post_image_result.command.is_none(), "{post_image_result:?}");
+        assert_eq!(recursive_storage_snapshot(&workspace), before);
+        assert!(absent.iter().all(|path| !path.exists()));
+
+        let planned_result = UnicaApplication::new()
+            .call_tool(
+                "unica.build.load",
+                json!({"cwd": workspace}).as_object().unwrap(),
+            )
+            .expect("real planned-command public preview");
+        assert!(
+            planned_result.summary.starts_with("dry run:"),
+            "{planned_result:?}"
+        );
+        assert!(planned_result.command.is_some(), "{planned_result:?}");
+        assert_eq!(recursive_storage_snapshot(&workspace), before);
+        assert!(absent.iter().all(|path| !path.exists()));
+    }
 
     #[test]
     fn code_search_logical_selector_resolves_one_named_scope_and_fails_closed() {
@@ -1678,11 +2060,6 @@ mod tests {
         ));
         let cases = [
             (
-                "unica.cf.info",
-                Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
-                "removed",
-            ),
-            (
                 "unica.role.info",
                 Map::from_iter([(
                     "RightsPath".to_string(),
@@ -1740,14 +2117,6 @@ mod tests {
         assert_eq!(
             *calls.lock().unwrap(),
             vec![
-                (
-                    "configuration",
-                    ResolvedTarget {
-                        source_set: "main".to_string(),
-                        metadata_path: None,
-                        target_kind: TargetKind::SourceRoot,
-                    },
-                ),
                 (
                     "object",
                     ResolvedTarget {
@@ -2256,7 +2625,7 @@ mod tests {
         };
         for mode in [InvocationMode::Preview, InvocationMode::Apply] {
             let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-                spec("unica.project.status", ToolHandler::ProjectStatus),
+                spec("unica.project.map", ToolHandler::ProjectMap),
                 &Map::new(),
                 &context,
                 mode,
@@ -2265,7 +2634,7 @@ mod tests {
                 Ok(_) => panic!("reader unexpectedly accepted {mode:?}"),
                 Err(error) => error,
             };
-            assert_eq!(error, "invalid invocation mode for unica.project.status");
+            assert_eq!(error, "invalid invocation mode for unica.project.map");
         }
     }
 
@@ -2281,7 +2650,7 @@ mod tests {
             workspace_epoch: 1,
         };
         let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-            spec("unica.cf.edit", ToolHandler::ProjectStatus),
+            spec("unica.cf.edit", ToolHandler::ProjectMap),
             &Map::new(),
             &context,
             InvocationMode::Read,
@@ -3233,41 +3602,122 @@ mod tests {
         }
     }
 
-    /// Слот подмены один на процесс, поэтому тесты, которые его пишут, идут по
-    /// одному: страж несёт замок сериализации и держит его до конца теста, а
-    /// подмена снимается на выходе даже при панике теста. Без замка два
-    /// стенд-теста под параллельным прогоном перезаписывали бы слот друг
-    /// друга — тот же приём, что и `index_test_lock` у поставщика.
-    struct StandInGuard {
-        _serial: std::sync::MutexGuard<'static, ()>,
+    fn install_stand_in(
+        provider: std::sync::Arc<RecordingProvider>,
+    ) -> super::DocumentationRegistryStandInGuard {
+        super::install_documentation_registry_stand_in(
+            provider as std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>,
+        )
     }
 
-    impl Drop for StandInGuard {
-        fn drop(&mut self) {
-            *super::DOCUMENTATION_REGISTRY_STAND_IN
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        }
-    }
-
-    /// Один замок на писателей слота подмены И на читателей настоящего
-    /// реестра: `documentation_registry()` под параллельным прогоном иначе
-    /// видел бы стенд соседнего теста вместо настоящего поставщика.
     fn documentation_registry_serial() -> std::sync::MutexGuard<'static, ()> {
-        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        SERIAL
+        super::DOCUMENTATION_REGISTRY_STAND_IN_SERIAL
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn install_stand_in(provider: std::sync::Arc<RecordingProvider>) -> StandInGuard {
-        let serial = documentation_registry_serial();
-        *super::DOCUMENTATION_REGISTRY_STAND_IN
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(
-            provider as std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>,
+    #[test]
+    fn canonical_v13_docs_search_passes_the_scalar_source_kind_to_the_shared_registry() {
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+        let dir = tempfile::tempdir().expect("workspace");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let result = canonical_v13_docs_search(
+            &context,
+            "syntax",
+            Some("platform-help"),
+            &CancellationToken::default(),
         );
-        StandInGuard { _serial: serial }
+
+        assert!(result.ok, "{result:?}");
+        let seen = recorder.seen.lock().expect("recorded request");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].0.source_kinds,
+            vec![crate::domain::documentation::SourceKind::PlatformHelp]
+        );
+    }
+
+    #[test]
+    fn canonical_v13_docs_search_rejects_unknown_source_as_typed_unsupported_source() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let result = canonical_v13_docs_search(
+            &context,
+            "syntax",
+            Some("vendor-private"),
+            &CancellationToken::default(),
+        );
+
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "unsupported_source");
+    }
+
+    #[test]
+    fn canonical_v13_docs_search_rejects_configuration_help_until_it_is_actor_safe() {
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+        let dir = tempfile::tempdir().expect("workspace");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let result = canonical_v13_docs_search(
+            &context,
+            "Items",
+            Some("configuration-documentation"),
+            &CancellationToken::default(),
+        );
+
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "unsupported_source");
+        assert!(recorder.seen.lock().expect("recorded request").is_empty());
+    }
+
+    #[test]
+    fn canonical_v13_docs_search_omits_unsafe_configuration_help_by_default() {
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+        let dir = tempfile::tempdir().expect("workspace");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let result =
+            canonical_v13_docs_search(&context, "syntax", None, &CancellationToken::default());
+
+        assert!(result.ok, "{result:?}");
+        let seen = recorder.seen.lock().expect("recorded request");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].0.source_kinds,
+            vec![
+                crate::domain::documentation::SourceKind::PlatformHelp,
+                crate::domain::documentation::SourceKind::DevelopmentStandard,
+            ]
+        );
     }
 
     /// `tools.platform.path` — вторая половина закрепления платформы у
@@ -3827,5 +4277,47 @@ mod tests {
             error.contains("query"),
             "отказ обязан назвать аргумент, получено {error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod engine_map_tests {
+    use super::engine_for;
+    use crate::application::tools;
+
+    fn spec(name: &str) -> crate::application::ToolSpec {
+        tools()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("инструмент {name} исчез с поверхности"))
+    }
+
+    #[test]
+    fn the_tools_that_run_an_engine_ask_for_it() {
+        // Список сверяется с настоящей поверхностью, а не с перечислением:
+        // разойтись он может только вместе с ней.
+        for (name, engine) in [
+            ("unica.runtime.execute", "v8-runner"),
+            ("unica.build.dump", "v8-runner"),
+            ("unica.runtime.job.start", "v8-runner"),
+            ("unica.code.graph", "bsl-analyzer"),
+        ] {
+            assert_eq!(engine_for(spec(name)), Some(engine), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_tool_that_runs_no_engine_asks_for_nothing() {
+        for name in ["unica.project.map", "unica.meta.info"] {
+            assert_eq!(engine_for(spec(name)), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn code_search_answers_without_waiting_for_a_delivery() {
+        // Поиск опрашивает несколько поставщиков и на отсутствие одного отвечает
+        // разделом «недоступен» и рабочим результатом. Ожидание доставки сломало
+        // бы быстрый ответ ради движка, без которого он умеет обойтись.
+        assert_eq!(engine_for(spec("unica.code.search")), None);
     }
 }

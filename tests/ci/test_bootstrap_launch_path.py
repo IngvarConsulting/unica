@@ -12,7 +12,10 @@ REQ-PERF-VERIFIED-HANDOFF говорит про релизный шлюз, а н
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -68,6 +71,63 @@ class BootstrapLaunchPathTests(unittest.TestCase):
 
         self.assertIn('"method": "initialize"', verification)
         self.assertIn('"method": "tools/list"', verification)
+
+
+
+
+class LauncherExitCodeTests(unittest.TestCase):
+    """Коды выхода `launch.sh` против кодов, которые раздаёт сам bootstrap.
+
+    Убитая посреди старта сессия текста не увидит: остаётся код. Поэтому у
+    запускателя и у загрузчика номера не должны значить разное — и не должны
+    случайно совпасть, означая разное.
+    """
+
+    def run_launcher(self, *args: str, env: "dict[str, str] | None" = None):
+        environment = dict(os.environ)
+        environment.update(env or {})
+        return subprocess.run(
+            ["sh", str(LAUNCHER), *args],
+            capture_output=True,
+            text=True,
+            env=environment,
+            check=False,
+        )
+
+    def test_a_wrong_call_exits_with_the_usage_code(self) -> None:
+        self.assertEqual(self.run_launcher().returncode, 64)
+
+    def test_a_host_the_release_does_not_serve_exits_with_78(self) -> None:
+        result = self.run_launcher(
+            str(REPO_ROOT / "plugins" / "unica"),
+            env={"UNICA_BOOTSTRAP_UNAME_S": "Plan9", "UNICA_BOOTSTRAP_UNAME_M": "risc-v"},
+        )
+
+        self.assertEqual(result.returncode, 78)
+        self.assertIn("Unsupported Unica host", result.stderr)
+
+    def test_a_missing_bootstrap_binary_exits_with_66(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            result = self.run_launcher(raw)
+
+        self.assertEqual(result.returncode, 66)
+        self.assertIn("Unica bootstrap is missing", result.stderr)
+
+    def test_the_bootstrap_codes_do_not_contradict_the_launcher(self) -> None:
+        error_rs = (REPO_ROOT / "crates" / "unica-bootstrap" / "src" / "error.rs").read_text(
+            encoding="utf-8"
+        )
+        codes = {
+            int(code)
+            for code in re.findall(r"Self::\w+ => (\d+),", error_rs)
+        }
+
+        # 64 и 66 принадлежат запускателю: до загрузчика такой отказ не доходит.
+        self.assertNotIn(64, codes)
+        self.assertNotIn(66, codes)
+        # 78 общий, и намеренно: цель, которую не обслуживают, — одна и та же
+        # причина, кто бы её ни заметил.
+        self.assertIn(78, codes)
 
 
 if __name__ == "__main__":

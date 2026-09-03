@@ -52,7 +52,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         """
         self.assert_classification(
             [
-                "spec/provenance/skill-upstreams.json",
+                "docs/provenance/skill-upstreams.json",
                 "docs/provenance/reviews/2026-06-15-upstream-review.json",
             ],
         )
@@ -158,6 +158,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "plugins/unica/.mcp.json",
             "plugins/unica/third-party/tools.lock.json",
             "scripts/ci/package-unica-runtime.py",
+            "scripts/ci/stage-unica-assessment-engine.py",
         ):
             with self.subTest(path=path):
                 self.assert_classification(
@@ -168,6 +169,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     assessment_required=path in {
                         "plugins/unica/third-party/tools.lock.json",
                         "scripts/ci/package-unica-runtime.py",
+                        "scripts/ci/stage-unica-assessment-engine.py",
                     },
                 )
 
@@ -228,6 +230,14 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             ci_changed=True,
         )
 
+    def test_p0_release_proof_changes_route_package_and_assessment_contours(self) -> None:
+        self.assert_classification(
+            ["scripts/ci/release-proof.py"],
+            package_changed=True,
+            release_required=True,
+            assessment_required=True,
+        )
+
     def test_mixed_changes_union_their_contours(self) -> None:
         self.assert_classification(
             [
@@ -272,6 +282,20 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             assessment_required=True,
         )
 
+    def test_p0_evidence_producers_route_package_and_proof_contours(self) -> None:
+        for path in (
+            "scripts/ci/package-unica-plugin.py",
+            "scripts/ci/probe-unica-wire.py",
+            "scripts/ci/verify-release-assets.py",
+        ):
+            with self.subTest(path=path):
+                self.assert_classification(
+                    [path],
+                    package_changed=True,
+                    release_required=True,
+                    assessment_required=True,
+                )
+
     def test_every_assessment_path_also_claims_a_release_or_ci_contour(self) -> None:
         """`evaluate-ci-gate.py` reads a lone assessment contour as a contradiction.
 
@@ -290,6 +314,22 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                 offenders.append(path)
 
         self.assertEqual([], offenders)
+
+    def test_release_assessment_affected_contour_is_closed(self) -> None:
+        module = load_classifier_module()
+
+        for path in sorted(module.ASSESSMENT_PATHS):
+            with self.subTest(affected=path):
+                self.assertTrue(module.classify_paths([path]).assessment_required)
+        for path in (
+            "README.md",
+            "plugins/unica/skills/meta-add/SKILL.md",
+            "crates/unica-coder/src/domain/cache.rs",
+            "docs/provenance/skill-upstreams.json",
+        ):
+            with self.subTest(unaffected=path):
+                self.assertFalse(module.classify_paths([path]).assessment_required)
+        self.assertTrue(module.classify_paths([], force_full=True).assessment_required)
 
     def test_forced_full_contour_enables_every_output(self) -> None:
         module = load_classifier_module()

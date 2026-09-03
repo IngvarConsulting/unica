@@ -7,7 +7,7 @@ description: "Размещение кода 1С по модулям. Испол�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.subsystem.info`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.subsystem.info`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -51,7 +51,7 @@ Then pick exactly one of the four common module contexts (std469) and name it by
 ## Workflow
 
 1. Answer the three std486 questions before opening any module. The answer, not convenience, picks the host.
-2. Map the neighbourhood with `unica.project.map` and `unica.subsystem.info`: an existing module for the same subsystem or purpose is a reason to extend rather than add.
+2. Map the neighbourhood with `unica.view {}` and `unica.subsystem.info`: an existing module for the same subsystem or purpose is a reason to extend rather than add.
 3. Check the callers with `unica.code.graph` before moving anything — a move that changes the module context changes what the callers may pass.
 4. When adding a common module, choose the context row first, then `unica.meta.add` with the matching flags and postfix.
 5. Set `Вызов сервера` only for API genuinely called from the client, and state what it exposes.

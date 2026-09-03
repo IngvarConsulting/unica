@@ -278,6 +278,21 @@ fn parse_observed_metadata_type_contents_node(
                     "existing defined type uses an unsupported namespace",
                 ));
             }
+            if let Some(chart) = local_name.strip_prefix("Characteristic.") {
+                // `cfg:Characteristic.X` is the type set of a chart of
+                // characteristic types: read it, never rewrite it.
+                let metadata_path = MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("ChartOfCharacteristicTypes.{chart}"),
+                )
+                .map_err(|_| {
+                    invalid_observed_type(
+                        "existing characteristic type set is not a metadata address",
+                    )
+                })?;
+                variants.push(ObservedMetadataTypeVariant::CharacteristicTypes { metadata_path });
+                continue;
+            }
             let metadata_path =
                 MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &local_name).map_err(
                     |_| invalid_observed_type("existing defined type is not a metadata address"),

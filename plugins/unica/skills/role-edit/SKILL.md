@@ -24,7 +24,7 @@ allowed-tools:
 - Не передавайте снятые top-level поля `RightsPath`, `Path`, `ObjectName`,
   `Name` и `Value`; schema и parser обязаны их отклонить.
 - `sourceSet` — имя набора исходников из `v8project.yaml`, а не константа.
-  Получите его через `unica.project.map`; `"main"` ниже — только пример.
+  Получите его через `unica.view {}`; `"main"` ниже — только пример.
 
 ## Вызов
 

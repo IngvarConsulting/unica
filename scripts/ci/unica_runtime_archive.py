@@ -30,6 +30,19 @@ class RuntimeArchiveFile:
 
 
 @dataclass(frozen=True)
+class VerifiedArchive:
+    """Что окажется на диске, если архив просто распаковать.
+
+    Конверт тулчейна — часть поставки, а не служебная обёртка: доставка
+    выкладывает архив как есть, поэтому `manifest.json` лежит рядом с
+    `payload/`, и закрывающая проверка обязана его видеть.
+    """
+
+    envelope: RuntimeArchiveFile
+    files: tuple[RuntimeArchiveFile, ...]
+
+
+@dataclass(frozen=True)
 class DeclaredFile:
     path: PurePosixPath
     sha256: str
@@ -253,7 +266,7 @@ def load_verified_archive(
     source_commit: str,
     target: dict[str, str],
     entrypoints: dict[str, str],
-) -> tuple[RuntimeArchiveFile, ...]:
+) -> VerifiedArchive:
     members = _read_members(path)
     manifest_member = members.get("manifest.json")
     if manifest_member is None:
@@ -332,4 +345,14 @@ def load_verified_archive(
         selected.append(item)
     if len({item.sha256 for item in selected}) != 1:
         raise SystemExit("multidist entrypoints must be byte-identical")
-    return tuple(result)
+    envelope_payload, envelope_mode = manifest_member
+    return VerifiedArchive(
+        envelope=RuntimeArchiveFile(
+            PurePosixPath("manifest.json"),
+            hashlib.sha256(envelope_payload).hexdigest(),
+            len(envelope_payload),
+            envelope_mode == 0o755,
+            envelope_payload,
+        ),
+        files=tuple(result),
+    )

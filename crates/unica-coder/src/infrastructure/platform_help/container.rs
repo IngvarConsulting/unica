@@ -122,7 +122,9 @@ fn read_block(bytes: &[u8], offset: usize) -> Result<Vec<u8>, ContainerError> {
 fn entry_name(header: &[u8]) -> String {
     let tail = header.get(20..).unwrap_or_default();
     let units: Vec<u16> = tail
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .take_while(|unit| *unit != 0)
         .collect();
@@ -138,7 +140,7 @@ impl V8Container {
         // на этом месте — `BadBlockHeader`.
         let toc = read_block(bytes, FILE_HEADER)?;
         let mut entries = BTreeMap::new();
-        for record in toc.chunks_exact(12) {
+        for record in toc.as_chunks::<12>().0 {
             let head = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
             let data = u32::from_le_bytes([record[4], record[5], record[6], record[7]]);
             // Пропуск, а не выход: запись с ограничителем встречается в

@@ -7,7 +7,7 @@ description: "Моделирование метаданных 1С. Исполь�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.cf.info`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.subsystem.info`, `unica.code.search`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.subsystem.info`, `unica.code.search`, `unica.code.diagnostics`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -47,7 +47,7 @@ A value several objects carry identically may be a common attribute (std677) rat
 ## Workflow
 
 1. State the business question the data must answer, and who is allowed to change the set of values. That answer picks the class.
-2. Check what already exists with `unica.cf.info` and `unica.meta.info` — an existing object with the same meaning is a reason to extend rather than add — and locate the owning subsystem with `unica.subsystem.info`.
+2. Check what already exists with `unica.view` (the configuration root and the object) and `unica.meta.info` — an existing object with the same meaning is a reason to extend rather than add — and locate the owning subsystem with `unica.subsystem.info`.
 3. Type every attribute deliberately: string length, composite type set, and whether a defined type already covers it (std432, std728, std704).
 4. Decide predefined items and their update mode before creating the object, and check the interactive-deletion rights with `unica.role.info` (std697).
 5. Create with `unica.meta.add` and refine with `unica.meta.edit`, one verifiable step at a time.

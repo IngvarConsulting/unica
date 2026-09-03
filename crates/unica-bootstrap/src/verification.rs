@@ -2,18 +2,26 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
-use std::thread;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::error::{BootstrapError, Result};
+use crate::error::{BootstrapError, Failure, Result};
 
-const REQUIRED_TOOLS: [&str; 3] = [
-    "unica.project.status",
-    "unica.standards.search",
-    "unica.standards.explain",
+const EXPECTED_COMPATIBILITY_TOOLS: [&str; 11] = [
+    "unica.view",
+    "unica.apply",
+    "unica.find",
+    "unica.search",
+    "unica.check",
+    "unica.diff",
+    "unica.run",
+    "unica.docs",
+    "unica.task.get",
+    "unica.task.result",
+    "unica.task.cancel",
 ];
 
 /// #490: every launch verifies both guaranteed lifecycles on fresh processes —
@@ -33,6 +41,7 @@ struct RuntimeProbe {
     child: Child,
     stdin: ChildStdin,
     receiver: Receiver<std::result::Result<String, String>>,
+    stdout_reader: Option<JoinHandle<()>>,
 }
 
 impl RuntimeProbe {
@@ -59,7 +68,7 @@ impl RuntimeProbe {
             .take()
             .ok_or_else(|| BootstrapError::new("failed to open Unica runtime stdout"))?;
         let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
+        let stdout_reader = thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 if sender
                     .send(line.map_err(|error| error.to_string()))
@@ -73,6 +82,7 @@ impl RuntimeProbe {
             child,
             stdin,
             receiver,
+            stdout_reader: Some(stdout_reader),
         })
     }
 }
@@ -81,6 +91,9 @@ impl Drop for RuntimeProbe {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(stdout_reader) = self.stdout_reader.take() {
+            let _ = stdout_reader.join();
+        }
     }
 }
 
@@ -119,7 +132,7 @@ fn verify_legacy_session(
         &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
     )?;
     let tools_response = receive_response(&probe.receiver, 2, timeout)?;
-    check_required_tools(&tools_response)
+    check_compatibility_surface(&tools_response)
 }
 
 fn verify_modern_direct(
@@ -170,10 +183,10 @@ fn verify_modern_direct(
         }),
     )?;
     let tools_response = receive_response(&probe.receiver, 2, timeout)?;
-    check_required_tools(&tools_response)
+    check_compatibility_surface(&tools_response)
 }
 
-fn check_required_tools(tools_response: &Value) -> Result<()> {
+fn check_compatibility_surface(tools_response: &Value) -> Result<()> {
     let tools = tools_response
         .pointer("/result/tools")
         .and_then(Value::as_array)
@@ -181,16 +194,38 @@ fn check_required_tools(tools_response: &Value) -> Result<()> {
     let names = tools
         .iter()
         .filter_map(|tool| tool.get("name").and_then(Value::as_str))
-        .collect::<BTreeSet<_>>();
-    let missing = REQUIRED_TOOLS
+        .collect::<Vec<_>>();
+    let mut unique_names = BTreeSet::new();
+    let mut duplicates = BTreeSet::new();
+    for name in &names {
+        if !unique_names.insert(*name) {
+            duplicates.insert(*name);
+        }
+    }
+    let expected = EXPECTED_COMPATIBILITY_TOOLS
         .iter()
         .copied()
-        .filter(|name| !names.contains(name))
+        .collect::<BTreeSet<_>>();
+    let missing = expected
+        .iter()
+        .copied()
+        .filter(|name| !unique_names.contains(name))
         .collect::<Vec<_>>();
-    if !missing.is_empty() {
+    let unexpected = unique_names
+        .difference(&expected)
+        .copied()
+        .collect::<Vec<_>>();
+    let unnamed = tools.len().saturating_sub(names.len());
+    if !missing.is_empty() || !unexpected.is_empty() || !duplicates.is_empty() || unnamed != 0 {
         return Err(BootstrapError::new(format!(
-            "Unica tools/list is missing required tools: {}",
-            missing.join(", ")
+            "Unica tools/list does not match the exact v0.13 compatibility surface; missing: {}; unexpected: {}; duplicate: {}; unnamed definitions: {unnamed}",
+            if missing.is_empty() { "none".to_string() } else { missing.join(", ") },
+            if unexpected.is_empty() { "none".to_string() } else { unexpected.join(", ") },
+            if duplicates.is_empty() {
+                "none".to_string()
+            } else {
+                duplicates.into_iter().collect::<Vec<_>>().join(", ")
+            },
         )));
     }
     Ok(())
@@ -212,14 +247,26 @@ fn receive_response(
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(BootstrapError::new(format!(
-                "timed out waiting for Unica JSON-RPC response {id}"
-            )));
+            // Единственный настоящий срок в загрузчике: рантайм либо ответил,
+            // либо нет. У доставки срока нет — движок качают, чтобы им
+            // пользоваться, — и один код выхода на оба случая скрыл бы, какой
+            // из них случился.
+            return Err(BootstrapError::of(
+                Failure::Timeout,
+                format!("timed out waiting for Unica JSON-RPC response {id}"),
+            ));
         }
         let line = receiver.recv_timeout(remaining).map_err(|error| {
-            BootstrapError::new(format!(
-                "failed waiting for Unica JSON-RPC response {id}: {error}"
-            ))
+            // Истёкший срок и закрытый провод — разные беды: первую лечит
+            // повтор, вторая означает рантайм, который умер, не ответив.
+            let failure = match error {
+                RecvTimeoutError::Timeout => Failure::Timeout,
+                RecvTimeoutError::Disconnected => Failure::Internal,
+            };
+            BootstrapError::of(
+                failure,
+                format!("failed waiting for Unica JSON-RPC response {id}: {error}"),
+            )
         })?;
         let line = line.map_err(BootstrapError::new)?;
         let value: Value = serde_json::from_str(&line).map_err(|error| {

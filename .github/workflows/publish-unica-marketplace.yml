@@ -30,7 +30,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  stage:
+  gate:
+    # Предвыпуск собирается и публикует ассеты, но каталога не касается: он
+    # существует для замеров и не существует для пользователей. Решает это
+    # конвейер, а не память того, кто его запускал, — иначе однажды забудут.
+    #
     # Publishing targets the IngvarConsulting marketplace and needs the shared
     # credential, so a fork must never run it — its workflow_run trigger fires
     # automatically after the fork's own build.
@@ -39,6 +43,31 @@ jobs:
       ((github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push') ||
       github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      promote: ${{ steps.decide.outputs.promote }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
+    steps:
+      - name: Decide whether this release reaches consumers
+        id: decide
+        run: |
+          set -euo pipefail
+          tag="$(gh api "repos/IngvarConsulting/unica/actions/runs/${SOURCE_RUN_ID}" --jq .head_branch)"
+          # Суффикс после версии — предвыпуск по SemVer. Сборка его выложила,
+          # каталог о нём не узнает.
+          case "$tag" in
+            v[0-9]*.[0-9]*.[0-9]*-*) promote=false ;;
+            *) promote=true ;;
+          esac
+          echo "promote=$promote" >> "$GITHUB_OUTPUT"
+          printf '%s: promote=%s\n' "$tag" "$promote" >> "$GITHUB_STEP_SUMMARY"
+
+  stage:
+    needs: gate
+    if: needs.gate.outputs.promote == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:

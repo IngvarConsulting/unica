@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -63,6 +64,64 @@ def job_block(workflow: str, job_id: str) -> str:
     return workflow[start:end]
 
 
+@dataclass(frozen=True)
+class ParsedJob:
+    body: str
+    needs: tuple[str, ...]
+    targets: tuple[tuple[str, str], ...]
+    steps: tuple[str, ...]
+
+
+def parse_workflow_jobs(workflow: str) -> dict[str, ParsedJob]:
+    """Parse the job graph and matrix/step order from the workflow subset we own."""
+    lines = workflow.splitlines()
+    jobs_start = lines.index("jobs:") + 1
+    boundaries = [
+        index
+        for index in range(jobs_start, len(lines))
+        if re.fullmatch(r"  [A-Za-z0-9_-]+:", lines[index])
+    ]
+    jobs: dict[str, ParsedJob] = {}
+    for position, start in enumerate(boundaries):
+        end = boundaries[position + 1] if position + 1 < len(boundaries) else len(lines)
+        name = lines[start].strip()[:-1]
+        block_lines = lines[start:end]
+        body = "\n".join(block_lines) + "\n"
+        needs: list[str] = []
+        for index, line in enumerate(block_lines):
+            match = re.fullmatch(r"    needs:\s*(.*)", line)
+            if not match:
+                continue
+            raw = match.group(1).strip()
+            if raw.startswith("["):
+                needs.extend(item.strip() for item in raw[1:-1].split(",") if item.strip())
+            elif raw:
+                needs.append(raw)
+            else:
+                cursor = index + 1
+                while cursor < len(block_lines):
+                    item = re.fullmatch(r"      - ([A-Za-z0-9_-]+)", block_lines[cursor])
+                    if item is None:
+                        break
+                    needs.append(item.group(1))
+                    cursor += 1
+            break
+        targets = tuple(
+            (target, runner)
+            for target, runner in re.findall(
+                r"(?m)^          - target: ([^\s]+)\n            runner: ([^\s]+)$",
+                body,
+            )
+        )
+        steps = tuple(
+            match.group(1).strip('"\'')
+            for line in block_lines
+            if (match := re.fullmatch(r"      - (?:name|uses): (.+)", line))
+        )
+        jobs[name] = ParsedJob(body=body, needs=tuple(needs), targets=targets, steps=steps)
+    return jobs
+
+
 class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def release_text(self) -> str:
         return RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -108,6 +167,37 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         ):
             with self.subTest(upstream=upstream):
                 self.assertIn(f"      - {upstream}", gate)
+
+    def test_p0_dry_release_proof_is_read_only_and_aggregated(self) -> None:
+        text = self.release_text()
+        jobs = parse_workflow_jobs(text)
+        proof = jobs.get("p0-release-proof")
+        self.assertIsNotNone(proof)
+        assert proof is not None
+        self.assertEqual(
+            set(proof.needs),
+            {"build-tools", "package-thin", "release-assessment"},
+        )
+        for argument in (
+            "scripts/ci/release-proof.py",
+            "--mode dry",
+            "--wire-dir",
+            "--package-dir",
+            "--asset-verification-dir",
+            "--source-commit",
+            "--baseline",
+            "--out-dir dist/p0-proof",
+        ):
+            self.assertIn(argument, proof.body)
+        self.assertIn("permissions:\n      contents: read", proof.body)
+        self.assertNotIn("softprops/action-gh-release", proof.body)
+        self.assertNotIn("git tag", proof.body)
+        self.assertIn("      - p0-release-proof", job_block(text, "unica-ci"))
+
+    def test_wire_probes_embed_the_matrix_target_in_their_evidence(self) -> None:
+        build = job_block(self.release_text(), "build-tools")
+
+        self.assertEqual(2, build.count('--target "$TARGET"'))
 
     def test_classifier_exposes_typed_contours_and_ci_full_override(self) -> None:
         text = self.release_text()
@@ -184,7 +274,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("cargo test", source)
         self.assertIn("search_integration_changed == 'true'", search_integration)
         self.assertIn("ci_changed == 'true'", search_integration)
-        self.assertIn("--test issue_89_workspace_service -- --ignored", search_integration)
+        self.assertIn("--test v13_search_integration -- --ignored", search_integration)
         self.assertNotIn("dtolnay/rust-toolchain", source)
         self.assertIn("runs-on: macos-14", primary)
         self.assertIn("rust_changed == 'true'", primary)
@@ -224,6 +314,19 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("needs: [classify-changes, build-tools]", assessment)
         self.assertIn("assessment_required == 'true'", assessment)
         self.assertIn("needs.build-tools.result == 'success'", assessment)
+
+    def test_release_assessment_uses_the_candidate_release_identity(self) -> None:
+        assessment = job_block(self.release_text(), "release-assessment")
+
+        self.assertIn(
+            "RELEASE_TAG: ${{ github.event_name == 'push' && "
+            "startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}",
+            assessment,
+        )
+        self.assertIn("if: ${{ env.RELEASE_TAG == '' }}", assessment)
+        self.assertIn('echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"', assessment)
+        self.assertIn('--release-tag "$RELEASE_TAG"', assessment)
+        self.assertNotIn("RELEASE_REF: ${{ github.ref_name }}", assessment)
 
     def test_only_tag_pushes_enable_release_behavior(self) -> None:
         text = self.release_text()
@@ -323,6 +426,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(job_id=job_id):
                 self.assertIn(f"timeout-minutes: {minutes}", job_block(publish, job_id))
 
+    def test_registry_guards_run_in_the_source_contour(self) -> None:
+        verify = job_block(self.release_text(), "verify-source")
+
+        self.assertIn("python -m unittest discover -s tests/arch", verify)
+        self.assertNotIn("python -m unittest discover -s tests/arch -t .", verify)
+        self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", verify)
+
     def test_platform_build_uses_exact_cargo_cache_and_reports_outcome(self) -> None:
         text = self.release_text()
         build = job_block(text, "build-tools")
@@ -366,12 +476,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("name: unica-runtime-metadata-${{ matrix.target }}", build)
         self.assertIn("name: unica-bootstrap-${{ matrix.target }}", build)
         self.assertIn("name: unica-runtime-${{ matrix.target }}", text)
+        # Узость здесь — про цель, а не про артефакт: разрез поставки дал по
+        # архиву на артефакт, и выгрузка обязана нести их все.
         self.assertIn(
-            ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.json",
+            ".build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.json",
             build,
         )
         self.assertIn(
-            ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz",
+            ".build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.tar.gz",
             build,
         )
         self.assertIn(
@@ -428,15 +540,31 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
     def test_packaged_bootstrap_is_smoked_on_every_supported_host(self) -> None:
         text = self.release_text()
+        probe = job_block(text, "probe-thin-bootstrap")
+        smoke = job_block(text, "smoke-thin-plugin")
 
-        self.assertIn("probe-thin-bootstrap:", text)
-        self.assertIn("smoke-thin-plugin:", text)
-        self.assertIn("Probe packaged bootstrap through the downloader", text)
-        self.assertIn("Smoke packaged bootstrap against published runtime", text)
-        self.assertIn("scripts/ci/smoke-unica-bootstrap.py", text)
-        self.assertIn("needs: package-thin", text)
-        self.assertIn("needs: [package-thin, publish-release-assets]", text)
-        self.assertIn("--expect-download-failure", text)
+        expected_targets = {
+            "linux-x64": "ubuntu-latest",
+            "win-x64": "windows-2022",
+            "darwin-arm64": "macos-14",
+        }
+        for target, runner in expected_targets.items():
+            with self.subTest(job="probe", target=target):
+                self.assertIn(f"- target: {target}", probe)
+                self.assertIn(f"runner: {runner}", probe)
+            with self.subTest(job="smoke", target=target):
+                self.assertIn(f"- target: {target}", smoke)
+                self.assertIn(f"runner: {runner}", smoke)
+        self.assertEqual(probe.count("- target:"), len(expected_targets))
+        self.assertEqual(smoke.count("- target:"), len(expected_targets))
+        self.assertIn("Probe packaged bootstrap through the downloader", probe)
+        self.assertIn("Smoke packaged bootstrap against published runtime", smoke)
+        self.assertIn("scripts/ci/smoke-unica-bootstrap.py", smoke)
+        self.assertIn(' --plugin-root .build/thin/plugins/unica', smoke)
+        self.assertIn(' --target "${{ matrix.target }}"', smoke)
+        self.assertIn("needs: package-thin", probe)
+        self.assertIn("needs: [package-thin, publish-release-assets]", smoke)
+        self.assertIn("--expect-download-failure", probe)
 
     def test_v080_source_release_has_no_executable_legacy_migration_jobs(self) -> None:
         release = self.release_text()
@@ -582,6 +710,166 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("plugin remove unica@unica --json", text)
         self.assertEqual(text.count("plugin add unica@unica --json"), 3)
         self.assertIn("verify --plugin-root $pluginRoot", text)
+
+
+class ArtifactSplitPublicationTests(unittest.TestCase):
+    """Разрез поставки делит сборку и выкладку по-разному.
+
+    Сборка несёт все артефакты: их метаданные нужны упаковщику, чтобы манифест
+    объявил каждый. Выкладка несёт одно ядро: движки издал тулчейн, и вторая
+    публикация тех же байтов стоила 439 МБ на выпуск.
+    """
+
+    def setUp(self) -> None:
+        self.release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    def test_the_release_publishes_the_core_and_only_it(self) -> None:
+        # Выкладывается то, у чего есть читатель: пару ядра перекачивает и
+        # перехеширует `verify-release-assets.py`. Описания поставок читает
+        # только упаковщик, и берёт он их из артефакта сборки.
+        self.assertIn("dist/runtime/unica-runtime-*.tar.gz", self.release)
+        self.assertIn("dist/runtime/unica-runtime-*.json", self.release)
+        self.assertNotIn("dist/runtime/*-runtime-*", self.release)
+
+    def test_the_manifest_still_names_the_artifacts_the_release_does_not_carry(
+        self,
+    ) -> None:
+        # Не выложить и не назвать — разные вещи. Движки объявлены адресом, и
+        # каждый адрес выпуск проверяет.
+        self.assertIn("verify-delivery-reachable.py", self.release)
+        self.assertIn("prefetch --plugin-root", self.release)
+
+    def test_packaging_uploads_every_artifact_of_the_target(self) -> None:
+        for glob in (
+            "runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.tar.gz",
+            "runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.json",
+        ):
+            self.assertIn(glob, self.release, glob)
+
+    def test_bsp_runtime_assessment_receives_the_engine_its_search_requires(self) -> None:
+        build = job_block(self.release, "build-tools")
+        assessment = job_block(self.release, "release-assessment")
+
+        self.assertIn("unica-assessment-engine-linux-x64", build)
+        self.assertIn("stage-unica-assessment-engine.py", build)
+        self.assertIn("--artifact bsl-analyzer", build)
+        self.assertIn("--artifact rlm-tools-bsl", build)
+        self.assertIn("--out-archive .build/unica-assessment-engine-linux-x64.tar.gz", build)
+        self.assertIn("name: unica-assessment-engine-linux-x64", assessment)
+        self.assertIn(
+            "--engine-overlay .build/assessment-engine/unica-assessment-engine-linux-x64.tar.gz",
+            assessment,
+        )
+
+    def test_the_direct_mcp_smoke_is_given_the_engines_it_asserts_on(self) -> None:
+        build = job_block(self.release, "build-tools")
+        extract = build[
+            build.index("name: Extract deterministic runtime for MCP smoke") :
+        ].split("- name: Smoke packaged Unica MCP")[0]
+
+        self.assertIn("unica-runtime-${{ matrix.target }}.tar.gz", extract)
+        self.assertIn(".build/tool-bundles/${{ matrix.target }}/bin/", extract)
+
+    def test_every_supported_target_must_pass_before_publication(self) -> None:
+        jobs = parse_workflow_jobs(self.release)
+        authoritative = jobs["build-tools"].targets
+        self.assertEqual(
+            authoritative,
+            (
+                ("linux-x64", "ubuntu-latest"),
+                ("win-x64", "windows-latest"),
+                ("darwin-arm64", "macos-14"),
+            ),
+        )
+        authoritative_targets = {target for target, _ in authoritative}
+        for contour in ("probe-thin-bootstrap", "smoke-thin-plugin"):
+            self.assertEqual(
+                {target for target, _ in jobs[contour].targets},
+                authoritative_targets,
+                contour,
+            )
+
+        build = jobs["build-tools"]
+        ordered_steps = (
+            "Build target bundle and bootstrap",
+            "Package deterministic runtime",
+            "Verify local runtime asset pair",
+            "Upload runtime metadata",
+            "Upload bootstrap payload",
+            "Upload required runtime archive",
+        )
+        positions = [build.steps.index(step) for step in ordered_steps]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("tools.json", build.body)
+        self.assertIn('manifest["runtimeFiles"]', build.body)
+        self.assertIn("--target \"${{ matrix.target }}\"", build.body)
+
+        expected_needs = {
+            "package-thin": ("build-tools",),
+            "publish-release-assets": ("build-tools",),
+            "probe-thin-bootstrap": ("package-thin",),
+            "smoke-thin-plugin": ("package-thin", "publish-release-assets"),
+            "verify-published-assets": ("publish-release-assets", "package-thin"),
+        }
+        for job, needs in expected_needs.items():
+            self.assertEqual(jobs[job].needs, needs, job)
+            for dependency in needs:
+                self.assertIn(f"needs.{dependency}.result == 'success'", jobs[job].body)
+
+        local_verifier = "python scripts/ci/verify-release-assets.py"
+        self.assertIn(local_verifier, build.body)
+        self.assertIn('--asset-dir ".build/runtime-assets/${{ matrix.target }}"', build.body)
+        self.assertIn('--target "${{ matrix.target }}"', build.body)
+
+        published = jobs["verify-published-assets"]
+        published_lifecycle = (
+            'gh release download "$GITHUB_REF_NAME" --pattern \'unica-runtime-*\' --dir published',
+            local_verifier + " --asset-dir published",
+            "name: unica-thin-marketplace",
+            "python scripts/ci/verify-delivery-reachable.py",
+        )
+        published_positions = [published.body.index(step) for step in published_lifecycle]
+        self.assertEqual(published_positions, sorted(published_positions))
+        self.assertNotIn("--target", published.body, "published verification must cover every target")
+
+        smoke = jobs["smoke-thin-plugin"]
+        smoke_lifecycle = (
+            "Smoke packaged bootstrap against published runtime",
+            "Prefetch the whole delivery once, end to end",
+        )
+        smoke_positions = [smoke.steps.index(step) for step in smoke_lifecycle]
+        self.assertEqual(smoke_positions, sorted(smoke_positions))
+        self.assertIn("matrix.target == 'linux-x64'", smoke.body)
+        self.assertIn('prefetch --plugin-root .build/thin/plugins/unica', smoke.body)
+
+
+class PrereleaseNeverReachesConsumersTests(unittest.TestCase):
+    """Предвыпуск собирается и публикует ассеты, но каталога не касается.
+
+    Замерить доставку можно только на настоящем релизе: адрес архива прибит к
+    релизам репозитория. Значит нужен выпуск, который существует для нас и не
+    существует для пользователей, — и решать это должен конвейер, а не память
+    того, кто его запускал.
+    """
+
+    def setUp(self) -> None:
+        self.release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    def test_a_prerelease_tag_marks_the_github_release_as_such(self) -> None:
+        # Иначе предвыпуск станет «последним релизом» и его начнут находить
+        # те, кто ищет свежее.
+        self.assertIn("prerelease: ${{ contains(github.ref_name, '-') }}", self.release)
+
+    def test_publication_asks_first_whether_this_release_is_for_consumers(self) -> None:
+        self.assertIn("\n  gate:\n", self.publish)
+        self.assertIn("promote:", self.publish)
+
+    def test_every_publishing_stage_waits_for_that_answer(self) -> None:
+        # Достаточно загейтить первую стадию: остальные ждут её через `needs`.
+        self.assertIn("needs: gate", self.publish)
+        self.assertIn("if: needs.gate.outputs.promote == 'true'", self.publish)
 
 
 if __name__ == "__main__":

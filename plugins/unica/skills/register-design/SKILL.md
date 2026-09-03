@@ -7,7 +7,7 @@ description: "Проектирование регистров 1С. Исполь�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.code.search`, `unica.code.outline`, `unica.dcs.info`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.code.search`, `unica.dcs.info`, `unica.code.diagnostics`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -42,7 +42,7 @@ Totals separation is the decision that pulls both ways: std664 wants it for writ
 
 1. State the accounting subject and the questions the register must answer. One subject, one register.
 2. Pick the class, then split every field into dimension, resource, or attribute before creating anything. Check the receipt/expense rule for every candidate dimension of a `Balances` register.
-3. Inspect neighbours with `unica.meta.info` — an existing register with the same subject is a reason to extend rather than add — and locate the read paths with `unica.code.search`, `unica.code.outline`, and `unica.dcs.info`.
+3. Inspect neighbours with `unica.meta.info` — an existing register with the same subject is a reason to extend rather than add — and locate the read paths with `unica.code.search`, `unica.view` on the module node (its `Method` branch lists the methods), and `unica.dcs.info`.
 4. Decide periodicity and `WriteMode` for an information register, and whether every std708 condition holds before enabling `EnableTotalsSliceLast` or `EnableTotalsSliceFirst`.
 5. Decide `EnableTotalsSplitting` against the read paths found in step 3, not in the abstract.
 6. Set `DenyIncompleteValues` on dimensions that must always carry a value, and decide `Master` deliberately: it makes record lifetime follow the master value.

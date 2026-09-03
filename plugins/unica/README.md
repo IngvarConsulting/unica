@@ -71,8 +71,7 @@ atomically replaces the transliterated `skd` domain with the official
 | `unica.skd.compile` | `unica.dcs.compile` |
 | `unica.skd.edit` | `unica.dcs.edit` |
 | `unica.skd.info` | `unica.dcs.info` |
-| `unica.skd.validate` | `unica.dcs.validate` |
-| `skd-compile/edit/info/validate` | `dcs-compile/edit/info/validate` |
+| `skd-compile/edit/info` | `dcs-compile/edit/info` |
 
 The operation arguments and `DataCompositionSchema` XML format are unchanged.
 
@@ -110,20 +109,20 @@ converts a path discovered by other means into one.
 
 ### Readers that accept either selector
 
-Thirteen readers and validators are in the transitional state ADR-0049
-defines: they accept the logical selector **and** still accept their existing
-path. Nothing is removed here, so no call breaks; removing each path is its own
-later merge request.
+Seven readers remain in the transitional state ADR-0049 defines: they accept
+the logical selector **and** still accept their existing path. The six
+`*.validate` tools that used to share this table are retired in favour of
+`unica.check` (see below); removing each remaining path is its own later merge
+request.
 
 | Tool | Logical selector | Path kept for now |
 | --- | --- | --- |
-| `unica.cf.info`, `unica.cf.validate` | `sourceSet` | `ConfigPath` |
+| `unica.cf.info` | `sourceSet` | `ConfigPath` |
 | `unica.subsystem.info` | `sourceSet`, optional `metadataPath` | `SubsystemPath` |
-| `unica.subsystem.validate` | `sourceSet` + `metadataPath` | `SubsystemPath` |
-| `unica.role.info`, `unica.role.validate` | `sourceSet` + `metadataPath` | `RightsPath` |
-| `unica.form.info`, `unica.form.validate` | `sourceSet` + `metadataPath` | `FormPath` |
-| `unica.dcs.info`, `unica.dcs.validate` | `sourceSet` + `metadataPath` | `TemplatePath` |
-| `unica.mxl.info`, `unica.mxl.validate`, `unica.mxl.decompile` | `sourceSet` + `metadataPath` | `TemplatePath` |
+| `unica.role.info` | `sourceSet` + `metadataPath` | `RightsPath` |
+| `unica.form.info` | `sourceSet` + `metadataPath` | `FormPath` |
+| `unica.dcs.info` | `sourceSet` + `metadataPath` | `TemplatePath` |
+| `unica.mxl.info`, `unica.mxl.decompile` | `sourceSet` + `metadataPath` | `TemplatePath` |
 
 Exactly one selector per call. Passing both fails with `selector_conflict`,
 because resolving a conflict silently would hide which selector produced the
@@ -139,8 +138,9 @@ addressable, that body does not.
 ## XDTO operations migration
 
 The release containing [issue #374](https://github.com/IngvarConsulting/unica/issues/374)
-replaces the flat single-operation form of `unica.xdto.edit` with a typed
-ordered `operations` array (ADR-0071). There is no compatibility alias: a call
+replaced the flat single-operation form of the retired `unica.xdto.edit`
+with a typed ordered `operations` array (ADR-0071); on the canonical surface
+the same operations are `unica.apply` ops of the XDTO family. There is no compatibility alias: a call
 that still passes any retired top-level field fails with
 `legacy_arguments_removed` and names the replacement.
 
@@ -157,31 +157,22 @@ package writer has always read. Operations in one call apply in order, see
 each other's results, and publish once; a failed element leaves no partial
 write, and every effect is reported by `operationIndex`.
 
-## Template and help migration
+## Templates, embedded help and validation
 
-The release containing [issue #375](https://github.com/IngvarConsulting/unica/issues/375)
-retires `unica.template.add`, `unica.template.remove` and `unica.help.add`
-(ADR-0072). There is no compatibility alias: every call answers
-`unknown unica tool`. Template registration and embedded help are operations
-of the shared `unica.meta.add`/`unica.meta.edit` union:
-
-| Removed call | Canonical `operations` element |
-| --- | --- |
-| `unica.template.add` + `ObjectName`, `TemplateName`, `TemplateType` | `{"op": "add", "collection": "templates", "elements": [{"name": "Basic", "templateType": "SpreadsheetDocument"}]}` |
-| `unica.template.remove` + `ObjectName`, `TemplateName` | `{"op": "remove", "collection": "templates", "names": ["Basic"]}` |
-| `unica.help.add` + `ObjectName`, `Lang` | `{"op": "addHelp", "lang": "ru"}` |
-
-The owner is addressed by `sourceSet + metadataPath`; the retired
-`ObjectName` path dialect under `SrcDir` is gone. `templateType` defaults to
-`SpreadsheetDocument`; `addHelp` is create-only and flips
-`IncludeHelpInContents` on the owner's forms exactly the way the retired tool
-did.
+Template registration and embedded help are `unica.apply` operations of the
+owning object: `template.add`, `template.set`, `template.remove` and
+`help.create`. Validation is `unica.check` over a node: the node kind
+owns its validators (`cf`, `cfe`, `form`, `dcs`, `mxl`, `role`,
+`subsystem`, `interface`, `meta`); the verdict travels in `data.status` and a
+root outside the platform XML profile `2.20` is reported as a warning
+diagnostic next to it. The retired `unica.template.*`, `unica.help.add` and
+`unica.*.validate` names have no alias.
 
 ## Runtime delivery
 
 The marketplace plugin contains skills, references, assets, `launch.sh`, and
-three small native bootstrap binaries. It contains no full `bin/<target>` tool
-runtime. Packaged `.mcp.json` invokes a command-scoped Git alias. Git's shell
+three small native bootstrap binaries. It contains neither the `unica` core nor
+engine binaries. Packaged `.mcp.json` invokes a command-scoped Git alias. Git's shell
 runs `bootstrap/launch.sh`, which selects exactly one bootstrap:
 
 - `darwin-arm64`;
@@ -193,11 +184,11 @@ Code rewrites `${CLAUDE_PLUGIN_ROOT}` before the shell sees it; Codex leaves the
 token unset, and the shell falls back to Git's own `$PWD`/`$GIT_PREFIX` pair.
 One launcher therefore serves both hosts without a per-host package.
 
-The bootstrap reads the release-pinned `runtime-manifest.json`, downloads
-`unica-runtime-<target>.tar.gz`, verifies archive and file SHA-256 values, and
-publishes the runtime atomically in the host cache. It then execs the single
-`unica` MCP process. Runtime stdout stays reserved for JSON-RPC; bootstrap
-diagnostics use stderr.
+The bootstrap downloads only `unica-runtime-<target>.tar.gz` before MCP startup.
+It reads the release-pinned `runtime-manifest.json`, verifies archive and file
+SHA-256 values, publishes the core atomically in the host cache, and then execs
+the single `unica` MCP process. Runtime stdout stays reserved for JSON-RPC;
+bootstrap diagnostics use stderr.
 
 The cache is `$CODEX_HOME/unica/runtimes` under Codex and
 `${CLAUDE_PLUGIN_DATA}/runtimes` under Claude Code, which survives plugin
@@ -206,21 +197,28 @@ updates. Packaged `.mcp.json` passes the Claude token through
 literal token, and the bootstrap discards any value that still contains `${`
 rather than creating a directory named after it.
 
-The runtime archive contains the target's `unica`, `bsl-analyzer`, `v8-runner`,
-`rlm-bsl-mcp`, and `rlm-bsl-index` binaries plus the generated
-`third-party/manifest.json`. Internal launches re-check the pinned binary hash.
+Each installed artifact lives below
+`<artifact>/<version>--<asset-sha256>/<target>`. The SHA-256 component prevents
+a rebuilt engine with the same upstream version from reusing or overwriting old
+bytes. The generated `third-party/manifest.json` maps tools to those artifact
+roots, and internal launches re-check the pinned binary hash.
 
-Because the cache key carries the plugin version, the first session after an
-install or an update pays for that download, and it happens inside the host's
-MCP startup budget. Packaged `.mcp.json` therefore declares
-`startup_timeout_sec`, which Codex honours: a slow link no longer has the
-install killed part-way, and the session is not held up while it runs, because
-the tools appear once the runtime is published. A host that does not know the
-key ignores it. To pay for the download outside a session on any host, run the
-bootstrap directly and open a new task afterwards:
+The core download happens inside the host's MCP startup budget. Packaged
+`.mcp.json` therefore declares `startup_timeout_sec`, which bounds this
+pre-startup transfer. The host waits for the core to be verified and published
+before it starts MCP; a host that does not know the key ignores it.
+
+After startup, engine delivery is non-blocking for concurrent callers. The
+first call that needs an absent engine starts one server-owned delivery from the
+pinned `unica-toolchain` asset. Concurrent calls
+share it. If the owner cannot finish inside the bounded wait window, the call
+returns `work.status=working`; retry the same domain call after the suggested
+interval. There is no public install tool, and cancelling one call does not
+cancel the shared delivery. To populate the core and every engine before
+building an offline image, run:
 
 ```sh
-<plugin-root>/bootstrap/bin/<target>/unica-bootstrap verify --plugin-root <plugin-root>
+<plugin-root>/bootstrap/bin/<target>/unica-bootstrap prefetch --plugin-root <plugin-root>
 ```
 
 ## Skills
@@ -254,7 +252,7 @@ scripts/dev/install-local-unica.sh
 ```
 
 On native Windows x64, run the script from **Git Bash** included with 64-bit Git
-for Windows. The local build requires Python 3.10 or newer, stable Rust with the
+for Windows. The local build requires Python 3.12 or newer, stable Rust with the
 native MSVC toolchain, Microsoft C++ Build Tools, and the Windows SDK. A current
 Codex CLI is required for the install and fresh-prompt verification steps.
 
@@ -281,10 +279,12 @@ To package a current-host Claude debug build instead, pass
 
 ## Release pipeline
 
-The source workflow builds tools and `unica-bootstrap` natively on each runner,
-creates deterministic runtime archives and checksum metadata, re-downloads
-published release bytes for verification, and emits one thin marketplace
-payload carrying both host catalogs. A separate workflow opens a plugin-only
+The source workflow builds the core and `unica-bootstrap` natively on each
+runner, creates three deterministic core archives and checksum metadata,
+re-downloads published core bytes, checks every pinned engine address, proves a
+full `prefetch`, and emits one thin marketplace payload carrying both host
+catalogs. Engine bytes remain in immutable `unica-toolchain` releases. A
+separate workflow opens a plugin-only
 staging PR in `IngvarConsulting/unica-marketplace`. After that commit is tagged
 immutably, a catalog-only promotion PR points both stable `git-subdir` entries,
 `.agents/plugins/marketplace.json` for Codex and `.claude-plugin/marketplace.json`

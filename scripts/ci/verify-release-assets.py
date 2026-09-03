@@ -11,6 +11,8 @@ from pathlib import Path
 
 
 TARGETS = {"darwin-arm64", "linux-x64", "win-x64"}
+SCHEMA_VERSION = 1
+VERIFICATION_SOURCES = {"local-build", "re-downloaded"}
 
 
 def sha256(path: Path) -> str:
@@ -21,14 +23,43 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_runtime_asset_pair(asset_dir: Path, target: str) -> str:
-    metadata_path = asset_dir / f"unica-runtime-{target}.json"
-    archive_path = asset_dir / f"unica-runtime-{target}.tar.gz"
+# Имя артефакта ядра. Остальные архивы на цели — движки.
+CORE_ARTIFACT = "unica"
+
+
+def published_artifacts(asset_dir: Path, target: str) -> "list[str]":
+    """Какие артефакты выпуск публикует архивом.
+
+    Ровно один — ядро. Движки издаёт тулчейн под своими тегами, и лишний архив
+    здесь означает, что выпуск снова начал перепубликовывать чужие байты.
+    """
+    suffix = f"-runtime-{target}.tar.gz"
+    found = sorted(
+        path.name[: -len(suffix)]
+        for path in asset_dir.glob(f"*{suffix}")
+        if path.name.endswith(suffix)
+    )
+    if found != [CORE_ARTIFACT]:
+        raise SystemExit(
+            f"published runtime archives for {target} must be [{CORE_ARTIFACT}], got {found}"
+        )
+    return found
+
+
+def verify_runtime_asset_pair(asset_dir: Path, target: str, artifact: str = CORE_ARTIFACT) -> str:
+    metadata_path = asset_dir / f"{artifact}-runtime-{target}.json"
+    archive_path = asset_dir / f"{artifact}-runtime-{target}.tar.gz"
     if not metadata_path.is_file() or not archive_path.is_file():
         raise SystemExit(f"published runtime asset pair is missing for {target}")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if metadata.get("schemaVersion") != 1 or metadata.get("target") != target:
+    if (
+        metadata.get("schemaVersion") != 2
+        or metadata.get("target") != target
+        or metadata.get("artifact") != artifact
+    ):
         raise SystemExit(f"published runtime metadata identity mismatch for {target}")
+    if not metadata.get("version"):
+        raise SystemExit(f"published runtime metadata has no artifact version for {target}")
     if metadata.get("asset", {}).get("name") != archive_path.name:
         raise SystemExit(f"published runtime archive name mismatch for {target}")
     if metadata["asset"].get("sha256") != sha256(archive_path):
@@ -57,24 +88,81 @@ def verify_runtime_asset_pair(asset_dir: Path, target: str) -> str:
     return version
 
 
+def verify_release_target(asset_dir: Path, target: str) -> str:
+    """Одна цель целиком: и состав выпуска, и байты каждой пары.
+
+    Состав проверяется здесь, потому что здесь он и создаётся: лишний архив,
+    замеченный после выкладки, — уже опубликованный лишний архив.
+    """
+    versions = {
+        verify_runtime_asset_pair(asset_dir, target, artifact)
+        for artifact in published_artifacts(asset_dir, target)
+    }
+    if len(versions) != 1:
+        raise SystemExit(f"published runtime versions disagree for {target}: {sorted(versions)}")
+    return versions.pop()
+
+
 def verify_release_assets(asset_dir: Path) -> str:
-    versions = {verify_runtime_asset_pair(asset_dir, target) for target in sorted(TARGETS)}
+    versions = {verify_release_target(asset_dir, target) for target in sorted(TARGETS)}
     if len(versions) != 1:
         raise SystemExit("published runtime target/version matrix is inconsistent")
     return versions.pop()
+
+
+def build_verification_report(
+    asset_dir: Path, target: str | None = None, *, source: str
+) -> dict:
+    """Return a durable outcome after all byte and composition checks pass."""
+    if source not in VERIFICATION_SOURCES:
+        raise SystemExit(f"unsupported runtime asset verification source: {source}")
+    targets = [target] if target else sorted(TARGETS)
+    if target:
+        if target not in TARGETS:
+            raise SystemExit(f"unsupported runtime asset target: {target}")
+        version = verify_release_target(asset_dir, target)
+    else:
+        version = verify_release_assets(asset_dir)
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "status": "passed",
+        "source": source,
+        "pluginVersion": version,
+        "targets": targets,
+        "checks": {
+            "artifactSet": True,
+            "archiveChecksum": True,
+            "memberChecksums": True,
+            "memberMetadata": True,
+        },
+    }
+
+
+def write_verification_report(report: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--asset-dir", type=Path, required=True)
     parser.add_argument("--target", choices=sorted(TARGETS))
-    args = parser.parse_args()
-    version = (
-        verify_runtime_asset_pair(args.asset_dir, args.target)
-        if args.target
-        else verify_release_assets(args.asset_dir)
+    parser.add_argument("--report", type=Path)
+    parser.add_argument(
+        "--source", choices=sorted(VERIFICATION_SOURCES), default="re-downloaded"
     )
-    print(f"verified published Unica runtime assets: {version}")
+    args = parser.parse_args()
+    report = build_verification_report(
+        args.asset_dir,
+        args.target,
+        source=args.source,
+    )
+    if args.report:
+        write_verification_report(report, args.report)
+    print(f"verified Unica runtime assets: {report['pluginVersion']}")
 
 
 if __name__ == "__main__":
