@@ -1,6 +1,6 @@
 - Date: `2026-09-04`
-- Status: `draft`
-- Decision: `none` — площадка описывается заранее, решение принимается вместе с первым ярусом
+- Status: `approved`
+- Decision: `DEC.2026-09-05.TEST-PIPELINE-PLATFORM`
 
 # Площадка под ярусы и сбор результатов
 
