@@ -153,16 +153,21 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
             self.assertIn(name, named)
 
     def test_subsystem_checks_cover_public_schema_and_no_data_failures(self) -> None:
-        self.assertTrue(
-            check("INV.SOURCE.SUBSYSTEM-ADDRESS").endswith(
-                "::public_subsystem_info_registration_address_and_schema_contract_is_complete"
-            )
+        """Чтение подсистемы переехало на канонический путь.
+
+        Логический адрес и отказ без данных доказываются приёмочным прогоном:
+        снятый `subsystem.info` больше не может их держать.
+        """
+        corpus_check = (
+            "tests/ci/test_acceptance_scenarios.py"
+            "::test_every_wire_answers_its_frozen_classes"
         )
-        self.assertTrue(
-            check("INV.SOURCE.SUBSYSTEM-DEADLINE-UNAVAILABLE").endswith(
-                "::public_subsystem_info_deadline_returns_no_data"
-            )
-        )
+        for rule in (
+            "INV.SOURCE.SUBSYSTEM-ADDRESS",
+            "INV.SOURCE.SUBSYSTEM-DEADLINE-UNAVAILABLE",
+        ):
+            with self.subTest(rule=rule):
+                self.assertEqual(check(rule), corpus_check)
         topology = check("INV.SOURCE.SUBSYSTEM-TOPOLOGY")
         for name in (
             "pointing_at_the_subsystems_folder_answers_only_with_tree",
@@ -174,23 +179,28 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
             "a_missing_command_interface_is_null_not_an_empty_interface",
         ):
             self.assertIn(name, topology)
+    def test_reader_records_retire_with_the_readers_they_governed(self) -> None:
+        """Мост читателей снят вместе с ними: правила моста стоят на корпусе.
 
-    def test_reader_records_share_one_authoritative_migration_inventory(self) -> None:
-        expected = (
-            "crates/unica-coder/src/application/tool_contracts.rs"
-            "::subject_reader_migration_inventory_is_complete"
+        Пока мост жил, оба правила ссылались на инвентарь режимов миграции.
+        Инвентаря больше нет — как и мостовых читателей, — поэтому оба правила
+        переведены в `superseded` и указывают на приёмочный прогон, который
+        замораживает ответы канонической поверхности на тех же узлах.
+        """
+        corpus_check = (
+            "tests/ci/test_acceptance_scenarios.py"
+            "::test_every_wire_answers_its_frozen_classes"
         )
-        self.assertEqual(check("INV.SOURCE.READER-MIGRATION"), expected)
-        self.assertIn(
-            "authoritative_reader_migration_inventory",
-            record("INV.SOURCE.READER-OUTPUT-PARITY"),
-        )
+        for rule in ("INV.SOURCE.READER-MIGRATION", "INV.SOURCE.READER-OUTPUT-PARITY"):
+            with self.subTest(rule=rule):
+                self.assertEqual(check(rule), corpus_check)
+                self.assertIn("status: superseded", record(rule))
         source = (
             REPO_ROOT / "crates" / "unica-coder" / "src" / "application" /
             "tool_contracts.rs"
         ).read_text(encoding="utf-8")
-        owner = source.index("pub(crate) enum ReaderMigrationMode")
-        self.assertNotIn("#[cfg(test)]", source[max(0, owner - 80):owner])
+        self.assertNotIn("ReaderMigrationMode", source)
+        self.assertNotIn("BRIDGED_SELECTORS", source)
 
     def test_broad_source_records_name_complete_behavior_checks(self) -> None:
         """Широкая запись называет весь набор проверок, а не одну за всех.

@@ -755,6 +755,12 @@ const CANONICAL_APPLY_TOOL: &str = "unica.apply";
 /// surface: the same production path a host uses, with the daemon state kept
 /// outside the case workspace so the platform checkpoint boundary stays clean.
 fn call_canonical_apply(args: &Map<String, Value>) -> Result<String, String> {
+    call_canonical_tool(CANONICAL_APPLY_TOOL, args)
+}
+
+/// Один канонический вызов по stdio: рабочее пространство берётся из `cwd`,
+/// состояние поставщика живёт вне него, ответ проверяется на ok и ошибки.
+fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, String> {
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
 
@@ -762,7 +768,7 @@ fn call_canonical_apply(args: &Map<String, Value>) -> Result<String, String> {
     let workspace = args
         .get("cwd")
         .and_then(Value::as_str)
-        .ok_or_else(|| "canonical apply corpus call has no workspace".to_string())?;
+        .ok_or_else(|| format!("canonical {tool} corpus call has no workspace"))?;
     let workspace = fs::canonicalize(workspace).map_err(|error| error.to_string())?;
     let state = std::env::temp_dir().join(format!(
         "unica-corpus-apply-state-{}-{}",
@@ -837,7 +843,7 @@ fn call_canonical_apply(args: &Map<String, Value>) -> Result<String, String> {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": {"name": CANONICAL_APPLY_TOOL, "arguments": Value::Object(request)}
+            "params": {"name": tool, "arguments": Value::Object(request)}
         }),
     )?;
     drop(stdin);
@@ -869,9 +875,7 @@ fn call_canonical_apply(args: &Map<String, Value>) -> Result<String, String> {
         })
         .unwrap_or_default();
     if !ok || !errors.is_empty() {
-        return Err(format!(
-            "{CANONICAL_APPLY_TOOL} failed: {summary}; errors={errors:?}"
-        ));
+        return Err(format!("{tool} failed: {summary}; errors={errors:?}"));
     }
     Ok(summary)
 }
@@ -4302,7 +4306,7 @@ fn source_resource_reads_preserve_every_corpus_byte() {
         .unwrap();
         fs::write(
             source.join("CommonModules/Shared.xml"),
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule uuid=\"ac847dc9-e222-45cf-af4a-6fa863c919a8\"><Properties><Name>Shared</Name><Synonym/><Comment/><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>",
         )
         .unwrap();
         fs::write(
@@ -4312,31 +4316,16 @@ fn source_resource_reads_preserve_every_corpus_byte() {
         .unwrap();
     }
     let before = capture_workspace_payloads_for_source_test(&workspace);
-    let app = UnicaApplication::new();
     for source_set in ["main", "extension"] {
-        let mut resources_args = common_args(&workspace);
-        resources_args.remove("dryRun");
-        resources_args.insert("sourceSet".to_string(), json!(source_set));
-        resources_args.insert(
-            "metadataPath".to_string(),
-            json!("CommonModule.Shared.Module"),
+        let mut view_args = common_args(&workspace);
+        view_args.remove("dryRun");
+        view_args.insert(
+            "at".to_string(),
+            json!(format!("{source_set}:CommonModule.Shared")),
         );
-        resources_args.insert("scope".to_string(), json!("self"));
-        let resources = app
-            .call_tool("unica.source.resources", &resources_args)
-            .unwrap();
-        let page = resources.data.unwrap();
-        let resource = &page["resources"][0];
-        assert_eq!(resource["access"], json!(["read"]));
-        let mut read_args = common_args(&workspace);
-        read_args.remove("dryRun");
-        read_args.insert("snapshotId".to_string(), page["snapshotId"].clone());
-        read_args.insert("resourceId".to_string(), resource["resourceId"].clone());
-        let read = app.call_tool("unica.source.read", &read_args).unwrap();
-        assert_eq!(read.data.unwrap()["eof"], json!(true));
+        call_canonical_tool("unica.view", &view_args).expect("canonical module view");
     }
-    // The whole public resource surface is read-only, so the corpus must come
-    // out byte-identical.
+    // Canonical reads never write: the corpus must come out byte-identical.
     assert_eq!(
         capture_workspace_payloads_for_source_test(&workspace),
         before

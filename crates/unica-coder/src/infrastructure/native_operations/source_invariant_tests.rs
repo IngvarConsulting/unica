@@ -121,31 +121,26 @@ fn public_platform_xml_mutator_preimage_contract_is_complete() {
     }
 }
 
-/// Every reader the migration inventory keeps in `bridge` mode answers a
-/// logical selector with the same typed data as its physical selector. The
-/// case table is compared against the inventory so a reader cannot enter or
-/// leave the bridge without its focused parity test following.
 #[test]
-fn bridged_reader_outputs_are_identical_for_logical_and_physical_selectors() {
-    use crate::application::tool_contracts::{
-        authoritative_reader_migration_inventory, ReaderMigrationMode,
-    };
-    use std::collections::BTreeSet;
+fn repeated_interface_and_mxl_mutations_preserve_file_identity_but_report_attempted_updates() {
+    super::interface::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update();
+    super::mxl::tests::repeated_mxl_compile_preserves_identity_but_reports_attempted_update();
+}
 
-    let cases: [(&str, fn()); 6] = [
-        ("unica.form.info", super::form::form_read_selector_bridge_tests::form_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.role.info", super::role::role_info_typed_result_tests::role_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.mxl.info", super::mxl::mxl_read_selector_bridge_tests::mxl_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.mxl.decompile", super::mxl::mxl_read_selector_bridge_tests::mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.dcs.info", super::mxl::mxl_read_selector_bridge_tests::dcs_info_answers_identically_for_a_logical_and_a_physical_selector),
-        ("unica.subsystem.info", super::subsystem::subsystem_read_selector_bridge_tests::subsystem_info_answers_identically_for_a_logical_and_a_physical_selector),
-    ];
-    let expected = authoritative_reader_migration_inventory()
-        .filter_map(|(name, mode)| (mode == ReaderMigrationMode::Bridge).then_some(name))
-        .collect::<BTreeSet<_>>();
-    let actual = cases.iter().map(|(name, _)| *name).collect::<BTreeSet<_>>();
-    assert_eq!(actual, expected);
-    for (_, parity_test) in cases {
-        parity_test();
-    }
+#[test]
+fn mutation_idempotence_scope_decision_is_fully_realized() {
+    verified_public_mutator_idempotence_cases_are_exact();
+    repeated_interface_and_mxl_mutations_preserve_file_identity_but_report_attempted_updates();
+}
+
+/// One registry-facing falsifier for every clause of selector-free tail
+/// insertion, whose public schema and write behavior live on opposite sides of
+/// the application/infrastructure boundary.
+#[test]
+fn tail_insert_public_and_write_contract_is_complete() {
+    crate::application::tool_contracts::tests::code_patch_tail_insert_public_contract_is_closed();
+    super::code::tests::code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat();
+    super::code::tests::code_patch_writes_the_first_body_of_an_empty_or_bom_only_module();
+    super::code::tests::code_patch_creates_a_module_file_the_platform_never_exported();
+    super::code::tests::code_patch_refuses_a_module_role_the_metadata_kind_never_owns();
 }

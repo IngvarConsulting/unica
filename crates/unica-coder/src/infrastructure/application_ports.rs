@@ -4,15 +4,7 @@ use crate::application::ports::{
     MetaRelatedData, MetadataRead, MetadataValidationResult, MetadataValidationSubject,
     PreparedMetadataMutation, PreparedToolInvocation, SupportGuardCheck,
 };
-use crate::application::source_navigation::{
-    SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
-    SourceResolveRequest, SourceResolveResult,
-};
-use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
-use crate::application::{
-    project_map, AdapterOutcome, InvocationMode, ToolExecution, ToolHandler, ToolSpec,
-    TypedReadOutcome,
-};
+use crate::application::{AdapterOutcome, InvocationMode, ToolExecution, ToolHandler, ToolSpec};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -26,15 +18,11 @@ use crate::domain::diagnostics::{
 use crate::domain::events::DomainEvent;
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::progress::ProgressSink;
-use crate::domain::source_resources::{
-    ResourceManifestPage, SourceReadResult, SourceResourceError,
-};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::code_intelligence::{BslAnalyzerProvider, GitGrepProvider, RlmProvider};
 use crate::infrastructure::diagnostics::BslAnalyzerDiagnosticProvider;
 use crate::infrastructure::internal_adapters::{
     BslAnalyzerMcpAdapter, CliAdapter, RuntimeAdapter, RuntimeInvocation, RuntimeJobAdapter,
-    StandardsAdapter,
 };
 use crate::infrastructure::metadata_operations::MetadataOperations;
 use crate::infrastructure::native_operations::subsystem;
@@ -83,20 +71,15 @@ pub(crate) fn engine_for(spec: ToolSpec) -> Option<&'static str> {
         | ToolHandler::RuntimeAdapter
         | ToolHandler::RuntimeJob { .. } => Some("v8-runner"),
         ToolHandler::CodeAdapter { .. } => Some("bsl-analyzer"),
-        ToolHandler::Metadata { .. }
+        ToolHandler::Documentation { .. }
+        | ToolHandler::Metadata { .. }
         | ToolHandler::NativeOperation { .. }
-        | ToolHandler::ProjectMap
         | ToolHandler::CodeIntelligence { .. }
-        | ToolHandler::SourceNavigation { .. }
-        | ToolHandler::SourceResources { .. }
-        | ToolHandler::Diagnostics
-        | ToolHandler::StandardsAdapter { .. }
-        | ToolHandler::Documentation { .. } => None,
+        | ToolHandler::Diagnostics => None,
     }
 }
 
 pub(crate) struct InfrastructureApplicationPorts {
-    source_resources: crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider,
     support_state_readers: Arc<dyn SupportStateReaderFactory>,
     /// Идущие доставки. Стол принадлежит серверу: доставка переживает вызов,
     /// который её начал, и достаётся следующему.
@@ -106,8 +89,6 @@ pub(crate) struct InfrastructureApplicationPorts {
 impl InfrastructureApplicationPorts {
     pub(crate) fn new() -> Self {
         Self {
-            source_resources:
-                crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider::new(),
             support_state_readers: Arc::new(WorkspaceSupportStateReaderFactory),
             deliveries: Default::default(),
         }
@@ -118,8 +99,6 @@ impl InfrastructureApplicationPorts {
         support_state_readers: Arc<dyn SupportStateReaderFactory>,
     ) -> Self {
         Self {
-            source_resources:
-                crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider::new(),
             support_state_readers,
             deliveries: Default::default(),
         }
@@ -326,45 +305,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         DiagnosticProviderRegistry::new(providers).map_err(|error| error.to_string())
     }
 
-    fn resolve_source_navigation(
-        &self,
-        request: SourceResolveRequest,
-        context: &WorkspaceContext,
-        cancellation: &CancellationToken,
-    ) -> Result<SourceResolveResult, String> {
-        crate::infrastructure::platform_xml_source_targets::resolve_platform_xml_source_navigation(
-            context,
-            &request,
-            cancellation,
-        )
-    }
-
-    fn children_source_navigation(
-        &self,
-        request: SourceChildrenRequest,
-        context: &WorkspaceContext,
-        cancellation: &CancellationToken,
-    ) -> Result<SourceChildrenResult, String> {
-        crate::infrastructure::platform_xml_source_targets::children_platform_xml_source_navigation(
-            context,
-            &request,
-            cancellation,
-        )
-    }
-
-    fn locate_source_navigation(
-        &self,
-        request: SourceLocateRequest,
-        context: &WorkspaceContext,
-        cancellation: &CancellationToken,
-    ) -> Result<SourceLocateResult, String> {
-        crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path(
-            context,
-            &request,
-            cancellation,
-        )
-    }
-
     fn resolve_diagnostic_context(
         &self,
         request: &DiagnosticRequest,
@@ -402,25 +342,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             context,
             cancellation,
         )
-    }
-
-    fn source_resources(
-        &self,
-        request: SourceResourcesRequest,
-        context: &WorkspaceContext,
-        cancellation: &CancellationToken,
-    ) -> Result<ResourceManifestPage, SourceResourceError> {
-        self.source_resources
-            .resources(request, context, cancellation)
-    }
-
-    fn read_source_resource(
-        &self,
-        request: SourceReadRequest,
-        context: &WorkspaceContext,
-        cancellation: &CancellationToken,
-    ) -> Result<SourceReadResult, SourceResourceError> {
-        self.source_resources.read(request, context, cancellation)
     }
 
     fn evaluate_support_guard(
@@ -635,18 +556,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     handler
                 })
             }
-            ToolHandler::ProjectMap => {
-                let source_map =
-                    crate::infrastructure::project_sources::discover_project_source_map(
-                        &context.workspace_root,
-                    );
-                if cancellation.is_cancelled() {
-                    return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
-                        "unica.project.map source-set discovery stopped",
-                    )));
-                }
-                Ok(typed_read(project_map(source_map)))
-            }
             ToolHandler::BuildRuntime { command, .. } => {
                 CliAdapter::new("v8-runner", command, "build/runtime")
                     .invoke_cancellable(
@@ -658,6 +567,43 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         cancellation,
                     )
                     .map(HandlerOutcome::plain)
+            }
+            ToolHandler::Documentation { operation: "get" } => {
+                let document_id = args
+                    .get("documentId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "unica.documentation.get requires documentId".to_string())?;
+                if document_id.trim().is_empty() {
+                    return Err(
+                        "unica.documentation.get requires a non-blank documentId".to_string()
+                    );
+                }
+                let language = args
+                    .get("language")
+                    .and_then(Value::as_str)
+                    .unwrap_or("ru")
+                    .to_string();
+                let registry = documentation_registry(context, cancellation)?;
+                let requested_version = args.get("platformVersion").and_then(Value::as_str);
+                let context = documentation_context(
+                    &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
+                    ),
+                    requested_version,
+                    context,
+                );
+                let data = crate::application::documentation::get(
+                    &registry,
+                    document_id,
+                    &language,
+                    &context,
+                )?;
+                Ok(HandlerOutcome::with_data(
+                    AdapterOutcome::ok("unica.documentation.get completed"),
+                    data,
+                ))
+            }
+            ToolHandler::Documentation { operation } => {
+                Err(format!("unknown documentation operation: {operation}"))
             }
             ToolHandler::RuntimeAdapter => RuntimeAdapter::new()
                 .invoke_cancellable(
@@ -695,14 +641,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 "{} must be dispatched through the provider-neutral code intelligence registry",
                 spec.name
             )),
-            ToolHandler::SourceNavigation { .. } => Err(format!(
-                "{} must be dispatched through the provider-neutral source navigation port",
-                spec.name
-            )),
-            ToolHandler::SourceResources { .. } => Err(format!(
-                "{} must be dispatched through the provider-neutral source resource port",
-                spec.name
-            )),
             ToolHandler::Diagnostics => Err(format!(
                 "{} must be dispatched through the provider-neutral diagnostics coordinator",
                 spec.name
@@ -731,137 +669,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         cancellation,
                     )
                     .map(HandlerOutcome::plain)
-            }
-            ToolHandler::StandardsAdapter { operation } => {
-                // Фасады делят с поставщиком v8std движок И политику: запрет в
-                // unica.toml выключает оба маршрута одним файлом (ADR-0032
-                // п.4, следствие 2). Нечитаемая политика — жёсткий отказ, а не
-                // молчаливое разрешение: это файл запрета.
-                let policy =
-                    crate::infrastructure::documentation_policy::DocumentationPolicy::load(
-                        &context.workspace_root,
-                        DOCUMENTATION_PROVIDER_IDS,
-                    )
-                    .map_err(|error| format!("{}: {error}", spec.name))?;
-                if policy.network("v8std")
-                    == crate::infrastructure::documentation_policy::NetworkAccess::Deny
-                {
-                    return Err(format!(
-                        "{}: сетевой выход v8std запрещён политикой unica.toml (policy-denied)",
-                        spec.name
-                    ));
-                }
-                let endpoint =
-                    crate::infrastructure::standards_documentation::resolve_standards_endpoint(
-                        &policy,
-                    );
-                let standards = StandardsAdapter::invoke(operation, args, &endpoint);
-                Ok(match standards.data {
-                    Some(data) => HandlerOutcome::with_data(standards.outcome, data),
-                    None => HandlerOutcome::plain(standards.outcome),
-                })
-            }
-            ToolHandler::Documentation { operation: "get" } => {
-                let document_id = args
-                    .get("documentId")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| "unica.documentation.get requires documentId".to_string())?;
-                if document_id.trim().is_empty() {
-                    return Err(
-                        "unica.documentation.get requires a non-blank documentId".to_string()
-                    );
-                }
-                let language = args
-                    .get("language")
-                    .and_then(Value::as_str)
-                    .unwrap_or("ru")
-                    .to_string();
-                let registry = documentation_registry(context, cancellation)?;
-                let requested_version = args.get("platformVersion").and_then(Value::as_str);
-                let context = documentation_context(
-                    &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
-                    ),
-                    requested_version,
-                    context,
-                );
-                let data = crate::application::documentation::get(
-                    &registry,
-                    document_id,
-                    &language,
-                    &context,
-                )?;
-                Ok(HandlerOutcome::with_data(
-                    AdapterOutcome::ok("unica.documentation.get completed"),
-                    data,
-                ))
-            }
-            ToolHandler::Documentation { operation } => {
-                if operation != "search" {
-                    return Err(format!("unknown documentation operation: {operation}"));
-                }
-                // Фильтр по смыслу источника (ADR-0032 п.5). Чужое значение —
-                // отказ с перечнем допустимых: молча проигнорированный фильтр
-                // отвечал бы стандартами на просьбу «только справка платформы».
-                let source_kinds = match args.get("sourceKinds") {
-                    None => Vec::new(),
-                    Some(value) => value
-                        .as_array()
-                        .ok_or_else(|| {
-                            "unica.documentation.search: sourceKinds must be an array".to_string()
-                        })?
-                        .iter()
-                        .map(|entry| {
-                            entry
-                                .as_str()
-                                .and_then(crate::domain::documentation::SourceKind::parse)
-                                .ok_or_else(|| {
-                                    // Нестроковое значение называется самим
-                                    // JSON-значением, а не пустой строкой.
-                                    format!(
-                                        "unica.documentation.search: unknown sourceKinds value {entry}; allowed: platform-help, development-standard, configuration-documentation"
-                                    )
-                                })
-                        })
-                        .collect::<Result<Vec<_>, String>>()?,
-                };
-                let request = crate::domain::documentation::DocumentationSearchRequest {
-                    query: args
-                        .get("query")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| "unica.documentation.search requires query".to_string())?
-                        .to_string(),
-                    source_kinds,
-                    limit: args
-                        .get("limit")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(20)
-                        .min(200) as usize,
-                    language: args
-                        .get("language")
-                        .and_then(Value::as_str)
-                        .unwrap_or("ru")
-                        .to_string(),
-                };
-                if request.query.trim().is_empty() {
-                    return Err("unica.documentation.search requires a non-blank query".to_string());
-                }
-                // Реестр собирается по рабочему пространству ДО того, как имя
-                // `context` затенит DocumentationContext: политика unica.toml —
-                // файлы проекта, и нечитаемая политика — отказ вызова.
-                let registry = documentation_registry(context, cancellation)?;
-                let requested_version = args.get("platformVersion").and_then(Value::as_str);
-                let context = documentation_context(
-                    &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
-                    ),
-                    requested_version,
-                    context,
-                );
-                let data =
-                    crate::application::documentation::search(&registry, &request, &context)?;
-                Ok(HandlerOutcome::with_data(
-                    AdapterOutcome::ok("unica.documentation.search completed"),
-                    data,
-                ))
             }
         }
     }
@@ -1008,15 +815,6 @@ fn verified_full_dump_invocation(
             Some(FullDumpInvocation::RuntimeExecute)
         }
         _ => None,
-    }
-}
-
-/// Publishes a typed read through the envelope: `data` when the handler proved
-/// a payload, plain outcome when it refused.
-fn typed_read(read: TypedReadOutcome) -> HandlerOutcome {
-    match read.data {
-        Some(data) => HandlerOutcome::with_data(read.outcome, data),
-        None => HandlerOutcome::plain(read.outcome),
     }
 }
 
@@ -1515,9 +1313,7 @@ mod tests {
         ToolSpec, UnicaApplication,
     };
     use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::{
-        CodeIntelligenceContext, CodeIntelligenceReadRequest, ProviderDeadline,
-    };
+    use crate::domain::code_intelligence::{CodeIntelligenceContext, CodeIntelligenceReadRequest};
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::source_target::{
         MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -1527,18 +1323,14 @@ mod tests {
         ResolvedSubsystemTarget, SupportReadError, SupportStateReader,
     };
     use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::native_operations::typed_result::NativeInvocationContext;
-    use crate::infrastructure::native_operations::NativeOperationAdapter;
+
     use crate::infrastructure::platform::full_dump_publication::FullDumpInvocation;
-    use crate::infrastructure::platform::secure_read::{
-        with_secure_tree_test_hook, SecureTreePhase,
-    };
+
     use crate::infrastructure::support_state::SupportStateReaderFactory;
     use serde_json::{json, Map};
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
 
     #[derive(Debug, PartialEq, Eq)]
     struct RecursiveStorageEntry {
@@ -2047,113 +1839,6 @@ mod tests {
     }
 
     #[test]
-    fn native_typed_readers_receive_logical_support_targets() {
-        use crate::application::ports::ApplicationPorts;
-
-        let (_root, context) = support_reader_fixture();
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
-            RecordingSupportStateReaderFactory {
-                calls: Arc::clone(&calls),
-                subsystem_calls: Arc::new(Mutex::new(Vec::new())),
-            },
-        ));
-        let cases = [
-            (
-                "unica.role.info",
-                Map::from_iter([(
-                    "RightsPath".to_string(),
-                    json!("src/Roles/Reader/Ext/Rights.xml"),
-                )]),
-                "locked",
-            ),
-            (
-                "unica.mxl.info",
-                Map::from_iter([(
-                    "TemplatePath".to_string(),
-                    json!("src/Reports/Sales/Templates/Sheet/Ext/Template.xml"),
-                )]),
-                "locked",
-            ),
-            (
-                "unica.dcs.info",
-                Map::from_iter([(
-                    "TemplatePath".to_string(),
-                    json!("src/Reports/Sales/Templates/Dcs/Ext/Template.xml"),
-                )]),
-                "locked",
-            ),
-            (
-                "unica.form.info",
-                Map::from_iter([(
-                    "FormPath".to_string(),
-                    json!("src/Catalogs/Items/Forms/Order/Ext/Form.xml"),
-                )]),
-                "locked",
-            ),
-        ];
-        for (name, args, expected_state) in cases {
-            let tool = crate::application::tools()
-                .into_iter()
-                .find(|tool| tool.name == name)
-                .unwrap();
-            let outcome = ports
-                .invoke_handler(
-                    tool,
-                    &args,
-                    &context,
-                    InvocationMode::Read,
-                    &CancellationToken::new(),
-                )
-                .unwrap();
-            assert!(outcome.adapter.ok, "{name}: {:?}", outcome.adapter);
-            assert_eq!(
-                outcome.data.as_ref().unwrap()["support"]["state"],
-                expected_state,
-                "{name} must publish the value returned by the injected reader"
-            );
-        }
-
-        assert_eq!(
-            *calls.lock().unwrap(),
-            vec![
-                (
-                    "object",
-                    ResolvedTarget {
-                        source_set: "main".to_string(),
-                        metadata_path: Some(metadata_address("Role.Reader")),
-                        target_kind: TargetKind::MetadataObject,
-                    },
-                ),
-                (
-                    "object",
-                    ResolvedTarget {
-                        source_set: "main".to_string(),
-                        metadata_path: Some(metadata_address("Report.Sales.Template.Sheet")),
-                        target_kind: TargetKind::MetadataObject,
-                    },
-                ),
-                (
-                    "object",
-                    ResolvedTarget {
-                        source_set: "main".to_string(),
-                        metadata_path: Some(metadata_address("Report.Sales.Template.Dcs")),
-                        target_kind: TargetKind::MetadataObject,
-                    },
-                ),
-                (
-                    "object",
-                    ResolvedTarget {
-                        source_set: "main".to_string(),
-                        metadata_path: Some(metadata_address("Catalog.Items.Form.Order")),
-                        target_kind: TargetKind::MetadataObject,
-                    },
-                ),
-            ]
-        );
-    }
-
-    #[test]
     fn runtime_build_entry_points_do_not_select_strategy_from_support_state() {
         use crate::application::ports::ApplicationPorts;
 
@@ -2421,482 +2106,6 @@ mod tests {
         assert!(!domain_port.contains("std::path"));
         assert!(!domain_port.contains("&Path"));
         assert!(!domain_port.contains("PathBuf"));
-    }
-
-    fn prepared_subsystem_fixture() -> (
-        tempfile::TempDir,
-        WorkspaceContext,
-        Map<String, serde_json::Value>,
-        Map<String, serde_json::Value>,
-    ) {
-        let root = tempfile::Builder::new()
-            .prefix("unica-prepared-subsystem-support")
-            .tempdir()
-            .unwrap();
-        let workspace = root.path().canonicalize().unwrap();
-        let source = workspace.join("src");
-        std::fs::create_dir_all(source.join("Subsystems")).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Subsystems/Sales.xml"),
-            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                "Sales", "2.20",
-            ),
-        )
-        .unwrap();
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        (
-            root,
-            context,
-            Map::from_iter([(
-                "SubsystemPath".to_string(),
-                json!("src/Subsystems/Sales.xml"),
-            )]),
-            Map::from_iter([("SubsystemPath".to_string(), json!("src/Subsystems"))]),
-        )
-    }
-
-    fn prepare_subsystem(
-        ports: &super::InfrastructureApplicationPorts,
-        args: &Map<String, serde_json::Value>,
-        context: &WorkspaceContext,
-    ) -> crate::application::ports::PreparedToolInvocation {
-        use crate::application::ports::ApplicationPorts;
-
-        let tool = crate::application::tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.subsystem.info")
-            .unwrap();
-        ports
-            .prepare_tool_invocation(
-                tool,
-                args,
-                context,
-                InvocationMode::Read,
-                &CancellationToken::new(),
-                ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
-            )
-            .unwrap()
-    }
-
-    #[test]
-    fn prepared_subsystem_info_records_the_descriptor_target() {
-        let (_root, context, object_args, _tree_args) = prepared_subsystem_fixture();
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let subsystem_calls = Arc::new(Mutex::new(Vec::new()));
-        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
-            RecordingSupportStateReaderFactory {
-                calls: Arc::clone(&calls),
-                subsystem_calls: Arc::clone(&subsystem_calls),
-            },
-        ));
-
-        let prepared = prepare_subsystem(&ports, &object_args, &context);
-        let handler = prepared.handler.expect("prepared handler");
-
-        assert!(handler.adapter.ok, "{:?}", handler.adapter);
-        assert_eq!(handler.data.unwrap()["support"]["state"], "locked");
-        assert_eq!(
-            *calls.lock().unwrap(),
-            vec![(
-                "object",
-                ResolvedTarget {
-                    source_set: "main".to_string(),
-                    metadata_path: Some(metadata_address("Subsystem.Sales")),
-                    target_kind: TargetKind::MetadataObject,
-                },
-            )]
-        );
-        assert!(subsystem_calls.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn prepared_nested_subsystem_keeps_the_dedicated_subsystem_address() {
-        let (_root, context, _object_args, _tree_args) = prepared_subsystem_fixture();
-        let source = context.workspace_root.join("src");
-        std::fs::write(
-            source.join("Subsystems/Sales.xml"),
-            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                "Sales", "2.20",
-            )
-            .replace(
-                "<ChildObjects/>",
-                "<ChildObjects><Subsystem>Online</Subsystem></ChildObjects>",
-            ),
-        )
-        .unwrap();
-        std::fs::create_dir_all(source.join("Subsystems/Sales/Subsystems")).unwrap();
-        std::fs::write(
-            source.join("Subsystems/Sales/Subsystems/Online.xml"),
-            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                "Online", "2.20",
-            ),
-        )
-        .unwrap();
-        let args = Map::from_iter([(
-            "SubsystemPath".to_string(),
-            json!("src/Subsystems/Sales/Subsystems/Online.xml"),
-        )]);
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let subsystem_calls = Arc::new(Mutex::new(Vec::new()));
-        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
-            RecordingSupportStateReaderFactory {
-                calls: Arc::clone(&calls),
-                subsystem_calls: Arc::clone(&subsystem_calls),
-            },
-        ));
-
-        let prepared = prepare_subsystem(&ports, &args, &context);
-        let handler = prepared.handler.expect("prepared handler");
-
-        assert!(handler.adapter.ok, "{:?}", handler.adapter);
-        assert_eq!(handler.data.unwrap()["support"]["state"], "locked");
-        assert!(calls.lock().unwrap().is_empty());
-        assert_eq!(
-            *subsystem_calls.lock().unwrap(),
-            vec![ResolvedSubsystemTarget {
-                source_set: "main".to_string(),
-                address: crate::domain::subsystem::SubsystemAddress::parse("Sales.Online").unwrap(),
-            }]
-        );
-    }
-
-    #[test]
-    fn subsystem_tree_does_not_invent_object_support() {
-        let (_root, context, _object_args, tree_args) = prepared_subsystem_fixture();
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let subsystem_calls = Arc::new(Mutex::new(Vec::new()));
-        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
-            RecordingSupportStateReaderFactory {
-                calls: Arc::clone(&calls),
-                subsystem_calls: Arc::clone(&subsystem_calls),
-            },
-        ));
-
-        let prepared = prepare_subsystem(&ports, &tree_args, &context);
-
-        assert!(prepared.handler.unwrap().adapter.ok);
-        assert!(calls.lock().unwrap().is_empty());
-        assert!(subsystem_calls.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn subsystem_support_failure_publishes_no_partial_data() {
-        let (_root, context, object_args, _tree_args) = prepared_subsystem_fixture();
-        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
-            FailingSupportStateReaderFactory,
-        ));
-
-        let prepared = prepare_subsystem(&ports, &object_args, &context);
-        let handler = prepared.handler.expect("prepared failure handler");
-
-        assert!(!handler.adapter.ok, "{:?}", handler.adapter);
-        assert_eq!(
-            handler.adapter.errors,
-            vec!["provider_unavailable: support-state provider is unavailable"]
-        );
-        assert!(handler.data.is_none());
-    }
-
-    #[test]
-    fn infrastructure_rejects_non_read_modes_for_a_reader() {
-        use crate::application::ports::ApplicationPorts;
-
-        let root = tempfile::tempdir().unwrap();
-        let context = WorkspaceContext {
-            cwd: root.path().to_path_buf(),
-            workspace_root: root.path().to_path_buf(),
-            cache_root: root.path().join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        for mode in [InvocationMode::Preview, InvocationMode::Apply] {
-            let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-                spec("unica.project.map", ToolHandler::ProjectMap),
-                &Map::new(),
-                &context,
-                mode,
-                &CancellationToken::new(),
-            ) {
-                Ok(_) => panic!("reader unexpectedly accepted {mode:?}"),
-                Err(error) => error,
-            };
-            assert_eq!(error, "invalid invocation mode for unica.project.map");
-        }
-    }
-
-    #[test]
-    fn infrastructure_rejects_read_mode_for_a_mutation() {
-        use crate::application::ports::ApplicationPorts;
-
-        let root = tempfile::tempdir().unwrap();
-        let context = WorkspaceContext {
-            cwd: root.path().to_path_buf(),
-            workspace_root: root.path().to_path_buf(),
-            cache_root: root.path().join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-            spec("unica.cf.edit", ToolHandler::ProjectMap),
-            &Map::new(),
-            &context,
-            InvocationMode::Read,
-            &CancellationToken::new(),
-        ) {
-            Ok(_) => panic!("mutation unexpectedly accepted Read"),
-            Err(error) => error,
-        };
-        assert_eq!(error, "invalid invocation mode for unica.cf.edit");
-    }
-
-    fn subsystem_info_fixture(
-        label: &str,
-    ) -> (
-        tempfile::TempDir,
-        WorkspaceContext,
-        Map<String, serde_json::Value>,
-    ) {
-        let root = tempfile::Builder::new().prefix(label).tempdir().unwrap();
-        let physical_root = root.path().canonicalize().unwrap();
-        std::fs::create_dir_all(physical_root.join("Subsystems")).unwrap();
-        std::fs::write(
-            physical_root.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            physical_root.join("Subsystems/Sales.xml"),
-            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                "Sales", "2.20",
-            ),
-        )
-        .unwrap();
-        let context = WorkspaceContext {
-            cwd: physical_root.clone(),
-            workspace_root: physical_root.clone(),
-            cache_root: physical_root.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        let args = Map::from_iter([(
-            "SubsystemPath".to_string(),
-            serde_json::Value::String("Subsystems".to_string()),
-        )]);
-        (root, context, args)
-    }
-
-    #[test]
-    fn subsystem_info_native_path_observes_mid_read_cancellation() {
-        let (_root, context, args) = subsystem_info_fixture("unica-subsystem-mid-read");
-        let cancellation = CancellationToken::new();
-        let hook_cancellation = cancellation.clone();
-        let outcome = with_secure_tree_test_hook(
-            move |phase| {
-                if phase == &SecureTreePhase::AfterRebindEntry(PathBuf::from("Configuration.xml")) {
-                    hook_cancellation.cancel();
-                }
-            },
-            || {
-                NativeOperationAdapter::invoke_with_data(
-                    "subsystem-info",
-                    "unica.subsystem.info",
-                    &args,
-                    &context,
-                    false,
-                    false,
-                    NativeInvocationContext::new(
-                        &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
-                            &context,
-                        ),
-                        &cancellation,
-                        ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
-                    ),
-                )
-            },
-        )
-        .unwrap();
-
-        assert!(!outcome.adapter.ok, "{:?}", outcome.adapter);
-        assert!(
-            outcome
-                .adapter
-                .errors
-                .iter()
-                .any(|error| error.starts_with("cancelled:")),
-            "{:?}",
-            outcome.adapter
-        );
-        assert!(outcome.data.is_none());
-    }
-
-    #[test]
-    fn subsystem_info_native_path_observes_terminal_cancellation_after_identity_proofs() {
-        let (_root, context, mut args) = subsystem_info_fixture("unica-subsystem-terminal-cancel");
-        args.insert(
-            "SubsystemPath".to_string(),
-            serde_json::Value::String("Subsystems/Sales.xml".to_string()),
-        );
-        let cancellation = CancellationToken::new();
-        let hook_cancellation = cancellation.clone();
-        let outcome = with_secure_tree_test_hook(
-            move |phase| {
-                if phase == &SecureTreePhase::AfterFinalIdentityProofs {
-                    hook_cancellation.cancel();
-                }
-            },
-            || {
-                NativeOperationAdapter::invoke_with_data(
-                    "subsystem-info",
-                    "unica.subsystem.info",
-                    &args,
-                    &context,
-                    false,
-                    false,
-                    NativeInvocationContext::new(
-                        &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
-                            &context,
-                        ),
-                        &cancellation,
-                        ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
-                    ),
-                )
-            },
-        )
-        .unwrap();
-
-        assert!(!outcome.adapter.ok, "{:?}", outcome.adapter);
-        assert!(
-            outcome
-                .adapter
-                .errors
-                .iter()
-                .any(|error| error.starts_with("cancelled:")),
-            "{:?}",
-            outcome.adapter
-        );
-        assert!(outcome.data.is_none());
-    }
-
-    #[test]
-    fn subsystem_info_typed_invocation_rejects_an_exhausted_deadline() {
-        let (_root, context, args) = subsystem_info_fixture("unica-subsystem-expired-deadline");
-        let cancellation = CancellationToken::new();
-
-        let outcome = super::NativeOperationAdapter::invoke_with_data(
-            "subsystem-info",
-            "unica.subsystem.info",
-            &args,
-            &context,
-            false,
-            false,
-            NativeInvocationContext::new(
-                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
-                &cancellation,
-                ProviderDeadline::new(Instant::now() - Duration::from_millis(1)),
-            ),
-        )
-        .unwrap();
-
-        assert!(!outcome.adapter.ok, "{:?}", outcome.adapter);
-        assert!(
-            outcome
-                .adapter
-                .errors
-                .iter()
-                .any(|error| error.contains("provider deadline exceeded")),
-            "{:?}",
-            outcome.adapter
-        );
-        assert!(outcome.data.is_none());
-    }
-
-    #[test]
-    fn standalone_subsystem_info_rejects_an_already_cancelled_invocation_before_read() {
-        let (_root, context, mut args) = subsystem_info_fixture("unica-standalone-cancelled");
-        std::fs::remove_file(context.cwd.join("Configuration.xml")).unwrap();
-        args.insert(
-            "SubsystemPath".to_string(),
-            serde_json::Value::String("Subsystems/Sales.xml".to_string()),
-        );
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-
-        let outcome = super::NativeOperationAdapter::invoke_with_data(
-            "subsystem-info",
-            "unica.subsystem.info",
-            &args,
-            &context,
-            false,
-            false,
-            NativeInvocationContext::new(
-                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
-                &cancellation,
-                ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
-            ),
-        )
-        .unwrap();
-
-        assert!(!outcome.adapter.ok, "{:?}", outcome.adapter);
-        assert!(
-            outcome
-                .adapter
-                .errors
-                .iter()
-                .any(|error| error.starts_with("cancelled:")),
-            "{:?}",
-            outcome.adapter
-        );
-        assert!(outcome.data.is_none());
-    }
-
-    #[test]
-    fn standalone_subsystem_info_rejects_an_exhausted_deadline_before_read() {
-        let (_root, context, mut args) = subsystem_info_fixture("unica-standalone-deadline");
-        std::fs::remove_file(context.cwd.join("Configuration.xml")).unwrap();
-        args.insert(
-            "SubsystemPath".to_string(),
-            serde_json::Value::String("Subsystems/Sales.xml".to_string()),
-        );
-        let cancellation = CancellationToken::new();
-
-        let outcome = super::NativeOperationAdapter::invoke_with_data(
-            "subsystem-info",
-            "unica.subsystem.info",
-            &args,
-            &context,
-            false,
-            false,
-            NativeInvocationContext::new(
-                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
-                &cancellation,
-                ProviderDeadline::new(Instant::now() - Duration::from_millis(1)),
-            ),
-        )
-        .unwrap();
-
-        assert!(!outcome.adapter.ok, "{:?}", outcome.adapter);
-        assert!(
-            outcome
-                .adapter
-                .errors
-                .iter()
-                .any(|error| error.contains("provider deadline exceeded")),
-            "{:?}",
-            outcome.adapter
-        );
-        assert!(outcome.data.is_none());
     }
 
     #[test]
@@ -3188,113 +2397,6 @@ mod tests {
             "source-set найден автодетектом и назван в локаторе"
         );
         assert_eq!(sections[0].hits[0].applicable_version, "1.0.0.1");
-    }
-
-    /// Фасады `unica.standards.*` делят с поставщиком движок и политику
-    /// (ADR-0032 п.4, следствие 2: «оба выключаются одним файлом настройки»).
-    /// Запрет в `unica.toml` обязан отказывать фасаду ДО транспорта, называя
-    /// политику; endpoint на закрытый локальный порт делает и красное
-    /// состояние герметичным — сеть за пределы машины не выходит.
-    /// Различающая сила доказана мутацией: со снятой проверкой запрета
-    /// (`if false`) тест падает.
-    #[test]
-    fn the_standards_facades_refuse_when_policy_denies_v8std() {
-        use crate::application::ports::ApplicationPorts;
-
-        struct EnvGuard {
-            previous: Option<String>,
-        }
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                match self.previous.take() {
-                    Some(value) => std::env::set_var("UNICA_STANDARDS_MCP_URL", value),
-                    None => std::env::remove_var("UNICA_STANDARDS_MCP_URL"),
-                }
-            }
-        }
-        let _env = EnvGuard {
-            previous: std::env::var("UNICA_STANDARDS_MCP_URL").ok(),
-        };
-        std::env::set_var("UNICA_STANDARDS_MCP_URL", "http://127.0.0.1:9/mcp");
-
-        let dir = tempfile::tempdir().expect("каталог");
-        let workspace = dir.path().to_path_buf();
-        std::fs::write(
-            workspace.join("unica.toml"),
-            "[providers.v8std]\nnetwork = \"deny\"\n",
-        )
-        .expect("политика");
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-
-        let mut args = Map::new();
-        args.insert("query".to_string(), json!("ссылка"));
-        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-            spec(
-                "unica.standards.search",
-                ToolHandler::StandardsAdapter {
-                    operation: "search",
-                },
-            ),
-            &args,
-            &context,
-            InvocationMode::Read,
-            &crate::domain::cancellation::CancellationToken::default(),
-        ) {
-            Ok(_) => panic!("запрет политики обязан отказывать фасаду"),
-            Err(error) => error,
-        };
-        assert!(
-            error.contains("unica.toml"),
-            "отказ обязан назвать политику, получено {error}"
-        );
-    }
-
-    /// Описание публичного инструмента обещало «development standards», хотя
-    /// ни один поставщик реестра не объявляет корпуса этого смысла источника:
-    /// секция `development-standard` в ответе недостижима до ADR-0032, и
-    /// агент, ищущий стандарт, получил бы `empty` вместо маршрута в
-    /// `unica.standards.search`. Проверка структурная: описание вправе
-    /// назвать стандарты в тот момент, когда реестр действительно несёт
-    /// такой корпус, — тогда это утверждение перестаёт быть переобещанием и
-    /// тест перестаёт его запрещать.
-    #[test]
-    fn the_documentation_tool_description_promises_only_declared_source_kinds() {
-        let description = crate::application::tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.documentation.search")
-            .expect("инструмент объявлен")
-            .description;
-        // Замок общий со стенд-тестами: настоящий реестр, а не стенд соседа.
-        let _serial = documentation_registry_serial();
-        let dir = tempfile::tempdir().expect("каталог");
-        let workspace = dir.path().to_path_buf();
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        let registry = documentation_registry(
-            &context,
-            &crate::domain::cancellation::CancellationToken::default(),
-        )
-        .expect("реестр собран");
-        let declares_standards = registry.providers().any(|provider| {
-            provider.corpora().iter().any(|corpus| {
-                corpus.source_kind == crate::domain::documentation::SourceKind::DevelopmentStandard
-            })
-        });
-        if !declares_standards {
-            assert!(
-                !description.to_lowercase().contains("standard"),
-                "описание обещает стандарты, которых нет ни у одного поставщика: {description}"
-            );
-        }
     }
 
     #[test]
@@ -3831,453 +2933,6 @@ mod tests {
             "семейство, которому пин не принадлежит, — отказ, а не перебор корней"
         );
     }
-
-    /// `the_dispatcher_constrains_the_installation_by_the_projects_own_platform_pin`
-    /// проверяет ПОМОЩНИКА, а не ветку, и три мутации самой ветки оставляли
-    /// всё дерево зелёным: игнорировать аргумент `language`, игнорировать
-    /// `platformVersion` и обойти `documentation_context` пустым контекстом.
-    /// Вторая кусает пользователя молча наполовину: ответ приходит из другой
-    /// установки, чем спросили. Здесь прогоняется сама ветка
-    /// `ToolHandler::Documentation`, а поставщик записывает то, что до него
-    /// дошло.
-    ///
-    /// Версия намеренно невозможная: она не разрешается ни в какую установку
-    /// ни на одной машине, поэтому проверка не зависит от того, какие
-    /// платформы стоят на машине сборки.
-    #[test]
-    fn the_documentation_branch_carries_its_arguments_into_the_request_and_the_context() {
-        use crate::application::ports::ApplicationPorts;
-
-        let recorder = std::sync::Arc::new(RecordingProvider::default());
-        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
-
-        let dir = tempfile::tempdir().expect("каталог");
-        let workspace = dir.path().to_path_buf();
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-
-        let mut args = Map::new();
-        args.insert("query".to_string(), json!("GetURL"));
-        args.insert("language".to_string(), json!("en"));
-        args.insert("platformVersion".to_string(), json!("9.9.9.9999"));
-        args.insert("limit".to_string(), json!(7));
-
-        let outcome = super::InfrastructureApplicationPorts::new()
-            .invoke_handler(
-                spec(
-                    "unica.documentation.search",
-                    ToolHandler::Documentation {
-                        operation: "search",
-                    },
-                ),
-                &args,
-                &context,
-                InvocationMode::Read,
-                &crate::domain::cancellation::CancellationToken::default(),
-            )
-            .expect("ветка обязана ответить");
-
-        let seen = recorder
-            .seen
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert_eq!(seen.len(), 1, "поставщик обязан быть опрошен ровно раз");
-        let (request, documentation_context) = &seen[0];
-        assert_eq!(request.query, "GetURL");
-        assert_eq!(
-            request.language, "en",
-            "аргумент language обязан дойти до запроса, а не подменяться константой"
-        );
-        assert_eq!(request.limit, 7, "аргумент limit обязан дойти до запроса");
-        assert_eq!(
-            documentation_context.platform_version.as_deref(),
-            Some("9.9.9.9999"),
-            "аргумент platformVersion обязан дойти до контекста: иначе ответ придёт из другой установки, чем спросили"
-        );
-        assert_eq!(
-            documentation_context.installation_root, None,
-            "несуществующая версия не разрешается ни в какую установку"
-        );
-
-        let data = outcome
-            .data
-            .expect("ветка обязана отвечать типизированным data");
-        assert_eq!(
-            data["sections"][0]["language"], "en",
-            "локаль ответа обязана дойти обратно до публичного результата"
-        );
-    }
-
-    /// Reader не имеет invocation switch: штатный вызов обязан дойти до
-    /// provider registry и вернуть его типизированные секции.
-    #[test]
-    fn documentation_reader_polls_provider_without_an_invocation_switch() {
-        use crate::application::ports::ApplicationPorts;
-
-        let recorder = std::sync::Arc::new(RecordingProvider::default());
-        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
-
-        let dir = tempfile::tempdir().expect("каталог");
-        let workspace = dir.path().to_path_buf();
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-
-        let mut args = Map::new();
-        args.insert("query".to_string(), json!("СтрНайти"));
-
-        let outcome = super::InfrastructureApplicationPorts::new()
-            .invoke_handler(
-                spec(
-                    "unica.documentation.search",
-                    ToolHandler::Documentation {
-                        operation: "search",
-                    },
-                ),
-                &args,
-                &context,
-                InvocationMode::Read,
-                &crate::domain::cancellation::CancellationToken::default(),
-            )
-            .expect("reader обязан ответить успехом");
-
-        let seen = recorder
-            .seen
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert_eq!(seen.len(), 1, "reader обязан опросить provider ровно раз");
-        assert!(outcome.adapter.ok, "reader обязан вернуть успешный ответ");
-        assert!(
-            !outcome.adapter.summary.contains("dry run"),
-            "reader не должен называться сухим прогоном: {}",
-            outcome.adapter.summary
-        );
-        assert!(
-            outcome.data.is_some(),
-            "успешный documentation reader обязан вернуть data"
-        );
-    }
-
-    /// Обычный reader без обязательного `query` отказывается до provider-а.
-    #[test]
-    fn documentation_reader_requires_the_query_argument() {
-        use crate::application::ports::ApplicationPorts;
-
-        let recorder = std::sync::Arc::new(RecordingProvider::default());
-        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
-
-        let dir = tempfile::tempdir().expect("каталог");
-        let workspace = dir.path().to_path_buf();
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-
-        // `HandlerOutcome` не несёт `Debug`, поэтому `expect_err` не
-        // компилируется — тот же приём, что и в
-        // `domain::documentation::tests::duplicate_provider_ids_are_rejected`.
-        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-            spec(
-                "unica.documentation.search",
-                ToolHandler::Documentation {
-                    operation: "search",
-                },
-            ),
-            &Map::new(),
-            &context,
-            InvocationMode::Read,
-            &crate::domain::cancellation::CancellationToken::default(),
-        ) {
-            Ok(_) => panic!("reader без query обязан отказывать"),
-            Err(error) => error,
-        };
-        assert!(
-            error.contains("query"),
-            "отказ обязан назвать недостающий аргумент, получено {error}"
-        );
-    }
-
-    /// Аргумент `sourceKinds` (ADR-0032 п.5) фильтрует по смыслу источника, а
-    /// не по идентификатору поставщика. Разобранные значения обязаны дойти до
-    /// запроса, а чужое значение — отказ с перечнем допустимых: молча
-    /// проигнорированный фильтр отвечал бы стандартами на просьбу «только
-    /// справка платформы».
-    #[test]
-    fn the_documentation_branch_parses_source_kinds_and_refuses_unknown_values() {
-        use crate::application::ports::ApplicationPorts;
-
-        let recorder = std::sync::Arc::new(RecordingProvider::default());
-        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
-
-        let dir = tempfile::tempdir().expect("каталог");
-        let workspace = dir.path().to_path_buf();
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-
-        let mut args = Map::new();
-        args.insert("query".to_string(), json!("СтрНайти"));
-        args.insert("sourceKinds".to_string(), json!(["platform-help"]));
-        super::InfrastructureApplicationPorts::new()
-            .invoke_handler(
-                spec(
-                    "unica.documentation.search",
-                    ToolHandler::Documentation {
-                        operation: "search",
-                    },
-                ),
-                &args,
-                &context,
-                InvocationMode::Read,
-                &crate::domain::cancellation::CancellationToken::default(),
-            )
-            .expect("вызов с применимым фильтром обязан пройти");
-        {
-            let seen = recorder
-                .seen
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            assert_eq!(seen.len(), 1, "применимый стенд опрошен ровно раз");
-            assert_eq!(
-                seen[0].0.source_kinds,
-                vec![crate::domain::documentation::SourceKind::PlatformHelp],
-                "разобранный фильтр обязан дойти до запроса, а не подменяться пустым"
-            );
-        }
-
-        let mut alien = Map::new();
-        alien.insert("query".to_string(), json!("СтрНайти"));
-        alien.insert("sourceKinds".to_string(), json!(["standards"]));
-        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-            spec(
-                "unica.documentation.search",
-                ToolHandler::Documentation {
-                    operation: "search",
-                },
-            ),
-            &alien,
-            &context,
-            InvocationMode::Read,
-            &crate::domain::cancellation::CancellationToken::default(),
-        ) {
-            Ok(_) => panic!("чужое значение sourceKinds обязано отклоняться"),
-            Err(error) => error,
-        };
-        assert!(
-            error.contains("standards") && error.contains("platform-help"),
-            "отказ обязан назвать чужое значение и допустимые, получено {error}"
-        );
-
-        // Нестроковое значение — тот же отказ, но с самим значением, а не с
-        // пустой строкой: «unknown value \"\"» не говорит автору вызова ничего.
-        let mut non_string = Map::new();
-        non_string.insert("query".to_string(), json!("СтрНайти"));
-        non_string.insert("sourceKinds".to_string(), json!([42]));
-        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-            spec(
-                "unica.documentation.search",
-                ToolHandler::Documentation {
-                    operation: "search",
-                },
-            ),
-            &non_string,
-            &context,
-            InvocationMode::Read,
-            &crate::domain::cancellation::CancellationToken::default(),
-        ) {
-            Ok(_) => panic!("нестроковое значение sourceKinds обязано отклоняться"),
-            Err(error) => error,
-        };
-        assert!(
-            error.contains("42"),
-            "отказ обязан назвать само значение, получено {error}"
-        );
-    }
-
-    /// Ветка `unica.documentation.get`: аргументы обязаны дойти до владельца
-    /// локатора — `documentId` и `language` в вызов `get`, `platformVersion`
-    /// в контекст, — а документ владельца обязан дойти обратно типизированным
-    /// `data.document`. Версия намеренно невозможная: разрешение установки не
-    /// должно зависеть от машин сборки.
-    #[test]
-    fn the_documentation_get_branch_carries_arguments_and_returns_the_document() {
-        use crate::application::ports::ApplicationPorts;
-
-        let recorder = std::sync::Arc::new(RecordingProvider::default());
-        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
-
-        let dir = tempfile::tempdir().expect("каталог");
-        let workspace = dir.path().to_path_buf();
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-
-        let mut args = Map::new();
-        args.insert(
-            "documentId".to_string(),
-            json!("platform-syntax-help:syntax-context:page.html"),
-        );
-        args.insert("language".to_string(), json!("en"));
-        args.insert("platformVersion".to_string(), json!("9.9.9.9999"));
-
-        let outcome = super::InfrastructureApplicationPorts::new()
-            .invoke_handler(
-                spec(
-                    "unica.documentation.get",
-                    ToolHandler::Documentation { operation: "get" },
-                ),
-                &args,
-                &context,
-                InvocationMode::Read,
-                &crate::domain::cancellation::CancellationToken::default(),
-            )
-            .expect("ветка get обязана ответить");
-
-        let seen = recorder
-            .seen_gets
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert_eq!(seen.len(), 1, "владелец опрошен ровно раз");
-        let (document_id, language, documentation_context) = &seen[0];
-        assert_eq!(document_id, "platform-syntax-help:syntax-context:page.html");
-        assert_eq!(language, "en", "language обязан дойти до get");
-        assert_eq!(
-            documentation_context.platform_version.as_deref(),
-            Some("9.9.9.9999"),
-            "platformVersion обязан дойти до контекста"
-        );
-
-        let data = outcome.data.expect("типизированный data");
-        assert_eq!(
-            data["document"]["documentId"],
-            "platform-syntax-help:syntax-context:page.html"
-        );
-        assert_eq!(data["document"]["text"], "Полный текст.");
-    }
-
-    /// `get` reader опрашивает владельца локатора и требует `documentId`.
-    #[test]
-    fn documentation_get_reader_polls_owner_and_requires_document_id() {
-        use crate::application::ports::ApplicationPorts;
-
-        let recorder = std::sync::Arc::new(RecordingProvider::default());
-        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
-
-        let dir = tempfile::tempdir().expect("каталог");
-        let workspace = dir.path().to_path_buf();
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-
-        let mut args = Map::new();
-        args.insert(
-            "documentId".to_string(),
-            json!("platform-syntax-help:syntax-context:page.html"),
-        );
-        let outcome = super::InfrastructureApplicationPorts::new()
-            .invoke_handler(
-                spec(
-                    "unica.documentation.get",
-                    ToolHandler::Documentation { operation: "get" },
-                ),
-                &args,
-                &context,
-                InvocationMode::Read,
-                &crate::domain::cancellation::CancellationToken::default(),
-            )
-            .expect("reader обязан ответить успехом");
-        assert_eq!(
-            recorder
-                .seen_gets
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .len(),
-            1,
-            "reader обязан опросить владельца ровно раз"
-        );
-        assert!(!outcome.adapter.summary.contains("dry run"));
-        assert!(
-            outcome.data.is_some(),
-            "успешный get reader обязан вернуть data"
-        );
-
-        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-            spec(
-                "unica.documentation.get",
-                ToolHandler::Documentation { operation: "get" },
-            ),
-            &Map::new(),
-            &context,
-            InvocationMode::Read,
-            &crate::domain::cancellation::CancellationToken::default(),
-        ) {
-            Ok(_) => panic!("reader без documentId обязан отказывать"),
-            Err(error) => error,
-        };
-        assert!(
-            error.contains("documentId"),
-            "отказ обязан назвать аргумент, получено {error}"
-        );
-    }
-
-    /// Пустой-но-присутствующий `query` отклоняется до provider-а.
-    #[test]
-    fn documentation_reader_refuses_a_blank_query() {
-        use crate::application::ports::ApplicationPorts;
-
-        let recorder = std::sync::Arc::new(RecordingProvider::default());
-        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
-
-        let dir = tempfile::tempdir().expect("каталог");
-        let workspace = dir.path().to_path_buf();
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-
-        let mut args = Map::new();
-        args.insert("query".to_string(), json!("   "));
-
-        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
-            spec(
-                "unica.documentation.search",
-                ToolHandler::Documentation {
-                    operation: "search",
-                },
-            ),
-            &args,
-            &context,
-            InvocationMode::Read,
-            &crate::domain::cancellation::CancellationToken::default(),
-        ) {
-            Ok(_) => panic!("reader обязан отклонять пробельный query"),
-            Err(error) => error,
-        };
-        assert!(
-            error.contains("query"),
-            "отказ обязан назвать аргумент, получено {error}"
-        );
-    }
 }
 
 #[cfg(test)]
@@ -4303,13 +2958,6 @@ mod engine_map_tests {
             ("unica.code.graph", "bsl-analyzer"),
         ] {
             assert_eq!(engine_for(spec(name)), Some(engine), "{name}");
-        }
-    }
-
-    #[test]
-    fn a_tool_that_runs_no_engine_asks_for_nothing() {
-        for name in ["unica.project.map", "unica.meta.info"] {
-            assert_eq!(engine_for(spec(name)), None, "{name}");
         }
     }
 

@@ -49,7 +49,6 @@ pub(crate) mod result_store;
 pub(crate) mod runtime_admission;
 pub(crate) mod shared_work;
 pub(crate) mod source_navigation;
-pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
 // The catalog is compiled for hidden canonical routing, while most semantic
 // descriptors remain unused until the atomic Task 22 public cutover.
@@ -192,38 +191,25 @@ pub enum ToolHandler {
         operation: &'static str,
         event: Option<DomainEventKind>,
     },
-    ProjectMap,
     BuildRuntime {
         command: &'static [&'static str],
         event: Option<DomainEventKind>,
     },
     RuntimeAdapter,
+    Documentation {
+        operation: &'static str,
+    },
     RuntimeJob {
         action: RuntimeJobAction,
     },
     CodeIntelligence {
         operation: CodeIntelligenceOperation,
     },
-    SourceNavigation {
-        operation: SourceNavigationOperation,
-    },
-    SourceResources {
-        operation: SourceResourceOperation,
-    },
     Diagnostics,
     CodeAdapter {
         command: &'static [&'static str],
     },
-    StandardsAdapter {
-        operation: &'static str,
-    },
-    Documentation {
-        operation: &'static str,
-    },
 }
-
-pub use source_navigation::SourceNavigationOperation;
-pub use source_resources::SourceResourceOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeJobAction {
@@ -618,17 +604,6 @@ impl UnicaApplication {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_ports_and_deferred(
-        ports: Arc<dyn ApplicationPorts + Send + Sync>,
-        deferred: deferred_delivery::DeferredDelivery,
-    ) -> Self {
-        Self {
-            ports,
-            deferred: Arc::new(deferred),
-        }
-    }
-
     pub fn tools(&self) -> Vec<ToolSpec> {
         tools()
     }
@@ -712,82 +687,6 @@ mod meta_info_surface_tests;
 pub fn tools() -> Vec<ToolSpec> {
     let mut specs = configuration_tools();
     specs.extend([
-        ToolSpec {
-            name: "unica.project.map",
-            description:
-                "Inspect configured source sets and effective source format per source set.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess {
-                reads: &["workspace_graph"],
-                writes: &[],
-            },
-            handler: ToolHandler::ProjectMap,
-        },
-        ToolSpec {
-            name: "unica.source.resolve",
-            description:
-                "Resolve an exact or prefix logical metadata query inside one named source set.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess {
-                reads: &["workspace_graph", "metadata_graph"],
-                writes: &[],
-            },
-            handler: ToolHandler::SourceNavigation {
-                operation: SourceNavigationOperation::Resolve,
-            },
-        },
-        ToolSpec {
-            name: "unica.source.children",
-            description:
-                "List exactly one level below a logical source-set root or metadata address.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess {
-                reads: &["workspace_graph", "metadata_graph"],
-                writes: &[],
-            },
-            handler: ToolHandler::SourceNavigation {
-                operation: SourceNavigationOperation::Children,
-            },
-        },
-        ToolSpec {
-            name: "unica.source.locate",
-            description:
-                "Recover the logical metadata address that owns one source path inside a named source set.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess {
-                reads: &["workspace_graph", "metadata_graph"],
-                writes: &[],
-            },
-            handler: ToolHandler::SourceNavigation {
-                operation: SourceNavigationOperation::Locate,
-            },
-        },
-        ToolSpec {
-            name: "unica.source.resources",
-            description:
-                "Open or page an immutable bounded manifest for one logical source target.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::SourceResources {
-                operation: SourceResourceOperation::Resources,
-            },
-        },
-        ToolSpec {
-            name: "unica.source.read",
-            description:
-                "Read one bounded byte range from a resource in an issued immutable snapshot.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::SourceResources {
-                operation: SourceResourceOperation::Read,
-            },
-        },
         ToolSpec {
             name: "unica.build.dump",
             description: "Dump source set through the internal build/runtime adapter.",
@@ -946,14 +845,6 @@ pub fn tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.xdto.info",
-            description: "Inspect one logically addressed 1C XDTO package schema.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::NativeOperation { operation: "xdto-info", event: None },
-        },
-        ToolSpec {
             name: "unica.code.graph",
             description: "Inspect BSL call graph through the typed Unica code analysis boundary.",
             execution: ToolExecution::Read,
@@ -976,47 +867,6 @@ pub fn tools() -> Vec<ToolSpec> {
                 writes: &[],
             },
             handler: ToolHandler::Diagnostics,
-        },
-        ToolSpec {
-            name: "unica.standards.search",
-            description: "Search 1C standards through the internal standards adapter.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::StandardsAdapter {
-                operation: "search",
-            },
-        },
-        ToolSpec {
-            name: "unica.standards.explain",
-            description:
-                "Explain 1C diagnostics or standards through the internal standards adapter.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::StandardsAdapter {
-                operation: "explain",
-            },
-        },
-        ToolSpec {
-            name: "unica.documentation.search",
-            description:
-                "Search the workspace configuration's embedded help, platform help, and development standards across documentation providers.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::Documentation {
-                operation: "search",
-            },
-        },
-        ToolSpec {
-            name: "unica.documentation.get",
-            description:
-                "Fetch the full text of a documentation search hit by its documentId locator.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::Documentation { operation: "get" },
         },
     ]);
     specs
@@ -1464,12 +1314,6 @@ fn call_tool_with_runtime_admission(
                     })?,
                     cancellation,
                 })?
-            }
-            ToolHandler::SourceNavigation { operation } => {
-                source_navigation::invoke(operation, ports, args, &context, cancellation)?
-            }
-            ToolHandler::SourceResources { operation } => {
-                source_resources::invoke(operation, ports, args, &context, cancellation)?
             }
             ToolHandler::Diagnostics => diagnostics::invoke(
                 ports,
@@ -2687,7 +2531,6 @@ fn domain_events(spec: ToolSpec, args: &Map<String, Value>) -> Vec<DomainEvent> 
             .map(|event| vec![DomainEvent::new(event, spec.name)])
             .unwrap_or_default(),
         ToolHandler::RuntimeJob { .. } => Vec::new(),
-        ToolHandler::SourceNavigation { .. } => Vec::new(),
         _ => Vec::new(),
     }
 }
@@ -2696,51 +2539,6 @@ fn runtime_event(args: &Map<String, Value>) -> Option<DomainEventKind> {
     args.get("operation")
         .and_then(Value::as_str)
         .and_then(runtime_event_kind)
-}
-
-/// A read whose result is data: ADR-0023 keeps the typed payload out of
-/// `stdout`, so the caller reads fields instead of parsing a rendered report.
-pub(crate) struct TypedReadOutcome {
-    pub(crate) outcome: AdapterOutcome,
-    pub(crate) data: Option<Value>,
-}
-
-pub(crate) fn project_map(
-    source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
-) -> TypedReadOutcome {
-    match source_map {
-        Ok(source_map) => {
-            let mut outcome = AdapterOutcome::ok(format!(
-                "project map discovered {} source set(s)",
-                source_map.source_sets.len()
-            ));
-            if let Some(error) = &source_map.source_selection_error {
-                outcome.warnings.push(error.clone());
-            }
-            // The map used to be serialized into `stdout`, which put a JSON
-            // string inside the JSON envelope -- exactly the shape ADR-0020
-            // rejected.
-            let data = serde_json::to_value(&source_map).expect("source map serializes");
-            TypedReadOutcome {
-                outcome,
-                data: Some(data),
-            }
-        }
-        Err(error) => TypedReadOutcome {
-            outcome: AdapterOutcome {
-                ok: false,
-                summary: "project map discovery failed".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![error],
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: None,
-                command: None,
-            },
-            data: None,
-        },
-    }
 }
 
 fn configuration_tools() -> Vec<ToolSpec> {
@@ -2777,17 +2575,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             handler: ToolHandler::NativeOperation {
                 operation: "cfe-borrow",
                 event: Some(DomainEventKind::CfeChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.cfe.diff",
-            description: "Inspect extension contents and transferred insertion blocks.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("cfe-diff", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "cfe-diff",
-                event: None,
             },
         },
         ToolSpec {
@@ -2846,6 +2633,10 @@ fn configuration_tools() -> Vec<ToolSpec> {
                 event: Some(DomainEventKind::ModuleChanged),
             },
         },
+        // `meta.info` остаётся до отдельного среза: 61 тест его набора
+        // доказывает движок типизированного чтения, который зовёт и
+        // канонический `view`. Снятие имени требует переноса этих тестов на
+        // движок напрямую, и это отдельная работа.
         ToolSpec {
             name: "unica.meta.info",
             description: "Inspect one metadata object with validation, proven subsystem memberships, and source-tree usage.",
@@ -2909,17 +2700,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.form.info",
-            description: "Inspect managed Form.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("form-info", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "form-info",
-                event: None,
-            },
-        },
-        ToolSpec {
             name: "unica.interface.edit",
             description: "Edit subsystem CommandInterface.xml.",
             execution: ToolExecution::Mutation,
@@ -2962,17 +2742,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.subsystem.info",
-            description: "Inspect a registered subsystem tree from a directory, a focused registered tree from XML, or an unregistered XML locally.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("subsystem-info", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "subsystem-info",
-                event: None,
-            },
-        },
-        ToolSpec {
             name: "unica.dcs.compile",
             description: "Compile Data Composition Schema XML from JSON DSL.",
             execution: ToolExecution::Mutation,
@@ -2994,26 +2763,30 @@ fn configuration_tools() -> Vec<ToolSpec> {
                 event: Some(DomainEventKind::DcsChanged),
             },
         },
+        // Чтение макета остаётся за v0.12: канонический `view` на узле
+        // `Template` отдаёт только адрес и заголовок, содержимого
+        // табличного документа у него пока нет.
+        // Канонический `docs` отдаёт `documentId` и сниппет, но не текст
+        // страницы. Пока выборки документа по локатору у него нет, ответ
+        // нечем доказать, поэтому этот вход остаётся.
         ToolSpec {
-            name: "unica.dcs.info",
-            description: "Inspect Data Composition Schema Template.xml.",
+            name: "unica.documentation.get",
+            description:
+                "Fetch the full text of a documentation search hit by its documentId locator.",
             execution: ToolExecution::Read,
             result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("dcs-info", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "dcs-info",
-                event: None,
-            },
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::Documentation { operation: "get" },
         },
         ToolSpec {
-            name: "unica.mxl.compile",
-            description: "Compile spreadsheet Template.xml from JSON DSL.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("mxl-compile", Some(DomainEventKind::MxlChanged)),
+            name: "unica.mxl.info",
+            description: "Inspect spreadsheet Template.xml.",
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
+            cache_access: cache_access_for("mxl-info", None),
             handler: ToolHandler::NativeOperation {
-                operation: "mxl-compile",
-                event: Some(DomainEventKind::MxlChanged),
+                operation: "mxl-info",
+                event: None,
             },
         },
         ToolSpec {
@@ -3028,14 +2801,14 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.mxl.info",
-            description: "Inspect spreadsheet Template.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("mxl-info", None),
+            name: "unica.mxl.compile",
+            description: "Compile spreadsheet Template.xml from JSON DSL.",
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
+            cache_access: cache_access_for("mxl-compile", Some(DomainEventKind::MxlChanged)),
             handler: ToolHandler::NativeOperation {
-                operation: "mxl-info",
-                event: None,
+                operation: "mxl-compile",
+                event: Some(DomainEventKind::MxlChanged),
             },
         },
         ToolSpec {
@@ -3061,17 +2834,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             handler: ToolHandler::NativeOperation {
                 operation: "role-edit",
                 event: Some(DomainEventKind::RoleChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.role.info",
-            description: "Inspect role Rights.xml.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("role-info", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "role-info",
-                event: None,
             },
         },
     ]
@@ -3126,277 +2888,13 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
 pub(crate) mod tests {
     use super::*;
     use crate::composition::testing::{
-        child_subsystem_stub_xml, create_file_link_fixture_for_test, file_identity_for_test,
-        prepare_file_for_removal, set_unix_mode_for_test, unix_mode_for_test,
-        with_publication_lock_contention_signal, with_publication_lock_pause,
-        with_secure_tree_test_hook, CompileTransaction, FileLinkFixtureOutcome, SecureTreePhase,
+        create_file_link_fixture_for_test, file_identity_for_test, prepare_file_for_removal,
+        set_unix_mode_for_test, unix_mode_for_test, with_publication_lock_contention_signal,
+        with_publication_lock_pause, CompileTransaction, FileLinkFixtureOutcome,
     };
 
-    mod deferred_delivery_call_path {
-        use super::super::*;
-        use crate::application::result_store::ResultStore;
-        use serde_json::{json, Map, Value};
-        use std::path::PathBuf;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-        use std::time::Duration;
-
-        struct BigTypedReadPorts {
-            handler_calls: AtomicUsize,
-            workspace_discoveries: AtomicUsize,
-            payload: Value,
-        }
-
-        impl BigTypedReadPorts {
-            fn new(payload: Value) -> Self {
-                Self {
-                    handler_calls: AtomicUsize::new(0),
-                    workspace_discoveries: AtomicUsize::new(0),
-                    payload,
-                }
-            }
-        }
-
-        impl ports::ApplicationPorts for BigTypedReadPorts {
-            fn discover_workspace(
-                &self,
-                requested_cwd: Option<PathBuf>,
-            ) -> Result<WorkspaceContext, String> {
-                self.workspace_discoveries.fetch_add(1, Ordering::SeqCst);
-                let cwd = requested_cwd.unwrap_or_default();
-                Ok(WorkspaceContext {
-                    cwd: cwd.clone(),
-                    workspace_root: cwd.clone(),
-                    cache_root: cwd.join(".build").join("unica"),
-                    workspace_epoch: 7,
-                })
-            }
-
-            fn validate_tool_context(
-                &self,
-                _spec: ToolSpec,
-                _args: &Map<String, Value>,
-                _mode: InvocationMode,
-                _context: &WorkspaceContext,
-            ) -> Result<(), String> {
-                Ok(())
-            }
-
-            fn evaluate_format_guard(
-                &self,
-                _spec: ToolSpec,
-                _args: &Map<String, Value>,
-                _context: &WorkspaceContext,
-            ) -> Result<FormatGuardCheck, FormatGuardError> {
-                Ok(FormatGuardCheck::Allow)
-            }
-
-            fn evaluate_support_guard(
-                &self,
-                _spec: ToolSpec,
-                _args: &Map<String, Value>,
-                _context: &WorkspaceContext,
-            ) -> Result<SupportGuardCheck, String> {
-                Ok(SupportGuardCheck::Allow)
-            }
-
-            fn invoke_handler(
-                &self,
-                _spec: ToolSpec,
-                _args: &Map<String, Value>,
-                _context: &WorkspaceContext,
-                _mode: InvocationMode,
-                _cancellation: &CancellationToken,
-            ) -> Result<ports::HandlerOutcome, String> {
-                self.handler_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(ports::HandlerOutcome::with_data(
-                    AdapterOutcome::ok("big role read"),
-                    self.payload.clone(),
-                ))
-            }
-
-            fn cache_report(
-                &self,
-                context: &WorkspaceContext,
-                _events: &[DomainEvent],
-                mode: InvocationMode,
-                _cache_access: CacheAccess,
-            ) -> Result<CacheReport, String> {
-                Ok(CacheReport {
-                    mode: match mode {
-                        InvocationMode::Read => "read",
-                        InvocationMode::Preview => "preview",
-                        InvocationMode::Apply => "apply",
-                    }
-                    .to_string(),
-                    root: context.cache_root.display().to_string(),
-                    workspace_epoch: context.workspace_epoch,
-                    events: Vec::new(),
-                    invalidated: Vec::new(),
-                    refreshed: Vec::new(),
-                    lazy_rebuilt: Vec::new(),
-                    stale: Vec::new(),
-                    fresh: Vec::new(),
-                    publication_warnings: Vec::new(),
-                })
-            }
-
-            fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
-        }
-
-        fn big_role_payload() -> Value {
-            let rights: Vec<Value> = (0..200)
-                .map(|index| {
-                    json!({
-                        "name": format!("Catalog.Item{index:03}"),
-                        "read": true,
-                        "insert": index % 2 == 0,
-                    })
-                })
-                .collect();
-            json!({ "role": "Role.Big", "rights": rights })
-        }
-
-        fn read_args() -> Map<String, Value> {
-            let mut args = Map::new();
-            args.insert("cwd".to_string(), json!("/ws"));
-            args.insert("sourceSet".to_string(), json!("main"));
-            args.insert("metadataPath".to_string(), json!("Role.Big"));
-            args
-        }
-
-        fn app_with_threshold(
-            payload: Value,
-            threshold_bytes: usize,
-            store: ResultStore,
-        ) -> (UnicaApplication, Arc<BigTypedReadPorts>) {
-            let fake = Arc::new(BigTypedReadPorts::new(payload));
-            let app = UnicaApplication::with_ports_and_deferred(
-                fake.clone(),
-                deferred_delivery::DeferredDelivery {
-                    store: Arc::new(store),
-                    threshold_bytes,
-                },
-            );
-            (app, fake)
-        }
-
-        #[test]
-        fn oversized_typed_read_returns_a_manifest_within_budget() {
-            let (app, fake) = app_with_threshold(big_role_payload(), 256, ResultStore::default());
-            let result = app.call_tool("unica.role.info", &read_args()).unwrap();
-            assert!(result.ok);
-            let data = result.data.expect("manifest is typed data");
-            assert_eq!(data["state"], "deferred");
-            assert_eq!(data["sections"]["rights"], 200);
-            assert!(data["resultRef"].as_str().is_some());
-            assert_eq!(data["snapshot"]["workspaceEpoch"], 7);
-            assert!(data["bytes"].as_u64().unwrap() > 256);
-            let manifest_bytes = serde_json::to_vec(&data).unwrap().len();
-            assert!(
-                manifest_bytes < 3200,
-                "manifest must stay within the notification budget, got {manifest_bytes}"
-            );
-            assert_eq!(fake.handler_calls.load(Ordering::SeqCst), 1);
-        }
-
-        #[test]
-        fn continuation_slices_byte_stably_without_rereading_the_source() {
-            let (app, fake) = app_with_threshold(big_role_payload(), 256, ResultStore::default());
-            let manifest = app
-                .call_tool("unica.role.info", &read_args())
-                .unwrap()
-                .data
-                .unwrap();
-            let reference = manifest["resultRef"].as_str().unwrap().to_string();
-
-            let mut continuation = read_args();
-            continuation.insert("resultRef".to_string(), json!(reference));
-            continuation.insert("section".to_string(), json!("rights"));
-            continuation.insert("page".to_string(), json!(2));
-            let first = app.call_tool("unica.role.info", &continuation).unwrap();
-            let second = app.call_tool("unica.role.info", &continuation).unwrap();
-            assert!(first.ok);
-            let first_data = first.data.unwrap();
-            assert_eq!(first_data["state"], "slice");
-            assert_eq!(first_data["totalInSection"], 200);
-            assert_eq!(first_data["page"], 2);
-            assert_eq!(first_data["items"].as_array().unwrap().len(), 50);
-            assert_eq!(
-                serde_json::to_vec(&first_data).unwrap(),
-                serde_json::to_vec(&second.data.unwrap()).unwrap(),
-                "continuation slices are byte-stable"
-            );
-            assert_eq!(
-                fake.handler_calls.load(Ordering::SeqCst),
-                1,
-                "continuations must not re-run the reader"
-            );
-            assert_eq!(
-                fake.workspace_discoveries.load(Ordering::SeqCst),
-                1,
-                "continuations must not touch the workspace"
-            );
-        }
-
-        #[test]
-        fn within_budget_typed_read_is_delivered_inline_unchanged() {
-            let payload = json!({ "role": "Role.Small", "rights": [{"name": "One"}] });
-            let (app, _fake) = app_with_threshold(
-                payload.clone(),
-                deferred_delivery::DEFAULT_THRESHOLD_BYTES,
-                ResultStore::default(),
-            );
-            let result = app.call_tool("unica.role.info", &read_args()).unwrap();
-            assert!(result.ok);
-            assert_eq!(result.data.unwrap(), payload);
-        }
-
-        #[test]
-        fn unknown_reference_is_a_stable_unavailable_error() {
-            let (app, fake) = app_with_threshold(big_role_payload(), 256, ResultStore::default());
-            let mut continuation = read_args();
-            continuation.insert("resultRef".to_string(), json!("res-404-dead"));
-            let result = app.call_tool("unica.role.info", &continuation).unwrap();
-            assert!(!result.ok);
-            assert!(result.errors[0].starts_with("result_unavailable:"));
-            assert_eq!(fake.handler_calls.load(Ordering::SeqCst), 0);
-        }
-
-        #[test]
-        fn expired_reference_reports_result_expired() {
-            let (app, _fake) = app_with_threshold(
-                big_role_payload(),
-                256,
-                ResultStore::new(Duration::ZERO, 8, 1024 * 1024),
-            );
-            let manifest = app
-                .call_tool("unica.role.info", &read_args())
-                .unwrap()
-                .data
-                .unwrap();
-            let mut continuation = read_args();
-            continuation.insert("resultRef".to_string(), manifest["resultRef"].clone());
-            continuation.insert("section".to_string(), json!("rights"));
-            let result = app.call_tool("unica.role.info", &continuation).unwrap();
-            assert!(!result.ok);
-            assert!(result.errors[0].starts_with("result_expired:"));
-        }
-
-        #[test]
-        fn selectors_without_a_reference_are_refused() {
-            let (app, fake) = app_with_threshold(big_role_payload(), 256, ResultStore::default());
-            let mut args = read_args();
-            args.insert("section".to_string(), json!("rights"));
-            let result = app.call_tool("unica.role.info", &args).unwrap();
-            assert!(!result.ok);
-            assert!(result.errors[0].starts_with("continuation_requires_result_ref:"));
-            assert_eq!(fake.handler_calls.load(Ordering::SeqCst), 0);
-        }
-    }
     use serde_json::Map;
-    use std::cell::Cell;
-    use std::rc::Rc;
+
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use std::sync::{mpsc, Arc, Barrier};
@@ -3901,35 +3399,6 @@ pub(crate) mod tests {
                 .any(|warning| warning.starts_with("runtime_risk_critical_non_abortable:")),
             "{:?}",
             result.warnings
-        );
-    }
-
-    #[test]
-    fn invocation_mode_is_derived_from_validated_tool_execution() {
-        let reader = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.project.map")
-            .expect("project.map reader exists");
-        let mutation = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.cf.edit")
-            .expect("cf.edit mutation exists");
-
-        assert_eq!(
-            InvocationMode::from_validated_args(reader, &Map::new()).unwrap(),
-            InvocationMode::Read,
-        );
-        assert_eq!(
-            InvocationMode::from_validated_args(mutation, &Map::new()).unwrap(),
-            InvocationMode::Preview,
-        );
-        assert_eq!(
-            InvocationMode::from_validated_args(
-                mutation,
-                serde_json::json!({"dryRun": false}).as_object().unwrap(),
-            )
-            .unwrap(),
-            InvocationMode::Apply,
         );
     }
 
@@ -4753,42 +4222,6 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn lists_unica_orchestrator_scope() {
-        let names = tools().iter().map(|tool| tool.name).collect::<Vec<_>>();
-        assert!(names.contains(&"unica.project.map"));
-        assert!(names.contains(&"unica.dcs.edit"));
-        assert!(names.contains(&"unica.mxl.compile"));
-        assert!(names.contains(&"unica.epf.init"));
-        assert!(names.contains(&"unica.erf.init"));
-        assert!(names.contains(&"unica.build.load"));
-        assert!(names.contains(&"unica.runtime.execute"));
-        for name in [
-            "unica.runtime.job.start",
-            "unica.runtime.job.wait",
-            "unica.runtime.job.logs",
-            "unica.runtime.job.list",
-        ] {
-            assert!(names.contains(&name), "missing {name}");
-        }
-        assert!(names.contains(&"unica.code.definition"));
-        assert!(!names.contains(&"unica.code.grep"));
-        assert!(names.contains(&"unica.code.graph"));
-        for name in ["unica.meta.info", "unica.meta.add", "unica.meta.edit"] {
-            assert!(names.contains(&name), "missing {name}");
-        }
-        for name in [
-            "unica.meta.compile",
-            "unica.meta.profile",
-            "unica.meta.validate",
-            "unica.meta.remove",
-        ] {
-            assert!(!names.contains(&name), "retired {name} is still public");
-        }
-        assert!(names.contains(&"unica.standards.explain"));
-        assert!(!names.contains(&"unica-coder"));
-    }
-
     /// ADR-0072: the three duplicate routes are retired without aliases.
     #[test]
     fn retired_template_help_routes_fail_as_unknown_tools() {
@@ -4819,6 +4252,182 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn xml_dsl_tools_route_to_parity_covered_native_handlers() {
+        // `unica.cf.info` left the parity stand when it started answering with
+        // typed data: there is no prose left to compare (ADR-0023).
+        const PARITY_COVERED_TOOLS: &[&str] = &[
+            "unica.form.compile",
+            "unica.subsystem.compile",
+            "unica.dcs.compile",
+            "unica.mxl.compile",
+            "unica.mxl.decompile",
+            "unica.role.compile",
+        ];
+        const REPO_OWNED_NATIVE_TOOLS: &[&str] = &[];
+        // A tool that answers with typed data has no prose left for the parity
+        // stand to compare, so it is covered by its own crate tests instead
+        // (ADR-0023).
+        const TYPED_RESULT_TOOLS: &[&str] = &[
+            "unica.mxl.info",
+            "unica.role.edit",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.interface.edit",
+            "unica.cfe.init",
+            "unica.cf.edit",
+            "unica.cf.init",
+            "unica.cfe.borrow",
+            "unica.cfe.patch_method",
+            "unica.subsystem.edit",
+            "unica.dcs.edit",
+            "unica.form.edit",
+            "unica.meta.info",
+        ];
+
+        for tool in tools() {
+            if !tool.name.starts_with("unica.cf.")
+                && !tool.name.starts_with("unica.cfe.")
+                && !tool.name.starts_with("unica.meta.")
+                && !tool.name.starts_with("unica.help.")
+                && !tool.name.starts_with("unica.form.")
+                && !tool.name.starts_with("unica.interface.")
+                && !tool.name.starts_with("unica.subsystem.")
+                && !tool.name.starts_with("unica.template.")
+                && !tool.name.starts_with("unica.dcs.")
+                && !tool.name.starts_with("unica.mxl.")
+                && !tool.name.starts_with("unica.role.")
+                && !tool.name.starts_with("unica.support.")
+            {
+                continue;
+            }
+            match tool.handler {
+                ToolHandler::NativeOperation { operation, .. } => {
+                    assert!(
+                        PARITY_COVERED_TOOLS.contains(&tool.name)
+                            || REPO_OWNED_NATIVE_TOOLS.contains(&tool.name)
+                            || TYPED_RESULT_TOOLS.contains(&tool.name),
+                        "{} routes to native operation {} without a parity fixture or repo-owned native contract exception",
+                        tool.name,
+                        operation
+                    );
+                }
+                ToolHandler::Metadata { .. } => assert!(
+                    matches!(
+                        tool.name,
+                        "unica.meta.info"
+                            | "unica.meta.add"
+                            | "unica.meta.edit"
+                            | "unica.meta.remove"
+                    ),
+                    "{} unexpectedly routes through the typed Metadata handler",
+                    tool.name
+                ),
+                _ => panic!("{} routes through unexpected handler", tool.name),
+            }
+        }
+    }
+
+    /// DEC.2026-08-21.SOURCE-READ-ONLY-SURFACE: чтение исходников остаётся
+    /// read-only. Предметом правила были снятые `unica.source.*`; клятва
+    /// сохраняется на читателях, которые ещё стоят в реестре, и на отсутствии
+    /// пишущего входа рядом с ними.
+    #[test]
+    fn source_resource_tools_are_read_only_and_have_no_cache_or_event_effects() {
+        let readers = tools()
+            .into_iter()
+            .filter(|tool| !tool.execution.is_mutating())
+            .collect::<Vec<_>>();
+        assert!(!readers.is_empty(), "the registry still declares readers");
+
+        for tool in readers {
+            assert!(
+                tool.cache_access.writes.is_empty(),
+                "{} is a reader and must not invalidate cache",
+                tool.name
+            );
+            assert!(
+                !matches!(
+                    tool.handler,
+                    ToolHandler::NativeOperation { event: Some(_), .. }
+                ),
+                "{} is a reader and must not publish a domain event",
+                tool.name
+            );
+        }
+
+        // Правка BSL принадлежит `unica.code.patch`, который меняет выбранный
+        // метод или якорь, а не переписывает модуль целиком: пишущего входа
+        // рядом с чтением исходников нет.
+        assert!(tools()
+            .into_iter()
+            .all(|tool| tool.name != "unica.source.apply"));
+    }
+
+    #[test]
+    fn entity_spelled_supported_format_is_invalid_at_the_public_boundary() {
+        for (index, raw) in ["2.&#50;0", "&#x32;.20", "2.2&#48;"]
+            .into_iter()
+            .enumerate()
+        {
+            let (root, workspace, config_path) = cf_edit_mutation_workspace(
+                &format!("unica-entity-spelled-format-{index}"),
+                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+                    .replacen(r#"version="2.20""#, &format!(r#"version="{raw}""#), 1)
+                    .as_bytes(),
+            );
+            let before = std::fs::read(&config_path).unwrap();
+
+            let mutation = UnicaApplication::new()
+                .call_tool(
+                    "unica.cf.edit",
+                    &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
+                )
+                .unwrap();
+
+            assert!(!mutation.ok, "{raw}: {mutation:?}");
+            let diagnostic = &mutation.diagnostics.as_ref().unwrap()["formatCompatibility"];
+            assert_eq!(diagnostic["code"], "formatVersionInvalid", "{raw}");
+            assert_eq!(diagnostic["actualFormat"], raw, "{raw}");
+            assert_eq!(std::fs::read(&config_path).unwrap(), before, "{raw}");
+            assert!(mutation.changes.is_empty(), "{raw}: {mutation:?}");
+            assert!(mutation.artifacts.is_empty(), "{raw}: {mutation:?}");
+            assert!(mutation.cache.events.is_empty(), "{raw}: {mutation:?}");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn numeric_equivalent_noncanonical_format_warns_on_read_and_blocks_public_mutator() {
+        for (index, raw) in ["2.20.0", "02.20", "2.020"].into_iter().enumerate() {
+            let (root, workspace, config_path) = cf_edit_mutation_workspace(
+                &format!("unica-noncanonical-format-{index}"),
+                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+                    .replacen(r#"version="2.20""#, &format!(r#"version="{raw}""#), 1)
+                    .as_bytes(),
+            );
+            let before = std::fs::read(&config_path).unwrap();
+
+            let mutation = UnicaApplication::new()
+                .call_tool(
+                    "unica.cf.edit",
+                    &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
+                )
+                .unwrap();
+
+            assert!(!mutation.ok, "{raw}: {mutation:?}");
+            let mutation_diagnostic =
+                &mutation.diagnostics.as_ref().unwrap()["formatCompatibility"];
+            assert_eq!(mutation_diagnostic["code"], "formatVersionInvalid", "{raw}");
+            assert_eq!(mutation_diagnostic["actualFormat"], raw, "{raw}");
+            assert_eq!(std::fs::read(&config_path).unwrap(), before, "{raw}");
+            assert!(mutation.changes.is_empty(), "{raw}: {mutation:?}");
+            assert!(mutation.artifacts.is_empty(), "{raw}: {mutation:?}");
+            assert!(mutation.cache.events.is_empty(), "{raw}: {mutation:?}");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn provider_neutral_tools_use_typed_code_intelligence_handlers() {
         let expected = [
             ("unica.code.search", CodeIntelligenceOperation::Search),
@@ -4837,65 +4446,6 @@ pub(crate) mod tests {
                 } if actual == operation
             ));
         }
-    }
-
-    #[test]
-    fn source_navigation_tools_use_provider_neutral_application_handlers() {
-        let expected = [
-            ("unica.source.resolve", SourceNavigationOperation::Resolve),
-            ("unica.source.children", SourceNavigationOperation::Children),
-        ];
-
-        for (name, operation) in expected {
-            let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
-            assert!(
-                !tool.execution.is_mutating(),
-                "{name} must remain read-only"
-            );
-            assert!(matches!(
-                tool.handler,
-                ToolHandler::SourceNavigation {
-                    operation: actual
-                } if actual == operation
-            ));
-        }
-    }
-
-    #[test]
-    fn source_resource_tools_are_read_only_and_have_no_cache_or_event_effects() {
-        let expected = [
-            ("unica.source.resources", SourceResourceOperation::Resources),
-            ("unica.source.read", SourceResourceOperation::Read),
-        ];
-
-        for (name, operation) in expected {
-            let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
-            assert!(
-                !tool.execution.is_mutating(),
-                "{name} must remain read-only"
-            );
-            assert!(
-                tool.cache_access.reads.is_empty(),
-                "{name} must not read cache"
-            );
-            assert!(
-                tool.cache_access.writes.is_empty(),
-                "{name} must not invalidate cache"
-            );
-            assert!(matches!(
-                tool.handler,
-                ToolHandler::SourceResources {
-                    operation: actual
-                } if actual == operation
-            ));
-        }
-
-        // The bounded resource surface is read-only: BSL mutation belongs to
-        // `unica.code.patch`, which edits the selected method or anchor instead
-        // of rewriting a whole module.
-        assert!(tools()
-            .into_iter()
-            .all(|tool| tool.name != "unica.source.apply"));
     }
 
     #[test]
@@ -4961,91 +4511,6 @@ pub(crate) mod tests {
             serde_json::to_value(result(Some(data.clone()))).expect("typed result must serialize");
         assert_eq!(structured["data"], data);
         assert!(structured.get("stdout").is_none());
-    }
-
-    #[test]
-    fn xdto_format_guard_preserves_known_resolver_codes_without_physical_handles() {
-        let (root, workspace) =
-            xdto_public_guard_workspace("unica-xdto-resolver-errors", "2.20", None);
-        std::fs::create_dir_all(workspace.join("external")).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external\n",
-        )
-        .unwrap();
-
-        let cases = [
-            (
-                "source_set_unknown",
-                "missing + XDTOPackage.Sample",
-                UnicaApplication::new()
-                    .call_tool(
-                        "unica.xdto.info",
-                        &xdto_public_info_args(&workspace, "missing", "XDTOPackage.Sample"),
-                    )
-                    .expect_err("unknown source set must remain an application error"),
-            ),
-            (
-                "target_not_found",
-                "main + XDTOPackage.Missing",
-                UnicaApplication::new()
-                    .call_tool(
-                        "unica.xdto.info",
-                        &xdto_public_info_args(&workspace, "main", "XDTOPackage.Missing"),
-                    )
-                    .expect_err("missing logical target must remain an application error"),
-            ),
-            (
-                "not_an_xdto_package",
-                "external + XDTOPackage.Sample",
-                UnicaApplication::new()
-                    .call_tool(
-                        "unica.xdto.info",
-                        &xdto_public_info_args(&workspace, "external", "XDTOPackage.Sample"),
-                    )
-                    .expect_err("unsupported source format must remain an application error"),
-            ),
-        ];
-
-        std::fs::remove_file(workspace.join("src/XDTOPackages/Sample/Ext/Package.bin")).unwrap();
-        let missing_resource = UnicaApplication::new()
-            .call_tool(
-                "unica.xdto.info",
-                &xdto_public_info_args(&workspace, "main", "XDTOPackage.Sample"),
-            )
-            .expect_err("missing Package.bin must remain an application error");
-        let expected_codes = [
-            "source_set_unknown",
-            "target_not_found",
-            "not_an_xdto_package",
-            "package_resource_missing",
-        ];
-        let actual_codes = cases
-            .iter()
-            .map(|(_, _, error)| {
-                error
-                    .split_once(':')
-                    .map_or(error.as_str(), |(code, _)| code)
-            })
-            .chain(std::iter::once(
-                missing_resource
-                    .split_once(':')
-                    .map_or(missing_resource.as_str(), |(code, _)| code),
-            ))
-            .collect::<Vec<_>>();
-        assert_eq!(actual_codes, expected_codes);
-
-        for (expected_code, expected_target, error) in &cases {
-            assert_xdto_public_error_is_logical(error, expected_code, expected_target, &workspace);
-        }
-        assert_xdto_public_error_is_logical(
-            &missing_resource,
-            "package_resource_missing",
-            "main + XDTOPackage.Sample",
-            &workspace,
-        );
-
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -6657,538 +6122,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn xml_dsl_tools_route_to_parity_covered_native_handlers() {
-        // `unica.cf.info` left the parity stand when it started answering with
-        // typed data: there is no prose left to compare (ADR-0023).
-        const PARITY_COVERED_TOOLS: &[&str] = &[
-            "unica.form.compile",
-            "unica.subsystem.compile",
-            "unica.dcs.compile",
-            "unica.mxl.compile",
-            "unica.mxl.decompile",
-            "unica.role.compile",
-        ];
-        const REPO_OWNED_NATIVE_TOOLS: &[&str] = &[];
-        // A tool that answers with typed data has no prose left for the parity
-        // stand to compare, so it is covered by its own crate tests instead
-        // (ADR-0023).
-        const TYPED_RESULT_TOOLS: &[&str] = &[
-            "unica.cf.info",
-            "unica.role.info",
-            "unica.role.edit",
-            "unica.subsystem.info",
-            "unica.mxl.info",
-            "unica.cfe.diff",
-            "unica.meta.add",
-            "unica.meta.edit",
-            "unica.form.remove",
-            "unica.interface.edit",
-            "unica.meta.remove",
-            "unica.cfe.init",
-            "unica.cf.edit",
-            "unica.cf.init",
-            "unica.cfe.borrow",
-            "unica.cfe.patch_method",
-            "unica.subsystem.edit",
-            "unica.dcs.edit",
-            "unica.form.edit",
-            "unica.form.info",
-            "unica.meta.info",
-            "unica.dcs.info",
-        ];
-
-        for tool in tools() {
-            if !tool.name.starts_with("unica.cf.")
-                && !tool.name.starts_with("unica.cfe.")
-                && !tool.name.starts_with("unica.meta.")
-                && !tool.name.starts_with("unica.help.")
-                && !tool.name.starts_with("unica.form.")
-                && !tool.name.starts_with("unica.interface.")
-                && !tool.name.starts_with("unica.subsystem.")
-                && !tool.name.starts_with("unica.template.")
-                && !tool.name.starts_with("unica.dcs.")
-                && !tool.name.starts_with("unica.mxl.")
-                && !tool.name.starts_with("unica.role.")
-                && !tool.name.starts_with("unica.support.")
-            {
-                continue;
-            }
-            match tool.handler {
-                ToolHandler::NativeOperation { operation, .. } => {
-                    assert!(
-                        PARITY_COVERED_TOOLS.contains(&tool.name)
-                            || REPO_OWNED_NATIVE_TOOLS.contains(&tool.name)
-                            || TYPED_RESULT_TOOLS.contains(&tool.name),
-                        "{} routes to native operation {} without a parity fixture or repo-owned native contract exception",
-                        tool.name,
-                        operation
-                    );
-                }
-                ToolHandler::Metadata { .. } => assert!(
-                    matches!(
-                        tool.name,
-                        "unica.meta.info"
-                            | "unica.meta.add"
-                            | "unica.meta.edit"
-                            | "unica.meta.remove"
-                    ),
-                    "{} unexpectedly routes through the typed Metadata handler",
-                    tool.name
-                ),
-                _ => panic!("{} routes through unexpected handler", tool.name),
-            }
-        }
-    }
-
-    #[test]
-    fn meta_info_declares_only_the_local_graphs_it_reads() {
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.meta.info")
-            .unwrap();
-
-        // Nothing in a metadata read consults the code index any more, so
-        // declaring `bsl_index` would report a dependency the tool does not
-        // have and make its cache status answer for a provider it never calls.
-        assert_eq!(
-            tool.cache_access.reads,
-            &["workspace_graph", "metadata_graph"]
-        );
-        assert!(tool.cache_access.writes.is_empty());
-    }
-
-    #[test]
-    fn form_and_dcs_tools_route_through_native_handlers() {
-        let expected = [
-            (
-                "unica.form.compile",
-                "form-compile",
-                Some(DomainEventKind::FormChanged),
-            ),
-            (
-                "unica.form.edit",
-                "form-edit",
-                Some(DomainEventKind::FormChanged),
-            ),
-            ("unica.form.info", "form-info", None),
-            (
-                "unica.dcs.compile",
-                "dcs-compile",
-                Some(DomainEventKind::DcsChanged),
-            ),
-            (
-                "unica.dcs.edit",
-                "dcs-edit",
-                Some(DomainEventKind::DcsChanged),
-            ),
-            ("unica.dcs.info", "dcs-info", None),
-        ];
-        for (tool_name, expected_operation, expected_event) in expected {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == tool_name)
-                .expect("form/DCS tool exists");
-
-            match tool.handler {
-                ToolHandler::NativeOperation { operation, event } => {
-                    assert_eq!(operation, expected_operation);
-                    assert_eq!(event, expected_event);
-                }
-                other => panic!("{tool_name} should route through native operation, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn project_map_reports_source_sets_as_read_only_json() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-project-map-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(workspace.join("src")).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(workspace.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.project.map", &args)
-            .unwrap();
-
-        assert!(result.ok);
-        assert_eq!(result.cache.mode, "read");
-        // ADR-0023: the map is the result, so it rides in `data` instead of
-        // being serialized into a JSON string inside the JSON envelope.
-        assert!(result.stdout.is_none(), "{:?}", result.stdout);
-        let data = result.data.unwrap();
-        let source_sets = data["sourceSets"].as_array().unwrap();
-        assert_eq!(source_sets.len(), 1);
-        assert_eq!(source_sets[0]["kind"], "configuration");
-        assert_eq!(source_sets[0]["sourceFormat"], "platform_xml");
-        assert_eq!(data["effectiveSourceSet"], "main");
-        assert!(data["effectiveSourceRoot"].is_string());
-        assert!(data.get("sourceSelectionError").is_none());
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn project_map_does_not_mix_git_health_into_source_map() {
-        let root = test_workspace_root("project-map-tracked-cdfi");
-        let src = root.join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(src.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
-        std::fs::write(src.join("configdumpinfo.xml"), "<ConfigDumpInfo/>").unwrap();
-        std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&root)
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args([
-                "add",
-                "v8project.yaml",
-                "src/Configuration.xml",
-                "src/configdumpinfo.xml",
-            ])
-            .current_dir(&root)
-            .status()
-            .unwrap();
-        let mut args = Map::new();
-        args.insert("cwd".to_string(), json!(root));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.project.map", &args)
-            .unwrap();
-
-        assert!(result.ok);
-        assert!(
-            result.warnings.iter().all(|warning| {
-                !warning.contains("ConfigDumpInfo.xml")
-                    && !warning.contains("git rm")
-                    && !warning.contains("manual review")
-            }),
-            "{:?}",
-            result.warnings
-        );
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn project_map_does_not_warn_for_tracked_external_object_named_config_dump_info() {
-        let root = test_workspace_root("project-map-external-object-named-cdfi");
-        let epf = root.join("epf");
-        let erf = root.join("erf");
-        std::fs::create_dir_all(&epf).unwrap();
-        std::fs::create_dir_all(&erf).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: processors\n",
-                "    type: EXTERNAL_DATA_PROCESSORS\n",
-                "    path: epf\n",
-                "  - name: reports\n",
-                "    type: EXTERNAL_REPORTS\n",
-                "    path: erf\n",
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            epf.join("ConfigDumpInfo.xml"),
-            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
-        )
-        .unwrap();
-        std::fs::write(
-            erf.join("configdumpinfo.xml"),
-            "<MetaDataObject><ExternalReport/></MetaDataObject>",
-        )
-        .unwrap();
-        std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&root)
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args([
-                "add",
-                "v8project.yaml",
-                "epf/ConfigDumpInfo.xml",
-                "erf/configdumpinfo.xml",
-            ])
-            .current_dir(&root)
-            .status()
-            .unwrap();
-        let mut args = Map::new();
-        args.insert("cwd".to_string(), json!(root));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.project.map", &args)
-            .unwrap();
-
-        assert!(result.ok);
-        let source_sets = result.data.as_ref().unwrap()["sourceSets"]
-            .as_array()
-            .unwrap()
-            .clone();
-        assert_eq!(
-            source_sets
-                .iter()
-                .filter(|entry| entry["sourceFormat"] == "platform_xml")
-                .count(),
-            2
-        );
-        assert!(
-            result
-                .warnings
-                .iter()
-                .all(|warning| !warning.contains("git rm --cached")),
-            "valid external descriptor must not be treated as runtime state: {:?}",
-            result.warnings
-        );
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn project_map_is_independent_of_config_dump_info_index_and_worktree_content() {
-        let runtime_index = test_workspace_root("project-map-cdfi-runtime-index");
-        std::fs::create_dir_all(runtime_index.join("epf")).unwrap();
-        std::fs::write(
-            runtime_index.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: processors\n",
-                "    type: EXTERNAL_DATA_PROCESSORS\n",
-                "    path: epf\n",
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            runtime_index.join("epf/ConfigDumpInfo.xml"),
-            "<ConfigDumpInfo/>",
-        )
-        .unwrap();
-        std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&runtime_index)
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["add", "v8project.yaml", "epf/ConfigDumpInfo.xml"])
-            .current_dir(&runtime_index)
-            .status()
-            .unwrap();
-        std::fs::write(
-            runtime_index.join("epf/ConfigDumpInfo.xml"),
-            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert("cwd".to_string(), json!(runtime_index));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.project.map", &args)
-            .unwrap();
-
-        assert!(
-            result.warnings.iter().all(|warning| {
-                !warning.contains("ConfigDumpInfo.xml")
-                    && !warning.contains("git rm")
-                    && !warning.contains("manual review")
-            }),
-            "{:?}",
-            result.warnings
-        );
-
-        let external_index = test_workspace_root("project-map-cdfi-external-index");
-        std::fs::create_dir_all(external_index.join("epf")).unwrap();
-        std::fs::write(
-            external_index.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: processors\n",
-                "    type: EXTERNAL_DATA_PROCESSORS\n",
-                "    path: epf\n",
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            external_index.join("epf/ConfigDumpInfo.xml"),
-            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
-        )
-        .unwrap();
-        std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&external_index)
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["add", "v8project.yaml", "epf/ConfigDumpInfo.xml"])
-            .current_dir(&external_index)
-            .status()
-            .unwrap();
-        std::fs::write(
-            external_index.join("epf/ConfigDumpInfo.xml"),
-            "<ConfigDumpInfo/>",
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert("cwd".to_string(), json!(external_index));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.project.map", &args)
-            .unwrap();
-
-        assert!(result.warnings.iter().all(|warning| {
-            !warning.contains("git rm --cached") && !warning.contains("manual review")
-        }));
-
-        let _ = std::fs::remove_dir_all(runtime_index);
-        let _ = std::fs::remove_dir_all(external_index);
-    }
-
-    #[test]
-    fn project_map_does_not_treat_nested_metadata_object_as_runtime_sidecar() {
-        let root = test_workspace_root("project-map-nested-metadata-named-cdfi");
-        std::fs::create_dir_all(root.join("src/Catalogs")).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: main\n",
-                "    type: CONFIGURATION\n",
-                "    path: src\n",
-            ),
-        )
-        .unwrap();
-        std::fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
-        std::fs::write(
-            root.join("src/Catalogs/ConfigDumpInfo.xml"),
-            "<MetaDataObject><Catalog/></MetaDataObject>",
-        )
-        .unwrap();
-        std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&root)
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args([
-                "add",
-                "v8project.yaml",
-                "src/Configuration.xml",
-                "src/Catalogs/ConfigDumpInfo.xml",
-            ])
-            .current_dir(&root)
-            .status()
-            .unwrap();
-        let mut args = Map::new();
-        args.insert("cwd".to_string(), json!(root));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.project.map", &args)
-            .unwrap();
-
-        assert!(result.ok);
-        assert!(result.warnings.iter().all(|warning| {
-            !warning.contains("git rm --cached") && !warning.contains("manual review")
-        }));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn project_map_failure_does_not_run_git_health_inspection() {
-        let root = test_workspace_root("project-map-invalid-with-tracked-cdfi");
-        std::fs::write(root.join("v8project.yaml"), "source-set: [").unwrap();
-        std::fs::write(root.join("ConfigDumpInfo.xml"), "<ConfigDumpInfo/>").unwrap();
-        std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&root)
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["add", "v8project.yaml", "ConfigDumpInfo.xml"])
-            .current_dir(&root)
-            .status()
-            .unwrap();
-        let mut args = Map::new();
-        args.insert("cwd".to_string(), json!(root));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.project.map", &args)
-            .unwrap();
-
-        assert!(!result.ok);
-        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn project_map_reports_ambiguous_configuration_source_sets_without_failing() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-project-map-ambiguous-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(workspace.join("app")).unwrap();
-        std::fs::create_dir_all(workspace.join("tests")).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "source-set:\n  - name: app\n    type: CONFIGURATION\n    path: app\n  - name: tests\n    type: CONFIGURATION\n    path: tests\n",
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.project.map", &args)
-            .unwrap();
-
-        assert!(result.ok);
-        assert!(result.warnings.join("\n").contains("sourceDir"));
-        let data = result.data.unwrap();
-        let names = data["sourceSets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["name"].as_str().unwrap().to_string())
-            .collect::<Vec<_>>();
-        assert_eq!(names, vec!["app".to_string(), "tests".to_string()]);
-        assert!(data["sourceSelectionError"]
-            .as_str()
-            .unwrap()
-            .contains("sourceDir"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn mutating_cf_edit_blocks_locked_configuration_directory_target() {
         let root = std::env::temp_dir().join(format!(
             "unica-cf-guard-dir-{}-{}",
@@ -7317,35 +6250,6 @@ pub(crate) mod tests {
         args.insert("Value".to_string(), Value::String(value.to_string()));
         args.insert("NoValidate".to_string(), Value::Bool(true));
         args
-    }
-
-    /// The root format literal is proven on a reader that is still public:
-    /// `unica.role.info` takes its format evidence from the owning
-    /// `Configuration.xml`, so the raw `version` spelling reaches the read.
-    fn register_format_probe_role(workspace: &std::path::Path) -> Map<String, Value> {
-        let src = workspace.join("src");
-        let role_dir = src.join("Roles/Reader");
-        std::fs::create_dir_all(role_dir.join("Ext")).unwrap();
-        std::fs::write(
-            src.join("Roles/Reader.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role><Properties><Name>Reader</Name></Properties></Role></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            role_dir.join("Ext/Rights.xml"),
-            r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"/>"#,
-        )
-        .unwrap();
-        Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            (
-                "path".to_string(),
-                Value::String(role_dir.display().to_string()),
-            ),
-        ])
     }
 
     fn cf_edit_mutation_workspace(
@@ -8449,67 +7353,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn meta_info_reports_locked_vendor_support_state_through_unica_boundary() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-meta-support-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let ext = src.join("Ext");
-        let catalogs = src.join("Catalogs");
-        std::fs::create_dir_all(&ext).unwrap();
-        std::fs::create_dir_all(&catalogs).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Configuration.xml"),
-            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-        )
-        .unwrap();
-        write_support_test_language(&src);
-        std::fs::write(
-            catalogs.join("Items.xml"),
-            support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-        )
-        .unwrap();
-        std::fs::write(
-            ext.join("ParentConfigurations.bin"),
-            support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-        args.insert(
-            "metadataPath".to_string(),
-            Value::String("Catalog.Items".to_string()),
-        );
-
-        let result = call_public_tool_from_workspace(&workspace, "unica.meta.info", &args).unwrap();
-
-        assert!(
-            !result.ok,
-            "the legacy support fixture is intentionally incomplete"
-        );
-        assert_eq!(result.summary, "metadata validation failed");
-        // The locked rule is a per-object fact: the configuration is on
-        // support, but this object must not be edited directly.
-        let data = result.data.as_ref().expect("meta.info answers with data");
-        assert_eq!(data["support"], serde_json::json!("locked"), "{data:?}");
-        assert!(result.stdout.is_none(), "{result:?}");
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn reader_schemas_never_publish_dry_run_and_mutations_keep_it() {
         for tool in tools() {
             let schema = input_schema_for_tool(&tool);
@@ -9026,529 +7869,6 @@ pub(crate) mod tests {
                 assert!(result.cache.events.is_empty(), "{tool}: {result:?}");
                 std::fs::remove_dir_all(root).unwrap();
             }
-        }
-    }
-
-    fn subsystem_format_guard_workspace(
-        prefix: &str,
-    ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
-        let root = test_workspace_root(prefix);
-        let workspace = root.join("workspace");
-        let source = workspace.join("src");
-        let child = source.join("Subsystems/Parent/Subsystems/Child.xml");
-        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Parent</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Subsystems/Parent.xml"),
-            child_subsystem_stub_xml("Parent", "2.20").replacen(
-                "<ChildObjects/>",
-                "<ChildObjects><Subsystem>Child</Subsystem></ChildObjects>",
-                1,
-            ),
-        )
-        .unwrap();
-        std::fs::write(&child, child_subsystem_stub_xml("Child", "2.21")).unwrap();
-        let physical_workspace = workspace.canonicalize().unwrap();
-        (root, physical_workspace, child)
-    }
-
-    fn assert_public_subsystem_format_warning(
-        workspace: &std::path::Path,
-        subsystem_path: &str,
-        child: &std::path::Path,
-    ) {
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.canonicalize().unwrap().display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String(subsystem_path.to_string()),
-            ),
-        ]);
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.subsystem.info", &args)
-            .unwrap();
-
-        assert!(result.ok, "{result:?}");
-        assert!(!result.warnings.is_empty(), "{result:?}");
-        let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
-        assert_eq!(diagnostic["actualFormat"], "2.21", "{result:?}");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(child)
-        );
-    }
-
-    #[test]
-    fn public_subsystem_format_guard_covers_registered_descendants_for_a_directory_without_mode() {
-        let (root, workspace, child) =
-            subsystem_format_guard_workspace("unica-subsystem-format-directory");
-
-        assert_public_subsystem_format_warning(&workspace, "src/Subsystems", &child);
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn public_subsystem_format_guard_covers_registered_descendants_for_a_file_without_mode() {
-        let (root, workspace, child) =
-            subsystem_format_guard_workspace("unica-subsystem-format-file");
-
-        assert_public_subsystem_format_warning(&workspace, "src/Subsystems/Parent.xml", &child);
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    pub(crate) fn public_subsystem_info_registration_address_and_schema_contract_is_complete() {
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.subsystem.info")
-            .expect("subsystem.info is publicly registered");
-        assert!(matches!(
-            tool.handler,
-            ToolHandler::NativeOperation {
-                operation: "subsystem-info",
-                ..
-            }
-        ));
-        let schema = crate::application::tool_contracts::input_schema_for_tool(&tool);
-        assert!(schema["properties"].get("Mode").is_none());
-        assert!(schema["properties"].get("mode").is_none());
-
-        let (root, workspace, _) =
-            subsystem_format_guard_workspace("unica-subsystem-public-address-contract");
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            ("sourceSet".to_string(), Value::String("main".to_string())),
-            (
-                "metadataPath".to_string(),
-                Value::String("Subsystem.Parent".to_string()),
-            ),
-        ]);
-        let result = UnicaApplication::new()
-            .call_tool("unica.subsystem.info", &args)
-            .unwrap();
-        assert!(result.ok, "{result:?}");
-        let data = serde_json::to_string(&result.data.expect("registered topology data")).unwrap();
-        assert!(data.contains(r#""name":"Parent""#), "{data}");
-        assert!(data.contains(r#""name":"Child""#), "{data}");
-        for physical in ["Subsystems/", "Subsystems\\\\", ".xml"] {
-            assert!(!data.contains(physical), "leaked {physical:?}: {data}");
-        }
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    pub(crate) fn public_subsystem_info_projects_registered_dependency_errors_as_typed_failures() {
-        let root = test_workspace_root("unica-subsystem-format-resolver-error");
-        let workspace = root.join("workspace");
-        let source = workspace.join("src");
-        std::fs::create_dir_all(source.join("Subsystems")).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Missing</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.canonicalize().unwrap().display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String("src/Subsystems".to_string()),
-            ),
-        ]);
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.subsystem.info", &args)
-            .expect("provider evidence failures stay inside the public tool envelope");
-
-        assert!(!result.ok, "{result:?}");
-        assert!(result.data.is_none(), "{result:?}");
-        let diagnostics = result
-            .diagnostics
-            .as_ref()
-            .and_then(Value::as_array)
-            .expect("typed provider diagnostics");
-        assert!(
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic["code"] == "provider_unavailable"),
-            "{diagnostics:?}"
-        );
-        assert!(
-            result.errors.iter().any(|error| {
-                error.contains("registered subsystem descriptor")
-                    && error.contains("Subsystems/Missing.xml")
-            }),
-            "{result:?}"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn public_subsystem_info_does_not_classify_descriptor_text_as_a_control_error() {
-        let root = test_workspace_root("unica-subsystem-provider-error-text");
-        let workspace = root.join("workspace");
-        let source = workspace.join("src");
-        std::fs::create_dir_all(source.join("Subsystems")).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Injected</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Subsystems/Injected.xml"),
-            child_subsystem_stub_xml("Injected", "2.20").replace(
-                "<Name>Injected</Name>",
-                "<Name>provider deadline exceeded</Name>",
-            ),
-        )
-        .unwrap();
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.canonicalize().unwrap().display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String("src/Subsystems".to_string()),
-            ),
-        ]);
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.subsystem.info", &args)
-            .expect("descriptor proof failures stay inside the public tool envelope");
-
-        assert!(!result.ok, "{result:?}");
-        assert!(result.data.is_none(), "{result:?}");
-        let diagnostics = result
-            .diagnostics
-            .as_ref()
-            .and_then(Value::as_array)
-            .expect("typed provider diagnostics");
-        assert!(
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic["code"] == "provider_unavailable"),
-            "{diagnostics:?}"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn public_subsystem_info_rejects_dry_run_before_reading_target() {
-        let root = test_workspace_root("unica-subsystem-dry-run-missing-target");
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
-        let missing = workspace.join("src/Subsystems/Продажи.xml");
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.canonicalize().unwrap().display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String("src/Subsystems/Продажи.xml".to_string()),
-            ),
-            ("dryRun".to_string(), Value::Bool(true)),
-        ]);
-
-        assert!(!missing.exists());
-        let error = UnicaApplication::new()
-            .call_tool("unica.subsystem.info", &args)
-            .expect_err("reader must reject dryRun before target discovery");
-
-        assert!(
-            error.contains("does not accept argument `dryRun`"),
-            "{error}"
-        );
-        assert!(
-            !missing.exists(),
-            "argument rejection must not create the missing target"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn public_subsystem_info_cancellation_stops_the_preflight_registered_capture() {
-        let (root, workspace, _) =
-            subsystem_format_guard_workspace("unica-subsystem-public-preflight-cancel");
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String("src/Subsystems".to_string()),
-            ),
-        ]);
-        let cancellation = CancellationToken::new();
-        let hook_cancellation = cancellation.clone();
-        let read_after_cancellation = Rc::new(Cell::new(false));
-        let hook_read_after_cancellation = Rc::clone(&read_after_cancellation);
-
-        let result = with_secure_tree_test_hook(
-            move |phase| match phase {
-                SecureTreePhase::AfterRebindEntry(path)
-                    if path == std::path::Path::new("Configuration.xml") =>
-                {
-                    hook_cancellation.cancel();
-                }
-                SecureTreePhase::AfterRebindEntry(path)
-                    if path != std::path::Path::new("Configuration.xml") =>
-                {
-                    hook_read_after_cancellation.set(true);
-                }
-                _ => {}
-            },
-            || {
-                UnicaApplication::new().call_tool_cancellable(
-                    "unica.subsystem.info",
-                    &args,
-                    cancellation,
-                )
-            },
-        )
-        .unwrap();
-
-        assert!(!result.ok, "{result:?}");
-        assert!(
-            result
-                .errors
-                .iter()
-                .any(|error| error.starts_with("cancelled:")),
-            "{result:?}"
-        );
-        assert!(
-            !read_after_cancellation.get(),
-            "public preflight continued into registered descriptors after cancellation"
-        );
-        assert!(
-            result.diagnostics.as_ref().is_none_or(|diagnostics| {
-                !diagnostics.to_string().contains("provider_unavailable")
-            }),
-            "cancellation must not be mislabeled as provider_unavailable: {result:?}"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn public_subsystem_info_uses_one_registered_snapshot_for_guard_and_handler() {
-        let (root, workspace, child) =
-            subsystem_format_guard_workspace("unica-subsystem-single-public-snapshot");
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String("src/Subsystems".to_string()),
-            ),
-        ]);
-        let completed_snapshots = Rc::new(Cell::new(0usize));
-        let hook_completed_snapshots = Rc::clone(&completed_snapshots);
-        let child_during_capture = child.clone();
-
-        let result = with_secure_tree_test_hook(
-            move |phase| {
-                if phase == &SecureTreePhase::AfterFinalIdentityProofs {
-                    let completed = hook_completed_snapshots.get();
-                    hook_completed_snapshots.set(completed + 1);
-                    if completed == 0 {
-                        std::fs::write(
-                            &child_during_capture,
-                            child_subsystem_stub_xml("Child", "2.20"),
-                        )
-                        .unwrap();
-                    }
-                }
-            },
-            || UnicaApplication::new().call_tool("unica.subsystem.info", &args),
-        )
-        .unwrap();
-
-        assert!(result.ok, "{result:?}");
-        assert_eq!(
-            completed_snapshots.get(),
-            1,
-            "format preflight and handler must consume one prepared registered snapshot"
-        );
-        assert_eq!(
-            result.diagnostics.as_ref().unwrap()["formatCompatibility"]["actualFormat"],
-            "2.21",
-            "format warning must use the exact bytes captured before the descriptor changed"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    pub(crate) fn public_subsystem_info_deadline_returns_no_data() {
-        let (root, workspace, _) =
-            subsystem_format_guard_workspace("unica-subsystem-public-preflight-deadline");
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String("src/Subsystems".to_string()),
-            ),
-        ]);
-        let delayed = Rc::new(Cell::new(false));
-        let hook_delayed = Rc::clone(&delayed);
-
-        let result = with_secure_tree_test_hook(
-            move |phase| {
-                if phase == &SecureTreePhase::RootOpened && !hook_delayed.replace(true) {
-                    std::thread::sleep(Duration::from_millis(5_100));
-                }
-            },
-            || UnicaApplication::new().call_tool("unica.subsystem.info", &args),
-        )
-        .unwrap();
-
-        assert!(!result.ok, "{result:?}");
-        assert!(
-            result.data.is_none(),
-            "deadline must not publish data: {result:?}"
-        );
-        assert!(
-            result
-                .errors
-                .iter()
-                .any(|error| error.contains("provider deadline exceeded")),
-            "{result:?}"
-        );
-        assert!(
-            result.diagnostics.as_ref().is_none_or(|diagnostics| {
-                !diagnostics.to_string().contains("provider_unavailable")
-            }),
-            "deadline expiry must not be mislabeled as provider_unavailable: {result:?}"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn numeric_equivalent_noncanonical_format_warns_on_read_and_blocks_public_mutator() {
-        for (index, raw) in ["2.20.0", "02.20", "2.020"].into_iter().enumerate() {
-            let (root, workspace, config_path) = cf_edit_mutation_workspace(
-                &format!("unica-noncanonical-format-{index}"),
-                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-                    .replacen(r#"version="2.20""#, &format!(r#"version="{raw}""#), 1)
-                    .as_bytes(),
-            );
-            let before = std::fs::read(&config_path).unwrap();
-
-            let read_args = register_format_probe_role(&workspace);
-            let read = UnicaApplication::new()
-                .call_tool("unica.role.info", &read_args)
-                .unwrap();
-
-            assert!(
-                !read.warnings.is_empty(),
-                "{raw} must produce a read warning: {read:?}"
-            );
-            let read_diagnostic = &read.diagnostics.as_ref().unwrap()["formatCompatibility"];
-            assert_eq!(read_diagnostic["code"], "formatVersionInvalid", "{raw}");
-            assert_eq!(read_diagnostic["actualFormat"], raw, "{raw}");
-
-            let mutation = UnicaApplication::new()
-                .call_tool(
-                    "unica.cf.edit",
-                    &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
-                )
-                .unwrap();
-
-            assert!(!mutation.ok, "{raw}: {mutation:?}");
-            let mutation_diagnostic =
-                &mutation.diagnostics.as_ref().unwrap()["formatCompatibility"];
-            assert_eq!(mutation_diagnostic["code"], "formatVersionInvalid", "{raw}");
-            assert_eq!(mutation_diagnostic["actualFormat"], raw, "{raw}");
-            assert_eq!(std::fs::read(&config_path).unwrap(), before, "{raw}");
-            assert!(mutation.changes.is_empty(), "{raw}: {mutation:?}");
-            assert!(mutation.artifacts.is_empty(), "{raw}: {mutation:?}");
-            assert!(mutation.cache.events.is_empty(), "{raw}: {mutation:?}");
-            std::fs::remove_dir_all(root).unwrap();
-        }
-    }
-
-    #[test]
-    fn entity_spelled_supported_format_is_invalid_at_the_public_boundary() {
-        for (index, raw) in ["2.&#50;0", "&#x32;.20", "2.2&#48;"]
-            .into_iter()
-            .enumerate()
-        {
-            let (root, workspace, config_path) = cf_edit_mutation_workspace(
-                &format!("unica-entity-spelled-format-{index}"),
-                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-                    .replacen(r#"version="2.20""#, &format!(r#"version="{raw}""#), 1)
-                    .as_bytes(),
-            );
-            let before = std::fs::read(&config_path).unwrap();
-
-            let read_args = register_format_probe_role(&workspace);
-            let read = UnicaApplication::new()
-                .call_tool("unica.role.info", &read_args)
-                .unwrap();
-
-            assert!(
-                !read.warnings.is_empty(),
-                "{raw} must produce a read warning: {read:?}"
-            );
-            let read_diagnostic = &read.diagnostics.as_ref().unwrap()["formatCompatibility"];
-            assert_eq!(read_diagnostic["code"], "formatVersionInvalid", "{raw}");
-            assert_eq!(read_diagnostic["actualFormat"], raw, "{raw}");
-
-            let mutation = UnicaApplication::new()
-                .call_tool(
-                    "unica.cf.edit",
-                    &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
-                )
-                .unwrap();
-
-            assert!(!mutation.ok, "{raw}: {mutation:?}");
-            let diagnostic = &mutation.diagnostics.as_ref().unwrap()["formatCompatibility"];
-            assert_eq!(diagnostic["code"], "formatVersionInvalid", "{raw}");
-            assert_eq!(diagnostic["actualFormat"], raw, "{raw}");
-            assert_eq!(std::fs::read(&config_path).unwrap(), before, "{raw}");
-            assert!(mutation.changes.is_empty(), "{raw}: {mutation:?}");
-            assert!(mutation.artifacts.is_empty(), "{raw}: {mutation:?}");
-            assert!(mutation.cache.events.is_empty(), "{raw}: {mutation:?}");
-            std::fs::remove_dir_all(root).unwrap();
         }
     }
 
@@ -10362,77 +8682,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn read_only_path_aliases_warn_for_older_directory_owned_inputs() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-application-read-format-aliases-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let src = root.join("src");
-        let extension = root.join("extension");
-        let role_dir = src.join("Roles/Reader");
-        let rights = role_dir.join("Ext/Rights.xml");
-        std::fs::create_dir_all(rights.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(&extension).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: extension\n    type: EXTENSION\n    path: extension\n",
-        )
-        .unwrap();
-        let configuration = src.join("Configuration.xml");
-        std::fs::write(
-            &configuration,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><Role>Reader</Role></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        let extension_configuration = extension.join("Configuration.xml");
-        std::fs::write(
-            &extension_configuration,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration><Properties><Name>Extension</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Roles/Reader.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role><Properties><Name>Reader</Name></Properties></Role></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &rights,
-            r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"/>"#,
-        )
-        .unwrap();
-        let protected = [
-            configuration.clone(),
-            extension_configuration.clone(),
-            rights.clone(),
-        ];
-        let before = protected
-            .iter()
-            .map(|path| std::fs::read(path).unwrap())
-            .collect::<Vec<_>>();
-
-        let (tool, alias) = ("unica.role.info", "path");
-        let mut args = Map::new();
-        args.insert("cwd".into(), Value::String(root.display().to_string()));
-        args.insert(alias.into(), Value::String(role_dir.display().to_string()));
-
-        let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
-        assert!(
-            !result.warnings.is_empty(),
-            "{tool} {alias} must preserve the old-format warning"
-        );
-        assert_eq!(
-            result.diagnostics.as_ref().unwrap()["formatCompatibility"]["actualFormat"],
-            "2.19",
-            "{tool} {alias}"
-        );
-        for (path, expected) in protected.iter().zip(before) {
-            assert_eq!(std::fs::read(path).unwrap(), expected, "{}", path.display());
-        }
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn mxl_compile_blocks_write_inside_older_dump_with_structured_diagnostic() {
         let root = std::env::temp_dir().join(format!(
             "unica-application-format-guard-mxl-old-{}-{}",
@@ -10748,64 +8997,6 @@ pub(crate) mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn native_path_alias_normalization_accepts_equal_or_empty_duplicates_but_rejects_conflicts() {
-        let same = json!({
-            "RightsPath": "src/Rights.xml",
-            "rightsPath": "src/Rights.xml"
-        });
-        UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
-            outcome: AdapterOutcome::ok("same aliases"),
-            data: Some(json!({"fixture": true})),
-        }))
-        .call_tool("unica.role.info", same.as_object().unwrap())
-        .expect("equal path aliases must collapse to one canonical value");
-
-        let empty_and_value = json!({
-            "RightsPath": "",
-            "rightsPath": "src/Rights.xml"
-        });
-        UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
-            outcome: AdapterOutcome::ok("empty alias ignored"),
-            data: Some(json!({"fixture": true})),
-        }))
-        .call_tool("unica.role.info", empty_and_value.as_object().unwrap())
-        .expect("one non-empty path alias must win over empty aliases");
-
-        let conflict = json!({
-            "RightsPath": "src/A.xml",
-            "rightsPath": "src/B.xml"
-        });
-        let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
-            outcome: AdapterOutcome::ok("must not run"),
-            data: None,
-        }))
-        .call_tool("unica.role.info", conflict.as_object().unwrap())
-        .unwrap_err();
-        assert!(error.contains("conflicting path aliases"), "{error}");
-        assert!(error.contains("RightsPath"), "{error}");
-        assert!(error.contains("rightsPath"), "{error}");
-
-        let form_compile_conflict = json!({
-            "OutputPath": "src/Catalogs/Items/Forms/A/Ext/Form.xml",
-            "outputPath": "src/Catalogs/Items/Forms/B/Ext/Form.xml",
-            "JsonPath": "form.json",
-            "dryRun": false
-        });
-        let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
-            outcome: AdapterOutcome::ok("form compile must not run"),
-            data: None,
-        }))
-        .call_tool(
-            "unica.form.compile",
-            form_compile_conflict.as_object().unwrap(),
-        )
-        .unwrap_err();
-        assert!(error.contains("conflicting path aliases"), "{error}");
-        assert!(error.contains("OutputPath"), "{error}");
-        assert!(error.contains("outputPath"), "{error}");
     }
 
     #[test]
@@ -11463,18 +9654,28 @@ pub(crate) mod tests {
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
     }
 
+    /// Живой типизированный читатель для контрактных проб: `project.map`
+    /// снят вместе с остальными читателями партии 3, а типизированное чтение
+    /// метаданных идёт мимо `invoke_handler`, который подменяют эти порты.
+    fn typed_reader_args() -> Map<String, Value> {
+        Map::from_iter([(
+            "TemplatePath".to_string(),
+            Value::String("src/Reports/Sales/Templates/Sheet/Ext/Template.xml".to_string()),
+        )])
+    }
+
     #[test]
     fn successful_typed_reader_without_data_fails_closed() {
         let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("reader omitted its typed payload"),
             data: None,
         }))
-        .call_tool("unica.project.map", &Map::new())
+        .call_tool("unica.mxl.info", &typed_reader_args())
         .expect_err("successful typed reader without data must fail closed");
 
         assert_eq!(
             error,
-            "typed_result_missing: unica.project.map returned ok without OperationResult.data"
+            "typed_result_missing: unica.mxl.info returned ok without OperationResult.data"
         );
     }
 
@@ -11487,12 +9688,12 @@ pub(crate) mod tests {
             outcome,
             data: Some(json!({"fixture": true})),
         }))
-        .call_tool("unica.project.map", &Map::new())
+        .call_tool("unica.mxl.info", &typed_reader_args())
         .expect_err("successful typed reader must not duplicate data in stdout");
 
         assert_eq!(
             error,
-            "typed_result_textual: unica.project.map returned ok with a stdout duplicate"
+            "typed_result_textual: unica.mxl.info returned ok with a stdout duplicate"
         );
     }
 
@@ -11506,7 +9707,7 @@ pub(crate) mod tests {
             outcome,
             data: None,
         }))
-        .call_tool("unica.project.map", &Map::new())
+        .call_tool("unica.mxl.info", &typed_reader_args())
         .expect("typed reader failure may omit data");
 
         assert!(!result.ok);
@@ -11595,326 +9796,6 @@ pub(crate) mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
-    }
-
-    fn xdto_public_guard_workspace(
-        prefix: &str,
-        source_format_version: &str,
-        support_mode: Option<&str>,
-    ) -> (std::path::PathBuf, std::path::PathBuf) {
-        let root = test_workspace_root(prefix);
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let package = src.join("XDTOPackages/Sample/Ext/Package.bin");
-        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(src.join("Ext")).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        if let Some(mode) = support_mode {
-            std::fs::write(
-                workspace.join(".v8-project.json"),
-                format!(r#"{{"editingAllowedCheck":"{mode}"}}"#),
-            )
-            .unwrap();
-        }
-        std::fs::write(
-            src.join("Configuration.xml"),
-            format!(
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{source_format_version}"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><XDTOPackage>Sample</XDTOPackage></ChildObjects></Configuration></MetaDataObject>"#
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("XDTOPackages/Sample.xml"),
-            format!(
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{source_format_version}"><XDTOPackage uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Sample</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            package,
-            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:test" targetNamespace="urn:test">
-	<objectType name="Existing"/>
-</package>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Ext/ParentConfigurations.bin"),
-            support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        )
-        .unwrap();
-        (root, workspace)
-    }
-
-    fn xdto_public_info_args(
-        workspace: &std::path::Path,
-        source_set: &str,
-        metadata_path: &str,
-    ) -> Map<String, Value> {
-        Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            ("sourceSet".to_string(), json!(source_set)),
-            ("metadataPath".to_string(), json!(metadata_path)),
-        ])
-    }
-
-    fn assert_xdto_public_error_is_logical(
-        error: &str,
-        expected_code: &str,
-        expected_target: &str,
-        workspace: &std::path::Path,
-    ) {
-        assert!(error.starts_with(expected_code), "{error}");
-        assert!(error.contains(expected_target), "{error}");
-        let serialized = serde_json::to_string(error).unwrap();
-        for forbidden in [
-            workspace.display().to_string(),
-            workspace.join("src").display().to_string(),
-            "XDTOPackages/Sample/Ext/Package.bin".to_string(),
-            "XDTOPackages\\Sample\\Ext\\Package.bin".to_string(),
-            "XDTOPackages/Sample.xml".to_string(),
-            "XDTOPackages\\Sample.xml".to_string(),
-            "Package.bin".to_string(),
-            "Configuration.xml".to_string(),
-            "provider".to_string(),
-        ] {
-            assert!(
-                !serialized.contains(&forbidden),
-                "leaked {forbidden:?}: {serialized}"
-            );
-        }
-    }
-
-    fn source_tree_snapshot(
-        root: &std::path::Path,
-    ) -> Vec<(std::path::PathBuf, &'static str, Vec<u8>, Option<String>)> {
-        fn visit(
-            root: &std::path::Path,
-            current: &std::path::Path,
-            snapshot: &mut Vec<(std::path::PathBuf, &'static str, Vec<u8>, Option<String>)>,
-        ) {
-            let mut entries = std::fs::read_dir(current)
-                .unwrap()
-                .map(Result::unwrap)
-                .collect::<Vec<_>>();
-            entries.sort_by_key(std::fs::DirEntry::file_name);
-            for entry in entries {
-                let path = entry.path();
-                let relative = path.strip_prefix(root).unwrap().to_path_buf();
-                let metadata = std::fs::symlink_metadata(&path).unwrap();
-                if metadata.file_type().is_symlink() {
-                    snapshot.push((
-                        relative,
-                        "symlink",
-                        std::fs::read_link(&path)
-                            .unwrap()
-                            .as_os_str()
-                            .to_string_lossy()
-                            .as_bytes()
-                            .to_vec(),
-                        None,
-                    ));
-                } else if metadata.is_dir() {
-                    snapshot.push((relative, "directory", Vec::new(), None));
-                    visit(root, &path, snapshot);
-                } else {
-                    let identity = file_identity_for_test(&path).unwrap();
-                    snapshot.push((relative, "file", std::fs::read(&path).unwrap(), identity));
-                }
-            }
-        }
-
-        let mut snapshot = Vec::new();
-        visit(root, root, &mut snapshot);
-        snapshot
-    }
-
-    #[test]
-    fn legacy_read_only_output_sinks_cannot_change_source_path_aliases() {
-        let root = test_workspace_root("unica-read-only-output-aliases");
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let protected = src.join("protected-source.xml");
-        let hard_link = src.join("protected-hard-link.xml");
-        let symlink = src.join("protected-symlink.xml");
-        let outside = root.join("outside/protected-source.xml");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(&protected, b"source bytes").unwrap();
-        std::fs::write(&outside, b"outside bytes").unwrap();
-        std::fs::hard_link(&protected, &hard_link).unwrap();
-        let symlink_created = match create_file_link_fixture_for_test(&protected, &symlink)
-            .expect("unexpected file-link creation error must fail the fixture test")
-        {
-            FileLinkFixtureOutcome::Created => true,
-            FileLinkFixtureOutcome::Unsupported => {
-                eprintln!("[SKIPPED FIXTURE] file links are unsupported on this host");
-                false
-            }
-            FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
-                eprintln!("[SKIPPED FIXTURE] Windows file-link privilege is unavailable");
-                false
-            }
-        };
-
-        let mut sink_targets = vec![
-            ("same source", protected.clone()),
-            (
-                "parent traversal",
-                workspace.join("src/../../outside/protected-source.xml"),
-            ),
-            ("hard-link alias", hard_link),
-        ];
-        if symlink_created {
-            sink_targets.push(("symlink alias", symlink));
-        }
-
-        let affected_tools = [
-            // Retired metadata readers are covered by the exact unknown-tool
-            // contract; typed meta.info has no output sink in its schema.
-            (
-                "unica.subsystem.info",
-                "SubsystemPath",
-                "OutFile",
-                "outFile",
-            ),
-            ("unica.dcs.info", "TemplatePath", "OutFile", "outFile"),
-            ("unica.role.info", "RightsPath", "OutFile", "outFile"),
-            (
-                "unica.mxl.decompile",
-                "TemplatePath",
-                "OutputPath",
-                "outputPath",
-            ),
-        ];
-
-        for (tool, input_argument, sink_argument, sink_alias) in affected_tools {
-            for argument in [sink_argument, sink_alias] {
-                for (target_kind, target) in &sink_targets {
-                    let mut args = Map::new();
-                    args.insert(
-                        "cwd".to_string(),
-                        Value::String(workspace.display().to_string()),
-                    );
-                    args.insert(
-                        input_argument.to_string(),
-                        Value::String("src/protected-source.xml".to_string()),
-                    );
-                    args.insert(
-                        argument.to_string(),
-                        Value::String(target.display().to_string()),
-                    );
-                    let before = source_tree_snapshot(&root);
-
-                    let error = UnicaApplication::new()
-                        .call_tool(tool, &args)
-                        .expect_err("legacy output sink must be rejected by the public contract");
-
-                    assert!(
-                        error.contains(&format!("does not accept argument `{argument}`")),
-                        "{tool} {argument} {target_kind}: {error}"
-                    );
-                    assert_eq!(
-                        source_tree_snapshot(&root),
-                        before,
-                        "{tool} {argument} must not change the tree through {target_kind}"
-                    );
-                }
-            }
-        }
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn dcs_format_warnings_leave_source_trees_unchanged() {
-        let dcs_fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "../../tests/fixtures/unica_mcp_script_parity/bsp/dcs/DataProcessors__ВыгрузкаЗагрузкаEnterpriseData__СхемаКомпоновкиДанных/Template.xml",
-        );
-
-        for (format, compatibility) in [("2.19", "older"), ("2.21", "newer")] {
-            let root = test_workspace_root(&format!("unica-read-only-format-{format}"));
-            let workspace = root.join("workspace");
-            let src = workspace.join("src");
-            let object = src.join("Catalogs/Items.xml");
-            let template = src.join("Reports/Sales/Templates/Main/Ext/Template.xml");
-            std::fs::create_dir_all(object.parent().unwrap()).unwrap();
-            std::fs::create_dir_all(template.parent().unwrap()).unwrap();
-            std::fs::write(
-                workspace.join("v8project.yaml"),
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-            )
-            .unwrap();
-            std::fs::write(
-                src.join("Configuration.xml"),
-                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").replacen(
-                    r#"version="2.20""#,
-                    &format!(r#"version="{format}""#),
-                    1,
-                ),
-            )
-            .unwrap();
-            std::fs::write(
-                &object,
-                support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").replacen(
-                    r#"version="2.20""#,
-                    &format!(r#"version="{format}""#),
-                    1,
-                ),
-            )
-            .unwrap();
-            std::fs::copy(&dcs_fixture, &template).unwrap();
-
-            let path_selector = |name: &str, path: &std::path::Path| {
-                vec![(name.to_string(), Value::String(path.display().to_string()))]
-            };
-            for (tool, selector) in [("unica.dcs.info", path_selector("TemplatePath", &template))] {
-                let mut args = Map::new();
-                args.insert(
-                    "cwd".to_string(),
-                    Value::String(workspace.display().to_string()),
-                );
-                for (key, value) in selector {
-                    args.insert(key, value);
-                }
-                let before = source_tree_snapshot(&src);
-
-                let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
-
-                assert!(
-                    !result.warnings.is_empty(),
-                    "{tool} must preserve the {format} warning: {result:?}"
-                );
-                let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
-                assert_eq!(diagnostic["actualFormat"], format, "{tool}: {result:?}");
-                assert_eq!(
-                    diagnostic["compatibility"], compatibility,
-                    "{tool}: {result:?}"
-                );
-                assert_eq!(
-                    source_tree_snapshot(&src),
-                    before,
-                    "{tool} must not change a {format} source tree"
-                );
-            }
-
-            std::fs::remove_dir_all(root).unwrap();
-        }
     }
 
     fn temp_meta_compile_workspace(prefix: &str) -> std::path::PathBuf {
@@ -12200,11 +10081,11 @@ pub(crate) mod tests {
             Value::String(workspace.display().to_string()),
         );
         args.insert(
-            "RightsPath".to_string(),
-            Value::String("src/Roles/Reader/Ext/Rights.xml".to_string()),
+            "TemplatePath".to_string(),
+            Value::String("src/Reports/Sales/Templates/Sheet/Ext/Template.xml".to_string()),
         );
 
-        let error = match UnicaApplication::new().call_tool("unica.role.info", &args) {
+        let error = match UnicaApplication::new().call_tool("unica.mxl.info", &args) {
             Ok(result) => panic!("expected EDT source-set guard, got {}", result.summary),
             Err(error) => error,
         };
@@ -12237,13 +10118,13 @@ pub(crate) mod tests {
                 Value::String(workspace.display().to_string()),
             ),
             (
-                "RightsPath".to_string(),
-                Value::String("src/Roles/Reader/Ext/Rights.xml".to_string()),
+                "TemplatePath".to_string(),
+                Value::String("src/Reports/Sales/Templates/Sheet/Ext/Template.xml".to_string()),
             ),
         ]);
 
         let error = UnicaApplication::new()
-            .call_tool("unica.role.info", &args)
+            .call_tool("unica.mxl.info", &args)
             .expect_err("ambiguous source format must fail before XML parsing");
 
         assert!(error.contains("invalid/ambiguous format"), "{error}");
@@ -12278,15 +10159,15 @@ pub(crate) mod tests {
             Value::String(workspace.display().to_string()),
         );
         args.insert(
-            "RightsPath".to_string(),
-            Value::String("src/Roles/Reader/Ext/Rights.xml".to_string()),
+            "TemplatePath".to_string(),
+            Value::String("src/Reports/Sales/Templates/Sheet/Ext/Template.xml".to_string()),
         );
         args.insert(
             "OutFile".to_string(),
             Value::String(outside.display().to_string()),
         );
 
-        let error = match UnicaApplication::new().call_tool("unica.role.info", &args) {
+        let error = match UnicaApplication::new().call_tool("unica.mxl.info", &args) {
             Ok(result) => panic!(
                 "expected OutFile contract rejection, got {}",
                 result.summary
@@ -12302,7 +10183,6 @@ pub(crate) mod tests {
 
         let _ = std::fs::remove_dir_all(root);
     }
-
     #[test]
     fn cfe_borrow_rejects_edt_config_source_set_target() {
         let root = std::env::temp_dir().join(format!(

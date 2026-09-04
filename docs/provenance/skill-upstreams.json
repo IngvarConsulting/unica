@@ -22,7 +22,6 @@
       "contractPaths": [
         "crates/unica-coder/src/application/tool_contracts.rs",
         "crates/unica-coder/src/application/source_navigation.rs",
-        "crates/unica-coder/src/application/source_resources.rs",
         "tests/ci/test_unica_skills.py"
       ]
     },

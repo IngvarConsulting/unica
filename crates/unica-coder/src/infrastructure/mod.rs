@@ -31,7 +31,6 @@ pub mod path_policy;
 pub(crate) mod platform;
 pub mod platform_help;
 pub(crate) mod platform_xml_owner;
-pub(crate) mod platform_xml_resources;
 pub(crate) mod platform_xml_roots;
 pub(crate) mod standards_documentation;
 // This foundational provider is consumed by the public migration in the next slice.

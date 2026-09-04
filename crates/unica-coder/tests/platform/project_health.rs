@@ -1506,7 +1506,7 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
 
     let result = status(&root);
 
-    assert!(result.ok, "errors={:?}", result.errors);
+    assert!(result.ok, "{:?}", result.errors);
     let data = result.data.unwrap();
     assert_repository_check_status(&data, "repository.attributes", None, "notRun");
     assert_repository_check_status(
