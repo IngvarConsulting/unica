@@ -10,13 +10,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_TOOLS = {
     "unica.dcs.compile",
     "unica.dcs.edit",
-    "unica.dcs.info",
 }
 REMOVED_TOOLS = {name.replace(".dcs.", ".skd.") for name in EXPECTED_TOOLS}
 EXPECTED_SKILLS = {
     "dcs-compile",
     "dcs-edit",
-    "dcs-info",
 }
 REMOVED_SKILLS = {name.replace("dcs-", "skd-") for name in EXPECTED_SKILLS}
 SKD_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9])(?:skd|Skd|SKD)")

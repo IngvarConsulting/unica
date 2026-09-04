@@ -2760,6 +2760,31 @@ fn configuration_tools() -> Vec<ToolSpec> {
                 event: Some(DomainEventKind::DcsChanged),
             },
         },
+        // Чтение макета остаётся за v0.12: канонический `view` на узле
+        // `Template` отдаёт только адрес и заголовок, содержимого
+        // табличного документа у него пока нет.
+        ToolSpec {
+            name: "unica.mxl.info",
+            description: "Inspect spreadsheet Template.xml.",
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
+            cache_access: cache_access_for("mxl-info", None),
+            handler: ToolHandler::NativeOperation {
+                operation: "mxl-info",
+                event: None,
+            },
+        },
+        ToolSpec {
+            name: "unica.mxl.decompile",
+            description: "Decompile spreadsheet Template.xml to JSON DSL.",
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
+            cache_access: cache_access_for("mxl-decompile", None),
+            handler: ToolHandler::NativeOperation {
+                operation: "mxl-decompile",
+                event: None,
+            },
+        },
         ToolSpec {
             name: "unica.mxl.compile",
             description: "Compile spreadsheet Template.xml from JSON DSL.",
@@ -4208,6 +4233,82 @@ pub(crate) mod tests {
                 .call_tool(retired, &Map::new())
                 .expect_err("retired Meta route must not dispatch");
             assert_eq!(error, format!("unknown unica tool: {retired}"));
+        }
+    }
+
+    #[test]
+    fn xml_dsl_tools_route_to_parity_covered_native_handlers() {
+        // `unica.cf.info` left the parity stand when it started answering with
+        // typed data: there is no prose left to compare (ADR-0023).
+        const PARITY_COVERED_TOOLS: &[&str] = &[
+            "unica.form.compile",
+            "unica.subsystem.compile",
+            "unica.dcs.compile",
+            "unica.mxl.compile",
+            "unica.mxl.decompile",
+            "unica.role.compile",
+        ];
+        const REPO_OWNED_NATIVE_TOOLS: &[&str] = &[];
+        // A tool that answers with typed data has no prose left for the parity
+        // stand to compare, so it is covered by its own crate tests instead
+        // (ADR-0023).
+        const TYPED_RESULT_TOOLS: &[&str] = &[
+            "unica.mxl.info",
+            "unica.role.edit",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.interface.edit",
+            "unica.cfe.init",
+            "unica.cf.edit",
+            "unica.cf.init",
+            "unica.cfe.borrow",
+            "unica.cfe.patch_method",
+            "unica.subsystem.edit",
+            "unica.dcs.edit",
+            "unica.form.edit",
+            "unica.meta.info",
+        ];
+
+        for tool in tools() {
+            if !tool.name.starts_with("unica.cf.")
+                && !tool.name.starts_with("unica.cfe.")
+                && !tool.name.starts_with("unica.meta.")
+                && !tool.name.starts_with("unica.help.")
+                && !tool.name.starts_with("unica.form.")
+                && !tool.name.starts_with("unica.interface.")
+                && !tool.name.starts_with("unica.subsystem.")
+                && !tool.name.starts_with("unica.template.")
+                && !tool.name.starts_with("unica.dcs.")
+                && !tool.name.starts_with("unica.mxl.")
+                && !tool.name.starts_with("unica.role.")
+                && !tool.name.starts_with("unica.support.")
+            {
+                continue;
+            }
+            match tool.handler {
+                ToolHandler::NativeOperation { operation, .. } => {
+                    assert!(
+                        PARITY_COVERED_TOOLS.contains(&tool.name)
+                            || REPO_OWNED_NATIVE_TOOLS.contains(&tool.name)
+                            || TYPED_RESULT_TOOLS.contains(&tool.name),
+                        "{} routes to native operation {} without a parity fixture or repo-owned native contract exception",
+                        tool.name,
+                        operation
+                    );
+                }
+                ToolHandler::Metadata { .. } => assert!(
+                    matches!(
+                        tool.name,
+                        "unica.meta.info"
+                            | "unica.meta.add"
+                            | "unica.meta.edit"
+                            | "unica.meta.remove"
+                    ),
+                    "{} unexpectedly routes through the typed Metadata handler",
+                    tool.name
+                ),
+                _ => panic!("{} routes through unexpected handler", tool.name),
+            }
         }
     }
 
