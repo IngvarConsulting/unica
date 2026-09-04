@@ -1473,7 +1473,14 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
         fs::write(root.join(format!("src/Module{index}.bsl")), "Процедура P()\nКонецПроцедуры\n")
             .unwrap();
     }
-    let source_sets = (0..1024)
+    // Every owner classifies the same 64 files, so the composition's cost is
+    // `owners x files` and the whole call has to fit the interactive invocation
+    // window. At 1024 owners that product is the classification ceiling itself,
+    // and the call sat close enough to the window to answer `deadline expired`
+    // on slower targets. The ceiling is proven exactly, and without a clock, by
+    // `resource_owner_expansion_admits_the_ceiling_and_refuses_the_entry_after_it`;
+    // what this test proves is that every equal-root owner is composed.
+    let source_sets = (0..256)
         .map(|index| {
             format!("  - name: owner-{index:04}\n    type: CONFIGURATION\n    path: src\n")
         })
@@ -1504,7 +1511,7 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
     assert_repository_check_status(
         &data,
         "repository.attributes",
-        Some("owner-1023"),
+        Some("owner-0255"),
         "notRun",
     );
     let owner_diagnostic = data["diagnostics"]
