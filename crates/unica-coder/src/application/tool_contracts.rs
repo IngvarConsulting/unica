@@ -2664,6 +2664,18 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Path to a JSON file holding a batch of operations or a full definition, for `unica.cf.edit`, `interface.edit`, `subsystem.edit`/`compile` and `dcs.compile`; relative to `cwd`",
     ),
     (
+        "delivery",
+        "Deferred continuation only: `\"full\"` asks for the whole stored snapshot; it expresses the caller's intent and proves no human confirmation (ADR-0070)",
+    ),
+    (
+        "page",
+        "Deferred continuation only: 1-based page of 50 entities inside the selected section of the stored snapshot",
+    ),
+    (
+        "resultRef",
+        "Continuation reference issued by a deferred manifest of the same tool: the call is served from the immutable stored snapshot without re-reading the source (ADR-0070)",
+    ),
+    (
         "detail",
         "How much detail to return from unica.code.graph: names, signatures or bodies",
     ),
@@ -4361,6 +4373,139 @@ pub(crate) mod tests {
             native_mutation_schema_signature(&changed),
             "a nested schema type change must alter the complete fingerprint",
         );
+    }
+
+    #[test]
+    fn logical_only_tool_schemas_match_exact_property_allowlists() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let mut actual = BTreeMap::new();
+        for tool in tools() {
+            let schema = input_schema_for_tool(&tool);
+            let Some(properties) = schema["properties"].as_object() else {
+                continue;
+            };
+            if !properties.contains_key("sourceSet") || !properties.contains_key("metadataPath") {
+                continue;
+            }
+            if tool.name == "unica.code.search" {
+                continue;
+            }
+            assert_eq!(schema["additionalProperties"], false, "{}", tool.name);
+            actual.insert(
+                tool.name,
+                properties.keys().cloned().collect::<BTreeSet<_>>(),
+            );
+        }
+        fn fields(names: &[&str]) -> BTreeSet<String> {
+            names.iter().map(|name| (*name).to_string()).collect()
+        }
+        let expected = BTreeMap::from([
+            (
+                "unica.code.diagnostics",
+                fields(&[
+                    "action",
+                    "cwd",
+                    "filter",
+                    "limit",
+                    "metadataPath",
+                    "range",
+                    "sourceSet",
+                    "timeoutSeconds",
+                ]),
+            ),
+            (
+                "unica.code.patch",
+                fields(&[
+                    "confirm",
+                    "content",
+                    "cwd",
+                    "dryRun",
+                    "metadataPath",
+                    "operation",
+                    "position",
+                    "selector",
+                    "sourceSet",
+                ]),
+            ),
+            (
+                "unica.meta.edit",
+                fields(&["cwd", "dryRun", "metadataPath", "operations", "sourceSet"]),
+            ),
+            (
+                "unica.meta.info",
+                fields(&["cwd", "limit", "metadataPath", "sections", "sourceSet"]),
+            ),
+            (
+                "unica.role.edit",
+                fields(&["dryRun", "metadataPath", "operations", "sourceSet"]),
+            ),
+        ]);
+        assert_eq!(actual, expected);
+    }
+
+    /// The eight readers ADR-0023 narrowed publish exactly this set and accept
+    /// exactly that one. The table is the contract: dropping a functional
+    /// selector by accident fails here, publishing an unreachable one fails
+    /// here, and so does letting a reader fall back to the historical catch-all.
+    /// Published names are canonical (ADR-0019 collapses path aliases in
+    /// `tools/list`); accepted names include the aliases validation still takes.
+    /// Six of them are also ADR-0049 bridges, so their logical selector belongs
+    /// to the pinned set: losing it would be as invisible as losing the path.
+    #[test]
+    fn every_narrowed_reader_publishes_its_exact_argument_set() {
+        let cases: [(&str, &[&str], &[&str]); 2] = [
+            (
+                "unica.mxl.info",
+                // Мост читателей снят: логический селектор больше не
+                // добавляется к файловому адресу макета.
+                &[
+                    "TemplatePath",
+                    "WithText",
+                    "confirm",
+                    "cwd",
+                    "delivery",
+                    "filter",
+                    "page",
+                    "resultRef",
+                    "section",
+                    "withText",
+                ],
+                &[
+                    "Path",
+                    "TemplatePath",
+                    "WithText",
+                    "confirm",
+                    "cwd",
+                    "delivery",
+                    "filter",
+                    "page",
+                    "path",
+                    "resultRef",
+                    "section",
+                    "templatePath",
+                    "withText",
+                ],
+            ),
+            (
+                "unica.meta.info",
+                &["cwd", "limit", "metadataPath", "sections", "sourceSet"],
+                // The metadata surface has no path aliases and validates its
+                // own closed shape, so `allowed_args` stays empty by design.
+                &[],
+            ),
+        ];
+
+        for (name, published, accepted) in cases {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            let schema = input_schema_for_tool(&tool);
+            assert_eq!(schema["additionalProperties"], false, "{name}");
+            assert_eq!(sorted_property_names(&schema), published, "{name}");
+            assert_eq!(allowed_args(&tool), accepted, "{name}");
+        }
     }
 
     #[test]

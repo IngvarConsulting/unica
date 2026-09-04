@@ -4312,6 +4312,106 @@ pub(crate) mod tests {
         }
     }
 
+    /// DEC.2026-08-21.SOURCE-READ-ONLY-SURFACE: чтение исходников остаётся
+    /// read-only. Предметом правила были снятые `unica.source.*`; клятва
+    /// сохраняется на читателях, которые ещё стоят в реестре, и на отсутствии
+    /// пишущего входа рядом с ними.
+    #[test]
+    fn source_resource_tools_are_read_only_and_have_no_cache_or_event_effects() {
+        let readers = tools()
+            .into_iter()
+            .filter(|tool| !tool.execution.is_mutating())
+            .collect::<Vec<_>>();
+        assert!(!readers.is_empty(), "the registry still declares readers");
+
+        for tool in readers {
+            assert!(
+                tool.cache_access.writes.is_empty(),
+                "{} is a reader and must not invalidate cache",
+                tool.name
+            );
+            assert!(
+                !matches!(
+                    tool.handler,
+                    ToolHandler::NativeOperation { event: Some(_), .. }
+                ),
+                "{} is a reader and must not publish a domain event",
+                tool.name
+            );
+        }
+
+        // Правка BSL принадлежит `unica.code.patch`, который меняет выбранный
+        // метод или якорь, а не переписывает модуль целиком: пишущего входа
+        // рядом с чтением исходников нет.
+        assert!(tools()
+            .into_iter()
+            .all(|tool| tool.name != "unica.source.apply"));
+    }
+
+    #[test]
+    fn entity_spelled_supported_format_is_invalid_at_the_public_boundary() {
+        for (index, raw) in ["2.&#50;0", "&#x32;.20", "2.2&#48;"]
+            .into_iter()
+            .enumerate()
+        {
+            let (root, workspace, config_path) = cf_edit_mutation_workspace(
+                &format!("unica-entity-spelled-format-{index}"),
+                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+                    .replacen(r#"version="2.20""#, &format!(r#"version="{raw}""#), 1)
+                    .as_bytes(),
+            );
+            let before = std::fs::read(&config_path).unwrap();
+
+            let mutation = UnicaApplication::new()
+                .call_tool(
+                    "unica.cf.edit",
+                    &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
+                )
+                .unwrap();
+
+            assert!(!mutation.ok, "{raw}: {mutation:?}");
+            let diagnostic = &mutation.diagnostics.as_ref().unwrap()["formatCompatibility"];
+            assert_eq!(diagnostic["code"], "formatVersionInvalid", "{raw}");
+            assert_eq!(diagnostic["actualFormat"], raw, "{raw}");
+            assert_eq!(std::fs::read(&config_path).unwrap(), before, "{raw}");
+            assert!(mutation.changes.is_empty(), "{raw}: {mutation:?}");
+            assert!(mutation.artifacts.is_empty(), "{raw}: {mutation:?}");
+            assert!(mutation.cache.events.is_empty(), "{raw}: {mutation:?}");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn numeric_equivalent_noncanonical_format_warns_on_read_and_blocks_public_mutator() {
+        for (index, raw) in ["2.20.0", "02.20", "2.020"].into_iter().enumerate() {
+            let (root, workspace, config_path) = cf_edit_mutation_workspace(
+                &format!("unica-noncanonical-format-{index}"),
+                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+                    .replacen(r#"version="2.20""#, &format!(r#"version="{raw}""#), 1)
+                    .as_bytes(),
+            );
+            let before = std::fs::read(&config_path).unwrap();
+
+            let mutation = UnicaApplication::new()
+                .call_tool(
+                    "unica.cf.edit",
+                    &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
+                )
+                .unwrap();
+
+            assert!(!mutation.ok, "{raw}: {mutation:?}");
+            let mutation_diagnostic =
+                &mutation.diagnostics.as_ref().unwrap()["formatCompatibility"];
+            assert_eq!(mutation_diagnostic["code"], "formatVersionInvalid", "{raw}");
+            assert_eq!(mutation_diagnostic["actualFormat"], raw, "{raw}");
+            assert_eq!(std::fs::read(&config_path).unwrap(), before, "{raw}");
+            assert!(mutation.changes.is_empty(), "{raw}: {mutation:?}");
+            assert!(mutation.artifacts.is_empty(), "{raw}: {mutation:?}");
+            assert!(mutation.cache.events.is_empty(), "{raw}: {mutation:?}");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     #[test]
     fn provider_neutral_tools_use_typed_code_intelligence_handlers() {
         let expected = [

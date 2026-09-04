@@ -552,13 +552,13 @@ class FateCoverageTests(unittest.TestCase):
             "INV-MCP-DEFERRED-READ": {
                 "INV.APP.DEFERRED-MANIFEST": (
                     "product",
-                    "crates/unica-coder/src/application/mod.rs::"
-                    "oversized_typed_read_returns_a_manifest_within_budget",
+                    "crates/unica-coder/src/application/result_store.rs::"
+                    "cursor_chain_is_refused_before_it_can_exceed_the_entry_bound",
                 ),
                 "INV.APP.DEFERRED-READ": (
                     "product",
-                    "crates/unica-coder/src/application/mod.rs::"
-                    "continuation_slices_byte_stably_without_rereading_the_source",
+                    "crates/unica-coder/src/application/result_store.rs::"
+                    "opaque_view_cursor_retry_is_idempotent_and_bound_to_the_complete_question",
                 ),
             },
         }
