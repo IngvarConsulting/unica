@@ -122,7 +122,7 @@ jobs:
             --out .build/status.json
           python scripts/ci/build-site.py --pages-only --status .build/status.json --out .build/site
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: .build/site
 
@@ -136,4 +136,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
