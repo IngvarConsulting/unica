@@ -286,6 +286,7 @@
 .pair .card p { margin: 0; color: var(--muted); font-size: 14px; }
 /* Имя файла или инструмента внутри фразы — тот же бабл, что и в таблицах:
    в приглушённом тексте одно моноширинное начертание его не выделяет. */
+.pair .card h4 code,
 .pair .card p code,
 .caption code {
   background: color-mix(in srgb, var(--blue) 13%, transparent);
