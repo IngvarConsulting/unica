@@ -125,18 +125,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Formatting does not depend on the build target, so one runner settles
+      # it. The lint does: `#[cfg]` decides which items exist, so a lint can
+      # hold on one target and break on another, and a gate bound to one target
+      # cannot see that class at all. It runs on every runner of this matrix.
       - if: matrix.runner == 'macos-14'
         run: cargo fmt --all -- --check
-      - if: matrix.runner == 'macos-14'
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      # `#[cfg]` decides which items exist, so a lint can hold on one target and
-      # break on another; a gate bound to one target cannot see that class at
-      # all. The workspace command above stays on macos-14 until the errors it
-      # reports elsewhere are resolved (#594). This crate is already clean on
-      # every target, so its gate runs on every target now — the alternative is
-      # to fix a lint under Windows and merge it with nothing under Windows
-      # checking it.
-      - run: cargo clippy -p unica-bootstrap --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace -- --test-threads=1
 
   test-search-integration:

@@ -283,7 +283,17 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("platform_changed == 'true'", platforms)
         self.assertIn("toolchain_changed == 'true'", platforms)
         self.assertIn("ci_changed == 'true'", platforms)
-        self.assertEqual(2, platforms.count("if: matrix.runner == 'macos-14'"))
+        # Formatting does not depend on the build target, so one runner settles
+        # it. The lint does: `#[cfg]` decides which items exist, so it runs on
+        # every runner of this matrix.
+        self.assertEqual(1, platforms.count("if: matrix.runner == 'macos-14'"))
+        self.assertIn(
+            "      - if: matrix.runner == 'macos-14'\n"
+            "        run: cargo fmt --all -- --check\n"
+            "      - run: cargo clippy --workspace --all-targets --all-features"
+            " -- -D warnings\n",
+            platforms,
+        )
 
     def test_search_integration_checkout_does_not_persist_credentials(self) -> None:
         integration = job_block(self.release_text(), "test-search-integration")

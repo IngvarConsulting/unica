@@ -2892,7 +2892,7 @@ mod tests {
             ),
         );
         match client.connect_existing().unwrap() {
-            crate::infrastructure::daemon::client::ExistingDaemon::Connected(owner) => owner,
+            crate::infrastructure::daemon::client::ExistingDaemon::Connected(owner) => *owner,
             crate::infrastructure::daemon::client::ExistingDaemon::Absent => {
                 panic!("published compatibility daemon must connect")
             }
@@ -3110,7 +3110,7 @@ mod tests {
                 DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
             );
             let owner = match client.connect_existing().unwrap() {
-                ExistingDaemon::Connected(owner) => owner,
+                ExistingDaemon::Connected(owner) => *owner,
                 ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
             };
             let (mut mcp, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
@@ -3210,7 +3210,7 @@ mod tests {
                 .with_clock_for_test(clock.clone()),
         );
         let owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
         };
         // The next daemon-clock sample is deliberately delayed until after the
@@ -3314,7 +3314,7 @@ mod tests {
             DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
         );
         let owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
         };
         let router = SurfaceToolRouter::CanonicalV13(canonical_daemon_router(
@@ -3464,7 +3464,7 @@ mod tests {
             DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
         );
         let anchor = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
         };
         let deadline = anchor.begin_task_deadline(Duration::from_secs(2)).unwrap();
@@ -3556,7 +3556,7 @@ mod tests {
             DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
         );
         let owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Connected(owner) => *owner,
             ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
         };
         let router = canonical_daemon_router(owner, "/workspace".to_string());
