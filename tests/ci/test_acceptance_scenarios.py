@@ -200,6 +200,10 @@ class AcceptanceServer:
     def __init__(self, cwd: Path, state: Path, protocol: str):
         env = dict(os.environ)
         env["UNICA_PROVIDER_STATE_DIR"] = str(state)
+        # Демон переживает сессию: без назначенной паузы он остаётся на
+        # четверть часа, а сценариев в корпусе десятки — к концу набора их
+        # столько же, и подключение начинает отказывать.
+        env["UNICA_DAEMON_IDLE_GRACE_MS"] = "5000"
         self.stderr_path = state / "unica-stderr.log"
         self.stderr_file = open(self.stderr_path, "wb")  # noqa: SIM115 - lives as long as the process
         self.process = subprocess.Popen(

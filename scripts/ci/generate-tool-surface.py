@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -89,12 +90,17 @@ def read_registry(binary: Path) -> list[dict]:
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
     ]
     payload = "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in messages)
+    # Один запрос `tools/list` — и всё. Тёплый демон после него никому не
+    # нужен, а живёт он по умолчанию четверть часа: на раннере такие остатки
+    # копятся от вызова к вызову, пока подключение не начинает отказывать.
+    environment = dict(os.environ, UNICA_DAEMON_IDLE_GRACE_MS="5000")
     process = subprocess.run(
         [str(binary), "mcp"],
         input=payload,
         capture_output=True,
         text=True,
         timeout=300,
+        env=environment,
     )
     for line in process.stdout.splitlines():
         try:
