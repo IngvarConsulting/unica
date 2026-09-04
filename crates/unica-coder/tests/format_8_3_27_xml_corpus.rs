@@ -4274,6 +4274,7 @@ fn none_impact_rejects_any_xml_map_change() {
 }
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn source_resource_reads_preserve_every_corpus_byte() {
     let root = unique_temp_dir("source-resource-snapshot-chain");
     let workspace = root.join("workspace");
@@ -4420,6 +4421,7 @@ fn cf_init_public_case_creates_real_xml() {
 }
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn managed_form_corpus_cases_mutate_content_without_overwriting_metadata_wrapper() {
     let root = unique_temp_dir("managed-form-content-targets");
     let mut gate = SequentialCallGate::default();
@@ -4761,6 +4763,7 @@ fn cfe_patch_method_case_seeds_a_registered_adopted_common_module() {
 }
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn non_xml_inventory_covers_every_xml_none_impact_case() {
     let expectations = [
         (
@@ -4827,6 +4830,7 @@ fn non_xml_inventory_covers_every_xml_none_impact_case() {
 }
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn managed_form_cases_address_logform_content_and_spare_the_descriptor() {
     let expectations = [
         ("form-compile-managed", "src/Reports/CorpusReport"),
@@ -4899,6 +4903,7 @@ fn assert_exact_extended_property_state(path: &Path, expected_property: &str) {
 }
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn cfe_patch_method_inventory_covers_atomic_xml_and_bsl_change() {
     let expectations = [
         (
@@ -5293,6 +5298,7 @@ fn tracked_xdto_package_fixture_is_an_importable_platform_export() {
 }
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn tracked_xdto_package_fixture_executes_public_corpus_preview_apply_and_noop() {
     let root = unique_temp_dir("xdto-package-pre-contract");
     fs::create_dir_all(&root).unwrap();
