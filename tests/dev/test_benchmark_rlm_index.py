@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -23,7 +24,11 @@ SPEC.loader.exec_module(MODULE)
 
 class BenchmarkRlmIndexTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
+        # Backstop, not the fix: git_fixture keeps the writer from existing.
+        # This only stops a stray cleanup error from failing a passing test.
+        self.temporary_directory = tempfile.TemporaryDirectory(
+            ignore_cleanup_errors=True
+        )
         self.addCleanup(self.temporary_directory.cleanup)
         self.root = Path(self.temporary_directory.name)
         self.fixture_number = 0
@@ -81,6 +86,15 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         configuration.write_text("<Configuration/>\n", encoding="utf-8")
 
         self.run_git(repo, "init", "-q")
+        # `git commit` otherwise spawns `git maintenance run --auto --detach`,
+        # which daemonizes: the commit returns, the fixture returns, and the
+        # grandchild keeps repacking `.git/objects` under the temporary
+        # directory this test is about to remove. A daemon is reparented to
+        # init, so nothing here can wait on it: the only sound fix is to keep it
+        # from being spawned. `gc.auto` covers Git older than 2.30, which
+        # detached `git gc --auto` directly instead.
+        self.run_git(repo, "config", "maintenance.auto", "false")
+        self.run_git(repo, "config", "gc.auto", "0")
         self.run_git(repo, "config", "user.email", "unica-test@example.invalid")
         self.run_git(repo, "config", "user.name", "Unica Test")
         self.run_git(repo, "add", ".")
@@ -139,6 +153,41 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
             "bdf429e3a8dee1fb9b1f1af66adcc4280732cc4287c92c4fbe4effddc0f8492e"
         )
         return [packaged, source]
+
+    def trace2_events(self, path: Path) -> list[dict]:
+        events = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                # A detached grandchild appends to the same trace file while we
+                # read it, so a torn final line is expected noise, not a fact.
+                continue
+        return events
+
+    def test_fixture_leaves_no_detached_git_process_behind(self) -> None:
+        trace = self.root / "git-trace2.jsonl"
+
+        with patch.dict(os.environ, {"GIT_TRACE2_EVENT": str(trace)}):
+            self.git_fixture()
+
+        events = self.trace2_events(trace)
+        self.assertTrue(
+            any(event.get("event") == "start" for event in events),
+            "git wrote no trace2 events, so this probe proves nothing",
+        )
+        self.assertEqual(
+            [
+                event.get("argv")
+                for event in events
+                if event.get("event") == "child_start"
+                and "--detach" in (event.get("argv") or ())
+            ],
+            [],
+            "the fixture left a daemonized git process running; it keeps "
+            "writing into .git/objects after setUp returns and races the "
+            "TemporaryDirectory cleanup registered there",
+        )
 
     def test_refuses_a_dirty_tracked_tree(self) -> None:
         repo = self.git_fixture()
