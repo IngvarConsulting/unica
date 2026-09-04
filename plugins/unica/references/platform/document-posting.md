@@ -7,7 +7,7 @@ The normative rules here are development standards, not platform evidence:
 `#std450` write order, `#std603` posting requirements, `#std477` register
 self-sufficiency, `#std661` locking balance reads, `#std663` and `#std664`
 totals separation, and diagnostics `АПК:105`, `АПК:123`, `АПК:226`, `АПК:227`.
-Confirm the current wording with `unica.standards.explain` before citing one.
+Confirm the current wording with `unica.docs` with `source: "development-standard"` before citing one.
 
 ## Should The Document Post At All
 

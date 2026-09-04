@@ -218,8 +218,7 @@
             "docs/1c-extension-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/cfe-diff",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/cfe-diff"
+            "plugins/unica/skills/cfe-diff"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -405,35 +404,6 @@
             "tests/ci/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/form.rs"
-          ],
-          "decision": "ignored-with-reason",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
-        },
-        {
-          "skill": "form-info",
-          "status": "ported-to-unica",
-          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/form.rs) behind unica.form.*; adapted script behavior is kept only as Unica-owned migration-equivalence models under tests/fixtures/unica_mcp_script_parity/unica_reference_models. Packaged legacy operation directories are intentionally absent.",
-          "upstreamPaths": [
-            ".claude/skills/form-info/**",
-            "docs/form-guide.md",
-            "docs/form-dsl-spec.md",
-            "docs/form-patterns.md",
-            "docs/1c-form-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/form-info",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/form-info",
-            "plugins/unica/references/specs/form-dsl-spec.md",
-            "plugins/unica/references/specs/form-patterns.md"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/common.rs",
             "crates/unica-coder/src/infrastructure/native_operations/form.rs"
           ],
           "decision": "ignored-with-reason",
@@ -661,31 +631,6 @@
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
-          "skill": "role-info",
-          "status": "ported-to-unica",
-          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through unica.role.info for Rights.xml owner roles; mutating role support-guard stays open. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
-          "upstreamPaths": [
-            ".claude/skills/role-info/**",
-            "docs/role-guide.md",
-            "docs/role-dsl-spec.md",
-            "docs/1c-role-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/role-info",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/role-info"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/common.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/role.rs"
-          ],
-          "decision": "ignored-with-reason",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
-        },
-        {
           "skill": "dcs-compile",
           "status": "ported-to-unica",
           "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/dcs.rs) behind unica.dcs.*; adapted script behavior is kept only as Unica-owned migration-equivalence models under tests/fixtures/unica_mcp_script_parity/unica_reference_models. Packaged legacy operation directories are intentionally absent.",
@@ -742,34 +687,6 @@
           "decisionReason": "Ported the documented donor operation semantics into canonical dcs-edit native Rust runtime behavior; Python remains only the parity reference fixture."
         },
         {
-          "skill": "dcs-info",
-          "status": "ported-to-unica",
-          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/dcs.rs) behind unica.dcs.*; adapted script behavior is kept only as Unica-owned migration-equivalence models under tests/fixtures/unica_mcp_script_parity/unica_reference_models. Packaged legacy operation directories are intentionally absent.",
-          "upstreamPaths": [
-            ".claude/skills/skd-info/**",
-            "docs/skd-guide.md",
-            "docs/skd-dsl-spec.md",
-            "docs/1c-dcs-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/dcs-info",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/dcs-info",
-            "plugins/unica/references/specs/dcs-dsl-spec.md",
-            "plugins/unica/references/specs/1c-dcs-spec.md"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/common.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
-          ],
-          "decision": "ignored-with-reason",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
-        },
-        {
           "skill": "subsystem-compile",
           "status": "ported-to-unica",
           "notes": "2026-07-04 78b5b73 refresh: refreshed subsystem-compile parity script to v1.8 and switched auto-validation from PowerShell subsystem-validate.ps1 to Python subsystem-validate.py via subprocess.run.",
@@ -809,30 +726,6 @@
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
-        },
-        {
-          "skill": "subsystem-info",
-          "status": "ported-to-unica",
-          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through unica.subsystem.info overview/full; mutating support-guard stays open. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
-          "upstreamPaths": [
-            ".claude/skills/subsystem-info/**",
-            "docs/subsystem-guide.md",
-            "docs/1c-subsystem-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/subsystem-info",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/subsystem-info"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/common.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/subsystem.rs"
-          ],
-          "decision": "ignored-with-reason",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {

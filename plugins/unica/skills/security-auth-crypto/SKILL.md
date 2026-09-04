@@ -7,7 +7,7 @@ description: "Безопасная аутентификация и крипто�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.meta.info`, `unica.role.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.meta.info`, `unica.view` on the role node, `unica.code.diagnostics`, `unica.docs`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -29,7 +29,7 @@ description: "Безопасная аутентификация и крипто�
 ## Workflow
 
 1. Identify the trust boundary: user login, service account, external API, OpenID provider, certificate store, CryptoPro provider, TLS endpoint, or file/key storage.
-2. Inspect existing auth and role paths with `unica.code.search`, `unica.meta.info`, and `unica.role.info`.
+2. Inspect existing auth and role paths with `unica.code.search`, `unica.meta.info`, and `unica.view` on the role node.
 3. Define secret lifecycle: source, storage, rotation, masking, runtime process user, test fixture policy, and log redaction.
 4. Define auth error semantics: missing credentials, expired token, invalid certificate, provider unavailable, denied rights, tenant mismatch, and remote auth failure.
 5. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them and report runtime behavior as unverified.
@@ -38,7 +38,7 @@ description: "Безопасная аутентификация и крипто�
 
 - Secrets and private keys are not committed, logged, or echoed in final output.
 - Certificate/OpenID/CryptoPro behavior states platform version, OS/process user, store location, and client/server boundary.
-- Rights checks are explicit and audited with `unica.role.info` when metadata rights matter.
+- Rights checks are explicit and audited with `unica.view` on the role node when metadata rights matter.
 - Integration auth failures are distinguishable from validation and business failures.
 - Temporary files with sensitive data have clear cleanup and access boundaries.
 

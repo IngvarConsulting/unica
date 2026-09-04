@@ -1,9 +1,8 @@
 ---
 name: cfe-diff
-description: Анализ расширения конфигурации 1С (CFE) — состав, заимствованные объекты, перехватчики, проверка переноса. Используй когда нужно понять что содержит расширение или проверить перенесены ли вставки в конфигурацию
-argument-hint: -ExtensionPath <path> -ConfigPath <path>
+description: Анализ расширения конфигурации 1С (CFE) — состав, заимствованные объекты, перехватчики, сверка с конфигурацией. Используй когда нужно понять что содержит расширение или чем его объект отличается от объекта конфигурации
+argument-hint: <набор-расширение> [<набор-конфигурация>]
 allowed-tools:
-  - Bash
   - Read
   - Glob
 ---
@@ -12,91 +11,126 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.cfe.diff`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
-- Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.cfe.diff`; skill-local operation scripts are not part of the workflow.
-- For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
+- Расширение — такой же набор исходников, как конфигурация, и читается тем же
+  MCP `unica`: `unica.view` по адресу `<набор>:Configuration` и ниже,
+  `unica.check` для валидации, `unica.diff` для сверки узла с конфигурацией.
+- Не вызывай внутренние MCP/CLI-адаптеры и не подменяй набор исходников путём к
+  каталогу выгрузки.
+- Чтение расширения ничего не меняет. Правку веди через `unica.apply` или
+  `unica.code.patch` с `dryRun: true` и повторяй с `dryRun: false` только после
+  явного подтверждения.
 
-Анализирует расширение целиком: и обзор его состава, и проверку переноса в конфигурацию.
+## 1. Какие наборы есть
 
-## Параметры
+`unica.view {}` называет каждый набор рабочего пространства и его вид. Набор с
+видом `EXTENSION` — расширение; его имя и есть префикс адреса.
 
-| Параметр | Обязательный | Описание |
-|----------|:------------:|----------|
-| `ExtensionPath` | да | Каталог выгрузки расширения |
-| `ConfigPath` | да | Каталог выгрузки конфигурации, с которой сверяется перенос |
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": { "name": "unica.view", "arguments": { "cwd": "<workspace>" } }
+}
+```
 
-`Mode` снят: прежние режимы A и B были двумя взглядами на одно расширение, и
-типизированный ответ несёт оба сразу (ADR-0023).
+## 2. Что содержит расширение
 
-## Поля `data`
-
-| Поле | Что содержит |
-|------|--------------|
-| `name`, `purpose`, `namePrefix` | Идентичность расширения и его назначение |
-| `objects[]` | Состав: `kind`, `name` и `status` — `borrowed`, `own`, `missing` или `unknownKind` |
-| `objects[].modules[]` | Модули объекта с перехватчиками: `method` и `kind` перехвата |
-| `objects[]` счётчики | `attributes`, `forms`, `tabularSections`, `borrowedItems`, `formNames` |
-| `totals` | Сколько объектов заимствовано и сколько собственных |
-| `transfer[]` | Проверка переноса вставок: `status` — `transferred`, `notTransferred` или `needsReview`, плюс `blocks` и `reason` |
-| `transferTotals` | Итоги проверки переноса |
-
-## MCP вызов
+Корень расширения отвечает его идентичностью и составом.
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.cfe.diff",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ExtensionPath": "src/cfe",
-      "ConfigPath": "src/cf"
-    }
+    "name": "unica.view",
+    "arguments": { "cwd": "<workspace>", "at": "ext:Configuration" }
   }
 }
 ```
 
-## Примеры
+| Что | Где в ответе |
+|-----|--------------|
+| Имя, синоним, версия, поставщик | `props.name`, `props.synonym`, `props.version`, `props.vendor` |
+| Назначение расширения | `props.extensionPurpose` |
+| Префикс имён | `props.properties.namePrefix` |
+| Режим совместимости расширения | `props.properties.extensionCompatibilityMode` |
+| Сколько объектов в расширении | `props.totalObjects` |
+| Состав по видам | `branches` — по ветви на вид с числом объектов |
 
-### Что содержит расширение
+`props.support.state` у расширения — `extension`: это его собственный статус
+поддержки, а не поддержка объекта конфигурации.
 
-`objects[].status` отделяет заимствованные объекты от собственных, а
-`objects[].modules[].interceptors[]` показывает перехватчики каждого модуля;
-каждый перехватчик содержит `method` и `kind`.
+Спуск по ветви даёт объекты вида, дальше — их модули и методы, как у обычного
+набора: `ext:Role` → роль, `ext:Module` → модули расширения.
+
+## 3. Валидация расширения
+
+Вид набора выбирает валидатор: на корне расширения работает `cfe`, на его
+объектах — валидатор вида узла.
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.cfe.diff",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ExtensionPath": "src/cfe",
-      "ConfigPath": "src/cf"
-    }
+    "name": "unica.check",
+    "arguments": { "cwd": "<workspace>", "at": "ext:Configuration" }
   }
 }
 ```
 
-### Перенесены ли вставки в конфигурацию
+Ответ несёт `status`, `validators` — какие валидаторы отработали — и
+`diagnostics`. Узел, у которого валидаторов нет, отвечает `status: "readable"`
+с пустым списком: это утверждение о читаемости, а не отсутствие проверки.
 
-`transfer[]` перечисляет перехватчики `&ИзменениеИКонтроль` со статусом
-переноса; `needsReview` всегда несёт `reason`, поэтому причина не теряется.
+## 4. Чем объект расширения отличается от объекта конфигурации
+
+`unica.diff` сравнивает один и тот же логический адрес в двух наборах.
+Заимствованный объект есть в обоих, и различие приходит списком путей.
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.cfe.diff",
+    "name": "unica.diff",
     "arguments": {
       "cwd": "<workspace>",
-      "ExtensionPath": "src/cfe",
-      "ConfigPath": "src/cf"
+      "left": "main:Catalog.Валюты",
+      "right": "ext:Catalog.Валюты"
     }
   }
 }
 ```
+
+`data.equal` отвечает на вопрос целиком, `data.changes[]` перечисляет
+расхождения с `path`, `left` и `right`. Собственный объект расширения в
+конфигурации не зарегистрирован, и сравнение отказывает кодом `not_found` —
+это и есть ответ «объект собственный, а не заимствованный».
+
+## 5. Перехватчики
+
+Перехватчик — метод модуля расширения с директивой `&ИзменениеИКонтроль`,
+`&Перед`, `&После` или `&Вместо`. Он виден в проекции модуля расширения:
+спустись до `ext:<объект>.Module.<Роль>.Method` и читай методы. Текст директивы
+приходит вместе с телом метода по адресу `...Method.<Имя>.Body`.
+
+Найти все перехватчики разом дешевле поиском по тексту:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.search",
+    "arguments": { "cwd": "<workspace>", "query": "&ИзменениеИКонтроль", "scope": "ext:Configuration" }
+  }
+}
+```
+
+## Чего поверхность не отвечает
+
+Автоматической сверки «перенесена ли вставка `&ИзменениеИКонтроль` в
+конфигурацию» на канонической поверхности нет. Проверяй перенос вручную:
+найди вставку поиском в расширении, затем тем же поиском в наборе конфигурации
+и сравни найденные места. Вывод о переносе делает читатель, а не инструмент.
