@@ -1494,7 +1494,7 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
 
     let result = status(&root);
 
-    assert!(result.ok, "errors={:?}", result.errors);
+    assert!(result.ok, "{}", result.raw);
     let data = result.data.unwrap();
     assert_repository_check_status(&data, "repository.attributes", None, "notRun");
     assert_repository_check_status(
@@ -1594,11 +1594,14 @@ fn project_health_linked_source_route_is_reported_without_following_it() {
 static STATE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The canonical readiness answer of `unica.view {}` over the stdio surface,
-/// in the shape the assertions below read: `ok`, `errors` and `data`.
+/// in the shape the assertions below read: `ok`, `errors` and `data`. `raw`
+/// keeps the whole structured payload so a refusal without a message still
+/// says what the surface answered.
 struct StatusResult {
     ok: bool,
     errors: Vec<String>,
     data: Option<Value>,
+    raw: Value,
 }
 
 fn status(workspace: &Path) -> StatusResult {
@@ -1723,6 +1726,7 @@ fn status(workspace: &Path) -> StatusResult {
         ok,
         errors,
         data: Some(structured["data"].clone()),
+        raw: structured,
     }
 }
 
