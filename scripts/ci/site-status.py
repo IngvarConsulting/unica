@@ -183,8 +183,17 @@ def main() -> int:
         "version_date": human(moment(latest["published_at"])),
         "version_url": latest["html_url"],
         "generated_at": human(now) + now.astimezone(timezone.utc).strftime(" %H:%M"),
-        "generated_sha": (args.sha or "")[:7] or "—",
-        "generated_url": args.run_url or f"https://github.com/{args.repo}/actions",
+        # Страницу собрал либо прогон, либо человек у себя. Во втором случае
+        # коммита нет, и подписывать её прочерком — значит промолчать: пусть
+        # прямо говорит `local` и ведёт в репозиторий, а не на прогон, которого
+        # не было.
+        "generated_sha": (args.sha or "")[:7] or "local",
+        "generated_url": args.run_url
+        or (
+            f"https://github.com/{args.repo}/commit/{args.sha}"
+            if args.sha
+            else f"https://github.com/{args.repo}"
+        ),
         "github_stars": github_stars(args.repo),
         "telegram_members": telegram_members(args.telegram),
     }
