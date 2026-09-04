@@ -546,12 +546,6 @@ mod tests {
     }
 
     #[test]
-    fn platform_profile_8_3_27_has_closed_module_capabilities() {
-        every_approved_module_role_is_a_closed_8_3_27_capability();
-        service_bot_websocket_and_absent_grpc_capabilities_are_not_conflated();
-    }
-
-    #[test]
     fn every_module_capability_is_owned_by_one_canonical_parent_branch() {
         let profile = PlatformProfile::v8_3_27();
         let mut reached = HashSet::new();

@@ -877,18 +877,4 @@ mod tests {
             )
         );
     }
-
-    #[test]
-    fn find_address_path_directory_contract_is_complete() {
-        a_name_resolves_to_the_address_and_the_file_that_carries_it();
-        a_file_path_resolves_back_to_its_object_address();
-        a_synonym_resolves_to_its_object();
-        the_directory_holds_objects_and_never_code_symbols_or_inner_nodes();
-        the_directory_refuses_to_grow_past_its_entry_bound();
-        the_directory_observes_cancellation();
-        the_directory_observes_its_operation_deadline();
-        an_external_root_publishes_its_owner_and_never_the_dump_sidecar();
-        a_file_that_is_not_an_owner_descriptor_never_becomes_an_object();
-        a_descriptor_whose_attributes_start_on_a_new_line_is_still_an_object();
-    }
 }

@@ -299,11 +299,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn runtime_risk_classification_is_closed() {
-        every_classified_applied_runtime_operation_is_warned_with_its_reason();
-        unclassified_applied_operation_still_fails_closed();
-        canonical_runtime_surface_has_an_explicit_risk_classification();
-    }
 }

@@ -8771,18 +8771,6 @@ pub(crate) mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// Registry-facing rollback diagnostic falsifier built only from real
-    /// publication failures.  It executes restore, removal, quarantine and
-    /// post-commit cleanup races instead of formatting invented messages.
-    #[test]
-    fn fault_injected_rollback_and_cleanup_paths_keep_distinct_diagnostics() {
-        registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap();
-        registration_rollback_validation_reports_preserved_quarantine();
-        removal_rollback_preserves_concurrent_file_and_recovery_artifact();
-        removal_rollback_preserves_concurrent_empty_directory_and_recovery_tree();
-        successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap();
-    }
-
     #[test]
     fn after_registration_backup_failure_restores_exact_bytes_and_removes_debris() {
         let root = temp_root("rollback-registration-backup");

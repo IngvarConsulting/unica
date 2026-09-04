@@ -1319,20 +1319,4 @@ mod tests {
         assert_eq!(*owner.wait().expect("owner result"), 37);
         assert_eq!(*follower.wait().expect("follower result"), 37);
     }
-
-    #[test]
-    fn exact_shared_work_keys_fanout_cancellation_and_retirement_are_one_contract() {
-        exact_key_vocabulary_covers_delivery_index_provider_and_runtime();
-        typed_provider_and_runtime_keys_reject_weak_identity_and_remain_exact();
-        one_producer_serves_many_exact_key_followers_and_fans_out_the_result();
-        different_exact_keys_do_not_share_and_failure_is_fanned_out();
-        producer_spawn_failure_is_terminal_for_the_leader_and_attached_follower();
-        follower_cancellation_does_not_cancel_a_live_owner();
-        owner_bound_work_is_cancelled_when_the_last_owner_leaves();
-        owner_attach_racing_last_owner_drop_observes_one_retiring_producer();
-        cancelled_attempt_retires_before_a_replacement_producer_starts();
-        owner_cancellation_cannot_be_lost_between_predicate_check_and_wait();
-        terminal_retirement_cannot_remove_an_entry_while_a_new_owner_attaches();
-        joining_shared_work_never_waits_with_an_admission_permit();
-    }
 }

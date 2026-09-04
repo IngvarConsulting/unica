@@ -4415,13 +4415,6 @@ mod tests {
     }
 
     #[test]
-    fn write_target_kind_and_revalidation_contract_is_complete() {
-        platform_xml_target_kind_policy_table_is_closed();
-        platform_xml_source_root_handle_revalidates_without_widening();
-        platform_xml_source_target_revalidation_rejects_changed_descriptor_identity();
-    }
-
-    #[test]
     fn platform_xml_source_targets_reject_a_configured_source_root_symlink() {
         let context = fixture(
             "symlink-source-root",

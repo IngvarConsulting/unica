@@ -181,10 +181,4 @@ mod tests {
         assert_eq!(value["items"][0].get("at"), None);
         assert_eq!(value["at"], "main:Document.Заказ.Module.Object.Body");
     }
-
-    #[test]
-    fn node_view_contract_is_complete() {
-        node_view_has_exactly_seven_common_slots_and_omits_empty_optional_slots();
-        only_a_collection_adds_items_and_data_rows_do_not_gain_addresses();
-    }
 }
