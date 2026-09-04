@@ -27,6 +27,9 @@ TOOLCHAIN_PATHS = {
     "Cargo.lock",
     "rust-toolchain",
     "rust-toolchain.toml",
+    # Настройка исполнителя тестов меняет, как гоняется каждая цель на каждом
+    # раннере: это тот же класс, что смена toolchain.
+    ".config/nextest.toml",
 }
 PACKAGE_PATHS = {
     ".agents/plugins/marketplace.json",
@@ -59,6 +62,10 @@ CI_CONTRACT_PATHS = {
     "scripts/dev/install-local-unica.sh",
     "scripts/ci/classify-workflow-changes.py",
     "scripts/ci/evaluate-ci-gate.py",
+    # Шов прогона решает, что именно гоняет каждая джоба; его правка — правка
+    # конвейера, а не исходников, и обязана ехать полным контуром.
+    "scripts/ci/run-tests.py",
+    "tests/ci/test_run_tests.py",
     "tests/ci/test_classify_workflow_changes.py",
     "tests/ci/test_evaluate_ci_gate.py",
     "tests/ci/test_unica_workflow.py",

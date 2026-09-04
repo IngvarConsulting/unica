@@ -103,6 +103,10 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # Версия закреплена: исполнитель тестов — часть контракта прогона.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.143
       - run: python3 scripts/ci/run-tests.py --profile all --ecosystem rust
 
   test-rust-platforms:
@@ -135,6 +139,10 @@ jobs:
       - if: matrix.runner == 'macos-14'
         run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # Версия закреплена: исполнитель тестов — часть контракта прогона.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.143
       - run: python3 scripts/ci/run-tests.py --profile all --ecosystem rust
 
   test-search-integration:
