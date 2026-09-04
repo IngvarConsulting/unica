@@ -7,7 +7,7 @@ description: "Модуль управляемой формы 1С. Использ
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.form.info`, `unica.form.edit`, `unica.meta.info`, `unica.code.search`, `unica.code.definition`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the form node, `unica.form.edit`, `unica.meta.info`, `unica.code.search`, `unica.code.definition`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -17,7 +17,7 @@ description: "Модуль управляемой формы 1С. Использ
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Use `unica.standards.search` and `unica.standards.explain` for a development-standard about form modules: 439, 455, 487, 492, 642, 724, 741, and diagnostics АПК:100, АПК:526, АПК:547, АПК:1410, АПК:1412, BSLLS:SeveralCompilerDirectives, BSLLS:ServerSideExportFormMethod. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
+- Use `unica.docs` with `source: "development-standard"` for the standards about form modules: 439, 455, 487, 492, 642, 724, 741, and diagnostics АПК:100, АПК:526, АПК:547, АПК:1410, АПК:1412, BSLLS:SeveralCompilerDirectives, BSLLS:ServerSideExportFormMethod. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## References
@@ -38,7 +38,7 @@ A form module holds client and server code in one file, and the directive on eac
 ## Workflow
 
 1. Decide which side the logic belongs to before writing it: needs the database or the object → server; needs the user or the form's visual state → client.
-2. Inspect the form with `unica.form.info` for the declared events, parameters, and items, and `unica.meta.info` for the object behind it.
+2. Inspect the form with `unica.view` on the form node for the declared events, parameters, and items, and `unica.meta.info` for the object behind it.
 3. Read the existing module with `unica.view` on the module node (its `Method` branch lists the methods) and `unica.code.definition` before adding to it.
 4. Count the server calls the change adds on the path of a single user action. If it adds one, name the reason.
 5. Declare any new form parameter through `unica.form.edit` before reading it in the module.

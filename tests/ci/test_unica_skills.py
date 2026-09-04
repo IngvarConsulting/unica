@@ -350,7 +350,6 @@ IN_SCOPE_TOOLS = {
     "cf-edit": "unica.cf.edit",
     "cf-init": "unica.cf.init",
     "cfe-borrow": "unica.cfe.borrow",
-    "cfe-diff": "unica.cfe.diff",
     "cfe-init": "unica.cfe.init",
     "cfe-patch-method": "unica.cfe.patch_method",
     "epf-init": "unica.epf.init",
@@ -360,20 +359,16 @@ IN_SCOPE_TOOLS = {
     "meta-info": "unica.meta.info",
     "form-compile": "unica.form.compile",
     "form-edit": "unica.form.edit",
-    "form-info": "unica.form.info",
     "interface-edit": "unica.interface.edit",
     "subsystem-compile": "unica.subsystem.compile",
     "subsystem-edit": "unica.subsystem.edit",
-    "subsystem-info": "unica.subsystem.info",
     "dcs-compile": "unica.dcs.compile",
     "dcs-edit": "unica.dcs.edit",
-    "dcs-info": "unica.dcs.info",
     "mxl-compile": "unica.mxl.compile",
     "mxl-decompile": "unica.mxl.decompile",
     "mxl-info": "unica.mxl.info",
     "role-compile": "unica.role.compile",
     "role-edit": "unica.role.edit",
-    "role-info": "unica.role.info",
 }
 
 SCENARIO_SKILLS = {
@@ -382,10 +377,8 @@ SCENARIO_SKILLS = {
         "unica.code.definition",
         "unica.code.diagnostics",
         "unica.view",
-        "unica.subsystem.info",
         "unica.meta.info",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.docs",
         "unica.runtime.execute",
     ],
     "code-search": [
@@ -397,8 +390,7 @@ SCENARIO_SKILLS = {
     "code-diagnostics": [
         "unica.code.diagnostics",
         "unica.code.search",
-        "unica.standards.explain",
-        "unica.standards.search",
+        "unica.docs",
         "unica.runtime.execute",
     ],
     "code-review": [
@@ -406,18 +398,15 @@ SCENARIO_SKILLS = {
         "unica.code.definition",
         "unica.code.diagnostics",
         "unica.meta.info",
-        "unica.standards.explain",
-        "unica.standards.search",
+        "unica.docs",
         "unica.view",
         "unica.runtime.execute",
     ],
     "query-optimize": [
         "unica.code.search",
         "unica.view",
-        "unica.dcs.info",
         "unica.meta.info",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.docs",
         "unica.runtime.execute",
     ],
     "test-authoring": [
@@ -426,17 +415,16 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "platform-help": [
-        "unica.code.search",
+        "unica.docs",
+        "unica.search",
         "unica.view",
         "unica.runtime.execute",
     ],
     "bsp-patterns": [
         "unica.code.search",
         "unica.meta.info",
-        "unica.form.info",
-        "unica.role.info",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.view",
+        "unica.docs",
         "unica.runtime.execute",
     ],
     "integration-implement": [
@@ -445,8 +433,7 @@ SCENARIO_SKILLS = {
         "unica.meta.add",
         "unica.meta.edit",
         "unica.code.search",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.docs",
         "unica.runtime.execute",
     ],
     "autonomous-server": [
@@ -461,16 +448,14 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.view",
         "unica.code.diagnostics",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.docs",
     ],
     "background-jobs": [
         "unica.view",
         "unica.code.search",
         "unica.meta.info",
         "unica.code.diagnostics",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.docs",
         "unica.runtime.execute",
     ],
     "data-exchange": [
@@ -478,56 +463,48 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.meta.info",
         "unica.code.diagnostics",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.docs",
         "unica.runtime.execute",
     ],
     "db-performance": [
         "unica.view",
         "unica.code.search",
         "unica.meta.info",
-        "unica.dcs.info",
         "unica.code.diagnostics",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.docs",
         "unica.runtime.execute",
     ],
     "security-auth-crypto": [
         "unica.view",
         "unica.code.search",
         "unica.meta.info",
-        "unica.role.info",
         "unica.code.diagnostics",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.docs",
         "unica.runtime.execute",
     ],
     "data-separation": [
         "unica.view",
         "unica.code.search",
         "unica.meta.info",
-        "unica.role.info",
         "unica.code.diagnostics",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.docs",
         "unica.runtime.execute",
     ],
     "release-support": [
         "unica.view",
         "unica.code.search",
-        "unica.cfe.diff",
+        "unica.diff",
         "unica.meta.info",
         "unica.code.diagnostics",
-        "unica.standards.search",
-        "unica.standards.explain",
+        "unica.docs",
         "unica.runtime.execute",
     ],
     "source-access": [
-        "unica.source.resolve",
-        "unica.source.children",
-        "unica.source.resources",
-        "unica.source.read",
-        "unica.source.locate",
+        "unica.find",
+        "unica.view",
+        "unica.search",
+        "unica.diff",
+        "unica.check",
     ],
     "document-posting": [
         "unica.view",
@@ -544,7 +521,6 @@ SCENARIO_SKILLS = {
         "unica.meta.add",
         "unica.meta.edit",
         "unica.code.search",
-        "unica.dcs.info",
         "unica.code.diagnostics",
         "unica.runtime.execute",
     ],
@@ -560,7 +536,6 @@ SCENARIO_SKILLS = {
     ],
     "form-events": [
         "unica.view",
-        "unica.form.info",
         "unica.form.edit",
         "unica.meta.info",
         "unica.code.patch",
@@ -571,7 +546,6 @@ SCENARIO_SKILLS = {
         "unica.view",
         "unica.meta.info",
         "unica.meta.add",
-        "unica.subsystem.info",
         "unica.code.graph",
         "unica.code.patch",
         "unica.code.diagnostics",
@@ -582,7 +556,6 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.meta.add",
         "unica.meta.edit",
-        "unica.subsystem.info",
         "unica.code.diagnostics",
         "unica.runtime.execute",
     ],
@@ -600,7 +573,6 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.code.graph",
         "unica.code.patch",
-        "unica.form.info",
         "unica.code.diagnostics",
         "unica.runtime.execute",
     ],
@@ -775,8 +747,8 @@ SCENARIO_REQUIRED_TOKENS = {
         "предметн",
         "dryRun",
         "unica.code.patch",
-        "unica.source.locate",
-        "только `read`",
+        "unica.find",
+        "invalid_cursor",
     ],
 }
 
@@ -803,7 +775,6 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "cf-edit": ["ConfigPath", "Operation", "Value"],
     "cf-init": ["Name", "OutputDir"],
     "cfe-borrow": ["ExtensionPath", "ConfigPath", "Object"],
-    "cfe-diff": ["ExtensionPath", "ConfigPath"],
     "cfe-init": ["Name", "OutputDir"],
     "cfe-patch-method": ["ExtensionPath", "ModulePath", "MethodName"],
     "epf-init": ["Name", "OutputDir", "FormName"],
@@ -813,28 +784,22 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "meta-info": ["sourceSet", "metadataPath"],
     "form-compile": ["JsonPath", "OutputPath"],
     "form-edit": ["FormPath", "JsonPath"],
-    "form-info": ["FormPath"],
-    "form-remove": ["ObjectName", "FormName", "SrcDir"],
     "interface-edit": ["CIPath", "Operation", "Value"],
     "subsystem-compile": ["Value", "OutputDir"],
     "subsystem-edit": ["SubsystemPath", "Operation", "Value"],
-    "subsystem-info": ["SubsystemPath"],
     "dcs-compile": ["DefinitionFile", "OutputPath"],
     "dcs-edit": ["TemplatePath", "Operation", "Value"],
-    "dcs-info": ["TemplatePath"],
     "mxl-compile": ["JsonPath", "OutputPath"],
     "mxl-decompile": ["TemplatePath"],
     "mxl-info": ["TemplatePath", "WithText"],
     "role-compile": ["JsonPath", "OutputDir"],
     "role-edit": ["sourceSet", "metadataPath", "operations"],
-    "role-info": ["RightsPath"],
 }
 
 SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cf-edit": 6,
     "cf-init": 6,
     "cfe-borrow": 7,
-    "cfe-diff": 3,
     "cfe-init": 6,
     "cfe-patch-method": 4,
     "meta-add": 2,
@@ -844,11 +809,8 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "interface-edit": 8,
     "subsystem-compile": 4,
     "subsystem-edit": 6,
-    "subsystem-info": 5,
     "dcs-compile": 5,
-    "dcs-info": 12,
     "mxl-info": 3,
-    "role-info": 2,
     "role-edit": 1,
     "dcs-edit": 4,
     "role-compile": 3,
@@ -860,11 +822,11 @@ ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
     "cfe-init": {"unica.check"},
     "epf-init": {"unica.runtime.execute"},
     "erf-init": {"unica.runtime.execute"},
-    "form-compile": {"unica.form.info", "unica.check"},
+    "form-compile": {"unica.view", "unica.check"},
     "interface-edit": {"unica.check"},
-    "role-compile": {"unica.role.info", "unica.check"},
-    "dcs-compile": {"unica.dcs.info", "unica.check"},
-    "dcs-edit": {"unica.dcs.info", "unica.check"},
+    "role-compile": {"unica.view", "unica.check"},
+    "dcs-compile": {"unica.view", "unica.check"},
+    "dcs-edit": {"unica.view", "unica.check"},
 }
 
 SCENARIO_PRESERVING_TOKENS = {
@@ -893,7 +855,6 @@ SCENARIO_PRESERVING_TOKENS = {
         '"BorrowMainAttribute": "All"',
         '"name": "unica.check"',
     ],
-    "cfe-diff": ["`transfer[]`", "`objects[].status`"],
     "cfe-init": [
         '"ConfigPath": "C:\\\\WS\\\\tasks\\\\cfsrc\\\\erp_8.3.24"',
         '"Purpose": "Patch"',
@@ -943,7 +904,7 @@ SCENARIO_PRESERVING_TOKENS = {
     "form-compile": [
         '"OutputPath": "<.../TypePlural/ObjectName/Forms/FormName/Ext/Form.xml>"',
         '"name": "unica.check"',
-        '"name": "unica.form.info"',
+        '"name": "unica.view"',
     ],
     "interface-edit": [
         '"Operation": "hide"',
@@ -964,45 +925,30 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Operation": "add-child"',
         '"Operation": "set-property"',
     ],
-    "subsystem-info": [
-        '"SubsystemPath": "Subsystems"',
-        "`commandInterface`",
-        "`tree`",
-    ],
     "role-compile": [
         '"name": "unica.check"',
-        '"name": "unica.role.info"',
+        '"name": "unica.view"',
     ],
     "dcs-compile": [
         '"DefinitionFile": "<json>"',
         '"Value": "<json-string>"',
         '"name": "unica.check"',
-        '"name": "unica.dcs.info"',
+        '"name": "unica.view"',
     ],
     "dcs-edit": [
         '"Operation": "add-field"',
         '"Value": "Цена: decimal(15,2) ;; Количество: decimal(15,3) ;; Сумма: decimal(15,2)"',
         '"name": "unica.check"',
-        '"name": "unica.dcs.info"',
+        '"name": "unica.view"',
     ],
     # Eleven `Mode` values selected eleven reports. The typed answer carries
     # every section at once, so the scenarios are preserved by the sections the
     # skill names, not by the selector that no longer exists (ADR-0023).
-    "dcs-info": [
-        "`dataSets`",
-        "`links`",
-        "`calculatedFields`",
-        "`totalFields`",
-        "`parameters`",
-        "`variants`",
-        "`templates`",
-    ],
     "mxl-info": [
         '"WithText": true',
         "`columnSets`",
         "`outside`",
     ],
-    "role-info": ["`data.denied`", "`restrictedObjects`"],
 }
 
 # Arguments the MCP contract used to publish and now rejects. The packaged skill
@@ -1011,12 +957,7 @@ SCENARIO_PRESERVING_TOKENS = {
 SCENARIO_RETIRED_TOKENS = {
     "meta-add": ['"JsonPath"', '"OutputDir"', '"DefinitionFile"'],
     "meta-edit": ['"ObjectPath"', '"Operation"', '"Value"', '"DefinitionFile"'],
-    "role-info": ['"ShowDenied"', '"Limit"', '"Offset"'],
-    "subsystem-info": ['"Mode"', '"Name"', '"Limit"', '"Offset"'],
     "mxl-info": ['"Format"', '"MaxParams"', '"Limit"', '"Offset"'],
-    "cfe-diff": ['"Mode"'],
-    # A published example that still selects by path shows a call the server
-    # now rejects with `legacy_target_removed`.
     "meta-info": ['"ObjectPath"', '"objectPath"', '"Detailed"', '"detailed"'],
 }
 
@@ -1253,9 +1194,8 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_read_only_skills_do_not_offer_outfile(self) -> None:
         read_only_skills = [
             "meta-info",
-            "subsystem-info",
-            "dcs-info",
-            "role-info",
+            "mxl-info",
+            "mxl-decompile",
         ]
 
         for skill in read_only_skills:
@@ -2407,7 +2347,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             encoding="utf-8"
         )
         dcs_edit = (self.skill_root() / "dcs-edit" / "SKILL.md").read_text(encoding="utf-8")
-        dcs_info = (self.skill_root() / "dcs-info" / "SKILL.md").read_text(encoding="utf-8")
         dcs_dsl = (self.reference_root() / "specs" / "dcs-dsl-spec.md").read_text(
             encoding="utf-8"
         )
@@ -2415,7 +2354,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for text in [dcs_compile, dcs_edit, dcs_info]:
+        for text in [dcs_compile, dcs_edit]:
             self.assertIn("MCP `unica`", text)
             self.assertNotIn("CLAUDE_SKILL_DIR", text)
             self.assertNotIn("powershell.exe", text)
@@ -2443,11 +2382,11 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
         self.assertIn("Значение-список", dcs_spec)
         self.assertIn("valueListAllowed", dcs_spec)
-        # `Raw` existed because pagination mangled the query; `data` carries the
-        # exact text always, so the promise moved into the section description.
-        self.assertNotIn('"Raw": true', dcs_info)
-        self.assertIn("сырой текст запроса целиком", dcs_info)
-        self.assertIn("unica.dcs.edit", dcs_info)
+        # `Raw` existed because pagination mangled the query; the canonical
+        # `Query` projection carries the exact text always, so the promise
+        # moved into the writer that consumes it.
+        self.assertNotIn('"Raw": true', dcs_edit)
+        self.assertIn("сырой текст запроса целиком", dcs_edit)
         self.assertIn("patch-query", dcs_edit)
         self.assertIn("@once", dcs_edit)
         self.assertIn("availableValue=", dcs_edit)
@@ -2458,7 +2397,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             encoding="utf-8"
         )
         form_edit = (self.skill_root() / "form-edit" / "SKILL.md").read_text(encoding="utf-8")
-        form_info = (self.skill_root() / "form-info" / "SKILL.md").read_text(encoding="utf-8")
         form_dsl = (self.reference_root() / "specs" / "form-dsl-spec.md").read_text(
             encoding="utf-8"
         )
@@ -2466,7 +2404,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for text in [form_compile, form_edit, form_info]:
+        for text in [form_compile, form_edit]:
             self.assertIn("MCP `unica`", text)
             self.assertNotIn("CLAUDE_SKILL_DIR", text)
             self.assertNotIn("powershell.exe", text)
@@ -2497,7 +2435,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("mobileCommandBarContent", form_compile)
         self.assertIn("choiceParameters", form_compile)
         self.assertIn("availableTypes", form_compile)
-        self.assertIn("unica.form.info", form_edit)
+        self.assertIn("unica.view", form_edit)
         self.assertIn("`unica.check`", form_edit)
         self.assertNotIn("unica.form.validate", form_edit)
 
@@ -2651,11 +2589,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_support_state_reporting_is_documented_for_info_skills(self) -> None:
         for skill in (
             "meta-info",
-            "form-info",
-            "dcs-info",
             "mxl-info",
-            "role-info",
-            "subsystem-info",
         ):
             with self.subTest(skill=skill):
                 text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
@@ -2920,43 +2854,44 @@ Use `.claude/commands/xdto.md` as the execution route.
         blocks = list(re.finditer(r"```json\s*(.*?)```", text, re.DOTALL))
         calls = [json.loads(block.group(1)) for block in blocks]
 
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         self.assertEqual(
             [call.get("method") for call in calls],
-            ["tools/call", "tools/call", "tools/call"],
+            ["tools/call", "tools/call", "tools/call", "tools/call"],
         )
         params = [call["params"] for call in calls]
         self.assertEqual(
             [item["name"] for item in params],
-            ["unica.xdto.info", "unica.apply", "unica.apply"],
+            ["unica.view", "unica.view", "unica.apply", "unica.apply"],
         )
         self.assertEqual(
             {item["name"] for item in params},
-            {"unica.xdto.info", "unica.apply"},
+            {"unica.view", "unica.apply"},
         )
 
-        preview = dict(params[1]["arguments"])
-        apply = dict(params[2]["arguments"])
+        preview = dict(params[2]["arguments"])
+        apply = dict(params[3]["arguments"])
         self.assertIs(preview.pop("dryRun"), True)
         self.assertIs(apply.pop("dryRun"), False)
         self.assertEqual(preview, apply)
-        confirmation_text = text[blocks[1].end() : blocks[2].start()].casefold()
+        confirmation_text = text[blocks[2].end() : blocks[3].start()].casefold()
         self.assertIn("явного подтверждения", confirmation_text)
 
-        # The reader still addresses the package by source set and logical
-        # path; the canonical writer addresses the typed node with `at`.
-        reader_arguments = params[0]["arguments"]
-        self.assertEqual(reader_arguments.get("sourceSet"), "main")
+        # Reader and writer address the same node with one canonical `at`.
         self.assertEqual(
-            reader_arguments.get("metadataPath"),
-            "XDTOPackage.EnterpriseData_1_17_3",
+            params[0]["arguments"].get("at"),
+            "main:XDTOPackage.EnterpriseData_1_17_3",
+        )
+        self.assertEqual(
+            params[1]["arguments"].get("at"),
+            "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
         )
         for item in params:
             with self.subTest(tool=item["name"]):
                 arguments = item["arguments"]
                 self.assertNotIn("path", arguments)
                 self.assertNotIn("Package.bin", json.dumps(arguments, ensure_ascii=False))
-        for item in params[1:]:
+        for item in params[2:]:
             with self.subTest(tool=item["name"], role="writer"):
                 self.assertTrue(
                     item["arguments"]["at"].startswith(
@@ -2995,15 +2930,15 @@ Use `.claude/commands/xdto.md` as the execution route.
         path = self.skill_root() / "source-access" / "SKILL.md"
         text = path.read_text(encoding="utf-8")
         writer = text.index("unica.code.patch")
-        inspect = text.index("unica.source.resources")
+        reader = text.index("unica.view")
 
-        self.assertLess(writer, inspect, "the specialized writer is named first")
-        # The resource surface is read-only, so the skill must not promise a
-        # write through it and must send edits to unica.code.patch.
+        self.assertLess(reader, writer, "reading comes before the writer")
+        # The canonical read surface never mutates, so the skill must not
+        # promise a write through it and must send edits to unica.code.patch.
         self.assertNotIn("unica.source.apply", text)
         self.assertRegex(text, r"(?s)dryRun.{0,80}true.{0,400}dryRun.{0,80}false")
-        self.assertIn("только `read`", text)
-        self.assertIn("unica.source.locate", text)
+        self.assertIn("Чтение не меняет исходники", text)
+        self.assertIn("unica.find", text)
         self.assertIn("replace", text)
 
     def test_package_readme_documents_code_patch_target_migration(self) -> None:
@@ -3204,7 +3139,8 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
     def test_routes_platform_questions_to_documentation_search(self) -> None:
-        self.assertIn("unica.documentation.search", self.text)
+        self.assertIn("unica.docs", self.text)
+        self.assertNotIn("unica.documentation.search", self.text)
 
     def test_keeps_the_standards_reading_rule(self) -> None:
         # Секция стандартов может прийти в том же ответе; правило вызова
@@ -3221,13 +3157,13 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         )
 
     def test_states_the_source_boundary(self) -> None:
-        self.assertIn("версию установки", self.text)
+        self.assertIn("Расхождение их версий называйте в ответе", self.text)
 
     def test_filters_platform_questions_by_source_kind(self) -> None:
         # ADR-0032 п.5: вопрос об API платформы зовётся с фильтром по смыслу
         # источника, а не полагается на то, что секция стандартов не помешает.
-        self.assertIn('"sourceKinds"', self.text)
-        self.assertIn('"platform-help"', self.text)
+        # На канонической поверхности фильтр — скаляр `source`.
+        self.assertIn('"source": "platform-help"', self.text)
 
     def test_explains_policy_denied_as_a_user_choice(self) -> None:
         # Запрет сетевого выхода — решение пользователя (unica.toml), и ответ
@@ -3236,37 +3172,29 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         self.assertIn("unica.toml", self.text)
 
     def test_confirms_answers_with_the_opened_document(self) -> None:
-        # ADR-0029 п.4: доказательство — текст открытой страницы, и с
-        # ADR-0033 он достижим маршрутом MCP. Проверяются сами примеры, а не
-        # подстроки прозы: скилл обязан нести исполнимый вызов
-        # unica.documentation.get с обязательным documentId рядом с вызовом
-        # search — поток «нашёл → открыл» закреплён формой, а не упоминанием.
-        self.assertIn("фрагмент выдачи доказательством не является", self.text)
+        # ADR-0029 п.4 требовал доказывать ответ текстом открытой страницы.
+        # Канонический провод инструмента, открывающего страницу по
+        # `documentId`, не публикует, поэтому правило вырождается в честную
+        # границу: скилл несёт только исполнимые вызовы и обязан назвать, что
+        # фрагмент страницей не является.
+        self.assertIn("не выдавайте", self.text)
         calls = [
             json.loads(block)
             for block in re.findall(r"```json\n(.*?)\n```", self.text, flags=re.S)
             if '"method": "tools/call"' in block
         ]
-        names = [call["params"]["name"] for call in calls]
-        self.assertIn("unica.documentation.search", names)
-        self.assertIn("unica.documentation.get", names)
-        get_calls = [
-            call for call in calls if call["params"]["name"] == "unica.documentation.get"
-        ]
-        for call in get_calls:
-            self.assertIn(
-                "documentId",
-                call["params"]["arguments"],
-                "пример get обязан нести обязательный documentId",
-            )
+        names = {call["params"]["name"] for call in calls}
+        self.assertIn("unica.docs", names)
+        self.assertNotIn("unica.documentation.get", names)
 
     def test_routes_configuration_domain_questions_to_configuration_help(self) -> None:
-        # ADR-0034: доменный вопрос о самой конфигурации — назначение
-        # объекта, роль документа в учёте — закрывает её встроенная справка,
-        # а не справка платформы; скилл обязан назвать и фильтр, и формат
-        # локатора нового корпуса.
+        # ADR-0034: доменный вопрос о самой конфигурации закрывает её
+        # встроенная справка, а не справка платформы. На канонической
+        # поверхности этот источник пока отвечает отказом, и скилл обязан
+        # назвать и сам источник, и названную причину его недоступности,
+        # чтобы читатель не принял отказ за отсутствие ответа.
         self.assertIn('"configuration-documentation"', self.text)
-        self.assertIn("configuration-help:", self.text)
+        self.assertIn("unsupported_source", self.text)
 
     def test_requires_naming_the_answering_locale(self) -> None:
         # ADR-0029 п.3: подстановка соседней локали разрешена и обязана быть
@@ -3283,10 +3211,6 @@ class PlatformHelpRoutingTests(unittest.TestCase):
 CONDITIONAL_MARKER = "один из двух"
 
 BRIDGED_SKILL_SELECTORS = {
-    "subsystem-info": ("SubsystemPath", True),
-    "role-info": ("RightsPath", True),
-    "form-info": ("FormPath", True),
-    "dcs-info": ("TemplatePath", True),
     "mxl-info": ("TemplatePath", True),
     "mxl-decompile": ("TemplatePath", True),
 }
@@ -3408,19 +3332,6 @@ class BridgedSkillSelectorDocumentationTests(unittest.TestCase):
                     statement,
                     f"{skill}: правило не называет стабильный код отказа",
                 )
-
-    def test_subsystem_info_states_that_the_address_is_optional(self) -> None:
-        # Its logical branch takes `sourceSet` alone; the schema forbids
-        # `metadataPath` in the path branch, so it is neither required nor
-        # freely optional.
-        table = self.parameter_table("subsystem-info", "SubsystemPath")
-        row = next(row for row in table if row and row[0] == "metadataPath")
-        description = row[-1].lower()
-        self.assertIn(
-            "без него",
-            description,
-            f"subsystem-info: не сказано, что адрес можно опустить: {row}",
-        )
 
 
 if __name__ == "__main__":
