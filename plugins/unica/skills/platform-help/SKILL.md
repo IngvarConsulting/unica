@@ -23,8 +23,11 @@ description: "Справка платформы 1С и объектной мод
 - `unica.docs` может ответить задачей (`status: "working"`). Тогда возьмите
   `taskId` из ответа и дождитесь результата через `unica.task.result`. Ответ
   «задача принята» не является ответом на вопрос.
-- Полный текст страницы даёт `unica.documentation.get` по `documentId`
-  попадания. Заголовок и фрагмент выдачи доказательством не являются.
+- Полного текста страницы канонический провод не отдаёт: инструмента,
+  открывающего страницу по `documentId`, он не публикует. Доказательство —
+  это `documentId`, `applicableVersion` и фрагмент попадания вместе; называйте
+  их в ответе, чтобы читатель мог открыть ту же страницу сам, и не выдавайте
+  фрагмент за прочитанную страницу.
 - For project context, use `unica.search`, `unica.view {}`, and
   `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
@@ -74,8 +77,9 @@ description: "Справка платформы 1С и объектной мод
 3. Если ответ пришёл задачей, дождитесь его через `unica.task.result`.
 4. Read `applicableVersion` in the hit. Если она расходится с версией проекта,
    назовите расхождение в ответе.
-5. Подтвердите ответ текстом открытой страницы: передайте `documentId`
-   попадания в `unica.documentation.get` дословно и опирайтесь на поле `text`.
+5. Назовите `documentId` попадания дословно вместе с ответом. Если фрагмента
+   не хватает, чтобы утверждение стояло, скажите это прямо и не достраивайте
+   страницу по памяти.
 6. Validate against local project context with `unica.view {}` and targeted
    `unica.search` if the answer depends on project conventions.
 7. For code examples, use `unica.runtime.execute` to preview `operation=syntax`
@@ -142,17 +146,3 @@ description: "Справка платформы 1С и объектной мод
 }
 ```
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.documentation.get",
-    "arguments": {
-      "cwd": "<workspace>",
-      "documentId": "platform-syntax-help:syntax-context:objects/catalog238/ValueTable/methods/GroupBy1290.html",
-      "platformVersion": "8.3.27.2074"
-    }
-  }
-}
-```

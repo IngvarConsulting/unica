@@ -19,7 +19,7 @@ description: "Проектирование и ревью API 1С: публичн
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Use v8std through public `unica.standards.*` tools for standards 483, 543, 551, 553, and 644 before making compatibility claims.
+- Use v8std through `unica.docs` with `source: "development-standard"` for standards 483, 543, 551, 553, and 644 before making compatibility claims.
 - Use `test-authoring` for unit tests that model API consumer scenarios; use `integration-implement` only when the task is about HTTP/REST/SOAP/gRPC transport implementation.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 

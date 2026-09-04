@@ -3172,29 +3172,20 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         self.assertIn("unica.toml", self.text)
 
     def test_confirms_answers_with_the_opened_document(self) -> None:
-        # ADR-0029 п.4: доказательство — текст открытой страницы, и с
-        # ADR-0033 он достижим маршрутом MCP. Проверяются сами примеры, а не
-        # подстроки прозы: скилл обязан нести исполнимый вызов
-        # unica.documentation.get с обязательным documentId рядом с вызовом
-        # search — поток «нашёл → открыл» закреплён формой, а не упоминанием.
-        self.assertIn("фрагмент выдачи доказательством не являются", self.text)
+        # ADR-0029 п.4 требовал доказывать ответ текстом открытой страницы.
+        # Канонический провод инструмента, открывающего страницу по
+        # `documentId`, не публикует, поэтому правило вырождается в честную
+        # границу: скилл несёт только исполнимые вызовы и обязан назвать, что
+        # фрагмент страницей не является.
+        self.assertIn("не выдавайте", self.text)
         calls = [
             json.loads(block)
             for block in re.findall(r"```json\n(.*?)\n```", self.text, flags=re.S)
             if '"method": "tools/call"' in block
         ]
-        names = [call["params"]["name"] for call in calls]
+        names = {call["params"]["name"] for call in calls}
         self.assertIn("unica.docs", names)
-        self.assertIn("unica.documentation.get", names)
-        get_calls = [
-            call for call in calls if call["params"]["name"] == "unica.documentation.get"
-        ]
-        for call in get_calls:
-            self.assertIn(
-                "documentId",
-                call["params"]["arguments"],
-                "пример get обязан нести обязательный documentId",
-            )
+        self.assertNotIn("unica.documentation.get", names)
 
     def test_routes_configuration_domain_questions_to_configuration_help(self) -> None:
         # ADR-0034: доменный вопрос о самой конфигурации закрывает её

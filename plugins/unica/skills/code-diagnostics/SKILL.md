@@ -26,7 +26,7 @@ description: "Диагностика BSL и объяснение отключе�
 - Treat `state=partial` as useful but incomplete. A `resourceFailure` is one provider's failure for one logical resource. `location.kind=unaddressable` means the observation is safe to report but cannot be navigated as its own logical target. A provider section with `complete=false` and an error may still carry proven items: one resource the mapper could not place never withdraws the rest. Neither means clean code.
 - For actions that return `items`, only `state=completed`, `complete=true`, `truncated=false`, and provider sections without failures prove an exhaustive answer. Check `itemsTotal` and `itemsReturned` before treating `items` as complete. `status` has no `truncated` field; its evidence is each provider's readiness.
 - `unica.code.definition` returns `index_pending:` only while an RLM index is building and `index_unavailable:` for missing, stale, failed, or unavailable indexes. Neither means “no definitions”.
-- Use `unica.code.graph` only for diagnostic impact context. v8std access goes only through public `unica.standards.*` tools. Do not call internal analyzer, standards, or package adapters directly.
+- Use `unica.code.graph` only for diagnostic impact context. v8std access goes only through `unica.docs` with `source: "development-standard"`. Do not call internal analyzer, standards, or package adapters directly.
 
 ## Workflow
 

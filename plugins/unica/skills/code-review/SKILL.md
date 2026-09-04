@@ -17,7 +17,7 @@ description: "Код-ревью BSL и изменений 1С. Использу�
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Use `unica.*.info` tools before reviewing code that depends on metadata shape, form structure, rights, DCS, MXL, or interfaces.
+- Use `unica.view` at the object's logical address before reviewing code that depends on metadata shape, form structure, rights, DCS, or interfaces; a spreadsheet template is read by `unica.mxl.info`.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Review stance
