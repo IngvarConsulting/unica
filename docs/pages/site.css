@@ -284,9 +284,10 @@
 @media (max-width: 760px) { .pair { grid-template-columns: 1fr; } }
 .pair .card h4 { margin: 0 0 8px; font-size: 15px; }
 .pair .card p { margin: 0; color: var(--muted); font-size: 14px; }
-/* Имя инструмента внутри фразы — тот же бабл, что и в таблицах: иначе оно
-   теряется в приглушённом тексте карточки. */
-.pair .card p code {
+/* Имя файла или инструмента внутри фразы — тот же бабл, что и в таблицах:
+   в приглушённом тексте одно моноширинное начертание его не выделяет. */
+.pair .card p code,
+.caption code {
   background: color-mix(in srgb, var(--blue) 13%, transparent);
   color: var(--blue); padding: 2px 6px; border-radius: 5px;
 }
