@@ -104,6 +104,8 @@ def main() -> int:
     parser.add_argument("--run-url", default="")
     parser.add_argument("--run-at", default="", help="время прогона в ISO-8601")
     parser.add_argument("--allure-summary", type=Path, help="widgets/summary.json собранного отчёта")
+    parser.add_argument("--summaries", type=Path, help="каталог data/ собранного сайта: сводка на линию")
+    parser.add_argument("--print-lines", action="store_true", help="напечатать открытые линии и выйти")
     parser.add_argument("--report-url", default="allure/main/")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -111,6 +113,10 @@ def main() -> int:
     if not args.repo:
         raise SystemExit("нужен --repo или GITHUB_REPOSITORY")
     now = datetime.now(timezone.utc)
+
+    if args.print_lines:
+        print("\n".join([args.branch, *open_lines(args.repo, now)]))
+        return 0
 
     releases = [r for r in gh(args.repo, "releases?per_page=100") if not r["draft"]]
     published = [r for r in releases if not r["prerelease"]]
@@ -138,22 +144,24 @@ def main() -> int:
         status["prerelease"] = "Планируется"
         status["prerelease_note"] = "сборка перед публикацией"
 
-    counts = summary_counts(args.allure_summary)
     run_at = human(moment(args.run_at)) if args.run_at else human(now)
     tested, plain = [], []
     for line in [args.branch, *open_lines(args.repo, now)]:
-        if line == args.branch and counts:
+        counts = summary_counts(
+            args.summaries / line / "summary.json" if args.summaries else args.allure_summary
+        )
+        if counts:
             tested.append(
                 {
                     "line": line,
-                    "build_sha": (args.sha or "")[:7] or "—",
+                    "build_sha": (args.sha or "")[:7] or "—" if line == args.branch else "—",
                     "build_date": run_at,
                     "build_url": status["generated_url"],
-                    "report_url": args.report_url,
+                    "report_url": f"allure/{line}/",
                     **counts,
                 }
             )
-        elif line != args.branch or not counts:
+        else:
             plain.append(
                 {
                     "line": line,

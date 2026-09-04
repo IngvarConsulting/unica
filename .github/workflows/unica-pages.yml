@@ -3,11 +3,13 @@ name: Unica Pages
 # Сайт собирается из того, что уже произошло: страницы из дерева, каталог
 # сценариев из приёмочного корпуса, отчёт — из результатов состоявшегося
 # прогона. Своих тестов этот workflow не гоняет.
+# Публикует один воркфлоу и всегда собирает сайт целиком: Pages заменяет
+# артефакт полностью, поэтому «выложить только свою папку» невозможно.
 on:
   workflow_run:
     workflows: ["Build Unica Codex Plugin"]
     types: [completed]
-    branches: [main]
+    branches: [main, "release-v*"]
   workflow_dispatch:
 
 permissions:
@@ -31,20 +33,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      # История опубликованного отчёта: без неё тренды начинаются заново на
-      # каждом прогоне, и перемежающийся тест выглядит разовым падением.
-      - name: Забрать историю опубликованного отчёта
-        continue-on-error: true
-        env:
-          SITE: https://ingvarconsulting.github.io/unica
-        run: |
-          set -eu
-          mkdir -p .build/history
-          for name in history.json history-trend.json duration-trend.json retry-trend.json categories-trend.json; do
-            curl -fsSL "$SITE/allure/main/history/$name" -o ".build/history/$name" || true
-          done
-          ls -la .build/history
-
       - name: Забрать результаты прогона, если он их оставил
         id: results
         continue-on-error: true
@@ -53,57 +41,69 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -eu
+          line="${{ github.event.workflow_run.head_branch || 'main' }}"
+          echo "line=$line" >> "$GITHUB_OUTPUT"
           if [ -z "${RUN_ID:-}" ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern 'allure-results*' --dir .build/allure-results; then
+          if gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+               --pattern 'allure-results*' --dir .build/allure-results; then
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Поставить Allure CLI
-        if: steps.results.outputs.found == 'true'
         run: |
           set -eu
-          curl -fsSL -o allure.tgz https://github.com/allure-framework/allure2/releases/download/2.35.1/allure-2.35.1.tgz
+          curl -fsSL -o allure.tgz \
+            https://github.com/allure-framework/allure2/releases/download/2.35.1/allure-2.35.1.tgz
           tar -xzf allure.tgz
           echo "$PWD/allure-2.35.1/bin" >> "$GITHUB_PATH"
 
-      # Отчёт собирается раньше документа статуса: счётчики тестов на странице
-      # берутся из его сводки, а не считаются вторым способом.
-      - name: Собрать отчёт
-        if: steps.results.outputs.found == 'true'
+      # Линии перечисляет то же правило, что и на странице: main плюс открытые
+      # релизные линии. У линии, которая сейчас не собиралась, результаты и
+      # история берутся с самого сайта — он их хранит.
+      - name: Собрать отчёты линий
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SITE: https://ingvarconsulting.github.io/unica
         run: |
           set -eu
-          cp -R .build/history .build/allure-results/history || true
-          allure generate --clean --output .build/report .build/allure-results
+          python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" \
+            --print-lines --out /dev/null > .build/lines.txt
+          args=""
+          while read -r line; do
+            [ -n "$line" ] || continue
+            if [ "$line" = "${{ steps.results.outputs.line }}" ] && \
+               [ "${{ steps.results.outputs.found }}" = "true" ]; then
+              args="$args --line $line=.build/allure-results"
+            else
+              args="$args --line $line"
+            fi
+          done < .build/lines.txt
+          python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" --out .build/bootstrap.json
+          # shellcheck disable=SC2086
+          python scripts/ci/build-site.py --status .build/bootstrap.json --out .build/site \
+            --site "$SITE" $args
 
-      - name: Собрать документ статуса
+      # Счётчики на странице берутся из сводок собранных отчётов, поэтому
+      # документ статуса считается после них, а страницы перерисовываются.
+      - name: Пересобрать страницы с итоговым статусом
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           python scripts/ci/site-status.py \
             --repo "$GITHUB_REPOSITORY" \
-            --branch main \
+            --branch "${{ steps.results.outputs.line }}" \
             --sha "${{ github.event.workflow_run.head_sha || github.sha }}" \
             --run-url "${{ github.event.workflow_run.html_url }}" \
             --run-at "${{ github.event.workflow_run.updated_at }}" \
-            --allure-summary .build/report/widgets/summary.json \
-            --report-url allure/main/ \
+            --summaries .build/site/data \
             --out .build/status.json
-
-      - name: Собрать сайт
-        run: |
-          set -eu
-          if [ -d .build/report ]; then
-            python scripts/ci/build-site.py --status .build/status.json --out .build/site \
-              --allure-report .build/report --allure-path allure/main
-          else
-            python scripts/ci/build-site.py --status .build/status.json --out .build/site
-          fi
+          python scripts/ci/build-site.py --pages-only --status .build/status.json --out .build/site
 
       - uses: actions/upload-pages-artifact@v4
         with:
