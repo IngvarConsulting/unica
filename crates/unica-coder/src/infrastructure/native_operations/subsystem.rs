@@ -2184,26 +2184,6 @@ pub(crate) mod subsystem_info_typed_result_tests {
         assert!(data.command_interface.is_none());
         let _ = fs::remove_dir_all(root);
     }
-
-    /// Registry-facing falsifier for the typed public subsystem projection.
-    #[test]
-    pub(crate) fn subsystem_projection_contract_is_complete() {
-        pointing_at_the_subsystems_folder_answers_only_with_tree();
-        concrete_subsystem_contains_its_root_chain_and_complete_descendant_tree();
-        unregistered_alias_keeps_local_data_without_borrowing_a_registered_tree();
-        root_subsystems_symlink_is_not_followed_for_a_tree_answer();
-        nested_subsystems_symlink_is_not_followed_for_a_tree_answer();
-        subsystem_info_answers_content_and_command_interface_at_once();
-        a_missing_command_interface_is_null_not_an_empty_interface();
-    }
-
-    #[test]
-    pub(crate) fn public_subsystem_projection_and_mode_absence_contract_is_complete() {
-        crate::application::tests::public_subsystem_info_registration_address_and_schema_contract_is_complete();
-        crate::application::tests::public_subsystem_info_projects_registered_dependency_errors_as_typed_failures();
-        crate::application::tests::public_subsystem_info_deadline_returns_no_data();
-        subsystem_projection_contract_is_complete();
-    }
 }
 
 #[cfg(test)]

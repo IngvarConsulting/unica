@@ -4637,13 +4637,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn daemon_actor_registry_is_bounded_weak_and_alias_safe() {
-        daemon_actor_registry_prunes_dead_entries_and_bounds_sequential_roots();
-        daemon_actor_registry_rejects_only_when_all_capacity_entries_are_live();
-        active_alias_reuses_actor_and_dropped_actor_recreates_a_new_instance();
-    }
-
-    #[test]
     fn multiroot_provider_keeps_identical_relative_paths_bound_to_the_requesting_root() {
         let fixture = actor_fixture("multiroot", &["A", "B"]);
         let relative = Path::new("CommonModules/Same/Ext/Module.bsl");
@@ -4906,16 +4899,6 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(root.join("Module.bsl")).unwrap(), b"after");
         assert!(root.join(".build/unica/state.json").is_file());
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn retained_apply_closed_participant_contract_is_complete() {
-        crate::infrastructure::native_operations::apply::tests::retained_transaction_roles_require_explicit_roots_and_cache_authority();
-        crate::infrastructure::native_operations::apply::tests::arbitrary_second_transaction_cannot_masquerade_as_actor_cache_authority();
-        crate::infrastructure::native_operations::apply::tests::closed_transaction_rejects_physical_alias_and_second_cache_participant();
-        apply_admission_rejects_source_inside_cache();
-        workspace_root_source_allows_exact_generated_cache_descendant();
-        workspace_root_source_and_missing_cache_publish_through_disjoint_shared_anchor();
     }
 
     #[test]
@@ -6653,27 +6636,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn retained_apply_deterministic_success_and_rollback_order_is_complete() {
-        prepared_apply_observer_sees_source_eager_revision_and_state_marker_order();
-        retained_apply_observer_sees_exact_reverse_rollback_after_state_marker();
-    }
-
-    #[test]
-    pub(crate) fn retained_apply_transaction_foundation_contract_is_complete() {
-        retained_apply_closed_participant_contract_is_complete();
-        prepared_apply_success_publishes_source_cache_record_and_state_as_one_revision();
-        retained_apply_failures_restore_source_cache_and_revision_machine_exactly();
-        retained_apply_deterministic_success_and_rollback_order_is_complete();
-        retained_apply_final_cancellation_gate_rolls_back_all_participants();
-        retained_apply_late_deadline_after_all_writes_rolls_back_all_participants();
-        retained_apply_trust_epoch_race_rolls_back_without_overwriting_foreign_state();
-        apply_admission_and_dry_run_revision_observation_are_cache_tree_write_free();
-        actor_scoped_logical_revision_service_keeps_the_platform_fence_capability();
-        prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic();
-        rollback_incomplete_failure_has_a_typed_non_success_category();
-    }
-
-    #[test]
     fn retained_apply_trust_epoch_race_rolls_back_without_overwriting_foreign_state() {
         let fixture = actor_fixture("retained-trust-epoch-race", &["src"]);
         std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
@@ -8052,54 +8014,6 @@ pub(crate) mod tests {
         );
         assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
-    }
-
-    #[test]
-    pub(crate) fn retained_source_selection_finality_contract_is_complete() {
-        crate::infrastructure::source_selection_evidence::tests::actor_admission_rejects_aggregate_exact_byte_budget();
-        crate::infrastructure::source_selection_evidence::tests::actor_admission_charges_repeated_exact_work_before_second_read();
-        crate::infrastructure::source_selection_evidence::tests::actor_admission_bounds_unique_retained_directories_without_ulimit();
-        crate::infrastructure::source_selection_evidence::tests::actor_admission_bounds_global_membership_across_external_source_sets();
-        crate::infrastructure::source_selection_evidence::tests::actor_admission_counts_repeated_membership_enumeration_globally();
-        crate::infrastructure::source_selection_evidence::tests::actor_admission_rejects_total_evidence_record_budget();
-        crate::infrastructure::source_selection_evidence::tests::actor_admission_rejects_route_and_name_byte_budget();
-        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_membership_budget_before_enumeration();
-        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_remaining_record_capacity_before_enumeration();
-        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_remaining_name_capacity_before_enumeration();
-        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_before_unseen_member_child_open();
-        crate::infrastructure::source_selection_evidence::tests::membership_overflow_probe_never_retains_more_names_than_charged();
-        crate::infrastructure::source_selection_evidence::tests::membership_zero_work_rejects_before_enumeration();
-        crate::infrastructure::source_selection_evidence::tests::membership_child_record_cost_is_preflighted_before_open();
-        crate::infrastructure::source_selection_evidence::tests::membership_child_route_cost_is_preflighted_before_open();
-        crate::infrastructure::source_selection_evidence::tests::retained_exact_read_never_appends_a_growth_chunk_past_the_limit();
-        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_checks_record_budget_before_regular_open();
-        crate::infrastructure::source_selection_evidence::tests::actor_admission_comparison_honors_cancellation();
-        crate::infrastructure::source_selection_evidence::tests::actor_admission_comparison_honors_deadline();
-        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_deduplicates_repeated_observations();
-        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_inconsistent_regular_repeat();
-        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_inconsistent_directory_repeat();
-        crate::infrastructure::source_selection_evidence::tests::retained_selection_pass_rejects_inconsistent_membership_repeat();
-        apply_selection_rejects_v8project_kind_change_after_prepare();
-        apply_selection_rejects_v8project_absence_to_appearance_after_prepare();
-        apply_selection_rejects_autodetected_extension_membership_change();
-        apply_selection_rejects_unselected_declared_parent_appearance();
-        apply_selection_rejects_unselected_non_platform_map_input_change();
-        apply_selection_rejects_repaired_oversized_unselected_external_descriptor();
-        apply_selection_dry_run_rejects_late_map_change_without_receipt();
-        apply_selection_late_change_rolls_back_source_cache_revision_and_receipt();
-        apply_selection_rejects_autodetection_container_identity_replacement();
-        prepared_apply_root_and_actor_capabilities_cannot_be_redirected_or_replayed();
-        apply_policy_foreign_actor_and_sibling_worktree_replay_are_rejected();
-        retained_binding_rejects_a_same_path_directory_replacement();
-        active_alias_reuses_actor_and_dropped_actor_recreates_a_new_instance();
-        crate::infrastructure::daemon::server::actor_capacity_tests::restart_request_does_not_claim_noncooperative_actor_released_in_process();
-        crate::infrastructure::daemon::server::actor_capacity_tests::working_task_recovery_is_resume_unsupported_without_apply_reexecution();
-        crate::infrastructure::daemon::server::actor_capacity_tests::view_find_admitted_snapshot_may_finish_after_map_change();
-        crate::infrastructure::daemon::server::actor_capacity_tests::semantically_equivalent_map_edit_reuses_actor_identity();
-        crate::infrastructure::project_sources::tests::actor_admission_preserves_declared_external_processor_and_report_map();
-        crate::infrastructure::project_sources::tests::actor_admission_external_config_dump_info_content_change_invalidates_evidence();
-        crate::infrastructure::project_sources::tests::actor_admission_external_descriptor_absence_to_appearance_invalidates_evidence();
-        crate::infrastructure::project_sources::tests::external_actor_positive_witness_uses_no_process_global_counter();
     }
 
     #[test]
@@ -10067,24 +9981,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn retained_apply_effect_result_contract_is_complete() {
+    pub(crate) fn apply_publication_result_exposes_the_effect_receipt_accessor() {
         let _total_effects_accessor: for<'a> fn(
             &'a super::ApplyPublicationResult,
         ) -> &'a ApplyEffectReceipt = super::ApplyPublicationResult::effects;
-        prepared_apply_effects_are_retained_from_planner_to_result();
-        prepared_apply_dry_run_returns_projected_effect_receipt_without_any_write();
-        prepared_apply_success_returns_committed_effect_receipt_after_one_commit();
-        event_implement_planner_integrates_with_actor_effect_publication_matrix();
-        event_implement_op_failure_returns_no_effect_receipt_and_preserves_all_state();
-        retained_apply_effect_failure_matrix_rolls_back_and_returns_no_receipt();
-        retained_apply_effect_races_never_publish_or_return_effects();
-        real_effect_foreign_actor_replay_preserves_both_actor_states();
-        real_effect_mutation_lane_cancellation_preserves_exact_state();
-        real_effect_mutation_lane_deadline_preserves_exact_state();
-        real_effect_mid_scan_cancellation_preserves_exact_state();
-        real_effect_mid_scan_deadline_preserves_exact_state();
-        real_effect_after_all_postimages_cancellation_rolls_back_exact_state();
-        real_effect_after_all_postimages_deadline_rolls_back_exact_state();
     }
 
     fn prepare_property_effect_batch(
@@ -11358,45 +11258,7 @@ pub(crate) mod tests {
             prepared.transaction.retained_role_root_counts_for_test(),
             (1, 1)
         );
-        retained_apply_closed_participant_contract_is_complete();
         fixture.cleanup();
-    }
-
-    #[test]
-    pub(crate) fn retained_apply_support_policy_evidence_contract_is_complete() {
-        apply_policy_preserves_workspace_ancestor_precedence_over_source_local_policy();
-        apply_policy_absent_chain_rejects_nearer_policy_insertion_before_publication();
-        apply_policy_exact_file_rejects_byte_change_and_rename_replacement();
-        apply_policy_stable_deny_evidence_allows_unrelated_dry_run_and_real_publication();
-        apply_policy_category_and_identity_transitions_are_rejected();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_candidate_parent_replacement_is_rejected();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_exact_and_oversized_reject_name_replacement_after_pre_read_identity();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_exact_rejects_name_replacement_after_retained_read_before_acceptance();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_exact_rejects_same_inode_change_between_stability_passes();
-        apply_policy_dry_run_churn_is_write_free_and_returns_no_receipt();
-        apply_policy_churn_before_source_publication_is_write_free();
-        apply_policy_churn_after_source_publication_rolls_back_all_retained_state();
-        apply_policy_same_inode_churn_during_late_final_gate_rolls_back_all_retained_state();
-        apply_policy_foreign_actor_and_sibling_worktree_replay_are_rejected();
-        apply_policy_same_ancestor_can_govern_two_worktrees_without_authority_aliasing();
-        apply_policy_deadline_and_cancellation_during_capture_are_write_free();
-        apply_policy_all_absent_capture_rejects_terminal_cancellation_and_deadline_write_free();
-        apply_policy_deadline_and_cancellation_during_final_validation_roll_back();
-        apply_policy_capture_stops_after_first_retained_read_chunk_write_free();
-        apply_policy_final_gate_stops_after_first_retained_read_chunk_and_rolls_back();
-        apply_policy_warn_off_deny_database_and_malformed_match_v12();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_read_stops_before_post_read_when_pre_read_becomes_terminal();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_read_stops_after_first_chunk_when_terminal();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_second_pass_reuses_terminal_state_between_chunks();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_reader_preserves_limit_plus_one_in_64_kib_chunks();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_reader_retries_interrupted_after_partial_read();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_reader_stops_repeated_interrupts_at_terminal_state();
-        crate::infrastructure::support_policy_evidence::tests::retained_support_policy_reader_preserves_limit_plus_one_after_interrupt();
-        crate::infrastructure::support_policy_evidence::tests::terminal_pre_read_does_not_leave_after_read_hook_for_following_validation();
-        crate::infrastructure::support_policy_evidence::tests::support_policy_database_paths_distinguish_nested_sources_from_prefix_siblings();
-        crate::infrastructure::support_policy_evidence::tests::support_policy_candidate_search_stops_at_exact_twentieth_candidate();
-        crate::infrastructure::support_policy_evidence::tests::support_policy_overlapping_chains_keep_first_occurrence_order_without_duplicates();
-        retained_apply_support_policy_evidence_does_not_add_a_third_writer_participant();
     }
 
     fn plan_actor_events(

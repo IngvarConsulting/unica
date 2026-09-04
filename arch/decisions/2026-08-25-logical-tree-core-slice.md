@@ -2,7 +2,12 @@
 id: DEC.2026-08-25.LOGICAL-TREE-CORE-SLICE
 status: active
 governs: product
-realized: crates/unica-coder/src/infrastructure/logical_tree.rs::qualified_logical_tree_core_contract_is_complete
+realized:
+  - crates/unica-coder/src/infrastructure/logical_tree.rs::logical_tree_routes_branches_to_existing_typed_readers
+  - crates/unica-coder/src/infrastructure/logical_tree.rs::logical_tree_delegates_representative_addresses_to_current_typed_reader_adapters
+  - crates/unica-coder/src/infrastructure/logical_tree.rs::task14_profiles_route_to_their_real_typed_readers_without_skips
+  - crates/unica-coder/src/infrastructure/logical_tree.rs::platform_capability_controls_logical_existence_without_filesystem_evidence
+  - crates/unica-coder/src/infrastructure/logical_tree.rs::deep_invalid_module_suffix_cannot_hide_below_a_valid_module_prefix
 supersedes: []
 superseded-by: null
 establishes: [CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS, INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE]

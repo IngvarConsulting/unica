@@ -3,7 +3,9 @@ id: INV.SOURCE.IDEMPOTENT-ATTEMPT-METADATA
 status: active
 governs: product
 decision: DEC.2026-08-21.MUTATION-IDEMPOTENCE-SCOPE
-check: crates/unica-coder/src/infrastructure/native_operations/source_invariant_tests.rs::repeated_interface_and_mxl_mutations_preserve_file_identity_but_report_attempted_updates
+check:
+  - crates/unica-coder/src/infrastructure/native_operations/interface.rs::repeated_interface_edit_preserves_identity_but_reports_attempted_update
+  - crates/unica-coder/src/infrastructure/native_operations/mxl.rs::repeated_mxl_compile_preserves_identity_but_reports_attempted_update
 scope: [source]
 ---
 

@@ -3328,31 +3328,4 @@ mod tests {
             assert_eq!(method.handles[0].binding, BindingFact::Property);
         }
     }
-
-    #[test]
-    fn module_projection_core_contract_is_complete() {
-        every_approved_module_role_projects_without_a_parallel_role_registry();
-        valid_missing_physical_file_keeps_possible_events_but_no_source_projection();
-        common_module_requires_all_normalized_flags();
-        multiline_signature_and_real_empty_body_boundaries_come_from_the_projector();
-        method_compilation_count_and_nested_guards_match_actual_ranges();
-        method_projection_uses_ast_and_omits_body_text();
-        explicit_body_preserves_lines_paginates_and_filters_without_method_duplication();
-        nested_regions_interface_projections_and_ambiguity_are_exact();
-        equal_nested_region_names_are_resolved_by_full_logical_address();
-        extension_annotations_resolve_independently_from_compilation_directives();
-        epf_erf_and_extension_sources_project_end_to_end();
-        russian_mobile_application_client_guard_normalizes_and_evaluates();
-        platform_event_state_requires_exact_kind_parameter_shape_and_effective_contexts();
-        form_catalog_is_emitted_once_for_two_bindings_on_one_owner();
-        form_event_state_requires_exact_method_kind_and_parameter_shape();
-        form_binding_retains_actual_element_and_nested_column_kinds();
-        form_owner_without_bindings_still_projects_its_closed_available_catalog();
-        form_possible_events_are_exact_for_document_and_dynamic_list_sources_without_bsl();
-        form_event_implementation_requires_call_type_valid_for_the_form_definition();
-        form_binding_owners_and_all_four_event_states_are_projected();
-        declarative_service_projection_must_use_real_fixture_syntax();
-        declarative_service_handlers_remain_on_exact_owners_without_synthetic_events();
-        crate::infrastructure::native_operations::form_event_registry::tests::platform_8_3_27_module_event_catalog_is_role_specific();
-    }
 }

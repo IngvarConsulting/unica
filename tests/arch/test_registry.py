@@ -126,6 +126,17 @@ def _rust_has_attached_test_attribute(source: bytes, node) -> bool:
     return False
 
 
+def named_evidence(path: Path, prop: str) -> list[str]:
+    """Адреса проверок, названные пропом записи.
+
+    Разбирается только фронт-маттер: имя, встреченное в прозе, проверкой не
+    является. Адрес возвращается целиком — одноимённое объявление в другом
+    файле это другая проверка, и принимать его за названное нельзя.
+    """
+    props, _ = REGISTRY.parse_front_matter(path.read_text(encoding="utf-8"))
+    return REGISTRY.evidence_names(props.get(prop))
+
+
 def evidence_reference_error(
     root: Path,
     reference: str,
@@ -515,10 +526,10 @@ class RecordShapeTests(unittest.TestCase):
             if record.kind != "decision":
                 continue
             status = record.props.get("status")
-            realized = record.props.get("realized")
-            if status == "active" and realized in (None, ""):
+            realized = REGISTRY.evidence_names(record.props.get("realized"))
+            if status == "active" and not realized:
                 offenders.append(f"{record.relative}: active decision has no evidence")
-            if status == "planned" and realized not in (None, ""):
+            if status == "planned" and realized:
                 offenders.append(f"{record.relative}: planned decision claims evidence")
         self.assertEqual(offenders, [])
 
@@ -640,18 +651,19 @@ class ReferenceTests(unittest.TestCase):
         for record in REGISTRY.records():
             if record.kind == "decision":
                 continue
-            check = record.props.get("check") or ""
-            if not check:
+            named = REGISTRY.evidence_names(record.props.get("check"))
+            if not named:
                 offenders.append(f"{record.relative}: no check named")
                 continue
-            error = evidence_reference_error(
-                REPO_ROOT,
-                check,
-                record.relative,
-                require_executable=True,
-            )
-            if error:
-                offenders.append(error)
+            for check in named:
+                error = evidence_reference_error(
+                    REPO_ROOT,
+                    check,
+                    record.relative,
+                    require_executable=True,
+                )
+                if error:
+                    offenders.append(error)
         self.assertEqual(offenders, [])
 
     def test_evidence_reference_requires_an_exact_python_or_rust_declaration(self) -> None:
@@ -796,17 +808,15 @@ class ReferenceTests(unittest.TestCase):
         for record in REGISTRY.records():
             if record.kind != "decision":
                 continue
-            evidence = record.props.get("realized")
-            if evidence in (None, ""):
-                continue
-            error = evidence_reference_error(
-                REPO_ROOT,
-                str(evidence),
-                record.relative,
-                require_executable=False,
-            )
-            if error:
-                offenders.append(error)
+            for evidence in REGISTRY.evidence_names(record.props.get("realized")):
+                error = evidence_reference_error(
+                    REPO_ROOT,
+                    evidence,
+                    record.relative,
+                    require_executable=False,
+                )
+                if error:
+                    offenders.append(error)
         self.assertEqual(offenders, [])
 
     def test_no_rule_explains_its_own_props(self) -> None:
@@ -985,22 +995,34 @@ class RetainedApplyFoundationTests(unittest.TestCase):
         self.assertTrue(order.is_file())
         self.assertTrue(write_free.is_file())
         self.assertIn("status: active", decision.read_text(encoding="utf-8"))
-        self.assertIn(
-            "retained_apply_transaction_foundation_contract_is_complete",
-            decision.read_text(encoding="utf-8"),
-        )
-        self.assertIn(
-            "retained_apply_closed_participant_contract_is_complete",
-            participants.read_text(encoding="utf-8"),
-        )
+        # Запись называет сами проверки, а не обёртку над ними: обёртка лишь
+        # переисполняла то, что харнесс уже прогнал.
+        realized = named_evidence(decision, "realized")
+        apply_rs = "crates/unica-coder/src/infrastructure/native_operations/apply.rs"
+        actor_rs = "crates/unica-coder/src/infrastructure/workspace_actor.rs"
+        for name in (
+            f"{apply_rs}::retained_transaction_roles_require_explicit_roots_and_cache_authority",
+            f"{apply_rs}::closed_transaction_rejects_physical_alias_and_second_cache_participant",
+            f"{actor_rs}::prepared_apply_success_publishes_source_cache_record_and_state_as_one_revision",
+        ):
+            self.assertIn(name, realized)
+        participant_checks = named_evidence(participants, "check")
+        for name in (
+            f"{apply_rs}::retained_transaction_roles_require_explicit_roots_and_cache_authority",
+            f"{apply_rs}::closed_transaction_rejects_physical_alias_and_second_cache_participant",
+            f"{actor_rs}::apply_admission_rejects_source_inside_cache",
+        ):
+            self.assertIn(name, participant_checks)
         self.assertIn(
             "retained_apply_failures_restore_source_cache_and_revision_machine_exactly",
             rollback.read_text(encoding="utf-8"),
         )
-        self.assertIn(
-            "retained_apply_deterministic_success_and_rollback_order_is_complete",
-            order.read_text(encoding="utf-8"),
-        )
+        order_checks = named_evidence(order, "check")
+        for name in (
+            f"{actor_rs}::prepared_apply_observer_sees_source_eager_revision_and_state_marker_order",
+            f"{actor_rs}::retained_apply_observer_sees_exact_reverse_rollback_after_state_marker",
+        ):
+            self.assertIn(name, order_checks)
         self.assertIn(
             "apply_admission_and_dry_run_revision_observation_are_cache_tree_write_free",
             write_free.read_text(encoding="utf-8"),
@@ -1037,66 +1059,58 @@ class RetainedApplyEffectResultTests(unittest.TestCase):
         decision_text = decision.read_text(encoding="utf-8")
         invariant_text = invariant.read_text(encoding="utf-8")
         self.assertIn("status: active", decision_text)
-        self.assertIn(
-            "retained_apply_effect_result_contract_is_complete",
-            decision_text,
-        )
+        # Запись называет сами проверки. Обёртка, стоявшая здесь прежде,
+        # переисполняла их и удалена; уцелевшее типовое утверждение о доступе
+        # к квитанции эффектов носит теперь имя, которое его и описывает.
+        actor_rs = "crates/unica-coder/src/infrastructure/workspace_actor.rs"
+        for name in (
+            f"{actor_rs}::prepared_apply_effects_are_retained_from_planner_to_result",
+            f"{actor_rs}::prepared_apply_dry_run_returns_projected_effect_receipt_without_any_write",
+        ):
+            self.assertIn(name, named_evidence(decision, "realized"))
         self.assertIn(
             "decision: DEC.2026-08-26.RETAINED-APPLY-EFFECT-PUBLICATION-SLICE",
             invariant_text,
         )
-        self.assertIn(
-            "retained_apply_effect_result_contract_is_complete",
-            invariant_text,
-        )
+        for name in (
+            f"{actor_rs}::prepared_apply_effects_are_retained_from_planner_to_result",
+            f"{actor_rs}::prepared_apply_success_returns_committed_effect_receipt_after_one_commit",
+        ):
+            self.assertIn(name, named_evidence(invariant, "check"))
         self.assertNotIn("CTR.", decision_text)
         self.assertNotIn("wire", invariant_text.lower())
 
-    def test_active_witness_invokes_real_effect_foreign_actor_and_late_gates(self) -> None:
-        source = (
-            REPO_ROOT / "crates/unica-coder/src/infrastructure/workspace_actor.rs"
-        ).read_bytes()
-        parser = Parser(Language(tree_sitter_rust.language()))
-        tree = parser.parse(source)
-        stack = [tree.root_node]
-        witness = None
-        while stack:
-            node = stack.pop()
-            if node.type == "function_item":
-                name = node.child_by_field_name("name")
-                if (
-                    name is not None
-                    and source[name.start_byte : name.end_byte]
-                    == b"retained_apply_effect_result_contract_is_complete"
-                ):
-                    witness = node.child_by_field_name("body")
-                    break
-            stack.extend(node.named_children)
-        self.assertIsNotNone(witness, "active retained-effect witness is absent")
+    def test_active_witness_names_real_effect_foreign_actor_and_late_gates(self) -> None:
+        """Правило держат сами сценарии, а не функция, вызывающая их подряд.
 
-        calls = set()
-        stack = [witness]
-        while stack:
-            node = stack.pop()
-            if node.type == "call_expression":
-                function = node.child_by_field_name("function")
-                if function is not None and function.type == "identifier":
-                    calls.add(source[function.start_byte : function.end_byte].decode())
-            stack.extend(node.named_children)
-
-        required = {
-            "real_effect_foreign_actor_replay_preserves_both_actor_states",
-            "real_effect_mutation_lane_cancellation_preserves_exact_state",
-            "real_effect_mutation_lane_deadline_preserves_exact_state",
-            "real_effect_mid_scan_cancellation_preserves_exact_state",
-            "real_effect_mid_scan_deadline_preserves_exact_state",
-            "real_effect_after_all_postimages_cancellation_rolls_back_exact_state",
-            "real_effect_after_all_postimages_deadline_rolls_back_exact_state",
-        }
-        self.assertFalse(
-            required - calls,
-            f"active retained-effect witness is missing real-effect calls: {sorted(required - calls)}",
+        Раньше здесь разбирался Rust: свидетель обязан был звать семь
+        сценариев. Звал он их вторым заходом — харнесс уже прогнал каждый
+        отдельным тестом. Требование по существу прежнее и переехало туда, где
+        живёт обещание: запись называет эти семь проверок поимённо.
+        """
+        record = named_evidence(
+            ARCH_ROOT / "invariants/INV.CACHE.RETAINED-APPLY-EFFECT-RESULT.md", "check"
         )
+        actor_rs = "crates/unica-coder/src/infrastructure/workspace_actor.rs"
+        required = tuple(
+            f"{actor_rs}::{declaration}"
+            for declaration in (
+                "real_effect_foreign_actor_replay_preserves_both_actor_states",
+                "real_effect_mutation_lane_cancellation_preserves_exact_state",
+                "real_effect_mutation_lane_deadline_preserves_exact_state",
+                "real_effect_mid_scan_cancellation_preserves_exact_state",
+                "real_effect_mid_scan_deadline_preserves_exact_state",
+                "real_effect_after_all_postimages_cancellation_rolls_back_exact_state",
+                "real_effect_after_all_postimages_deadline_rolls_back_exact_state",
+            )
+        )
+        missing = sorted(name for name in required if name not in record)
+        self.assertFalse(
+            missing,
+            f"active retained-effect rule is missing real-effect checks: {missing}",
+        )
+
+
 
 
 if __name__ == "__main__":

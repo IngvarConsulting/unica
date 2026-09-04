@@ -11497,14 +11497,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn typed_read_result_contract_is_closed() {
-        successful_typed_reader_without_data_fails_closed();
-        successful_typed_reader_with_stdout_duplicate_fails_closed();
-        failed_typed_reader_may_omit_data();
-        successful_typed_mutation_may_omit_data();
-    }
-
-    #[test]
     fn failed_typed_reader_may_omit_data() {
         let mut outcome = AdapterOutcome::ok("reader failed before producing data");
         outcome.ok = false;
@@ -12257,12 +12249,6 @@ pub(crate) mod tests {
         assert!(error.contains("invalid/ambiguous format"), "{error}");
         assert!(error.contains("platform_xml"), "{error}");
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn native_xml_metadata_tools_require_platform_xml_source_sets() {
-        native_xml_metadata_tools_reject_edt_source_set_targets();
-        native_xml_metadata_tools_reject_ambiguous_source_set_targets();
     }
 
     #[test]

@@ -4092,87 +4092,82 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn actor_read_authority_builder_uses_only_actor_bound_semantics() {
-        actor_read_authority_builder_rejects_actor_bound_unsupported_profile();
-        actor_read_authority_builder_preserves_actor_bound_source_kind();
-        actor_read_authority_builder_preserves_non_replenishing_deadline();
-    }
-
-    #[test]
     pub(crate) fn actor_authenticated_source_architecture_names_complete_witnesses() {
-        fn front_matter_value<'a>(document: &'a str, key: &str) -> &'a str {
-            document
-                .lines()
-                .find_map(|line| line.strip_prefix(key))
-                .map(str::trim)
-                .unwrap_or_else(|| panic!("architecture record has no `{key}` field"))
+        // Запись называет сами проверки, а не агрегат над ними. Раньше здесь
+        // разбирался Rust: свидетель обязан был звать перечисленное. Звал он
+        // это вторым заходом, потому что харнесс уже прогнал каждую проверку
+        // отдельным тестом. Требование прежнее и проверяется там, где живёт
+        // обещание.
+        // Имя, встреченное в прозе записи, проверкой не является: смотрим
+        // только список под ключом во фронт-маттере.
+        fn declarations(record: &str, key: &str) -> Vec<String> {
+            // Запись читается с диска как есть, а на Windows `checkout` отдаёт
+            // её с CRLF. Разбор идёт построчно с обрезанным `\r`, иначе на
+            // одной из трёх ОС фронт-маттер просто не находится.
+            let mut lines = record.lines().map(str::trim_end);
+            assert_eq!(
+                lines.next(),
+                Some("---"),
+                "architecture record has front matter"
+            );
+            let front: Vec<&str> = lines.take_while(|line| *line != "---").collect();
+            let mut collecting = false;
+            let mut named = Vec::new();
+            for line in front {
+                if let Some(inline) = line.strip_prefix(key) {
+                    collecting = inline.trim().is_empty();
+                    if !collecting {
+                        named.push(inline.trim().to_owned());
+                    }
+                    continue;
+                }
+                match line.trim_start().strip_prefix("- ") {
+                    Some(entry) if collecting => named.push(entry.trim().to_owned()),
+                    _ => collecting = false,
+                }
+            }
+            named
+                .into_iter()
+                .filter_map(|entry| entry.rsplit_once("::").map(|(_, name)| name.to_owned()))
+                .collect()
         }
 
-        let capability = include_str!(
-            "../../../../../arch/invariants/INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES.md"
-        );
-        assert_eq!(
-            front_matter_value(capability, "check:"),
-            "crates/unica-coder/src/infrastructure/daemon/server.rs::actor_authenticated_source_capability_contract_is_complete",
-            "capability invariant points at a witness that omits daemon no-substitution"
-        );
-
-        let decision = include_str!(
-            "../../../../../arch/decisions/2026-08-26-actor-authenticated-source-profile-slice.md"
-        );
-        assert_eq!(
-            front_matter_value(decision, "realized:"),
-            "crates/unica-coder/src/infrastructure/daemon/server.rs::actor_authenticated_source_profile_contract_is_complete"
-        );
-
-        let source = include_str!("server.rs");
-        let aggregate_declaration = [
-            "pub(crate) fn actor_authenticated_source_profile_contract_is_complete",
-            "()",
-        ]
-        .concat();
-        let (_, after_aggregate) = source
-            .split_once(&aggregate_declaration)
-            .expect("decision aggregate remains available to the architecture witness");
-        let (aggregate, _) = after_aggregate
-            .split_once("\n    }\n")
-            .expect("decision aggregate remains structurally bounded");
-        assert!(
-            aggregate.contains("actor_authenticated_source_capability_contract_is_complete();"),
-            "decision aggregate omits the complete actor capability witness"
-        );
-        assert!(
-            aggregate.contains(
-                "remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state();"
+        let capability = declarations(
+            include_str!(
+                "../../../../../arch/invariants/INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES.md"
             ),
-            "decision aggregate omits actor state-scope separation"
+            "check:",
         );
-        assert!(
-            aggregate.contains("duplicate_source_set_names_with_distinct_roots_are_rejected();"),
-            "decision aggregate omits duplicate source-set name rejection"
-        );
+        for named in [
+            "actor_read_source_capability_is_sealed_after_binding",
+            "actor_read_authority_builder_rejects_actor_bound_unsupported_profile",
+            "actor_read_authority_builder_preserves_actor_bound_source_kind",
+            "actor_read_authority_builder_preserves_non_replenishing_deadline",
+            "provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile",
+        ] {
+            assert!(
+                capability.iter().any(|entry| entry == named),
+                "capability invariant omits the witness {named}"
+            );
+        }
 
-        let capability_aggregate_declaration = [
-            "pub(crate) fn actor_authenticated_source_capability_contract_is_complete",
-            "()",
-        ]
-        .concat();
-        let (_, after_capability_aggregate) = source
-            .split_once(&capability_aggregate_declaration)
-            .expect("capability aggregate remains available to the architecture witness");
-        let (capability_aggregate, _) = after_capability_aggregate
-            .split_once("\n    }\n")
-            .expect("capability aggregate remains structurally bounded");
-        assert!(
-            capability_aggregate
-                .contains("actor_read_source_capability_is_sealed_after_binding();"),
-            "capability aggregate omits the complete AST and sibling-privacy witness"
+        let decision = declarations(
+            include_str!(
+                "../../../../../arch/decisions/2026-08-26-actor-authenticated-source-profile-slice.md"
+            ),
+            "realized:",
         );
-        assert!(
-            capability_aggregate
-                .contains("actor_read_authority_builder_uses_only_actor_bound_semantics();"),
-            "capability aggregate omits bound profile/kind/deadline behavior"
-        );
+        for named in [
+            "provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile",
+            "remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state",
+            "duplicate_source_set_names_with_distinct_roots_are_rejected",
+            "actor_read_source_capability_is_sealed_after_binding",
+        ] {
+            assert!(
+                decision.iter().any(|entry| entry == named),
+                "decision omits the witness {named}"
+            );
+        }
     }
 
     #[test]
@@ -5623,29 +5618,6 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
-    #[test]
-    pub(crate) fn actor_authenticated_source_profile_contract_is_complete() {
-        crate::infrastructure::workspace_actor::tests::same_name_root_changed_kind_rotates_actor_and_state_scope();
-        crate::infrastructure::workspace_actor::tests::same_name_root_changed_format_or_platform_profile_rotates_actor();
-        crate::infrastructure::workspace_actor::tests::workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots();
-        crate::infrastructure::workspace_actor::tests::duplicate_physical_root_names_are_rejected_as_ambiguous();
-        crate::infrastructure::workspace_actor::tests::duplicate_source_set_names_with_distinct_roots_are_rejected();
-        actor_authenticated_source_capability_contract_is_complete();
-        crate::infrastructure::workspace_actor::tests::remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state();
-        subsequent_daemon_invocation_after_same_root_kind_change_gets_new_actor_identity();
-        v13_daemon_rejects_unproved_edt_invalid_or_empty_platform_fallback();
-        hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once();
-    }
-
-    #[test]
-    pub(crate) fn actor_authenticated_source_capability_contract_is_complete() {
-        actor_read_source_capability_is_sealed_after_binding();
-        actor_read_authority_builder_uses_only_actor_bound_semantics();
-        provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile();
-        crate::infrastructure::workspace_actor::tests::capabilities_do_not_cross_distinct_actor_instances_with_equal_identity();
-        crate::infrastructure::workspace_actor::tests::workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication();
-    }
-
     struct ManualInvocationClock(Mutex<Instant>);
 
     impl ManualInvocationClock {
@@ -6124,16 +6096,6 @@ struct ActorLogicalReadLease {"#,
             accepted.is_empty(),
             "zero-fence publication accepted forbidden envelopes: {accepted:?}"
         );
-    }
-
-    #[test]
-    pub(crate) fn hidden_v13_logical_publication_contract_is_complete() {
-        crate::infrastructure::source_revision::tests::retained_final_confirmation_stabilization_contract_is_complete();
-        hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once();
-        review_invalid_logical_address_reaches_typed_bad_value_result();
-        valid_unknown_source_reaches_typed_provider_unavailable_without_scanning();
-        zero_fence_view_rejection_accepts_only_the_exact_canonical_envelope();
-        crate::infrastructure::workspace_actor::tests::logical_read_publication_lane_wait_honors_existing_cancellation_and_deadline();
     }
 
     struct BlockingService {

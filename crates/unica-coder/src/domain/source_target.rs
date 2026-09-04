@@ -991,14 +991,6 @@ mod tests {
     }
 
     #[test]
-    fn logical_target_identity_contract_is_complete() {
-        source_target_profile_emits_canonical_english_kind_tokens();
-        source_target_profile_normalizes_only_registered_exact_russian_kind_aliases();
-        source_target_profile_preserves_application_name_case();
-        source_target_and_resolved_target_serialize_only_logical_identity();
-    }
-
-    #[test]
     fn nested_subsystem_paths_do_not_extend_the_metadata_address_grammar() {
         let profile = AddressProfile::new(PLATFORM_XML_8_3_27_FORMAT_2_20).unwrap();
 

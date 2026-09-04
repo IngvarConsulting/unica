@@ -2748,14 +2748,6 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn code_patch_observed_eol_policy_is_closed() {
-        code_patch_rejects_lone_cr_instead_of_inventing_or_gaining_an_eol_policy();
-        code_patch_without_any_source_eol_uses_lf_for_preview_apply_and_repeat_noop();
-        mixed_eol_apply_preserves_untouched_bytes_and_uses_target_eol();
-        unified_diff_round_trips_crlf_and_missing_terminal_eol();
-    }
-
-    #[test]
     fn object_and_manager_modules_report_owner_and_role() {
         let context = temp_context("module-roles");
         fs::create_dir_all(context.workspace_root.join("src/Catalogs")).unwrap();
