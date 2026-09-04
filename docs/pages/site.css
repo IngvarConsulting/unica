@@ -113,7 +113,9 @@
     color: var(--muted); font-weight: 600; margin: 0 0 14px;
   }
   .hero h1 { font-size: clamp(38px, 6vw, 60px); line-height: 1.05; margin: 0 0 18px; letter-spacing: -0.03em; }
-  .hero h1 span { color: var(--blue); }
+  /* В заголовке яркий синий уместен и читается: для крупного текста
+     порог контраста 3, а не 4,5 — приглушать его незачем. */
+  .hero h1 span { color: var(--blue-fill); }
   .lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 62ch; margin: 0 0 28px; }
   .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 34px; }
   .btn {
