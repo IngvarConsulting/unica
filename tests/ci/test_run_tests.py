@@ -34,12 +34,13 @@ class RunTestsSeamTests(unittest.TestCase):
         self.assertEqual(
             rust, [["cargo", "nextest", "run", "--workspace", "--profile", "default"]]
         )
+        runner_script = str(MODULE_PATH.with_name("run-unittest.py"))
         self.assertEqual(
             python,
             [
-                ["python", "-m", "unittest", "discover", "-s", "tests/ci", "--durations", "20"],
-                ["python", "-m", "unittest", "discover", "-s", "tests/arch"],
-                ["python", "-m", "unittest", "discover", "-s", "tests/dev", "--durations", "20"],
+                ["python", runner_script, "-s", "tests/ci", "--durations", "20"],
+                ["python", runner_script, "-s", "tests/arch"],
+                ["python", runner_script, "-s", "tests/dev", "--durations", "20"],
             ],
         )
 
@@ -62,7 +63,21 @@ class RunTestsSeamTests(unittest.TestCase):
 
         self.assertEqual(planned[0][0], "cargo")
         self.assertTrue(all(command[0] == "python" for command in planned[1:]))
+        self.assertTrue(all(command[1].endswith("run-unittest.py") for command in planned[1:]))
         self.assertEqual(len(planned), 4)
+
+    def test_results_directory_turns_emission_on_for_python_suites(self) -> None:
+        """Без `--results` набор идёт как раньше; с ним пишет результаты и знает раннер."""
+        module = load_module()
+        from pathlib import Path as P
+
+        quiet = module.commands("all", "python", interpreter="python")
+        emitting = module.commands("all", "python", interpreter="python", results=P("out"), runner="macos-14")
+
+        self.assertTrue(all("--results" not in command for command in quiet))
+        for command in emitting:
+            self.assertIn("--results", command)
+            self.assertIn("macos-14", command)
 
     def test_unknown_profile_or_ecosystem_is_a_refusal_not_an_empty_run(self) -> None:
         """Пустой прогон зелёный по устройству; отказ — единственный честный ответ."""
