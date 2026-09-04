@@ -18,6 +18,11 @@ import traceback
 import unittest
 from pathlib import Path
 
+# `python -m unittest` ставит текущий каталог первым в `sys.path`, и модули
+# тестов импортируют `scripts.ci.*` от корня. Скрипт по умолчанию ставит
+# свой каталог, а не корень, — восстанавливаем то, что было у `-m`.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
 
