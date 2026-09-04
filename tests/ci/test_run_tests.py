@@ -79,6 +79,24 @@ class RunTestsSeamTests(unittest.TestCase):
             self.assertIn("--results", command)
             self.assertIn("macos-14", command)
 
+    def test_own_runner_imports_every_module_the_module_runner_could(self) -> None:
+        """`python -m unittest` видит `scripts.ci.*` от корня; наш раннер обязан тоже.
+
+        Иначе модуль, импортирующий скрипт конвейера, падает на импорте и
+        считается упавшим тестом — так и было на первом прогоне.
+        """
+        import subprocess
+        import sys
+
+        runner = MODULE_PATH.with_name("run-unittest.py")
+        listing = subprocess.run(
+            [sys.executable, str(runner), "-s", "tests/ci", "--plan-only"],
+            cwd=MODULE_PATH.parents[2], capture_output=True, text=True, check=True,
+        ).stdout
+
+        self.assertNotIn("_FailedTest", listing)
+        self.assertIn("test_donor_parity_contract", listing)
+
     def test_unknown_profile_or_ecosystem_is_a_refusal_not_an_empty_run(self) -> None:
         """Пустой прогон зелёный по устройству; отказ — единственный честный ответ."""
         module = load_module()
