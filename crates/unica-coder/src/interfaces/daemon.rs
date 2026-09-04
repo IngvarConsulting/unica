@@ -7,8 +7,13 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
-const DEFAULT_IDLE_GRACE: Duration = Duration::from_secs(30);
-const MAX_TEST_IDLE_GRACE_MS: u128 = 600_000;
+/// Сколько демон ждёт работы, прежде чем выйти. Тёплый индекс BSL стоит минут,
+/// поэтому пауза между задачами не должна стоить пользователю повторной сборки.
+const DEFAULT_IDLE_GRACE: Duration = Duration::from_secs(15 * 60);
+/// Верхняя граница принимаемого значения. Её проверяет и производственный
+/// запуск демона, и тестовый вход, поэтому она обязана быть не меньше
+/// `DEFAULT_IDLE_GRACE`.
+const MAX_IDLE_GRACE_MS: u128 = 60 * 60 * 1_000;
 
 pub fn run_from_args(args: &[String]) -> Result<(), String> {
     let parsed = parse_daemon_args(args)?;
@@ -93,8 +98,8 @@ pub fn connect_owner_for_protocol_test(
 ) -> Result<DaemonOwnerLease, String> {
     let identity = CoreIdentity::from_str(core_identity)?;
     let idle_grace = Duration::from_millis(idle_grace_ms);
-    if idle_grace.is_zero() || idle_grace.as_millis() > MAX_TEST_IDLE_GRACE_MS {
-        return Err("daemon test idle grace is outside the supported range".to_string());
+    if idle_grace.is_zero() || idle_grace.as_millis() > MAX_IDLE_GRACE_MS {
+        return Err("daemon idle grace is outside the supported range".to_string());
     }
     let inner = match identity.protocol_identity() {
         DaemonProtocolIdentity::V3 => DaemonClient::new(DaemonClientConfig::new(
@@ -214,7 +219,7 @@ fn parse_daemon_args(args: &[String]) -> Result<ParsedDaemonArgs, String> {
                 .parse::<u64>()
                 .map_err(|_| "daemon idle grace must be an integer".to_string())?;
             let duration = Duration::from_millis(milliseconds);
-            if duration.is_zero() || duration.as_millis() > MAX_TEST_IDLE_GRACE_MS {
+            if duration.is_zero() || duration.as_millis() > MAX_IDLE_GRACE_MS {
                 return Err("daemon idle grace is outside the supported range".to_string());
             }
             duration
@@ -232,7 +237,7 @@ fn parse_daemon_args(args: &[String]) -> Result<ParsedDaemonArgs, String> {
 mod tests {
     use super::{
         parse_daemon_args, resolve_default_user_daemon_state_root, runtime_selection,
-        DaemonRuntimeSelection,
+        DaemonRuntimeSelection, DEFAULT_IDLE_GRACE, MAX_IDLE_GRACE_MS,
     };
     use crate::infrastructure::daemon::identity::CoreIdentity;
     use std::str::FromStr;
@@ -246,6 +251,20 @@ mod tests {
             "--core-identity".into(),
             "a".repeat(64),
         ]
+    }
+
+    /// Родитель всегда передаёт демону `--idle-grace-ms`, и это же значение
+    /// проверяет парсер. Дефолт выше границы означал бы, что демон не
+    /// запускается вовсе, а обнаружилось бы это только на живом хосте.
+    #[test]
+    fn default_idle_grace_is_accepted_by_the_parser_that_receives_it() {
+        assert!(DEFAULT_IDLE_GRACE.as_millis() <= MAX_IDLE_GRACE_MS);
+
+        let mut args = base_args();
+        args.push("--idle-grace-ms".into());
+        args.push(DEFAULT_IDLE_GRACE.as_millis().to_string());
+        let parsed = parse_daemon_args(&args).expect("default idle grace must parse");
+        assert_eq!(parsed.idle_grace, DEFAULT_IDLE_GRACE);
     }
 
     #[test]

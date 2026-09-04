@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unica — плагин Codex и Claude Code для 1С</title>
+<meta name="description" content="Unica помогает агенту находить нужный код, изменять объекты 1С и проверять результат.">
+<meta name="theme-color" content="#F8FAFC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0D1117" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="assets/unica-mark-blue.svg">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <a class="brand" href="#top" aria-label="Unica">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192.096 53.36" aria-hidden="true">
+        <g transform="translate(0 0) scale(0.83375)">
+          <rect x="0" y="0" width="64" height="64" rx="15.304" fill="#2563EB"/>
+          <path d="M3.3 3.3v12.004278c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722V3.3" transform="translate(10.2608695652 10.2608695652) scale(1.73913043478)" fill="none" stroke="#FFFFFF" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="32" cy="29.913" r="3.826" fill="#93C5FD"/>
+        </g>
+        <g transform="translate(19.227 8.555) scale(1.45)" fill="none" stroke="currentColor" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3.3 21.7V9.695722c0-3.542246 2.853476-6.395722 6.395722-6.395722h5.608556c3.542246 0 6.395722 2.853476 6.395722 6.395722V21.7" transform="translate(27.048 0)"/>
+          <path d="M6.125 3.3v18.4" transform="translate(53.295 0)"/>
+          <path d="M21.7 3.3H9.695722c-3.542246 0-6.395722 2.853476-6.395722 6.395722v5.608556c0 3.542246 2.853476 6.395722 6.395722 6.395722H21.7" transform="translate(66.792 0)"/>
+          <path d="M21.7 21.7V9.695722c0-3.542246-2.853476-6.395722-6.395722-6.395722H9.695722c-3.542246 0-6.395722 2.853476-6.395722 6.395722v5.608556c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722" transform="translate(95.68 0)"/>
+        </g>
+      </svg>
+    </a>
+    <nav>
+      <a href="#install">Установка</a>
+      <a href="architecture.html">Архитектура</a>
+      <a href="scenarios.html">Сценарии</a>
+      <a href="https://github.com/IngvarConsulting/unica" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer">Telegram</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <div class="wrap hero">
+    <p class="eyebrow">Unica · плагин для Codex и Claude Code</p>
+    <h1>Разработка на <span>1С</span> с AI-агентом</h1>
+    <p class="lede">
+      Unica помогает агенту находить нужный код, изменять объекты 1С и проверять
+      результат.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#install">Установить Unica</a>
+      <a class="btn btn-ghost" href="https://ingvar.pro/products/unica" target="_blank" rel="noopener noreferrer">Страница продукта</a>
+      <a class="btn btn-ghost" href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer">Telegram</a>
+    </div>
+
+    <div class="cards" id="state">
+      <div class="card">
+        <h3>Публичная версия</h3>
+        <a class="metric" href="{{version_url}}" target="_blank" rel="noopener noreferrer">{{version}}</a>
+        <div class="sub">опубликована {{version_date}}</div>
+      </div>
+      <div class="card">
+        <h3>Пререлиз</h3>
+        <span class="metric metric-idle">{{prerelease}}</span>
+        <div class="sub">{{prerelease_note}}</div>
+      </div>
+      <!-- repeat: tested_lines -->
+      <div class="card">
+        <h3 class="ident line-head"><svg class="branch-icon" viewBox="0 0 14 14" aria-hidden="true"><circle cx="4" cy="3" r="1.7"/><circle cx="4" cy="11" r="1.7"/><circle cx="10.5" cy="3" r="1.7"/><path d="M4 4.7v4.6M10.5 4.7v1.2c0 1.7-1.4 3.1-3.1 3.1H4"/></svg>{{line}}<span class="line-run"><a href="{{build_url}}" target="_blank" rel="noopener noreferrer">{{build_sha}}</a> от {{build_date}}</span></h3>
+        <div class="metric-row">
+          <a class="metric" href="{{report_url}}" target="_blank" rel="noopener noreferrer">{{tests_total}} <small>теста</small></a>
+          <span class="card-action"><a href="{{report_url}}" target="_blank" rel="noopener noreferrer">Отчёт Allure →</a></span>
+        </div>
+        <div class="sub">
+          <span class="stat"><span class="dot dot-ok"></span>{{tests_passed}} прошли</span> ·
+          <span class="stat"><span class="dot dot-bad"></span>{{tests_failed}} упали</span> ·
+          <span class="stat"><span class="dot dot-skip"></span>{{tests_skipped}} пропущены</span>
+        </div>
+      </div>
+      <!-- /repeat -->
+      <!-- repeat: plain_lines -->
+      <div class="card">
+        <h3 class="ident line-head"><svg class="branch-icon" viewBox="0 0 14 14" aria-hidden="true"><circle cx="4" cy="3" r="1.7"/><circle cx="4" cy="11" r="1.7"/><circle cx="10.5" cy="3" r="1.7"/><path d="M4 4.7v4.6M10.5 4.7v1.2c0 1.7-1.4 3.1-3.1 3.1H4"/></svg>{{line}}</h3>
+        <span class="metric metric-idle">{{build_state}}</span>
+        <div class="sub">{{build_note}}</div>
+      </div>
+      <!-- /repeat -->
+    </div>
+  </div>
+
+  <section id="install">
+    <div class="wrap">
+      <h2>Установка</h2>
+      <p>Codex и Claude Code ставятся из одного маркетплейса. Нужен Git.</p>
+      <div class="tabs">
+        <input type="radio" id="host-codex" name="host" checked>
+        <input type="radio" id="host-claude" name="host">
+        <div class="tabbar">
+          <label for="host-codex">Codex</label>
+          <label for="host-claude">Claude Code</label>
+        </div>
+        <div class="panel panel-codex">
+          <pre><code id="cmd-codex">codex plugin marketplace add IngvarConsulting/unica-marketplace --ref main
+codex plugin add unica@unica</code></pre>
+          <button class="copy" type="button" data-target="cmd-codex" aria-label="Скопировать" title="Скопировать"><svg class="i-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M15 5.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h.5"/></svg><svg class="i-done" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5 9.5 17.5 19.5 6.5"/></svg></button>
+        </div>
+        <div class="panel panel-claude">
+          <pre><code id="cmd-claude">claude plugin marketplace add IngvarConsulting/unica-marketplace
+claude plugin install unica@unica</code></pre>
+          <button class="copy" type="button" data-target="cmd-claude" aria-label="Скопировать" title="Скопировать"><svg class="i-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M15 5.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h.5"/></svg><svg class="i-done" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5 9.5 17.5 19.5 6.5"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Поддерживаемые версии платформы</h2>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Версия</th><th>Статус</th><th>Что это означает</th></tr></thead>
+        <tbody>
+          <tr><td><code>8.5.1.x</code>, <code>8.5.4.x</code></td><td>Планируется</td><td>Хотим добавить в ближайшее время.</td></tr>
+          <tr><td><code>8.3.27.x</code></td><td>Поддерживается</td><td>Поддержаны все актуальные релизы ветки.</td></tr>
+          <tr><td><code>8.3.26.x</code> и ниже</td><td>Не планируется</td><td>Помогаем мигрировать на 8.3.27.</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+  // Кнопка копирования — единственное место, где странице нужен скрипт.
+  // Без него команда остаётся видимой и выделяется мышью.
+  for (const button of document.querySelectorAll('.copy')) {
+    button.addEventListener('click', async () => {
+      const text = document.getElementById(button.dataset.target).innerText;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const area = document.createElement('textarea');
+        area.value = text;
+        document.body.append(area);
+        area.select();
+        document.execCommand('copy');
+        area.remove();
+      }
+      button.classList.add('copied');
+      setTimeout(() => button.classList.remove('copied'), 1600);
+    });
+  }
+</script>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      ООО «Ингвар Консалтинг» · ИНН 9715492967<br>
+      <a href="https://ingvar.pro/products/unica/privacy" target="_blank" rel="noopener noreferrer">Политика конфиденциальности</a> ·
+      <a href="https://ingvar.pro/products/unica/terms" target="_blank" rel="noopener noreferrer">Условия использования</a>
+    </div>
+    <div>
+      <a href="https://ingvar.pro/products/unica" target="_blank" rel="noopener noreferrer">ingvar.pro</a> ·
+      <a href="https://github.com/IngvarConsulting/unica" target="_blank" rel="noopener noreferrer">GitHub</a> ·
+      <a href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer">Telegram</a><br>
+      Страница собрана {{generated_at}} из <a href="{{generated_url}}" target="_blank" rel="noopener noreferrer">{{generated_sha}}</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

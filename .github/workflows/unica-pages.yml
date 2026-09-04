@@ -1,0 +1,122 @@
+name: Unica Pages
+
+# Сайт собирается из того, что уже произошло: страницы из дерева, каталог
+# сценариев из приёмочного корпуса, отчёт — из результатов состоявшегося
+# прогона. Своих тестов этот workflow не гоняет.
+on:
+  workflow_run:
+    workflows: ["Build Unica Codex Plugin"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: unica-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Собрать сайт
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # История опубликованного отчёта: без неё тренды начинаются заново на
+      # каждом прогоне, и перемежающийся тест выглядит разовым падением.
+      - name: Забрать историю опубликованного отчёта
+        continue-on-error: true
+        env:
+          SITE: https://ingvarconsulting.github.io/unica
+        run: |
+          set -eu
+          mkdir -p .build/history
+          for name in history.json history-trend.json duration-trend.json retry-trend.json categories-trend.json; do
+            curl -fsSL "$SITE/allure/main/history/$name" -o ".build/history/$name" || true
+          done
+          ls -la .build/history
+
+      - name: Забрать результаты прогона, если он их оставил
+        id: results
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -eu
+          if [ -z "${RUN_ID:-}" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern 'allure-results*' --dir .build/allure-results; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Поставить Allure CLI
+        if: steps.results.outputs.found == 'true'
+        run: |
+          set -eu
+          curl -fsSL -o allure.tgz https://github.com/allure-framework/allure2/releases/download/2.35.1/allure-2.35.1.tgz
+          tar -xzf allure.tgz
+          echo "$PWD/allure-2.35.1/bin" >> "$GITHUB_PATH"
+
+      # Отчёт собирается раньше документа статуса: счётчики тестов на странице
+      # берутся из его сводки, а не считаются вторым способом.
+      - name: Собрать отчёт
+        if: steps.results.outputs.found == 'true'
+        run: |
+          set -eu
+          cp -R .build/history .build/allure-results/history || true
+          allure generate --clean --output .build/report .build/allure-results
+
+      - name: Собрать документ статуса
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          python scripts/ci/site-status.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --branch main \
+            --sha "${{ github.event.workflow_run.head_sha || github.sha }}" \
+            --run-url "${{ github.event.workflow_run.html_url }}" \
+            --run-at "${{ github.event.workflow_run.updated_at }}" \
+            --allure-summary .build/report/widgets/summary.json \
+            --report-url allure/main/ \
+            --out .build/status.json
+
+      - name: Собрать сайт
+        run: |
+          set -eu
+          if [ -d .build/report ]; then
+            python scripts/ci/build-site.py --status .build/status.json --out .build/site \
+              --allure-report .build/report --allure-path allure/main
+          else
+            python scripts/ci/build-site.py --status .build/status.json --out .build/site
+          fi
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: .build/site
+
+  deploy:
+    name: Опубликовать
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

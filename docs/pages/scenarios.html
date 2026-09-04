@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Сценарии Unica</title>
+<meta name="description" content="Каталог задач разработчика, которые Unica проходит на канонической поверхности: области, операции, сценарии.">
+<meta name="theme-color" content="#F8FAFC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0D1117" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="assets/unica-mark-blue.svg">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <a class="brand" href="index.html" aria-label="Unica">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192.096 53.36" aria-hidden="true">
+        <g transform="translate(0 0) scale(0.83375)">
+          <rect x="0" y="0" width="64" height="64" rx="15.304" fill="#2563EB"/>
+          <path d="M3.3 3.3v12.004278c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722V3.3" transform="translate(10.2608695652 10.2608695652) scale(1.73913043478)" fill="none" stroke="#FFFFFF" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="32" cy="29.913" r="3.826" fill="#93C5FD"/>
+        </g>
+        <g transform="translate(19.227 8.555) scale(1.45)" fill="none" stroke="currentColor" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3.3 21.7V9.695722c0-3.542246 2.853476-6.395722 6.395722-6.395722h5.608556c3.542246 0 6.395722 2.853476 6.395722 6.395722V21.7" transform="translate(27.048 0)"/>
+          <path d="M6.125 3.3v18.4" transform="translate(53.295 0)"/>
+          <path d="M21.7 3.3H9.695722c-3.542246 0-6.395722 2.853476-6.395722 6.395722v5.608556c0 3.542246 2.853476 6.395722 6.395722 6.395722H21.7" transform="translate(66.792 0)"/>
+          <path d="M21.7 21.7V9.695722c0-3.542246-2.853476-6.395722-6.395722-6.395722H9.695722c-3.542246 0-6.395722 2.853476-6.395722 6.395722v5.608556c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722" transform="translate(95.68 0)"/>
+        </g>
+      </svg>
+    </a>
+    <nav>
+      <a href="index.html#install">Установка</a>
+      <a href="architecture.html">Архитектура</a>
+      <a href="scenarios.html">Сценарии</a>
+      <a href="https://github.com/IngvarConsulting/unica" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer">Telegram</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <p class="eyebrow">Для контрибьютора</p>
+    <h1>Что Unica уже <span>умеет</span></h1>
+    <p class="page-lede">
+      Каждый сценарий — настоящая задача разработчика, разложенная в цепочку вызовов
+      <code>unica.*</code>. Приёмочный тест гоняет их все и сверяет с замороженным классом ответа,
+      поэтому список ниже — не обещание, а то, что проходит на каждом прогоне.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/IngvarConsulting/unica/issues/new?template=new_operation.yml" target="_blank" rel="noopener noreferrer">Добавить сценарий</a>
+      <a class="btn btn-ghost" href="architecture.html">Как это устроено</a>
+    </div>
+
+    <div class="badges">
+      <span class="badge"><b>{{scenarios_total}}</b> сценариев</span>
+      <span class="badge"><b>{{ops_total}}</b> операций</span>
+    </div>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <h2>Каталог сценариев</h2>
+      <p class="caption">
+        Не нашли своей задачи — заведите сценарий: опишите её и цепочку вызовов, которой
+        она должна проходить.
+      </p>
+
+      <p class="catalog-count" id="shown"></p>
+
+      <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th class="id-col"><button class="col-sort" type="button" data-sort="id">ID<span class="sort-mark" aria-hidden="true"></span></button></th>
+          <th><button class="col-sort" type="button" data-sort="area">Область<span class="sort-mark" aria-hidden="true"></span></button></th>
+          <th>Задача</th>
+          <th><button class="col-sort col-filter" type="button" id="tool-filter">Инструменты<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2.5h13l-5 5.6v4.4l-3 1.5V8.1z"/></svg></button></th>
+          <th></th>
+        </tr></thead>
+        <tbody id="catalog">
+          <!-- repeat: scenarios -->
+          <tr><td class="addr-cell id-col">{{id}}</td><td>{{area}}</td><td>{{task}}</td><td class="addr-cell">{{tools}}</td><td></td></tr>
+          <!-- /repeat -->
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </section>
+
+  <dialog id="tool-dialog">
+    <div class="dialog-head">
+      <div>
+        <h3>Инструмент</h3>
+        <p class="dialog-area">Показать сценарии, где он встречается в цепочке</p>
+      </div>
+      <button class="dialog-close" id="tool-close" type="button" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="tool-list" id="tool-list"></div>
+  </dialog>
+
+  <dialog id="details">
+    <div class="dialog-head">
+      <div>
+        <p class="dialog-id" id="details-id"></p>
+        <h3 id="details-task"></h3>
+        <p class="dialog-area" id="details-area"></p>
+      </div>
+      <button class="dialog-close" id="details-close" type="button" aria-label="Закрыть">✕</button>
+    </div>
+    <div id="details-wire"></div>
+  </dialog>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      ООО «Ингвар Консалтинг» · ИНН 9715492967<br>
+      <a href="https://ingvar.pro/products/unica/privacy" target="_blank" rel="noopener noreferrer">Политика конфиденциальности</a> ·
+      <a href="https://ingvar.pro/products/unica/terms" target="_blank" rel="noopener noreferrer">Условия использования</a>
+    </div>
+    <div>
+      <a href="https://ingvar.pro/products/unica" target="_blank" rel="noopener noreferrer">ingvar.pro</a> ·
+      <a href="https://github.com/IngvarConsulting/unica" target="_blank" rel="noopener noreferrer">GitHub</a> ·
+      <a href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer">Telegram</a><br>
+      Страница собрана {{generated_at}} из <a href="{{generated_url}}" target="_blank" rel="noopener noreferrer">{{generated_sha}}</a>
+    </div>
+  </div>
+</footer>
+
+
+<script type="application/json" id="scenario-data">{{scenarios_json}}</script>
+<script>
+  // Каталог перерисовывается на клиенте: отбор, сортировка и окно деталей.
+  // Без скрипта таблица остаётся той, что собрана на сборке, — читать можно.
+  const scenarios = JSON.parse(document.getElementById('scenario-data').textContent);
+  const body = document.getElementById('catalog');
+  const shown = document.getElementById('shown');
+  const dialog = document.getElementById('details');
+  const toolDialog = document.getElementById('tool-dialog');
+
+  // Очень короткие подписи: в окне выбора нужно узнать инструмент, а не изучить его.
+  const ABOUT = {
+    'unica.view': 'смотрит проект и объекты',
+    'unica.find': 'имя, адрес и файл — в обе стороны',
+    'unica.search': 'ищет по коду',
+    'unica.diff': 'сравнивает два объекта',
+    'unica.check': 'гоняет проверки объекта',
+    'unica.apply': 'вносит правки',
+    'unica.run': 'запускает 1С',
+    'unica.docs': 'ищет в документации',
+  };
+
+  let sortKey = 'id';
+  let sortDown = false;
+  let toolFilter = '';
+
+  // Лесенка вместо стрелки: растущие столбики — по возрастанию, убывающие —
+  // по убыванию, вразнобой — «сейчас сортируем не по этой колонке».
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const LADDER = { asc: [4, 8, 12], desc: [12, 8, 4], none: [7, 4, 10] };
+
+  function ladder(state) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 14 14');
+    LADDER[state].forEach((height, index) => {
+      const bar = document.createElementNS(SVG_NS, 'rect');
+      bar.setAttribute('x', index * 4.75);
+      bar.setAttribute('y', 14 - height);
+      bar.setAttribute('width', '3.2');
+      bar.setAttribute('height', height);
+      bar.setAttribute('rx', '1');
+      svg.append(bar);
+    });
+    return svg;
+  }
+
+  const number = (id) => { const found = /(\d+)/.exec(id); return found ? Number(found[1]) : 0; };
+  const toolsOf = (scenario) => [...new Set(scenario.wire.map((step) => step.tool))];
+  const allTools = [...new Set(scenarios.flatMap(toolsOf))].sort();
+
+  function cell(text, className) {
+    const td = document.createElement('td');
+    if (className) td.className = className;
+    td.textContent = text;
+    return td;
+  }
+
+  function row(scenario) {
+    const tr = document.createElement('tr');
+    tr.append(
+      cell(scenario.id, 'addr-cell id-col'),
+      cell(scenario.area),
+      cell(scenario.task),
+      cell(toolsOf(scenario).join(' · '), 'addr-cell'),
+    );
+    const action = document.createElement('td');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'row-button';
+    button.textContent = 'Цепочка';
+    button.addEventListener('click', () => openDetails(scenario));
+    action.append(button);
+    tr.append(action);
+    return tr;
+  }
+
+  const TOKEN = /"(?:\\.|[^"\\])*"(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
+
+  function tinted(text, className) {
+    const span = document.createElement('span');
+    span.className = className;
+    span.textContent = text;
+    return span;
+  }
+
+  function paint(pre, value) {
+    const text = JSON.stringify(value, null, 2);
+    let last = 0;
+    let found;
+    TOKEN.lastIndex = 0;
+    while ((found = TOKEN.exec(text)) !== null) {
+      if (found.index > last) pre.append(text.slice(last, found.index));
+      const token = found[0];
+      if (found[1]) {
+        pre.append(tinted(token.slice(0, -found[1].length), 'k'), tinted(found[1], 'p'));
+      } else {
+        pre.append(tinted(token, 'v'));
+      }
+      last = found.index + token.length;
+    }
+    pre.append(text.slice(last));
+  }
+
+  function openDetails(scenario) {
+    document.getElementById('details-id').textContent = scenario.id;
+    document.getElementById('details-task').textContent = scenario.task;
+    document.getElementById('details-area').textContent = scenario.workspace
+      ? scenario.area + ' · ' + scenario.workspace
+      : scenario.area;
+    const wire = document.getElementById('details-wire');
+    wire.replaceChildren(...scenario.wire.map((step, index) => {
+      const block = document.createElement('div');
+      block.className = 'step';
+
+      const head = document.createElement('div');
+      head.className = 'step-head';
+      const order = document.createElement('span');
+      order.className = 'step-order';
+      order.textContent = index + 1;
+      const tool = document.createElement('span');
+      tool.className = 'step-tool';
+      tool.textContent = step.tool;
+      head.append(order, tool);
+
+      const ask = document.createElement('p');
+      ask.className = 'step-label';
+      ask.textContent = 'Запрос';
+      const args = document.createElement('pre');
+      paint(args, step.args);
+
+      const answer = document.createElement('p');
+      answer.className = 'step-label';
+      answer.textContent = 'Ответ';
+      const facts = document.createElement('div');
+      facts.className = 'step-answer';
+      for (const expected of step.expect) {
+        const mark = document.createElement('span');
+        mark.className = 'step-expect is-' + expected;
+        mark.textContent = expected;
+        facts.append(mark);
+      }
+      // Проверяемая часть ответа показывается так же, как запрос: тем же
+      // блоком и той же раскраской — иначе она читается как подпись, а не как
+      // фрагмент ответа.
+      const seen = {};
+      for (const key of ['status', 'validators', 'diagnostic', 'refusal']) {
+        if (step[key] !== undefined) seen[key] = step[key];
+      }
+      const payload = Object.keys(seen).length ? document.createElement('pre') : null;
+      if (payload) paint(payload, seen);
+
+      block.append(head, ask, args, answer, facts);
+      if (payload) block.append(payload);
+      return block;
+    }));
+    dialog.showModal();
+  }
+
+  function toolRow(tool) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tool-row' + (toolFilter === tool ? ' is-active' : '');
+    const name = document.createElement('span');
+    name.className = 'tool-name';
+    name.textContent = tool || 'Любой';
+    const about = document.createElement('span');
+    about.className = 'tool-about';
+    about.textContent = tool
+      ? (ABOUT[tool] || '')
+      : 'без отбора, весь каталог';
+    const count = document.createElement('span');
+    count.className = 'tool-count';
+    count.textContent = tool
+      ? scenarios.filter((scenario) => toolsOf(scenario).includes(tool)).length
+      : scenarios.length;
+    button.append(name, about, count);
+    button.addEventListener('click', () => {
+      toolFilter = tool;
+      toolDialog.close();
+      render();
+    });
+    return button;
+  }
+
+  function openTools() {
+    document.getElementById('tool-list').replaceChildren(
+      toolRow(''), ...allTools.map(toolRow),
+    );
+    toolDialog.showModal();
+  }
+
+  function render() {
+    const rows = scenarios.filter((scenario) => !toolFilter || toolsOf(scenario).includes(toolFilter));
+    const direction = sortDown ? -1 : 1;
+    rows.sort(sortKey === 'area'
+      ? (a, b) => direction * (a.area.localeCompare(b.area, 'ru') || number(a.id) - number(b.id))
+      : (a, b) => direction * (number(a.id) - number(b.id)));
+    body.replaceChildren(...rows.map(row));
+
+    for (const header of document.querySelectorAll('.col-sort[data-sort]')) {
+      const active = header.dataset.sort === sortKey;
+      header.classList.toggle('is-sorted', active);
+      header.querySelector('.sort-mark')
+        .replaceChildren(ladder(active ? (sortDown ? 'desc' : 'asc') : 'none'));
+    }
+    document.getElementById('tool-filter').classList.toggle('is-active', Boolean(toolFilter));
+
+    shown.textContent = toolFilter
+      ? `${rows.length} из ${scenarios.length} · ${toolFilter}`
+      : `${rows.length} сценариев`;
+  }
+
+  for (const header of document.querySelectorAll('.col-sort[data-sort]')) {
+    header.addEventListener('click', () => {
+      const key = header.dataset.sort;
+      if (key === sortKey) sortDown = !sortDown;
+      else { sortKey = key; sortDown = false; }
+      render();
+    });
+  }
+
+  document.getElementById('tool-filter').addEventListener('click', openTools);
+  document.getElementById('tool-close').addEventListener('click', () => toolDialog.close());
+  toolDialog.addEventListener('click', (event) => { if (event.target === toolDialog) toolDialog.close(); });
+  document.getElementById('details-close').addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
+  render();
+</script>
+
+</body>
+</html>
