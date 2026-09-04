@@ -133,9 +133,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         text = self.release_text()
 
         self.assertIn("cargo clippy --workspace --all-targets --all-features -- -D warnings", text)
-        self.assertIn("cargo test --workspace -- --test-threads=1", text)
-        self.assertIn("python -m unittest discover -s tests/ci --durations 20", text)
-        self.assertIn("python -m unittest discover -s tests/dev --durations 20", text)
+        # Наборы гоняет шов; сами команды закреплены тестом `test_run_tests`.
+        self.assertIn("python3 scripts/ci/run-tests.py --profile all --ecosystem rust", text)
+        self.assertIn("python scripts/ci/run-tests.py --profile all --ecosystem python", text)
+        self.assertNotIn("cargo test --workspace", text)
+        self.assertNotIn("unittest discover", text)
         self.assertIn("python -m py_compile scripts/dev/*.py tests/dev/*.py", text)
         self.assertIn("python scripts/ci/check-version-contract.py", text)
 
@@ -451,8 +453,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_registry_guards_run_in_the_source_contour(self) -> None:
         verify = job_block(self.release_text(), "verify-source")
 
-        self.assertIn("python -m unittest discover -s tests/arch", verify)
-        self.assertNotIn("python -m unittest discover -s tests/arch -t .", verify)
+        self.assertIn("python scripts/ci/run-tests.py --profile all --ecosystem python", verify)
         self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", verify)
 
     def test_platform_build_uses_exact_cargo_cache_and_reports_outcome(self) -> None:
