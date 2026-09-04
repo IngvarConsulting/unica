@@ -65,7 +65,10 @@ CI_CONTRACT_PATHS = {
     # Шов прогона решает, что именно гоняет каждая джоба; его правка — правка
     # конвейера, а не исходников, и обязана ехать полным контуром.
     "scripts/ci/run-tests.py",
+    "scripts/ci/run-unittest.py",
+    "scripts/ci/allure_results.py",
     "tests/ci/test_run_tests.py",
+    "tests/ci/test_allure_results.py",
     "tests/ci/test_classify_workflow_changes.py",
     "tests/ci/test_evaluate_ci_gate.py",
     "tests/ci/test_unica_workflow.py",

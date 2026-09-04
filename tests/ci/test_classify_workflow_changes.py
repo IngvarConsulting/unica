@@ -244,7 +244,13 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         Иначе правка одного `run-tests.py` ехала бы контуром исходников и
         могла бы тихо сузить прогон, который сама и должна была запустить.
         """
-        for path in ("scripts/ci/run-tests.py", "tests/ci/test_run_tests.py"):
+        for path in (
+            "scripts/ci/run-tests.py",
+            "scripts/ci/run-unittest.py",
+            "scripts/ci/allure_results.py",
+            "tests/ci/test_run_tests.py",
+            "tests/ci/test_allure_results.py",
+        ):
             with self.subTest(path=path):
                 self.assert_classification([path], ci_changed=True)
 
