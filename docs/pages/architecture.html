@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Архитектура Unica</title>
+<meta name="description" content="Как устроена Unica: кто приходит по MCP, две поверхности инструментов, процесс и демон, движки.">
+<meta name="theme-color" content="#F8FAFC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0D1117" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="assets/unica-mark-blue.svg">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <a class="brand" href="index.html" aria-label="Unica">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192.096 53.36" aria-hidden="true">
+        <g transform="translate(0 0) scale(0.83375)">
+          <rect x="0" y="0" width="64" height="64" rx="15.304" fill="#2563EB"/>
+          <path d="M3.3 3.3v12.004278c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722V3.3" transform="translate(10.2608695652 10.2608695652) scale(1.73913043478)" fill="none" stroke="#FFFFFF" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="32" cy="29.913" r="3.826" fill="#93C5FD"/>
+        </g>
+        <g transform="translate(19.227 8.555) scale(1.45)" fill="none" stroke="currentColor" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3.3 21.7V9.695722c0-3.542246 2.853476-6.395722 6.395722-6.395722h5.608556c3.542246 0 6.395722 2.853476 6.395722 6.395722V21.7" transform="translate(27.048 0)"/>
+          <path d="M6.125 3.3v18.4" transform="translate(53.295 0)"/>
+          <path d="M21.7 3.3H9.695722c-3.542246 0-6.395722 2.853476-6.395722 6.395722v5.608556c0 3.542246 2.853476 6.395722 6.395722 6.395722H21.7" transform="translate(66.792 0)"/>
+          <path d="M21.7 21.7V9.695722c0-3.542246-2.853476-6.395722-6.395722-6.395722H9.695722c-3.542246 0-6.395722 2.853476-6.395722 6.395722v5.608556c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722" transform="translate(95.68 0)"/>
+        </g>
+      </svg>
+    </a>
+    <nav>
+      <a href="index.html#install">Установка</a>
+      <a href="architecture.html">Архитектура</a>
+      <a href="scenarios.html">Сценарии</a>
+      <a href="https://github.com/IngvarConsulting/unica" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer">Telegram</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <p class="eyebrow">Для контрибьютора</p>
+    <h1>Как устроена <span>Unica</span></h1>
+    <p class="page-lede">
+      Агент говорит с Unica по MCP. Unica отвечает предметными инструментами,
+      а тяжёлую работу отдаёт демону: он живёт дольше вызова, делит рабочие пространства
+      и запускает движки.
+    </p>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <h2>Кто приходит и по какому протоколу</h2>
+      <p class="caption">
+        Хост и сервер договариваются о версии протокола MCP в <code>initialize</code>.
+        Unica принимает три и отвечает той, которую попросил хост.
+      </p>
+
+      <svg class="diagram" viewBox="0 0 960 300" role="img" aria-label="Три клиента приходят к одному MCP-серверу Unica и договариваются о версии протокола MCP">
+        <defs>
+          <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="flow-head" d="M0 0 L10 5 L0 10 z"/>
+          </marker>
+        </defs>
+
+        <rect class="box" x="20" y="14" width="280" height="78" rx="12"/>
+        <g class="glyph" transform="translate(44 40)"><rect x="0" y="0" width="22" height="18" rx="3"/><path d="M5 6l4 3-4 3M11 12h6"/></g>
+        <text class="t-title" x="80" y="46">Codex CLI</text>
+        <a href="https://modelcontextprotocol.io/specification/2025-06-18" target="_blank" rel="noopener noreferrer"><text class="t-mono t-link" x="80" y="68">MCP 2025-06-18</text></a>
+
+        <rect class="box" x="340" y="14" width="280" height="78" rx="12"/>
+        <g class="glyph" transform="translate(364 40)"><path d="M2 3h18a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-5 4v-4H2a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/></g>
+        <text class="t-title" x="400" y="46">Claude Code</text>
+        <a href="https://modelcontextprotocol.io/specification/2025-11-25" target="_blank" rel="noopener noreferrer"><text class="t-mono t-link" x="400" y="68">MCP 2025-11-25</text></a>
+
+        <rect class="box" x="660" y="14" width="280" height="78" rx="12"/>
+        <g class="glyph" transform="translate(684 40)"><circle cx="9" cy="9" r="8"/><path d="M15 15l6 6"/></g>
+        <text class="t-title" x="720" y="46">MCP Inspector</text>
+        <text class="t-mono" x="720" y="68">версия MCP выбирается вручную</text>
+
+        <path class="flow" marker-end="url(#head)" d="M160 92 L420 158"/>
+        <path class="flow" marker-end="url(#head)" d="M480 92 L480 160"/>
+        <path class="flow" marker-end="url(#head)" d="M800 92 L540 158"/>
+        <text class="t-muted" x="480" y="128" text-anchor="middle" style="paint-order:stroke;stroke:var(--paper);stroke-width:6px">initialize · согласование версии</text>
+
+        <rect class="box-accent" x="20" y="166" width="920" height="104" rx="12"/>
+        <text class="t-tag" x="44" y="194">ОДИН ПУБЛИЧНЫЙ СЕРВЕР</text>
+        <text class="t-title" x="44" y="222">unica</text>
+        <text class="t-muted" x="44" y="248">принимает версии MCP <a href="https://modelcontextprotocol.io/specification/2026-07-28" target="_blank" rel="noopener noreferrer"><tspan class="t-link">2026-07-28</tspan></a> · <a href="https://modelcontextprotocol.io/specification/2025-11-25" target="_blank" rel="noopener noreferrer"><tspan class="t-link">2025-11-25</tspan></a> · <a href="https://modelcontextprotocol.io/specification/2025-06-18" target="_blank" rel="noopener noreferrer"><tspan class="t-link">2025-06-18</tspan></a>; имя сервера и префикс инструментов не меняются</text>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Долгая работа: два способа вернуться за результатом</h2>
+      <p class="caption">
+        Индекс BSL строится минутами, запуск 1С тоже. Инструмент отвечает раньше, чем закончит
+        работу: отдаёт квитанцию и продолжает. Агент возвращается за результатом, и вернуться он
+        может двумя способами.
+      </p>
+      <p class="caption">
+        Первый — спросить сам протокол; инструменты для этого не нужны. Второй — позвать три
+        обычных инструмента <code>unica.task.*</code>, которые делают то же самое. Первый способ
+        появился в протоколе недавно (<a href="https://modelcontextprotocol.io/extensions/tasks/overview" target="_blank" rel="noopener noreferrer">SEP-2663</a>). Unica смотрит,
+        объявил ли клиент его поддержку: объявил — задачи живут в протоколе, не объявил —
+        в списке инструментов появляются эти три.
+      </p>
+
+      <svg class="diagram" viewBox="0 0 960 400" role="img" aria-label="Соответствие задач протокола и трёх compatibility-инструментов">
+        <rect class="box" x="20" y="14" width="440" height="350" rx="12"/>
+        <text class="t-tag" x="44" y="44">NATIVE TASKS</text>
+        <text class="t-title" x="44" y="72">Предметные инструменты</text>
+        <text class="t-muted" x="44" y="96">Задача живёт в протоколе. Инструмент отвечает</text>
+        <text class="t-muted" x="44" y="116">квитанцией, дальше хост спрашивает сам протокол.</text>
+        <text class="t-mono" x="44" y="152">tasks/get</text>
+        <text class="t-mono" x="44" y="176">tasks/result</text>
+        <text class="t-mono" x="44" y="200">tasks/cancel</text>
+        <text class="t-muted" x="44" y="236">Повторный вызов не перезапускает работу:</text>
+        <text class="t-muted" x="44" y="256">квитанция адресует ту же durable-задачу.</text>
+        <line x1="44" y1="282" x2="436" y2="282" stroke="currentColor" stroke-opacity="0.14"/>
+        <text class="t-muted" x="44" y="308">Способ появился в протоколе недавно: <a href="https://modelcontextprotocol.io/extensions/tasks/overview" target="_blank" rel="noopener noreferrer"><tspan class="t-link">SEP-2663</tspan></a>.</text>
+        <text class="t-muted" x="44" y="328">Агенты его пока не объявляют, и он не встречается.</text>
+        <text class="t-muted" x="44" y="348">У Unica он написан и включится сам, когда объявят.</text>
+
+        <rect class="box" x="500" y="14" width="440" height="350" rx="12"/>
+        <text class="t-tag" x="524" y="44">COMPATIBILITY</text>
+        <text class="t-title" x="524" y="72">Предметные инструменты + 3 tasks</text>
+        <text class="t-muted" x="524" y="96">Агент задач протокола не объявляет — те же три</text>
+        <text class="t-muted" x="524" y="116">операции приходят обычными инструментами.</text>
+        <text class="t-mono" x="524" y="152">unica.task.get</text>
+        <text class="t-mono" x="524" y="176">unica.task.result</text>
+        <text class="t-mono" x="524" y="200">unica.task.cancel</text>
+        <text class="t-muted" x="524" y="236">Отмена идемпотентна, ожидание ограничено</text>
+        <text class="t-muted" x="524" y="256">интервалом, полезная нагрузка — до 16 KiB.</text>
+        <line x1="524" y1="282" x2="916" y2="282" stroke="currentColor" stroke-opacity="0.14"/>
+        <text class="t-muted" x="524" y="308">Клиент не объявил поддержку задач — сервер</text>
+        <text class="t-muted" x="524" y="328">добавляет эти три инструмента в список.</text>
+
+        <path class="flow" marker-end="url(#head)" d="M470 152 L490 152"/>
+        <path class="flow" marker-end="url(#head)" d="M470 176 L490 176"/>
+        <path class="flow" marker-end="url(#head)" d="M470 200 L490 200"/>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Что происходит внутри</h2>
+      <p class="caption">
+        Процесс MCP тонкий: он переводит кадры протокола в вызовы и обратно. Состояние,
+        долгая работа и движки принадлежат демону, который переживает отдельный вызов.
+      </p>
+
+      <svg class="diagram" viewBox="0 0 960 500" role="img" aria-label="Процесс MCP запускает демон, демон делит рабочие пространства и запускает движки, платформу 1С дёргает v8-runner">
+        <rect class="box" x="20" y="14" width="330" height="76" rx="12"/>
+        <text class="t-title" x="44" y="46">unica · процесс MCP</text>
+        <text class="t-muted" x="44" y="70">stdin/stdout, запускает хост</text>
+
+        <path class="flow" marker-end="url(#head)" d="M185 90 L185 128"/>
+        <text class="t-mono" x="196" y="114">protocol-v5</text>
+
+        <rect class="box-accent" x="20" y="132" width="330" height="96" rx="12"/>
+        <text class="t-title" x="44" y="164">unica · демон</text>
+        <text class="t-muted" x="44" y="188">один на пользователя, версию</text>
+        <text class="t-muted" x="44" y="208">протокола и идентичность ядра</text>
+
+        <path class="flow" marker-end="url(#head)" d="M350 180 L392 180"/>
+
+        <rect class="band" x="400" y="14" width="540" height="214" rx="12"/>
+        <text class="t-tag" x="424" y="44">РАБОЧИЕ ПРОСТРАНСТВА</text>
+        <rect class="box" x="424" y="60" width="492" height="72" rx="10"/>
+        <text class="t-title" x="448" y="88">actor · worktree A</text>
+        <text class="t-mono" x="448" y="112">source set · configuration + extensions</text>
+        <rect class="box" x="424" y="144" width="492" height="66" rx="10"/>
+        <text class="t-title" x="448" y="172">actor · worktree B</text>
+        <text class="t-mono" x="448" y="196">свой кеш, своя ревизия, свои квитанции</text>
+
+        <path class="flow" marker-end="url(#head)" d="M185 228 L185 292"/>
+
+        <rect class="band" x="20" y="296" width="920" height="186" rx="12"/>
+        <text class="t-tag" x="44" y="326">ДВИЖКИ, КОТОРЫЕ ЗАПУСКАЕТ ДЕМОН</text>
+        <rect class="box" x="44" y="338" width="280" height="52" rx="10"/>
+        <text class="t-title" x="68" y="370">RLM</text>
+        <text class="t-mono" x="120" y="370">индекс и поиск по BSL</text>
+        <rect class="box" x="340" y="338" width="280" height="52" rx="10"/>
+        <text class="t-title" x="364" y="370">bsl-analyzer</text>
+        <text class="t-mono" x="470" y="370">диагностика</text>
+        <rect class="box" x="636" y="338" width="280" height="52" rx="10"/>
+        <text class="t-title" x="660" y="370">v8-runner</text>
+        <text class="t-mono" x="750" y="370">запуск 1С</text>
+
+        <path class="flow" marker-end="url(#head)" d="M700 390 L700 412"/>
+        <path class="flow" marker-end="url(#head)" d="M852 390 L852 412"/>
+        <rect class="box" x="636" y="416" width="134" height="46" rx="10"/>
+        <text class="t-mono" x="656" y="444">ibcmd</text>
+        <rect class="box" x="782" y="416" width="134" height="46" rx="10"/>
+        <text class="t-mono" x="796" y="444">1cv8 DESIGNER</text>
+        <text class="t-muted" x="44" y="430">Платформу 1С дёргает только v8-runner: собирает</text>
+        <text class="t-muted" x="44" y="452">информационную базу через ibcmd, конфигурацию — конфигуратором.</text>
+      </svg>
+
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Движок</th><th>Проект</th><th>Лицензия</th><th>Как попадает в поставку</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><b>RLM</b></td>
+            <td><a href="https://github.com/Dach-Coin/rlm-tools-bsl" target="_blank" rel="noopener noreferrer">Dach-Coin/rlm-tools-bsl</a></td>
+            <td>MIT</td>
+            <td>Собираем в <a href="https://github.com/IngvarConsulting/unica-toolchain" target="_blank" rel="noopener noreferrer">тулчейне Unica</a> из закреплённого тега.</td>
+          </tr>
+          <tr>
+            <td><b>bsl-analyzer</b></td>
+            <td><a href="https://github.com/itrous/bsl-analyzer" target="_blank" rel="noopener noreferrer">itrous/bsl-analyzer</a></td>
+            <td>LGPL-3.0-or-later</td>
+            <td>Собираем в <a href="https://github.com/IngvarConsulting/unica-toolchain" target="_blank" rel="noopener noreferrer">тулчейне Unica</a> из закреплённого тега.</td>
+          </tr>
+          <tr>
+            <td><b>v8-runner</b></td>
+            <td><a href="https://github.com/IngvarConsulting/v8-runner-rust" target="_blank" rel="noopener noreferrer">IngvarConsulting/v8-runner-rust</a> — форк <a href="https://github.com/alkoleft/v8-runner-rust" target="_blank" rel="noopener noreferrer">alkoleft/v8-runner-rust</a></td>
+            <td>AGPL-3.0-only</td>
+            <td>Собираем в форке.</td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+      <p class="caption" style="margin-top:14px">
+        Каждая версия закреплена в <code>tools.lock.json</code> вместе с коммитом. AGPL у v8-runner
+        лицензией Unica не заменяется: он запускается отдельным процессом и остаётся на своих условиях.
+      </p>
+
+      <div class="pair">
+        <div class="card">
+          <h4>Почему демон, а не процесс на вызов</h4>
+          <p>Индекс BSL строится минутами, а вызов агента живёт секунды. Демон переживает вызов, поэтому второй запрос попадает в готовый индекс, а долгая работа отвечает состоянием вместо обрыва.</p>
+        </div>
+        <div class="card">
+          <h4>Почему актор на рабочее пространство</h4>
+          <p>Две задачи в двух worktree не должны делить кеш и ревизию. Актор изолирует состояние, а квитанции остаются адресуемыми внутри своего пространства.</p>
+        </div>
+        <div class="card">
+          <h4>Сколько живёт демон</h4>
+          <p>Без работы он завершается через пятнадцать минут, а пока задача идёт — держится. Серия вызовов подряд попадает в один тёплый процесс; забытая сессия не оставляет его висеть.</p>
+        </div>
+        <div class="card">
+          <h4>Общий ли демон у Claude Code и Codex</h4>
+          <p>Нет. Каталог состояния демон берёт от хоста: у Codex он свой, у Claude Code свой — и процесс у каждого получается свой. Внутри одного хоста демон, наоборот, один на все worktree: их разделяют акторы.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Набор исходников</h2>
+      <p class="caption">
+        Набор исходников — именованный каталог с выгрузкой конфигурации или расширения.
+        Наборов в проекте может быть несколько: рядом с основной конфигурацией лежат
+        расширения и другие её версии.
+      </p>
+      <p class="caption">
+        Список наборов Unica не придумывает и не хранит у себя: она читает <code>v8project.yaml</code>
+        — файл проекта v8-runner, который лежит в корне и уже описывает проект для запуска 1С.
+        Одно описание работает и на запуск, и на адресацию.
+      </p>
+
+<pre><code><span class="k">format</span><span class="p">:</span> <span class="v">DESIGNER</span>
+<span class="k">source-set</span><span class="p">:</span>
+  <span class="p">-</span> <span class="k">name</span><span class="p">:</span> <span class="v">main</span>
+    <span class="k">type</span><span class="p">:</span> <span class="v">CONFIGURATION</span>
+    <span class="k">path</span><span class="p">:</span> <span class="v">src</span>
+  <span class="p">-</span> <span class="k">name</span><span class="p">:</span> <span class="v">ext</span>
+    <span class="k">type</span><span class="p">:</span> <span class="v">EXTENSION</span>
+    <span class="k">path</span><span class="p">:</span> <span class="v">src-ext</span></code></pre>
+
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th class="field-col">Поле</th><th>Что задаёт</th></tr></thead>
+        <tbody>
+          <tr><td class="addr-cell field-col">format</td><td>Как выгружены исходники: <code>DESIGNER</code> или <code>EDT</code>. Поле можно не писать — тогда действует умолчание v8-runner.</td></tr>
+          <tr><td class="addr-cell field-col">basePath</td><td>От чего считаются пути наборов. По умолчанию — каталог самого файла.</td></tr>
+          <tr><td class="addr-cell field-col">name</td><td>Имя набора. Оно же стоит слева от двоеточия в адресе. По умолчанию <code>main</code>.</td></tr>
+          <tr><td class="addr-cell field-col">type</td><td><code>CONFIGURATION</code> или <code>EXTENSION</code>. Синоним поля — <code>purpose</code>.</td></tr>
+          <tr><td class="addr-cell field-col">path</td><td>Каталог, в котором лежит выгрузка этого набора.</td></tr>
+        </tbody>
+      </table>
+      </div>
+
+      <p class="caption">
+        Отсюда и берётся связь между адресом и диском: <code>main:Catalog.Валюты</code> читается
+        в каталоге <code>src</code>, а тот же справочник из другого набора — в каталоге этого
+        набора. Инструменты работают с именем набора и никогда не получают путь.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Семантическая адресация</h2>
+      <p class="caption">
+        Адрес называет объект так, как о нём думает разработчик: набор исходников, вид, имя.
+        Путь к файлу в адрес не входит.
+      </p>
+
+      <div class="addr">
+        <span class="seg seg-set"><span class="tok">main</span><span class="lbl">набор исходников</span></span>
+        <span class="sep">:</span>
+        <span class="seg seg-kind"><span class="tok">Catalog</span><span class="lbl">вид</span></span>
+        <span class="sep">.</span>
+        <span class="seg seg-name"><span class="tok">Валюты</span><span class="lbl">имя</span></span>
+        <span class="sep">.</span>
+        <span class="seg seg-kind"><span class="tok">Form</span><span class="lbl">вид</span></span>
+        <span class="sep">.</span>
+        <span class="seg seg-name"><span class="tok">ФормаЭлемента</span><span class="lbl">имя</span></span>
+        <span class="sep">.</span>
+        <span class="seg seg-kind"><span class="tok">Item</span><span class="lbl">вид</span></span>
+        <span class="sep">.</span>
+        <span class="seg seg-name"><span class="tok">ГруппаСлужебная</span><span class="lbl">имя</span></span>
+      </div>
+
+      <p class="caption">
+        Виды и имена чередуются, и так до нужной глубины. Последний вид может остаться без
+        имени — тогда адрес указывает на всю ветку. Русские названия видов приводятся к
+        английским токенам, прикладные имена остаются как написаны.
+      </p>
+
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Адрес</th><th>Что это</th></tr></thead>
+        <tbody>
+          <tr><td class="addr-cell">main:Configuration</td><td>Корень конфигурации. <code>Configuration</code> стоит только здесь и больше нигде.</td></tr>
+          <tr><td class="addr-cell">main:Catalog<wbr>.Валюты</td><td>Сам справочник.</td></tr>
+          <tr><td class="addr-cell">main:Catalog<wbr>.Валюты<wbr>.Attribute</td><td>Все реквизиты справочника: вид без имени — это ветка.</td></tr>
+          <tr><td class="addr-cell">main:Catalog<wbr>.Валюты<wbr>.Attribute<wbr>.Наценка</td><td>Один реквизит.</td></tr>
+          <tr><td class="addr-cell">main:Catalog<wbr>.Валюты<wbr>.TabularSection<wbr>.Представления</td><td>Табличная часть.</td></tr>
+          <tr><td class="addr-cell">main:Catalog<wbr>.Валюты<wbr>.TabularSection<wbr>.Представления<wbr>.Attribute</td><td>Реквизиты этой табличной части.</td></tr>
+          <tr><td class="addr-cell">main:Report<wbr>.АнализВерсийОбъектов<wbr>.Template<wbr>.МакетОтчета</td><td>Макет отчёта.</td></tr>
+          <tr><td class="addr-cell">main:Report<wbr>.АнализВерсийОбъектов<wbr>.Template<wbr>.ОсновнаяСхемаКомпоновкиДанных<wbr>.DataSet<wbr>.НаборДанных1<wbr>.Field<wbr>.Версия</td><td>Поле набора данных внутри схемы компоновки. Глубина не ограничена.</td></tr>
+          <tr><td class="addr-cell">main:Document<wbr>.Заказ<wbr>.Form<wbr>.ФормаДокумента<wbr>.Attribute<wbr>.Объект</td><td>Реквизит формы.</td></tr>
+          <tr><td class="addr-cell">main:Catalog<wbr>.Валюты<wbr>.Form<wbr>.ФормаЭлемента<wbr>.Item<wbr>.ГруппаСлужебная</td><td>Элемент формы.</td></tr>
+          <tr><td class="addr-cell">main:CommonModule<wbr>.GoogleПереводчик<wbr>.Method<wbr>.ПеревестиТекст</td><td>Метод общего модуля.</td></tr>
+          <tr><td class="addr-cell">epf:ExternalDataProcessor<wbr>.Импорт<wbr>.Module<wbr>.Object<wbr>.Method<wbr>.ОбработкаПроверкиЗаполнения</td><td>Метод модуля объекта внешней обработки. Слева другой набор исходников.</td></tr>
+          <tr><td class="addr-cell">newer:Catalog<wbr>.Валюты<wbr>.Form<wbr>.ФормаСписка</td><td>Тот же объект в другом наборе исходников.</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Предметные инструменты</h2>
+      <p class="caption">
+        Эту публичную поверхность Unica публикует в MCP.
+      </p>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Инструмент</th><th>Что делает</th><th>Почему так удобнее агенту</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tool">unica.view</span></td><td>Показывает, что есть в проекте, и открывает объект по адресу: реквизиты, формы, макеты, код.</td><td>Агент смотрит на объект, а не на файлы: не нужно знать, где что лежит на диске.</td></tr>
+          <tr><td><span class="tool">unica.find</span></td><td>По имени объекта находит адрес, по адресу — файл, и в обратную сторону тоже.</td><td>Имя из задачи превращается в адрес, с которым работают остальные инструменты. Гадать путь больше не нужно.</td></tr>
+          <tr><td><span class="tool">unica.search</span></td><td>Ищет по коду: текст или объявления процедур и функций. Можно искать внутри одного объекта.</td><td>Ищет по коду, а не по строкам файла, и область поиска сужается до нужной ветки.</td></tr>
+          <tr><td><span class="tool">unica.diff</span></td><td>Показывает, чем отличаются два объекта одного вида.</td><td>Сравнение без выгрузок во временные файлы, и ничего при этом не меняется.</td></tr>
+          <tr><td><span class="tool">unica.check</span></td><td>Без адреса проверяет, что проект принят в работу. С адресом гоняет по объекту все проверки его вида: модуль, форму, роль, СКД.</td><td>Ошибки приходят списком, поэтому агент чинит их по одной и видит, что осталось.</td></tr>
+          <tr><td><span class="tool">unica.apply</span></td><td>Вносит правку: добавить реквизит, изменить свойство, дописать код. Сначала можно посмотреть план и ничего не записывать.</td><td>План до записи совпадает с самой записью, поэтому правку видно раньше, чем она попадёт в файлы.</td></tr>
+          <tr><td><span class="tool">unica.run</span></td><td>Запускает 1С: собрать конфигурацию, перенести её в базу, выгрузить или загрузить информационную базу. Без аргументов показывает, что умеет.</td><td>Список операций приходит из кода, поэтому агент не выдумывает команду, которой нет.</td></tr>
+          <tr><td><span class="tool">unica.docs</span></td><td>Ищет сразу по четырём источникам: справка проекта в рабочем пространстве, синтакс-помощник установленной платформы и два сетевых — база знаний 1С и стандарты разработки.</td><td>Локальные источники отвечают без сети, сетевые включаются политикой проекта. Результат разложен по источникам, поэтому видно, откуда взят ответ.</td></tr>
+          <tr class="planned"><td><span class="tool">unica.test</span></td><td colspan="2">Планируется в версии 0.14, пока недоступен.</td></tr>
+          <tr class="planned"><td><span class="tool">unica.feature</span></td><td colspan="2">Планируется в версии 0.14, пока недоступен.</td></tr>
+          <tr class="planned"><td><span class="tool">unica.log</span></td><td colspan="2">Планируется в версии 0.14, пока недоступен.</td></tr>
+        </tbody>
+      </table>
+      </div>
+
+      <h2 style="margin-top:44px">Три инструмента совместимости</h2>
+      <p class="caption">
+        Эти три Unica публикует, когда клиент не объявил поддержку задач протокола.
+      </p>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Инструмент</th><th>Что делает</th><th>Почему так удобнее агенту</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tool">unica.task.get</span></td><td>Показывает, что с задачей сейчас, и отвечает сразу.</td><td>Спросить «как там» можно в любой момент: работа не начнётся заново.</td></tr>
+          <tr><td><span class="tool">unica.task.result</span></td><td>Ждёт результат ограниченное время и возвращает его или новую квитанцию.</td><td>Ожидание всегда конечно, поэтому агент не зависает и не теряет задачу.</td></tr>
+          <tr><td><span class="tool">unica.task.cancel</span></td><td>Просит отменить задачу.</td><td>Повторная отмена безопасна — можно звать, не проверяя прошлый ответ.</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      ООО «Ингвар Консалтинг» · ИНН 9715492967<br>
+      <a href="https://ingvar.pro/products/unica/privacy" target="_blank" rel="noopener noreferrer">Политика конфиденциальности</a> ·
+      <a href="https://ingvar.pro/products/unica/terms" target="_blank" rel="noopener noreferrer">Условия использования</a>
+    </div>
+    <div>
+      <a href="https://ingvar.pro/products/unica" target="_blank" rel="noopener noreferrer">ingvar.pro</a> ·
+      <a href="https://github.com/IngvarConsulting/unica" target="_blank" rel="noopener noreferrer">GitHub</a> ·
+      <a href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer">Telegram</a><br>
+      Страница собрана {{generated_at}} из <a href="{{generated_url}}" target="_blank" rel="noopener noreferrer">{{generated_sha}}</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
