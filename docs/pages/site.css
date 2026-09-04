@@ -284,6 +284,12 @@
 @media (max-width: 760px) { .pair { grid-template-columns: 1fr; } }
 .pair .card h4 { margin: 0 0 8px; font-size: 15px; }
 .pair .card p { margin: 0; color: var(--muted); font-size: 14px; }
+/* Имя инструмента внутри фразы — тот же бабл, что и в таблицах: иначе оно
+   теряется в приглушённом тексте карточки. */
+.pair .card p code {
+  background: color-mix(in srgb, var(--blue) 13%, transparent);
+  color: var(--blue); padding: 2px 6px; border-radius: 5px;
+}
 td .tool { font-family: var(--mono); font-size: 13px; color: var(--blue); white-space: nowrap; }
 @media (max-width: 760px) {
   .diagram { margin: 18px -18px 10px; width: calc(100% + 36px); }
