@@ -1475,9 +1475,7 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
     }
     let source_sets = (0..1024)
         .map(|index| {
-            format!(
-                "  - name: owner-{index:04}\n    type: CONFIGURATION\n    path: src\n"
-            )
+            format!("  - name: owner-{index:04}\n    type: CONFIGURATION\n    path: src\n")
         })
         .collect::<String>();
     fs::write(
@@ -1709,16 +1707,33 @@ fn status(workspace: &Path) -> StatusResult {
 
     let structured = response["result"]["structuredContent"].clone();
     let ok = structured["ok"] == Value::Bool(true);
-    let errors = structured["diagnostics"]
+    // Diagnostics live under `data`, and a call that fails before producing a
+    // structured answer carries none: reading them from the wrong place left
+    // every failure reporting an empty list. The JSON-RPC error is the
+    // fallback, so a refusal names itself instead of showing `[]`.
+    let errors = structured["data"]["diagnostics"]
         .as_array()
         .map(|items| {
             items
                 .iter()
-                .filter_map(|item| item.get("message").and_then(Value::as_str))
-                .map(str::to_string)
+                .map(|item| {
+                    let code = item.get("code").and_then(Value::as_str);
+                    let message = item.get("message").and_then(Value::as_str);
+                    match (code, message) {
+                        (Some(code), Some(message)) => format!("{code}: {message}"),
+                        (Some(code), None) => code.to_string(),
+                        (None, Some(message)) => message.to_string(),
+                        (None, None) => "diagnostic without code or message".to_string(),
+                    }
+                })
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            response["error"]["message"]
+                .as_str()
+                .map(|message| vec![format!("jsonrpc error: {message}")])
+                .unwrap_or_default()
+        });
     StatusResult {
         ok,
         errors,
