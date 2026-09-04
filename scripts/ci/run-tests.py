@@ -34,9 +34,10 @@ PYTHON_SUITES = (
 def rust_commands(profile: str) -> list[list[str]]:
     """Команды Rust для профиля. Сегодня — весь набор, одним потоком."""
     if profile == "all":
-        # `--test-threads=1` — не выбор, а необходимость: тесты делят состояние
-        # процесса. Снимается, когда исполнитель даст процесс на тест.
-        return [["cargo", "test", "--workspace", "--", "--test-threads=1"]]
+        # nextest: процесс на тест и JUnit из коробки. Число потоков, повторы
+        # и отчёт описаны в `.config/nextest.toml`, а не здесь: конвейер и
+        # локальный прогон обязаны идти одной настройкой.
+        return [["cargo", "nextest", "run", "--workspace", "--profile", "default"]]
     raise ValueError(f"профиль {profile!r} для Rust не описан")
 
 

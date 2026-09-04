@@ -21,17 +21,19 @@ def load_module():
 
 class RunTestsSeamTests(unittest.TestCase):
     def test_profile_all_repeats_the_former_workflow_commands_verbatim(self) -> None:
-        """Шаг переезда обязан быть неотличим от того, что было.
+        """Команды закреплены дословно: правка гейта не должна прятаться в шве.
 
-        Команды ниже — ровно те строки, что стояли в workflow. Если шов их
-        меняет, это уже не переезд, а правка гейта под чужим именем.
+        Rust идёт через nextest одним профилем; число потоков и отчёт живут в
+        `.config/nextest.toml`. Python — те самые строки, что стояли в workflow.
         """
         module = load_module()
 
         rust = module.commands("all", "rust", interpreter="python")
         python = module.commands("all", "python", interpreter="python")
 
-        self.assertEqual(rust, [["cargo", "test", "--workspace", "--", "--test-threads=1"]])
+        self.assertEqual(
+            rust, [["cargo", "nextest", "run", "--workspace", "--profile", "default"]]
+        )
         self.assertEqual(
             python,
             [
@@ -81,7 +83,9 @@ class RunTestsSeamTests(unittest.TestCase):
             code = module.main(["--profile", "all", "--ecosystem", "rust", "--dry-run"])
 
         self.assertEqual(code, 0)
-        self.assertEqual(captured.getvalue().strip(), "cargo test --workspace -- --test-threads=1")
+        self.assertEqual(
+            captured.getvalue().strip(), "cargo nextest run --workspace --profile default"
+        )
 
 
 if __name__ == "__main__":
