@@ -156,13 +156,17 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
 
     def trace2_events(self, path: Path) -> list[dict]:
         events = []
-        for line in path.read_text(encoding="utf-8").splitlines():
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
             try:
                 events.append(json.loads(line))
             except json.JSONDecodeError:
-                # A detached grandchild appends to the same trace file while we
-                # read it, so a torn final line is expected noise, not a fact.
-                continue
+                # A still-running grandchild appends to this file while we read
+                # it, so only the last line can be a torn write. Skipping an
+                # unparsable line anywhere else would let a `--detach` record
+                # go unseen and pass this test for the wrong reason.
+                if index != len(lines) - 1:
+                    raise
         return events
 
     def test_fixture_leaves_no_detached_git_process_behind(self) -> None:
