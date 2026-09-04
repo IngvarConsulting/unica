@@ -1398,8 +1398,15 @@ fn project_health_full_portable_linked_worktree_is_ready_and_read_only() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// The staged index must be larger than the generic stdout capture limit that
+/// the process facade applies by default: project health reads git through its
+/// own, much larger limit, and a routing regression would truncate a real
+/// repository's index and report the inspection as incomplete. The fixture is
+/// kept just past that limit rather than multiples above it, because the whole
+/// call has to answer inside the interactive invocation window, and git work on
+/// a large index is where a slow target spends that window.
 #[test]
-fn project_health_handles_real_index_with_43k_sibling_paths() {
+fn project_health_handles_a_real_index_past_the_generic_capture_limit() {
     let root = temp_root("large-index");
     git(&root, &["init"]);
     let workspace = root.join("workspace");
@@ -1425,8 +1432,8 @@ fn project_health_handles_real_index_with_43k_sibling_paths() {
         ],
     );
     let oid = git_with_input(&root, &["hash-object", "-w", "--stdin"], b"fixture\n");
-    let mut index_info = Vec::with_capacity(43_000 * 80);
-    for index in 0..43_000 {
+    let mut index_info = Vec::with_capacity(16_000 * 80);
+    for index in 0..16_000 {
         write!(
             index_info,
             "100644 {}\tlarge-sibling/{index:05}.txt\0",
@@ -1473,11 +1480,16 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
         fs::write(root.join(format!("src/Module{index}.bsl")), "Процедура P()\nКонецПроцедуры\n")
             .unwrap();
     }
-    let source_sets = (0..1024)
+    // Every owner classifies the same 64 files, so the composition's cost is
+    // `owners x files` and the whole call has to fit the interactive invocation
+    // window. At 1024 owners that product is the classification ceiling itself,
+    // and the call sat close enough to the window to answer `deadline expired`
+    // on slower targets. The ceiling is proven exactly, and without a clock, by
+    // `resource_owner_expansion_admits_the_ceiling_and_refuses_the_entry_after_it`;
+    // what this test proves is that every equal-root owner is composed.
+    let source_sets = (0..256)
         .map(|index| {
-            format!(
-                "  - name: owner-{index:04}\n    type: CONFIGURATION\n    path: src\n"
-            )
+            format!("  - name: owner-{index:04}\n    type: CONFIGURATION\n    path: src\n")
         })
         .collect::<String>();
     fs::write(
@@ -1506,7 +1518,7 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
     assert_repository_check_status(
         &data,
         "repository.attributes",
-        Some("owner-1023"),
+        Some("owner-0255"),
         "notRun",
     );
     let owner_diagnostic = data["diagnostics"]
@@ -1712,16 +1724,33 @@ fn status(workspace: &Path) -> StatusResult {
 
     let structured = response["result"]["structuredContent"].clone();
     let ok = structured["ok"] == Value::Bool(true);
-    let errors = structured["diagnostics"]
+    // Diagnostics live under `data`, and a call that fails before producing a
+    // structured answer carries none: reading them from the wrong place left
+    // every failure reporting an empty list. The JSON-RPC error is the
+    // fallback, so a refusal names itself instead of showing `[]`.
+    let errors = structured["data"]["diagnostics"]
         .as_array()
         .map(|items| {
             items
                 .iter()
-                .filter_map(|item| item.get("message").and_then(Value::as_str))
-                .map(str::to_string)
+                .map(|item| {
+                    let code = item.get("code").and_then(Value::as_str);
+                    let message = item.get("message").and_then(Value::as_str);
+                    match (code, message) {
+                        (Some(code), Some(message)) => format!("{code}: {message}"),
+                        (Some(code), None) => code.to_string(),
+                        (None, Some(message)) => message.to_string(),
+                        (None, None) => "diagnostic without code or message".to_string(),
+                    }
+                })
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            response["error"]["message"]
+                .as_str()
+                .map(|message| vec![format!("jsonrpc error: {message}")])
+                .unwrap_or_default()
+        });
     StatusResult {
         ok,
         errors,
