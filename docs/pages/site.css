@@ -342,13 +342,21 @@ tr.planned td, tr.planned .tool { color: var(--muted); }
 .badge b { font-size: 16px; font-weight: 680; color: var(--ink); }
 
 /* Панель каталога и окно с цепочкой вызовов */
-.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin: 22px 0 4px; font-size: 14px; color: var(--muted); }
-.toolbar label { display: inline-flex; align-items: center; gap: 8px; }
-.toolbar select {
-  font: inherit; font-size: 14px; color: var(--ink); background: var(--card);
-  border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px;
+/* Сортировка и отбор живут в шапке таблицы, а на телефоне шапки нет: строки
+   раскладываются карточками. Поэтому те же кнопки дублируются панелью — она
+   появляется ровно там, где исчезает `thead`. */
+.toolbar { display: none; }
+@media (max-width: 760px) {
+  .toolbar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    margin: 18px 0 0; font-size: 14px; color: var(--muted);
+  }
+  .toolbar .col-sort, .toolbar .col-filter {
+    border: 1px solid var(--line); border-radius: 999px; padding: 7px 13px;
+    background: var(--card);
+  }
+  .toolbar .col-sort.is-sorted, .toolbar .col-filter.is-active { border-color: var(--blue); }
 }
-.toolbar-count { margin-left: auto; font-variant-numeric: tabular-nums; }
 .row-button {
   font: inherit; font-size: 13px; font-weight: 600; color: var(--blue);
   background: none; border: 1px solid var(--line); border-radius: 8px;
@@ -390,7 +398,6 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
 }
 .step pre { margin: 0; font-size: 12.5px; }
 @media (max-width: 760px) {
-  .toolbar-count { margin-left: 0; width: 100%; }
   .dialog-head { padding: 18px 16px 14px; }
   #details-wire { padding: 14px 16px 20px; }
 }
@@ -444,7 +451,9 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
 .steps { list-style: none; counter-reset: step; margin: 0; padding: 0; display: grid; gap: 12px; }
 .steps li {
   counter-increment: step;
-  display: grid; grid-template-columns: 26px 1fr; gap: 14px; align-items: start;
+  /* minmax(0, 1fr), а не 1fr: иначе колонка не сжимается ниже своего
+     min-content, и длинный путь распирает всю страницу на телефоне. */
+  display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 14px; align-items: start;
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 16px 20px;
 }
@@ -460,7 +469,7 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
 .steps li > a:hover { text-decoration: none; }
 .steps li:hover { border-color: var(--muted); }
 .steps li:hover b { color: var(--blue); }
-.steps b { display: block; font-weight: 620; font-size: 15px; }
+.steps b { display: block; font-weight: 620; font-size: 15px; overflow-wrap: anywhere; }
 /* Путь до репозитория — опора для глаза, а имя файла — то, куда идти. */
 .steps .repo { color: var(--muted); font-weight: 500; }
 .steps p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
