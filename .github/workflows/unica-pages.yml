@@ -25,6 +25,15 @@ concurrency:
 jobs:
   build:
     name: Собрать сайт
+    # Фильтр `branches` смотрит на имя ветки прогона-источника, а его выбирает
+    # автор PR: форк с веткой `main` прошёл бы через него, и мы скачали бы его
+    # артефакты и опубликовали на своём сайте. Поэтому источник обязан быть
+    # успешным push-прогоном этого же репозитория.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
