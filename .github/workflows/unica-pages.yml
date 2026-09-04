@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
   pages: write
   id-token: write
 
@@ -42,30 +41,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Забрать результаты прогона, если он их оставил
-        id: results
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          # Имя ветки выбирает тот, кто её завёл: в скрипт оно попадает
-          # переменной, а не текстом команды.
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-        run: |
-          set -eu
-          line="${HEAD_BRANCH:-main}"
-          echo "line=$line" >> "$GITHUB_OUTPUT"
-          if [ -z "${RUN_ID:-}" ]; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
-               --pattern 'allure-results*' --dir .build/allure-results; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Поставить Allure CLI
         run: |
           set -eu
@@ -75,46 +50,45 @@ jobs:
           echo "$PWD/allure-2.35.1/bin" >> "$GITHUB_PATH"
 
       # Линии перечисляет то же правило, что и на странице: main плюс открытые
-      # релизные линии. У линии, которая сейчас не собиралась, результаты и
-      # история берутся с самого сайта — он их хранит.
+      # релизные линии. Результаты и история каждой берутся с самого сайта — он
+      # их хранит. Артефакты прогонов здесь не читаются: сегодня ни один прогон
+      # не оставляет allure-results, а забирать артефакт чужого прогона в
+      # workflow_run — известный способ протащить чужое содержимое в публикацию.
+      # Канал для свежих результатов появится вместе с их эмиссией.
       - name: Собрать отчёты линий
         env:
           GH_TOKEN: ${{ github.token }}
           SITE: https://ingvarconsulting.github.io/unica
-          FRESH_LINE: ${{ steps.results.outputs.line }}
-          FRESH_FOUND: ${{ steps.results.outputs.found }}
         run: |
           set -eu
+          mkdir -p .build
           python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" \
             --print-lines --out /dev/null > .build/lines.txt
-          args=""
+          # Массив, а не строка: имя линии приходит из ветки репозитория и
+          # разваливаться на пробелах не должно.
+          args=()
           while read -r line; do
             [ -n "$line" ] || continue
-            if [ "$line" = "$FRESH_LINE" ] && [ "$FRESH_FOUND" = "true" ]; then
-              args="$args --line $line=.build/allure-results"
-            else
-              args="$args --line $line"
-            fi
+            args+=(--line "$line")
           done < .build/lines.txt
           python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" --out .build/bootstrap.json
-          # shellcheck disable=SC2086
           python scripts/ci/build-site.py --status .build/bootstrap.json --out .build/site \
-            --site "$SITE" $args
+            --site "$SITE" "${args[@]}"
 
       # Счётчики на странице берутся из сводок собранных отчётов, поэтому
       # документ статуса считается после них, а страницы перерисовываются.
       - name: Пересобрать страницы с итоговым статусом
         env:
           GH_TOKEN: ${{ github.token }}
-          FRESH_LINE: ${{ steps.results.outputs.line }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_AT: ${{ github.event.workflow_run.updated_at }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch || 'main' }}
         run: |
           set -eu
           python scripts/ci/site-status.py \
             --repo "$GITHUB_REPOSITORY" \
-            --branch "$FRESH_LINE" \
+            --branch "$RUN_BRANCH" \
             --sha "$RUN_SHA" \
             --run-url "$RUN_URL" \
             --run-at "$RUN_AT" \
