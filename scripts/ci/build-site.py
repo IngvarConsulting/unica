@@ -46,21 +46,18 @@ def render_pages(status: Path, out: Path) -> list[str]:
         raise SystemExit("status carries generated corpus values: " + ", ".join(overlap))
     status_document.update(generated)
 
-    styles = module.STYLESHEET.read_text(encoding="utf-8")
     (out / "assets").mkdir(parents=True, exist_ok=True)
     written = []
     for template in sorted(module.PAGES.glob("*.html")):
         page = module.render(template.read_text(encoding="utf-8"), status_document)
-        page = page.replace(
-            '<link rel="stylesheet" href="assets/site.css">',
-            "<style>\n" + styles + "</style>",
-        )
+        page = module.inline_assets(page, template.name)
         (out / template.name).write_text(page, encoding="utf-8")
         written.append(template.name)
     (out / "status.json").write_text(
         json.dumps(status_document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    shutil.copy2(module.MARK, out / "assets" / module.MARK.name)
+    for asset in (module.MARK, module.VISUAL_KIT):
+        shutil.copy2(asset, out / "assets" / asset.name)
     return written
 
 

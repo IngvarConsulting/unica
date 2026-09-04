@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -29,8 +30,9 @@ def gh(repo: str, path: str) -> list:
     склейка потока JSON регулярным выражением ломается на первой же кавычке
     внутри строки.
     """
+    endpoint = f"repos/{repo}/{path}" if path else f"repos/{repo}"
     result = subprocess.run(
-        ["gh", "api", f"repos/{repo}/{path}", "--paginate", "--slurp"],
+        ["gh", "api", endpoint, "--paginate", "--slurp"],
         capture_output=True,
         text=True,
         check=True,
@@ -109,6 +111,30 @@ def line_run(path: Path | None, repo: str) -> dict[str, str]:
     }
 
 
+def github_stars(repo: str) -> str:
+    """Звёзд у репозитория на момент сборки."""
+    try:
+        return str(gh(repo, "")[0]["stargazers_count"])
+    except Exception:
+        return "—"
+
+
+def telegram_members(chat: str) -> str:
+    """Сколько человек в группе.
+
+    Из браузера это число не прочитать: `t.me` не отдаёт CORS-заголовков, а у
+    Bot API нет входа без токена, и класть токен в страницу нельзя. Поэтому
+    число печатается при сборке и живёт до следующей.
+    """
+    try:
+        with urllib.request.urlopen(f"https://t.me/{chat}", timeout=20) as response:
+            page = response.read().decode("utf-8", "replace")
+    except Exception:
+        return "—"
+    found = re.search(r'tgme_page_extra">([\d\s \xa0]+)\s+(?:members|subscribers)', page)
+    return re.sub(r"[\s \xa0]", "", found.group(1)) if found else "—"
+
+
 def summary_counts(path: Path | None) -> dict[str, str] | None:
     """Счётчики берутся из сводки собранного отчёта, а не из воздуха."""
     if path is None or not path.is_file():
@@ -132,6 +158,7 @@ def main() -> int:
     parser.add_argument("--allure-summary", type=Path, help="widgets/summary.json собранного отчёта")
     parser.add_argument("--summaries", type=Path, help="каталог data/ собранного сайта: сводка на линию")
     parser.add_argument("--print-lines", action="store_true", help="напечатать открытые линии и выйти")
+    parser.add_argument("--telegram", default="unica_ai", help="публичная группа Telegram")
     parser.add_argument("--report-url", default="allure/main/")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -156,8 +183,19 @@ def main() -> int:
         "version_date": human(moment(latest["published_at"])),
         "version_url": latest["html_url"],
         "generated_at": human(now) + now.astimezone(timezone.utc).strftime(" %H:%M"),
-        "generated_sha": (args.sha or "")[:7] or "—",
-        "generated_url": args.run_url or f"https://github.com/{args.repo}/actions",
+        # Страницу собрал либо прогон, либо человек у себя. Во втором случае
+        # коммита нет, и подписывать её прочерком — значит промолчать: пусть
+        # прямо говорит `local` и ведёт в репозиторий, а не на прогон, которого
+        # не было.
+        "generated_sha": (args.sha or "")[:7] or "local",
+        "generated_url": args.run_url
+        or (
+            f"https://github.com/{args.repo}/commit/{args.sha}"
+            if args.sha
+            else f"https://github.com/{args.repo}"
+        ),
+        "github_stars": github_stars(args.repo),
+        "telegram_members": telegram_members(args.telegram),
     }
 
     # Пререлиз показывается только пока он впереди опубликованной версии:

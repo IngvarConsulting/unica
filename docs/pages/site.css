@@ -1,5 +1,8 @@
   :root {
     --blue: #2563EB;
+    /* Синий заливки — под белой подписью, поэтому в тёмной теме он не
+       приглушается: белое на приглушённом синем не прочитать. */
+    --blue-fill: #2563EB;
     --blue-strong: #1D4ED8;
     --accent: #93C5FD;
     --ink: #0F172A;
@@ -15,8 +18,13 @@
     --code-key: #1D4ED8;
     --code-val: #B45309;
   }
+  /* Тёмная палитра нужна в двух случаях: система просит тёмное и человек не
+     возражал, либо человек выбрал тёмное сам. Списки одинаковые, но один
+     живёт внутри @media, а другой снаружи, поэтому их два. Правя один,
+     правьте второй. */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
+      --blue: #7FA8E0;
       --ink: #F0F6FC;
       --muted: #9198A1;
       --paper: #0D1117;
@@ -27,6 +35,18 @@
       --code-key: #79B8FF;
       --code-val: #E3B341;
     }
+  }
+  :root[data-theme="dark"] {
+    --blue: #7FA8E0;
+    --ink: #F0F6FC;
+    --muted: #9198A1;
+    --paper: #0D1117;
+    --card: #161B22;
+    --line: #30363D;
+    --ok: #3FB950;
+    --bad: #F85149;
+    --code-key: #79B8FF;
+    --code-val: #E3B341;
   }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
@@ -56,10 +76,36 @@
   .brand { display: flex; align-items: center; color: var(--blue); }
   .brand:hover { text-decoration: none; }
   .brand svg { height: 27px; width: auto; display: block; }
-  @media (prefers-color-scheme: dark) { .brand { color: var(--ink); } }
-  nav { margin-left: auto; display: flex; gap: 20px; flex-wrap: wrap; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .brand { color: var(--ink); } }
+  :root[data-theme="dark"] .brand { color: var(--ink); }
+  nav { margin-left: auto; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
   nav a { color: var(--muted); font-size: 14px; }
   nav a:hover { color: var(--ink); text-decoration: none; }
+  /* Ссылка с числом: сколько звёзд у репозитория, сколько людей в группе.
+     Звёзды печатаются при сборке и освежаются в браузере, число Telegram —
+     только при сборке: `t.me` не отдаёт CORS-заголовков. */
+  nav .chip { display: inline-flex; align-items: center; gap: 7px; }
+  nav .chip svg { width: 17px; height: 17px; display: block; flex: none; }
+  nav .chip .count {
+    font-size: 12px; font-variant-numeric: tabular-nums; line-height: 1;
+    padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px;
+  }
+
+  /* Переключатель темы. Значок показывает, куда переключит, а не где мы
+     сейчас: так понятно, что произойдёт по нажатию. */
+  .theme {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; padding: 0;
+    border: 1px solid var(--line); border-radius: 9px;
+    background: var(--card); color: var(--muted);
+    cursor: pointer; flex: none;
+  }
+  .theme:hover { color: var(--ink); border-color: var(--muted); }
+  .theme svg { width: 16px; height: 16px; display: block; }
+  /* До ответа скрипта показывать нечего: иначе значок мигнёт не тем. */
+  .theme .sun, .theme .moon { display: none; }
+  .theme[data-shows="dark"] .moon { display: block; }
+  .theme[data-shows="light"] .sun { display: block; }
 
   .hero { padding-top: 72px; padding-bottom: 40px; }
   .eyebrow {
@@ -67,7 +113,9 @@
     color: var(--muted); font-weight: 600; margin: 0 0 14px;
   }
   .hero h1 { font-size: clamp(38px, 6vw, 60px); line-height: 1.05; margin: 0 0 18px; letter-spacing: -0.03em; }
-  .hero h1 span { color: var(--blue); }
+  /* В заголовке яркий синий уместен и читается: для крупного текста
+     порог контраста 3, а не 4,5 — приглушать его незачем. */
+  .hero h1 span { color: var(--blue-fill); }
   .lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 62ch; margin: 0 0 28px; }
   .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 34px; }
   .btn {
@@ -75,7 +123,7 @@
     padding: 11px 20px; border-radius: 10px; font-weight: 600; font-size: 15px;
     border: 1px solid transparent;
   }
-  .btn-primary { background: var(--blue); color: #fff; }
+  .btn-primary { background: var(--blue-fill); color: #fff; }
   .btn-primary:hover { background: var(--blue-strong); text-decoration: none; }
   .btn-ghost { border-color: var(--line); color: var(--ink); background: var(--card); }
   .btn-ghost:hover { border-color: var(--blue); text-decoration: none; }
@@ -236,6 +284,14 @@
 @media (max-width: 760px) { .pair { grid-template-columns: 1fr; } }
 .pair .card h4 { margin: 0 0 8px; font-size: 15px; }
 .pair .card p { margin: 0; color: var(--muted); font-size: 14px; }
+/* Имя файла или инструмента внутри фразы — тот же бабл, что и в таблицах:
+   в приглушённом тексте одно моноширинное начертание его не выделяет. */
+.pair .card h4 code,
+.pair .card p code,
+.caption code {
+  background: color-mix(in srgb, var(--blue) 13%, transparent);
+  color: var(--blue); padding: 2px 6px; border-radius: 5px;
+}
 td .tool { font-family: var(--mono); font-size: 13px; color: var(--blue); white-space: nowrap; }
 @media (max-width: 760px) {
   .diagram { margin: 18px -18px 10px; width: calc(100% + 36px); }
@@ -382,6 +438,34 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
 /* Ссылка на отчёт стоит в строке с числом: справа от него всё равно пусто,
    а отдельной строкой она оставляла в карточке провал. */
 .metric-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+/* Путь для того, кто пришёл вносить вклад: шаги по порядку, у каждого — куда
+   идти и что там лежит. Номер рисует счётчик, чтобы разметка осталась списком,
+   а не списком с вписанными цифрами. */
+.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; display: grid; gap: 12px; }
+.steps li {
+  counter-increment: step;
+  display: grid; grid-template-columns: 26px 1fr; gap: 14px; align-items: start;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px 20px;
+}
+.steps li::before {
+  content: counter(step);
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 8px;
+  background: color-mix(in srgb, var(--blue) 13%, transparent);
+  color: var(--blue); font-size: 13px; font-weight: 700;
+}
+/* Кликает вся карточка, а не только заголовок: цель у шага одна. */
+.steps li > a { display: block; color: var(--ink); }
+.steps li > a:hover { text-decoration: none; }
+.steps li:hover { border-color: var(--muted); }
+.steps li:hover b { color: var(--blue); }
+.steps b { display: block; font-weight: 620; font-size: 15px; }
+/* Путь до репозитория — опора для глаза, а имя файла — то, куда идти. */
+.steps .repo { color: var(--muted); font-weight: 500; }
+.steps p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+@media (max-width: 560px) { .steps li { padding: 14px 16px; gap: 11px; } }
+
 .card-action { white-space: nowrap; font-size: 13px; }
 /* Точка, число и слово — одна величина: переносится группа целиком. */
 .stat { white-space: nowrap; }

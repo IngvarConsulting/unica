@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Архитектура Unica</title>
 <meta name="description" content="Как устроена Unica: кто приходит по MCP, две поверхности инструментов, процесс и демон, движки.">
-<meta name="theme-color" content="#F8FAFC" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0D1117" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F8FAFC">
 <link rel="icon" href="assets/unica-mark-blue.svg">
 <link rel="stylesheet" href="assets/site.css">
+<script src="assets/site.js"></script>
 </head>
 <body>
 
@@ -31,10 +31,23 @@
     </a>
     <nav>
       <a href="index.html#install">Установка</a>
-      <a href="architecture.html">Архитектура</a>
       <a href="scenarios.html">Сценарии</a>
-      <a href="https://github.com/IngvarConsulting/unica" target="_blank" rel="noopener noreferrer">GitHub</a>
-      <a href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer">Telegram</a>
+      <a href="architecture.html">Архитектура</a>
+      <a class="chip" href="https://github.com/IngvarConsulting/unica" target="_blank" rel="noopener noreferrer" aria-label="GitHub">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        <span class="count" data-stars>{{github_stars}}</span></a>
+      <a class="chip" href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer" aria-label="Telegram">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+        <span class="count">{{telegram_members}}</span></a>
+      <button class="theme" type="button" aria-label="Переключить тему">
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/>
+        </svg>
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.6 6.6 0 0 0 10.5 10.5z"/>
+        </svg>
+      </button>
     </nav>
   </div>
 </header>
@@ -54,8 +67,8 @@
     <div class="wrap">
       <h2>Кто приходит и по какому протоколу</h2>
       <p class="caption">
-        Хост и сервер договариваются о версии протокола MCP в <code>initialize</code>.
-        Unica принимает три и отвечает той, которую попросил хост.
+        О версии протокола MCP договариваются в <code>initialize</code>.
+        Unica принимает три версии протокола и отвечает той, которую попросил агент.
       </p>
 
       <svg class="diagram" viewBox="0 0 960 300" role="img" aria-label="Три клиента приходят к одному MCP-серверу Unica и договариваются о версии протокола MCP">
@@ -95,18 +108,23 @@
 
   <section>
     <div class="wrap">
-      <h2>Долгая работа: два способа вернуться за результатом</h2>
+      <h2>Длительные операции: два способа вернуться за результатом</h2>
       <p class="caption">
         Индекс BSL строится минутами, запуск 1С тоже. Инструмент отвечает раньше, чем закончит
-        работу: отдаёт квитанцию и продолжает. Агент возвращается за результатом, и вернуться он
-        может двумя способами.
+        работу: отдаёт квитанцию и продолжает.
       </p>
-      <p class="caption">
-        Первый — спросить сам протокол; инструменты для этого не нужны. Второй — позвать три
-        обычных инструмента <code>unica.task.*</code>, которые делают то же самое. Первый способ
-        появился в протоколе недавно (<a href="https://modelcontextprotocol.io/extensions/tasks/overview" target="_blank" rel="noopener noreferrer">SEP-2663</a>). Unica смотрит,
-        объявил ли клиент его поддержку: объявил — задачи живут в протоколе, не объявил —
-        в списке инструментов появляются эти три.
+      <div class="pair">
+        <div class="card">
+          <h4>На уровне протокола</h4>
+          <p>Агент спрашивает о задаче сам протокол — инструменты для этого не нужны. Так умеют клиенты, объявившие расширение задач (<a href="https://modelcontextprotocol.io/extensions/tasks/overview" target="_blank" rel="noopener noreferrer">SEP-2663</a>): в MCP оно появилось недавно.</p>
+        </div>
+        <div class="card">
+          <h4>Инструментами Unica</h4>
+          <p>Клиент расширение не объявил — Unica добавляет в список три обычных инструмента <code>unica.task.*</code>. Они делают ровно то же: узнать состояние, забрать результат, отменить.</p>
+        </div>
+      </div>
+      <p class="caption" style="margin-top:16px">
+        Выбирать не нужно: Unica смотрит, что объявил клиент, и сама решает, каким путём отвечать.
       </p>
 
       <svg class="diagram" viewBox="0 0 960 400" role="img" aria-label="Соответствие задач протокола и трёх compatibility-инструментов">
@@ -122,8 +140,7 @@
         <text class="t-muted" x="44" y="256">квитанция адресует ту же durable-задачу.</text>
         <line x1="44" y1="282" x2="436" y2="282" stroke="currentColor" stroke-opacity="0.14"/>
         <text class="t-muted" x="44" y="308">Способ появился в протоколе недавно: <a href="https://modelcontextprotocol.io/extensions/tasks/overview" target="_blank" rel="noopener noreferrer"><tspan class="t-link">SEP-2663</tspan></a>.</text>
-        <text class="t-muted" x="44" y="328">Агенты его пока не объявляют, и он не встречается.</text>
-        <text class="t-muted" x="44" y="348">У Unica он написан и включится сам, когда объявят.</text>
+        <text class="t-muted" x="44" y="328">У Unica он написан и включится сам, когда объявят.</text>
 
         <rect class="box" x="500" y="14" width="440" height="350" rx="12"/>
         <text class="t-tag" x="524" y="44">COMPATIBILITY</text>
@@ -151,7 +168,7 @@
       <h2>Что происходит внутри</h2>
       <p class="caption">
         Процесс MCP тонкий: он переводит кадры протокола в вызовы и обратно. Состояние,
-        долгая работа и движки принадлежат демону, который переживает отдельный вызов.
+        длительные операции и движки принадлежат демону, который переживает отдельный вызов.
       </p>
 
       <svg class="diagram" viewBox="0 0 960 500" role="img" aria-label="Процесс MCP запускает демон, демон делит рабочие пространства и запускает движки, платформу 1С дёргает v8-runner">
@@ -235,7 +252,7 @@
       <div class="pair">
         <div class="card">
           <h4>Почему демон, а не процесс на вызов</h4>
-          <p>Индекс BSL строится минутами, а вызов агента живёт секунды. Демон переживает вызов, поэтому второй запрос попадает в готовый индекс, а долгая работа отвечает состоянием вместо обрыва.</p>
+          <p>Индекс BSL строится минутами, а вызов агента живёт секунды. Демон переживает вызов, поэтому второй запрос попадает в готовый индекс, а длительная операция отвечает состоянием вместо обрыва.</p>
         </div>
         <div class="card">
           <h4>Почему актор на рабочее пространство</h4>
@@ -389,6 +406,29 @@
         </tbody>
       </table>
       </div>
+
+      <h2 style="margin-top:44px">Механика dryRun</h2>
+      <p class="caption">
+        Инструмент, который что-то меняет, зовут дважды: сначала за планом, потом за записью.
+        Это один и тот же вызов с разным <code>dryRun</code>.
+      </p>
+
+      <div class="pair">
+        <div class="card">
+          <h4>План — <code>dryRun: true</code></h4>
+          <p>Ничего не пишет. Возвращает, что именно изменится, и ревизию проекта <code>rev</code> — отпечаток того состояния, на котором план построен.</p>
+        </div>
+        <div class="card">
+          <h4>Запись — <code>dryRun: false</code></h4>
+          <p>Принимает <code>ifRev</code> из плана. Проект успел измениться — ревизия не сойдётся, Unica ответит <code>revision_mismatch</code> и не тронет файлы.</p>
+        </div>
+      </div>
+
+      <p class="caption" style="margin-top:16px">
+        У <code>dryRun</code> нет умолчания: вызов без него — ошибка <code>bad_value</code>, а не запись.
+        Забыть указать и записать случайно нельзя. Отдельной проверки перед записью тоже не нужно:
+        план и запись — один код, поэтому показанное планом и запишется.
+      </p>
     </div>
   </section>
 </main>
@@ -403,7 +443,8 @@
     <div>
       <a href="https://ingvar.pro/products/unica" target="_blank" rel="noopener noreferrer">ingvar.pro</a> ·
       <a href="https://github.com/IngvarConsulting/unica" target="_blank" rel="noopener noreferrer">GitHub</a> ·
-      <a href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer">Telegram</a><br>
+      <a href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer">Telegram</a> ·
+      <a href="assets/unica-visual-kit.pdf" target="_blank" rel="noopener noreferrer">Unica visual kit</a><br>
       Страница собрана {{generated_at}} из <a href="{{generated_url}}" target="_blank" rel="noopener noreferrer">{{generated_sha}}</a>
     </div>
   </div>
