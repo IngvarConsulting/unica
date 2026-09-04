@@ -12,10 +12,10 @@ on:
     branches: [main, "release-v*"]
   workflow_dispatch:
 
+# Право писать на Pages нужно одной джобе — той, что публикует. Сборка только
+# читает дерево и складывает артефакт, поэтому шире её права не бывают.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: unica-pages
@@ -115,6 +115,9 @@ jobs:
   deploy:
     name: Опубликовать
     needs: build
+    permissions:
+      pages: write
+      id-token: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
