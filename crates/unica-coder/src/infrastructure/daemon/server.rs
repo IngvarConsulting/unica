@@ -4101,14 +4101,19 @@ struct ActorLogicalReadLease {"#,
         // Имя, встреченное в прозе записи, проверкой не является: смотрим
         // только список под ключом во фронт-маттере.
         fn declarations(record: &str, key: &str) -> Vec<String> {
-            let front = record
-                .strip_prefix("---\n")
-                .and_then(|rest| rest.split_once("\n---\n"))
-                .map(|(front, _)| front)
-                .expect("architecture record has front matter");
+            // Запись читается с диска как есть, а на Windows `checkout` отдаёт
+            // её с CRLF. Разбор идёт построчно с обрезанным `\r`, иначе на
+            // одной из трёх ОС фронт-маттер просто не находится.
+            let mut lines = record.lines().map(str::trim_end);
+            assert_eq!(
+                lines.next(),
+                Some("---"),
+                "architecture record has front matter"
+            );
+            let front: Vec<&str> = lines.take_while(|line| *line != "---").collect();
             let mut collecting = false;
             let mut named = Vec::new();
-            for line in front.lines() {
+            for line in front {
                 if let Some(inline) = line.strip_prefix(key) {
                     collecting = inline.trim().is_empty();
                     if !collecting {
