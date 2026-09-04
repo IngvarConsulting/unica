@@ -4135,7 +4135,9 @@ struct ActorLogicalReadLease {"#,
         );
         for named in [
             "actor_read_source_capability_is_sealed_after_binding",
-            "actor_read_authority_builder_uses_only_actor_bound_semantics",
+            "actor_read_authority_builder_rejects_actor_bound_unsupported_profile",
+            "actor_read_authority_builder_preserves_actor_bound_source_kind",
+            "actor_read_authority_builder_preserves_non_replenishing_deadline",
             "provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile",
         ] {
             assert!(
