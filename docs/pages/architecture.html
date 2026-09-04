@@ -111,15 +111,20 @@
       <h2>Длительные операции: два способа вернуться за результатом</h2>
       <p class="caption">
         Индекс BSL строится минутами, запуск 1С тоже. Инструмент отвечает раньше, чем закончит
-        работу: отдаёт квитанцию и продолжает. Агент возвращается за результатом, и вернуться он
-        может двумя способами.
+        работу: отдаёт квитанцию и продолжает.
       </p>
-      <p class="caption">
-        Первый — спросить сам протокол; инструменты для этого не нужны. Второй — позвать три
-        обычных инструмента <code>unica.task.*</code>, которые делают то же самое. Первый способ
-        появился в протоколе недавно (<a href="https://modelcontextprotocol.io/extensions/tasks/overview" target="_blank" rel="noopener noreferrer">SEP-2663</a>). Unica смотрит,
-        объявил ли клиент его поддержку: объявил — задачи живут в протоколе, не объявил —
-        в списке инструментов появляются эти три.
+      <div class="pair">
+        <div class="card">
+          <h4>На уровне протокола</h4>
+          <p>Агент спрашивает о задаче сам протокол — инструменты для этого не нужны. Так умеют клиенты, объявившие расширение задач (<a href="https://modelcontextprotocol.io/extensions/tasks/overview" target="_blank" rel="noopener noreferrer">SEP-2663</a>): в MCP оно появилось недавно.</p>
+        </div>
+        <div class="card">
+          <h4>Инструментами Unica</h4>
+          <p>Клиент расширение не объявил — Unica добавляет в список три обычных инструмента <code>unica.task.*</code>. Они делают ровно то же: узнать состояние, забрать результат, отменить.</p>
+        </div>
+      </div>
+      <p class="caption" style="margin-top:16px">
+        Выбирать не нужно: Unica смотрит, что объявил клиент, и сама решает, каким путём отвечать.
       </p>
 
       <svg class="diagram" viewBox="0 0 960 400" role="img" aria-label="Соответствие задач протокола и трёх compatibility-инструментов">
@@ -135,8 +140,7 @@
         <text class="t-muted" x="44" y="256">квитанция адресует ту же durable-задачу.</text>
         <line x1="44" y1="282" x2="436" y2="282" stroke="currentColor" stroke-opacity="0.14"/>
         <text class="t-muted" x="44" y="308">Способ появился в протоколе недавно: <a href="https://modelcontextprotocol.io/extensions/tasks/overview" target="_blank" rel="noopener noreferrer"><tspan class="t-link">SEP-2663</tspan></a>.</text>
-        <text class="t-muted" x="44" y="328">Агенты его пока не объявляют, и он не встречается.</text>
-        <text class="t-muted" x="44" y="348">У Unica он написан и включится сам, когда объявят.</text>
+        <text class="t-muted" x="44" y="328">У Unica он написан и включится сам, когда объявят.</text>
 
         <rect class="box" x="500" y="14" width="440" height="350" rx="12"/>
         <text class="t-tag" x="524" y="44">COMPATIBILITY</text>
