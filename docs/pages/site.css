@@ -76,6 +76,14 @@
   nav { margin-left: auto; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
   nav a { color: var(--muted); font-size: 14px; }
   nav a:hover { color: var(--ink); text-decoration: none; }
+  /* Ссылка с числом: сколько звёзд у репозитория, сколько людей в группе.
+     Звёзды печатаются при сборке и освежаются в браузере, число Telegram —
+     только при сборке: `t.me` не отдаёт CORS-заголовков. */
+  nav .chip { display: inline-flex; align-items: center; gap: 6px; }
+  nav .chip .count {
+    font-size: 12px; font-variant-numeric: tabular-nums; line-height: 1;
+    padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px;
+  }
 
   /* Переключатель темы. Значок показывает, куда переключит, а не где мы
      сейчас: так понятно, что произойдёт по нажатию. */
