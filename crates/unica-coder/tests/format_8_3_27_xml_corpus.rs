@@ -875,9 +875,7 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
         })
         .unwrap_or_default();
     if !ok || !errors.is_empty() {
-        return Err(format!(
-            "{tool} failed: {summary}; errors={errors:?}"
-        ));
+        return Err(format!("{tool} failed: {summary}; errors={errors:?}"));
     }
     Ok(summary)
 }
