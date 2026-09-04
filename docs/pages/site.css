@@ -15,8 +15,12 @@
     --code-key: #1D4ED8;
     --code-val: #B45309;
   }
+  /* Тёмная палитра нужна в двух случаях: система просит тёмное и человек не
+     возражал, либо человек выбрал тёмное сам. Списки одинаковые, но один
+     живёт внутри @media, а другой снаружи, поэтому их два. Правя один,
+     правьте второй. */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --ink: #F0F6FC;
       --muted: #9198A1;
       --paper: #0D1117;
@@ -27,6 +31,17 @@
       --code-key: #79B8FF;
       --code-val: #E3B341;
     }
+  }
+  :root[data-theme="dark"] {
+    --ink: #F0F6FC;
+    --muted: #9198A1;
+    --paper: #0D1117;
+    --card: #161B22;
+    --line: #30363D;
+    --ok: #3FB950;
+    --bad: #F85149;
+    --code-key: #79B8FF;
+    --code-val: #E3B341;
   }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
@@ -56,10 +71,27 @@
   .brand { display: flex; align-items: center; color: var(--blue); }
   .brand:hover { text-decoration: none; }
   .brand svg { height: 27px; width: auto; display: block; }
-  @media (prefers-color-scheme: dark) { .brand { color: var(--ink); } }
-  nav { margin-left: auto; display: flex; gap: 20px; flex-wrap: wrap; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .brand { color: var(--ink); } }
+  :root[data-theme="dark"] .brand { color: var(--ink); }
+  nav { margin-left: auto; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
   nav a { color: var(--muted); font-size: 14px; }
   nav a:hover { color: var(--ink); text-decoration: none; }
+
+  /* Переключатель темы. Значок показывает, куда переключит, а не где мы
+     сейчас: так понятно, что произойдёт по нажатию. */
+  .theme {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; padding: 0;
+    border: 1px solid var(--line); border-radius: 9px;
+    background: var(--card); color: var(--muted);
+    cursor: pointer; flex: none;
+  }
+  .theme:hover { color: var(--ink); border-color: var(--muted); }
+  .theme svg { width: 16px; height: 16px; display: block; }
+  /* До ответа скрипта показывать нечего: иначе значок мигнёт не тем. */
+  .theme .sun, .theme .moon { display: none; }
+  .theme[data-shows="dark"] .moon { display: block; }
+  .theme[data-shows="light"] .sun { display: block; }
 
   .hero { padding-top: 72px; padding-bottom: 40px; }
   .eyebrow {
@@ -382,6 +414,29 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
 /* Ссылка на отчёт стоит в строке с числом: справа от него всё равно пусто,
    а отдельной строкой она оставляла в карточке провал. */
 .metric-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+/* Путь для того, кто пришёл вносить вклад: шаги по порядку, у каждого — куда
+   идти и что там лежит. Номер рисует счётчик, чтобы разметка осталась списком,
+   а не списком с вписанными цифрами. */
+.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; display: grid; gap: 12px; }
+.steps li {
+  counter-increment: step;
+  display: grid; grid-template-columns: 26px 1fr; gap: 14px; align-items: start;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px 20px;
+}
+.steps li::before {
+  content: counter(step);
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 8px;
+  background: color-mix(in srgb, var(--blue) 13%, transparent);
+  color: var(--blue); font-size: 13px; font-weight: 700;
+}
+.steps b { font-weight: 620; font-size: 15px; }
+.steps b a { color: var(--ink); }
+.steps b a:hover { color: var(--blue); text-decoration: none; }
+.steps p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+@media (max-width: 560px) { .steps li { padding: 14px 16px; gap: 11px; } }
+
 .card-action { white-space: nowrap; font-size: 13px; }
 /* Точка, число и слово — одна величина: переносится группа целиком. */
 .stat { white-space: nowrap; }

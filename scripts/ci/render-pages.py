@@ -21,9 +21,32 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PAGES = REPO_ROOT / "docs" / "pages"
 MARK = REPO_ROOT / "docs" / "visual-kit" / "logos" / "unica-mark-blue.svg"
 STYLESHEET = PAGES / "site.css"
+SCRIPT = PAGES / "site.js"
+# Стили и скрипт лежат отдельными файлами, чтобы их правили в одном месте, но
+# в страницу попадают телом: тогда страница открывается сама по себе — из
+# артефакта, из письма, из локального файла.
+INLINED = (
+    ('<link rel="stylesheet" href="assets/site.css">', "style", STYLESHEET),
+    ('<script src="assets/site.js"></script>', "script", SCRIPT),
+)
 PLACEHOLDER = re.compile(r"\{\{([a-z0-9_]+)\}\}")
 SCENARIO_STATUS = Path(__file__).with_name("scenario-status.py")
 REPEAT = re.compile(r"[ \t]*<!-- repeat: ([a-z_]+) -->\n(.*?)[ \t]*<!-- /repeat -->\n", re.S)
+
+
+def inline_assets(page: str, name: str) -> str:
+    """Заменить ссылки на стили и скрипт их телом.
+
+    Отсутствие ссылки — не мелочь: в артефакт кладётся только знак, поэтому
+    страница со ссылкой на `assets/site.css` уедет на сайт без оформления.
+    Молчать об этом нельзя, поэтому пропавшая ссылка — отказ.
+    """
+    for marker, tag, source in INLINED:
+        if marker not in page:
+            raise SystemExit(f"{name}: нет ссылки на подстановку — {marker}")
+        body = source.read_text(encoding="utf-8")
+        page = page.replace(marker, f"<{tag}>\n{body}</{tag}>")
+    return page
 
 
 def placeholders(template: str) -> set[str]:
@@ -110,17 +133,10 @@ def main() -> int:
     out = args.out
     (out / "assets").mkdir(parents=True, exist_ok=True)
 
-    # Стили лежат одним файлом, чтобы их правили в одном месте, но в
-    # страницу попадают телом: тогда страница открывается сама по себе —
-    # из артефакта, из письма, из локального файла.
-    styles = STYLESHEET.read_text(encoding="utf-8")
     written = []
     for template in sorted(args.pages.glob("*.html")):
         page = render(template.read_text(encoding="utf-8"), status)
-        page = page.replace(
-            '<link rel="stylesheet" href="assets/site.css">',
-            "<style>\n" + styles + "</style>",
-        )
+        page = inline_assets(page, template.name)
         (out / template.name).write_text(page, encoding="utf-8")
         written.append(template.name)
 
