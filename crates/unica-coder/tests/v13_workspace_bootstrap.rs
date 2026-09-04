@@ -300,8 +300,11 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
     mcp.finish();
 }
 
+// Исключение из отключённого яруса: на этот тест ссылается реестр
+// `arch/tool-implementation-coverage.json` как на доказательство того, что
+// `workspace.initialize` поддержана. Отключить его — значит оставить
+// заявку без доказательства; внутрипроцессной замены ему нет.
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn canonical_stdio_previews_and_applies_workspace_initialization_before_admission() {
     let root = tempfile::tempdir().expect("source attach integration root");
     let workspace = root.path().join("workspace");
@@ -474,8 +477,11 @@ fn canonical_stdio_previews_and_applies_autodetected_source_attachment_before_ad
     canonical_stdio_previews_and_applies_workspace_initialization_before_admission();
 }
 
+// Исключение из отключённого яруса: на этот тест ссылается реестр
+// `arch/tool-implementation-coverage.json` как на доказательство того, что
+// `workspace.initialize` поддержана. Отключить его — значит оставить
+// заявку без доказательства; внутрипроцессной замены ему нет.
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn canonical_workspace_initialization_refuses_mixed_designer_and_edt_discovery() {
     let root = tempfile::tempdir().expect("mixed source attach integration root");
     let workspace = root.path().join("workspace");
