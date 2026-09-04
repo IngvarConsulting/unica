@@ -31,6 +31,10 @@ impl McpProcess {
             .arg("mcp")
             .current_dir(workspace)
             .env("UNICA_PROVIDER_STATE_DIR", state)
+            // Демон переживает MCP: без назначенной паузы он остаётся на
+            // четверть часа, и к концу прогона их набирается столько же,
+            // сколько было тестов.
+            .env("UNICA_DAEMON_IDLE_GRACE_MS", "5000")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
