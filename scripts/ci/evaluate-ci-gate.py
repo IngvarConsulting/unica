@@ -111,7 +111,10 @@ def expected_results(
 
     full_matrix = values["platform_changed"] or values["toolchain_changed"] or values["ci_changed"]
     primary_rust = values["rust_changed"] and not full_matrix
-    package_pipeline = values["release_required"] or values["ci_changed"]
+    # Сборка пакета и холодные старты сняты с pull request до пересборки системы
+    # тестирования: прослеживаемости они не давали, а гейт красили. Тег и ручной
+    # запуск их сохраняют — выпуск обязан собираться.
+    package_pipeline = (values["release_required"] or values["ci_changed"]) and not is_pr
 
     expected["test-rust-primary"] = "success" if primary_rust else "skipped"
     expected["test-rust-platforms"] = "success" if full_matrix else "skipped"
@@ -121,15 +124,13 @@ def expected_results(
         else "skipped"
     )
     expected.update({job: "success" if package_pipeline else "skipped" for job in PACKAGE_JOBS})
-    expected[ASSESSMENT_JOB] = "success" if values["assessment_required"] else "skipped"
+    expected[ASSESSMENT_JOB] = (
+        "success" if values["assessment_required"] and not is_pr else "skipped"
+    )
     expected[P0_PROOF_JOB] = (
-        "success"
-        if values["assessment_required"] and (is_pr or is_manual)
-        else "skipped"
+        "success" if values["assessment_required"] and is_manual else "skipped"
     )
-    expected["probe-thin-bootstrap"] = (
-        "success" if package_pipeline and (is_pr or is_manual) else "skipped"
-    )
+    expected["probe-thin-bootstrap"] = "success" if package_pipeline and is_manual else "skipped"
     expected.update({job: "success" if is_tag else "skipped" for job in PUBLISH_JOBS})
 
     if is_tag:

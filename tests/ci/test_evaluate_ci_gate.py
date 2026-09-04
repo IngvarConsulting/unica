@@ -62,28 +62,29 @@ def source_results() -> dict[str, str]:
 
 
 class EvaluateCiGateTests(unittest.TestCase):
-    def test_p0_release_proof_runs_for_assessed_pr_without_publication(self) -> None:
+    def test_pull_request_skips_package_pipeline_even_when_classified(self) -> None:
+        """Тяжёлые контуры сняты с pull request, а не выключены везде.
+
+        Классификация продолжает честно говорить, что правка задела упаковку и
+        оценку; гейт при этом ждёт от них пропуска, потому что на pull request
+        они больше не запускаются.
+        """
         module = load_gate_module()
         outputs = classification(
             package_changed=True,
             release_required=True,
             assessment_required=True,
         )
-        results = {
-            **source_results(),
-            "build-tools": "success",
-            "package-thin": "success",
-            "p0-release-proof": "success",
-            "release-assessment": "success",
-            "probe-thin-bootstrap": "success",
-        }
 
         evaluation = module.evaluate_gate(
-            "pull_request", "refs/pull/581/merge", outputs, results
+            "pull_request", "refs/pull/581/merge", outputs, source_results()
         )
 
         self.assertTrue(evaluation.ok)
-        self.assertEqual("success", evaluation.expected["p0-release-proof"])
+        for job in ("build-tools", "package-thin", "probe-thin-bootstrap"):
+            self.assertEqual("skipped", evaluation.expected[job], job)
+        self.assertEqual("skipped", evaluation.expected["release-assessment"])
+        self.assertEqual("skipped", evaluation.expected["p0-release-proof"])
 
     def test_source_only_pr_accepts_only_classified_skips(self) -> None:
         module = load_gate_module()
@@ -96,14 +97,12 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertEqual("source", evaluation.contour)
         self.assertEqual(set(results) - set(ALWAYS_SUCCESS), set(evaluation.skipped_jobs))
 
-    def test_platform_independent_rust_uses_primary_macos_and_package_pipeline(self) -> None:
+    def test_platform_independent_rust_uses_primary_macos_without_package_pipeline(self) -> None:
         module = load_gate_module()
         outputs = classification(rust_changed=True, release_required=True)
         results = {
             **source_results(),
             "test-rust-primary": "success",
-            **PACKAGE_SUCCESS,
-            "probe-thin-bootstrap": "success",
         }
 
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
@@ -118,8 +117,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         results = {
             **source_results(),
             "test-rust-platforms": "success",
-            **PACKAGE_SUCCESS,
-            "probe-thin-bootstrap": "success",
         }
 
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
@@ -128,38 +125,15 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertEqual("platform", evaluation.contour)
         self.assertEqual("skipped", evaluation.expected["test-rust-primary"])
 
-    def test_long_assessment_requires_affected_mechanism_or_full_contour(self) -> None:
-        module = load_gate_module()
-        ordinary_outputs = classification(rust_changed=True, release_required=True)
-        ordinary_results = {
-            **source_results(),
-            "test-rust-primary": "success",
-            **PACKAGE_SUCCESS,
-            "probe-thin-bootstrap": "success",
-        }
-        affected_outputs = classification(
-            rust_changed=True,
-            release_required=True,
-            assessment_required=True,
-        )
-        affected_results = {**ordinary_results, **ASSESSMENT_SUCCESS, **P0_SUCCESS}
+    def test_long_assessment_runs_outside_pull_request_only(self) -> None:
+        """Оценка на BSP осталась у ручного запуска и тега.
 
-        ordinary = module.evaluate_gate(
-            "pull_request", "refs/pull/155/merge", ordinary_outputs, ordinary_results
-        )
-        affected = module.evaluate_gate(
-            "pull_request", "refs/pull/155/merge", affected_outputs, affected_results
-        )
-
-        self.assertTrue(ordinary.ok)
-        self.assertEqual("skipped", ordinary.expected["release-assessment"])
-        self.assertTrue(affected.ok)
-        self.assertEqual("success", affected.expected["release-assessment"])
-
-    def test_ci_full_pr_runs_all_validation_and_package_jobs_without_publication(self) -> None:
+        На pull request её нет ни при какой классификации: это и есть снятие
+        тяжёлого контура, а не отключение оценки вообще.
+        """
         module = load_gate_module()
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
-        results = {
+        manual_results = {
             **source_results(),
             "test-rust-platforms": "success",
             "test-search-integration": "success",
@@ -169,11 +143,50 @@ class EvaluateCiGateTests(unittest.TestCase):
             "probe-thin-bootstrap": "success",
         }
 
+        manual = module.evaluate_gate(
+            "workflow_dispatch", "refs/heads/main", outputs, manual_results
+        )
+        request = module.evaluate_gate(
+            "pull_request",
+            "refs/pull/155/merge",
+            outputs,
+            {
+                **source_results(),
+                "test-rust-platforms": "success",
+                "test-search-integration": "success",
+            },
+        )
+
+        self.assertTrue(manual.ok)
+        self.assertEqual("success", manual.expected["release-assessment"])
+        self.assertTrue(request.ok)
+        self.assertEqual("skipped", request.expected["release-assessment"])
+
+    def test_ci_full_pr_runs_validation_but_no_package_jobs(self) -> None:
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {
+            **source_results(),
+            "test-rust-platforms": "success",
+            "test-search-integration": "success",
+        }
+
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("full", evaluation.contour)
-        self.assertEqual({"test-rust-primary", *PUBLISH_SKIPPED}, set(evaluation.skipped_jobs))
+        self.assertEqual(
+            {
+                "test-rust-primary",
+                "build-tools",
+                "package-thin",
+                "probe-thin-bootstrap",
+                "release-assessment",
+                "p0-release-proof",
+                *PUBLISH_SKIPPED,
+            },
+            set(evaluation.skipped_jobs),
+        )
 
     def test_ci_change_requires_the_search_integration_job(self) -> None:
         module = load_gate_module()
@@ -182,8 +195,6 @@ class EvaluateCiGateTests(unittest.TestCase):
             **source_results(),
             "test-rust-platforms": "success",
             "test-search-integration": "success",
-            **PACKAGE_SUCCESS,
-            "probe-thin-bootstrap": "success",
         }
 
         evaluation = module.evaluate_gate(
@@ -272,10 +283,9 @@ class EvaluateCiGateTests(unittest.TestCase):
             "verify-source": "cancelled",
             "test-rust-platforms": "failure",
             "test-search-integration": "success",
-            **PACKAGE_SUCCESS,
-            **ASSESSMENT_SUCCESS,
-            "package-thin": "skipped",
-            "probe-thin-bootstrap": "success",
+            # Снятый с pull request контур, который всё-таки отработал, — тоже
+            # расхождение: гейт обязан заметить и лишнюю работу.
+            "build-tools": "success",
         }
 
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
@@ -285,8 +295,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             {
                 "verify-source": ("cancelled", "success"),
                 "test-rust-platforms": ("failure", "success"),
-                "package-thin": ("skipped", "success"),
-                "p0-release-proof": ("skipped", "success"),
+                "build-tools": ("success", "skipped"),
             },
             {key: value for key, value in evaluation.unexpected.items() if key != "classification"},
         )

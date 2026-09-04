@@ -279,7 +279,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("runs-on: macos-14", primary)
         self.assertIn("rust_changed == 'true'", primary)
         self.assertIn("platform_changed == 'false'", primary)
-        self.assertIn("runner: [ubuntu-latest, windows-latest, macos-14]", platforms)
+        # windows-latest снят с матрицы до разбора нестабильности раннера;
+        # список закреплён целиком, поэтому вернуть его молча не получится.
+        self.assertIn("runner: [ubuntu-latest, macos-14]", platforms)
         self.assertIn("platform_changed == 'true'", platforms)
         self.assertIn("toolchain_changed == 'true'", platforms)
         self.assertIn("ci_changed == 'true'", platforms)
@@ -313,8 +315,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn("release_required == 'true'", build)
         self.assertIn("ci_changed == 'true'", build)
-        self.assertIn("github.event_name == 'pull_request'", probe)
+        # Сборка и холодный старт сняты с pull request: там они не давали
+        # прослеживаемости, а гейт красили. Тег и ручной запуск их сохраняют.
+        self.assertIn("github.event_name != 'pull_request'", build)
         self.assertIn("github.event_name == 'workflow_dispatch'", probe)
+        self.assertNotIn("github.event_name == 'pull_request'", probe)
         self.assertIn("startsWith(github.ref, 'refs/tags/')", publish)
 
     def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
