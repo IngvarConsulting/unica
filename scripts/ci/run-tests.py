@@ -106,10 +106,10 @@ def write_rust_plan(results: Path, profile: str) -> int:
     return len(entries)
 
 
-def emit_rust(results: Path, profile: str, runner: str) -> int:
+def emit_rust(results: Path, profile: str, runner: str, junit: Path = NEXTEST_JUNIT) -> int:
     """JUnit от nextest + причины `#[ignore]` из атрибутов → allure-results."""
     reasons = allure_results.ignore_reasons(REPO_ROOT)
-    entries = allure_results.junit_records(NEXTEST_JUNIT, runner=runner, profile=profile, reasons=reasons)
+    entries = allure_results.junit_records(junit, runner=runner, profile=profile, reasons=reasons)
     for entry in entries:
         allure_results.write(results, entry)
     return len(entries)
@@ -155,18 +155,35 @@ def main(argv: list[str] | None = None) -> int:
             print(f"план Rust: {write_rust_plan(args.results, args.profile)} тестов")
         return 0
 
+    return execute(args.profile, args.ecosystem, args.results, args.runner)
+
+
+def execute(
+    profile: str,
+    ecosystem: str,
+    results: Path | None,
+    runner: str,
+    run_commands=None,
+    junit: Path = NEXTEST_JUNIT,
+) -> int:
+    """Прогнать экосистемы и оставить результаты.
+
+    Подпись прогона пишется один раз на вызов и до тестов: она описывает
+    вызов, а не исход, и обязана остаться даже когда nextest упал раньше, чем
+    успел написать JUnit. Результаты Rust пишутся, только если JUnit есть.
+    """
+    run_commands = run if run_commands is None else run_commands
+    if results is not None:
+        allure_results.write_run(results, profile=profile, runner=runner, ecosystem=ecosystem)
     code = 0
-    if args.ecosystem in ("rust", "all"):
-        code = run(rust_commands(args.profile))
-        if args.results is not None and NEXTEST_JUNIT.is_file():
-            print(f"результаты Rust: {emit_rust(args.results, args.profile, args.runner)} записей")
-            allure_results.write_run(args.results, profile=args.profile, runner=args.runner, ecosystem="rust")
+    if ecosystem in ("rust", "all"):
+        code = run_commands(rust_commands(profile))
+        if results is not None and junit.is_file():
+            print(f"результаты Rust: {emit_rust(results, profile, runner, junit)} записей")
         if code != 0:
             return code
-    if args.ecosystem in ("python", "all"):
-        code = run(python_commands(args.profile, results=args.results, runner=args.runner))
-        if args.results is not None:
-            allure_results.write_run(args.results, profile=args.profile, runner=args.runner, ecosystem="python")
+    if ecosystem in ("python", "all"):
+        code = run_commands(python_commands(profile, results=results, runner=runner))
     return code
 
 
