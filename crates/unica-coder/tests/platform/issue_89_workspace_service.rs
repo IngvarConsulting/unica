@@ -59,6 +59,7 @@ fn stderr_drain_survives_invalid_utf8_and_keeps_the_tail() {
 }
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn search_progress_liveness_does_not_depend_on_a_transient_provider_phase() {
     let message = json!({
         "jsonrpc": "2.0",
