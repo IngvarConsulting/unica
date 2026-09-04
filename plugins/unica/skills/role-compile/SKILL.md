@@ -145,10 +145,10 @@ allowed-tools:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.role.info",
+    "name": "unica.view",
     "arguments": {
       "cwd": "<workspace>",
-      "RightsPath": "<RightsPath>"
+      "at": "<набор>:Role.<ИмяРоли>"
     }
   }
 }

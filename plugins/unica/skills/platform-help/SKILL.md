@@ -7,13 +7,29 @@ description: "Справка платформы 1С и объектной мод
 
 ## MCP routing
 
-- For platform API and mechanics, use MCP `unica` tool `unica.documentation.search` with `"sourceKinds": ["platform-help"]`: фильтр по смыслу источника оставляет справку платформы и не тратит сетевой вызов стандартов на вопрос, который им не является.
-- For domain questions about the workspace configuration itself — назначение справочника, роль документа в учёте, — используйте `"sourceKinds": ["configuration-documentation"]`: отвечает встроенная справка конфигурации (корпус `configuration-help`, локатор `configuration-help:<набор-исходников>:<путь>`), а не справка платформы. `applicableVersion` такого попадания — версия конфигурации, не платформы.
-- Секции приходят от четырёх поставщиков: встроенная справка конфигурации рабочего пространства, установка платформы (Синтакс-помощник и справка конфигуратора), руководства площадки вендора (`kb-developer-guide`, `kb-administrator-guide` — описательный слой: механизмы целиком, форматы адресов, администрирование) и сервер стандартов. Установка старше в интерфейсе программирования, руководства — в описательном; расхождение их версий называйте в ответе.
-- Каждая секция несёт `sourceKind` и `authority`, каждое попадание в ней — `applicableVersion` и `documentId`. Ответ обязан называть источник, версию установки и `documentId` страницы: без него читатель не может вернуться к той же странице.
-- `language` секции — локаль, которой источник ответил на самом деле, а не запрошенная. Если они расходятся, назовите подстановку локали в ответе: справка поставляется не во всех локалях, и запрос `en` на русскоязычной установке молча отвечал бы русскими страницами.
-- Секция со смыслом источника `development-standard` не закрывает вопрос о сигнатуре или механике платформы, каким бы уместным ни выглядел её текст. Это правило чтения, а не правило вызова. Симметрично: секция `configuration-documentation` описывает прикладную конфигурацию и не доказывает поведение самой платформы.
-- For project context, use `unica.code.search`, `unica.view {}`, and `unica.runtime.execute`.
+- Документацию спрашивает MCP `unica` инструментом `unica.docs`. `source` —
+  один вид источника, а не имя поставщика. Список закрыт: `platform-help`,
+  `development-standard`, `configuration-documentation`. Неизвестное имя
+  отклоняется кодом `unsupported_source`, который перечисляет допустимые.
+- `source: "platform-help"` — интерфейс программирования и механика платформы
+  (Синтакс-помощник, справка конфигуратора, руководства площадки вендора).
+  `source: "development-standard"` — сервер стандартов разработки.
+- Без `source` спрашиваются оба сразу: справка платформы и стандарты. Это
+  единственный смысл умолчания — встроенная справка конфигурации в него не
+  входит.
+- `source: "configuration-documentation"` пока отвечает `unsupported_source` с
+  названной причиной: её читатель ещё не переведён на границу отмены рабочего
+  пространства. Называйте это границей поверхности, а не отсутствием ответа.
+- `unica.docs` может ответить задачей (`status: "working"`). Тогда возьмите
+  `taskId` из ответа и дождитесь результата через `unica.task.result`. Ответ
+  «задача принята» не является ответом на вопрос.
+- Полного текста страницы канонический провод не отдаёт: инструмента,
+  открывающего страницу по `documentId`, он не публикует. Доказательство —
+  это `documentId`, `applicableVersion` и фрагмент попадания вместе; называйте
+  их в ответе, чтобы читатель мог открыть ту же страницу сам, и не выдавайте
+  фрагмент за прочитанную страницу.
+- For project context, use `unica.search`, `unica.view {}`, and
+  `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -23,17 +39,52 @@ description: "Справка платформы 1С и объектной мод
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Use object-specific `unica.*.info` tools when the API question depends on metadata structure.
+- Когда вопрос об API зависит от структуры метаданных, читай её `unica.view` по
+  логическому адресу объекта.
 - Do not call internal standards, runtime, or package adapters directly.
+
+## Чтение ответа
+
+Ответ приходит секциями, по секции на поставщика, в порядке реестра.
+
+- Каждая секция несёт `sourceKind` и `authority`, каждое попадание в ней —
+  `applicableVersion` и `documentId`. Ответ обязан называть источник, версию и
+  `documentId` страницы: без него читатель не может вернуться к той же странице.
+- `language` секции — локаль, которой источник ответил на самом деле, а не
+  запрошенная. Если они расходятся, назовите подстановку локали в ответе:
+  справка поставляется не во всех локалях, и запрос на одной локали молча
+  отвечал бы страницами другой.
+- Секция со смыслом источника `development-standard` не закрывает вопрос о
+  сигнатуре или механике платформы, каким бы уместным ни выглядел её текст. Это
+  правило чтения, а не правило вызова. Симметрично: секция
+  `configuration-documentation` описывает прикладную конфигурацию и не
+  доказывает поведение самой платформы.
+- Установка платформы старше в интерфейсе программирования, руководства
+  площадки — в описательном слое: механизмы целиком, форматы адресов,
+  администрирование. Расхождение их версий называйте в ответе.
+- Отказ `provider_unavailable` означает, что ни один поставщик не дал
+  результата: справка не установлена либо сетевой выход закрыт политикой.
+  Назовите условие среды, а не отвечайте по памяти.
 
 ## Workflow
 
-1. State the exact platform/API question: object, method/property, platform version, infobase mode, client/server context.
-2. Call `unica.documentation.search` with the object or member name — или с естественной формулировкой вопроса: поиск пословный, морфологический и нечёткий (ADR-0037), точная подстрока и порядок слов не требуются, опечатка в имени не прячет страницу.
-3. Read `applicableVersion` in the hit. Если она расходится с версией проекта, назовите расхождение в ответе.
-4. Подтвердите ответ текстом открытой страницы: передайте `documentId` попадания в `unica.documentation.get` дословно и опирайтесь на поле `text`. Заголовок и фрагмент выдачи доказательством не является — доказательство только текст документа.
-5. Validate against local project context with `unica.view {}` and targeted `unica.code.search` if the answer depends on project conventions.
-6. For code examples, use `unica.runtime.execute` to preview `operation=syntax` and, with `dryRun: false`, to run it; report actual syntax and runtime behavior as unverified.
+1. State the exact platform/API question: object, method/property, platform
+   version, infobase mode, client/server context.
+2. Вызовите `unica.docs` с именем объекта или члена — или с естественной
+   формулировкой вопроса: поиск пословный, морфологический и нечёткий
+   (ADR-0037), точная подстрока и порядок слов не требуются, опечатка в имени
+   не прячет страницу.
+3. Если ответ пришёл задачей, дождитесь его через `unica.task.result`.
+4. Read `applicableVersion` in the hit. Если она расходится с версией проекта,
+   назовите расхождение в ответе.
+5. Назовите `documentId` попадания дословно вместе с ответом. Если фрагмента
+   не хватает, чтобы утверждение стояло, скажите это прямо и не достраивайте
+   страницу по памяти.
+6. Validate against local project context with `unica.view {}` and targeted
+   `unica.search` if the answer depends on project conventions.
+7. For code examples, use `unica.runtime.execute` to preview `operation=syntax`
+   and, with `dryRun: false`, to run it; report actual syntax and runtime
+   behavior as unverified.
 
 ## Platform context
 
@@ -60,12 +111,11 @@ description: "Справка платформы 1С и объектной мод
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.documentation.search",
+    "name": "unica.docs",
     "arguments": {
       "cwd": "<workspace>",
       "query": "СтрНайти",
-      "sourceKinds": ["platform-help"],
-      "limit": 10
+      "source": "platform-help"
     }
   }
 }
@@ -76,12 +126,10 @@ description: "Справка платформы 1С и объектной мод
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.documentation.search",
+    "name": "unica.docs",
     "arguments": {
       "cwd": "<workspace>",
-      "query": "ТаблицаЗначений.Свернуть",
-      "platformVersion": "8.3.27.2074",
-      "limit": 10
+      "query": "как удалить элемент массива"
     }
   }
 }
@@ -92,27 +140,9 @@ description: "Справка платформы 1С и объектной мод
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.documentation.search",
-    "arguments": {
-      "cwd": "<workspace>",
-      "query": "как удалить элемент массива",
-      "sourceKinds": ["platform-help"],
-      "limit": 10
-    }
+    "name": "unica.task.result",
+    "arguments": { "taskId": "<taskId из ответа unica.docs>", "waitMs": 7000 }
   }
 }
 ```
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.documentation.get",
-    "arguments": {
-      "cwd": "<workspace>",
-      "documentId": "platform-syntax-help:syntax-context:objects/catalog238/ValueTable/methods/GroupBy1290.html"
-    }
-  }
-}
-```

@@ -7,7 +7,7 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.view`, `unica.code.graph`, `unica.code.diagnostics`, `unica.dcs.info`, `unica.meta.info`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.view`, `unica.code.graph`, `unica.code.diagnostics`, `unica.view` on the schema node, `unica.meta.info`, `unica.docs`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -22,13 +22,13 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 
 ## Workflow
 
-1. Extract the exact query text with `unica.code.search` or `unica.dcs.info`.
+1. Extract the exact query text with `unica.code.search` or `unica.view` on the schema node.
 2. Inspect the execution context with `unica.view` on the module node (its `Method` branch lists the methods): module, exported entry point, region, temporary table chain, and caller loop.
 3. Use `unica.code.graph` for callers/callees when the query is inside reusable API, background jobs, event handlers, or suspected query-in-loop flow.
 4. Run `unica.code.diagnostics` with `action=findings`, the exact `sourceSet`, and the containing module's logical `metadataPath` when analyzer diagnostics can reveal unreachable code, unresolved calls, or type issues around the query. Do not pass a DCS `TemplatePath` as a diagnostic target; locate the BSL module that executes the query.
 5. Inspect `unica.meta.info` for both related modules, subscriptions, roles, functional options and the local registers, dimensions, resources, реквизиты, tabular sections, and indexes implied by the platform object type.
-6. Inspect DCS with `unica.dcs.info` when the query lives in a data composition schema.
-7. Search `unica.standards.search` only for `development-standard` query rules. Exact platform query semantics require a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap before making a platform-dependent rewrite.
+6. Inspect DCS with `unica.view` on the schema node when the query lives in a data composition schema.
+7. Search `unica.docs` with `source: "development-standard"` only for `development-standard` query rules. Exact platform query semantics require `unica.docs` with `source: "platform-help"` before a platform-dependent rewrite.
 8. Read `../../references/platform/db-performance.md` when performance depends on DBMS behavior, locks, indexes, temp storage, WAL, TEMPDB, or large table statistics.
 9. Optimize one cause at a time: filters before joins, virtual table parameters, temporary table materialization, repeated queries in loops, dot dereference expansion, unbounded selections, and unnecessary totals.
 10. Use `unica.runtime.execute` only to preview typed syntax arguments; report actual syntax as unverified and require real trace/log evidence when performance depends on data volume.
@@ -70,10 +70,10 @@ description: "Оптимизация запросов 1С и СКД. Испол�
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.dcs.info",
+    "name": "unica.view",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "Reports/Продажи/Ext/Report/DataCompositionSchema.xml"
+      "at": "main:Report.Продажи.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet"
     }
   }
 }
@@ -84,10 +84,10 @@ description: "Оптимизация запросов 1С и СКД. Испол�
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.standards.search",
+    "name": "unica.docs",
     "arguments": {
       "query": "оптимизация запросов 1С виртуальные таблицы",
-      "limit": 5
+      "source": "development-standard"
     }
   }
 }

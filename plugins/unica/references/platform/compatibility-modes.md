@@ -62,7 +62,7 @@ methods behave as they did in an older release.
 6. When environments or candidate modes differ, present the result as a
    matrix.
 
-`unica.standards.search` and `unica.standards.explain` cover development
+`unica.docs` with `source: "development-standard"` cover development
 standards, not the platform contract. An exact compatibility boundary requires
 a `platform-help` source for the target version. Until public MCP `unica`
 exposes that source, report a `platform-help contract gap` instead of
