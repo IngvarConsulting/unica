@@ -82,6 +82,33 @@ def open_lines(repo: str, now: datetime) -> list[str]:
     return sorted(lines)
 
 
+def site_lines(branch: str, repo: str, now: datetime) -> list[str]:
+    """Линия прогона и открытые релизные линии, каждая по одному разу.
+
+    Прогон релизной линии приходит с самой линии, поэтому её имя стоит и в
+    `--branch`, и в списке открытых. Без свёртки отчёт этой линии собирался бы
+    дважды, а на странице появлялась бы вторая такая же строка.
+    """
+    return list(dict.fromkeys([branch, *open_lines(repo, now)]))
+
+
+def line_run(path: Path | None, repo: str) -> dict[str, str]:
+    """Чей прогон дал этот отчёт.
+
+    Отчёт линии пересобирается из результатов, которые хранит сайт, — он тогда
+    показывает прошлый прогон, а не тот, что собирает сайт сейчас. Подпись
+    берётся из метки, сохранённой рядом с результатами, поэтому вчерашние
+    счётчики не выдаются за сегодняшние.
+    """
+    record = json.loads(path.read_text(encoding="utf-8")) if path and path.is_file() else {}
+    at = record.get("at")
+    return {
+        "sha": (record.get("sha") or "")[:7] or "—",
+        "date": human(moment(at)) if at else "—",
+        "url": record.get("url") or f"https://github.com/{repo}/actions",
+    }
+
+
 def summary_counts(path: Path | None) -> dict[str, str] | None:
     """Счётчики берутся из сводки собранного отчёта, а не из воздуха."""
     if path is None or not path.is_file():
@@ -102,7 +129,6 @@ def main() -> int:
     parser.add_argument("--branch", default="main")
     parser.add_argument("--sha", default=os.environ.get("GITHUB_SHA", ""))
     parser.add_argument("--run-url", default="")
-    parser.add_argument("--run-at", default="", help="время прогона в ISO-8601")
     parser.add_argument("--allure-summary", type=Path, help="widgets/summary.json собранного отчёта")
     parser.add_argument("--summaries", type=Path, help="каталог data/ собранного сайта: сводка на линию")
     parser.add_argument("--print-lines", action="store_true", help="напечатать открытые линии и выйти")
@@ -115,7 +141,7 @@ def main() -> int:
     now = datetime.now(timezone.utc)
 
     if args.print_lines:
-        print("\n".join([args.branch, *open_lines(args.repo, now)]))
+        print("\n".join(site_lines(args.branch, args.repo, now)))
         return 0
 
     releases = [r for r in gh(args.repo, "releases?per_page=100") if not r["draft"]]
@@ -144,19 +170,18 @@ def main() -> int:
         status["prerelease"] = "Планируется"
         status["prerelease_note"] = "сборка перед публикацией"
 
-    run_at = human(moment(args.run_at)) if args.run_at else human(now)
     tested, plain = [], []
-    for line in [args.branch, *open_lines(args.repo, now)]:
-        counts = summary_counts(
-            args.summaries / line / "summary.json" if args.summaries else args.allure_summary
-        )
+    for line in site_lines(args.branch, args.repo, now):
+        data = args.summaries / line if args.summaries else None
+        counts = summary_counts(data / "summary.json" if data else args.allure_summary)
         if counts:
+            run = line_run(data / "run.json" if data else None, args.repo)
             tested.append(
                 {
                     "line": line,
-                    "build_sha": (args.sha or "")[:7] or "—" if line == args.branch else "—",
-                    "build_date": run_at,
-                    "build_url": status["generated_url"],
+                    "build_sha": run["sha"],
+                    "build_date": run["date"],
+                    "build_url": run["url"],
                     "report_url": f"allure/{line}/",
                     **counts,
                 }

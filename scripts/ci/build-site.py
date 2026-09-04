@@ -106,16 +106,33 @@ def previous_results(site: str | None, line: str, work: Path) -> Path | None:
     unpacked = work / line / "results"
     unpacked.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, "r:gz") as bundle:
-        root = unpacked.resolve()
-        for member in bundle.getmembers():
-            # Архив приезжает с сайта, а не из дерева: наружу его не пускаем.
-            if not str((unpacked / member.name).resolve()).startswith(str(root)):
-                raise SystemExit(f"архив линии {line} ведёт наружу: {member.name}")
-        bundle.extractall(unpacked)
+        # Архив приезжает с сайта, а не из дерева. Сверять имена самому мало:
+        # ссылка внутри архива уводит наружу уже после проверки. `data` —
+        # фильтр самого tarfile: он отбрасывает и абсолютные пути, и `..`, и
+        # ссылки за пределы каталога.
+        bundle.extractall(unpacked, filter="data")
     return unpacked
 
 
-def publish_line(out: Path, line: str, results: Path, args: argparse.Namespace) -> str:
+def record_run(data: Path, line: str, fresh: bool, args: argparse.Namespace) -> None:
+    """Подписать отчёт тем прогоном, который его дал.
+
+    Линия, у которой сегодня прогона не было, пересобирается из результатов,
+    лежащих на сайте. Подписать такой отчёт сборкой сайта — значит объявить
+    вчерашние счётчики сегодняшними, поэтому метка либо приходит вместе со
+    свежими результатами, либо переносится с сайта вместе с ними.
+    """
+    if not fresh:
+        if args.site:
+            fetch(f"{args.site}/data/{line}/run.json", data / "run.json")
+        return
+    record = {"sha": args.run_sha, "url": args.run_url, "at": args.run_at}
+    (data / "run.json").write_text(
+        json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def publish_line(out: Path, line: str, results: Path, fresh: bool, args: argparse.Namespace) -> str:
     """Собрать отчёт линии и положить рядом сырые данные для следующего раза."""
     carried = carry_history(results, args.site, line)
     if shutil.which(args.allure_command) is None:
@@ -136,7 +153,10 @@ def publish_line(out: Path, line: str, results: Path, args: argparse.Namespace) 
     summary = report / "widgets" / "summary.json"
     if summary.is_file():
         shutil.copy2(summary, data / "summary.json")
-    return f"{line}: отчёт собран, файлов истории {carried}"
+    record_run(data, line, fresh, args)
+    return f"{line}: отчёт собран, файлов истории {carried}, результаты " + (
+        "свежие" if fresh else "с сайта"
+    )
 
 
 def build_reports(out: Path, args: argparse.Namespace) -> list[str]:
@@ -155,7 +175,7 @@ def build_reports(out: Path, args: argparse.Namespace) -> list[str]:
         if results is None or not results.is_dir():
             notes.append(f"{line}: результатов нет — ни свежих, ни на сайте")
             continue
-        notes.append(publish_line(out, line, results, args))
+        notes.append(publish_line(out, line, results, bool(fresh), args))
     return notes
 
 
@@ -173,6 +193,9 @@ def main() -> int:
     parser.add_argument(
         "--site", help="адрес опубликованного сайта: оттуда берутся история и прошлые результаты"
     )
+    parser.add_argument("--run-sha", default="", help="коммит прогона, давшего свежие результаты")
+    parser.add_argument("--run-url", default="", help="адрес этого прогона")
+    parser.add_argument("--run-at", default="", help="время этого прогона в ISO-8601")
     parser.add_argument("--allure-command", default="allure")
     parser.add_argument(
         "--pages-only",
