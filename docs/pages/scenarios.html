@@ -80,6 +80,15 @@
         она должна проходить.
       </p>
 
+      <!-- На телефоне шапка таблицы скрыта, а сортировка и отбор живут в ней.
+           Эти кнопки — те же самые: класс `col-sort` подхватывается тем же
+           обработчиком, поэтому состояние у них общее с шапкой. -->
+      <div class="toolbar">
+        <button class="col-sort" type="button" data-sort="id">ID<span class="sort-mark" aria-hidden="true"></span></button>
+        <button class="col-sort" type="button" data-sort="area">Область<span class="sort-mark" aria-hidden="true"></span></button>
+        <button class="col-sort col-filter tool-filter" type="button">Инструменты<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2.5h13l-5 5.6v4.4l-3 1.5V8.1z"/></svg></button>
+      </div>
+
       <p class="catalog-count" id="shown"></p>
 
       <div class="table-wrap">
@@ -88,7 +97,7 @@
           <th class="id-col"><button class="col-sort" type="button" data-sort="id">ID<span class="sort-mark" aria-hidden="true"></span></button></th>
           <th><button class="col-sort" type="button" data-sort="area">Область<span class="sort-mark" aria-hidden="true"></span></button></th>
           <th>Задача</th>
-          <th><button class="col-sort col-filter" type="button" id="tool-filter">Инструменты<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2.5h13l-5 5.6v4.4l-3 1.5V8.1z"/></svg></button></th>
+          <th><button class="col-sort col-filter tool-filter" type="button">Инструменты<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2.5h13l-5 5.6v4.4l-3 1.5V8.1z"/></svg></button></th>
           <th></th>
         </tr></thead>
         <tbody id="catalog">
@@ -348,7 +357,9 @@
       header.querySelector('.sort-mark')
         .replaceChildren(ladder(active ? (sortDown ? 'desc' : 'asc') : 'none'));
     }
-    document.getElementById('tool-filter').classList.toggle('is-active', Boolean(toolFilter));
+    for (const button of document.querySelectorAll('.tool-filter')) {
+      button.classList.toggle('is-active', Boolean(toolFilter));
+    }
 
     // Строка нужна, только когда фильтр сузил каталог: без фильтра она
     // повторила бы число, уже названное в шапке страницы.
@@ -365,7 +376,9 @@
     });
   }
 
-  document.getElementById('tool-filter').addEventListener('click', openTools);
+  for (const button of document.querySelectorAll('.tool-filter')) {
+    button.addEventListener('click', openTools);
+  }
   document.getElementById('tool-close').addEventListener('click', () => toolDialog.close());
   toolDialog.addEventListener('click', (event) => { if (event.target === toolDialog) toolDialog.close(); });
   document.getElementById('details-close').addEventListener('click', () => dialog.close());

@@ -5,7 +5,13 @@ name: Unica Pages
 # прогона. Своих тестов этот workflow не гоняет.
 # Публикует один воркфлоу и всегда собирает сайт целиком: Pages заменяет
 # артефакт полностью, поэтому «выложить только свою папку» невозможно.
+# Push в main пересобирает сайт сам: страницы и каталог сценариев берутся из
+# дерева, а не из чужого прогона, поэтому ждать конвейера незачем. Прогон
+# нужен только ради свежих результатов Allure — их канал появится вместе с
+# эмиссией, и тогда `workflow_run` начнёт приносить их.
 on:
+  push:
+    branches: [main, "release-v*"]
   workflow_run:
     workflows: ["Build Unica Codex Plugin"]
     types: [completed]
@@ -24,11 +30,14 @@ concurrency:
 jobs:
   build:
     name: Собрать сайт
-    # Фильтр `branches` смотрит на имя ветки прогона-источника, а его выбирает
-    # автор PR: форк с веткой `main` прошёл бы через него, и мы скачали бы его
-    # артефакты и опубликовали на своём сайте. Поэтому источник обязан быть
+    # Push и ручной запуск доверены: в первом случае содержимое пришло в ветку
+    # этого репозитория, во втором его выбрал человек с правами. У `workflow_run`
+    # такой опоры нет: фильтр `branches` смотрит на имя ветки прогона-источника,
+    # а его выбирает автор PR — форк с веткой `main` прошёл бы через фильтр, и мы
+    # опубликовали бы его содержимое у себя. Поэтому источник обязан быть
     # успешным push-прогоном этого же репозитория.
     if: >-
+      github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
@@ -70,7 +79,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SITE: https://ingvarconsulting.github.io/unica
           RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_URL: ${{ github.event.workflow_run.html_url ||
+            format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
           RUN_AT: ${{ github.event.workflow_run.updated_at }}
         run: |
           set -eu
@@ -95,8 +105,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
-          RUN_BRANCH: ${{ github.event.workflow_run.head_branch || 'main' }}
+          RUN_URL: ${{ github.event.workflow_run.html_url ||
+            format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
         run: |
           set -eu
           python scripts/ci/site-status.py \

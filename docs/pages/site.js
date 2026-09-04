@@ -83,6 +83,59 @@
       });
     }
 
+    // Блок, который прокручивается вбок, на телефоне об этом не сообщает:
+    // полосы нет, а обрезанный край читается как конец содержимого. Поэтому,
+    // впервые появившись на экране, он один раз качается и возвращается —
+    // подсказка без единого слова. Тем, кто просил меньше движения, её не
+    // показываем.
+    var still = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)");
+    var scrollable = document.querySelectorAll(".table-wrap, .addr");
+    if (scrollable.length && window.IntersectionObserver && !(still && still.matches)) {
+      // Кадры считаем сами: `scrollTo({behavior:"smooth"})` молча ничего не
+      // делает там, где сглаживание отключено, и подсказка бы не показалась.
+      var glide = function (node, from, to, span, done) {
+        var start = 0;
+        var step = function (now) {
+          start = start || now;
+          var part = Math.min(1, (now - start) / span);
+          var eased = part < 0.5 ? 2 * part * part : 1 - Math.pow(-2 * part + 2, 2) / 2;
+          node.scrollLeft = from + (to - from) * eased;
+          if (part < 1) {
+            window.requestAnimationFrame(step);
+          } else if (done) {
+            done();
+          }
+        };
+        window.requestAnimationFrame(step);
+      };
+
+      var nudge = function (node) {
+        var far = Math.min(30, node.scrollWidth - node.clientWidth);
+        if (far < 10 || node.scrollLeft > 0) {
+          return;
+        }
+        glide(node, 0, far, 280, function () {
+          window.setTimeout(function () {
+            glide(node, far, 0, 340);
+          }, 140);
+        });
+      };
+      var watcher = new IntersectionObserver(
+        function (entries) {
+          entries.forEach(function (entry) {
+            if (entry.isIntersecting) {
+              watcher.unobserve(entry.target);
+              nudge(entry.target);
+            }
+          });
+        },
+        { threshold: 0.35 }
+      );
+      Array.prototype.forEach.call(scrollable, function (node) {
+        watcher.observe(node);
+      });
+    }
+
     // Звёзды печатаются при сборке, поэтому число видно и без сети, и без
     // скрипта. Здесь оно только освежается: у публичного API нет ключа и
     // есть CORS, а отказ — просто оставленное прежним число.
