@@ -56,7 +56,8 @@ def render_pages(status: Path, out: Path) -> list[str]:
     (out / "status.json").write_text(
         json.dumps(status_document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    shutil.copy2(module.MARK, out / "assets" / module.MARK.name)
+    for asset in (module.MARK, module.VISUAL_KIT):
+        shutil.copy2(asset, out / "assets" / asset.name)
     return written
 
 

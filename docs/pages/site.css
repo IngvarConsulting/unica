@@ -1,5 +1,8 @@
   :root {
     --blue: #2563EB;
+    /* Синий заливки — под белой подписью, поэтому в тёмной теме он не
+       приглушается: белое на приглушённом синем не прочитать. */
+    --blue-fill: #2563EB;
     --blue-strong: #1D4ED8;
     --accent: #93C5FD;
     --ink: #0F172A;
@@ -21,6 +24,7 @@
      правьте второй. */
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
+      --blue: #7FA8E0;
       --ink: #F0F6FC;
       --muted: #9198A1;
       --paper: #0D1117;
@@ -33,6 +37,7 @@
     }
   }
   :root[data-theme="dark"] {
+    --blue: #7FA8E0;
     --ink: #F0F6FC;
     --muted: #9198A1;
     --paper: #0D1117;
@@ -79,7 +84,8 @@
   /* Ссылка с числом: сколько звёзд у репозитория, сколько людей в группе.
      Звёзды печатаются при сборке и освежаются в браузере, число Telegram —
      только при сборке: `t.me` не отдаёт CORS-заголовков. */
-  nav .chip { display: inline-flex; align-items: center; gap: 6px; }
+  nav .chip { display: inline-flex; align-items: center; gap: 7px; }
+  nav .chip svg { width: 17px; height: 17px; display: block; flex: none; }
   nav .chip .count {
     font-size: 12px; font-variant-numeric: tabular-nums; line-height: 1;
     padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px;
@@ -115,7 +121,7 @@
     padding: 11px 20px; border-radius: 10px; font-weight: 600; font-size: 15px;
     border: 1px solid transparent;
   }
-  .btn-primary { background: var(--blue); color: #fff; }
+  .btn-primary { background: var(--blue-fill); color: #fff; }
   .btn-primary:hover { background: var(--blue-strong); text-decoration: none; }
   .btn-ghost { border-color: var(--line); color: var(--ink); background: var(--card); }
   .btn-ghost:hover { border-color: var(--blue); text-decoration: none; }
@@ -439,9 +445,14 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
   background: color-mix(in srgb, var(--blue) 13%, transparent);
   color: var(--blue); font-size: 13px; font-weight: 700;
 }
-.steps b { font-weight: 620; font-size: 15px; }
-.steps b a { color: var(--ink); }
-.steps b a:hover { color: var(--blue); text-decoration: none; }
+/* Кликает вся карточка, а не только заголовок: цель у шага одна. */
+.steps li > a { display: block; color: var(--ink); }
+.steps li > a:hover { text-decoration: none; }
+.steps li:hover { border-color: var(--muted); }
+.steps li:hover b { color: var(--blue); }
+.steps b { display: block; font-weight: 620; font-size: 15px; }
+/* Путь до репозитория — опора для глаза, а имя файла — то, куда идти. */
+.steps .repo { color: var(--muted); font-weight: 500; }
 .steps p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
 @media (max-width: 560px) { .steps li { padding: 14px 16px; gap: 11px; } }
 
