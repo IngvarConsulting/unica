@@ -41,13 +41,20 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Отчёт собирает скачанный бинарь, и попадает он на публичный сайт.
+      # Тег релиза можно переставить, поэтому принимаем не «файл по адресу», а
+      # известный файл: сверенный архив 2.35.1 и ничего другого.
       - name: Поставить Allure CLI
+        env:
+          ALLURE_VERSION: "2.35.1"
+          ALLURE_SHA256: b40c6f1f82f8b945d8b1454beb1e641f196004241e8720299aee862218bdaca6
         run: |
           set -eu
           curl -fsSL -o allure.tgz \
-            https://github.com/allure-framework/allure2/releases/download/2.35.1/allure-2.35.1.tgz
+            "https://github.com/allure-framework/allure2/releases/download/$ALLURE_VERSION/allure-$ALLURE_VERSION.tgz"
+          echo "$ALLURE_SHA256  allure.tgz" | sha256sum -c -
           tar -xzf allure.tgz
-          echo "$PWD/allure-2.35.1/bin" >> "$GITHUB_PATH"
+          echo "$PWD/allure-$ALLURE_VERSION/bin" >> "$GITHUB_PATH"
 
       # Линии перечисляет то же правило, что и на странице: main плюс открытые
       # релизные линии. Результаты и история каждой берутся с самого сайта — он
@@ -55,10 +62,17 @@ jobs:
       # не оставляет allure-results, а забирать артефакт чужого прогона в
       # workflow_run — известный способ протащить чужое содержимое в публикацию.
       # Канал для свежих результатов появится вместе с их эмиссией.
+      # Метка прогона едет вместе с результатами: линия, пересобранная из того,
+      # что лежит на сайте, сохраняет подпись своего прогона, а не получает
+      # сегодняшнюю. Свежие результаты подписываются этим прогоном — форма
+      # `--line ИМЯ=КАТАЛОГ` появится вместе с их эмиссией.
       - name: Собрать отчёты линий
         env:
           GH_TOKEN: ${{ github.token }}
           SITE: https://ingvarconsulting.github.io/unica
+          RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_AT: ${{ github.event.workflow_run.updated_at }}
         run: |
           set -eu
           mkdir -p .build
@@ -73,7 +87,8 @@ jobs:
           done < .build/lines.txt
           python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" --out .build/bootstrap.json
           python scripts/ci/build-site.py --status .build/bootstrap.json --out .build/site \
-            --site "$SITE" "${args[@]}"
+            --site "$SITE" --run-sha "$RUN_SHA" --run-url "$RUN_URL" --run-at "$RUN_AT" \
+            "${args[@]}"
 
       # Счётчики на странице берутся из сводок собранных отчётов, поэтому
       # документ статуса считается после них, а страницы перерисовываются.
@@ -82,7 +97,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
-          RUN_AT: ${{ github.event.workflow_run.updated_at }}
           RUN_BRANCH: ${{ github.event.workflow_run.head_branch || 'main' }}
         run: |
           set -eu
@@ -91,7 +105,6 @@ jobs:
             --branch "$RUN_BRANCH" \
             --sha "$RUN_SHA" \
             --run-url "$RUN_URL" \
-            --run-at "$RUN_AT" \
             --summaries .build/site/data \
             --out .build/status.json
           python scripts/ci/build-site.py --pages-only --status .build/status.json --out .build/site
