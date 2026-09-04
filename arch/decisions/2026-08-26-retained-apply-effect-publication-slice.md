@@ -17,7 +17,6 @@ realized:
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::real_effect_mid_scan_deadline_preserves_exact_state
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::real_effect_after_all_postimages_cancellation_rolls_back_exact_state
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::real_effect_after_all_postimages_deadline_rolls_back_exact_state
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::retained_apply_effect_result_contract_is_complete
 supersedes: []
 superseded-by: null
 establishes: [INV.CACHE.RETAINED-APPLY-EFFECT-RESULT]

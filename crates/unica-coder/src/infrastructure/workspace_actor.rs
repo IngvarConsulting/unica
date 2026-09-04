@@ -9981,7 +9981,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn retained_apply_effect_result_contract_is_complete() {
+    pub(crate) fn apply_publication_result_exposes_the_effect_receipt_accessor() {
         let _total_effects_accessor: for<'a> fn(
             &'a super::ApplyPublicationResult,
         ) -> &'a ApplyEffectReceipt = super::ApplyPublicationResult::effects;

@@ -222,26 +222,29 @@ def _is_evidence_repoint(repo: Path, base_ref: str, before: str, after: str) -> 
         old_reference = old_names[0]
         old_path, _, old_declaration = old_reference.partition("::")
         current = repo / old_path
-        # Старый адрес либо исчез вместе с обёрткой, либо уцелел и тогда обязан
-        # остаться в списке: обещание расширяется, а не подменяется.
-        if (
-            current.is_file()
-            and _declaration_in(current.read_text(encoding="utf-8"), old_declaration)
-            and old_reference not in new_names
+        # Исключение открыто ровно для одного случая: имя исчезло, и вместо
+        # него названо то, что оно приводило в исполнение. Уцелевшее имя под
+        # него не подпадает — дописать к нему свидетельство значит расширить
+        # продуктовое обещание, а на это нужно новое решение.
+        if current.is_file() and _declaration_in(
+            current.read_text(encoding="utf-8"), old_declaration
         ):
             return False
         pool = {reference.partition("::")[0] for reference in new_names}
         covered = _covered_names(repo, base_ref, old_reference, pool)
         if not covered:
             return False
-        # Покрытие — включение, а не равенство: список вправе называть больше,
-        # чем исполняло исчезнувшее имя, и уцелевший адрес входит в него сам.
-        # Лишнее имя обещание не ослабляет, недостающее — ослабляет.
+        # Ровно замыкание вызовов исчезнувшего имени, не больше и не меньше.
+        # Лишнее имя — это добавленное свидетельство, и оно идёт обычным путём
+        # через основание; недостающее — молча суженное обещание.
         unqualified = {name for name in covered if name.startswith("::")}
-        declarations = {reference.partition("::")[2] for reference in new_names}
-        if not (covered - unqualified) <= set(new_names):
+        qualified = covered - unqualified
+        remaining = set(new_names) - qualified
+        if len(remaining) != len(unqualified):
             return False
-        if not {name[2:] for name in unqualified} <= declarations:
+        if {name[2:] for name in unqualified} != {
+            reference.partition("::")[2] for reference in remaining
+        }:
             return False
     return True
 
