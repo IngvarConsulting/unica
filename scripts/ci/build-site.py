@@ -14,6 +14,9 @@ import json
 import shutil
 import subprocess
 import sys
+import tarfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -61,73 +64,135 @@ def render_pages(status: Path, out: Path) -> list[str]:
     return written
 
 
-def carry_history(results: Path, history: Path | None) -> int:
+def fetch(url: str, target: Path) -> bool:
+    """Скачать файл с опубликованного сайта, если он там есть."""
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(response.read())
+        return True
+    except Exception:
+        return False
+
+
+def carry_history(results: Path, site: str | None, line: str) -> int:
     """Положить историю прошлого прогона рядом с результатами.
 
     Без неё отчёт теряет тренды и перестаёт отличать перемежающийся тест от
     разового падения — то есть ровно то, ради чего история и публикуется.
     """
-    if history is None or not history.is_dir():
+    if not site:
         return 0
     target = results / "history"
-    target.mkdir(parents=True, exist_ok=True)
     carried = 0
     for name in HISTORY_FILES:
-        source = history / name
-        if source.is_file():
-            shutil.copy2(source, target / name)
+        if fetch(f"{site}/allure/{line}/history/{name}", target / name):
             carried += 1
     return carried
 
 
-def build_report(out: Path, args: argparse.Namespace) -> str:
-    # Отчёт лежит под своей веткой: у каждой линии своя история, иначе тренды
-    # перемешаются и «перемежающийся тест» окажется артефактом смешения.
-    report = out / args.allure_path
-    if args.allure_report:
-        shutil.copytree(args.allure_report, report, dirs_exist_ok=True)
-        return f"отчёт скопирован из {args.allure_report}"
+def previous_results(site: str | None, line: str, work: Path) -> Path | None:
+    """Взять результаты последнего опубликованного прогона линии с сайта.
 
-    if not args.allure_results:
-        return "отчёт не собирался: не передан ни --allure-results, ни --allure-report"
+    Сайт хранит их у себя, поэтому срок жизни артефактов прогона ни на что не
+    влияет: линия, которая сегодня не собиралась, всё равно покажет прошлый
+    отчёт, а не исчезнет с сайта.
+    """
+    if not site:
+        return None
+    archive = work / f"{line}.tar.gz"
+    if not fetch(f"{site}/data/{line}/results.tar.gz", archive):
+        return None
+    unpacked = work / line / "results"
+    unpacked.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive, "r:gz") as bundle:
+        root = unpacked.resolve()
+        for member in bundle.getmembers():
+            # Архив приезжает с сайта, а не из дерева: наружу его не пускаем.
+            if not str((unpacked / member.name).resolve()).startswith(str(root)):
+                raise SystemExit(f"архив линии {line} ведёт наружу: {member.name}")
+        bundle.extractall(unpacked)
+    return unpacked
 
-    results = Path(args.allure_results)
-    if not results.is_dir():
-        raise SystemExit(f"нет каталога результатов: {results}")
-    carried = carry_history(results, Path(args.allure_history) if args.allure_history else None)
 
-    executable = shutil.which(args.allure_command) or args.allure_command
-    if not Path(executable).exists() and shutil.which(args.allure_command) is None:
+def publish_line(out: Path, line: str, results: Path, args: argparse.Namespace) -> str:
+    """Собрать отчёт линии и положить рядом сырые данные для следующего раза."""
+    carried = carry_history(results, args.site, line)
+    if shutil.which(args.allure_command) is None:
         raise SystemExit(
-            f"{args.allure_command} не найден: поставьте Allure CLI или передайте --allure-report"
+            f"{args.allure_command} не найден: поставьте Allure CLI или уберите линию из сборки"
         )
+    report = out / "allure" / line
     subprocess.run(
-        [executable, "generate", "--clean", "--output", str(report), str(results)],
+        [args.allure_command, "generate", "--clean", "--output", str(report), str(results)],
         check=True,
     )
-    return f"отчёт собран из {results}, перенесено файлов истории: {carried}"
+
+    data = out / "data" / line
+    data.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(data / "results.tar.gz", "w:gz") as bundle:
+        for item in sorted(results.iterdir()):
+            bundle.add(item, arcname=item.name)
+    summary = report / "widgets" / "summary.json"
+    if summary.is_file():
+        shutil.copy2(summary, data / "summary.json")
+    return f"{line}: отчёт собран, файлов истории {carried}"
+
+
+def build_reports(out: Path, args: argparse.Namespace) -> list[str]:
+    if not args.line:
+        return ["отчёты не собирались: линии не переданы"]
+
+    work = out.parent / ".lines"
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+
+    notes = []
+    for entry in args.line:
+        line, _, fresh = entry.partition("=")
+        results = Path(fresh) if fresh else previous_results(args.site, line, work)
+        if results is None or not results.is_dir():
+            notes.append(f"{line}: результатов нет — ни свежих, ни на сайте")
+            continue
+        notes.append(publish_line(out, line, results, args))
+    return notes
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--status", type=Path, required=True, help="значения страниц вне корпуса")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--allure-results", help="каталог allure-results прошедшего прогона")
-    parser.add_argument("--allure-report", help="уже собранный отчёт")
-    parser.add_argument("--allure-history", help="каталог history опубликованного прогона")
+    parser.add_argument(
+        "--line",
+        action="append",
+        default=[],
+        metavar="ИМЯ[=КАТАЛОГ]",
+        help="линия сайта; с каталогом — свежие результаты, без него — прошлые с сайта",
+    )
+    parser.add_argument(
+        "--site", help="адрес опубликованного сайта: оттуда берутся история и прошлые результаты"
+    )
     parser.add_argument("--allure-command", default="allure")
-    parser.add_argument("--allure-path", default="allure", help="куда класть отчёт внутри сайта")
+    parser.add_argument(
+        "--pages-only",
+        action="store_true",
+        help="перерисовать страницы поверх собранного сайта, не трогая отчёты",
+    )
     args = parser.parse_args()
 
     out = args.out
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
+    if not args.pages_only:
+        if out.exists():
+            shutil.rmtree(out)
+        out.mkdir(parents=True)
 
     pages = render_pages(args.status, out)
-    report = build_report(out, args)
     print("страницы: " + ", ".join(pages))
-    print("allure: " + report)
+    if args.pages_only:
+        return 0
+    for note in build_reports(out, args):
+        print("allure: " + note)
     return 0
 
 
