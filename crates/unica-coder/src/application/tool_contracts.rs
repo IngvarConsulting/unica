@@ -4317,6 +4317,34 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn meta_info_publishes_only_the_logical_selector_and_what_it_reads() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.meta.info")
+            .expect("unica.meta.info is registered");
+
+        let mut args = Map::new();
+        args.insert("sourceSet".to_string(), json!("main"));
+        args.insert("metadataPath".to_string(), json!("Catalog.Items"));
+        args.insert("limit".to_string(), json!(10));
+        args.insert("sections".to_string(), json!(["roles", "subscriptions"]));
+        validate_tool_arguments(tool, &args, false).unwrap();
+
+        // Physical paths and report-formatting controls belong to the retired
+        // surface; the typed tool publishes only logical selectors.
+        for rejected in [
+            "Mode", "Name", "offset", "Detailed", "detailed", "OutFile", "outFile", "SrcDir",
+        ] {
+            let mut with_rejected = args.clone();
+            with_rejected.insert(rejected.to_string(), json!("value"));
+            let error = validate_tool_arguments(tool, &with_rejected, false).unwrap_err();
+            assert!(
+                error.contains(&format!("does not accept argument `{rejected}`")),
+                "{rejected}: {error}"
+            );
+        }
+    }
     fn native_mutation_schema_signature(schema: &Value) -> String {
         fn write_canonical(value: &Value, output: &mut Vec<u8>) {
             match value {

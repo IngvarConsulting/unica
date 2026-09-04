@@ -2123,59 +2123,7 @@ fn extension_root_platform_modules_are_owned_by_the_extension_root() {
 }
 
 #[test]
-fn logical_reader_parity_contract_is_complete() {
-    crate::infrastructure::source_revision::tests::retained_revision_authority_contract_is_complete(
-    );
-    object_commands_are_registered_inline_without_descriptor_files();
-    template_bodies_are_read_only_when_the_template_node_is_addressed();
-    add_in_templates_stop_addressing_at_the_template_without_reading_the_payload();
-    configuration_level_rights_are_readable_role_objects();
-    actor_owned_reader_never_follows_a_source_set_remap_after_admission();
-    actor_owned_configuration_support_and_home_page_sidecars_are_retained();
-    actor_owned_typed_form_reader_never_follows_a_source_set_remap();
-    actor_owned_module_reader_never_follows_a_source_set_remap();
-    every_typed_reader_remains_on_the_admitted_root_after_source_set_remap();
-    actor_supplied_extension_kind_preserves_extension_support_semantics();
-    configuration_root_branch_counts_match_every_reachable_collection();
-    module_capability_parents_expose_canonical_module_collections();
-    configuration_runtime_modules_are_read_from_the_shared_ext_layout();
-    every_accepted_profile_address_has_a_real_non_skipping_view();
-    real_typed_readers_cover_every_task14_profile_without_skipping();
-    every_reader_rejects_an_extra_unconsumed_address_tail();
-    form_table_column_event_consumes_arbitrary_depth_and_preserves_owner_address();
-    form_projection_uses_a_positive_nested_scalar_allowlist();
-    role_merges_access_by_canonical_object_and_keeps_rls_under_that_right();
-    role_right_projection_never_serializes_an_unbounded_rights_array_into_props();
-    retained_home_page_distinguishes_missing_from_malformed_and_wrong_root();
-    unsupported_view_filter_is_a_typed_bad_value_instead_of_a_noop();
-    module_body_context_filter_excludes_at_client_source_from_server_slice();
-    module_method_public_filter_returns_only_export_methods();
-    typed_projection_never_leaks_provider_or_physical_slots();
-    typed_projection_rejects_unknown_provider_payload_instead_of_dumping_it();
-    missing_owner_module_branch_is_not_invented_but_registered_owner_without_bsl_is_kept();
-    real_external_sources_are_traversable_without_configuration_xml_and_hide_root_runtime_modules();
-    external_inventory_skips_runtime_sidecar_and_fails_closed_on_malformed_or_ambiguous_owner();
-    retained_external_inventory_is_cancellable_and_has_an_aggregate_byte_bound();
-    production_authorities_reach_all_profile_module_capabilities_from_real_parent_inventories();
-    ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work();
-    review_role_canonical_encoding_cannot_collapse_distinct_kind_name_pairs();
-    review_rejects_direct_typed_owner_absent_from_configuration_inventory();
-    review_rejects_orphan_nested_module_owners_not_registered_by_parent();
-    registered_physical_child_with_wrong_descriptor_fails_direct_and_parent_navigation();
-    registered_top_level_owner_without_descriptor_fails_kind_branch_and_direct_view();
-    orphan_and_missing_physical_children_fail_closed_across_reader_families();
-    external_parent_childobjects_are_the_only_nested_owner_authority();
-    unregistered_top_level_descriptors_cannot_enter_any_typed_reader_family();
-    review_revision_authority_cannot_be_swapped_after_named_identity_validation();
-    operation_lease_rejects_named_root_replacement_before_node_read();
-    review_rejects_revision_change_during_post_fence_owner_proof();
-    cursor_retry_rejects_revision_change_during_role_canonicalization();
-    review_production_read_port_has_no_nocancel_inventory_entrypoint();
-    review_role_rejects_non_platform_metadata_node_kinds();
-    operation_lease_find_traversal_scans_once_then_confirms_once();
-    websocket_client_source_view_is_an_explicit_provider_gap();
-    extension_platform_event_does_not_advertise_unproved_interception();
-    extension_root_platform_modules_are_owned_by_the_extension_root();
+fn logical_read_operation_budget_survives_handoff_and_completes_once() {
     crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
         crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
     );

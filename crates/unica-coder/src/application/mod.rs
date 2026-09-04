@@ -9639,9 +9639,64 @@ pub(crate) mod tests {
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
     }
 
+    /// Живой типизированный читатель для контрактных проб: `project.map`
+    /// снят вместе с остальными читателями партии 3, а типизированное чтение
+    /// метаданных идёт мимо `invoke_handler`, который подменяют эти порты.
+    fn typed_reader_args() -> Map<String, Value> {
+        Map::from_iter([(
+            "TemplatePath".to_string(),
+            Value::String("src/Reports/Sales/Templates/Sheet/Ext/Template.xml".to_string()),
+        )])
+    }
+
     #[test]
-    fn typed_read_result_contract_is_closed() {
-        successful_typed_mutation_may_omit_data();
+    fn successful_typed_reader_without_data_fails_closed() {
+        let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("reader omitted its typed payload"),
+            data: None,
+        }))
+        .call_tool("unica.mxl.info", &typed_reader_args())
+        .expect_err("successful typed reader without data must fail closed");
+
+        assert_eq!(
+            error,
+            "typed_result_missing: unica.mxl.info returned ok without OperationResult.data"
+        );
+    }
+
+    #[test]
+    fn successful_typed_reader_with_stdout_duplicate_fails_closed() {
+        let mut outcome = AdapterOutcome::ok("reader duplicated its typed payload");
+        outcome.stdout = Some("rendered result".to_string());
+
+        let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome,
+            data: Some(json!({"fixture": true})),
+        }))
+        .call_tool("unica.mxl.info", &typed_reader_args())
+        .expect_err("successful typed reader must not duplicate data in stdout");
+
+        assert_eq!(
+            error,
+            "typed_result_textual: unica.mxl.info returned ok with a stdout duplicate"
+        );
+    }
+
+    #[test]
+    fn failed_typed_reader_may_omit_data() {
+        let mut outcome = AdapterOutcome::ok("reader failed before producing data");
+        outcome.ok = false;
+        outcome.errors.push("invalid source input".to_string());
+
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome,
+            data: None,
+        }))
+        .call_tool("unica.mxl.info", &typed_reader_args())
+        .expect("typed reader failure may omit data");
+
+        assert!(!result.ok);
+        assert!(result.data.is_none());
     }
 
     #[test]
@@ -9986,8 +10041,133 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn native_xml_metadata_tools_require_platform_xml_source_sets() {}
+    fn native_xml_metadata_tools_reject_edt_source_set_targets() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-xml-tool-edt-guard-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("src/Configuration")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.join("src/.project"), "<projectDescription/>").unwrap();
+        std::fs::write(
+            workspace.join("src/Configuration/Configuration.mdo"),
+            "<mdclass:Configuration/>",
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert(
+            "TemplatePath".to_string(),
+            Value::String("src/Reports/Sales/Templates/Sheet/Ext/Template.xml".to_string()),
+        );
 
+        let error = match UnicaApplication::new().call_tool("unica.mxl.info", &args) {
+            Ok(result) => panic!("expected EDT source-set guard, got {}", result.summary),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("sourceFormat=edt"));
+        assert!(error.contains("platform_xml"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_xml_metadata_tools_reject_ambiguous_source_set_targets() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-xml-tool-ambiguous-guard-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.join("src/.project"), "<projectDescription/>").unwrap();
+        std::fs::write(workspace.join("src/Configuration.xml"), "not XML").unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            (
+                "TemplatePath".to_string(),
+                Value::String("src/Reports/Sales/Templates/Sheet/Ext/Template.xml".to_string()),
+            ),
+        ]);
+
+        let error = UnicaApplication::new()
+            .call_tool("unica.mxl.info", &args)
+            .expect_err("ambiguous source format must fail before XML parsing");
+
+        assert!(error.contains("invalid/ambiguous format"), "{error}");
+        assert!(error.contains("platform_xml"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_only_native_outfile_is_rejected_before_any_write() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-read-outfile-write-guard-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let workspace = root.join("workspace");
+        let outside = root.join("outside").join("report.txt");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/Configuration.xml"),
+            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert(
+            "TemplatePath".to_string(),
+            Value::String("src/Reports/Sales/Templates/Sheet/Ext/Template.xml".to_string()),
+        );
+        args.insert(
+            "OutFile".to_string(),
+            Value::String(outside.display().to_string()),
+        );
+
+        let error = match UnicaApplication::new().call_tool("unica.mxl.info", &args) {
+            Ok(result) => panic!(
+                "expected OutFile contract rejection, got {}",
+                result.summary
+            ),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("does not accept argument `OutFile`"),
+            "{error}"
+        );
+        assert!(!outside.exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
     #[test]
     fn cfe_borrow_rejects_edt_config_source_set_target() {
         let root = std::env::temp_dir().join(format!(

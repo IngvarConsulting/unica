@@ -735,12 +735,18 @@ class FateCoverageTests(unittest.TestCase):
                 "canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication"
             ),
             "INV.SAFETY.SUPPORT-GUARD-COVERAGE": (
-                "crates/unica-coder/src/infrastructure/support_guard.rs::"
-                "public_support_guard_resolver_matrix_runs_real_handlers"
+                "mutating_native_support_guard_coverage_is_explicit",
+                "code_patch_locked_support_blocks_preview_and_apply_before_handler",
+                "subsystem_compile_guards_locked_parent_before_both_planners",
+                "cf_init_support_exemption_reaches_preview_and_apply_handlers",
+                "project_editing_policy_is_the_closed_support_guard_downgrade_source",
             ),
             "INV.SAFETY.SUPPORT-GUARD-PARITY": (
-                "crates/unica-coder/src/infrastructure/support_guard.rs::"
-                "public_support_guard_resolver_matrix_runs_real_handlers"
+                "mutating_native_support_guard_coverage_is_explicit",
+                "code_patch_locked_support_blocks_preview_and_apply_before_handler",
+                "subsystem_compile_guards_locked_parent_before_both_planners",
+                "cf_init_support_exemption_reaches_preview_and_apply_handlers",
+                "project_editing_policy_is_the_closed_support_guard_downgrade_source",
             ),
             "INV.SAFETY.RUNTIME-SECRET-REDACTION": (
                 "crates/unica-coder/src/infrastructure/internal_adapters.rs::"
@@ -767,10 +773,17 @@ class FateCoverageTests(unittest.TestCase):
                 "source_resource_tools_are_read_only_and_have_no_cache_or_event_effects"
             ),
         }
-        self.assertEqual(
-            {identifier: records.get(identifier, {}).get("check") for identifier in exact_checks},
-            exact_checks,
-        )
+        for identifier, check in exact_checks.items():
+            with self.subTest(identifier=identifier):
+                named = records.get(identifier, {}).get("check")
+                if isinstance(check, tuple):
+                    # Правило держат несколько проверок, и запись называет их
+                    # все. Проверяется присутствие каждой, а не совпадение с
+                    # именем обёртки, которой больше нет.
+                    for required in check:
+                        self.assertIn(required, named or "")
+                else:
+                    self.assertEqual(named, check)
 
         removal = records.get("DEC.2026-08-21.SOURCE-READ-ONLY-SURFACE", {})
         self.assertEqual(removal.get("status"), "active")
@@ -881,8 +894,9 @@ class FateCoverageTests(unittest.TestCase):
                 "runtime_execute_terminal_result_is_returned_in_original_call"
             ),
             "INV.RUNTIME.RISK-CLASSIFICATION": (
-                "crates/unica-coder/src/application/runtime_admission.rs::"
-                "runtime_risk_classification_is_closed"
+                "every_classified_applied_runtime_operation_is_warned_with_its_reason",
+                "unclassified_applied_operation_still_fails_closed",
+                "canonical_runtime_surface_has_an_explicit_risk_classification",
             ),
             "INV.RUNTIME.NO-REFUSAL-FALLBACK": (
                 "tests/ci/test_unica_skills.py::"
@@ -901,20 +915,36 @@ class FateCoverageTests(unittest.TestCase):
                 "canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication"
             ),
             "INV.CACHE.EVENT-IMPACT-CLOSED": (
-                "crates/unica-coder/src/domain/cache.rs::"
-                "typed_event_cache_impact_catalog_is_closed"
+                "the_kind_list_covers_the_whole_enum",
+                "every_event_invalidates_at_least_one_cache",
+                "no_event_refreshes_a_cache_it_did_not_invalidate",
+                "from_events_unions_the_impact_of_every_event",
+                "no_events_leave_the_impact_empty",
             ),
             "INV.SOURCE.OBSERVED-EOL-PROFILE": (
-                "crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::"
-                "observed_line_ending_profile_is_closed"
+                "snapshot_classifies_no_line_endings",
+                "snapshot_classifies_uniform_lf_and_terminal_newline",
+                "snapshot_classifies_uniform_crlf_and_terminal_newline",
+                "snapshot_classifies_uniform_cr_and_terminal_newline",
+                "snapshot_classifies_mixed_endings_with_exact_counts",
+                "snapshot_reports_missing_terminal_newline",
+                "preserve_prefers_local_context_for_mixed_source",
+                "observed_resolution_serves_no_eol_source_with_explicit_lf",
+                "observed_resolution_preserves_uniform_profile_and_prefers_local",
+                "observed_resolution_rejects_mixed_profile_without_local_context",
             ),
             "INV.SOURCE.CODE-PATCH-EOL": (
-                "crates/unica-coder/src/infrastructure/native_operations/code.rs::"
-                "code_patch_observed_eol_policy_is_closed"
+                "code_patch_rejects_lone_cr_instead_of_inventing_or_gaining_an_eol_policy",
+                "code_patch_without_any_source_eol_uses_lf_for_preview_apply_and_repeat_noop",
+                "mixed_eol_apply_preserves_untouched_bytes_and_uses_target_eol",
+                "unified_diff_round_trips_crlf_and_missing_terminal_eol",
             ),
             "INV.PKG.VERIFIED-ATOMIC-INSTALL": (
-                "crates/unica-bootstrap/tests/runtime_install.rs::"
-                "verified_install_publishes_exact_closure_atomically"
+                "valid_archive_is_published_with_a_ready_marker",
+                "ready_marker_waits_for_the_complete_runtime_file_closure",
+                "corrupt_archive_never_publishes_a_ready_runtime",
+                "install_closure_rejects_unsafe_or_drifted_archives_without_ready",
+                "concurrent_installers_download_and_publish_once",
             ),
             "INV.PLATFORM.PROCESS-TREE-LIFECYCLE": (
                 "crates/unica-coder/src/infrastructure/platform/process.rs::"
@@ -941,8 +971,10 @@ class FateCoverageTests(unittest.TestCase):
                 "test_every_in_scope_tool_has_a_parity_scenario"
             ),
             "INV.WIRE.TYPED-READ-FINALIZER": (
-                "crates/unica-coder/src/application/mod.rs::"
-                "typed_read_result_contract_is_closed"
+                "successful_typed_reader_without_data_fails_closed",
+                "successful_typed_reader_with_stdout_duplicate_fails_closed",
+                "failed_typed_reader_may_omit_data",
+                "successful_typed_mutation_may_omit_data",
             ),
             "INV.APP.CODE-DEFINITION-READINESS": (
                 "crates/unica-coder/src/infrastructure/rlm_navigation.rs::"
@@ -951,7 +983,15 @@ class FateCoverageTests(unittest.TestCase):
         }
         for identifier, check in exact_checks.items():
             with self.subTest(identifier=identifier):
-                self.assertEqual(records.get(identifier, {}).get("check"), check)
+                named = records.get(identifier, {}).get("check")
+                if isinstance(check, tuple):
+                    # Правило держат несколько проверок, и запись называет их
+                    # все. Проверяется присутствие каждой, а не совпадение с
+                    # именем обёртки, которой больше нет.
+                    for required in check:
+                        self.assertIn(required, named or "")
+                else:
+                    self.assertEqual(named, check)
 
     def test_narrowed_v1_claims_are_explicit_and_product_owned(self) -> None:
         records = {}

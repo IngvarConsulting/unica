@@ -175,11 +175,24 @@ def _front_matter_props(path: Path) -> dict[str, str]:
     if not match:
         return {}
     props: dict[str, str] = {}
+    block_key: str | None = None
     for line in match.group("props").splitlines():
+        # Проп может нести список: правило, которое держат несколько проверок,
+        # называет их все. Список склеивается пробелом, чтобы читатель этого
+        # разбора продолжал видеть строку.
+        entry = line.strip()
+        if entry.startswith("- ") and block_key is not None:
+            joined = props[block_key]
+            props[block_key] = f"{joined} {entry[2:].strip()}".strip()
+            continue
+        block_key = None
         if ":" not in line:
             continue
         key, value = line.split(":", 1)
-        props[key.strip()] = value.strip()
+        key, value = key.strip(), value.strip()
+        props[key] = value
+        if not value:
+            block_key = key
     return props
 
 

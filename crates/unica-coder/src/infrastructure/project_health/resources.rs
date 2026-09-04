@@ -3593,12 +3593,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn portable_lfs_advice_and_readiness_contract_is_complete() {
-        project_health_repository_policy_lfs_is_advisory_for_exact_large_binary();
-        crate::domain::project_health::tests::lfs_advice_is_informational_and_does_not_close_readiness();
-    }
-
     thread_local! {
         static RESOURCE_POLICY_NOW: RefCell<Option<Instant>> = const { RefCell::new(None) };
         static RESOURCE_POLICY_EXPIRED: Cell<bool> = const { Cell::new(false) };

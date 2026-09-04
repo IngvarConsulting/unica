@@ -1148,7 +1148,7 @@ mod tests {
         evaluate_read_format_guard,
     };
     use crate::application::operation_descriptors::native_operation_descriptor;
-    use crate::application::ports::{ApplicationPorts, FormatGuardCheck};
+    use crate::application::ports::{ApplicationPorts, FormatGuardCheck, XdtoPublicErrorCode};
     use crate::application::{tools, InvocationMode, ToolHandler};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
@@ -2800,6 +2800,115 @@ mod tests {
     }
 
     #[test]
+    fn newer_dump_warns_for_read_only_with_roadmap_copy() {
+        let root = test_root("new");
+        let path = config(&root, Some("2.21"));
+        let mut args = Map::new();
+        args.insert(
+            "TemplatePath".into(),
+            Value::String(path.display().to_string()),
+        );
+        let check = evaluate_format_guard(spec("unica.mxl.info"), &args, &context(&root)).unwrap();
+        let FormatGuardCheck::Warn {
+            warning,
+            diagnostic,
+        } = check
+        else {
+            panic!("newer read-only input must warn and continue");
+        };
+        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
+        assert!(warning.contains("Поддержка платформы 1С 8.5 планируется"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mxl_info_warns_old_external_source_set_via_owner_descriptor() {
+        let root = test_root("old-external-mxl-info");
+        std::fs::create_dir_all(&root).unwrap();
+        let source_root = external_source_set(&root, "EXTERNAL_REPORTS", "erf", "Sales", "2.19");
+        let target = source_root.join("Sales/Templates/Print/Ext/Template.xml");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "<document/>").unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "TemplatePath".into(),
+            Value::String(target.display().to_string()),
+        );
+
+        let check = evaluate_format_guard(spec("unica.mxl.info"), &args, &context(&root)).unwrap();
+        let FormatGuardCheck::Warn {
+            warning,
+            diagnostic,
+        } = check
+        else {
+            panic!("old ERF owner must warn for read-only MXL info");
+        };
+        assert_eq!(diagnostic["actualFormat"], "2.19");
+        assert_platform_reexport_warning(&warning);
+        assert!(
+            warning.contains("Доступен только режим чтения."),
+            "{warning}"
+        );
+        assert!(!warning.contains("Изменение отменено."), "{warning}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn valid_standalone_mxl_without_owner_version_is_not_an_old_dump() {
+        let root = test_root("valid-standalone-mxl");
+        std::fs::create_dir_all(&root).unwrap();
+        let document = root.join("standalone.xml");
+        std::fs::write(
+            &document,
+            r#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet"/>"#,
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "TemplatePath".into(),
+            Value::String(document.display().to_string()),
+        );
+
+        assert!(matches!(
+            evaluate_format_guard(spec("unica.mxl.info"), &args, &context(&root)).unwrap(),
+            FormatGuardCheck::Allow
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Нерезолвящийся XDTO-путь остаётся контрактной ошибкой и после снятия
+    /// публичных имён XDTO: страж зовётся по имени операции, как это делает
+    /// канонический путь.
+    #[test]
+    fn xdto_guard_empty_handler_resolution_is_a_contract_error() {
+        let root = test_root("xdto-empty-handler-resolution");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert("sourceSet".into(), Value::String("main".to_string()));
+        args.insert(
+            "metadataPath".into(),
+            Value::String("XDTOPackage.Missing".to_string()),
+        );
+
+        let error = match evaluate_read_format_guard("xdto-info", &args, &context(&root)) {
+            Ok(_) => panic!("an unresolved XDTO HandlerResolved path must not degrade to Allow"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.public_projection().map(|(code, _)| code),
+            Some(XdtoPublicErrorCode::TargetNotFound)
+        );
+        assert!(error.to_string().contains("target_not_found"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn single_writable_platform_xml_profile_is_exact() {
         assert_eq!(
             crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.platform_line,
@@ -2813,22 +2922,22 @@ mod tests {
         supported_dump_allows_mutation_preflight();
     }
 
-    #[test]
-    fn owner_version_read_write_gate_is_complete() {
-        missing_root_version_is_classified_as_1_0();
-        versionless_known_standalone_form_is_classified_as_1_0_owner();
+    /// Полезная нагрузка проверки реентерабельности, а не самостоятельный тест.
+    /// Харнесс гоняет каждую из этих проверок отдельно; здесь они нужны разом и
+    /// в восьми потоках, чтобы поймать общий временный корень. Пометка
+    /// `#[test]` сделала бы из этого ещё один прогон уже сделанной работы.
+    fn format_evidence_payload() {
+        single_writable_platform_xml_profile_is_exact();
+        crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
+        public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
         dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
-        version_owning_target_cannot_hide_behind_supported_source_set_owner();
-        unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog();
-        crate::infrastructure::platform_xml_owner::tests::equal_depth_source_set_owners_are_ambiguous_for_existing_and_new_outputs();
+        cf_init_public_guard_blocks_newer_existing_post_validation_dependency();
     }
 
     #[test]
     fn aggregated_format_evidence_is_reentrant_under_parallel_test_execution() {
         let workers = (0..8)
-            .map(|_| {
-                std::thread::spawn(single_writable_platform_xml_profile_decision_is_fully_realized)
-            })
+            .map(|_| std::thread::spawn(format_evidence_payload))
             .collect::<Vec<_>>();
 
         for worker in workers {
@@ -2933,21 +3042,6 @@ mod tests {
         crate::application::tests::incompatible_format_blocks_before_native_handler();
         crate::application::tests::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
         std::fs::remove_dir_all(workspace_root).unwrap();
-    }
-
-    #[test]
-    fn native_mutation_surface_and_format_refusal_are_exact() {
-        crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
-        public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
-        dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
-        cf_init_public_guard_blocks_newer_existing_post_validation_dependency();
-    }
-
-    #[test]
-    fn single_writable_platform_xml_profile_decision_is_fully_realized() {
-        single_writable_platform_xml_profile_is_exact();
-        owner_version_read_write_gate_is_complete();
-        native_mutation_surface_and_format_refusal_are_exact();
     }
 
     #[test]

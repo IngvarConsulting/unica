@@ -15,10 +15,19 @@ def record(record_id: str) -> str:
 
 
 def check(record_id: str) -> str:
-    match = re.search(r"^check: (.+)$", record(record_id), re.MULTILINE)
-    if match is None:
+    """Имена проверок записи одной строкой.
+
+    Проп несёт либо одно имя, либо блочный список: правило, которое держат
+    несколько проверок, называет их все, а не обёртку над ними.
+    """
+    text = record(record_id)
+    inline = re.search(r"^check: (\S.*)$", text, re.MULTILINE)
+    if inline is not None:
+        return inline.group(1)
+    block = re.search(r"^check:[ \t]*\n((?:[ \t]+- .+\n)+)", text, re.MULTILINE)
+    if block is None:
         raise AssertionError(f"{record_id} has no check")
-    return match.group(1)
+    return " ".join(line.strip()[2:] for line in block.group(1).splitlines())
 
 
 class SourceFateSemanticClosureTests(unittest.TestCase):
@@ -60,15 +69,21 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
             REPO_ROOT / "arch" / "decisions" /
             "2026-08-21-mutation-idempotence-scope.md"
         ).read_text(encoding="utf-8")
-        self.assertIn(
-            "realized: crates/unica-coder/src/infrastructure/format_guard.rs::single_writable_platform_xml_profile_decision_is_fully_realized",
-            profile,
-        )
+        for name in (
+            "single_writable_platform_xml_profile_is_exact",
+            "native_mutation_surface_has_exact_operations_and_schemas",
+            "public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal",
+            "dcs_edit_blocks_old_external_source_set_via_owner_descriptor",
+            "cf_init_public_guard_blocks_newer_existing_post_validation_dependency",
+        ):
+            self.assertIn(name, profile)
         self.assertNotIn("INV.SOURCE.PLATFORM-BEFORE-XSD", profile)
-        self.assertIn(
-            "realized: crates/unica-coder/src/infrastructure/native_operations/source_invariant_tests.rs::mutation_idempotence_scope_decision_is_fully_realized",
-            mutation,
-        )
+        for name in (
+            "verified_public_mutator_idempotence_cases_are_exact",
+            "repeated_interface_edit_preserves_identity_but_reports_attempted_update",
+            "repeated_mxl_compile_preserves_identity_but_reports_attempted_update",
+        ):
+            self.assertIn(name, mutation)
 
     def test_portable_git_and_platform_xml_checks_are_closed_matrices(self) -> None:
         self.assertTrue(
@@ -127,11 +142,15 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
                 "::unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog"
             )
         )
-        self.assertTrue(
-            check("INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS").endswith(
-                "::fault_injected_rollback_and_cleanup_paths_keep_distinct_diagnostics"
-            )
-        )
+        named = check("INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS")
+        for name in (
+            "registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap",
+            "registration_rollback_validation_reports_preserved_quarantine",
+            "removal_rollback_preserves_concurrent_file_and_recovery_artifact",
+            "removal_rollback_preserves_concurrent_empty_directory_and_recovery_tree",
+            "successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap",
+        ):
+            self.assertIn(name, named)
 
     def test_subsystem_checks_cover_public_schema_and_no_data_failures(self) -> None:
         """Чтение подсистемы переехало на канонический путь.
@@ -149,12 +168,17 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
         ):
             with self.subTest(rule=rule):
                 self.assertEqual(check(rule), corpus_check)
-        self.assertEqual(
-            check("INV.SOURCE.SUBSYSTEM-TOPOLOGY"),
-            "crates/unica-coder/src/infrastructure/native_operations/subsystem.rs"
-            "::public_subsystem_projection_and_mode_absence_contract_is_complete",
-        )
-
+        topology = check("INV.SOURCE.SUBSYSTEM-TOPOLOGY")
+        for name in (
+            "pointing_at_the_subsystems_folder_answers_only_with_tree",
+            "concrete_subsystem_contains_its_root_chain_and_complete_descendant_tree",
+            "unregistered_alias_keeps_local_data_without_borrowing_a_registered_tree",
+            "root_subsystems_symlink_is_not_followed_for_a_tree_answer",
+            "nested_subsystems_symlink_is_not_followed_for_a_tree_answer",
+            "subsystem_info_answers_content_and_command_interface_at_once",
+            "a_missing_command_interface_is_null_not_an_empty_interface",
+        ):
+            self.assertIn(name, topology)
     def test_reader_records_retire_with_the_readers_they_governed(self) -> None:
         """Мост читателей снят вместе с ними: правила моста стоят на корпусе.
 
@@ -179,19 +203,40 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
         self.assertNotIn("BRIDGED_SELECTORS", source)
 
     def test_broad_source_records_name_complete_behavior_checks(self) -> None:
-        expected_suffixes = {
-            "INV.SOURCE.LOGICAL-IDENTITY":
-                "::logical_target_identity_contract_is_complete",
-            "INV.SOURCE.WRITE-TARGET-KIND":
-                "::write_target_kind_and_revalidation_contract_is_complete",
-            "INV.SOURCE.TAIL-INSERT":
-                "::tail_insert_public_and_write_contract_is_complete",
-            "INV.SOURCE.ROOT-READINESS":
-                "::project_health_workspace_root_rejection_suppresses_source_derived_git_facts",
+        """Широкая запись называет весь набор проверок, а не одну за всех.
+
+        Раньше здесь стояло имя обёртки, и запись выглядела полной, пока
+        обёртка держала список вызовов. Список ведёт запись, поэтому проверять
+        надо его состав.
+        """
+        expected_names = {
+            "INV.SOURCE.LOGICAL-IDENTITY": {
+                "source_target_profile_emits_canonical_english_kind_tokens",
+                "source_target_profile_normalizes_only_registered_exact_russian_kind_aliases",
+                "source_target_profile_preserves_application_name_case",
+                "source_target_and_resolved_target_serialize_only_logical_identity",
+            },
+            "INV.SOURCE.WRITE-TARGET-KIND": {
+                "platform_xml_target_kind_policy_table_is_closed",
+                "platform_xml_source_root_handle_revalidates_without_widening",
+                "platform_xml_source_target_revalidation_rejects_changed_descriptor_identity",
+            },
+            "INV.SOURCE.TAIL-INSERT": {
+                "code_patch_tail_insert_public_contract_is_closed",
+                "code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat",
+                "code_patch_writes_the_first_body_of_an_empty_or_bom_only_module",
+                "code_patch_creates_a_module_file_the_platform_never_exported",
+                "code_patch_refuses_a_module_role_the_metadata_kind_never_owns",
+            },
+            "INV.SOURCE.ROOT-READINESS": {
+                "project_health_workspace_root_rejection_suppresses_source_derived_git_facts",
+            },
         }
-        for record_id, suffix in expected_suffixes.items():
+        for record_id, names in expected_names.items():
             with self.subTest(record_id=record_id):
-                self.assertTrue(check(record_id).endswith(suffix))
+                named = check(record_id)
+                for name in names:
+                    self.assertIn(name, named)
 
     def test_autodetect_check_is_driven_by_the_production_catalog(self) -> None:
         self.assertTrue(
@@ -213,18 +258,22 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
         self.assertIn("public_code_mutator_inventory_is_exact", source)
 
     def test_no_format_migration_uses_exact_surface_and_behavior(self) -> None:
-        self.assertTrue(
-            check("INV.SOURCE.NO-FORMAT-MIGRATION").endswith(
-                "::native_mutation_surface_and_format_refusal_are_exact"
-            )
-        )
+        named = check("INV.SOURCE.NO-FORMAT-MIGRATION")
+        for name in (
+            "native_mutation_surface_has_exact_operations_and_schemas",
+            "public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal",
+            "dcs_edit_blocks_old_external_source_set_via_owner_descriptor",
+            "cf_init_public_guard_blocks_newer_existing_post_validation_dependency",
+        ):
+            self.assertIn(name, named)
 
     def test_portable_resource_role_and_lfs_readiness_are_aggregated(self) -> None:
-        self.assertTrue(
-            check("INV.SOURCE.PORTABLE-LFS-ADVISORY").endswith(
-                "::portable_lfs_advice_and_readiness_contract_is_complete"
-            )
-        )
+        named = check("INV.SOURCE.PORTABLE-LFS-ADVISORY")
+        for name in (
+            "project_health_repository_policy_lfs_is_advisory_for_exact_large_binary",
+            "lfs_advice_is_informational_and_does_not_close_readiness",
+        ):
+            self.assertIn(name, named)
         portable = (
             REPO_ROOT / "crates" / "unica-coder" / "tests" / "platform" /
             "project_health.rs"
