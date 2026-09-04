@@ -242,7 +242,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         the rules `github.base_ref` does, so pinning only the name the review
         happened to cite would leave the defect a second way back in.
         """
-        refs = ("github.base_ref", "github.ref_name", "github.head_ref")
+        # Имя ветки прогона-источника приходит из того же класса значений:
+        # его выбирает тот, кто может завести ветку или тег.
+        refs = (
+            "github.base_ref",
+            "github.ref_name",
+            "github.head_ref",
+            "github.event.workflow_run.head_branch",
+        )
         scanned = 0
         # GitHub accepts either extension, so a guard that scans one of them
         # leaves the other as a blind spot.

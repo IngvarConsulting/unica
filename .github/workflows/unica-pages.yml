@@ -39,9 +39,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          # Имя ветки выбирает тот, кто её завёл: в скрипт оно попадает
+          # переменной, а не текстом команды.
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -eu
-          line="${{ github.event.workflow_run.head_branch || 'main' }}"
+          line="${HEAD_BRANCH:-main}"
           echo "line=$line" >> "$GITHUB_OUTPUT"
           if [ -z "${RUN_ID:-}" ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
@@ -69,6 +72,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SITE: https://ingvarconsulting.github.io/unica
+          FRESH_LINE: ${{ steps.results.outputs.line }}
+          FRESH_FOUND: ${{ steps.results.outputs.found }}
         run: |
           set -eu
           python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" \
@@ -76,8 +81,7 @@ jobs:
           args=""
           while read -r line; do
             [ -n "$line" ] || continue
-            if [ "$line" = "${{ steps.results.outputs.line }}" ] && \
-               [ "${{ steps.results.outputs.found }}" = "true" ]; then
+            if [ "$line" = "$FRESH_LINE" ] && [ "$FRESH_FOUND" = "true" ]; then
               args="$args --line $line=.build/allure-results"
             else
               args="$args --line $line"
@@ -93,14 +97,18 @@ jobs:
       - name: Пересобрать страницы с итоговым статусом
         env:
           GH_TOKEN: ${{ github.token }}
+          FRESH_LINE: ${{ steps.results.outputs.line }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_AT: ${{ github.event.workflow_run.updated_at }}
         run: |
           set -eu
           python scripts/ci/site-status.py \
             --repo "$GITHUB_REPOSITORY" \
-            --branch "${{ steps.results.outputs.line }}" \
-            --sha "${{ github.event.workflow_run.head_sha || github.sha }}" \
-            --run-url "${{ github.event.workflow_run.html_url }}" \
-            --run-at "${{ github.event.workflow_run.updated_at }}" \
+            --branch "$FRESH_LINE" \
+            --sha "$RUN_SHA" \
+            --run-url "$RUN_URL" \
+            --run-at "$RUN_AT" \
             --summaries .build/site/data \
             --out .build/status.json
           python scripts/ci/build-site.py --pages-only --status .build/status.json --out .build/site
