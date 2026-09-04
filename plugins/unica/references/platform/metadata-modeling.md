@@ -16,7 +16,7 @@ common attributes, `#std697` predefined items, `#std704` defined types, `#std728
 composite type attributes, and diagnostics `АПК:93`, `АПК:192`–`АПК:195`,
 `АПК:304`, `АПК:305`, `АПК:1205`, `АПК:1207`, `АПК:1210`–`АПК:1217`, `АПК:1329`,
 `АПК:1330`, `v8cs:db-object-anyref-type`, `v8cs:db-object-ref-non-ref-type`.
-Confirm the current wording with `unica.standards.explain` before citing one.
+Confirm the current wording with `unica.docs` with `source: "development-standard"` before citing one.
 
 ## Which Class Holds The Data
 

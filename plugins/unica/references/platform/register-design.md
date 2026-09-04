@@ -10,7 +10,7 @@ The normative rules here are development standards, not platform evidence:
 registers, `#std792` bulk writes, and diagnostics `АПК:123`, `АПК:229`,
 `BSLLS:DenyIncompleteValues`, `BSLLS:VirtualTableCallWithoutParameters`,
 `v8cs:ql-virtual-table-filters`, `v8cs:register-resource-precision`. Confirm the
-current wording with `unica.standards.explain` before citing one.
+current wording with `unica.docs` with `source: "development-standard"` before citing one.
 
 ## Choosing The Register Class
 
