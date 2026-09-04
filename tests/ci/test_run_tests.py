@@ -97,6 +97,42 @@ class RunTestsSeamTests(unittest.TestCase):
         self.assertNotIn("_FailedTest", listing)
         self.assertIn("test_donor_parity_contract", listing)
 
+    def test_run_signature_is_written_once_per_invocation_and_names_the_ecosystem(self) -> None:
+        """`--ecosystem all` — одна подпись с `all`, а не две, где вторая стирает первую."""
+        import json
+        import tempfile
+        from pathlib import Path as P
+
+        module = load_module()
+        out = P(tempfile.mkdtemp(prefix="run-tests-"))
+        calls = []
+
+        code = module.execute("all", "all", out, "ubuntu-latest",
+                              run_commands=lambda planned: calls.append(planned) or 0,
+                              junit=out / "no-such-junit.xml")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 2)
+        signature = json.loads((out / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual(signature["ecosystem"], "all")
+        self.assertEqual(signature["runner"], "ubuntu-latest")
+
+    def test_rust_failure_before_junit_still_leaves_the_signature(self) -> None:
+        """Подпись описывает вызов, а не исход: nextest упал до JUnit — она всё равно есть."""
+        import tempfile
+        from pathlib import Path as P
+
+        module = load_module()
+        out = P(tempfile.mkdtemp(prefix="run-tests-"))
+
+        code = module.execute("all", "rust", out, "macos-14",
+                              run_commands=lambda planned: 101,
+                              junit=out / "no-such-junit.xml")
+
+        self.assertEqual(code, 101)
+        self.assertTrue((out / "run.json").is_file())
+        self.assertEqual(list(out.glob("*-result.json")), [])
+
     def test_unknown_profile_or_ecosystem_is_a_refusal_not_an_empty_run(self) -> None:
         """Пустой прогон зелёный по устройству; отказ — единственный честный ответ."""
         module = load_module()
