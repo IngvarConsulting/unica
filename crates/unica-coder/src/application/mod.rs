@@ -196,6 +196,9 @@ pub enum ToolHandler {
         event: Option<DomainEventKind>,
     },
     RuntimeAdapter,
+    Documentation {
+        operation: &'static str,
+    },
     RuntimeJob {
         action: RuntimeJobAction,
     },
@@ -2763,6 +2766,18 @@ fn configuration_tools() -> Vec<ToolSpec> {
         // Чтение макета остаётся за v0.12: канонический `view` на узле
         // `Template` отдаёт только адрес и заголовок, содержимого
         // табличного документа у него пока нет.
+        // Канонический `docs` отдаёт `documentId` и сниппет, но не текст
+        // страницы. Пока выборки документа по локатору у него нет, ответ
+        // нечем доказать, поэтому этот вход остаётся.
+        ToolSpec {
+            name: "unica.documentation.get",
+            description:
+                "Fetch the full text of a documentation search hit by its documentId locator.",
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::Documentation { operation: "get" },
+        },
         ToolSpec {
             name: "unica.mxl.info",
             description: "Inspect spreadsheet Template.xml.",

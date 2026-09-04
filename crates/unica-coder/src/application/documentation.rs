@@ -141,6 +141,46 @@ pub fn search(
     Ok(json!({ "sections": sections }))
 }
 
+/// Документ целиком по устойчивому локатору попадания (`unica.documentation.get`).
+/// Владельца локатора находит первый не-`None` ответ в порядке реестра:
+/// форматы локаторов поставщиков не пересекаются. Отказ владельца — отказ
+/// вызова; локатор без владельца — отказ, называющий сам локатор.
+pub fn get(
+    registry: &DocumentationRegistry,
+    document_id: &str,
+    language: &str,
+    context: &DocumentationContext,
+) -> Result<Value, String> {
+    if document_id.trim().is_empty() {
+        return Err("unica.documentation.get requires a non-blank documentId".to_string());
+    }
+    for provider in registry.providers() {
+        let Some(answer) = provider.get(document_id, language, context) else {
+            continue;
+        };
+        // Отказ владельца — отказ вызова: подмена другой страницей или
+        // другим поставщиком недопустима, локатор один и владелец один.
+        let document = answer?;
+        return Ok(json!({
+            "document": {
+                "provider": document.provider.to_string(),
+                "corpus": document.corpus,
+                "sourceKind": document.source_kind.as_str(),
+                "authority": document.authority.as_str(),
+                "language": document.language,
+                "documentId": document.document_id,
+                "title": document.title,
+                "signature": document.signature,
+                "applicableVersion": document.applicable_version,
+                "text": document.text,
+            }
+        }));
+    }
+    Err(format!(
+        "ни один поставщик документации не владеет локатором {document_id:?}"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     // `super::*` already re-exports `crate::domain::documentation::*` (this
@@ -596,5 +636,146 @@ mod tests {
             sections[0]["diagnostic"]["detail"],
             "установка платформы не разрешена для рабочего пространства"
         );
+    }
+
+    struct GetStub {
+        id: &'static str,
+        answer: Option<Result<DocumentationDocument, String>>,
+    }
+
+    impl DocumentationProvider for GetStub {
+        fn id(&self) -> DocumentationProviderId {
+            DocumentationProviderId::new(self.id)
+        }
+        fn corpora(&self) -> Vec<DocumentationCorpus> {
+            Vec::new()
+        }
+        fn needs_network(&self) -> bool {
+            false
+        }
+        fn search(
+            &self,
+            _: &DocumentationSearchRequest,
+            _: &DocumentationContext,
+        ) -> Vec<DocumentationSection> {
+            Vec::new()
+        }
+        fn get(
+            &self,
+            _document_id: &str,
+            _language: &str,
+            _context: &DocumentationContext,
+        ) -> Option<Result<DocumentationDocument, String>> {
+            self.answer.clone()
+        }
+    }
+
+    fn document(id: &str) -> DocumentationDocument {
+        DocumentationDocument {
+            provider: DocumentationProviderId::new(id),
+            corpus: "syntax-context".to_string(),
+            source_kind: SourceKind::PlatformHelp,
+            authority: Authority::Vendor,
+            language: "ru".to_string(),
+            document_id: "platform-syntax-help:syntax-context:page.html".to_string(),
+            title: "Заголовок".to_string(),
+            signature: Some("Имя()".to_string()),
+            applicable_version: "8.3.27.2074".to_string(),
+            text: "Полный текст открытой страницы.".to_string(),
+        }
+    }
+
+    /// Владельца находит первый не-`None` в порядке реестра, и его документ
+    /// доходит до публичного результата всеми полями происхождения.
+    #[test]
+    fn get_skips_a_non_owner_and_projects_the_owners_document() {
+        let registry = DocumentationRegistry::new(vec![
+            Arc::new(GetStub {
+                id: "stranger",
+                answer: None,
+            }) as Arc<dyn DocumentationProvider>,
+            Arc::new(GetStub {
+                id: "owner",
+                answer: Some(Ok(document("owner"))),
+            }),
+        ])
+        .expect("реестр");
+        let value = get(
+            &registry,
+            "platform-syntax-help:syntax-context:page.html",
+            "ru",
+            &context(),
+        )
+        .expect("документ");
+        let doc = &value["document"];
+        assert_eq!(doc["provider"], "owner");
+        assert_eq!(doc["corpus"], "syntax-context");
+        assert_eq!(doc["sourceKind"], "platform-help");
+        assert_eq!(doc["authority"], "vendor");
+        assert_eq!(doc["language"], "ru");
+        assert_eq!(
+            doc["documentId"],
+            "platform-syntax-help:syntax-context:page.html"
+        );
+        assert_eq!(doc["title"], "Заголовок");
+        assert_eq!(doc["signature"], "Имя()");
+        assert_eq!(doc["applicableVersion"], "8.3.27.2074");
+        assert_eq!(doc["text"], "Полный текст открытой страницы.");
+    }
+
+    /// Локатор без владельца — отказ, называющий сам локатор: молчаливый
+    /// пустой успех оставил бы вызывающего гадать, что пошло не так.
+    #[test]
+    fn a_locator_no_provider_owns_is_refused_naming_it() {
+        let registry = DocumentationRegistry::new(vec![Arc::new(GetStub {
+            id: "stranger",
+            answer: None,
+        })
+            as Arc<dyn DocumentationProvider>])
+        .expect("реестр");
+        let error = get(&registry, "alien:whatever", "ru", &context())
+            .expect_err("чужой локатор обязан отклоняться");
+        assert!(
+            error.contains("alien:whatever"),
+            "отказ обязан назвать локатор, получено {error}"
+        );
+    }
+
+    /// Отказ владельца — отказ вызова с его причиной: страница исчезла или
+    /// сеть запрещена политикой, и подмена другой страницей недопустима.
+    #[test]
+    fn the_owners_failure_is_the_calls_failure() {
+        let registry = DocumentationRegistry::new(vec![Arc::new(GetStub {
+            id: "owner",
+            answer: Some(Err(
+                "страница не отдана: перенаправление на корень".to_string()
+            )),
+        })
+            as Arc<dyn DocumentationProvider>])
+        .expect("реестр");
+        let error = get(&registry, "https://kb.1ci.com/x/", "ru", &context())
+            .expect_err("отказ владельца обязан стать отказом вызова");
+        assert!(
+            error.contains("страница не отдана"),
+            "причина владельца обязана дойти, получено {error}"
+        );
+    }
+
+    #[test]
+    fn a_blank_locator_is_refused_before_any_provider_runs() {
+        let registry = DocumentationRegistry::new(vec![Arc::new(GetStub {
+            id: "owner",
+            answer: Some(Ok(document("owner"))),
+        })
+            as Arc<dyn DocumentationProvider>])
+        .expect("реестр");
+        for blank in ["", "   "] {
+            let error = get(&registry, blank, "ru", &context())
+                .expect_err("пустой локатор обязан отклоняться");
+            assert!(
+                error.contains("documentId"),
+                "отказ обязан назвать аргумент, получено {error}"
+            );
+        }
     }
 }

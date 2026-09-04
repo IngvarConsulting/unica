@@ -71,7 +71,8 @@ pub(crate) fn engine_for(spec: ToolSpec) -> Option<&'static str> {
         | ToolHandler::RuntimeAdapter
         | ToolHandler::RuntimeJob { .. } => Some("v8-runner"),
         ToolHandler::CodeAdapter { .. } => Some("bsl-analyzer"),
-        ToolHandler::Metadata { .. }
+        ToolHandler::Documentation { .. }
+        | ToolHandler::Metadata { .. }
         | ToolHandler::NativeOperation { .. }
         | ToolHandler::CodeIntelligence { .. }
         | ToolHandler::Diagnostics => None,
@@ -566,6 +567,43 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         cancellation,
                     )
                     .map(HandlerOutcome::plain)
+            }
+            ToolHandler::Documentation { operation: "get" } => {
+                let document_id = args
+                    .get("documentId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "unica.documentation.get requires documentId".to_string())?;
+                if document_id.trim().is_empty() {
+                    return Err(
+                        "unica.documentation.get requires a non-blank documentId".to_string()
+                    );
+                }
+                let language = args
+                    .get("language")
+                    .and_then(Value::as_str)
+                    .unwrap_or("ru")
+                    .to_string();
+                let registry = documentation_registry(context, cancellation)?;
+                let requested_version = args.get("platformVersion").and_then(Value::as_str);
+                let context = documentation_context(
+                    &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
+                    ),
+                    requested_version,
+                    context,
+                );
+                let data = crate::application::documentation::get(
+                    &registry,
+                    document_id,
+                    &language,
+                    &context,
+                )?;
+                Ok(HandlerOutcome::with_data(
+                    AdapterOutcome::ok("unica.documentation.get completed"),
+                    data,
+                ))
+            }
+            ToolHandler::Documentation { operation } => {
+                Err(format!("unknown documentation operation: {operation}"))
             }
             ToolHandler::RuntimeAdapter => RuntimeAdapter::new()
                 .invoke_cancellable(

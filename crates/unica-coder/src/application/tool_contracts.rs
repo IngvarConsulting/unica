@@ -511,6 +511,7 @@ const CODE_ARGS: &[&str] = &[
 
 const CODE_DEFINITION_ARGS: &[&str] = &["limit", "moduleHint", "name", "sourceDir"];
 const CODE_OUTLINE_ARGS: &[&str] = &["includeMethods", "path", "sourceDir"];
+const DOCUMENTATION_GET_ARGS: &[&str] = &["documentId", "language", "platformVersion"];
 const CODE_SEARCH_ARGS: &[&str] = &["limit", "metadataPath", "query", "sourceDir", "sourceSet"];
 const CODE_GRAPH_ARGS: &[&str] = &[
     "detail",
@@ -2315,6 +2316,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
                     .flat_map(|descriptor| descriptor.allowed_args.iter().copied()),
             );
         }
+        ToolHandler::Documentation { .. } => names.extend(DOCUMENTATION_GET_ARGS),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
     }
     if tool.name == "unica.mxl.decompile" {
@@ -2344,6 +2346,7 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::NativeOperation { operation, .. } => native_operation_descriptor(operation)
             .map(|descriptor| descriptor.required_args.to_vec())
             .unwrap_or_default(),
+        ToolHandler::Documentation { .. } => vec!["documentId"],
         ToolHandler::RuntimeAdapter => runtime_required_args(tool),
         ToolHandler::RuntimeJob { action } => runtime_job_required_args(action),
         ToolHandler::CodeIntelligence { operation } => match operation {
@@ -2674,6 +2677,14 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "resultRef",
         "Continuation reference issued by a deferred manifest of the same tool: the call is served from the immutable stored snapshot without re-reading the source (ADR-0070)",
+    ),
+    (
+        "documentId",
+        "Stable locator of a unica.documentation.search hit, passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
+    ),
+    (
+        "platformVersion",
+        "Requested platform installation version for unica.documentation.search and unica.documentation.get, matched against an installation directory name exactly, for example 8.3.27.2074; when omitted the project's own tools.platform.version constrains the choice, and without that the numerically newest installation found under a configured platform root wins; a tools.platform.path pin names the installation directly instead of walking the roots, with the same version constraints applied to it.",
     ),
     (
         "detail",
