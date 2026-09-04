@@ -1398,8 +1398,15 @@ fn project_health_full_portable_linked_worktree_is_ready_and_read_only() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// The staged index must be larger than the generic stdout capture limit that
+/// the process facade applies by default: project health reads git through its
+/// own, much larger limit, and a routing regression would truncate a real
+/// repository's index and report the inspection as incomplete. The fixture is
+/// kept just past that limit rather than multiples above it, because the whole
+/// call has to answer inside the interactive invocation window, and git work on
+/// a large index is where a slow target spends that window.
 #[test]
-fn project_health_handles_real_index_with_43k_sibling_paths() {
+fn project_health_handles_a_real_index_past_the_generic_capture_limit() {
     let root = temp_root("large-index");
     git(&root, &["init"]);
     let workspace = root.join("workspace");
@@ -1425,8 +1432,8 @@ fn project_health_handles_real_index_with_43k_sibling_paths() {
         ],
     );
     let oid = git_with_input(&root, &["hash-object", "-w", "--stdin"], b"fixture\n");
-    let mut index_info = Vec::with_capacity(43_000 * 80);
-    for index in 0..43_000 {
+    let mut index_info = Vec::with_capacity(16_000 * 80);
+    for index in 0..16_000 {
         write!(
             index_info,
             "100644 {}\tlarge-sibling/{index:05}.txt\0",
