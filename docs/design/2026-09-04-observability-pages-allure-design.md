@@ -71,10 +71,15 @@ main» брать неоткуда, и отчёту на `main` тоже не и
 
 1. Джобы с тестами (`verify-source`, `test-rust-primary`, `test-rust-platforms`,
    `test-search-integration`) кладут `allure-results` артефактом.
-2. Workflow `observability-pages.yml` просыпается по `workflow_run: completed`
-   для `Build Unica Codex Plugin` на `main` — тем же способом, каким уже устроен
+2. Workflow `unica-pages.yml` просыпается по `workflow_run: completed` для
+   `Build Unica Codex Plugin` — тем же способом, каким уже устроен
    `publish-unica-marketplace.yml`. Он берётся из версии файла на `main`, а не из
    ветки прогона: это свойство события, и на него нельзя опираться иначе.
+
+   Фильтра `branches` для доверия мало: он смотрит на имя ветки прогона, а его
+   выбирает автор pull request. Форк с веткой `main` прошёл бы фильтр, и его
+   артефакты уехали бы на наш сайт. Поэтому источник обязан быть успешным
+   push-прогоном этого же репозитория; всё остальное отсекается условием джобы.
 3. Скачивает `history/` с живого сайта в `allure-results/history/`.
 4. Кладёт рядом `executor.json` (имя, номер и ссылка на прогон) и
    `categories.json` — категории отчёта, где дедлайн по настенным часам
