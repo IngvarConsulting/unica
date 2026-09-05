@@ -755,6 +755,66 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 различие кодов остаётся для человека и `detailCode`, а ветвление идёт по
 исходу.
 
+### Сорок два кода по шести исходам
+
+`?` помечает суждение, которое исполнителю стоит подтвердить.
+
+**Повторить как есть** — преходящее, никто не действует:
+
+`stale_revision`, `revision_mismatch`, `stale_cursor`, `concurrent_change`,
+`concurrent_modification`, `source_selection_changed`, `deadline_exceeded`,
+`provider_deadline`, `dependency_unavailable`, `task_transport_failed`?
+
+**Исправить вызов** — агент правит аргументы:
+
+`bad_value`, `not_found`, `source_set_unknown`, `target_not_found`,
+`not_a_role`, `containment_denied`, `invalid_cursor`, `unsupported_cursor`,
+`unsupported_source`, `unsupported_filter`, `incomparable_nodes`,
+`result_too_large`, `invalid_task_id`, `bad_wait_ms`, `bad_task_arguments`
+
+**Починить предмет** — агент правит исходники:
+
+`invalid_source` — разбор XML исходника не удался, `postcondition_failed` —
+запись прошла, проверка после неё не сошлась
+
+**Нужен человек** — действует человек над средой:
+
+`provider_unavailable`, `provider_failed`?, `ambiguous_source_format`,
+`rollback_failed`, `rollback_incomplete`, `task_protocol_failed`?,
+`task_projection_failed`?, `task_backend_failed`?
+
+**Пойти иначе** — маршрут не работает, альтернатива есть:
+
+`unsupported_operation`, `profile_unsupported`, `invalid_state`?,
+`task_not_found`?, `task_expired`?
+
+**Тупик** — дальше ничего не поможет:
+
+`cancelled` — отмена была намеренной, действия из неё не следует
+
+### Что видно из раскладки
+
+**Половина словаря — «исправить вызов».** Пятнадцать кодов из сорока двух
+означают «аргументы не те». Это нормально: большинство отказов происходит до
+работы. Но значит и обратное — по одному исходу агент не поймёт, **что именно**
+исправить, и `detailCode` тут не украшение, а необходимость.
+
+**«Починить предмет» всего два.** Ожидалось больше: это исход, ради которого
+агент идёт в `check`. Похоже, ошибки самих исходников до сих пор приходят под
+`bad_value` и `provider_unavailable` — стоит проверить при реализации, не
+теряется ли там различие.
+
+**Четыре кода задачи разложились в разные исходы.** `task_transport_failed`
+похож на преходящий, а `task_protocol_failed` и `task_projection_failed` — на
+дефект продукта, где повтор не поможет. Если это так, различие между ними
+осмысленно и схлопывать их нельзя — вопреки тому, что казалось по одному имени.
+
+**`invalid_state` под вопросом.** Он приходит, когда цель уже в нужном
+состоянии — например `workspace.initialize` по существующей конфигурации.
+Формально это не отказ, а «уже сделано», и ни один из шести исходов не описывает
+его точно. Возможно, седьмой исход — «цель уже достигнута» — или это признак,
+что такие случаи вообще не должны быть отказами.
+
 **Дефект, найденный при разборе.** В `role.rs` при публикации любой сбой
 повторного разрешения адреса схлопывается в `concurrent_modification` —
 `SourceSetUnknown`, `TargetNotFound`, `NotARole`, `ProviderUnavailable` и
