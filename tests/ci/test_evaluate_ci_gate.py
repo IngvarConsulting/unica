@@ -339,6 +339,23 @@ class BranchPushGateTests(unittest.TestCase):
         for job in (*PACKAGE_SUCCESS, *ASSESSMENT_SUCCESS, *P0_SUCCESS, "probe-thin-bootstrap"):
             self.assertEqual("skipped", evaluation.expected[job], job)
 
+    def test_merge_group_is_the_queue_gate_full_tests_no_package_pipeline(self) -> None:
+        """Очередь слияния гоняет всё, как push в ветку; упаковка остаётся тегу."""
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {
+            **source_results(),
+            "test-rust-platforms": "success",
+            "test-search-integration": "success",
+        }
+
+        evaluation = module.evaluate_gate("merge_group", "refs/heads/gh-readonly-queue/main/pr-738-abc", outputs, results)
+
+        self.assertTrue(evaluation.ok)
+        self.assertEqual("queue", evaluation.contour)
+        for job in (*PACKAGE_SUCCESS, *ASSESSMENT_SUCCESS, *P0_SUCCESS, "probe-thin-bootstrap"):
+            self.assertEqual("skipped", evaluation.expected[job], job)
+
     def test_branch_push_with_partial_classification_is_invalid(self) -> None:
         """На ветке отбора по файлам нет: неполная классификация — ошибка гейта."""
         module = load_gate_module()
