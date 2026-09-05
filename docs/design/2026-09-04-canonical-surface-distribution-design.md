@@ -694,33 +694,45 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 `bad_value` — «исправить вызов»; слив их в один код, мы теряем ровно то, ради
 чего исход вводили.
 
-**Измерено: пятнадцать различимых кодов** вне тестов.
+**Словарь измеряется структурно, а не поиском по тексту.** Коды кладёт в
+`diagnostics[]` единственный конструктор `DomainResult::canonical_rejection`, а
+приходят они двумя путями: литералом на месте вызова и через карты вида
+`fn …code(&self) -> &'static str`, отображающие варианты ошибки. Карты и есть
+словарь.
 
-| Код | Упоминаний |
+**Девять таких карт дают 35 различимых кодов**, и это без литералов на границе
+(`unsupported_source`, `unsupported_operation`, `stale_revision`,
+`result_too_large`, `ambiguous_source_format`, `unsupported_cursor`). То есть
+объявленная пятёрка занижает словарь примерно в восемь раз.
+
+| Карта | Кодов |
 |---|---:|
-| `provider_unavailable` | 147 |
-| `not_found` | 79 |
-| `bad_value` | 34 |
-| `stale_cursor` | 5 |
-| `cancelled`, `invalid_state` | по 3 |
-| `provider_deadline`, `unsupported_source`, `deadline_exceeded`, `concurrent_change` | по 2 |
-| `invalid_cursor`, `result_too_large`, `unsupported_operation`, `ambiguous_source_format`, `revision_mismatch` | по 1 |
+| `task_tools.rs::code` | 10 |
+| `v13_service.rs::apply_publication_error_code` | 8 |
+| `v13_service.rs::apply_plan_error_code` | 7 |
+| `role.rs::code` | 6 |
+| `diff.rs::code` | 5 |
+| `v13_infobase_exports.rs::map_runner_code` | 4 |
+| `role.rs::role_commit_failure_code` | 3 |
+| `check.rs::code`, `result_store.rs::code` | по 2 |
 
-**Объявленная пятёрка неверна в обе стороны.** Она не перечисляет десять
-кодов — и при этом два её члена, `invalid_source` и `stale_revision`, среди
-этих конструкторов не встречаются. Доходят ли они до провода, надо проверить:
-возможно, объявлены мёртвые коды.
+**Оба подозрительных кода живы.** `invalid_source` приходит из
+`apply_plan_error_code`, `stale_revision` — из отказа допуска `apply` при
+устаревшем `ifRev`. Пятёрка неверна только в одну сторону: она не перечисляет
+остальных, но мёртвых среди неё нет.
 
-**Три пары синонимов схлопываются при объявлении, а не переписываются как
-есть:**
+**Синонимы надо определять по смыслу, а не по схожести имён.**
+`invalid_cursor` и `stale_cursor` стоят парой в двух независимых местах —
+`diff.rs` и `result_store.rs`; это осознанное различие: «курсор чужой» против
+«ревизия уехала», и исходы у них разные — исправить вызов против повторить
+обход. Схлопывать их нельзя.
 
-| Пара | Про что |
-|---|---|
-| `stale_cursor`, `invalid_cursor` | курсор |
-| `deadline_exceeded`, `provider_deadline` | таймаут |
-| `revision_mismatch`, `stale_revision` | ревизионный забор |
+Настоящие кандидаты в дубли выглядят иначе и требуют разбора по смыслу:
+`target_not_found` и `source_set_unknown` рядом с `not_found`,
+`concurrent_modification` рядом с `concurrent_change`, `rollback_failed` рядом
+с `rollback_incomplete`.
 
-С решением про исход синонимы стали опаснее: два кода с одним смыслом обязаны
+С решением про исход это стало существеннее: два кода с одним смыслом обязаны
 давать один исход, а разойдясь — дадут разные, и агент поведёт себя по-разному
 в одинаковой ситуации.
 
@@ -786,5 +798,7 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
    занятость базы, права, отсутствие платформы, — или нужен обеззараженный
    хвост вывода. **Решается опытом, а не рассуждением: неизвестно, что удобнее
    агенту.** Форма опыта описана ниже.
-3. Свести синонимы и проверить два объявленных кода — остаток работы по
-   набору отказов, см. измерение ниже.
+3. Разобрать по смыслу кандидатов в дубли — `target_not_found` и
+   `source_set_unknown` против `not_found`, `concurrent_modification` против
+   `concurrent_change`, `rollback_failed` против `rollback_incomplete` — и
+   дособрать литералы на границе к 35 кодам из карт.
