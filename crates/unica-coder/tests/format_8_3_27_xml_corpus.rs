@@ -5764,4 +5764,3 @@ fn corpus_owner_version_uses_the_raw_lexical_attribute() {
     assert_eq!(owner_type.as_deref(), Some("Configuration"));
     assert_eq!(version.as_deref(), Some("2.&#50;0"));
 }
-

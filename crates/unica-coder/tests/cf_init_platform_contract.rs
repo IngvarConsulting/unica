@@ -31,7 +31,11 @@ impl Drop for TempWorkspace {
     }
 }
 
-pub(crate) fn call_cf_init(workspace: &Path, output_dir: &str, compatibility_mode: Option<&str>) -> PathBuf {
+pub(crate) fn call_cf_init(
+    workspace: &Path,
+    output_dir: &str,
+    compatibility_mode: Option<&str>,
+) -> PathBuf {
     let mut args = Map::new();
     args.insert(
         "cwd".to_string(),
@@ -186,4 +190,3 @@ fn public_cf_init_preserves_explicit_compatibility_mode() {
         Some("Version8_3_24")
     );
 }
-
