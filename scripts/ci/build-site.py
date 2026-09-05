@@ -86,6 +86,44 @@ def carry_history(results: Path, site: str | None, line: str) -> int:
     return carried
 
 
+TREND_FILES = tuple(name for name in HISTORY_FILES if name != "history.json")
+
+
+def unwind_history(history: Path) -> int:
+    """Снять вершину перенесённой истории перед пересборкой из сохранённых результатов.
+
+    Вершина — тот самый прогон, что сейчас пересобирается: Allure положит его
+    в историю заново, и без этого каждая пересборка сайта удваивала бы запуск
+    в тренде и в истории каждого теста. Тест с единственным запуском убирается
+    целиком — Allure заведёт его заново тем же запуском.
+    """
+    unwound = 0
+    for name in TREND_FILES:
+        path = history / name
+        if not path.is_file():
+            continue
+        entries = json.loads(path.read_text(encoding="utf-8"))
+        if entries:
+            path.write_text(json.dumps(entries[1:], ensure_ascii=False), encoding="utf-8")
+            unwound += 1
+    path = history / "history.json"
+    if path.is_file():
+        kept = {}
+        for key, entry in json.loads(path.read_text(encoding="utf-8")).items():
+            items = list(entry.get("items", []))
+            if len(items) < 2:
+                continue
+            top, rest = items[0], items[1:]
+            statistic = dict(entry.get("statistic", {}))
+            for field in (str(top.get("status", "")).lower(), "total"):
+                if statistic.get(field, 0) > 0:
+                    statistic[field] -= 1
+            kept[key] = {**entry, "statistic": statistic, "items": rest}
+        path.write_text(json.dumps(kept, ensure_ascii=False), encoding="utf-8")
+        unwound += 1
+    return unwound
+
+
 def previous_results(site: str | None, line: str, work: Path) -> Path | None:
     """Взять результаты последнего опубликованного прогона линии с сайта.
 
@@ -130,6 +168,8 @@ def record_run(data: Path, line: str, fresh: bool, args: argparse.Namespace) -> 
 def publish_line(out: Path, line: str, results: Path, fresh: bool, args: argparse.Namespace) -> str:
     """Собрать отчёт линии и положить рядом сырые данные для следующего раза."""
     carried = carry_history(results, args.site, line)
+    if not fresh and carried:
+        unwind_history(results / "history")
     if shutil.which(args.allure_command) is None:
         raise SystemExit(
             f"{args.allure_command} не найден: поставьте Allure CLI или уберите линию из сборки"
@@ -150,7 +190,7 @@ def publish_line(out: Path, line: str, results: Path, fresh: bool, args: argpars
         shutil.copy2(summary, data / "summary.json")
     record_run(data, line, fresh, args)
     return f"{line}: отчёт собран, файлов истории {carried}, результаты " + (
-        "свежие" if fresh else "с сайта"
+        "свежие" if fresh else "с сайта, вершина истории снята"
     )
 
 
