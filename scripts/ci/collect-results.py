@@ -112,6 +112,19 @@ def fill_gaps(plans: list[Path], seen: dict[str, set[str]], out: Path, run: dict
     return filled
 
 
+def properties_line(key: str, value: str) -> str:
+    """Строка Java Properties: файл читается как ISO-8859-1, всё вне ASCII — `\\uXXXX`.
+
+    Иначе кириллица в виджете окружения превращается в кракозябры — так и
+    вышло на первом отчёте.
+    """
+
+    def escape(text: str) -> str:
+        return "".join(c if ord(c) < 128 else f"\\u{ord(c):04x}" for c in text)
+
+    return f"{escape(key)}={escape(value)}\n"
+
+
 def write_metadata(out: Path, run: dict, line: str, runners: list[str], site: str) -> None:
     (out / "categories.json").write_text(json.dumps(CATEGORIES, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     environment = {
@@ -123,7 +136,7 @@ def write_metadata(out: Path, run: dict, line: str, runners: list[str], site: st
         "Раннеры": ", ".join(runners),
     }
     (out / "environment.properties").write_text(
-        "".join(f"{key}={value}\n" for key, value in environment.items() if value), encoding="utf-8"
+        "".join(properties_line(key, value) for key, value in environment.items() if value), encoding="ascii"
     )
     executor = {
         "name": "GitHub Actions",

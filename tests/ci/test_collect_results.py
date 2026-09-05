@@ -90,9 +90,11 @@ class CollectResultsTests(unittest.TestCase):
 
         categories = json.loads((out / "categories.json").read_text(encoding="utf-8"))
         self.assertIn("Инфраструктура: раннер не дошёл", [c["name"] for c in categories])
-        environment = (out / "environment.properties").read_text(encoding="utf-8")
-        self.assertIn("Ветка=release-v0.12", environment)
-        self.assertIn("Попытка=2", environment)
+        # Java Properties читается как ISO-8859-1: кириллица едет `\\uXXXX`.
+        environment = (out / "environment.properties").read_text(encoding="ascii")
+        decoded = environment.encode("ascii").decode("unicode_escape")
+        self.assertIn("Ветка=release-v0.12", decoded)
+        self.assertIn("Попытка=2", decoded)
         executor = json.loads((out / "executor.json").read_text(encoding="utf-8"))
         self.assertEqual(executor["buildOrder"], 42)
         self.assertEqual(executor["reportUrl"], "https://example.invalid/allure/release-v0.12/")
