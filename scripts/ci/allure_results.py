@@ -30,6 +30,9 @@ IGNORE_ATTRIBUTE = re.compile(
 # Паника из assert — дефект продукта; любая другая — поломка самого теста.
 # JUnit от nextest этого не различает, различаем по тексту.
 ASSERTION = re.compile(r"assertion|assert_eq|assert_ne|left == right|left != right", re.I)
+# Неудачные попытки при повторах: `flaky*` — итог прошёл, `rerun*` — итог упал.
+# Так пишет nextest (соглашение Surefire), и так же читает его JUnit сам.
+RETRIED_ATTEMPTS = ("flakyFailure", "flakyError", "rerunFailure", "rerunError")
 
 
 def now_ms() -> int:
@@ -169,6 +172,18 @@ def rust_labels(binary: str, name: str, profile: str) -> dict[str, str]:
     }
 
 
+def failure_outcome(node: ET.Element) -> tuple[str, str, str]:
+    """Статус, сообщение и трейс одной неудачной попытки из узла JUnit."""
+    body = (node.text or "").strip()
+    err = node.find("system-err")
+    stderr = ((err.text or "") if err is not None else "").strip()
+    # Первая содержательная строка — сообщение; всё остальное — трейс.
+    message = body.splitlines()[0] if body else (node.get("message") or "тест упал")
+    trace = "\n".join(part for part in (body, stderr) if part)
+    status = "failed" if ASSERTION.search(trace or message) else "broken"
+    return status, message, trace
+
+
 def junit_records(
     junit: Path, *, runner: str, profile: str, reasons: dict[str, str], stop: int | None = None
 ) -> list[dict]:
@@ -176,7 +191,9 @@ def junit_records(
 
     Статус и трейс — из JUnit; причина `#[ignore]` — из атрибута; полное имя
     — двоичный файл и путь теста. Паника из assert — `failed`, прочая —
-    `broken`; отключённый — `skipped` с причиной автора.
+    `broken`; отключённый — `skipped` с причиной автора. Каждая неудачная
+    попытка при повторах — своя запись с тем же именем и параметром: Allure
+    складывает их повторами последней, и график повторов их видит.
     """
     root = ET.parse(junit).getroot()
     finished = stop if stop is not None else now_ms()
@@ -199,15 +216,32 @@ def junit_records(
                 message = f"отключён автором: {reason}" if reason else (skipped.get("message") or "пропущен")
             elif failure is not None or error is not None:
                 node = failure if failure is not None else error
-                body = (node.text or "").strip()
                 err = case.find("system-err")
-                stderr = ((err.text or "") if err is not None else "").strip()
-                # Первая содержательная строка — сообщение; всё остальное — трейс.
-                message = body.splitlines()[0] if body else (node.get("message") or "тест упал")
-                trace = "\n".join(part for part in (body, stderr) if part)
-                status = "failed" if ASSERTION.search(trace or message) else "broken"
+                if err is not None and node.find("system-err") is None:
+                    node.append(err)
+                status, message, trace = failure_outcome(node)
             else:
                 status = "passed"
+            attempts = [node for node in case if node.tag in RETRIED_ATTEMPTS]
+            for index, node in enumerate(attempts):
+                attempt_status, attempt_message, attempt_trace = failure_outcome(node)
+                attempt_seconds = float(node.get("time", "0") or 0)
+                # Попытки идут до итоговой: каждая заканчивается раньше её начала.
+                attempt_stop = start - (len(attempts) - index)
+                entries.append(
+                    record(
+                        name=name,
+                        full_name=full_name,
+                        status=attempt_status,
+                        runner=runner,
+                        labels=rust_labels(binary, name, profile),
+                        tags=(profile, "retry"),
+                        message=attempt_message,
+                        trace=attempt_trace,
+                        start=attempt_stop - int(attempt_seconds * 1000),
+                        stop=attempt_stop,
+                    )
+                )
             entries.append(
                 record(
                     name=name,

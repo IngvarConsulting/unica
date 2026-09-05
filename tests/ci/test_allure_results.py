@@ -25,6 +25,15 @@ JUNIT = """<?xml version="1.0" encoding="UTF-8"?>
     <testcase name="daemon::spawns_daemon" classname="unica-coder" time="0">
       <skipped message="Skipped: test does not match the run-ignored option"/>
     </testcase>
+    <testcase name="address::flaky_then_green" classname="unica-coder" time="0.050">
+      <flakyFailure timestamp="2026-09-05T03:00:00+00:00" time="0.040" type="test failure">assertion `left == right` failed: раз в год
+        <system-err>thread 'address::flaky_then_green' panicked</system-err>
+      </flakyFailure>
+    </testcase>
+    <testcase name="address::always_red" classname="unica-coder" time="0.010">
+      <rerunFailure timestamp="2026-09-05T03:00:00+00:00" time="0.010" type="test failure">index out of bounds: первая попытка</rerunFailure>
+      <failure message="test failed">index out of bounds: вторая попытка</failure>
+    </testcase>
   </testsuite>
 </testsuites>
 """
@@ -108,14 +117,35 @@ class JunitTranslationTests(unittest.TestCase):
             ubuntu["historyId"], self.entries("ubuntu-latest")["address::resolves_catalog"]["historyId"]
         )
 
+    def test_retried_attempts_become_records_that_allure_folds_as_retries(self) -> None:
+        """Попытка — своя запись с тем же именем и параметром; итог — последняя."""
+        reasons = self.module.ignore_reasons(self.root)
+        records = self.module.junit_records(self.junit, runner="ubuntu-latest", profile="main", reasons=reasons)
+
+        flaky = [r for r in records if r["fullName"] == "unica-coder::address::flaky_then_green"]
+        self.assertEqual([r["status"] for r in flaky], ["failed", "passed"])
+        self.assertIn("раз в год", flaky[0]["statusDetails"]["message"])
+        self.assertIn("panicked", flaky[0]["statusDetails"]["trace"])
+        self.assertIn("retry", [l["value"] for l in flaky[0]["labels"] if l["name"] == "tag"])
+        self.assertEqual(flaky[0]["parameters"], flaky[1]["parameters"])
+        self.assertEqual(flaky[0]["historyId"], flaky[1]["historyId"])
+        self.assertLess(flaky[0]["stop"], flaky[1]["start"])
+
+        red = [r for r in records if r["fullName"] == "unica-coder::address::always_red"]
+        self.assertEqual([r["status"] for r in red], ["broken", "broken"])
+        self.assertEqual(
+            [r["statusDetails"]["message"] for r in red],
+            ["index out of bounds: первая попытка", "index out of bounds: вторая попытка"],
+        )
+
     def test_write_produces_one_uuid_named_file_per_record(self) -> None:
         out = self.root / "allure-results"
         module = self.module
 
         paths = [module.write(out, entry) for entry in self.entries().values()]
 
-        self.assertEqual(len(paths), 4)
-        self.assertEqual(len({path.name for path in paths}), 4)
+        self.assertEqual(len(paths), 6)
+        self.assertEqual(len({path.name for path in paths}), 6)
         for path in paths:
             self.assertTrue(path.name.endswith("-result.json"))
             json.loads(path.read_text(encoding="utf-8"))
