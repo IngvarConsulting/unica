@@ -135,7 +135,7 @@
   .cta-note { margin: 0 0 0 10px; font-size: 14px; color: var(--muted); }
   .cta-note b { font-size: 17px; font-weight: 680; color: var(--ink); margin-right: 2px; }
   .os { display: inline-flex; align-items: center; gap: 7px; }
-  .os svg { width: 15px; height: 15px; fill: currentColor; opacity: 0.85; }
+  .os svg { width: 15px; height: 15px; fill: currentcolor; opacity: 0.85; }
   .btn {
     display: inline-flex; align-items: center; gap: 8px;
     padding: 11px 20px; border-radius: 10px; font-weight: 600; font-size: 15px;
@@ -226,7 +226,7 @@
     border: 1px solid var(--line); border-radius: 8px;
   }
   .copy:hover { color: var(--ink); border-color: var(--blue); }
-  .copy svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .copy svg { width: 16px; height: 16px; fill: none; stroke: currentcolor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .copy .i-done, .copy.copied .i-copy { display: none; }
   .copy.copied .i-done { display: block; }
   .copy.copied { color: var(--ok); border-color: var(--ok); }
@@ -548,12 +548,12 @@ td.catalog-count { padding: 9px 12px; font-size: 13.5px; color: var(--muted); fo
 .col-sort.is-sorted, .col-sort.is-active { color: var(--blue); }
 .sort-mark { display: inline-flex; }
 .sort-mark svg { width: 12px; height: 12px; display: block; }
-.sort-mark rect { fill: currentColor; }
+.sort-mark rect { fill: currentcolor; }
 .col-sort:not(.is-sorted) .sort-mark { opacity: 0.45; }
 /* Два состояния воронки из Tabler Icons (MIT): filter, пока отбора нет, и
    filter-check, когда отбор поставлен. Разница видна по значку, без чтения. */
 .col-filter .filter-icon {
-  width: 15px; height: 15px; fill: none; stroke: currentColor;
+  width: 15px; height: 15px; fill: none; stroke: currentcolor;
   stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
 }
 .col-filter .filter-icon .on { display: none; }
@@ -633,7 +633,7 @@ td.catalog-count { padding: 9px 12px; font-size: 13.5px; color: var(--muted); fo
 
 /* Шапка карточки линии: значок ветки, имя, коммит прогона. */
 .line-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.branch-icon { width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.branch-icon { width: 13px; height: 13px; flex: none; fill: none; stroke: currentcolor; stroke-width: 1.5; stroke-linecap: round; }
 .line-run { font-weight: 400; white-space: nowrap; }
 
 
