@@ -42,6 +42,11 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_repository.full_name == github.repository)
+    # Артефакты прогона-источника читаются по `actions: read`; права джобы
+    # заменяют права workflow целиком, поэтому `contents: read` повторён.
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -66,14 +71,35 @@ jobs:
           echo "$PWD/allure-$ALLURE_VERSION/bin" >> "$GITHUB_PATH"
 
       # Линии перечисляет то же правило, что и на странице: main плюс открытые
-      # релизные линии. Результаты и история каждой берутся с самого сайта — он
-      # их хранит. Артефакты прогонов здесь не читаются: сегодня ни один прогон
-      # не оставляет allure-results, а забирать артефакт чужого прогона в
-      # workflow_run — известный способ протащить чужое содержимое в публикацию.
-      # Канал для свежих результатов — форма `--line ИМЯ=КАТАЛОГ` — появится
-      # вместе с их эмиссией; они и будут подписаны этим прогоном. Линия,
-      # пересобранная из того, что лежит на сайте, сохраняет подпись своего
-      # прогона: иначе вчерашние счётчики выдавались бы за сегодняшние.
+      # релизные линии. Линия прогона-источника получает свежие результаты,
+      # остальные пересобираются из того, что хранит сайт, и сохраняют подпись
+      # своего прогона: иначе вчерашние счётчики выдавались бы за сегодняшние.
+      # Свежие результаты приходят только с прогона-источника. Артефакт кладёт
+      # тот, чей прогон его оставил, — потому джоба admits лишь push-прогон
+      # этого репозитория (см. `if:` выше). План выгружен до тестов: тест из
+      # плана без результата дописывается `skipped` с причиной «раннер не
+      # дошёл» и не исчезает из истории.
+      - if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v7
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          pattern: "{results,plan}-*"
+          path: .build/artifacts
+      - if: github.event_name == 'workflow_run'
+        name: Сложить результаты прогона-источника
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SITE: https://ingvarconsulting.github.io/unica
+        run: |
+          set -eu
+          mkdir -p .build
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs" > .build/jobs.json
+          python scripts/ci/collect-results.py --artifacts .build/artifacts --out .build/fresh \
+            --jobs .build/jobs.json --fallback-line "$SOURCE_BRANCH" --site "$SITE" > .build/fresh-line.txt
+
       - name: Собрать отчёты линий
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,7 +118,13 @@ jobs:
           args=()
           while read -r line; do
             [ -n "$line" ] || continue
-            args+=(--line "$line")
+            # Линия со свежими результатами едет как `имя=каталог`, остальные
+            # пересобираются из того, что хранит сайт.
+            if [ -d ".build/fresh/$line" ]; then
+              args+=(--line "$line=.build/fresh/$line")
+            else
+              args+=(--line "$line")
+            fi
           done < .build/lines.txt
           python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" --out .build/bootstrap.json
           python scripts/ci/build-site.py --status .build/bootstrap.json --out .build/site \

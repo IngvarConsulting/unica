@@ -248,8 +248,10 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "scripts/ci/run-tests.py",
             "scripts/ci/run-unittest.py",
             "scripts/ci/allure_results.py",
+            "scripts/ci/collect-results.py",
             "tests/ci/test_run_tests.py",
             "tests/ci/test_allure_results.py",
+            "tests/ci/test_collect_results.py",
         ):
             with self.subTest(path=path):
                 self.assert_classification([path], ci_changed=True)
