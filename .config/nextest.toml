@@ -49,3 +49,8 @@ default-filter = 'all()'
 
 [profile.release]
 default-filter = 'all()'
+
+# Ночной ярус. Пуст до расстановки размеров: выражение придёт вместе с ней,
+# а до тех пор ночь честно гоняет ноль и пишет память о проверенной вершине.
+[profile.large]
+default-filter = 'none()'

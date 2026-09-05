@@ -1,0 +1,54 @@
+name: Unica Large
+
+# Тяжёлый ярус на самой линии. Запускается ночным перечислением или рукой на
+# нужной ветке: `github.sha` и `github.ref_name` и есть вершина и линия, и
+# ничего чужого выписывать не надо. Ярус пуст до расстановки размеров и честно
+# гоняет ноль; результаты уходят на сайт тем же путём, что и у сборки, и
+# пишут память о проверенной вершине.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unica-large-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  large:
+    # Имя как у сборки: сайт по нему находит заключение джобы для недошедших.
+    name: Rust tests (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-14]
+    env:
+      RUN_LINE: ${{ github.ref_name }}
+      RUNNER_LABEL: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # Версия закреплена: исполнитель тестов — часть контракта прогона.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.143
+      # План с подписью — до тестов: упавший раннер не унесёт его с собой.
+      - run: python3 scripts/ci/run-tests.py --profile large --ecosystem rust --plan-only --results .build/results --runner "$RUNNER_LABEL" --line "$RUN_LINE"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: plan-rust-${{ matrix.runner }}
+          path: .build/results
+          retention-days: 7
+          overwrite: true
+      - run: python3 scripts/ci/run-tests.py --profile large --ecosystem rust --results .build/results --runner "$RUNNER_LABEL" --line "$RUN_LINE"
+      # Результаты едут артефактом и при красном прогоне: ради них он и шёл.
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-rust-${{ matrix.runner }}
+          path: .build/results
+          retention-days: 7
+          overwrite: true

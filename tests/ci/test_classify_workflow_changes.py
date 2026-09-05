@@ -251,6 +251,10 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "scripts/ci/collect-results.py",
             "tests/ci/test_run_tests.py",
             "tests/ci/test_gate_profiles.py",
+            "scripts/ci/nightly-lines.py",
+            "scripts/ci/resolve-line.py",
+            "tests/ci/test_nightly_lines.py",
+            "tests/ci/test_resolve_line.py",
             "tests/ci/test_allure_results.py",
             "tests/ci/test_collect_results.py",
         ):

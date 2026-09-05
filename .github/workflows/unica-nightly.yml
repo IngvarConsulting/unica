@@ -1,0 +1,43 @@
+name: Unica Nightly
+
+# Ночной прогон тяжёлого яруса. Расписание у GitHub работает только на ветке
+# по умолчанию, поэтому workflow один: он перечисляет открытые линии тем же
+# правилом, что и сайт, и для каждой, чья вершина сдвинулась с прошлого
+# такого прогона, запускает `unica-large.yml` на самой линии — там
+# `github.sha` и `github.ref_name` и есть вершина и линия, checkout
+# стандартный, и чужой ссылки в нём нет. Память о прошлом прогоне лежит на
+# сайте; линия без `unica-large.yml` площадки не несёт и в ночь не идёт.
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unica-nightly
+  cancel-in-progress: false
+
+jobs:
+  lines:
+    name: Перечислить сдвинувшиеся линии и запустить large
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Запуск workflow на линии — запись в Actions; права джобы заменяют права
+    # workflow целиком, поэтому `contents: read` повторён.
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SITE: https://ingvarconsulting.github.io/unica
+        run: |
+          set -euo pipefail
+          python scripts/ci/nightly-lines.py --repo "$GITHUB_REPOSITORY" --site "$SITE" \
+            --dispatch --summary "$GITHUB_STEP_SUMMARY" >> "$GITHUB_OUTPUT"

@@ -41,10 +41,18 @@ jobs:
       ci_changed: ${{ steps.scope.outputs.ci_changed }}
       release_required: ${{ steps.scope.outputs.release_required }}
       assessment_required: ${{ steps.scope.outputs.assessment_required }}
+      line: ${{ steps.line.outputs.line }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      # Линия прогона едет в подписи результатов: для ветки — она сама, для
+      # тега — релизная линия с его коммитом; тег вне релизной линии — отказ.
+      - id: line
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "line=$(python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
       - id: scope
         shell: bash
         env:
@@ -126,7 +134,9 @@ jobs:
     name: Python tests (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    needs: guards
+    needs: [classify-changes, guards]
+    env:
+      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -138,7 +148,7 @@ jobs:
       - run: python -m pip install -r tests/ci/requirements.txt
       # Наборы гоняет одна точка входа: профиль ворот меняется в ней, а не в
       # трёх строках здесь. Сегодня `all` повторяет прежние команды один в один.
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --results .build/results --runner ubuntu-latest
+      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
       # Результаты едут артефактом и при красном прогоне: ради них он и шёл.
       - if: always()
         uses: actions/upload-artifact@v7
@@ -156,6 +166,8 @@ jobs:
       contents: read
       security-events: write
     needs: [classify-changes, guards]
+    env:
+      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
     if: >-
       ${{
         needs.classify-changes.outputs.rust_changed == 'true' &&
@@ -187,14 +199,15 @@ jobs:
           category: clippy-macos-14-primary
       # План выгружается до тестов: упавший раннер не унесёт его с собой,
       # и недошедшие тесты попадут в отчёт как `skipped`, а не исчезнут.
-      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --plan-only --results .build/results --runner macos-14
+      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --plan-only --results .build/results --runner macos-14 --line "$RUN_LINE"
       - uses: actions/upload-artifact@v7
         with:
           name: plan-rust-macos-14-primary
-          path: .build/results/plan.json
+          # План с подписью: сайт сопоставляет его с результатами по линии и раннеру.
+          path: .build/results
           retention-days: 7
           overwrite: true
-      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results .build/results --runner macos-14
+      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results .build/results --runner macos-14 --line "$RUN_LINE"
       - if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -211,6 +224,8 @@ jobs:
       contents: read
       security-events: write
     needs: [classify-changes, guards]
+    env:
+      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
     if: >-
       ${{
         needs.classify-changes.outputs.platform_changed == 'true' ||
@@ -248,14 +263,15 @@ jobs:
           category: clippy-${{ matrix.runner }}
       # План выгружается до тестов: упавший раннер не унесёт его с собой,
       # и недошедшие тесты попадут в отчёт как `skipped`, а не исчезнут.
-      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --plan-only --results .build/results --runner ${{ matrix.runner }}
+      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --plan-only --results .build/results --runner ${{ matrix.runner }} --line "$RUN_LINE"
       - uses: actions/upload-artifact@v7
         with:
           name: plan-rust-${{ matrix.runner }}
-          path: .build/results/plan.json
+          # План с подписью: сайт сопоставляет его с результатами по линии и раннеру.
+          path: .build/results
           retention-days: 7
           overwrite: true
-      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results .build/results --runner ${{ matrix.runner }}
+      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results .build/results --runner ${{ matrix.runner }} --line "$RUN_LINE"
       - if: always()
         uses: actions/upload-artifact@v7
         with:
