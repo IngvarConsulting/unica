@@ -138,6 +138,16 @@ class JunitTranslationTests(unittest.TestCase):
             ["index out of bounds: первая попытка", "index out of bounds: вторая попытка"],
         )
 
+    def test_size_label_follows_the_medium_expression_of_nextest(self) -> None:
+        """Интеграционная цель и модуль с процессом — medium; остальное — small."""
+        matcher = self.module.MediumMatcher("kind(test)\n    | test(/^infrastructure::daemon::(tests)::/)")
+
+        self.assertEqual(matcher.size("unica-coder::v13_search_integration", "canonical_search"), "medium")
+        self.assertEqual(matcher.size("unica-coder", "infrastructure::daemon::tests::spawns"), "medium")
+        self.assertEqual(matcher.size("unica-coder", "domain::address::tests::resolves"), "small")
+        labels = {l["name"]: l["value"] for l in self.entries()["address::resolves_catalog"]["labels"]}
+        self.assertIn(labels["size"], ("small", "medium"))
+
     def test_write_produces_one_uuid_named_file_per_record(self) -> None:
         out = self.root / "allure-results"
         module = self.module
