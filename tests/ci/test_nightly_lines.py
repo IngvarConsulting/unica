@@ -76,5 +76,29 @@ class NightlyLinesTests(unittest.TestCase):
         self.assertEqual(self.module.dispatch(self.decisions(memory=memory), run_workflow=lambda line: None), [])
 
 
+    def test_dispatch_prints_the_run_address_to_stderr_not_stdout(self) -> None:
+        """stdout скрипта — строки для GITHUB_OUTPUT; адрес прогона от `gh` идёт в stderr."""
+        import contextlib
+        import io
+
+        module = self.module
+        calls = []
+
+        class Completed:
+            stdout = "https://github.com/x/actions/runs/1\n"
+
+        original = module.subprocess.run
+        module.subprocess.run = lambda command, **kwargs: (calls.append(command), Completed())[1]
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                module.dispatch_large("main")
+        finally:
+            module.subprocess.run = original
+
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("runs/1", err.getvalue())
+        self.assertEqual(calls[0][:6], ["gh", "workflow", "run", "unica-large.yml", "--ref", "main"])
+
 if __name__ == "__main__":
     unittest.main()
