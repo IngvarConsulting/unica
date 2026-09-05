@@ -160,7 +160,7 @@ class RunTestsSeamTests(unittest.TestCase):
         module = load_module()
 
         with self.assertRaises(ValueError):
-            module.commands("pr", "rust")
+            module.commands("weekly", "rust")
         with self.assertRaises(ValueError):
             module.commands("all", "go")
 
@@ -177,6 +177,31 @@ class RunTestsSeamTests(unittest.TestCase):
         self.assertEqual(
             captured.getvalue().strip(), "cargo nextest run --workspace --profile default"
         )
+
+
+class GateProfileTests(unittest.TestCase):
+    """Ворота ложатся на одноимённые профили nextest; Python отбирает наборы по размеру."""
+
+    def test_each_gate_maps_to_its_own_nextest_profile_and_junit_directory(self) -> None:
+        module = load_module()
+
+        for gate in ("pr", "queue", "main", "release"):
+            with self.subTest(gate=gate):
+                self.assertEqual(
+                    module.rust_commands(gate),
+                    [["cargo", "nextest", "run", "--workspace", "--profile", gate]],
+                )
+                self.assertEqual(module.nextest_junit(gate).parts[-3:], ("nextest", gate, "junit.xml"))
+        self.assertEqual(module.nextest_junit("all").parts[-3:], ("nextest", "default", "junit.xml"))
+
+    def test_every_gate_runs_every_python_suite_while_all_suites_are_small(self) -> None:
+        """Отбора пока нет: все наборы `small`, и любые ворота гоняют все три."""
+        module = load_module()
+
+        for gate in module.PROFILES:
+            with self.subTest(gate=gate):
+                suites = [command[3] for command in module.python_commands(gate, "python3")]
+                self.assertEqual(suites, [suite for suite, _, _ in module.PYTHON_SUITES])
 
 
 if __name__ == "__main__":

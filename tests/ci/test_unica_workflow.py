@@ -134,8 +134,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn("cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings", text)
         # Наборы гоняет шов; сами команды закреплены тестом `test_run_tests`.
-        self.assertIn("python3 scripts/ci/run-tests.py --profile all --ecosystem rust --results", text)
-        self.assertIn("python scripts/ci/run-tests.py --profile all --ecosystem python --results", text)
+        self.assertIn('python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results', text)
+        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --results', text)
         self.assertNotIn("cargo test --workspace", text)
         self.assertNotIn("unittest discover", text)
         self.assertIn("python -m py_compile scripts/dev/*.py tests/dev/*.py", text)
@@ -480,8 +480,19 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", guards)
         self.assertIn("python scripts/arch/registry.py --check", guards)
-        self.assertIn("python scripts/ci/run-tests.py --profile all --ecosystem python --results", python)
+        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --results', python)
         self.assertIn("needs: guards", python)
+
+    def test_gate_profile_follows_the_event_not_the_job(self) -> None:
+        """Ворота → профиль: pull request — `pr`, push в ветку — `main`, тег — `release`."""
+        text = self.release_text()
+
+        self.assertIn(
+            "GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || "
+            "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}",
+            text,
+        )
+        self.assertNotIn("run-tests.py --profile all", text)
 
     def test_guards_ship_findings_to_code_scanning_not_the_gate(self) -> None:
         """Находка линтера — не исход теста: SARIF в Code Scanning, гейт не краснеет."""

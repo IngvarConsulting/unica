@@ -23,23 +23,38 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_UNITTEST = Path(__file__).with_name("run-unittest.py")
 NEXTEST_JUNIT = REPO_ROOT / "target" / "nextest" / "default" / "junit.xml"
 
-PROFILES = ("all",)
+# Ворота конвейера плюс локальный `all` — «гони всё» без подписи ворот.
+PROFILES = ("all", "pr", "queue", "main", "release")
+SIZES = ("small", "medium", "large")
+# Какие размеры принимают ворота — таблица «Что тестировать и когда» из
+# замысла площадки. Пока все наборы `small`, и любые ворота гоняют всё:
+# площадка под ярусы готова, отбора нет.
+ADMITTED = {
+    "all": SIZES,
+    "pr": ("small",),
+    "queue": ("small", "medium"),
+    "main": ("small", "medium"),
+    "release": SIZES,
+}
 ECOSYSTEMS = ("rust", "python", "all")
 
 # Наборы Python идут в том же порядке, что шли шагами workflow: сначала стражи
 # CI, потом реестр, потом инструменты разработчика. `--durations` там, где
 # набор длинный и стоит видеть, кто тянет время. Набор `tests/arch` идёт без
 # `-t .`: его модули не пакет, и верхний уровень ему не нужен.
+# У Python роль выражения размера играет сам набор: размер объявлен здесь,
+# рядом с ним, и ворота отбирают наборы по нему.
 PYTHON_SUITES = (
-    ("tests/ci", ("--durations", "20")),
-    ("tests/arch", ()),
-    ("tests/dev", ("--durations", "20")),
+    ("tests/ci", "small", ("--durations", "20")),
+    ("tests/arch", "small", ()),
+    ("tests/dev", "small", ("--durations", "20")),
 )
 
 
 # Профиль ворот и профиль nextest — разные имена: ворота описывают, когда
-# гоняем, профиль nextest — как. Пока ворота одни, они ложатся на `default`.
-NEXTEST_PROFILES = {"all": "default"}
+# гоняем, профиль nextest — как. Ворота ложатся на одноимённые профили
+# `.config/nextest.toml`, локальный `all` — на `default`.
+NEXTEST_PROFILES = {"all": "default", "pr": "pr", "queue": "queue", "main": "main", "release": "release"}
 
 
 def nextest_profile(profile: str) -> str:
@@ -47,6 +62,11 @@ def nextest_profile(profile: str) -> str:
         return NEXTEST_PROFILES[profile]
     except KeyError:
         raise ValueError(f"профиль {profile!r} для Rust не описан") from None
+
+
+def nextest_junit(profile: str) -> Path:
+    """JUnit лежит в каталоге профиля nextest: `target/nextest/<профиль>/`."""
+    return REPO_ROOT / "target" / "nextest" / nextest_profile(profile) / "junit.xml"
 
 
 def rust_commands(profile: str) -> list[list[str]]:
@@ -63,21 +83,24 @@ def python_commands(
     results: Path | None = None,
     runner: str = "local",
 ) -> list[list[str]]:
-    """Команды Python для профиля. Сегодня — три набора целиком.
+    """Команды Python для профиля: наборы тех размеров, что ворота принимают.
 
     Идут через `run-unittest.py`: это тот же `discover` и тот же текстовый
     вывод, но с классом результата, который пишет `allure-results`, когда
     указан каталог. Без каталога набор идёт как раньше и ничего не пишет.
     """
-    if profile == "all":
-        tail: list[str] = []
-        if results is not None:
-            tail = ["--results", str(results), "--runner", runner, "--profile", profile]
-        return [
-            [interpreter, str(RUN_UNITTEST), "-s", suite, *extra, *tail]
-            for suite, extra in PYTHON_SUITES
-        ]
-    raise ValueError(f"профиль {profile!r} для Python не описан")
+    try:
+        admitted = ADMITTED[profile]
+    except KeyError:
+        raise ValueError(f"профиль {profile!r} для Python не описан") from None
+    tail: list[str] = []
+    if results is not None:
+        tail = ["--results", str(results), "--runner", runner, "--profile", profile]
+    return [
+        [interpreter, str(RUN_UNITTEST), "-s", suite, *extra, *tail]
+        for suite, size, extra in PYTHON_SUITES
+        if size in admitted
+    ]
 
 
 def commands(
@@ -106,8 +129,9 @@ def write_rust_plan(results: Path, profile: str) -> int:
     return len(entries)
 
 
-def emit_rust(results: Path, profile: str, runner: str, junit: Path = NEXTEST_JUNIT) -> int:
+def emit_rust(results: Path, profile: str, runner: str, junit: Path | None = None) -> int:
     """JUnit от nextest + причины `#[ignore]` из атрибутов → allure-results."""
+    junit = nextest_junit(profile) if junit is None else junit
     reasons = allure_results.ignore_reasons(REPO_ROOT)
     entries = allure_results.junit_records(junit, runner=runner, profile=profile, reasons=reasons)
     for entry in entries:
@@ -164,7 +188,7 @@ def execute(
     results: Path | None,
     runner: str,
     run_commands=None,
-    junit: Path = NEXTEST_JUNIT,
+    junit: Path | None = None,
 ) -> int:
     """Прогнать экосистемы и оставить результаты.
 
@@ -173,6 +197,7 @@ def execute(
     успел написать JUnit. Результаты Rust пишутся, только если JUnit есть.
     """
     run_commands = run if run_commands is None else run_commands
+    junit = nextest_junit(profile) if junit is None else junit
     if results is not None:
         allure_results.write_run(results, profile=profile, runner=runner, ecosystem=ecosystem)
     code = 0
