@@ -145,7 +145,8 @@ def write_metadata(out: Path, run: dict, line: str, runners: list[str], site: st
         "buildOrder": int(run["run_id"]) if str(run.get("run_id", "")).isdigit() else 0,
         "buildName": f"{line} · {run.get('sha', '')[:7]}",
         "buildUrl": run.get("run_url", ""),
-        "reportUrl": f"{site}/allure/{line}/" if site else "",
+        # Без завершающей косой черты: Allure сам дописывает `/#testresult/…`.
+        "reportUrl": f"{site}/allure/{line}" if site else "",
     }
     (out / "executor.json").write_text(json.dumps(executor, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

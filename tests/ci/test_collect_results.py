@@ -97,7 +97,7 @@ class CollectResultsTests(unittest.TestCase):
         self.assertIn("Попытка=2", decoded)
         executor = json.loads((out / "executor.json").read_text(encoding="utf-8"))
         self.assertEqual(executor["buildOrder"], 42)
-        self.assertEqual(executor["reportUrl"], "https://example.invalid/allure/release-v0.12/")
+        self.assertEqual(executor["reportUrl"], "https://example.invalid/allure/release-v0.12")
 
     def test_no_result_artifacts_is_a_refusal(self) -> None:
         self.artifacts.mkdir(parents=True)
