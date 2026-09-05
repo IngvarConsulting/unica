@@ -133,6 +133,28 @@ class RunTestsSeamTests(unittest.TestCase):
         self.assertTrue((out / "run.json").is_file())
         self.assertEqual(list(out.glob("*-result.json")), [])
 
+    def test_stale_junit_from_an_earlier_run_is_never_emitted_as_fresh(self) -> None:
+        """nextest упал до отчёта, а от прошлого прогона остался JUnit — он не результат."""
+        import tempfile
+        from pathlib import Path as P
+
+        module = load_module()
+        out = P(tempfile.mkdtemp(prefix="run-tests-"))
+        stale = out / "junit.xml"
+        stale.write_text(
+            '<testsuites name="unica"><testsuite name="unica-coder">'
+            '<testcase name="old::passed" classname="unica-coder" time="0.1"/>'
+            "</testsuite></testsuites>",
+            encoding="utf-8",
+        )
+
+        code = module.execute("all", "rust", out, "ubuntu-latest",
+                              run_commands=lambda planned: 101, junit=stale)
+
+        self.assertEqual(code, 101)
+        self.assertFalse(stale.exists(), "старый отчёт обязан быть снят до прогона")
+        self.assertEqual(list(out.glob("*-result.json")), [])
+
     def test_unknown_profile_or_ecosystem_is_a_refusal_not_an_empty_run(self) -> None:
         """Пустой прогон зелёный по устройству; отказ — единственный честный ответ."""
         module = load_module()

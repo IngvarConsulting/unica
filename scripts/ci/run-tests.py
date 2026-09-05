@@ -177,6 +177,10 @@ def execute(
         allure_results.write_run(results, profile=profile, runner=runner, ecosystem=ecosystem)
     code = 0
     if ecosystem in ("rust", "all"):
+        # Старый JUnit от прошлого прогона — не результат этого. Если nextest
+        # упадёт до отчёта, файл на месте выдал бы чужие записи за свежие.
+        if junit.is_file():
+            junit.unlink()
         code = run_commands(rust_commands(profile))
         if results is not None and junit.is_file():
             print(f"результаты Rust: {emit_rust(results, profile, runner, junit)} записей")
