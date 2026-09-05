@@ -44,9 +44,13 @@ def label(entry: dict, name: str) -> str | None:
 
 
 def signed_dirs(artifacts: Path, prefix: str) -> list[tuple[Path, dict]]:
-    """Каталоги артефактов с подписью прогона; без подписи каталог не читается."""
+    """Каталоги артефактов с подписью прогона; без подписи каталог не читается.
+
+    Ищутся на любой глубине: ночной прогон выкладывает артефакты запущенных им
+    прогонов одним своим, и внутри него лежат те же `results-*` и `plan-*`.
+    """
     found = []
-    for path in sorted(artifacts.glob(f"{prefix}*")):
+    for path in sorted(artifacts.rglob(f"{prefix}*")):
         if path.is_dir() and (path / "run.json").is_file():
             found.append((path, load_json(path / "run.json")))
     return found

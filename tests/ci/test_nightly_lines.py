@@ -69,6 +69,35 @@ class NightlyLinesTests(unittest.TestCase):
         self.assertEqual(launched, ["release-v0.13"])
         self.assertEqual(started, ["release-v0.13"])
 
+    def test_follow_waits_for_each_started_run_and_downloads_its_artifacts(self) -> None:
+        """Ночь несёт артефакты запущенных прогонов сама: событие от токена страницы не будит."""
+        decisions = self.decisions()
+        self.module.dispatch(decisions, run_workflow=lambda line: None)
+        downloaded = []
+
+        outcomes = self.module.follow(
+            decisions,
+            Path("/tmp/large"),
+            find=lambda line, since: 42,
+            watch=lambda run_id: "success",
+            download=lambda run_id, dest: downloaded.append((run_id, dest)),
+        )
+
+        self.assertEqual(outcomes, [{"line": "release-v0.13", "run_id": 42, "conclusion": "success"}])
+        self.assertEqual(downloaded, [(42, Path("/tmp/large/release-v0.13"))])
+        self.assertIn("прогон 42: success", next(d for d in decisions if d["line"] == "release-v0.13")["reason"])
+
+    def test_find_started_run_takes_the_newest_run_created_after_dispatch(self) -> None:
+        runs = [
+            {"databaseId": 1, "createdAt": "2026-09-05T10:00:00Z"},
+            {"databaseId": 2, "createdAt": "2026-09-05T10:26:00Z"},
+            {"databaseId": 3, "createdAt": "2026-09-05T10:25:00Z"},
+        ]
+
+        found = self.module.find_started_run("main", "2026-09-05T10:24:00Z", list_runs=lambda line: runs, attempts=1, pause=0)
+
+        self.assertEqual(found, 2)
+
     def test_nothing_moved_means_nothing_dispatched(self) -> None:
         memory = dict(self.memory)
         memory["https://site/data/release-v0.13/profiles/large.json"] = {"sha": self.heads["release-v0.13"], "at": "x"}
