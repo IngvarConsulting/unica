@@ -132,7 +132,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_source_gate_checks_the_full_rust_and_python_workspace(self) -> None:
         text = self.release_text()
 
-        self.assertIn("cargo clippy --workspace --all-targets --all-features -- -D warnings", text)
+        self.assertIn("cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings", text)
         # Наборы гоняет шов; сами команды закреплены тестом `test_run_tests`.
         self.assertIn("python3 scripts/ci/run-tests.py --profile all --ecosystem rust --results", text)
         self.assertIn("python scripts/ci/run-tests.py --profile all --ecosystem python --results", text)
@@ -155,7 +155,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("python scripts/ci/evaluate-ci-gate.py", gate)
         for upstream in (
             "classify-changes",
-            "verify-source",
+            "guards",
+            "test-python",
             "test-rust-primary",
             "test-rust-platforms",
             "test-search-integration",
@@ -275,7 +276,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
     def test_rust_jobs_route_primary_and_platform_contours(self) -> None:
         text = self.release_text()
-        source = job_block(text, "verify-source")
+        source = job_block(text, "test-python")
         primary = job_block(text, "test-rust-primary")
         platforms = job_block(text, "test-rust-platforms")
         search_integration = job_block(text, "test-search-integration")
@@ -294,15 +295,24 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("platform_changed == 'true'", platforms)
         self.assertIn("toolchain_changed == 'true'", platforms)
         self.assertIn("ci_changed == 'true'", platforms)
-        # Formatting does not depend on the build target, so one runner settles
-        # it. The lint does: `#[cfg]` decides which items exist, so it runs on
-        # every runner of this matrix.
-        self.assertEqual(1, platforms.count("if: matrix.runner == 'macos-14'"))
+        # Форматирование от цели не зависит — оно в `guards`. Линт зависит:
+        # `#[cfg]` решает, какие элементы существуют, поэтому clippy идёт на
+        # каждом раннере матрицы, а его находки — в Code Scanning.
+        self.assertNotIn("cargo fmt", platforms)
+        self.assertNotIn("cargo fmt", primary)
+        self.assertIn("cargo fmt --all -- --check", job_block(text, "guards"))
+        for block, category in ((platforms, "clippy-${{ matrix.runner }}"), (primary, "clippy-macos-14-primary")):
+            self.assertIn("| clippy-sarif | tee clippy.sarif | sarif-fmt", block)
+            self.assertIn(f"category: {category}", block)
+            self.assertIn("needs: [classify-changes, guards]", block)
+        # Команда линта закреплена дословно: `-D warnings` красит джобу, JSON
+        # идёт в SARIF, и убрать одно из двух молча не выйдет.
         self.assertIn(
-            "      - if: matrix.runner == 'macos-14'\n"
-            "        run: cargo fmt --all -- --check\n"
-            "      - run: cargo clippy --workspace --all-targets --all-features"
-            " -- -D warnings\n",
+            "      - run: |\n"
+            "          set -o pipefail\n"
+            "          cargo clippy --workspace --all-targets --all-features"
+            " --message-format=json -- -D warnings \\\n"
+            "            | clippy-sarif | tee clippy.sarif | sarif-fmt\n",
             platforms,
         )
 
@@ -415,6 +425,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("actions/upload-artifact@v7", release)
         self.assertIn("actions/download-artifact@v8", release)
         self.assertIn("softprops/action-gh-release@v3", release)
+        self.assertIn("github/codeql-action/upload-sarif@v4", release)
         for stale in (
             "actions/checkout@v4",
             "actions/setup-python@v5",
@@ -422,6 +433,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "actions/upload-artifact@v4",
             "actions/download-artifact@v4",
             "softprops/action-gh-release@v2",
+            "github/codeql-action/upload-sarif@v3",
         ):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, combined)
@@ -432,7 +444,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         expected_release_timeouts = {
             "classify-changes": 10,
-            "verify-source": 90,
+            "guards": 15,
+            "test-python": 90,
             "test-rust-primary": 60,
             "test-rust-platforms": 60,
             "build-tools": 90,
@@ -460,10 +473,27 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 self.assertIn(f"timeout-minutes: {minutes}", job_block(publish, job_id))
 
     def test_registry_guards_run_in_the_source_contour(self) -> None:
-        verify = job_block(self.release_text(), "verify-source")
+        """Стражи реестра идут в `guards` первыми, наборы Python — в `test-python` за ними."""
+        text = self.release_text()
+        guards = job_block(text, "guards")
+        python = job_block(text, "test-python")
 
-        self.assertIn("python scripts/ci/run-tests.py --profile all --ecosystem python --results", verify)
-        self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", verify)
+        self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", guards)
+        self.assertIn("python scripts/arch/registry.py --check", guards)
+        self.assertIn("python scripts/ci/run-tests.py --profile all --ecosystem python --results", python)
+        self.assertIn("needs: guards", python)
+
+    def test_guards_ship_findings_to_code_scanning_not_the_gate(self) -> None:
+        """Находка линтера — не исход теста: SARIF в Code Scanning, гейт не краснеет."""
+        guards = job_block(self.release_text(), "guards")
+
+        self.assertIn("tool: zizmor@1.30.0", guards)
+        self.assertIn("zizmor --format sarif --no-exit-codes .github/workflows > zizmor.sarif", guards)
+        self.assertIn("uses: github/codeql-action/upload-sarif@v4", guards)
+        self.assertIn("category: zizmor", guards)
+        self.assertIn("security-events: write", guards)
+        # Токен pull request из форка писать в Code Scanning не вправе.
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", guards)
 
     def test_platform_build_uses_exact_cargo_cache_and_reports_outcome(self) -> None:
         text = self.release_text()

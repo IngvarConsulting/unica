@@ -47,7 +47,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         """The donor index and its review records ship with nothing.
 
         They live outside `plugins/unica/`, so a change to them must not claim
-        the plugin content contour. `verify-source` runs unconditionally and
+        the plugin content contour. `test-python` runs unconditionally and
         still covers the attribution and provenance contracts.
         """
         self.assert_classification(

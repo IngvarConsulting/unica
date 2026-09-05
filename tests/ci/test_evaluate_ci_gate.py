@@ -28,7 +28,7 @@ OUTPUT_NAMES = (
     "release_required",
     "assessment_required",
 )
-ALWAYS_SUCCESS = {"classify-changes": "success", "verify-source": "success"}
+ALWAYS_SUCCESS = {"classify-changes": "success", "guards": "success", "test-python": "success"}
 PACKAGE_SUCCESS = {
     "build-tools": "success",
     "package-thin": "success",
@@ -280,7 +280,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
         results = {
             **source_results(),
-            "verify-source": "cancelled",
+            "test-python": "cancelled",
             "test-rust-platforms": "failure",
             "test-search-integration": "success",
             # Снятый с pull request контур, который всё-таки отработал, — тоже
@@ -293,7 +293,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertFalse(evaluation.ok)
         self.assertEqual(
             {
-                "verify-source": ("cancelled", "success"),
+                "test-python": ("cancelled", "success"),
                 "test-rust-platforms": ("failure", "success"),
                 "build-tools": ("success", "skipped"),
             },
