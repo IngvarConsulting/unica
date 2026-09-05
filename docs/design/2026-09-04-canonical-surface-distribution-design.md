@@ -757,13 +757,13 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 
 ### Сорок два кода по шести исходам
 
-`?` помечает суждение, которое исполнителю стоит подтвердить.
+Все пометки суждения сняты: семь спорных назначений разобраны по коду ниже.
 
 **Повторить как есть** — преходящее, никто не действует:
 
 `stale_revision`, `revision_mismatch`, `stale_cursor`, `concurrent_change`,
 `concurrent_modification`, `source_selection_changed`, `deadline_exceeded`,
-`provider_deadline`, `dependency_unavailable`, `task_transport_failed`?
+`provider_deadline`, `dependency_unavailable`, `task_transport_failed`
 
 **Исправить вызов** — агент правит аргументы:
 
@@ -779,20 +779,17 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 
 **Нужен человек** — действует человек над средой:
 
-`provider_unavailable`, `provider_failed`?, `ambiguous_source_format`,
-`rollback_failed`, `rollback_incomplete`, `task_protocol_failed`?,
-`task_projection_failed`?, `task_backend_failed`?
+`provider_unavailable`, `ambiguous_source_format`, `rollback_failed`,
+`rollback_incomplete`, `invalid_state`, `task_backend_failed`
 
 **Пойти иначе** — маршрут не работает, альтернатива есть:
 
-`unsupported_operation`, `profile_unsupported`, `task_not_found`?,
-`task_expired`?
+`unsupported_operation`, `profile_unsupported`, `task_not_found`,
+`task_expired` — ручка задачи мертва, работу надо выдать заново
 
-**Нужен человек** дополняется `invalid_state` — разбор ниже.
+**Тупик** — остановись и сообщи:
 
-**Тупик** — дальше ничего не поможет:
-
-`cancelled` — отмена была намеренной, действия из неё не следует
+`cancelled`, `task_protocol_failed`, `task_projection_failed`, `provider_failed`
 
 ### Что видно из раскладки
 
@@ -802,14 +799,17 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 исправить, и `detailCode` тут не украшение, а необходимость.
 
 **«Починить предмет» всего два.** Ожидалось больше: это исход, ради которого
-агент идёт в `check`. Похоже, ошибки самих исходников до сих пор приходят под
-`bad_value` и `provider_unavailable` — стоит проверить при реализации, не
-теряется ли там различие.
+агент идёт в `check`. Подозрение проверено — разбор `provider_unavailable` ниже.
 
-**Четыре кода задачи разложились в разные исходы.** `task_transport_failed`
-похож на преходящий, а `task_protocol_failed` и `task_projection_failed` — на
-дефект продукта, где повтор не поможет. Если это так, различие между ними
-осмысленно и схлопывать их нельзя — вопреки тому, что казалось по одному имени.
+**Тупик — это «остановись и сообщи», а не одна отмена.** Разбор по коду свёл
+туда три случая помимо `cancelled`. `task_protocol_failed` приходит на
+`UnexpectedResponse` и на несовпадение идентичности задачи, `task_projection_failed`
+— когда снимок демона не ложится на форму провода: оба означают дефект самой
+Unica. `provider_failed` — ветка `_` в `map_runner_code`, то есть отказ раннера,
+который мы не классифицировали; в диагностиках он и несёт `retryable: false`.
+Ни аргумент, ни повтор, ни человек над средой тут не помогут — правильное
+действие агента остановиться и назвать причину. Это делает шестой исход
+осмысленным: он был бы лишним ради одной отмены.
 
 **«Цель уже достигнута» — положительный ответ, а не отказ.** Седьмой исход не
 нужен, и разбор шести случаев `invalid_state` это подтверждает: под «уже
@@ -856,6 +856,18 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 
 Разделять сам код на пять не нужно: имя `provider_unavailable` останется, но
 перестанет быть единственным носителем смысла.
+
+И это не единственный случай. `task_backend_failed` устроен так же: он ловит
+`Protocol(_)` — то есть **любой** код демона, кроме `TaskNotFound` и
+`TaskExpired`. В этот остаток попадают `Overloaded`, `TaskCapacity`,
+`OwnerCapacity`, `WorkspaceCapacity` (преходящие, надо повторить),
+`ProtocolMismatch`, `CoreMismatch`, `Unauthorized` (нужен человек),
+`InvalidRequest`, `StoreFailed`, `DurabilityUncertain` (тупик). Три исхода под
+одним именем, и по той же причине: широкая ветка `_` в отображении.
+
+Значит схлопывание не случайность одного места, а **свойство границы**: там,
+где чужой типизированный код сводится к нашему через `_`, смысл теряется
+всегда. Проверять при реализации надо не отдельные коды, а именно такие ветки.
 
 **Дефект, найденный при разборе.** В `role.rs` при публикации любой сбой
 повторного разрешения адреса схлопывается в `concurrent_modification` —
