@@ -18,9 +18,12 @@ import os
 import re
 import subprocess
 import time
+import tomllib
 import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+NEXTEST_TOML = Path(__file__).resolve().parents[2] / ".config" / "nextest.toml"
 
 # Причина `#[ignore]` — конструкция языка, а не наше имя: nextest её не отдаёт
 # ни в JUnit, ни в списке, а в атрибуте она есть всегда.
@@ -150,6 +153,10 @@ def nextest_list(root: Path, profile: str) -> list[dict]:
     entries = []
     for suite in listed["rust-suites"].values():
         for name, case in suite["testcases"].items():
+            # Не выбранный воротами тест — не в этом плане: его результат в
+            # отчёте линии даёт другой профиль, а не пропуск от этого.
+            if case.get("filter-match", {}).get("status", "matches") != "matches":
+                continue
             entries.append({"binary": suite["binary-id"], "name": name, "ignored": bool(case.get("ignored"))})
     return entries
 
@@ -161,6 +168,46 @@ def write_plan(out: Path, entries: list[dict]) -> Path:
     return path
 
 
+class MediumMatcher:
+    """Размер теста по выражению `medium` из `.config/nextest.toml`.
+
+    Выражение объявляет размер вне теста: `kind(test)` — интеграционные
+    цели, `test(/…/)` — модули по пути. Здесь оно читается, чтобы отчёт нёс
+    метку `size` тем же правилом, каким ворота отбирают тесты.
+    """
+
+    def __init__(self, expression: str):
+        self.integration = "kind(test)" in expression
+        self.patterns = [re.compile(found) for found in re.findall(r"test\(/(.*?)/\)", expression)]
+
+    @classmethod
+    def from_toml(cls, path: Path = NEXTEST_TOML) -> "MediumMatcher":
+        try:
+            config = tomllib.loads(path.read_text(encoding="utf-8"))
+            overrides = config["profile"]["default"].get("overrides", [])
+            expression = next(o["filter"] for o in overrides if "slow-timeout" in o)
+        except (OSError, KeyError, StopIteration):
+            expression = ""
+        return cls(expression)
+
+    def size(self, binary: str, name: str) -> str:
+        if self.integration and "::" in binary and "bin/" not in binary:
+            return "medium"
+        if any(pattern.search(name) for pattern in self.patterns):
+            return "medium"
+        return "small"
+
+
+_MEDIUM: MediumMatcher | None = None
+
+
+def size_of(binary: str, name: str) -> str:
+    global _MEDIUM
+    if _MEDIUM is None:
+        _MEDIUM = MediumMatcher.from_toml()
+    return _MEDIUM.size(binary, name)
+
+
 def rust_labels(binary: str, name: str, profile: str) -> dict[str, str]:
     module = name.rsplit("::", 1)[0] if "::" in name else binary
     return {
@@ -170,6 +217,7 @@ def rust_labels(binary: str, name: str, profile: str) -> dict[str, str]:
         "suite": binary,
         "subSuite": module,
         "profile": profile,
+        "size": size_of(binary, name),
     }
 
 

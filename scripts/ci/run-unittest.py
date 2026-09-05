@@ -34,6 +34,7 @@ class AllureResult(unittest.TextTestResult):
     runner_name = "local"
     profile = "all"
     suite_name = ""
+    size = "small"
 
     def startTest(self, test):
         super().startTest(test)
@@ -59,6 +60,7 @@ class AllureResult(unittest.TextTestResult):
                     "suite": self.suite_name,
                     "subSuite": cls.__qualname__,
                     "profile": self.profile,
+                    "size": self.size,
                 },
                 tags=(self.profile,),
                 message=message,
@@ -100,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--results", type=Path, default=None, help="каталог allure-results")
     parser.add_argument("--runner", default="local")
     parser.add_argument("--profile", default="all")
+    parser.add_argument("--size", default="small", help="размер набора для метки")
     parser.add_argument("--plan-only", action="store_true", help="перечислить тесты и выйти")
     args = parser.parse_args(argv)
 
@@ -113,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     AllureResult.runner_name = args.runner
     AllureResult.profile = args.profile
     AllureResult.suite_name = args.start_directory
+    AllureResult.size = args.size
     options = {"resultclass": AllureResult, "verbosity": 1}
     if args.durations is not None:
         options["durations"] = args.durations

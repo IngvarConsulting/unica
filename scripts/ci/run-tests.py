@@ -102,11 +102,13 @@ def python_commands(
         admitted = ADMITTED[profile]
     except KeyError:
         raise ValueError(f"профиль {profile!r} для Python не описан") from None
-    tail: list[str] = []
-    if results is not None:
-        tail = ["--results", str(results), "--runner", runner, "--profile", profile]
+    def tail(size: str) -> list[str]:
+        if results is None:
+            return []
+        return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size]
+
     return [
-        [interpreter, str(RUN_UNITTEST), "-s", suite, *extra, *tail]
+        [interpreter, str(RUN_UNITTEST), "-s", suite, *extra, *tail(size)]
         for suite, size, extra in PYTHON_SUITES
         if size in admitted
     ]

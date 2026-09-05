@@ -34,8 +34,12 @@ class GateProfileCompositionTests(unittest.TestCase):
         for gate in GATES:
             with self.subTest(gate=gate):
                 self.assertIn(gate, profiles)
-                self.assertEqual(profiles[gate].get("default-filter"), "all()")
                 self.assertEqual(self.run_tests.nextest_profile(gate), gate)
+                if gate == "pr":
+                    # Pull request — только small: всё, что не объявлено medium.
+                    self.assertTrue(profiles[gate]["default-filter"].startswith("not ("))
+                else:
+                    self.assertEqual(profiles[gate].get("default-filter"), "all()")
         self.assertEqual(set(self.run_tests.PROFILES), {"all", "large", *GATES})
         # Ночной ярус пуст до расстановки размеров и честно гоняет ноль.
         self.assertEqual(profiles["large"].get("default-filter"), "none()")
