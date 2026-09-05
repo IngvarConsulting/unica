@@ -7,6 +7,9 @@ name: Unica Nightly
 # `github.sha` и `github.ref_name` и есть вершина и линия, checkout
 # стандартный, и чужой ссылки в нём нет. Память о прошлом прогоне лежит на
 # сайте; линия без `unica-large.yml` площадки не несёт и в ночь не идёт.
+# Завершение прогона, созданного `GITHUB_TOKEN`, другие workflow не будит —
+# поэтому ночь дожидается запущенных прогонов и выкладывает их артефакты
+# своим: завершение ночи страницы будит, её создал планировщик или человек.
 on:
   schedule:
     - cron: "30 1 * * *"
@@ -21,9 +24,9 @@ concurrency:
 
 jobs:
   lines:
-    name: Перечислить сдвинувшиеся линии и запустить large
+    name: Перечислить сдвинувшиеся линии, запустить large и забрать результаты
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 90
     # Запуск workflow на линии — запись в Actions; права джобы заменяют права
     # workflow целиком, поэтому `contents: read` повторён.
     permissions:
@@ -40,4 +43,13 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/ci/nightly-lines.py --repo "$GITHUB_REPOSITORY" --site "$SITE" \
-            --dispatch --summary "$GITHUB_STEP_SUMMARY" >> "$GITHUB_OUTPUT"
+            --dispatch --follow .build/large --summary "$GITHUB_STEP_SUMMARY" >> "$GITHUB_OUTPUT"
+      # Артефакты запущенных прогонов едут дальше одним своим: внутри те же
+      # `results-*` и `plan-*` с подписями, сайт находит их на любой глубине.
+      - if: always() && hashFiles('.build/large/**/run.json') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-nightly
+          path: .build/large
+          retention-days: 7
+          overwrite: true

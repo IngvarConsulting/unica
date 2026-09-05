@@ -527,7 +527,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("schedule:", nightly)
         self.assertIn("actions: write", nightly)
         self.assertIn('python scripts/ci/nightly-lines.py --repo "$GITHUB_REPOSITORY" --site "$SITE"', nightly)
-        self.assertIn("--dispatch", nightly)
+        self.assertIn("--dispatch --follow .build/large", nightly)
+        self.assertIn("name: results-nightly", nightly)
         self.assertNotIn("ref:", nightly)
         self.assertIn("workflow_dispatch:", large)
         self.assertIn("name: Rust tests (${{ matrix.runner }})", job)
@@ -542,7 +543,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         """Красный прогон — тоже результат; ночь и тег — тоже источники."""
         text = self.pages_text()
 
-        self.assertIn('workflows: ["Build Unica Codex Plugin", "Unica Large"]', text)
+        self.assertIn('workflows: ["Build Unica Codex Plugin", "Unica Large", "Unica Nightly"]', text)
         self.assertIn('branches: [main, "release-v*", "v*"]', text)
         self.assertIn("github.event.workflow_run.conclusion == 'failure'", text)
         self.assertIn("github.event.workflow_run.event == 'schedule'", text)

@@ -18,6 +18,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -69,6 +70,59 @@ def dispatch_large(line: str) -> None:
     print(f"{line}: {completed.stdout.strip() or 'запущен'}", file=sys.stderr)
 
 
+def list_large_runs(line: str) -> list[dict]:
+    completed = subprocess.run(
+        ["gh", "run", "list", "--workflow", LARGE_WORKFLOW, "--branch", line, "--event", "workflow_dispatch",
+         "--limit", "5", "--json", "databaseId,createdAt,status,conclusion"],
+        check=True, capture_output=True, text=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def find_started_run(line: str, since: str, list_runs=list_large_runs, attempts: int = 30, pause: float = 10.0) -> int:
+    """Прогон, созданный после запуска: `gh workflow run` его номера не отдаёт."""
+    for _ in range(attempts):
+        runs = [run for run in list_runs(line) if run.get("createdAt", "") >= since]
+        if runs:
+            return int(max(runs, key=lambda run: run["createdAt"])["databaseId"])
+        time.sleep(pause)
+    raise SystemExit(f"{line}: запущенный прогон {LARGE_WORKFLOW} не появился в списке за {attempts * pause:.0f} с")
+
+
+def watch_run(run_id: int) -> str:
+    """Дождаться прогона и вернуть его заключение; красный — тоже результат."""
+    subprocess.run(["gh", "run", "watch", str(run_id), "--interval", "30"], check=False, capture_output=True, text=True)
+    completed = subprocess.run(
+        ["gh", "run", "view", str(run_id), "--json", "conclusion", "--jq", ".conclusion"],
+        check=True, capture_output=True, text=True,
+    )
+    return completed.stdout.strip()
+
+
+def download_run(run_id: int, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["gh", "run", "download", str(run_id), "--dir", str(dest)], check=True, capture_output=True, text=True)
+
+
+def follow(decisions: list[dict], dest: Path, *, find=find_started_run, watch=watch_run, download=download_run) -> list[dict]:
+    """Дождаться запущенных прогонов и забрать их артефакты в `dest/<линия>/`.
+
+    Событие завершения прогона, созданного `GITHUB_TOKEN`, другие workflow не
+    будит, поэтому ночь несёт их артефакты сама: внутри те же `results-*` и
+    `plan-*` с подписями, и сайт находит их на любой глубине.
+    """
+    outcomes = []
+    for decision in decisions:
+        if not decision.get("since"):
+            continue
+        run_id = find(decision["line"], decision["since"])
+        conclusion = watch(run_id)
+        download(run_id, dest / decision["line"])
+        decision["reason"] += f", прогон {run_id}: {conclusion}"
+        outcomes.append({"line": decision["line"], "run_id": run_id, "conclusion": conclusion})
+    return outcomes
+
+
 def enumerate_lines(repo: str, site: str, now: datetime, *, gh, fetch, open_lines, platform=None) -> list[dict]:
     """Каждая открытая линия с решением: гнать или пропустить, и почему."""
     platform = platform or (lambda line: has_platform(repo, line, gh))
@@ -96,6 +150,8 @@ def dispatch(decisions: list[dict], run_workflow=dispatch_large) -> list[str]:
     for decision in decisions:
         if not decision["run"]:
             continue
+        # Метка «до запуска» с запасом: по ней потом находится созданный прогон.
+        decision["since"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60))
         run_workflow(decision["line"])
         decision["reason"] += " — запущен"
         started.append(decision["line"])
@@ -112,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", required=True)
     parser.add_argument("--site", required=True, help="адрес сайта с памятью прогонов")
     parser.add_argument("--dispatch", action="store_true", help="запустить unica-large.yml на сдвинувшихся линиях")
+    parser.add_argument("--follow", type=Path, default=None, help="дождаться запущенных прогонов и забрать их артефакты сюда")
     parser.add_argument("--summary", type=Path, default=None, help="куда дописать таблицу решений")
     args = parser.parse_args(argv)
 
@@ -120,6 +177,8 @@ def main(argv: list[str] | None = None) -> int:
         args.repo, args.site, datetime.now(timezone.utc), gh=status.gh, fetch=fetch_json, open_lines=status.open_lines
     )
     started = dispatch(decisions) if args.dispatch else [d["line"] for d in decisions if d["run"]]
+    if args.dispatch and args.follow is not None:
+        follow(decisions, args.follow)
     table = summary(decisions)
     if args.summary is not None:
         with args.summary.open("a", encoding="utf-8") as handle:

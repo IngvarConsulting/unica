@@ -136,6 +136,23 @@ class CollectResultsTests(unittest.TestCase):
             self.assertEqual(gap["fullName"], f"unica-coder::{line}::missing")
             self.assertEqual(gap["status"], "skipped")
 
+    def test_nested_artifacts_of_a_relayed_run_are_found_at_any_depth(self) -> None:
+        """Ночь выкладывает артефакты запущенного large одним своим — вложенным."""
+        nested = self.artifacts / "results-nightly" / "main"
+        path = nested / "results-rust-ubuntu-latest"
+        path.mkdir(parents=True)
+        self.allure.write(path, self.rust("a::one", "ubuntu-latest"))
+        (path / "run.json").write_text(json.dumps({**self.run, "ref": "main", "runner": "ubuntu-latest", "profile": "large"}), encoding="utf-8")
+        plan = nested / "plan-rust-ubuntu-latest"
+        plan.mkdir()
+        (plan / "run.json").write_text(json.dumps({**self.run, "ref": "main", "runner": "ubuntu-latest", "profile": "large"}), encoding="utf-8")
+        (plan / "plan.json").write_text(json.dumps([{"binary": "unica-coder", "name": "a::one", "ignored": False}]), encoding="utf-8")
+
+        lines = self.collect.collect(self.artifacts, self.root / "fresh", None, "", "")
+
+        self.assertEqual(list(lines), ["main"])
+        self.assertEqual((lines["main"]["copied"], lines["main"]["filled"]), (1, 0))
+
 
 if __name__ == "__main__":
     unittest.main()
