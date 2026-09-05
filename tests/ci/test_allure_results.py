@@ -96,11 +96,13 @@ class JunitTranslationTests(unittest.TestCase):
         self.assertEqual(labels["host"], "ubuntu-latest")
         self.assertEqual(entry["fullName"], "unica-coder::address::resolves_catalog")
 
-    def test_history_id_separates_runners_so_neither_result_vanishes(self) -> None:
-        """Один `historyId` на два раннера — Allure покажет только последний."""
+    def test_two_runners_are_two_parameterised_cases_with_separate_histories(self) -> None:
+        """Повторы Allure склеивает по `fullName` и параметрам: раннер — параметр, история — своя."""
         ubuntu = self.entries("ubuntu-latest")["address::resolves_catalog"]
         macos = self.entries("macos-14")["address::resolves_catalog"]
 
+        self.assertEqual(ubuntu["parameters"], [{"name": "runner", "value": "ubuntu-latest"}])
+        self.assertEqual(macos["parameters"], [{"name": "runner", "value": "macos-14"}])
         self.assertNotEqual(ubuntu["historyId"], macos["historyId"])
         self.assertEqual(
             ubuntu["historyId"], self.entries("ubuntu-latest")["address::resolves_catalog"]["historyId"]

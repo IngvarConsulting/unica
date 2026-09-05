@@ -37,10 +37,12 @@ def now_ms() -> int:
 
 
 def history_id(full_name: str, runner: str) -> str:
-    """Один тест на двух раннерах — два теста, две истории.
+    """История теста ведётся на раннер: один тест на двух машинах — две истории.
 
-    С одним `historyId` Allure счёл бы их повторами одного теста и показал бы
-    только последний; результат второго раннера исчез бы.
+    Повторы Allure склеивает по `fullName` и параметрам, а не по `historyId`
+    (проверено на 2.46.1), поэтому раннер идёт ещё и параметром записи, см.
+    `record`. `historyId` связывает запуски одного теста на одной машине между
+    прогонами — по нему строятся тренд и метка `flaky`.
     """
     return hashlib.md5(f"{full_name}@{runner}".encode("utf-8")).hexdigest()
 
@@ -71,6 +73,9 @@ def record(
         "fullName": full_name,
         "status": status,
         "statusDetails": details,
+        # Раннер — параметр теста: так Allure показывает два раннера рядом как
+        # один тест с двумя значениями параметра, а не как повтор одного.
+        "parameters": [{"name": "runner", "value": runner}],
         "start": start if start is not None else now_ms(),
         "stop": stop if stop is not None else now_ms(),
         "labels": [
