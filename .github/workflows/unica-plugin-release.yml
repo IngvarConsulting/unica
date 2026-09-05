@@ -57,15 +57,73 @@ jobs:
           git diff --name-only FETCH_HEAD...HEAD |
             python scripts/ci/classify-workflow-changes.py >> "$GITHUB_OUTPUT"
 
-  verify-source:
-    name: Verify source guardrails
+  # Дешёвое раньше дорогого: линтеры и проверки реестра отвечают за минуту,
+  # тесты ждут их. Результат линтера — находка, а не исход теста: она едет в
+  # Code Scanning (SARIF), а не в Allure.
+  guards:
+    name: Guards
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 15
+    # Загрузка SARIF пишет в Code Scanning; права джобы заменяют права
+    # workflow целиком, поэтому `contents: read` повторён.
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v7
         with:
           # The architecture-sync guard diffs against the merge base, which a
           # shallow clone cannot compute.
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m py_compile scripts/ci/*.py tests/ci/*.py
+      - run: python -m py_compile scripts/arch/*.py tests/arch/*.py
+      - run: python -m py_compile scripts/dev/*.py tests/dev/*.py
+      - run: python scripts/ci/check-version-contract.py
+      - name: Check accepted architecture records
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE_REF"
+          python scripts/arch/registry.py --check
+          python scripts/arch/fate.py
+          python scripts/arch/immutability.py --base FETCH_HEAD
+      # Форматирование от цели сборки не зависит — одного раннера хватает.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+      # Линтер workflow. Версия закреплена; находки гейт не красят — они
+      # уходят в Code Scanning, где видны по правилу и строке, и разбираются
+      # отдельно. Токен нужен сетевым проверкам: подменённые коммиты, известные
+      # уязвимости действий.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: zizmor@1.30.0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --format sarif --no-exit-codes .github/workflows > zizmor.sarif
+      # Токен pull request из форка писать в Code Scanning не вправе; своим
+      # веткам и push загрузка доступна.
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor
+
+  test-python:
+    name: Python tests (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: guards
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Страж неизменности продукта сравнивает с базой — нужна история.
           fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
@@ -82,26 +140,15 @@ jobs:
           path: .build/results
           retention-days: 7
           overwrite: true
-      - run: python -m py_compile scripts/ci/*.py tests/ci/*.py
-      - run: python -m py_compile scripts/arch/*.py tests/arch/*.py
-      - run: python -m py_compile scripts/dev/*.py tests/dev/*.py
-      - run: python scripts/ci/check-version-contract.py
-      - name: Check accepted architecture records
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$BASE_REF"
-          python scripts/arch/registry.py --check
-          python scripts/arch/fate.py
-          python scripts/arch/immutability.py --base FETCH_HEAD
 
   test-rust-primary:
     name: Rust tests (macos-14 primary)
     runs-on: macos-14
     timeout-minutes: 60
-    needs: classify-changes
+    permissions:
+      contents: read
+      security-events: write
+    needs: [classify-changes, guards]
     if: >-
       ${{
         needs.classify-changes.outputs.rust_changed == 'true' &&
@@ -113,13 +160,24 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      # Версия закреплена: исполнитель тестов — часть контракта прогона.
+          components: clippy
+      # Форматирование от цели не зависит — оно в `guards`. Линт зависит:
+      # `#[cfg]` решает, какие элементы существуют, поэтому clippy идёт на
+      # каждом раннере, своим шагом до тестов. Находки едут в Code Scanning,
+      # а `-D warnings` по-прежнему красит джобу. Версии закреплены:
+      # исполнители — часть контракта прогона.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.143
+          tool: cargo-nextest@0.9.143,clippy-sarif@0.8.0,sarif-fmt@0.8.0
+      - run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings \
+            | clippy-sarif | tee clippy.sarif | sarif-fmt
+      - if: always() && hashFiles('clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: clippy.sarif
+          category: clippy-macos-14-primary
       # План выгружается до тестов: упавший раннер не унесёт его с собой,
       # и недошедшие тесты попадут в отчёт как `skipped`, а не исчезнут.
       - run: python3 scripts/ci/run-tests.py --profile all --ecosystem rust --plan-only --results .build/results --runner macos-14
@@ -142,7 +200,10 @@ jobs:
     name: Rust tests (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
-    needs: classify-changes
+    permissions:
+      contents: read
+      security-events: write
+    needs: [classify-changes, guards]
     if: >-
       ${{
         needs.classify-changes.outputs.platform_changed == 'true' ||
@@ -160,18 +221,24 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      # Formatting does not depend on the build target, so one runner settles
-      # it. The lint does: `#[cfg]` decides which items exist, so a lint can
-      # hold on one target and break on another, and a gate bound to one target
-      # cannot see that class at all. It runs on every runner of this matrix.
-      - if: matrix.runner == 'macos-14'
-        run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      # Версия закреплена: исполнитель тестов — часть контракта прогона.
+          components: clippy
+      # Форматирование от цели не зависит — оно в `guards`. Линт зависит:
+      # `#[cfg]` решает, какие элементы существуют, поэтому clippy идёт на
+      # каждом раннере матрицы, своим шагом до тестов. Находки едут в Code
+      # Scanning, а `-D warnings` по-прежнему красит джобу. Версии закреплены:
+      # исполнители — часть контракта прогона.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.143
+          tool: cargo-nextest@0.9.143,clippy-sarif@0.8.0,sarif-fmt@0.8.0
+      - run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings \
+            | clippy-sarif | tee clippy.sarif | sarif-fmt
+      - if: always() && hashFiles('clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: clippy.sarif
+          category: clippy-${{ matrix.runner }}
       # План выгружается до тестов: упавший раннер не унесёт его с собой,
       # и недошедшие тесты попадут в отчёт как `skipped`, а не исчезнут.
       - run: python3 scripts/ci/run-tests.py --profile all --ecosystem rust --plan-only --results .build/results --runner ${{ matrix.runner }}
@@ -194,7 +261,7 @@ jobs:
     name: Search integration (macos-14)
     runs-on: macos-14
     timeout-minutes: 30
-    needs: classify-changes
+    needs: [classify-changes, guards]
     if: >-
       ${{
         needs.classify-changes.outputs.search_integration_changed == 'true' ||
@@ -211,12 +278,13 @@ jobs:
     name: Build tools (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    needs: [classify-changes, verify-source, test-rust-primary, test-rust-platforms, test-search-integration]
+    needs: [classify-changes, guards, test-python, test-rust-primary, test-rust-platforms, test-search-integration]
     if: >-
       ${{
         always() &&
         needs.classify-changes.result == 'success' &&
-        needs.verify-source.result == 'success' &&
+        needs.guards.result == 'success' &&
+        needs.test-python.result == 'success' &&
         (needs.test-rust-primary.result == 'success' || needs.test-rust-primary.result == 'skipped') &&
         (needs.test-rust-platforms.result == 'success' || needs.test-rust-platforms.result == 'skipped') &&
         (needs.test-search-integration.result == 'success' || needs.test-search-integration.result == 'skipped') &&
@@ -894,7 +962,8 @@ jobs:
     if: always()
     needs:
       - classify-changes
-      - verify-source
+      - guards
+      - test-python
       - test-rust-primary
       - test-rust-platforms
       - test-search-integration

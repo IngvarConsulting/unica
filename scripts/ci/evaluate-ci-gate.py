@@ -24,7 +24,8 @@ CLASSIFICATION_OUTPUTS = (
 )
 ALWAYS_JOBS = (
     "classify-changes",
-    "verify-source",
+    "guards",
+    "test-python",
 )
 PACKAGE_JOBS = (
     "build-tools",
