@@ -24,7 +24,7 @@ RUN_UNITTEST = Path(__file__).with_name("run-unittest.py")
 NEXTEST_JUNIT = REPO_ROOT / "target" / "nextest" / "default" / "junit.xml"
 
 # Ворота конвейера плюс локальный `all` — «гони всё» без подписи ворот.
-PROFILES = ("all", "pr", "queue", "main", "release")
+PROFILES = ("all", "pr", "queue", "main", "release", "large")
 SIZES = ("small", "medium", "large")
 # Какие размеры принимают ворота — таблица «Что тестировать и когда» из
 # замысла площадки. Пока все наборы `small`, и любые ворота гоняют всё:
@@ -35,6 +35,8 @@ ADMITTED = {
     "queue": ("small", "medium"),
     "main": ("small", "medium"),
     "release": SIZES,
+    # Ночной прогон: только тяжёлый ярус. Пока он пуст и честно гоняет ноль.
+    "large": ("large",),
 }
 ECOSYSTEMS = ("rust", "python", "all")
 
@@ -54,7 +56,9 @@ PYTHON_SUITES = (
 # Профиль ворот и профиль nextest — разные имена: ворота описывают, когда
 # гоняем, профиль nextest — как. Ворота ложатся на одноимённые профили
 # `.config/nextest.toml`, локальный `all` — на `default`.
-NEXTEST_PROFILES = {"all": "default", "pr": "pr", "queue": "queue", "main": "main", "release": "release"}
+NEXTEST_PROFILES = {
+    "all": "default", "pr": "pr", "queue": "queue", "main": "main", "release": "release", "large": "large",
+}
 
 
 def nextest_profile(profile: str) -> str:
@@ -74,7 +78,12 @@ def rust_commands(profile: str) -> list[list[str]]:
     # nextest: процесс на тест и JUnit из коробки. Число потоков, повторы
     # и отчёт описаны в `.config/nextest.toml`, а не здесь: конвейер и
     # локальный прогон обязаны идти одной настройкой.
-    return [["cargo", "nextest", "run", "--workspace", "--profile", nextest_profile(profile)]]
+    command = ["cargo", "nextest", "run", "--workspace", "--profile", nextest_profile(profile)]
+    if profile == "large":
+        # Ярус пуст до расстановки размеров: ноль тестов — честный результат,
+        # а не ошибка выбора. У остальных ворот пустой набор — ошибка.
+        command.append("--no-tests=pass")
+    return [command]
 
 
 def python_commands(
@@ -164,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runner", default=os.environ.get("RUNNER_NAME_LABEL", "local"),
                         help="имя раннера для меток и истории")
     parser.add_argument("--plan-only", action="store_true", help="записать план и выйти")
+    parser.add_argument("--line", default=None, help="линия прогона для подписи; по умолчанию — из окружения")
+    parser.add_argument("--sha", default=None, help="вершина линии для подписи; по умолчанию — из окружения")
     args = parser.parse_args(argv)
 
     planned = commands(args.profile, args.ecosystem, results=args.results, runner=args.runner)
@@ -175,11 +186,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.plan_only:
         if args.results is None:
             parser.error("--plan-only требует --results")
+        # План едет с подписью: сайт сопоставляет его с результатами по линии
+        # и раннеру, а не по имени артефакта.
+        allure_results.write_run(
+            args.results, profile=args.profile, runner=args.runner, ecosystem=args.ecosystem, line=args.line, sha=args.sha
+        )
         if args.ecosystem in ("rust", "all"):
             print(f"план Rust: {write_rust_plan(args.results, args.profile)} тестов")
         return 0
 
-    return execute(args.profile, args.ecosystem, args.results, args.runner)
+    return execute(args.profile, args.ecosystem, args.results, args.runner, line=args.line, sha=args.sha)
 
 
 def execute(
@@ -189,6 +205,8 @@ def execute(
     runner: str,
     run_commands=None,
     junit: Path | None = None,
+    line: str | None = None,
+    sha: str | None = None,
 ) -> int:
     """Прогнать экосистемы и оставить результаты.
 
@@ -199,7 +217,7 @@ def execute(
     run_commands = run if run_commands is None else run_commands
     junit = nextest_junit(profile) if junit is None else junit
     if results is not None:
-        allure_results.write_run(results, profile=profile, runner=runner, ecosystem=ecosystem)
+        allure_results.write_run(results, profile=profile, runner=runner, ecosystem=ecosystem, line=line, sha=sha)
     code = 0
     if ecosystem in ("rust", "all"):
         # Старый JUnit от прошлого прогона — не результат этого. Если nextest

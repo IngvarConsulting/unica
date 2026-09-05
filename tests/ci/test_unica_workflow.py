@@ -9,6 +9,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml"
+NIGHTLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-nightly.yml"
+PAGES_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-pages.yml"
 PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-unica-marketplace.yml"
 LEGACY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-legacy-migration.yml"
 
@@ -125,6 +127,12 @@ def parse_workflow_jobs(workflow: str) -> dict[str, ParsedJob]:
 class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def release_text(self) -> str:
         return RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    def nightly_text(self) -> str:
+        return NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
+
+    def pages_text(self) -> str:
+        return PAGES_WORKFLOW.read_text(encoding="utf-8")
 
     def publish_text(self) -> str:
         return PUBLISH_WORKFLOW.read_text(encoding="utf-8")
@@ -417,7 +425,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_javascript_actions_use_node24_compatible_majors(self) -> None:
         release = self.release_text()
         publish = self.publish_text()
-        combined = release + publish
+        combined = release + publish + self.nightly_text() + self.pages_text()
 
         self.assertIn("actions/checkout@v7", combined)
         self.assertIn("actions/setup-python@v7", release)
@@ -481,7 +489,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", guards)
         self.assertIn("python scripts/arch/registry.py --check", guards)
         self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --results', python)
-        self.assertIn("needs: guards", python)
+        self.assertIn("needs: [classify-changes, guards]", python)
 
     def test_gate_profile_follows_the_event_not_the_job(self) -> None:
         """Ворота → профиль: pull request — `pr`, push в ветку — `main`, тег — `release`."""
@@ -493,6 +501,45 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             text,
         )
         self.assertNotIn("run-tests.py --profile all", text)
+
+    def test_line_rides_in_the_signature_and_tags_resolve_to_a_release_line(self) -> None:
+        """Линия прогона — из resolve-line.py, в подписи результатов и плана."""
+        text = self.release_text()
+        classify = job_block(text, "classify-changes")
+
+        self.assertIn('python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA"', classify)
+        self.assertIn("line: ${{ steps.line.outputs.line }}", classify)
+        self.assertEqual(5, text.count('--line "$RUN_LINE"'))
+        self.assertEqual(3, text.count("RUN_LINE: ${{ needs.classify-changes.outputs.line }}"))
+        # План едет каталогом вместе с подписью, а не одним файлом.
+        self.assertNotIn("path: .build/results/plan.json", text)
+
+    def test_nightly_runs_only_moved_lines_and_signs_each_artifact_with_its_line(self) -> None:
+        """Ночь: одна джоба перечисления, матрица из сдвинувшихся линий, ярус large."""
+        text = self.nightly_text()
+        lines = job_block(text, "lines")
+        large = job_block(text, "large")
+
+        self.assertIn("schedule:", text)
+        self.assertIn("workflow_dispatch:", text)
+        self.assertIn('python scripts/ci/nightly-lines.py --repo "$GITHUB_REPOSITORY" --site "$SITE"', lines)
+        self.assertIn("if: needs.lines.outputs.count != '0'", large)
+        self.assertIn("matrix: ${{ fromJSON(needs.lines.outputs.matrix) }}", large)
+        self.assertIn("ref: ${{ matrix.sha }}", large)
+        self.assertIn('--profile large --ecosystem rust --plan-only --results .build/results --runner "$RUNNER_LABEL" --line "$RUN_LINE" --sha "$RUN_SHA"', large)
+        self.assertIn("name: plan-${{ matrix.line }}-rust-${{ matrix.runner }}", large)
+        self.assertIn("name: results-${{ matrix.line }}-rust-${{ matrix.runner }}", large)
+        self.assertIn("if: always()", large)
+
+    def test_pages_take_results_from_red_runs_and_from_the_nightly(self) -> None:
+        """Красный прогон — тоже результат; ночь и тег — тоже источники."""
+        text = self.pages_text()
+
+        self.assertIn('workflows: ["Build Unica Codex Plugin", "Unica Nightly"]', text)
+        self.assertIn('branches: [main, "release-v*", "v*"]', text)
+        self.assertIn("github.event.workflow_run.conclusion == 'failure'", text)
+        self.assertIn("github.event.workflow_run.event == 'schedule'", text)
+        self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", text)
 
     def test_guards_ship_findings_to_code_scanning_not_the_gate(self) -> None:
         """Находка линтера — не исход теста: SARIF в Code Scanning, гейт не краснеет."""

@@ -18,9 +18,11 @@ on:
   push:
     branches: [main, "release-v*"]
   workflow_run:
-    workflows: ["Build Unica Codex Plugin"]
+    workflows: ["Build Unica Codex Plugin", "Unica Nightly"]
     types: [completed]
-    branches: [main, "release-v*"]
+    # Фильтр смотрит на `head_branch` прогона-источника: у push в ветку это
+    # ветка, у тега — имя тега, у ночного прогона — всегда `main`.
+    branches: [main, "release-v*", "v*"]
 
 # Право писать на Pages нужно одной джобе — той, что публикует. Сборка только
 # читает дерево и складывает артефакт, поэтому шире её права не бывают.
@@ -39,10 +41,13 @@ jobs:
     # а его выбирает автор PR — форк с веткой `main` прошёл бы через фильтр, и мы
     # опубликовали бы его содержимое у себя. Поэтому источник обязан быть
     # успешным push-прогоном этого же репозитория.
+    # Красный прогон — тоже результат, и страница обязана его показать; не
+    # источник только отменённый. Источник — push, расписание или ручной
+    # запуск в этом репозитории: у форка ни расписания, ни push сюда нет.
     if: >-
       github.event_name == 'push' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
+      ((github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure') &&
+       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch') &&
        github.event.workflow_run.head_repository.full_name == github.repository)
     # Артефакты прогона-источника читаются по `actions: read`; права джобы
     # заменяют права workflow целиком, поэтому `contents: read` повторён.

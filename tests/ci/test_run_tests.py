@@ -199,9 +199,13 @@ class GateProfileTests(unittest.TestCase):
         module = load_module()
 
         for gate in module.PROFILES:
+            if gate == "large":
+                continue
             with self.subTest(gate=gate):
                 suites = [command[3] for command in module.python_commands(gate, "python3")]
                 self.assertEqual(suites, [suite for suite, _, _ in module.PYTHON_SUITES])
+        # Ночной ярус принимает только `large`, а таких наборов пока нет.
+        self.assertEqual(module.python_commands("large", "python3"), [])
 
 
 if __name__ == "__main__":

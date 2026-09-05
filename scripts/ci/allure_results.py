@@ -93,18 +93,19 @@ def write(out: Path, entry: dict) -> Path:
     return path
 
 
-def write_run(out: Path, *, profile: str, runner: str, ecosystem: str) -> Path:
+def write_run(out: Path, *, profile: str, runner: str, ecosystem: str, line: str | None = None, sha: str | None = None) -> Path:
     """Подпись прогона: кто, когда и на чём собрал эти результаты.
 
     Сайт читает её оттуда, а не из события: у прогона по расписанию
-    `head_branch` всегда `main`, даже когда он проверяет релизную линию.
+    `head_branch` всегда `main`, даже когда он проверяет релизную линию, —
+    поэтому линию и её вершину передают явно, а окружение — запасной путь.
     """
     env = os.environ.get
     repository = env("GITHUB_REPOSITORY", "")
     run_id = env("GITHUB_RUN_ID", "")
     signature = {
-        "sha": env("GITHUB_SHA", ""),
-        "ref": env("GITHUB_REF_NAME", ""),
+        "sha": sha or env("GITHUB_SHA", ""),
+        "ref": line or env("GITHUB_REF_NAME", ""),
         "run_id": run_id,
         "run_attempt": env("GITHUB_RUN_ATTEMPT", ""),
         "run_url": f"https://github.com/{repository}/actions/runs/{run_id}" if repository and run_id else "",

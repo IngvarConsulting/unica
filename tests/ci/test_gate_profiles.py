@@ -36,7 +36,10 @@ class GateProfileCompositionTests(unittest.TestCase):
                 self.assertIn(gate, profiles)
                 self.assertEqual(profiles[gate].get("default-filter"), "all()")
                 self.assertEqual(self.run_tests.nextest_profile(gate), gate)
-        self.assertEqual(set(self.run_tests.PROFILES), {"all", *GATES})
+        self.assertEqual(set(self.run_tests.PROFILES), {"all", "large", *GATES})
+        # Ночной ярус пуст до расстановки размеров и честно гоняет ноль.
+        self.assertEqual(profiles["large"].get("default-filter"), "none()")
+        self.assertIn("--no-tests=pass", self.run_tests.rust_commands("large")[0])
 
     def test_default_profile_carries_the_small_deadline_for_everyone(self) -> None:
         """Срок на тест — то, чем размер держится честным; пока он один на всех."""

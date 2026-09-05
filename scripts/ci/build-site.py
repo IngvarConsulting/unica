@@ -147,6 +147,31 @@ def previous_results(site: str | None, line: str, work: Path) -> Path | None:
     return unpacked
 
 
+LARGE_PROFILES = ("large", "release")
+
+
+def record_large_memory(data: Path, line: str, results: Path, fresh: bool, site: str | None) -> str:
+    """Память ночного прогона: какую вершину линии `large` проверил последним.
+
+    Ночной workflow читает её с сайта и пропускает линию, чья вершина на месте.
+    Прогон по тегу пишет ту же память: после тега на вершине ночью — пропуск.
+    Линия без такого прогона переносит память с сайта, иначе каждая
+    пересборка страниц стирала бы её.
+    """
+    target = data / "profiles" / "large.json"
+    signature = results / "run.json"
+    if fresh and signature.is_file():
+        run = json.loads(signature.read_text(encoding="utf-8"))
+        if run.get("profile") in LARGE_PROFILES:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            memory = {key: run.get(key, "") for key in ("sha", "at", "run_url", "run_id", "profile")}
+            target.write_text(json.dumps(memory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            return f"память large записана: {run.get('sha', '')[:7]}"
+    if site and fetch(f"{site}/data/{line}/profiles/large.json", target):
+        return "память large перенесена с сайта"
+    return "памяти large нет"
+
+
 def record_run(data: Path, line: str, fresh: bool, args: argparse.Namespace) -> None:
     """Подписать отчёт тем прогоном, который его дал.
 
@@ -189,9 +214,10 @@ def publish_line(out: Path, line: str, results: Path, fresh: bool, args: argpars
     if summary.is_file():
         shutil.copy2(summary, data / "summary.json")
     record_run(data, line, fresh, args)
+    memory = record_large_memory(data, line, results, fresh, args.site)
     return f"{line}: отчёт собран, файлов истории {carried}, результаты " + (
         "свежие" if fresh else "с сайта, вершина истории снята"
-    )
+    ) + f", {memory}"
 
 
 def build_reports(out: Path, args: argparse.Namespace) -> list[str]:

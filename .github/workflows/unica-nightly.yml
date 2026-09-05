@@ -1,0 +1,82 @@
+name: Unica Nightly
+
+# Ночной прогон тяжёлого яруса. Расписание у GitHub работает только на ветке
+# по умолчанию, поэтому workflow один: он сам перечисляет открытые линии тем
+# же правилом, что и сайт, и гонит только те, чья вершина сдвинулась с
+# прошлого такого прогона — память о нём лежит на сайте. Линия и её вершина
+# едут в подписи артефактов: у прогона по расписанию `head_branch` всегда
+# `main`. Ярус пуст до расстановки размеров и честно гоняет ноль.
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unica-nightly
+  cancel-in-progress: false
+
+jobs:
+  lines:
+    name: Перечислить сдвинувшиеся линии
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.lines.outputs.matrix }}
+      count: ${{ steps.lines.outputs.count }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - id: lines
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SITE: https://ingvarconsulting.github.io/unica
+        run: |
+          set -euo pipefail
+          python scripts/ci/nightly-lines.py --repo "$GITHUB_REPOSITORY" --site "$SITE" \
+            --out .build-matrix.json --summary "$GITHUB_STEP_SUMMARY" >> "$GITHUB_OUTPUT"
+
+  large:
+    name: Large (${{ matrix.line }}, ${{ matrix.runner }})
+    needs: lines
+    # Пустая матрица — линий со сдвигом нет: пропуск по делу, а не отказ.
+    if: needs.lines.outputs.count != '0'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.lines.outputs.matrix) }}
+    env:
+      RUN_LINE: ${{ matrix.line }}
+      RUN_SHA: ${{ matrix.sha }}
+      RUNNER_LABEL: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      # Версия закреплена: исполнитель тестов — часть контракта прогона.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.143
+      # План с подписью — до тестов: упавший раннер не унесёт его с собой.
+      - run: python3 scripts/ci/run-tests.py --profile large --ecosystem rust --plan-only --results .build/results --runner "$RUNNER_LABEL" --line "$RUN_LINE" --sha "$RUN_SHA"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: plan-${{ matrix.line }}-rust-${{ matrix.runner }}
+          path: .build/results
+          retention-days: 7
+          overwrite: true
+      - run: python3 scripts/ci/run-tests.py --profile large --ecosystem rust --results .build/results --runner "$RUNNER_LABEL" --line "$RUN_LINE" --sha "$RUN_SHA"
+      # Результаты едут артефактом и при красном прогоне: ради них он и шёл.
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-${{ matrix.line }}-rust-${{ matrix.runner }}
+          path: .build/results
+          retention-days: 7
+          overwrite: true

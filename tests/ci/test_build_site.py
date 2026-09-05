@@ -42,5 +42,29 @@ class UnwindHistoryTests(unittest.TestCase):
         self.assertEqual([{"status": "passed"}], tests["old"]["items"])
 
 
+class LargeMemoryTests(unittest.TestCase):
+    """Память ночного прогона живёт на сайте и пишется прогоном large или тегом."""
+
+    def test_large_or_release_run_writes_memory_and_others_keep_the_site_copy(self) -> None:
+        module = load_module()
+        root = Path(tempfile.mkdtemp(prefix="memory-"))
+        results = root / "results"
+        results.mkdir()
+        (results / "run.json").write_text(json.dumps({
+            "sha": "abc1234567", "at": "2026-09-05T01:30:00Z", "run_url": "https://x/runs/7", "run_id": "7", "profile": "large",
+        }), encoding="utf-8")
+
+        note = module.record_large_memory(root / "data", "main", results, fresh=True, site=None)
+
+        memory = json.loads((root / "data" / "profiles" / "large.json").read_text(encoding="utf-8"))
+        self.assertEqual((memory["sha"], memory["profile"]), ("abc1234567", "large"))
+        self.assertIn("записана", note)
+
+        (results / "run.json").write_text(json.dumps({"sha": "def", "profile": "main"}), encoding="utf-8")
+        note = module.record_large_memory(root / "data2", "main", results, fresh=True, site=None)
+        self.assertFalse((root / "data2" / "profiles" / "large.json").exists())
+        self.assertIn("нет", note)
+
+
 if __name__ == "__main__":
     unittest.main()
