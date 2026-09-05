@@ -500,10 +500,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         text = self.release_text()
 
         self.assertIn(
-            "GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || "
+            "GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'merge_group' && 'queue' || "
             "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}",
             text,
         )
+        # Очередь слияния: конвейер отвечает на merge_group, иначе очередь ждёт вечно.
+        self.assertIn("  merge_group:\n    types: [checks_requested]", text)
         self.assertNotIn("run-tests.py --profile all", text)
 
     def test_line_rides_in_the_signature_and_tags_resolve_to_a_release_line(self) -> None:

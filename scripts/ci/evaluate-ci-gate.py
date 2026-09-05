@@ -102,15 +102,18 @@ def expected_results(
     # Push в main или релизную линию — ворота линии: полный набор тестов без
     # упаковки. Отсюда сайт собирает опубликованный отчёт.
     is_branch = event_name == "push" and ref.startswith("refs/heads/")
+    # Очередь слияния — ворота будущего main: полный набор без отбора и без
+    # упаковки, как push в ветку.
+    is_queue = event_name == "merge_group"
     is_manual = event_name == "workflow_dispatch"
     is_pr = event_name == "pull_request"
-    if not (is_tag or is_branch or is_manual or is_pr):
-        invalid["event"] = (f"{event_name}:{ref}", "pull_request, branch push, tag push, or workflow_dispatch")
+    if not (is_tag or is_branch or is_queue or is_manual or is_pr):
+        invalid["event"] = (f"{event_name}:{ref}", "pull_request, merge_group, branch push, tag push, or workflow_dispatch")
 
-    if (is_tag or is_branch or is_manual) and not all(values.values()):
+    if (is_tag or is_branch or is_queue or is_manual) and not all(values.values()):
         invalid["classification"] = (
             ", ".join(name for name, enabled in values.items() if not enabled) or "invalid",
-            "all contours enabled for tag, branch push or workflow_dispatch",
+            "all contours enabled for tag, branch push, merge_group or workflow_dispatch",
         )
 
     full_matrix = values["platform_changed"] or values["toolchain_changed"] or values["ci_changed"]
@@ -144,6 +147,8 @@ def expected_results(
         contour = "full"
     elif is_branch:
         contour = "branch"
+    elif is_queue:
+        contour = "queue"
     elif not is_pr:
         contour = "invalid"
     elif all(values.values()) or values["ci_changed"]:

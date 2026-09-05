@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  # Очередь слияния: прогон на будущем состоянии main пачкой pull request.
+  # Здесь ловится то, что отбор по размеру на pull request пропускает.
+  merge_group:
+    types: [checks_requested]
   # Push в main и релизную линию — ворота линии: полный набор тестов без
   # отбора по файлам и без упаковки. Отсюда сайт собирает опубликованный
   # отчёт (`workflow_run` в unica-pages.yml). Упаковка, холодный старт и
@@ -16,12 +20,10 @@ on:
 permissions:
   contents: read
 
-# Ворота → профиль исполнителя: pull request — `pr`, push в ветку и ручной
-# запуск — `main`, тег — `release`; очередь слияния (`queue`) появится вместе
-# с ней. Сегодня каждый профиль гоняет всё, разница — только в подписи
-# результатов; отбор по размеру придёт вместе с расстановкой размеров.
+# Ворота → профиль исполнителя: pull request — `pr`, очередь слияния —
+# `queue`, push в ветку и ручной запуск — `main`, тег — `release`.
 env:
-  GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}
+  GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'merge_group' && 'queue' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
