@@ -482,7 +482,7 @@ fn prepare_cfe_borrow_with_trace(
         }
     }
 
-    cfe_borrow_normalize_lxml_config_serialization(&mut ext_text);
+    cfe_borrow_normalize_empty_default_roles(&mut ext_text);
     write_plan.write_utf8_bom(&ext_path, &ext_text)?;
     registered_format_dependencies.extend(cfe_registered_xml_dependency_paths_with_reader(
         &ext_path,
@@ -2173,22 +2173,17 @@ pub(crate) fn cfe_borrow_add_to_child_objects(
     Ok(())
 }
 
-pub(crate) fn cfe_borrow_normalize_lxml_config_serialization(ext_text: &mut String) {
-    if ext_text.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>") {
-        *ext_text = ext_text.replacen(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
-            1,
-        );
-    }
+/// Collapses an empty `DefaultRoles` pair to the self-closing form the platform
+/// emits.
+///
+/// This used to normalize the whole descriptor to the serialization of the
+/// retired Python writer: it lowercased the XML declaration, escaped every CRLF
+/// inside `ChildObjects` as `&#13;`, and appended a trailing newline. Platform
+/// dumps do none of that — `DumpConfigToFiles` writes `encoding="UTF-8"`, plain
+/// CRLF, and no newline after `</MetaDataObject>` — so those three rewrites made
+/// every borrow diverge from the format Designer round-trips.
+pub(crate) fn cfe_borrow_normalize_empty_default_roles(ext_text: &mut String) {
     *ext_text = ext_text.replace("<DefaultRoles></DefaultRoles>", "<DefaultRoles/>");
-    if let Some((start, end, _)) = cf_edit_element_range(ext_text, "ChildObjects") {
-        let child_objects = ext_text[start..end].replace("\r\n", "&#13;\n");
-        ext_text.replace_range(start..end, &child_objects);
-    }
-    if !ext_text.ends_with('\n') {
-        ext_text.push('\n');
-    }
 }
 
 pub(crate) fn cfe_borrow_form_shell(
@@ -3214,7 +3209,7 @@ pub(crate) fn cfe_borrow_register_form(
             1,
         );
     }
-    cfe_borrow_normalize_lxml_config_serialization(&mut text);
+    cfe_borrow_normalize_empty_default_roles(&mut text);
     write_plan.write_utf8_bom(&object_file, &text)?;
     Ok(())
 }
@@ -8422,6 +8417,72 @@ pub(crate) mod tests {
                 "every change names its effect: {change}"
             );
         }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// The extension descriptor keeps the serialization `DumpConfigToFiles`
+    /// emits, not the one the retired Python writer produced.
+    ///
+    /// Borrow used to post-process the descriptor into the shape of that old
+    /// writer: it lowercased the XML declaration, escaped every CRLF inside
+    /// `ChildObjects` as `&#13;`, and appended a newline the platform never
+    /// writes. Measured against `DumpConfigToFiles` output of two unrelated
+    /// production extensions, all three diverge — the platform writes
+    /// `encoding="UTF-8"`, plain CRLF, zero `&#13;`, and nothing after
+    /// `</MetaDataObject>`. A descriptor in the old shape still loads, so the
+    /// divergence is invisible until the next platform dump rewrites it and
+    /// the diff appears on untouched lines.
+    #[test]
+    fn borrow_cfe_writes_the_platform_serialization_of_the_extension_descriptor() {
+        let context = temp_context("borrow-canonical-descriptor");
+        let (_, _, extension_owner) =
+            write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+        // A second registration is what makes the separator observable: the
+        // escaping only ever showed up between two `ChildObjects` entries.
+        write_file(
+            &extension_owner,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\r\n\
+\t<Configuration uuid=\"66666666-6666-6666-6666-666666666666\">\r\n\
+\t\t<InternalInfo/>\r\n\
+\t\t<Properties>\r\n\
+\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>\r\n\
+\t\t\t<Name>GuardedExtension</Name>\r\n\
+\t\t\t<ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>\r\n\
+\t\t\t<NamePrefix>GE_</NamePrefix>\r\n\
+\t\t</Properties>\r\n\
+\t\t<ChildObjects>\r\n\t\t\t<Catalog>Already</Catalog>\r\n\t\t</ChildObjects>\r\n\
+\t</Configuration>\r\n\
+</MetaDataObject>",
+        );
+
+        let outcome = borrow_cfe(&minimal_borrow_args(), &context);
+        assert!(outcome.ok, "{:?}", outcome.errors);
+
+        let published = fs::read_to_string(&extension_owner)
+            .expect("the extension descriptor is published")
+            .trim_start_matches('\u{feff}')
+            .to_string();
+
+        assert!(
+            !published.contains("&#13;"),
+            "the platform never escapes a line break inside ChildObjects: {published}"
+        );
+        assert!(
+            published.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
+            "the declaration keeps the platform spelling: {published}"
+        );
+        assert!(
+            published.contains(
+                "<ChildObjects>\r\n\t\t\t<Catalog>Already</Catalog>\r\n\t\t\t<Catalog>Items</Catalog>\r\n\t\t</ChildObjects>"
+            ),
+            "registrations are separated by a plain CRLF: {published}"
+        );
+        assert!(
+            published.ends_with("</MetaDataObject>"),
+            "no newline is appended after the root element: {published:?}"
+        );
 
         let _ = fs::remove_dir_all(&context.cwd);
     }

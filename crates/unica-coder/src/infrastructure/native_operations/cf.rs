@@ -3930,17 +3930,12 @@ pub(crate) fn cf_edit_child_objects_xml(children: &[(String, String)]) -> String
     if children.is_empty() {
         return "<ChildObjects/>".to_string();
     }
-    let mut body = String::from("<ChildObjects>\n");
-    for (index, (type_name, obj_name)) in children.iter().enumerate() {
+    let mut body = String::from("<ChildObjects>\r\n");
+    for (type_name, obj_name) in children {
         body.push_str(&format!(
-            "\t\t\t<{type_name}>{}</{type_name}>",
+            "\t\t\t<{type_name}>{}</{type_name}>\r\n",
             escape_xml(obj_name)
         ));
-        if index + 1 == children.len() {
-            body.push('\n');
-        } else {
-            body.push_str("\r\n");
-        }
     }
     body.push_str("\t\t</ChildObjects>");
     body
