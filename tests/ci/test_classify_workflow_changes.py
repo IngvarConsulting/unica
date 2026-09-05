@@ -250,6 +250,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "scripts/ci/allure_results.py",
             "scripts/ci/collect-results.py",
             "tests/ci/test_run_tests.py",
+            "tests/ci/test_gate_profiles.py",
             "tests/ci/test_allure_results.py",
             "tests/ci/test_collect_results.py",
         ):
