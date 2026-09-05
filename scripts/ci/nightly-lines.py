@@ -61,7 +61,12 @@ def has_platform(repo: str, line: str, gh) -> bool:
 
 
 def dispatch_large(line: str) -> None:
-    subprocess.run(["gh", "workflow", "run", LARGE_WORKFLOW, "--ref", line], check=True)
+    # `gh` печатает адрес прогона в stdout, а stdout этого скрипта — строки
+    # для GITHUB_OUTPUT: чужая строка там — отказ раннера. Адрес — в stderr.
+    completed = subprocess.run(
+        ["gh", "workflow", "run", LARGE_WORKFLOW, "--ref", line], check=True, capture_output=True, text=True
+    )
+    print(f"{line}: {completed.stdout.strip() or 'запущен'}", file=sys.stderr)
 
 
 def enumerate_lines(repo: str, site: str, now: datetime, *, gh, fetch, open_lines, platform=None) -> list[dict]:
