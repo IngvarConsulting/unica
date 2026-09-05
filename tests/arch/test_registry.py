@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -206,6 +207,177 @@ def evidence_reference_error(
         qualifier = " an executable test" if require_executable else ""
         return f"{owner}: {path_text} does not declare{qualifier} {name}"
     return None
+
+
+_MODULE_PATH_ATTRIBUTE = re.compile(r'\Apath\s*=\s*"(?P<path>[^"]+)"\Z')
+
+
+def _cargo_manifest(path: Path) -> dict:
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def _workspace_crates(root: Path) -> list[Path]:
+    """Crate directories the Cargo workspace at `root` builds."""
+    manifest = _cargo_manifest(root / "Cargo.toml")
+    members = manifest.get("workspace", {}).get("members")
+    if members is None:
+        return [root] if "package" in manifest else []
+    crates = [root] if "package" in manifest else []
+    crates.extend(
+        candidate
+        for member in members
+        for candidate in sorted(root.glob(member))
+        if (candidate / "Cargo.toml").is_file()
+    )
+    return crates
+
+
+def _crate_roots(crate: Path) -> set[Path]:
+    """Root files of every target: explicit `Cargo.toml` paths and auto-discovered ones."""
+    manifest = _cargo_manifest(crate / "Cargo.toml")
+    package = manifest.get("package", {})
+    roots: set[Path] = set()
+
+    def add(relative: object) -> None:
+        if isinstance(relative, str) and (crate / relative).is_file():
+            roots.add((crate / relative).resolve())
+
+    add(manifest.get("lib", {}).get("path", "src/lib.rs"))
+    build = package.get("build", "build.rs")
+    if build is not False:
+        add(build)
+    for kind, directory, auto in (
+        ("bin", "src/bin", "autobins"),
+        ("test", "tests", "autotests"),
+        ("bench", "benches", "autobenches"),
+        ("example", "examples", "autoexamples"),
+    ):
+        for target in manifest.get(kind, []):
+            add(target.get("path"))
+        if not package.get(auto, True):
+            continue
+        if kind == "bin":
+            add("src/main.rs")
+        for pattern in ("*.rs", "*/main.rs"):
+            roots.update(path.resolve() for path in (crate / directory).glob(pattern))
+    return roots
+
+
+def _attached_module_path(source: bytes, node) -> str | None:
+    """The `#[path = "..."]` attached to a module declaration, if any."""
+    siblings = node.parent.children if node.parent is not None else []
+    index = next(
+        (position for position, sibling in enumerate(siblings) if sibling == node),
+        None,
+    )
+    if index is None:
+        return None
+    for sibling in reversed(siblings[:index]):
+        if sibling.type in {"line_comment", "block_comment"}:
+            continue
+        if sibling.type != "attribute_item":
+            break
+        attribute = next(
+            (child for child in sibling.named_children if child.type == "attribute"),
+            None,
+        )
+        if attribute is None:
+            continue
+        match = _MODULE_PATH_ATTRIBUTE.match(
+            source[attribute.start_byte : attribute.end_byte].decode("utf-8")
+        )
+        if match:
+            return match.group("path")
+    return None
+
+
+def _included_literal(source: bytes, node) -> str | None:
+    """The path of an `include!("...")` with one plain literal; composed forms are skipped."""
+    macro = node.child_by_field_name("macro")
+    if macro is None or source[macro.start_byte : macro.end_byte] != b"include":
+        return None
+    tokens = next(
+        (child for child in node.named_children if child.type == "token_tree"), None
+    )
+    if tokens is None or len(tokens.named_children) != 1:
+        return None
+    literal = tokens.named_children[0]
+    if literal.type != "string_literal":
+        return None
+    content = next(
+        (child for child in literal.named_children if child.type == "string_content"),
+        None,
+    )
+    if content is None:
+        return None
+    return source[content.start_byte : content.end_byte].decode("utf-8")
+
+
+def _module_directory(file: Path, *, is_root: bool) -> Path:
+    """Where a file's `mod name;` children live: mod-rs files own their directory."""
+    if is_root or file.name == "mod.rs":
+        return file.parent
+    return file.parent / file.stem
+
+
+def rust_sources_reached(root: Path) -> set[Path]:
+    """Every `.rs` file the compiler opens starting from the workspace's target roots.
+
+    An edge is a `mod name;` declaration — honouring `#[path]` and the
+    directory nesting of inline `mod name { ... }` blocks — or an
+    `include!("...")` with one literal. A file no edge reaches keeps its
+    `#[test]` attributes and bodies, yet no target compiles it, so nothing in
+    it ever runs.
+    """
+    parser = Parser(Language(tree_sitter_rust.language()))
+    reached: set[Path] = set()
+    pending = [
+        (crate_root, _module_directory(crate_root, is_root=True))
+        for crate in _workspace_crates(root)
+        for crate_root in _crate_roots(crate)
+    ]
+    while pending:
+        file, module_directory = pending.pop()
+        if file in reached or not file.is_file():
+            continue
+        reached.add(file)
+        source = file.read_bytes()
+        stack = [
+            (child, module_directory, 0)
+            for child in parser.parse(source).root_node.children
+        ]
+        while stack:
+            node, directory, depth = stack.pop()
+            if node.type == "mod_item":
+                name_node = node.child_by_field_name("name")
+                body = node.child_by_field_name("body")
+                if name_node is None:
+                    continue
+                name = source[name_node.start_byte : name_node.end_byte].decode("utf-8")
+                if body is not None:
+                    stack.extend(
+                        (child, directory / name, depth + 1) for child in body.children
+                    )
+                    continue
+                explicit = _attached_module_path(source, node)
+                if explicit is not None:
+                    base = file.parent if depth == 0 else directory
+                    target = (base / explicit).resolve()
+                    pending.append((target, _module_directory(target, is_root=False)))
+                    continue
+                for candidate in (directory / f"{name}.rs", directory / name / "mod.rs"):
+                    if candidate.is_file():
+                        pending.append((candidate.resolve(), (directory / name).resolve()))
+                continue
+            if node.type == "macro_invocation":
+                included = _included_literal(source, node)
+                if included is not None:
+                    pending.append(((file.parent / included).resolve(), directory))
+            stack.extend((child, directory, depth) for child in node.children)
+    return reached
 
 
 def contract_record(props: dict) -> REGISTRY.Record:
@@ -665,6 +837,81 @@ class ReferenceTests(unittest.TestCase):
                 if error:
                     offenders.append(error)
         self.assertEqual(offenders, [])
+
+    def test_every_rust_evidence_is_compiled_from_a_crate_root(self) -> None:
+        """A Rust check the compiler never reaches is prose with `#[test]` on it.
+
+        `mod` declarations, not the file system, decide what a crate builds. A
+        file dropped from its `mod` list keeps every attribute and body the
+        textual resolution looks for, yet no target compiles it, so a record
+        citing it names a test that has not run since the declaration went
+        away. The same holds for `realized` on a decision.
+        """
+        reached = rust_sources_reached(REPO_ROOT)
+        offenders = []
+        for record in REGISTRY.records():
+            prop = "realized" if record.kind == "decision" else "check"
+            for evidence in REGISTRY.evidence_names(record.props.get(prop)):
+                relative = Path(evidence.partition("::")[0])
+                if relative.suffix != ".rs":
+                    continue
+                if (REPO_ROOT / relative).resolve() not in reached:
+                    offenders.append(
+                        f"{record.relative}: {relative.as_posix()} is not reached "
+                        "from any crate root"
+                    )
+        self.assertEqual(offenders, [])
+
+    def test_rust_module_graph_follows_declarations_paths_includes_and_cargo_targets(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            crate = root / "crates" / "demo"
+            crate.mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/*"]\n', encoding="utf-8"
+            )
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n\n'
+                '[[test]]\nname = "declared"\npath = "tests/declared/entry.rs"\n',
+                encoding="utf-8",
+            )
+            sources = {
+                "src/lib.rs": (
+                    "#[cfg(test)]\nmod tests;\n"
+                    '#[path = "custom/renamed.rs"]\nmod renamed;\n'
+                    "mod inline { mod nested; }\n"
+                ),
+                "src/tests.rs": "#[test]\nfn reached() {}\n",
+                "src/custom/renamed.rs": "mod deeper;\n",
+                "src/custom/renamed/deeper.rs": "",
+                "src/inline/nested.rs": "",
+                "src/main.rs": "fn main() {}\n",
+                "src/bin/tool.rs": "fn main() {}\n",
+                "src/orphan.rs": "#[test]\nfn never_compiled() {}\n",
+                "tests/auto.rs": 'include!("shared/body.rs");\n',
+                "tests/shared/body.rs": "#[test]\nfn included() {}\n",
+                "tests/shared/quoted.rs": (
+                    'const FIXTURE: &str = r#"include!("shared/quoted.rs");"#;\n'
+                ),
+                "tests/declared/entry.rs": "mod helper;\n",
+                "tests/declared/helper.rs": "",
+                "benches/speed.rs": "",
+            }
+            for relative, text in sources.items():
+                path = crate / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+
+            reached = {
+                path.relative_to(crate).as_posix() for path in rust_sources_reached(root)
+            }
+
+            self.assertEqual(
+                reached,
+                set(sources) - {"src/orphan.rs", "tests/shared/quoted.rs"},
+            )
 
     def test_evidence_reference_requires_an_exact_python_or_rust_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

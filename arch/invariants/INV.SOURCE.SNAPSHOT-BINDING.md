@@ -1,9 +1,9 @@
 ---
 id: INV.SOURCE.SNAPSHOT-BINDING
-status: active
+status: superseded
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/platform_xml_resources.rs::source_resources_ids_are_valid_only_inside_the_snapshot_that_issued_them
+decision: DEC.2026-09-05.SOURCE-SNAPSHOT-PROVIDER-RETIRED
+check: tests/ci/test_acceptance_scenarios.py::test_every_wire_answers_its_frozen_classes
 scope: [source]
 ---
 
@@ -11,3 +11,7 @@ scope: [source]
 
 Идентификатор ресурса нельзя прочитать с идентификатором другого снимка, даже
 если оба снимка получены от одного поставщика для одного источника.
+
+Правило снято вместе с поставщиком снимков: идентификаторов ресурсов больше
+нет, а курсор канонического `view` связан с вопросом и ревизией
+(`INV.SOURCE.REVISION-BOUND-VIEW-CURSOR`).

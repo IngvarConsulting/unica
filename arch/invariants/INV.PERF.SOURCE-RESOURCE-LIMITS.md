@@ -1,9 +1,9 @@
 ---
 id: INV.PERF.SOURCE-RESOURCE-LIMITS
-status: active
+status: superseded
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/platform_xml_resources.rs::source_resource_limits_and_cancellation_matrix_is_exact
+decision: DEC.2026-09-05.SOURCE-SNAPSHOT-PROVIDER-RETIRED
+check: tests/ci/test_acceptance_scenarios.py::test_every_wire_answers_its_frozen_classes
 scope: [product, source]
 ---
 
@@ -11,3 +11,7 @@ scope: [product, source]
 
 Снимок содержит не более 100 ресурсов, страница — не более 50, чтение — не
 более 64 КиБ, срок жизни равен пяти минутам, а полнота имеет закрытые значения.
+
+Правило снято вместе с читателями `unica.source.resources` и
+`unica.source.read`: канонический `view` отвечает страницей по курсору, а не
+манифестом снимка с этими лимитами.
