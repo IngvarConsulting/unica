@@ -124,27 +124,77 @@ def unwind_history(history: Path) -> int:
     return unwound
 
 
-def previous_results(site: str | None, line: str, work: Path) -> Path | None:
-    """Взять результаты последнего опубликованного прогона линии с сайта.
+SITE_PROFILES = ("main", "release", "large", "all")
 
-    Сайт хранит их у себя, поэтому срок жизни артефактов прогона ни на что не
-    влияет: линия, которая сегодня не собиралась, всё равно покажет прошлый
-    отчёт, а не исчезнет с сайта.
-    """
-    if not site:
-        return None
-    archive = work / f"{line}.tar.gz"
-    if not fetch(f"{site}/data/{line}/results.tar.gz", archive):
-        return None
-    unpacked = work / line / "results"
-    unpacked.mkdir(parents=True, exist_ok=True)
+
+def unpack(archive: Path, target: Path) -> Path:
+    target.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, "r:gz") as bundle:
         # Архив приезжает с сайта, а не из дерева. Сверять имена самому мало:
         # ссылка внутри архива уводит наружу уже после проверки. `data` —
         # фильтр самого tarfile: он отбрасывает и абсолютные пути, и `..`, и
         # ссылки за пределы каталога.
-        bundle.extractall(unpacked, filter="data")
-    return unpacked
+        bundle.extractall(target, filter="data")
+    return target
+
+
+def signature_of(results: Path | None) -> dict:
+    path = results / "run.json" if results is not None else None
+    return json.loads(path.read_text(encoding="utf-8")) if path is not None and path.is_file() else {}
+
+
+def stored_results(site: str | None, line: str, work: Path) -> dict[str, tuple[Path, Path]]:
+    """Хранимые результаты линии по профилям: профиль → (архив, каталог).
+
+    Сайт хранит их у себя, поэтому срок жизни артефактов прогона ни на что не
+    влияет: линия, которая сегодня не собиралась, всё равно покажет прошлый
+    отчёт, а не исчезнет с сайта. Архив без профиля — из прежней раскладки —
+    считается результатами `main`.
+    """
+    if not site:
+        return {}
+    found: dict[str, tuple[Path, Path]] = {}
+    for profile in SITE_PROFILES:
+        archive = work / f"{line}-{profile}.tar.gz"
+        if fetch(f"{site}/data/{line}/results/{profile}.tar.gz", archive):
+            found[profile] = (archive, unpack(archive, work / line / profile))
+    if not found:
+        archive = work / f"{line}-main.tar.gz"
+        if fetch(f"{site}/data/{line}/results.tar.gz", archive):
+            found["main"] = (archive, unpack(archive, work / line / "main"))
+    return found
+
+
+def merge_results(sources: list[Path], out: Path) -> int:
+    """Объединить результаты: по тесту и раннеру побеждает поздняя запись.
+
+    Отчёт линии — последнее известное состояние по всем ярусам: push обновляет
+    свою часть, ночной `large` — свою, и ни один не стирает другую. Ключ —
+    `historyId`, то есть имя теста и раннер; все записи выигравшего источника
+    с этим ключом идут вместе, чтобы попытки повторов не потерялись. Метаданные
+    — от первого источника, у которого они есть: свежий идёт первым.
+    """
+    winners: dict[str, tuple[int, list[Path]]] = {}
+    for source in sources:
+        groups: dict[str, tuple[int, list[Path]]] = {}
+        for record in source.glob("*-result.json"):
+            entry = json.loads(record.read_text(encoding="utf-8"))
+            key = entry.get("historyId") or record.name
+            stop, paths = groups.get(key, (0, []))
+            groups[key] = (max(stop, int(entry.get("stop") or 0)), [*paths, record])
+        for key, (stop, paths) in groups.items():
+            if key not in winners or stop > winners[key][0]:
+                winners[key] = (stop, paths)
+    out.mkdir(parents=True, exist_ok=True)
+    for _, paths in winners.values():
+        for record in paths:
+            shutil.copy2(record, out / record.name)
+    for name in ("categories.json", "environment.properties", "executor.json", "run.json"):
+        for source in sources:
+            if (source / name).is_file():
+                shutil.copy2(source / name, out / name)
+                break
+    return len(winners)
 
 
 LARGE_PROFILES = ("large", "release")
@@ -190,10 +240,18 @@ def record_run(data: Path, line: str, fresh: bool, args: argparse.Namespace) -> 
     )
 
 
-def publish_line(out: Path, line: str, results: Path, fresh: bool, args: argparse.Namespace) -> str:
-    """Собрать отчёт линии и положить рядом сырые данные для следующего раза."""
+def publish_line(
+    out: Path,
+    line: str,
+    results: Path,
+    fresh: Path | None,
+    profile: str | None,
+    stored: dict[str, tuple[Path, Path]],
+    args: argparse.Namespace,
+) -> str:
+    """Собрать отчёт линии из объединения и положить рядом сырые данные по профилям."""
     carried = carry_history(results, args.site, line)
-    if not fresh and carried:
+    if fresh is None and carried:
         unwind_history(results / "history")
     if shutil.which(args.allure_command) is None:
         raise SystemExit(
@@ -205,19 +263,25 @@ def publish_line(out: Path, line: str, results: Path, fresh: bool, args: argpars
         check=True,
     )
 
+    # Сырые результаты хранятся по профилям: свежий профиль перезаписывает
+    # свой архив, остальные едут дальше как есть.
     data = out / "data" / line
-    data.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(data / "results.tar.gz", "w:gz") as bundle:
-        for item in sorted(results.iterdir()):
-            bundle.add(item, arcname=item.name)
+    (data / "results").mkdir(parents=True, exist_ok=True)
+    if fresh is not None:
+        with tarfile.open(data / "results" / f"{profile}.tar.gz", "w:gz") as bundle:
+            for item in sorted(fresh.iterdir()):
+                if item.name != "history":
+                    bundle.add(item, arcname=item.name)
+    for other, (archive, _) in stored.items():
+        shutil.copy2(archive, data / "results" / f"{other}.tar.gz")
     summary = report / "widgets" / "summary.json"
     if summary.is_file():
         shutil.copy2(summary, data / "summary.json")
-    record_run(data, line, fresh, args)
-    memory = record_large_memory(data, line, results, fresh, args.site)
+    record_run(data, line, fresh is not None, args)
+    memory = record_large_memory(data, line, fresh if fresh is not None else results, fresh is not None, args.site)
     return f"{line}: отчёт собран, файлов истории {carried}, результаты " + (
-        "свежие" if fresh else "с сайта, вершина истории снята"
-    ) + f", {memory}"
+        f"свежие ({profile})" if fresh is not None else "с сайта, вершина истории снята"
+    ) + f", профилей в объединении {len(stored) + (1 if fresh is not None else 0)}, {memory}"
 
 
 def build_reports(out: Path, args: argparse.Namespace) -> list[str]:
@@ -231,12 +295,23 @@ def build_reports(out: Path, args: argparse.Namespace) -> list[str]:
 
     notes = []
     for entry in args.line:
-        line, _, fresh = entry.partition("=")
-        results = Path(fresh) if fresh else previous_results(args.site, line, work)
-        if results is None or not results.is_dir():
+        line, _, fresh_dir = entry.partition("=")
+        fresh = Path(fresh_dir) if fresh_dir else None
+        if fresh is not None and not fresh.is_dir():
+            notes.append(f"{line}: каталога свежих результатов {fresh} нет")
+            continue
+        stored = stored_results(args.site, line, work)
+        profile = (signature_of(fresh).get("profile") or "main") if fresh is not None else None
+        others = {name: pair for name, pair in stored.items() if name != profile}
+        if fresh is None and not others:
             notes.append(f"{line}: результатов нет — ни свежих, ни на сайте")
             continue
-        notes.append(publish_line(out, line, results, bool(fresh), args))
+        # Хранимые — от новых к старым: метаданные пересборки идут от последнего прогона.
+        ordered = sorted(others.values(), key=lambda pair: signature_of(pair[1]).get("at", ""), reverse=True)
+        sources = ([fresh] if fresh is not None else []) + [directory for _, directory in ordered]
+        merged = work / line / "merged"
+        records = merge_results(sources, merged)
+        notes.append(publish_line(out, line, merged, fresh, profile, others, args) + f", записей {records}")
     return notes
 
 
