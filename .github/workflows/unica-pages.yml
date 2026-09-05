@@ -18,7 +18,7 @@ on:
   push:
     branches: [main, "release-v*"]
   workflow_run:
-    workflows: ["Build Unica Codex Plugin", "Unica Nightly"]
+    workflows: ["Build Unica Codex Plugin", "Unica Large"]
     types: [completed]
     # Фильтр смотрит на `head_branch` прогона-источника: у push в ветку это
     # ветка, у тега — имя тега, у ночного прогона — всегда `main`.

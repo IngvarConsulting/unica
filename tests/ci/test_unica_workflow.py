@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml"
 NIGHTLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-nightly.yml"
+LARGE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-large.yml"
 PAGES_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-pages.yml"
 PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-unica-marketplace.yml"
 LEGACY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-legacy-migration.yml"
@@ -130,6 +131,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
     def nightly_text(self) -> str:
         return NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
+
+    def large_text(self) -> str:
+        return LARGE_WORKFLOW.read_text(encoding="utf-8")
 
     def pages_text(self) -> str:
         return PAGES_WORKFLOW.read_text(encoding="utf-8")
@@ -425,7 +429,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_javascript_actions_use_node24_compatible_majors(self) -> None:
         release = self.release_text()
         publish = self.publish_text()
-        combined = release + publish + self.nightly_text() + self.pages_text()
+        combined = release + publish + self.nightly_text() + self.large_text() + self.pages_text()
 
         self.assertIn("actions/checkout@v7", combined)
         self.assertIn("actions/setup-python@v7", release)
@@ -514,28 +518,31 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # План едет каталогом вместе с подписью, а не одним файлом.
         self.assertNotIn("path: .build/results/plan.json", text)
 
-    def test_nightly_runs_only_moved_lines_and_signs_each_artifact_with_its_line(self) -> None:
-        """Ночь: одна джоба перечисления, матрица из сдвинувшихся линий, ярус large."""
-        text = self.nightly_text()
-        lines = job_block(text, "lines")
-        large = job_block(text, "large")
+    def test_nightly_enumerates_lines_and_large_runs_on_the_line_itself(self) -> None:
+        """Ночь перечисляет и запускает; large идёт на самой линии со стандартным checkout."""
+        nightly = self.nightly_text()
+        large = self.large_text()
+        job = job_block(large, "large")
 
-        self.assertIn("schedule:", text)
-        self.assertIn("workflow_dispatch:", text)
-        self.assertIn('python scripts/ci/nightly-lines.py --repo "$GITHUB_REPOSITORY" --site "$SITE"', lines)
-        self.assertIn("if: needs.lines.outputs.count != '0'", large)
-        self.assertIn("matrix: ${{ fromJSON(needs.lines.outputs.matrix) }}", large)
-        self.assertIn("ref: ${{ matrix.sha }}", large)
-        self.assertIn('--profile large --ecosystem rust --plan-only --results .build/results --runner "$RUNNER_LABEL" --line "$RUN_LINE" --sha "$RUN_SHA"', large)
-        self.assertIn("name: plan-${{ matrix.line }}-rust-${{ matrix.runner }}", large)
-        self.assertIn("name: results-${{ matrix.line }}-rust-${{ matrix.runner }}", large)
-        self.assertIn("if: always()", large)
+        self.assertIn("schedule:", nightly)
+        self.assertIn("actions: write", nightly)
+        self.assertIn('python scripts/ci/nightly-lines.py --repo "$GITHUB_REPOSITORY" --site "$SITE"', nightly)
+        self.assertIn("--dispatch", nightly)
+        self.assertNotIn("ref:", nightly)
+        self.assertIn("workflow_dispatch:", large)
+        self.assertIn("name: Rust tests (${{ matrix.runner }})", job)
+        self.assertIn("RUN_LINE: ${{ github.ref_name }}", job)
+        self.assertNotIn("ref: ${{", job)
+        self.assertIn('--profile large --ecosystem rust --plan-only --results .build/results --runner "$RUNNER_LABEL" --line "$RUN_LINE"', job)
+        self.assertIn("name: plan-rust-${{ matrix.runner }}", job)
+        self.assertIn("name: results-rust-${{ matrix.runner }}", job)
+        self.assertIn("if: always()", job)
 
     def test_pages_take_results_from_red_runs_and_from_the_nightly(self) -> None:
         """Красный прогон — тоже результат; ночь и тег — тоже источники."""
         text = self.pages_text()
 
-        self.assertIn('workflows: ["Build Unica Codex Plugin", "Unica Nightly"]', text)
+        self.assertIn('workflows: ["Build Unica Codex Plugin", "Unica Large"]', text)
         self.assertIn('branches: [main, "release-v*", "v*"]', text)
         self.assertIn("github.event.workflow_run.conclusion == 'failure'", text)
         self.assertIn("github.event.workflow_run.event == 'schedule'", text)

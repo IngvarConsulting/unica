@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Перечислить линии, чья вершина сдвинулась с прошлого прогона `large`.
+"""Перечислить линии, чья вершина сдвинулась с прошлого прогона `large`, и запустить его.
 
 Расписание у GitHub работает только на ветке по умолчанию, поэтому ночной
-workflow один и сам перечисляет открытые линии тем же правилом, что и сайт.
-Память о прошлом прогоне лежит на сайте: `data/<линия>/profiles/large.json` —
-коммит, время и ссылка. Линия идёт в матрицу, если памяти нет или её коммит
-не равен вершине линии. Прогон по тегу пишет ту же память, поэтому после тега
-на вершине ночью — пропуск.
+workflow один: он перечисляет открытые линии тем же правилом, что и сайт, и
+для каждой сдвинувшейся запускает `unica-large.yml` на самой линии — там
+`github.sha` и `github.ref_name` и есть вершина и линия, и checkout стандартный.
+Память о прошлом прогоне лежит на сайте: `data/<линия>/profiles/large.json`
+— коммит, время и ссылка. Прогон по тегу пишет ту же память, поэтому после
+тега на вершине ночью — пропуск. Линия без `unica-large.yml` площадки не
+несёт и в ночь не идёт.
 """
 
 from __future__ import annotations
@@ -14,13 +16,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import subprocess
 import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-RUNNERS = ("ubuntu-latest", "macos-14")
+LARGE_WORKFLOW = "unica-large.yml"
 
 
 def load_site_status():
@@ -48,11 +51,28 @@ def head_sha(repo: str, line: str, gh) -> str:
     return data["commit"]["sha"]
 
 
-def enumerate_lines(repo: str, site: str, now: datetime, *, gh, fetch, open_lines) -> list[dict]:
+def has_platform(repo: str, line: str, gh) -> bool:
+    """Несёт ли линия ночной workflow; без него запускать нечего."""
+    try:
+        gh(repo, f"contents/.github/workflows/{LARGE_WORKFLOW}?ref={line}")
+    except subprocess.CalledProcessError:
+        return False
+    return True
+
+
+def dispatch_large(line: str) -> None:
+    subprocess.run(["gh", "workflow", "run", LARGE_WORKFLOW, "--ref", line], check=True)
+
+
+def enumerate_lines(repo: str, site: str, now: datetime, *, gh, fetch, open_lines, platform=None) -> list[dict]:
     """Каждая открытая линия с решением: гнать или пропустить, и почему."""
+    platform = platform or (lambda line: has_platform(repo, line, gh))
     decisions = []
     for line in ["main", *open_lines(repo, now)]:
         sha = head_sha(repo, line, gh)
+        if not platform(line):
+            decisions.append({"line": line, "sha": sha, "run": False, "reason": f"линия без площадки: нет {LARGE_WORKFLOW}"})
+            continue
         memory = fetch(f"{site}/data/{line}/profiles/large.json") or {}
         last = memory.get("sha", "")
         if not last:
@@ -65,16 +85,16 @@ def enumerate_lines(repo: str, site: str, now: datetime, *, gh, fetch, open_line
     return decisions
 
 
-def matrix(decisions: list[dict], runners: tuple[str, ...] = RUNNERS) -> dict:
-    """Полные сочетания линия × раннер: `include` без общих ключей матрица не сложит."""
-    return {
-        "include": [
-            {"line": d["line"], "sha": d["sha"], "runner": runner}
-            for d in decisions
-            if d["run"]
-            for runner in runners
-        ]
-    }
+def dispatch(decisions: list[dict], run_workflow=dispatch_large) -> list[str]:
+    """Запустить `large` на каждой линии со сдвигом; вернуть запущенные."""
+    started = []
+    for decision in decisions:
+        if not decision["run"]:
+            continue
+        run_workflow(decision["line"])
+        decision["reason"] += " — запущен"
+        started.append(decision["line"])
+    return started
 
 
 def summary(decisions: list[dict]) -> str:
@@ -86,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", required=True)
     parser.add_argument("--site", required=True, help="адрес сайта с памятью прогонов")
-    parser.add_argument("--out", type=Path, required=True, help="куда записать матрицу")
+    parser.add_argument("--dispatch", action="store_true", help="запустить unica-large.yml на сдвинувшихся линиях")
     parser.add_argument("--summary", type=Path, default=None, help="куда дописать таблицу решений")
     args = parser.parse_args(argv)
 
@@ -94,16 +114,15 @@ def main(argv: list[str] | None = None) -> int:
     decisions = enumerate_lines(
         args.repo, args.site, datetime.now(timezone.utc), gh=status.gh, fetch=fetch_json, open_lines=status.open_lines
     )
-    chosen = matrix(decisions)
-    args.out.write_text(json.dumps(chosen, ensure_ascii=False) + "\n", encoding="utf-8")
+    started = dispatch(decisions) if args.dispatch else [d["line"] for d in decisions if d["run"]]
     table = summary(decisions)
     if args.summary is not None:
         with args.summary.open("a", encoding="utf-8") as handle:
             handle.write("## Ночной прогон: линии\n\n" + table)
     print(table, file=sys.stderr)
-    # Строки для GITHUB_OUTPUT: матрица одной строкой и число сочетаний.
-    print(f"matrix={json.dumps(chosen, ensure_ascii=False)}")
-    print(f"count={len(chosen['include'])}")
+    # Строки для GITHUB_OUTPUT: линии со сдвигом и их число.
+    print(f"lines={' '.join(started)}")
+    print(f"count={len(started)}")
     return 0
 
 
