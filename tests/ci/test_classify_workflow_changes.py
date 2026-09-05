@@ -94,7 +94,15 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                 )
 
     def test_cargo_and_toolchain_changes_require_full_rust_and_package_contours(self) -> None:
-        for path in ("Cargo.toml", "Cargo.lock", "crates/unica-coder/Cargo.toml", "rust-toolchain.toml"):
+        # `.config/nextest.toml` меняет, как гоняется каждая цель на каждом
+        # раннере, — тот же класс, что смена toolchain.
+        for path in (
+            "Cargo.toml",
+            "Cargo.lock",
+            "crates/unica-coder/Cargo.toml",
+            "rust-toolchain.toml",
+            ".config/nextest.toml",
+        ):
             with self.subTest(path=path):
                 self.assert_classification(
                     [path],
@@ -229,6 +237,24 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             ["scripts/dev/install-local-unica.sh"],
             ci_changed=True,
         )
+
+    def test_the_test_seam_and_its_guard_require_the_ci_contour(self) -> None:
+        """Шов решает, что гоняет каждая джоба: его правка — правка конвейера.
+
+        Иначе правка одного `run-tests.py` ехала бы контуром исходников и
+        могла бы тихо сузить прогон, который сама и должна была запустить.
+        """
+        for path in (
+            "scripts/ci/run-tests.py",
+            "scripts/ci/run-unittest.py",
+            "scripts/ci/allure_results.py",
+            "scripts/ci/collect-results.py",
+            "tests/ci/test_run_tests.py",
+            "tests/ci/test_allure_results.py",
+            "tests/ci/test_collect_results.py",
+        ):
+            with self.subTest(path=path):
+                self.assert_classification([path], ci_changed=True)
 
     def test_p0_release_proof_changes_route_package_and_assessment_contours(self) -> None:
         self.assert_classification(

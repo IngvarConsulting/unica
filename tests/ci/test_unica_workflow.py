@@ -133,9 +133,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         text = self.release_text()
 
         self.assertIn("cargo clippy --workspace --all-targets --all-features -- -D warnings", text)
-        self.assertIn("cargo test --workspace -- --test-threads=1", text)
-        self.assertIn("python -m unittest discover -s tests/ci --durations 20", text)
-        self.assertIn("python -m unittest discover -s tests/dev --durations 20", text)
+        # Наборы гоняет шов; сами команды закреплены тестом `test_run_tests`.
+        self.assertIn("python3 scripts/ci/run-tests.py --profile all --ecosystem rust --results", text)
+        self.assertIn("python scripts/ci/run-tests.py --profile all --ecosystem python --results", text)
+        self.assertNotIn("cargo test --workspace", text)
+        self.assertNotIn("unittest discover", text)
         self.assertIn("python -m py_compile scripts/dev/*.py tests/dev/*.py", text)
         self.assertIn("python scripts/ci/check-version-contract.py", text)
 
@@ -322,12 +324,21 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn("release_required == 'true'", build)
         self.assertIn("ci_changed == 'true'", build)
-        # Сборка и холодный старт сняты с pull request: там они не давали
-        # прослеживаемости, а гейт красили. Тег и ручной запуск их сохраняют.
-        self.assertIn("github.event_name != 'pull_request'", build)
+        # Сборка и холодный старт сняты с pull request и с push в ветку: там они
+        # не давали прослеживаемости, а гейт красили. Тег и ручной запуск их
+        # сохраняют.
+        self.assertIn("(github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/'))", build)
+        self.assertNotIn("github.event_name != 'pull_request'", build)
         self.assertIn("github.event_name == 'workflow_dispatch'", probe)
         self.assertNotIn("github.event_name == 'pull_request'", probe)
         self.assertIn("startsWith(github.ref, 'refs/tags/')", publish)
+
+    def test_branch_push_is_the_gate_the_site_reports_from(self) -> None:
+        """Push в main и релизную линию гоняет все тесты: отсюда сайт берёт отчёт."""
+        text = self.release_text()
+
+        self.assertIn('branches: [main, "release-v*"]', text)
+        self.assertIn('    tags:\n      - "v*"', text)
 
     def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
         text = self.release_text()
@@ -451,8 +462,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_registry_guards_run_in_the_source_contour(self) -> None:
         verify = job_block(self.release_text(), "verify-source")
 
-        self.assertIn("python -m unittest discover -s tests/arch", verify)
-        self.assertNotIn("python -m unittest discover -s tests/arch -t .", verify)
+        self.assertIn("python scripts/ci/run-tests.py --profile all --ecosystem python --results", verify)
         self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", verify)
 
     def test_platform_build_uses_exact_cargo_cache_and_reports_outcome(self) -> None:
@@ -684,6 +694,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("workflow_run:", text)
         self.assertIn("workflow_dispatch:", text)
         self.assertIn("source_run_id:", text)
+        # Сборка запускается и по push в main; публикацию открывает только тег.
+        self.assertIn("startsWith(github.event.workflow_run.head_branch, 'v')", text)
         for job in ("stage:", "tag:", "verify-fresh-install:", "verify-upgrade:", "promote:"):
             self.assertIn(f"\n  {job}", text)
         self.assertIn("needs: stage", text)

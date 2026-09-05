@@ -4,7 +4,12 @@ on:
   workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  # Push в main и релизную линию — ворота линии: полный набор тестов без
+  # отбора по файлам и без упаковки. Отсюда сайт собирает опубликованный
+  # отчёт (`workflow_run` в unica-pages.yml). Упаковка, холодный старт и
+  # оценка остаются у тега и ручного запуска.
   push:
+    branches: [main, "release-v*"]
     tags:
       - "v*"
 
@@ -66,9 +71,17 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -r tests/ci/requirements.txt
-      - run: python -m unittest discover -s tests/ci --durations 20
-      - run: python -m unittest discover -s tests/arch
-      - run: python -m unittest discover -s tests/dev --durations 20
+      # Наборы гоняет одна точка входа: профиль ворот меняется в ней, а не в
+      # трёх строках здесь. Сегодня `all` повторяет прежние команды один в один.
+      - run: python scripts/ci/run-tests.py --profile all --ecosystem python --results .build/results --runner ubuntu-latest
+      # Результаты едут артефактом и при красном прогоне: ради них он и шёл.
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-python
+          path: .build/results
+          retention-days: 7
+          overwrite: true
       - run: python -m py_compile scripts/ci/*.py tests/ci/*.py
       - run: python -m py_compile scripts/arch/*.py tests/arch/*.py
       - run: python -m py_compile scripts/dev/*.py tests/dev/*.py
@@ -103,7 +116,27 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace -- --test-threads=1
+      # Версия закреплена: исполнитель тестов — часть контракта прогона.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.143
+      # План выгружается до тестов: упавший раннер не унесёт его с собой,
+      # и недошедшие тесты попадут в отчёт как `skipped`, а не исчезнут.
+      - run: python3 scripts/ci/run-tests.py --profile all --ecosystem rust --plan-only --results .build/results --runner macos-14
+      - uses: actions/upload-artifact@v7
+        with:
+          name: plan-rust-macos-14-primary
+          path: .build/results/plan.json
+          retention-days: 7
+          overwrite: true
+      - run: python3 scripts/ci/run-tests.py --profile all --ecosystem rust --results .build/results --runner macos-14
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-rust-macos-14-primary
+          path: .build/results
+          retention-days: 7
+          overwrite: true
 
   test-rust-platforms:
     name: Rust tests (${{ matrix.runner }})
@@ -135,7 +168,27 @@ jobs:
       - if: matrix.runner == 'macos-14'
         run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace -- --test-threads=1
+      # Версия закреплена: исполнитель тестов — часть контракта прогона.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.143
+      # План выгружается до тестов: упавший раннер не унесёт его с собой,
+      # и недошедшие тесты попадут в отчёт как `skipped`, а не исчезнут.
+      - run: python3 scripts/ci/run-tests.py --profile all --ecosystem rust --plan-only --results .build/results --runner ${{ matrix.runner }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: plan-rust-${{ matrix.runner }}
+          path: .build/results/plan.json
+          retention-days: 7
+          overwrite: true
+      - run: python3 scripts/ci/run-tests.py --profile all --ecosystem rust --results .build/results --runner ${{ matrix.runner }}
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-rust-${{ matrix.runner }}
+          path: .build/results
+          retention-days: 7
+          overwrite: true
 
   test-search-integration:
     name: Search integration (macos-14)
@@ -167,7 +220,7 @@ jobs:
         (needs.test-rust-primary.result == 'success' || needs.test-rust-primary.result == 'skipped') &&
         (needs.test-rust-platforms.result == 'success' || needs.test-rust-platforms.result == 'skipped') &&
         (needs.test-search-integration.result == 'success' || needs.test-search-integration.result == 'skipped') &&
-        github.event_name != 'pull_request' &&
+        (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) &&
         (needs.classify-changes.outputs.release_required == 'true' ||
          needs.classify-changes.outputs.ci_changed == 'true')
       }}
@@ -660,7 +713,7 @@ jobs:
         always() &&
         needs.classify-changes.result == 'success' &&
         needs.build-tools.result == 'success' &&
-        github.event_name != 'pull_request' &&
+        (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) &&
         needs.classify-changes.outputs.assessment_required == 'true'
       }}
     steps:
