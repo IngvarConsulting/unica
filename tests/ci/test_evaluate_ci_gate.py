@@ -320,5 +320,34 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertIn("Skipped jobs", summary)
 
 
+class BranchPushGateTests(unittest.TestCase):
+    """Push в main — ворота линии: все тесты, без упаковки; отсюда отчёт сайта."""
+
+    def test_branch_push_runs_every_test_and_no_package_pipeline(self) -> None:
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {
+            **source_results(),
+            "test-rust-platforms": "success",
+            "test-search-integration": "success",
+        }
+
+        evaluation = module.evaluate_gate("push", "refs/heads/main", outputs, results)
+
+        self.assertTrue(evaluation.ok)
+        self.assertEqual("branch", evaluation.contour)
+        for job in (*PACKAGE_SUCCESS, *ASSESSMENT_SUCCESS, *P0_SUCCESS, "probe-thin-bootstrap"):
+            self.assertEqual("skipped", evaluation.expected[job], job)
+
+    def test_branch_push_with_partial_classification_is_invalid(self) -> None:
+        """На ветке отбора по файлам нет: неполная классификация — ошибка гейта."""
+        module = load_gate_module()
+        outputs = classification(rust_changed=True)
+
+        evaluation = module.evaluate_gate("push", "refs/heads/release-v0.12", outputs, source_results())
+
+        self.assertFalse(evaluation.ok)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -324,12 +324,21 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn("release_required == 'true'", build)
         self.assertIn("ci_changed == 'true'", build)
-        # Сборка и холодный старт сняты с pull request: там они не давали
-        # прослеживаемости, а гейт красили. Тег и ручной запуск их сохраняют.
-        self.assertIn("github.event_name != 'pull_request'", build)
+        # Сборка и холодный старт сняты с pull request и с push в ветку: там они
+        # не давали прослеживаемости, а гейт красили. Тег и ручной запуск их
+        # сохраняют.
+        self.assertIn("(github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/'))", build)
+        self.assertNotIn("github.event_name != 'pull_request'", build)
         self.assertIn("github.event_name == 'workflow_dispatch'", probe)
         self.assertNotIn("github.event_name == 'pull_request'", probe)
         self.assertIn("startsWith(github.ref, 'refs/tags/')", publish)
+
+    def test_branch_push_is_the_gate_the_site_reports_from(self) -> None:
+        """Push в main и релизную линию гоняет все тесты: отсюда сайт берёт отчёт."""
+        text = self.release_text()
+
+        self.assertIn('branches: [main, "release-v*"]', text)
+        self.assertIn('    tags:\n      - "v*"', text)
 
     def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
         text = self.release_text()
@@ -685,6 +694,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("workflow_run:", text)
         self.assertIn("workflow_dispatch:", text)
         self.assertIn("source_run_id:", text)
+        # Сборка запускается и по push в main; публикацию открывает только тег.
+        self.assertIn("startsWith(github.event.workflow_run.head_branch, 'v')", text)
         for job in ("stage:", "tag:", "verify-fresh-install:", "verify-upgrade:", "promote:"):
             self.assertIn(f"\n  {job}", text)
         self.assertIn("needs: stage", text)

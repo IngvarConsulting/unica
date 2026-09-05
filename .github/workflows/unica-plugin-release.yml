@@ -4,7 +4,12 @@ on:
   workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  # Push в main и релизную линию — ворота линии: полный набор тестов без
+  # отбора по файлам и без упаковки. Отсюда сайт собирает опубликованный
+  # отчёт (`workflow_run` в unica-pages.yml). Упаковка, холодный старт и
+  # оценка остаются у тега и ручного запуска.
   push:
+    branches: [main, "release-v*"]
     tags:
       - "v*"
 
@@ -215,7 +220,7 @@ jobs:
         (needs.test-rust-primary.result == 'success' || needs.test-rust-primary.result == 'skipped') &&
         (needs.test-rust-platforms.result == 'success' || needs.test-rust-platforms.result == 'skipped') &&
         (needs.test-search-integration.result == 'success' || needs.test-search-integration.result == 'skipped') &&
-        github.event_name != 'pull_request' &&
+        (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) &&
         (needs.classify-changes.outputs.release_required == 'true' ||
          needs.classify-changes.outputs.ci_changed == 'true')
       }}
@@ -708,7 +713,7 @@ jobs:
         always() &&
         needs.classify-changes.result == 'success' &&
         needs.build-tools.result == 'success' &&
-        github.event_name != 'pull_request' &&
+        (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) &&
         needs.classify-changes.outputs.assessment_required == 'true'
       }}
     steps:
