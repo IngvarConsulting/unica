@@ -46,7 +46,7 @@ def render_pages(status: Path, out: Path) -> list[str]:
         raise SystemExit("status carries generated corpus values: " + ", ".join(overlap))
     status_document.update(generated)
 
-    (out / "assets").mkdir(parents=True, exist_ok=True)
+    module.copy_assets(out)
     written = []
     for template in sorted(module.PAGES.glob("*.html")):
         page = module.render(template.read_text(encoding="utf-8"), status_document)
@@ -56,8 +56,6 @@ def render_pages(status: Path, out: Path) -> list[str]:
     (out / "status.json").write_text(
         json.dumps(status_document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    for asset in (module.MARK, module.VISUAL_KIT):
-        shutil.copy2(asset, out / "assets" / asset.name)
     return written
 
 
