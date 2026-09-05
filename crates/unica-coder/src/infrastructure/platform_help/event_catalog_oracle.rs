@@ -1064,8 +1064,12 @@ fn every_vendor_event_markup_page_belongs_to_one_closed_partition_category() {
     assert_eq!(classified.len(), event_pages.len());
 }
 
+// Исследование, не тест: собирается только с фичей `research`, запуск —
+// scripts/research/platform-event-catalog.sh. `#[ignore]` остаётся стражем от
+// случайного прогона с включённой фичей.
+#[cfg(feature = "research")]
 #[test]
-#[ignore = "writes the mechanically derived compact fixture when explicitly requested"]
+#[ignore = "research: writes the mechanically derived compact fixture; run scripts/research/platform-event-catalog.sh"]
 fn regenerate_checked_platform_event_catalog() {
     assert_eq!(
         std::env::var("UNICA_UPDATE_PLATFORM_EVENT_CATALOG").as_deref(),

@@ -74,6 +74,7 @@ CI_CONTRACT_PATHS = {
     "scripts/ci/resolve-line.py",
     "tests/ci/test_nightly_lines.py",
     "tests/ci/test_resolve_line.py",
+    "tests/ci/test_research_policy.py",
     "tests/ci/test_allure_results.py",
     "tests/ci/test_collect_results.py",
     "tests/ci/test_classify_workflow_changes.py",
