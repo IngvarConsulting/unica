@@ -199,14 +199,18 @@ def main() -> int:
     }
 
     # Пререлиз показывается только пока он впереди опубликованной версии:
-    # прошлогодний rc уже ничего не готовит.
+    # прошлогодний rc уже ничего не готовит. Список из нуля или одного
+    # элемента: страница не показывает «планируется» вместо пустого места.
     newest = max(prereleases, key=lambda r: moment(r["published_at"]), default=None)
+    status["prereleases"] = []
     if newest and moment(newest["published_at"]) > moment(latest["published_at"]):
-        status["prerelease"] = newest["tag_name"]
-        status["prerelease_note"] = "опубликован " + human(moment(newest["published_at"]))
-    else:
-        status["prerelease"] = "Планируется"
-        status["prerelease_note"] = "сборка перед публикацией"
+        status["prereleases"].append(
+            {
+                "prerelease": newest["tag_name"],
+                "prerelease_date": human(moment(newest["published_at"])),
+                "prerelease_url": newest["html_url"],
+            }
+        )
 
     tested, plain = [], []
     for line in site_lines(args.branch, args.repo, now):

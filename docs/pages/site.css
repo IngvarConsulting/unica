@@ -76,9 +76,15 @@
   .brand { display: flex; align-items: center; color: var(--blue); }
   .brand:hover { text-decoration: none; }
   .brand svg { height: 27px; width: auto; display: block; }
+  /* На узком экране от логотипа остаётся марка: слово не помещается рядом с
+     тремя пунктами меню, а марка узнаётся и одна. */
+  .brand .brand-mark { display: none; }
   @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .brand { color: var(--ink); } }
   :root[data-theme="dark"] .brand { color: var(--ink); }
   nav { margin-left: auto; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  /* Кнопка темы стоит вне навигации: на телефоне ссылки уезжают в прокрутку,
+     а кнопка остаётся на месте. */
+  .bar > .theme { margin-left: 0; }
   nav a { color: var(--muted); font-size: 14px; }
   nav a:hover { color: var(--ink); text-decoration: none; }
   /* Ссылка с числом: сколько звёзд у репозитория, сколько людей в группе.
@@ -117,7 +123,19 @@
      порог контраста 3, а не 4,5 — приглушать его незачем. */
   .hero h1 span { color: var(--blue-fill); }
   .lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 62ch; margin: 0 0 28px; }
-  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 34px; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 34px; }
+  /* Три системы одной тихой строкой: значок и слово, без рамок. Многие
+     инструменты для 1С живут только на Windows, поэтому это стоит сказать
+     сразу, но не громче кнопок. На десктопе строка стоит в ряду с кнопками
+     и закрывает пустоту справа, на телефоне уходит под кнопки по центру. */
+  .platforms { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0 0 0 10px; font-size: 13px; color: var(--muted); }
+  /* Число сценариев живёт по тем же правилам: справа от кнопок, на телефоне
+     под ними по центру. Текстом, не баблом: бабл рядом с кнопками читается
+     как ещё одна кнопка. */
+  .cta-note { margin: 0 0 0 10px; font-size: 14px; color: var(--muted); }
+  .cta-note b { font-size: 17px; font-weight: 680; color: var(--ink); margin-right: 2px; }
+  .os { display: inline-flex; align-items: center; gap: 7px; }
+  .os svg { width: 15px; height: 15px; fill: currentColor; opacity: 0.85; }
   .btn {
     display: inline-flex; align-items: center; gap: 8px;
     padding: 11px 20px; border-radius: 10px; font-weight: 600; font-size: 15px;
@@ -128,11 +146,34 @@
   .btn-ghost { border-color: var(--line); color: var(--ink); background: var(--card); }
   .btn-ghost:hover { border-color: var(--blue); text-decoration: none; }
 
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(238px, 1fr)); gap: 16px; }
-  /* Между «все в строку» и «по одной» карточки идут парами: раскладка 3 + 1
-     выглядит обрывком, а не сеткой. */
+  /* auto-fill, а не auto-fit: одна карточка занимает своё место, а не всю
+     ширину, поэтому сетка выглядит одинаково при одной плитке и при четырёх. */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  /* Четыре и больше карточек идут парами: в три колонки они дают раскладку
+     3 + 1, а в четыре — плитка линии ужимается и переносит каждую строку. */
+  @media (min-width: 1101px) {
+    .cards:has(> :nth-child(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
   @media (max-width: 1100px) { .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  @media (max-width: 560px) { .cards { grid-template-columns: 1fr; } }
+  /* На телефоне версия и пререлиз короткие и встают парой, плитка линии
+     занимает всю ширину: так четыре карточки не уводят установку на два
+     экрана вниз. */
+  @media (max-width: 560px) {
+    .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .card-line { grid-column: 1 / -1; }
+    .card-version { padding: 16px; }
+    .card-version .metric { font-size: 22px; }
+    .card-version .sub { font-size: 12.5px; }
+    /* В узкой карточке ссылке на заметки не хватает места; номер версии
+       и так ведёт на выпуск. */
+    .card-version .card-action { display: none; }
+  }
+  /* Совсем узкий экран: пара карточек версий переносит и подпись, и номер,
+     поэтому они снова идут столбиком. */
+  @media (max-width: 400px) {
+    .cards { grid-template-columns: 1fr; }
+    .card-version .metric { font-size: 26px; }
+  }
   .card {
     background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
     padding: 20px 22px;
@@ -161,7 +202,7 @@
   }
   .note { font-size: 14px; color: var(--muted); }
 
-  /* Переключатель хостов держится на радиокнопках: без скрипта он работает
+  /* Переключатель агентов держится на радиокнопках: без скрипта он работает
      так же, как со скриптом. Скрипт нужен только кнопке «Скопировать». */
   .tabs { margin-top: 24px; }
   .tabs > input { position: absolute; opacity: 0; pointer-events: none; }
@@ -210,16 +251,24 @@
      не съедают высоту второй строкой. */
   @media (max-width: 760px) {
     .wrap { padding: 0 18px; }
-    .bar { height: 56px; gap: 12px; }
+    .bar { height: 56px; gap: 14px; }
     .brand { flex: none; }
     .brand svg { height: 24px; }
     nav {
-      margin-left: auto; gap: 18px; flex-wrap: nowrap; min-width: 0;
+      margin-left: auto; gap: 14px; flex-wrap: nowrap; min-width: 0;
       overflow-x: auto; -webkit-overflow-scrolling: touch;
       scrollbar-width: none; -ms-overflow-style: none;
     }
     nav::-webkit-scrollbar { display: none; }
     nav a { white-space: nowrap; }
+    /* Правый край тает только когда меню действительно не поместилось:
+       класс ставит скрипт по замеру. Иначе затухание съедало бы хвост
+       последнего пункта там, где всё влезло. */
+    nav.is-scrollable {
+      -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+      mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+      padding-right: 28px;
+    }
 
     .hero { padding-top: 44px; padding-bottom: 32px; }
     .eyebrow {
@@ -231,6 +280,7 @@
     .cta { gap: 10px; }
     .btn { flex: 1 1 calc(50% - 5px); justify-content: center; padding: 12px 14px; }
     .btn-primary { flex-basis: 100%; }
+    .platforms, .cta-note { flex-basis: 100%; justify-content: center; text-align: center; margin: 14px 0 0; }
 
     section { padding: 40px 0; }
     .card { padding: 18px; }
@@ -243,6 +293,18 @@
     .foot { gap: 18px; }
   }
 
+  /* Числа у значков пропадают там, где перестают помещаться, а не раньше. */
+  @media (max-width: 600px) { nav .chip .count { display: none; } }
+  /* Совсем узко: значки GitHub и Telegram уходят из шапки, они есть в
+     футере, а от логотипа остаётся марка. Кегль меню чуть меньше, чтобы три
+     пункта были видны целиком на 360 px. */
+  @media (max-width: 560px) {
+    nav .chip { display: none; }
+    .brand .brand-full { display: none; }
+    .brand .brand-mark { display: block; height: 26px; }
+    nav a { font-size: 13px; }
+  }
+
   /* Таблица из трёх колонок на телефоне превращается в столбик блоков:
      версия, статус, пояснение. Заголовки колонок при этом не нужны — роль
      ячейки видна по её месту и начертанию. */
@@ -253,8 +315,19 @@
     tr { border-bottom: 1px solid var(--line); padding: 14px 0; }
     td { border: 0; padding: 0; }
     td:nth-child(1) { margin-bottom: 7px; }
-    td:nth-child(2) { font-weight: 620; }
+    /* Полужирным только статус версии и область в каталоге: там вторая
+       ячейка — заголовок блока. В остальных таблицах она — пояснение. */
+    td:nth-child(2) { color: var(--muted); font-size: 14px; }
+    .catalog-table td:nth-child(2) { font-weight: 620; color: var(--ink); font-size: 15px; }
     td:nth-child(3) { color: var(--muted); font-size: 14px; margin-top: 3px; }
+    /* Версии платформы: строка становится карточкой. Слева номер платформы,
+       справа статус, под ними подпись с форматом выгрузки, чтобы без шапки
+       таблицы было понятно, что это за число. */
+    .versions tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 12px; padding: 14px 0; }
+    .versions td:nth-child(1) { margin: 0; }
+    .versions td:nth-child(3) { grid-column: 2; grid-row: 1; margin: 0; }
+    .versions td:nth-child(2) { grid-column: 1 / -1; font-size: 13.5px; }
+    .versions td:nth-child(2)::before { content: "Формат выгрузки "; }
   }
 
   @media (max-width: 400px) {
@@ -282,19 +355,33 @@
 .caption { color: var(--muted); font-size: 14px; margin: 0 0 8px; }
 .pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 22px; }
 @media (max-width: 760px) { .pair { grid-template-columns: 1fr; } }
+/* Пояснения «почему так» — абзацы с полужирным вопросом, а не карточки:
+   рамка и подложка остаются плиткам и таблицам, где они разделяют объекты. */
+.pair .card { background: none; border: 0; border-top: 2px solid var(--line); border-radius: 0; padding: 14px 0 0; }
 .pair .card h4 { margin: 0 0 8px; font-size: 15px; }
 .pair .card p { margin: 0; color: var(--muted); font-size: 14px; }
 /* Имя файла или инструмента внутри фразы — тот же бабл, что и в таблицах:
    в приглушённом тексте одно моноширинное начертание его не выделяет. */
 .pair .card h4 code,
 .pair .card p code,
+.page-lede code,
 .caption code {
   background: color-mix(in srgb, var(--blue) 13%, transparent);
   color: var(--blue); padding: 2px 6px; border-radius: 5px;
 }
 td .tool { font-family: var(--mono); font-size: 13px; color: var(--blue); white-space: nowrap; }
+/* На телефоне диаграмма не ужимается до нечитаемого: она остаётся в своём
+   размере и прокручивается вбок, как разбор адреса. */
+.diagram-wrap { margin: 26px 0 10px; }
+.diagram-wrap .diagram { margin: 0; }
 @media (max-width: 760px) {
-  .diagram { margin: 18px -18px 10px; width: calc(100% + 36px); }
+  .diagram-wrap {
+    margin: 18px -18px 10px; padding: 0 18px;
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; -ms-overflow-style: none;
+  }
+  .diagram-wrap::-webkit-scrollbar { display: none; }
+  .diagram-wrap .diagram { min-width: 720px; }
 }
 .diagram a .t-link { fill: var(--blue); }
 .diagram a:hover .t-link { text-decoration: underline; }
@@ -328,9 +415,53 @@ pre .k { color: var(--code-key); }
 pre .v { color: var(--code-val); }
 pre .p { color: var(--muted); }
 tr.planned td, tr.planned .tool { color: var(--muted); }
+/* Статус версии платформы: бабл в цвете смысла. Синий — впереди, зелёный —
+   есть, жёлтый — нет и не будет. Жёлтый берётся из раскраски значений в
+   коде: он уже подобран под обе темы. */
+.status {
+  display: inline-block; font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 3px 10px; border-radius: 999px; white-space: nowrap; border: 1px solid;
+}
+.status-plan { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 50%, transparent); background: color-mix(in srgb, var(--blue) 10%, transparent); }
+.status-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.status-no { color: var(--code-val); border-color: color-mix(in srgb, var(--code-val) 50%, transparent); background: color-mix(in srgb, var(--code-val) 10%, transparent); }
+
 /* Идентификатор не переносится и держит ширину под пятизначный номер:
    при двух тысячах сценариев колонка не должна прыгать. */
 .id-col { width: 10ch; white-space: nowrap; }
+/* Фиксированная раскладка: ширины колонок заданы здесь и не зависят от
+   того, какие строки прошли отбор. На телефоне таблица становится блоками,
+   и раскладка не действует. */
+.catalog-table { table-layout: fixed; }
+.catalog-table .c-id { width: 8%; }
+.catalog-table .c-area { width: 17%; }
+.catalog-table .c-mode { width: 10%; }
+.catalog-table .c-tools { width: 20%; }
+/* Колонка с кнопкой в пикселях: доля от ширины в узкой панели меньше
+   самой кнопки, и её подрезало. */
+.catalog-table .c-open { width: 112px; }
+.catalog-table td { overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .catalog-table { table-layout: auto; }
+  .catalog-table colgroup { display: none; }
+  /* Строка каталога — карточка, как у таблицы версий: номер и режим в
+     верхней строке, задача крупно, под ней область и инструменты мелко,
+     кнопка справа. Шесть строк подряд одним кеглем не читались. */
+  .catalog-table tbody#catalog tr {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto auto auto;
+    gap: 4px 12px; align-items: center; padding: 14px 0;
+  }
+  .catalog-table tbody#catalog td { margin: 0; }
+  .catalog-table td:nth-child(1) { grid-column: 1; grid-row: 1; font-size: 12.5px; color: var(--muted); }
+  /* Ячейка режима на десктопе держит ширину колонки; в карточке ей нужна
+     ширина по содержимому, иначе бабл висит слева от своего края. */
+  .catalog-table td:nth-child(4) { grid-column: 2; grid-row: 1; justify-self: end; width: auto; text-align: right; }
+  .catalog-table td:nth-child(3) { grid-column: 1 / -1; grid-row: 2; color: var(--ink); font-size: 15px; line-height: 1.45; margin-bottom: 4px; }
+  .catalog-table td:nth-child(2) { grid-column: 1; grid-row: 3; font-size: 13px; color: var(--muted); font-weight: 400; }
+  .catalog-table td:nth-child(5) { grid-column: 1; grid-row: 4; font-size: 12.5px; color: var(--muted); }
+  .catalog-table td:nth-child(6) { grid-column: 2; grid-row: 3 / 5; justify-self: end; }
+  #shown-row tr { display: block; padding: 10px 0 0; border: 0; }
+}
 
 /* Баджи сводки: две цифры рядом с призывом, а не отдельный блок карточек. */
 .badges { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 2px; }
@@ -351,10 +482,14 @@ tr.planned td, tr.planned .tool { color: var(--muted); }
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
     margin: 18px 0 0; font-size: 14px; color: var(--muted);
   }
+  /* Три кнопки должны встать в один ряд и на 320 px: кегль и отступы меньше,
+     чем в шапке таблицы. */
+  .toolbar { gap: 5px; }
   .toolbar .col-sort, .toolbar .col-filter {
-    border: 1px solid var(--line); border-radius: 999px; padding: 7px 13px;
-    background: var(--card);
+    border: 1px solid var(--line); border-radius: 999px; padding: 4px 7px;
+    background: var(--card); font-size: 11px; letter-spacing: 0.03em; gap: 4px;
   }
+  .toolbar .filter-icon { width: 13px; height: 13px; }
   .toolbar .col-sort.is-sorted, .toolbar .col-filter.is-active { border-color: var(--blue); }
 }
 .row-button {
@@ -375,6 +510,9 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
   padding: 22px 24px 16px; border-bottom: 1px solid var(--line);
   position: sticky; top: 0; background: var(--card);
 }
+/* Фокус при открытии окна уходит на шапку, а не на кнопку закрытия: иначе
+   кнопка получает кольцо фокуса и выглядит иначе, чем в соседнем окне. */
+.dialog-head:focus { outline: none; }
 .dialog-head h3 { margin: 6px 0; font-size: 19px; letter-spacing: -0.01em; }
 .dialog-id { margin: 0; font-family: var(--mono); font-size: 12px; color: var(--blue); }
 .dialog-area { margin: 0; font-size: 13px; color: var(--muted); }
@@ -392,10 +530,6 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
   background: color-mix(in srgb, var(--blue) 13%, transparent); color: var(--blue);
 }
 .step-tool { font-family: var(--mono); font-size: 13px; font-weight: 600; }
-.step-expect {
-  font-family: var(--mono); font-size: 11.5px; color: var(--muted);
-  border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px;
-}
 .step pre { margin: 0; font-size: 12.5px; }
 @media (max-width: 760px) {
   .dialog-head { padding: 18px 16px 14px; }
@@ -403,7 +537,8 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
 }
 
 /* Сортировка и отбор живут в шапке таблицы */
-.catalog-count { margin: 18px 0 0; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+td.catalog-count { padding: 9px 12px; font-size: 13.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) { td.catalog-count { padding: 6px 0 2px; } }
 .col-sort {
   display: inline-flex; align-items: center; gap: 6px; padding: 0;
   font: inherit; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em;
@@ -415,7 +550,15 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
 .sort-mark svg { width: 12px; height: 12px; display: block; }
 .sort-mark rect { fill: currentColor; }
 .col-sort:not(.is-sorted) .sort-mark { opacity: 0.45; }
-.col-filter svg { width: 13px; height: 13px; fill: currentColor; }
+/* Два состояния воронки из Tabler Icons (MIT): filter, пока отбора нет, и
+   filter-check, когда отбор поставлен. Разница видна по значку, без чтения. */
+.col-filter .filter-icon {
+  width: 15px; height: 15px; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.col-filter .filter-icon .on { display: none; }
+.col-filter.is-active .filter-icon .off { display: none; }
+.col-filter.is-active .filter-icon .on { display: block; }
 .tool-list { padding: 10px; display: grid; gap: 2px; }
 .tool-row {
   display: grid; grid-template-columns: max-content 1fr max-content; align-items: baseline; gap: 12px;
@@ -435,7 +578,14 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
 /* Шаг цепочки: сверху запрос, снизу то, что проверяется в ответе */
 .step-label { margin: 12px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
 .step-answer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.step-expect { font-family: var(--mono); font-size: 12px; border-radius: 999px; padding: 3px 10px; border: 1px solid var(--line); color: var(--muted); }
+/* Чип класса ответа один и тот же в шаге, в легенде окна и в легенде под
+   каталогом: собственная высота строки, чтобы форма не зависела от того,
+   лежит он во flex-ряду или в обычной строке текста. */
+.step-expect {
+  display: inline-flex; align-items: center; line-height: 1.3;
+  font-family: var(--mono); font-size: 12px; border-radius: 999px; padding: 3px 10px;
+  border: 1px solid var(--line); color: var(--muted); vertical-align: middle;
+}
 .step-expect.is-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
 .step-expect.is-refused, .step-expect.is-unsupported { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
 .step-expect.is-task, .step-expect.is-provider { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 45%, transparent); }
@@ -449,13 +599,14 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
    идти и что там лежит. Номер рисует счётчик, чтобы разметка осталась списком,
    а не списком с вписанными цифрами. */
 .steps { list-style: none; counter-reset: step; margin: 0; padding: 0; display: grid; gap: 12px; }
+.steps { gap: 0; }
 .steps li {
   counter-increment: step;
   /* minmax(0, 1fr), а не 1fr: иначе колонка не сжимается ниже своего
      min-content, и длинный путь распирает всю страницу на телефоне. */
   display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 14px; align-items: start;
-  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+  padding: 16px 4px;
 }
 .steps li::before {
   content: counter(step);
@@ -467,13 +618,14 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
 /* Кликает вся карточка, а не только заголовок: цель у шага одна. */
 .steps li > a { display: block; color: var(--ink); }
 .steps li > a:hover { text-decoration: none; }
-.steps li:hover { border-color: var(--muted); }
 .steps li:hover b { color: var(--blue); }
-.steps b { display: block; font-weight: 620; font-size: 15px; overflow-wrap: anywhere; }
+/* Путь переносится только после слэша: разрыв внутри имени файла читается
+   как опечатка. Точки переноса стоят в разметке. */
+.steps b { display: block; font-weight: 620; font-size: 15px; overflow-wrap: normal; word-break: keep-all; }
 /* Путь до репозитория — опора для глаза, а имя файла — то, куда идти. */
 .steps .repo { color: var(--muted); font-weight: 500; }
 .steps p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
-@media (max-width: 560px) { .steps li { padding: 14px 16px; gap: 11px; } }
+@media (max-width: 560px) { .steps li { padding: 14px 0; gap: 11px; } }
 
 .card-action { white-space: nowrap; font-size: 13px; }
 /* Точка, число и слово — одна величина: переносится группа целиком. */
@@ -483,3 +635,153 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
 .line-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .branch-icon { width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
 .line-run { font-weight: 400; white-space: nowrap; }
+
+
+/* Установка в три шага: что понадобится, команды, первый запрос. */
+.setup { counter-reset: setup; display: grid; gap: 34px; margin-top: 22px; }
+/* На телефоне шаги без отступа списка: сорок пикселей слева отнимали
+   десятую часть экрана у текста. */
+@media (max-width: 760px) { .setup { padding-left: 0; gap: 28px; } }
+.setup > li { list-style: none; counter-increment: setup; }
+.setup h3 {
+  display: flex; align-items: center; gap: 12px; margin: 0 0 10px; font-size: 18px;
+}
+.setup h3::before {
+  content: counter(setup);
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 28px; height: 28px; border-radius: 8px; font-size: 14px; font-weight: 700;
+  background: color-mix(in srgb, var(--blue) 13%, transparent); color: var(--blue);
+}
+.setup p { color: var(--muted); max-width: 68ch; margin: 0 0 12px; }
+.setup .tabs { margin-top: 12px; }
+.needs { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-width: 68ch; }
+.needs li { position: relative; padding-left: 22px; }
+.needs li::before {
+  content: ""; position: absolute; left: 4px; top: 9px;
+  width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+}
+.needs b { font-weight: 620; }
+.needs span { color: var(--muted); }
+
+/* Пример диалога: реплика человека справа, ответ Unica слева, план — как
+   таблица изменений. Это разметка примера, а не живой чат. */
+.dialogue { display: grid; gap: 12px; max-width: 720px; margin-top: 14px; }
+.msg { padding: 12px 16px; border-radius: 14px; font-size: 15px; line-height: 1.5; }
+.msg-user {
+  justify-self: end; max-width: 80%;
+  background: var(--blue-fill); color: #fff; border-bottom-right-radius: 4px;
+}
+.msg-agent {
+  justify-self: start; max-width: 92%;
+  background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px;
+}
+.msg-agent p { margin: 0 0 8px; }
+.msg-agent p:last-child { margin: 0; }
+.msg-agent .who { display: block; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+.plan-list { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 14px; }
+.plan-list li { position: relative; padding-left: 18px; }
+.plan-list li::before { content: "+"; position: absolute; left: 0; top: 0; color: var(--ok); font-family: var(--mono); font-weight: 700; }
+.plan-list li.same::before { content: "="; color: var(--muted); }
+
+/* Каталог: поиск, отбор по области, метка режима. */
+.catalog-controls { margin-top: 18px; }
+.search {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+  padding: 0 12px; flex: 1 1 320px; max-width: 520px;
+}
+.search svg { width: 16px; height: 16px; flex: none; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; }
+.search input {
+  flex: 1; min-width: 0; font: inherit; font-size: 15px; padding: 10px 0;
+  border: 0; background: none; color: var(--ink); outline: none;
+}
+.search input::placeholder { color: var(--muted); }
+.search:focus-within { border-color: var(--blue); }
+.area-name { font-size: 14px; }
+.tool-row.area-row { grid-template-columns: 1fr max-content; }
+.mode {
+  display: inline-block; font-size: 11.5px; font-weight: 600; letter-spacing: 0.03em;
+  padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.mode-write { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+.mode-plan { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 50%, transparent); }
+.mode-col { width: 9ch; white-space: nowrap; }
+.legend { margin-top: 26px; display: grid; gap: 6px; font-size: 14px; color: var(--muted); }
+.legend li { display: grid; grid-template-columns: 15ch 1fr; gap: 10px; align-items: baseline; list-style: none; }
+.legend ul { margin: 0; padding: 0; display: grid; gap: 6px; }
+.legend h3 { margin: 0 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+/* Чип класса тот же, что в окне цепочки: одна раскраска в двух местах. */
+.legend .cls { display: inline-flex; align-items: baseline; gap: 8px; }
+.legend .cls small { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* Легенда классов ответа: чип слева, значение справа, по строке на класс. */
+.dialog-legend {
+  display: grid; grid-template-columns: max-content 1fr; gap: 8px 12px; align-items: baseline;
+  margin: 0; padding: 14px 24px 20px; border-top: 1px solid var(--line);
+  font-size: 13px; color: var(--muted);
+}
+.dialog-legend dt, .dialog-legend dd { margin: 0; }
+.dialog-legend:empty { display: none; }
+/* Подпись отделяет легенду от последнего ответа: без неё тот же чип строкой
+   ниже читался как повтор. */
+.dialog-legend::before {
+  content: "Классы ответа"; grid-column: 1 / -1; margin-bottom: 2px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; color: var(--muted);
+}
+@media (max-width: 760px) { .dialog-legend { padding: 0 16px 16px; } }
+.contrib { margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--line); }
+.contrib h3 { margin: 0 0 8px; font-size: 17px; }
+.contrib p { color: var(--muted); font-size: 14px; max-width: 68ch; margin: 0 0 14px; }
+
+/* Заглушка раздела, который пополнится после приёмки версии. */
+.stub {
+  border: 1px dashed var(--line); border-radius: var(--radius); padding: 18px 20px;
+  color: var(--muted); font-size: 15px; max-width: 68ch; margin-top: 22px;
+}
+.stub b { color: var(--ink); font-weight: 620; }
+
+/* Текст слева, короткий пример справа: восемь строк YAML на всю ширину
+   оставляли пустой ящик, а рядом с абзацами читаются как иллюстрация. */
+.split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px 40px; align-items: start; margin-top: 4px; }
+.split pre { margin: 0; font-size: 13px; }
+.split .caption { font-size: 15px; margin: 0 0 12px; }
+.split .caption code { background: color-mix(in srgb, var(--blue) 13%, transparent); color: var(--blue); padding: 2px 6px; border-radius: 5px; }
+@media (max-width: 760px) { .split { grid-template-columns: 1fr; gap: 14px; } }
+/* Таблица полей: имя поля не тянет на себя ширину, пояснение читается строкой. */
+.fields { margin-top: 26px; }
+.fields td { font-size: 14.5px; }
+/* Пояснение во второй колонке приглушено и на десктопе: имя поля и адрес
+   слева — то, что ищут глазами, справа — подпись к ним. */
+.fields td:nth-child(2), .addr-table td:nth-child(2) { color: var(--muted); }
+.note-line { margin-top: 14px; max-width: 68ch; }
+@media (max-width: 560px) {
+  .fields tr { padding: 12px 0; }
+  .fields td:nth-child(1) { margin-bottom: 4px; }
+}
+
+/* Сеть и данные: вопрос за вопросом, стопкой. Слева короткие факты, справа
+   то, что копируют: конфиг, команда, адреса. Три узкие колонки прозы не
+   читались и рвались на длинных путях. */
+.qa {
+  display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px 40px;
+  align-items: start; padding: 24px 0; border-top: 1px solid var(--line);
+}
+.qa:first-of-type { border-top: 0; margin-top: 10px; }
+.qa h3 { margin: 0 0 10px; font-size: 17px; }
+.qa-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; font-size: 15px; color: var(--muted); }
+.qa-list li { position: relative; padding-left: 18px; }
+.qa-list li::before { content: ""; position: absolute; left: 2px; top: 10px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.qa-list code, .stub code, .setup p code, .needs code, .kv code {
+  background: color-mix(in srgb, var(--blue) 13%, transparent);
+  color: var(--blue); padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere;
+}
+.qa-aside pre { margin: 0; font-size: 12.5px; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 14px; margin: 4px 0 0; font-size: 14px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+/* Несколько имён в одной ячейке идут столбиком, каждое целиком. */
+.kv dd.stack { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.kv dd.stack code { white-space: nowrap; }
+@media (max-width: 760px) {
+  .qa { grid-template-columns: 1fr; gap: 14px; padding: 20px 0; }
+}
