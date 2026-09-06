@@ -21,6 +21,7 @@ import allure_results  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_UNITTEST = Path(__file__).with_name("run-unittest.py")
+PYTHON_SIZES = REPO_ROOT / ".config" / "python-sizes.toml"
 NEXTEST_JUNIT = REPO_ROOT / "target" / "nextest" / "default" / "junit.xml"
 
 # Ворота конвейера плюс локальный `all` — «гони всё» без подписи ворот.
@@ -102,10 +103,16 @@ def python_commands(
         admitted = ADMITTED[profile]
     except KeyError:
         raise ValueError(f"профиль {profile!r} для Python не описан") from None
+    # Размер набора — умолчание; манифест поднимает отдельные классы и тесты
+    # до `medium`. Ворота, допускающие не все размеры, получают `--admit`;
+    # `all` без записи результатов повторяет прежнюю команду один в один.
     def tail(size: str) -> list[str]:
+        sizing: list[str] = []
+        if set(admitted) != set(SIZES):
+            sizing = ["--sizes", str(PYTHON_SIZES), "--admit", ",".join(admitted)]
         if results is None:
-            return []
-        return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size]
+            return sizing
+        return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size, "--sizes", str(PYTHON_SIZES), *sizing]
 
     return [
         [interpreter, str(RUN_UNITTEST), "-s", suite, *extra, *tail(size)]

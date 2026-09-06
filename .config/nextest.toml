@@ -120,6 +120,12 @@ default-filter = 'all()'
 [profile.large]
 default-filter = 'none()'
 
+# Ночью Windows гоняет весь набор: с матрицы pull request и main он снят за
+# нестабильность раннера, а в ночном ярусе сбой виден и никого не блокирует.
+[[profile.large.overrides]]
+platform = 'cfg(windows)'
+default-filter = 'all()'
+
 # Срок `medium` — 300 с, остановка после второго периода; `small` остаётся на
 # сроке `default`. Выражение — то же, что у ворот `pr`.
 # >>> размер medium (срок): пишет scripts/ci/size-filters.py --write

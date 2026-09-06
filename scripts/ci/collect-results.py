@@ -93,7 +93,7 @@ def fill_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, conclusions:
     runner = run.get("runner", "")
     profile = run.get("profile", "all")
     job = f"Rust tests ({runner})"
-    conclusion = conclusions.get(job) or conclusions.get(f"{job} primary") or "unknown"
+    conclusion = conclusions.get(job) or "unknown"
     filled = 0
     for case in load_json(plan_dir / "plan.json"):
         full_name = f"{case['binary']}::{case['name']}"

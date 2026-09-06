@@ -10,7 +10,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml"
 NIGHTLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-nightly.yml"
-LARGE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-large.yml"
 PAGES_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-pages.yml"
 PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-unica-marketplace.yml"
 LEGACY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-legacy-migration.yml"
@@ -132,9 +131,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def nightly_text(self) -> str:
         return NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
 
-    def large_text(self) -> str:
-        return LARGE_WORKFLOW.read_text(encoding="utf-8")
-
     def pages_text(self) -> str:
         return PAGES_WORKFLOW.read_text(encoding="utf-8")
 
@@ -169,9 +165,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "classify-changes",
             "guards",
             "test-python",
-            "test-rust-primary",
             "test-rust-platforms",
-            "test-search-integration",
             "build-tools",
             "package-thin",
             "probe-thin-bootstrap",
@@ -286,24 +280,17 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # test forever. The workflows have far more shell than this.
         self.assertGreater(scanned, 50)
 
-    def test_rust_jobs_route_primary_and_platform_contours(self) -> None:
+    def test_rust_jobs_run_the_full_matrix_for_any_rust_change(self) -> None:
         text = self.release_text()
         source = job_block(text, "test-python")
-        primary = job_block(text, "test-rust-primary")
         platforms = job_block(text, "test-rust-platforms")
-        search_integration = job_block(text, "test-search-integration")
 
         self.assertNotIn("cargo test", source)
-        self.assertIn("search_integration_changed == 'true'", search_integration)
-        self.assertIn("ci_changed == 'true'", search_integration)
-        self.assertIn("--test v13_search_integration -- --ignored", search_integration)
         self.assertNotIn("dtolnay/rust-toolchain", source)
-        self.assertIn("runs-on: macos-14", primary)
-        self.assertIn("rust_changed == 'true'", primary)
-        self.assertIn("platform_changed == 'false'", primary)
         # windows-latest снят с матрицы до разбора нестабильности раннера;
         # список закреплён целиком, поэтому вернуть его молча не получится.
-        self.assertIn("runner: [ubuntu-latest, macos-14]", platforms)
+        # Список раннеров считает classify-changes: Windows — только в ночном ярусе large.
+        self.assertIn("runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}", platforms)
         self.assertIn("platform_changed == 'true'", platforms)
         self.assertIn("toolchain_changed == 'true'", platforms)
         self.assertIn("ci_changed == 'true'", platforms)
@@ -311,12 +298,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # `#[cfg]` решает, какие элементы существуют, поэтому clippy идёт на
         # каждом раннере матрицы, а его находки — в Code Scanning.
         self.assertNotIn("cargo fmt", platforms)
-        self.assertNotIn("cargo fmt", primary)
         self.assertIn("cargo fmt --all -- --check", job_block(text, "guards"))
-        for block, category in ((platforms, "clippy-${{ matrix.runner }}"), (primary, "clippy-macos-14-primary")):
-            self.assertIn("| clippy-sarif | tee clippy.sarif | sarif-fmt", block)
-            self.assertIn(f"category: {category}", block)
-            self.assertIn("needs: [classify-changes, guards]", block)
+        self.assertIn("| clippy-sarif | tee clippy.sarif | sarif-fmt", platforms)
+        self.assertIn("category: clippy-${{ matrix.runner }}", platforms)
+        self.assertIn("needs: [classify-changes, guards]", platforms)
+        # Любая правка Rust — полная матрица; отдельной джобы на одном раннере нет.
+        self.assertIn("rust_changed == 'true'", platforms)
+        self.assertNotIn("test-rust-primary:", text)
         # Команда линта закреплена дословно: `-D warnings` красит джобу, JSON
         # идёт в SARIF, и убрать одно из двух молча не выйдет.
         self.assertIn(
@@ -326,16 +314,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             " --message-format=json -- -D warnings \\\n"
             "            | clippy-sarif | tee clippy.sarif | sarif-fmt\n",
             platforms,
-        )
-
-    def test_search_integration_checkout_does_not_persist_credentials(self) -> None:
-        integration = job_block(self.release_text(), "test-search-integration")
-
-        self.assertIn(
-            "      - uses: actions/checkout@v7\n"
-            "        with:\n"
-            "          persist-credentials: false",
-            integration,
         )
 
     def test_package_contour_and_pr_smoke_do_not_publish_release_assets(self) -> None:
@@ -429,7 +407,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_javascript_actions_use_node24_compatible_majors(self) -> None:
         release = self.release_text()
         publish = self.publish_text()
-        combined = release + publish + self.nightly_text() + self.large_text() + self.pages_text()
+        combined = release + publish + self.nightly_text() + self.pages_text()
 
         self.assertIn("actions/checkout@v7", combined)
         self.assertIn("actions/setup-python@v7", release)
@@ -458,7 +436,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "classify-changes": 10,
             "guards": 15,
             "test-python": 90,
-            "test-rust-primary": 60,
             "test-rust-platforms": 60,
             "build-tools": 90,
             "package-thin": 30,
@@ -501,6 +478,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn(
             "GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'merge_group' && 'queue' || "
+            "github.event_name == 'workflow_dispatch' && inputs.profile || "
             "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}",
             text,
         )
@@ -515,37 +493,40 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn('python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA"', classify)
         self.assertIn("line: ${{ steps.line.outputs.line }}", classify)
-        self.assertEqual(5, text.count('--line "$RUN_LINE"'))
-        self.assertEqual(3, text.count("RUN_LINE: ${{ needs.classify-changes.outputs.line }}"))
+        self.assertEqual(3, text.count('--line "$RUN_LINE"'))
+        self.assertEqual(2, text.count("RUN_LINE: ${{ needs.classify-changes.outputs.line }}"))
         # План едет каталогом вместе с подписью, а не одним файлом.
         self.assertNotIn("path: .build/results/plan.json", text)
 
-    def test_nightly_enumerates_lines_and_large_runs_on_the_line_itself(self) -> None:
-        """Ночь перечисляет и запускает; large идёт на самой линии со стандартным checkout."""
+    def test_nightly_dispatches_the_manual_contour_with_the_large_profile(self) -> None:
+        """Ночь перечисляет и запускает ручной контур сборки на линии; Windows — только там."""
         nightly = self.nightly_text()
-        large = self.large_text()
-        job = job_block(large, "large")
+        release = self.release_text()
+        classify = job_block(release, "classify-changes")
+        platforms = job_block(release, "test-rust-platforms")
 
         self.assertIn("schedule:", nightly)
         self.assertIn("actions: write", nightly)
-        self.assertIn('python scripts/ci/nightly-lines.py --repo "$GITHUB_REPOSITORY" --site "$SITE"', nightly)
         self.assertIn("--dispatch --follow .build/large", nightly)
         self.assertIn("name: results-nightly", nightly)
         self.assertNotIn("ref:", nightly)
-        self.assertIn("workflow_dispatch:", large)
-        self.assertIn("name: Rust tests (${{ matrix.runner }})", job)
-        self.assertIn("RUN_LINE: ${{ github.ref_name }}", job)
-        self.assertNotIn("ref: ${{", job)
-        self.assertIn('--profile large --ecosystem rust --plan-only --results .build/results --runner "$RUNNER_LABEL" --line "$RUN_LINE"', job)
-        self.assertIn("name: plan-rust-${{ matrix.runner }}", job)
-        self.assertIn("name: results-rust-${{ matrix.runner }}", job)
-        self.assertIn("if: always()", job)
+        self.assertIn("options: [main, large]", release)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.profile", release)
+        self.assertIn("runners: ${{ steps.runners.outputs.runners }}", classify)
+        self.assertIn('runners=["ubuntu-latest", "macos-14", "windows-latest"]', classify)
+        self.assertIn("runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}", platforms)
+        self.assertIn("shell: bash", platforms)
+        self.assertIn("uses: actions/setup-python@v7", platforms)
+        # Консоль Windows — cp1252; сбой Windows виден, но упаковку ночи не блокирует.
+        self.assertIn('PYTHONUTF8: "1"', platforms)
+        self.assertIn("continue-on-error: ${{ matrix.runner == 'windows-latest' }}", platforms)
+        self.assertFalse((REPO_ROOT / ".github" / "workflows" / "unica-large.yml").exists())
 
     def test_pages_take_results_from_red_runs_and_from_the_nightly(self) -> None:
         """Красный прогон — тоже результат; ночь и тег — тоже источники."""
         text = self.pages_text()
 
-        self.assertIn('workflows: ["Build Unica Codex Plugin", "Unica Large", "Unica Nightly"]', text)
+        self.assertIn('workflows: ["Build Unica Codex Plugin", "Unica Nightly"]', text)
         self.assertIn('branches: [main, "release-v*", "v*"]', text)
         self.assertIn("github.event.workflow_run.conclusion == 'failure'", text)
         self.assertIn("github.event.workflow_run.event == 'schedule'", text)

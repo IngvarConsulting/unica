@@ -43,6 +43,8 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(set(self.run_tests.PROFILES), {"all", "large", *GATES})
         # Ночной ярус пуст до расстановки размеров и честно гоняет ноль.
         self.assertEqual(profiles["large"].get("default-filter"), "none()")
+        # Ночью Windows гоняет всё: переопределение по платформе в профиле large.
+        self.assertEqual(profiles["large"]["overrides"], [{"platform": "cfg(windows)", "default-filter": "all()"}])
         self.assertIn("--no-tests=pass", self.run_tests.rust_commands("large")[0])
 
     def test_default_profile_carries_the_small_deadline_for_everyone(self) -> None:

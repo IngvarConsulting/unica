@@ -123,6 +123,53 @@ EXPECTED_META_OUTPUT_SCHEMA = {
 }
 
 
+_SMOKE_STARTED = time.monotonic()
+_PHASE_LOCK = threading.Lock()
+_LAST_PHASE: list[str] = ["starting"]
+
+
+def _trace(message: str) -> None:
+    """Progress line on stderr, stamped with seconds since the smoke started.
+
+    A hang is located by the last line written before the watchdog fires, so
+    every request and cleanup phase reports here. Bytes go straight to fd 2:
+    a cp1252 console on Windows must not turn a progress line into an
+    encoding error.
+    """
+    elapsed = time.monotonic() - _SMOKE_STARTED
+    with _PHASE_LOCK:
+        _LAST_PHASE[0] = f"{message} (at +{elapsed:.1f}s)"
+    try:
+        os.write(
+            2, f"[smoke +{elapsed:.1f}s] {message}\n".encode("utf-8", "replace")
+        )
+    except OSError:
+        pass
+
+
+def _last_phase() -> str:
+    with _PHASE_LOCK:
+        return _LAST_PHASE[0]
+
+
+def _request_label(message: dict) -> str:
+    method = str(message.get("method", "?"))
+    params = message.get("params")
+    if method == "tools/call" and isinstance(params, dict):
+        return f"{method} {params.get('name', '?')}"
+    return method
+
+
+def _describe_error(error: BaseException) -> str:
+    if isinstance(error, SystemExit):
+        return str(error.code) if error.code is not None else "SystemExit"
+    return f"{type(error).__name__}: {error}"
+
+
+def _tail(text: str, lines: int) -> str:
+    return "\n".join(text.rstrip("\n").splitlines()[-lines:])
+
+
 def _valid_unica_tool_name(value: object) -> bool:
     if not isinstance(value, str) or not 1 <= len(value) <= 128:
         return False
@@ -1155,12 +1202,23 @@ class McpSession(_WIRE_PROBE.JsonRpcSession):
         )
 
     def request(self, message: dict) -> dict:
+        label = _request_label(message)
+        started = time.monotonic()
+        _trace(f"-> {label}")
         try:
-            return super().request(message)
+            response = super().request(message)
+        except BaseException as error:
+            _trace(
+                f"!! {label} failed after {time.monotonic() - started:.1f}s: "
+                f"{_describe_error(error)}"
+            )
+            raise
         finally:
             cache_root = getattr(self, "_service_cache_root", None)
             if cache_root is not None:
                 self.observe_workspace_services(cache_root)
+        _trace(f"<- {label} in {time.monotonic() - started:.2f}s")
+        return response
 
     def observe_workspace_services(self, cache_root: Path) -> None:
         observed = getattr(self, "_service_identities", {})
@@ -1356,6 +1414,7 @@ def _exercise_bsl_search(
     deadline = time.monotonic() + max(10.0, timeout_seconds * 3)
     if smoke_deadline is not None:
         deadline = min(deadline, smoke_deadline)
+    attempt = 0
     while True:
         payload = _code_search_payload(
             session.request(
@@ -1375,17 +1434,25 @@ def _exercise_bsl_search(
             )
         )
         request_id += 1
+        attempt += 1
         if _bsl_search_is_ready(payload):
             if payload.get("ok") is not True:
                 raise SystemExit(
                     "Unica MCP code search has inconsistent success state: "
                     f"{payload}"
                 )
+            _trace(f"bsl-analyzer ready after {attempt} code.search attempt(s)")
             return request_id
+        section = payload["data"]["sections"][1]
+        _trace(
+            f"bsl-analyzer not ready (attempt {attempt}): "
+            + json.dumps(section, ensure_ascii=False)[:400]
+        )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise SystemExit(
-                "Unica MCP bsl-analyzer stayed not_ready until the smoke deadline"
+                "Unica MCP bsl-analyzer stayed not_ready until the smoke deadline "
+                f"after {attempt} attempt(s); last section: {section}"
             )
         time.sleep(min(0.5, remaining))
 
@@ -1490,14 +1557,15 @@ def _wait_for_workspace_services(
     services_root = cache_root / "services"
     service_pids = service_pids or set()
     while True:
-        records_remain = any(services_root.glob("*/service.json"))
+        records = sorted(str(path) for path in services_root.glob("*/service.json"))
         running_pids = {pid for pid in service_pids if _process_is_running(pid)}
-        if not records_remain and not running_pids:
+        if not records and not running_pids:
             return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise SystemExit(
-                "Unica MCP workspace service did not exit before smoke cleanup"
+                "Unica MCP workspace service did not exit before smoke cleanup "
+                f"(records left: {records}; running pids: {sorted(running_pids)})"
             )
         time.sleep(min(0.05, remaining))
 
@@ -1588,6 +1656,45 @@ def _shutdown_workspace_services(
     return service_pids
 
 
+def _dump_session_diagnostics(session: object, cache_root: Path) -> str:
+    """Copy the child's stderr and the workspace service logs to stderr.
+
+    The temp workspace disappears when the smoke ends, so the logs are copied
+    out on the failure path and by the watchdog, never on success. Returns the
+    rendered text so tests can check it without capturing fd 2.
+    """
+    # The failure path and the watchdog can both get here for one session;
+    # the second copy of the same logs only pushes the first off the screen.
+    with _PHASE_LOCK:
+        if getattr(session, "_smoke_diagnostics_dumped", False):
+            return ""
+        try:
+            session._smoke_diagnostics_dumped = True  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+    chunks = [f"---- smoke diagnostics (last phase: {_last_phase()}) ----"]
+    diagnostics = "".join(getattr(session, "diagnostics", None) or [])
+    chunks.append("MCP stderr tail:\n" + (_tail(diagnostics, 60) or "<empty>"))
+    services_root = cache_root / "services"
+    for service_dir in sorted(path for path in services_root.glob("*") if path.is_dir()):
+        chunks.append(f"workspace service directory {service_dir}:")
+        for name in ("service.json", "service.stderr.log", "service.stdout.log"):
+            try:
+                content = (service_dir / name).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except OSError:
+                continue
+            chunks.append(f"{name} tail:\n" + (_tail(content, 40) or "<empty>"))
+    chunks.append("---- end of smoke diagnostics ----")
+    rendered = "\n".join(chunks) + "\n"
+    try:
+        os.write(2, rendered.encode("utf-8", "replace"))
+    except OSError:
+        pass
+    return rendered
+
+
 def _close_session_and_workspace_services(
     session: McpSession,
     cache_root: Path,
@@ -1609,6 +1716,9 @@ def _close_session_and_workspace_services(
             # waits for reader EOF while the service that owns those copies is
             # still alive, so cleanup never reaches its shutdown call.
             # Ask the authenticated services to stop before waiting for MCP EOF.
+            _trace(
+                f"cleanup: shutting down {len(service_pids)} recorded workspace service(s)"
+            )
             service_pids.update(
                 _shutdown_workspace_services(
                     cache_root,
@@ -1617,19 +1727,24 @@ def _close_session_and_workspace_services(
             )
         finally:
             try:
+                _trace("cleanup: closing MCP session (stdin EOF, exit, pipe EOF)")
                 session.close()
             finally:
+                _trace("cleanup: waiting for workspace services to exit")
                 _wait_for_workspace_services(
                     cache_root,
                     _remaining_smoke_timeout(deadline, timeout_seconds),
                     service_pids,
                 )
+                _trace("cleanup: quiescing owned processes")
                 _quiesce_owned_processes(
                     ownership,
                     owned_processes,
                     _remaining_smoke_timeout(deadline, timeout_seconds),
                 )
-    except BaseException:
+                _trace("cleanup: done")
+    except BaseException as error:
+        _trace(f"cleanup failed: {_describe_error(error)}")
         session.terminate_tree(cache_root, service_identities)
         raise
 
@@ -2012,6 +2127,7 @@ def smoke(
         if executable.exists():
             command = [str(executable.resolve()), *command[1:]]
         admission = admission_lock or contextlib.nullcontext()
+        _trace(f"spawning {command[0]} in {workspace}")
         with admission:
             session = McpSession(
                 command,
@@ -2023,6 +2139,8 @@ def smoke(
             )
             if session_started is not None:
                 session_started(session, cache_root)
+        _trace("session admitted")
+        body_error: BaseException | None = None
         try:
             initialize = session.request({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
                 "protocolVersion": "2025-06-18", "capabilities": {},
@@ -2098,13 +2216,28 @@ def smoke(
                     raise SystemExit(
                         f"invalid Meta smoke returned unstable diagnostics: {invalid}"
                     )
+        except BaseException as error:
+            body_error = error
+            _trace(f"smoke failed: {_describe_error(error)}")
+            _dump_session_diagnostics(session, cache_root)
+            raise
         finally:
-            _close_session_and_workspace_services(
-                session,
-                cache_root,
-                max(5.0, timeout_seconds),
-                deadline,
-            )
+            try:
+                _close_session_and_workspace_services(
+                    session,
+                    cache_root,
+                    max(5.0, timeout_seconds),
+                    deadline,
+                )
+            except BaseException as cleanup_error:
+                if body_error is None:
+                    raise
+                # SystemExit prints only its own message, so a cleanup failure
+                # would otherwise replace the failure that caused it.
+                raise SystemExit(
+                    f"{_describe_error(body_error)}; cleanup after that failure "
+                    f"also failed: {_describe_error(cleanup_error)}"
+                ) from cleanup_error
         after = _source_snapshot(workspace)
         # The whole public source surface is read-only, so the packaged smoke
         # must end with the byte map it started from.
@@ -2146,7 +2279,7 @@ def main() -> None:
     def cleanup_expired_smoke() -> None:
         message = (
             "Unica MCP smoke exceeded its aggregate deadline of "
-            f"{args.total_timeout_seconds:g}s\n"
+            f"{args.total_timeout_seconds:g}s; last phase: {_last_phase()}\n"
         ).encode("utf-8", errors="replace")
         try:
             os.write(2, message)
@@ -2158,6 +2291,10 @@ def main() -> None:
                     active = active_session[0] if active_session else None
                 if active is not None:
                     session, cache_root = active
+                    try:
+                        _dump_session_diagnostics(session, cache_root)
+                    except BaseException:
+                        pass
                     session.terminate_tree(cache_root)
             finally:
                 cleanup_done.set()
@@ -2194,7 +2331,7 @@ def main() -> None:
                 # racing its slower tree cleanup must not commit exit code 0.
                 cleanup_done.wait(timeout=30)
                 os._exit(124)
-        except BaseException:
+        except BaseException as error:
             with outcome_lock:
                 if outcome[0] == "running" and time.monotonic() < deadline:
                     outcome[0] = "failed"
@@ -2206,6 +2343,19 @@ def main() -> None:
                     failure_action = "wait"
                 else:
                     failure_action = "raise"
+            if failure_action != "raise":
+                # The watchdog owns the exit code; the failure it pre-empted
+                # is still the most useful line of the log.
+                try:
+                    os.write(
+                        2,
+                        (
+                            "Unica MCP smoke failure pending at the deadline: "
+                            f"{_describe_error(error)}\n"
+                        ).encode("utf-8", errors="replace"),
+                    )
+                except OSError:
+                    pass
             if failure_action == "cleanup":
                 cleanup_expired_smoke()
             if failure_action == "wait":
