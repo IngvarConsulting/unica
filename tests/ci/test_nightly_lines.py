@@ -49,7 +49,7 @@ class NightlyLinesTests(unittest.TestCase):
         self.assertIn("cccc333 → dddd444", decisions["release-v0.13"]["reason"])
 
     def test_line_without_the_platform_is_skipped_with_its_reason(self) -> None:
-        """Старая релизная линия не несёт unica-large.yml — запускать на ней нечего."""
+        """Старая релизная линия не знает входа profile — запускать на ней нечего."""
         decisions = {d["line"]: d for d in self.decisions()}
 
         self.assertFalse(decisions["release-v0.12"]["run"])
@@ -127,7 +127,18 @@ class NightlyLinesTests(unittest.TestCase):
 
         self.assertEqual(out.getvalue(), "")
         self.assertIn("runs/1", err.getvalue())
-        self.assertEqual(calls[0][:6], ["gh", "workflow", "run", "unica-large.yml", "--ref", "main"])
+        self.assertEqual(calls[0], ["gh", "workflow", "run", "unica-plugin-release.yml", "--ref", "main", "-f", "profile=large"])
+
+    def test_has_platform_reads_the_profile_input_from_the_line_workflow(self) -> None:
+        import base64
+
+        def gh(repo, path):
+            body = "on:\n  workflow_dispatch:\n    inputs:\n      profile:\n        options: [main, large]\n" if "ref=main" in path else "on:\n  workflow_dispatch:\n"
+            return [{"content": base64.b64encode(body.encode()).decode()}]
+
+        self.assertTrue(self.module.has_platform("x/y", "main", gh))
+        self.assertFalse(self.module.has_platform("x/y", "release-v0.12", gh))
+
 
 if __name__ == "__main__":
     unittest.main()

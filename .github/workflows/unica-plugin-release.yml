@@ -1,7 +1,17 @@
 name: Build Unica Codex Plugin
 
 on:
+  # Ручной запуск — полный контур: сборка инструментов, пакет, проба, сухой
+  # RC, оценка. Ночь запускает его на сдвинувшейся линии с `profile: large`:
+  # тесты идут ярусом `large` (на Windows — весь набор), а сайт пишет память
+  # о проверенной вершине.
   workflow_dispatch:
+    inputs:
+      profile:
+        description: "Профиль ворот: main — как push в ветку, large — ночной ярус"
+        type: choice
+        options: [main, large]
+        default: main
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   # Очередь слияния: прогон на будущем состоянии main пачкой pull request.
@@ -21,9 +31,10 @@ permissions:
   contents: read
 
 # Ворота → профиль исполнителя: pull request — `pr`, очередь слияния —
-# `queue`, push в ветку и ручной запуск — `main`, тег — `release`.
+# `queue`, ручной запуск — что попросили (`main` или `large`), push в ветку
+# — `main`, тег — `release`.
 env:
-  GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'merge_group' && 'queue' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}
+  GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'merge_group' && 'queue' || github.event_name == 'workflow_dispatch' && inputs.profile || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -44,10 +55,23 @@ jobs:
       release_required: ${{ steps.scope.outputs.release_required }}
       assessment_required: ${{ steps.scope.outputs.assessment_required }}
       line: ${{ steps.line.outputs.line }}
+      runners: ${{ steps.runners.outputs.runners }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      # Раннеры матрицы Rust. Windows — только в ночном ярусе `large`: с
+      # матрицы pull request и main он снят за нестабильность раннера, а
+      # ночью сбой виден и никого не блокирует.
+      - id: runners
+        env:
+          PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || '' }}
+        run: |
+          if [ "$PROFILE" = "large" ]; then
+            echo 'runners=["ubuntu-latest", "macos-14", "windows-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'runners=["ubuntu-latest", "macos-14"]' >> "$GITHUB_OUTPUT"
+          fi
       # Линия прогона едет в подписи результатов: для ветки — она сама, для
       # тега — релизная линия с его коммитом; тег вне релизной линии — отказ.
       - id: line
@@ -184,15 +208,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # windows-latest снят: раннер валил разные тесты от прогона к прогону
-        # при 4366 зелёных, и гейт краснел не по предмету правки. Вернётся
-        # отдельно, вместе с разбором дедлайнов и Job Object.
-        runner: [ubuntu-latest, macos-14]
+        # Список считает `classify-changes`: ubuntu и macOS всегда, Windows —
+        # только в ночном ярусе `large`.
+        runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}
+    # Шаги написаны на bash: на Windows умолчание — pwsh, и `$RUN_LINE` там
+    # значил бы другое.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      # `python3` есть не на каждом раннере: на Windows его даёт setup-python.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
       # Форматирование от цели не зависит — оно в `guards`. Линт зависит:
       # `#[cfg]` решает, какие элементы существуют, поэтому clippy идёт на
       # каждом раннере матрицы, своим шагом до тестов. Находки едут в Code

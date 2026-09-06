@@ -10,7 +10,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml"
 NIGHTLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-nightly.yml"
-LARGE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-large.yml"
 PAGES_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-pages.yml"
 PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-unica-marketplace.yml"
 LEGACY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-legacy-migration.yml"
@@ -131,9 +130,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
     def nightly_text(self) -> str:
         return NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
-
-    def large_text(self) -> str:
-        return LARGE_WORKFLOW.read_text(encoding="utf-8")
 
     def pages_text(self) -> str:
         return PAGES_WORKFLOW.read_text(encoding="utf-8")
@@ -293,7 +289,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("dtolnay/rust-toolchain", source)
         # windows-latest снят с матрицы до разбора нестабильности раннера;
         # список закреплён целиком, поэтому вернуть его молча не получится.
-        self.assertIn("runner: [ubuntu-latest, macos-14]", platforms)
+        # Список раннеров считает classify-changes: Windows — только в ночном ярусе large.
+        self.assertIn("runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}", platforms)
         self.assertIn("platform_changed == 'true'", platforms)
         self.assertIn("toolchain_changed == 'true'", platforms)
         self.assertIn("ci_changed == 'true'", platforms)
@@ -410,7 +407,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_javascript_actions_use_node24_compatible_majors(self) -> None:
         release = self.release_text()
         publish = self.publish_text()
-        combined = release + publish + self.nightly_text() + self.large_text() + self.pages_text()
+        combined = release + publish + self.nightly_text() + self.pages_text()
 
         self.assertIn("actions/checkout@v7", combined)
         self.assertIn("actions/setup-python@v7", release)
@@ -481,6 +478,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn(
             "GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'merge_group' && 'queue' || "
+            "github.event_name == 'workflow_dispatch' && inputs.profile || "
             "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}",
             text,
         )
@@ -500,32 +498,32 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # План едет каталогом вместе с подписью, а не одним файлом.
         self.assertNotIn("path: .build/results/plan.json", text)
 
-    def test_nightly_enumerates_lines_and_large_runs_on_the_line_itself(self) -> None:
-        """Ночь перечисляет и запускает; large идёт на самой линии со стандартным checkout."""
+    def test_nightly_dispatches_the_manual_contour_with_the_large_profile(self) -> None:
+        """Ночь перечисляет и запускает ручной контур сборки на линии; Windows — только там."""
         nightly = self.nightly_text()
-        large = self.large_text()
-        job = job_block(large, "large")
+        release = self.release_text()
+        classify = job_block(release, "classify-changes")
+        platforms = job_block(release, "test-rust-platforms")
 
         self.assertIn("schedule:", nightly)
         self.assertIn("actions: write", nightly)
-        self.assertIn('python scripts/ci/nightly-lines.py --repo "$GITHUB_REPOSITORY" --site "$SITE"', nightly)
         self.assertIn("--dispatch --follow .build/large", nightly)
         self.assertIn("name: results-nightly", nightly)
         self.assertNotIn("ref:", nightly)
-        self.assertIn("workflow_dispatch:", large)
-        self.assertIn("name: Rust tests (${{ matrix.runner }})", job)
-        self.assertIn("RUN_LINE: ${{ github.ref_name }}", job)
-        self.assertNotIn("ref: ${{", job)
-        self.assertIn('--profile large --ecosystem rust --plan-only --results .build/results --runner "$RUNNER_LABEL" --line "$RUN_LINE"', job)
-        self.assertIn("name: plan-rust-${{ matrix.runner }}", job)
-        self.assertIn("name: results-rust-${{ matrix.runner }}", job)
-        self.assertIn("if: always()", job)
+        self.assertIn("options: [main, large]", release)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.profile", release)
+        self.assertIn("runners: ${{ steps.runners.outputs.runners }}", classify)
+        self.assertIn('runners=["ubuntu-latest", "macos-14", "windows-latest"]', classify)
+        self.assertIn("runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}", platforms)
+        self.assertIn("shell: bash", platforms)
+        self.assertIn("uses: actions/setup-python@v7", platforms)
+        self.assertFalse((REPO_ROOT / ".github" / "workflows" / "unica-large.yml").exists())
 
     def test_pages_take_results_from_red_runs_and_from_the_nightly(self) -> None:
         """Красный прогон — тоже результат; ночь и тег — тоже источники."""
         text = self.pages_text()
 
-        self.assertIn('workflows: ["Build Unica Codex Plugin", "Unica Large", "Unica Nightly"]', text)
+        self.assertIn('workflows: ["Build Unica Codex Plugin", "Unica Nightly"]', text)
         self.assertIn('branches: [main, "release-v*", "v*"]', text)
         self.assertIn("github.event.workflow_run.conclusion == 'failure'", text)
         self.assertIn("github.event.workflow_run.event == 'schedule'", text)

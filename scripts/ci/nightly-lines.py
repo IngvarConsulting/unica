@@ -3,17 +3,20 @@
 
 Расписание у GitHub работает только на ветке по умолчанию, поэтому ночной
 workflow один: он перечисляет открытые линии тем же правилом, что и сайт, и
-для каждой сдвинувшейся запускает `unica-large.yml` на самой линии — там
-`github.sha` и `github.ref_name` и есть вершина и линия, и checkout стандартный.
-Память о прошлом прогоне лежит на сайте: `data/<линия>/profiles/large.json`
-— коммит, время и ссылка. Прогон по тегу пишет ту же память, поэтому после
-тега на вершине ночью — пропуск. Линия без `unica-large.yml` площадки не
-несёт и в ночь не идёт.
+для каждой сдвинувшейся запускает ручной контур сборки плагина на самой линии
+с `profile=large` — там `github.sha` и `github.ref_name` и есть вершина и
+линия, checkout стандартный, а контур несёт упаковку, пробу и дым, то есть
+ярус `large` по замыслу; на Windows он гоняет весь набор тестов. Память о
+прошлом прогоне лежит на сайте: `data/<линия>/profiles/large.json` — коммит,
+время и ссылка. Прогон по тегу пишет ту же память, поэтому после тега на
+вершине ночью — пропуск. Линия, чей workflow не знает входа `profile`,
+площадки не несёт и в ночь не идёт.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import importlib.util
 import json
 import subprocess
@@ -24,7 +27,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-LARGE_WORKFLOW = "unica-large.yml"
+LARGE_WORKFLOW = "unica-plugin-release.yml"
+PROFILE_INPUT = "options: [main, large]"
 
 
 def load_site_status():
@@ -53,19 +57,23 @@ def head_sha(repo: str, line: str, gh) -> str:
 
 
 def has_platform(repo: str, line: str, gh) -> bool:
-    """Несёт ли линия ночной workflow; без него запускать нечего."""
+    """Знает ли workflow сборки на линии вход `profile`; без него ночью запускать нечего."""
     try:
-        gh(repo, f"contents/.github/workflows/{LARGE_WORKFLOW}?ref={line}")
+        data = gh(repo, f"contents/.github/workflows/{LARGE_WORKFLOW}?ref={line}")
     except subprocess.CalledProcessError:
         return False
-    return True
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    content = base64.b64decode(data.get("content", "") or "").decode("utf-8", errors="replace")
+    return PROFILE_INPUT in content
 
 
 def dispatch_large(line: str) -> None:
     # `gh` печатает адрес прогона в stdout, а stdout этого скрипта — строки
     # для GITHUB_OUTPUT: чужая строка там — отказ раннера. Адрес — в stderr.
     completed = subprocess.run(
-        ["gh", "workflow", "run", LARGE_WORKFLOW, "--ref", line], check=True, capture_output=True, text=True
+        ["gh", "workflow", "run", LARGE_WORKFLOW, "--ref", line, "-f", "profile=large"],
+        check=True, capture_output=True, text=True,
     )
     print(f"{line}: {completed.stdout.strip() or 'запущен'}", file=sys.stderr)
 
@@ -130,7 +138,7 @@ def enumerate_lines(repo: str, site: str, now: datetime, *, gh, fetch, open_line
     for line in ["main", *open_lines(repo, now)]:
         sha = head_sha(repo, line, gh)
         if not platform(line):
-            decisions.append({"line": line, "sha": sha, "run": False, "reason": f"линия без площадки: нет {LARGE_WORKFLOW}"})
+            decisions.append({"line": line, "sha": sha, "run": False, "reason": "линия без площадки: workflow сборки не знает входа profile"})
             continue
         memory = fetch(f"{site}/data/{line}/profiles/large.json") or {}
         last = memory.get("sha", "")
@@ -167,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", required=True)
     parser.add_argument("--site", required=True, help="адрес сайта с памятью прогонов")
-    parser.add_argument("--dispatch", action="store_true", help="запустить unica-large.yml на сдвинувшихся линиях")
+    parser.add_argument("--dispatch", action="store_true", help="запустить ручной контур сборки с profile=large на сдвинувшихся линиях")
     parser.add_argument("--follow", type=Path, default=None, help="дождаться запущенных прогонов и забрать их артефакты сюда")
     parser.add_argument("--summary", type=Path, default=None, help="куда дописать таблицу решений")
     args = parser.parse_args(argv)
