@@ -420,7 +420,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertRegex(combined, pinned("actions/checkout", "v7"))
         self.assertRegex(release, pinned("actions/setup-python", "v7"))
-        self.assertRegex(release, pinned("actions/cache", "v5"))
+        self.assertRegex(release, pinned("actions/cache", "v6"))
         self.assertRegex(release, pinned("actions/upload-artifact", "v7"))
         self.assertRegex(release, pinned("actions/download-artifact", "v8"))
         self.assertRegex(release, pinned("softprops/action-gh-release", "v3"))
@@ -560,7 +560,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("id: rust-toolchain", build)
         self.assertIn("id: cargo-cache", build)
         self.assertIn("continue-on-error: true", build)
-        self.assertRegex(build, pinned("actions/cache", "v5"))
+        self.assertRegex(build, pinned("actions/cache", "v6"))
         self.assertIn("path: .build/tool-work/${{ matrix.target }}/cargo-target", build)
         self.assertIn(
             "key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ "
