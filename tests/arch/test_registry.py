@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import hashlib
+import os
 import re
 import subprocess
 import sys
@@ -206,6 +207,39 @@ def evidence_reference_error(
         qualifier = " an executable test" if require_executable else ""
         return f"{owner}: {path_text} does not declare{qualifier} {name}"
     return None
+
+
+def repository_files(repo_root: Path, *pathspecs: str) -> list[Path]:
+    """Files git tracks or would track under `pathspecs`; ignored files never enter.
+
+    `Path.rglob` also returns what the desktop drops into a checkout: `.DS_Store`,
+    editor swap files, a locally built binary. One such file breaks a text scan on
+    a developer machine while CI, whose checkout carries none of them, stays
+    green. A file git ignores is not part of the repository, so it is not part
+    of a scan; an untracked file git would accept still is, exactly as with
+    `rglob`. A tracked file deleted from the working tree is still listed, so
+    callers keep their `is_file()` guard.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *pathspecs],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    ).stdout.split(b"\0")
+    return sorted(repo_root / os.fsdecode(raw_path) for raw_path in listed if raw_path)
+
+
+def archive_digests(repo_root: Path, archive: Path) -> dict[str, str]:
+    """SHA-256 of every archive file, keyed by its archive-relative path.
+
+    The manifest itself is the expectation, not a member of the archive.
+    """
+    manifest = archive / "MANIFEST.sha256"
+    return {
+        path.relative_to(archive).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in repository_files(repo_root, archive.relative_to(repo_root).as_posix())
+        if path.is_file() and path != manifest
+    }
 
 
 def contract_record(props: dict) -> REGISTRY.Record:
@@ -945,13 +979,37 @@ class LayerBoundaryTests(unittest.TestCase):
             self.assertEqual(separator, "  ", f"malformed archive manifest line: {line!r}")
             expected[relative] = digest
 
-        actual = {
-            path.relative_to(ARCHIVE).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in ARCHIVE.rglob("*")
-            if path.is_file() and path != manifest
-        }
+        actual = archive_digests(REPO_ROOT, ARCHIVE)
         self.assertEqual(set(actual), set(expected), "archive file set differs from its manifest")
         self.assertEqual(actual, expected, "archive bytes differ from their frozen digests")
+
+    def test_archive_digests_skip_what_git_ignores(self) -> None:
+        """Finder's `.DS_Store` in the archive is not drift; an unstaged file still is.
+
+        The freeze covers what git tracks or would track. An ignored file
+        cannot reach a commit, so it cannot change the archive anyone
+        receives, while a file dropped into the archive without `git add`
+        is still reported before it is staged.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "docs" / "arch-v1"
+            archive.mkdir(parents=True)
+            (root / ".gitignore").write_text(".DS_Store\n", encoding="utf-8")
+            (archive / "MANIFEST.sha256").write_text("", encoding="utf-8")
+            (archive / "frozen.md").write_bytes(b"frozen\n")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            (archive / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1\xa8\xff")
+            (archive / "unstaged.md").write_bytes(b"drift\n")
+
+            self.assertEqual(
+                archive_digests(root, archive),
+                {
+                    "frozen.md": hashlib.sha256(b"frozen\n").hexdigest(),
+                    "unstaged.md": hashlib.sha256(b"drift\n").hexdigest(),
+                },
+            )
 
     def test_v2_process_policy_changes_are_explicit_and_compatible(self) -> None:
         agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
