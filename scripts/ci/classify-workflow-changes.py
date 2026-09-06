@@ -124,8 +124,6 @@ SEARCH_INTEGRATION_PATHS = {
     "crates/unica-coder/src/infrastructure/workspace_index.rs",
     "crates/unica-coder/src/infrastructure/workspace_services.rs",
     "crates/unica-coder/src/interfaces/mcp.rs",
-    "crates/unica-coder/tests/issue_89_workspace_service.rs",
-    "crates/unica-coder/tests/platform/issue_89_workspace_service.rs",
 }
 SEARCH_INTEGRATION_PREFIXES = (
     "crates/unica-coder/src/infrastructure/platform/source_revision_fence",

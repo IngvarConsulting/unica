@@ -635,8 +635,14 @@ Python получил свой разрез 06.09.2026: наборы остаю�
 `main` обычным профилем. Два теста `issue_89_*` с тем же маршрутом в
 джобе не запускались никогда — она гоняла только цель `v13_search_integration`
 — и локально падают; они остаются под `#[ignore]` с честной причиной, а их
-судьба — отдельная задача. Флаг `search_integration_changed` остался: он
-питает `assessment_required`.
+судьба — отдельная задача. Она решена тем же днём: оба теста звали имена
+v0.12 (`unica.code.search`, `unica.meta.info`, `unica.code.graph`), и их
+предмет — скрытый сервис RLM и анализатора — с канонического провода
+недостижим, потому что `unica.search` ищет буквально силами актора и
+провайдеров не поднимает. Цель `issue_89_workspace_service` снята целиком;
+правила реестра `arch/` на неё не ссылались — их держат модульные проверки
+в `workspace_services.rs`, `workspace_index.rs` и `platform/process.rs`.
+Флаг `search_integration_changed` остался: он питает `assessment_required`.
 
 Тогда же снята джоба «Rust tests (macos-14 primary)» — экономия эпохи
 контуров: rust-only pull request шёл на одном раннере. Под профилем `pr`
