@@ -445,9 +445,11 @@ XML объект расширения несёт `ObjectBelonging` со знач
 на объявление (`v8project.yaml:format=DESIGNER`). То есть формат в первом
 случае наблюдён, во втором лишь заявлен. Это надо сделать явным полем, а не
 оставлять выводом из вида доказательства: `sourceState` с тремя значениями по
-строкам таблицы — `observed` (формат наблюдён в файле), `unsupported` (наблюдён
-и не поддерживается), `declared` (каталог пуст, формат лишь заявлен).
-`sourceFormat` присутствует только при `observed`.
+строкам таблицы — `supported` (формат наблюдён в файле и поддерживается),
+`unsupported` (наблюдён и не поддерживается), `declared` (каталог пуст, формат
+лишь заявлен). `sourceFormat` присутствует у обоих наблюдённых состояний и
+отсутствует у `declared` — иначе читатель знал бы, что формат не поддержан, но
+не знал бы какой, и не смог бы ни назвать причину, ни выбрать конвертацию.
 
 Отсюда же две поправки: пустому набору не следует приписывать
 `sourceFormat: "platform_xml"` без единого доказательства, и он не должен
@@ -757,8 +759,9 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 **Синонимы надо определять по смыслу, а не по схожести имён.**
 `invalid_cursor` и `stale_cursor` стоят парой в двух независимых местах —
 `diff.rs` и `result_store.rs`; это осознанное различие: «курсор чужой» против
-«ревизия уехала», и исходы у них разные — исправить вызов против повторить
-обход. Схлопывать их нельзя.
+«ревизия уехала». Исход у них общий — «исправить вызов», — но чинится разное:
+взять свой курсор против начать обход заново. Различие несёт `detailCode`, как
+у пары `source_set_unknown` и `target_not_found`. Схлопывать коды нельзя.
 
 Кандидаты разобраны по смыслу; из четырёх дублями оказались два.
 
@@ -774,9 +777,11 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
   добавляется `unsupported_cursor`;
 - **четыре кода про отказ задачи** — `task_backend_failed`,
   `task_transport_failed`, `task_protocol_failed`, `task_projection_failed` —
-  различают слой поломки при, похоже, одном исходе;
+  различают слой поломки; разбор по коду ниже развёл их по трём разным
+  исходам, так что схлопывать их нельзя;
 - **`provider_failed` рядом с `provider_unavailable`**: «упал» против
-  «недоступен», исходы разные — повторить против позвать человека;
+  «недоступен». Разбор по коду ниже показал, что «упал» — это неклассифи­
+  цированный отказ раннера с `retryable: false`, то есть тупик, а не повтор;
 - **`provider_deadline` и `deadline_exceeded`** — оба живы.
 
 Сорок два кода — много для закрытого набора, на котором агент ветвится.
@@ -790,16 +795,20 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 
 **Повторить как есть** — преходящее, никто не действует:
 
-`stale_revision`, `revision_mismatch`, `stale_cursor`, `concurrent_change`,
-`concurrent_modification`, `source_selection_changed`, `deadline_exceeded`,
-`provider_deadline`, `dependency_unavailable`, `task_transport_failed`
+`concurrent_change`, `concurrent_modification`, `source_selection_changed`,
+`deadline_exceeded`, `provider_deadline`, `dependency_unavailable`,
+`task_transport_failed`, `task_session_closed`
+
+Условие приёма в этот исход одно: **тот же самый вызов может позже пройти.**
+Оно отсеивает коды, несущие устаревшую метку, — их разбор ниже.
 
 **Исправить вызов** — агент правит аргументы:
 
 `bad_value`, `not_found`, `source_set_unknown`, `target_not_found`,
 `not_a_role`, `containment_denied`, `invalid_cursor`, `unsupported_cursor`,
 `unsupported_source`, `unsupported_filter`, `incomparable_nodes`,
-`result_too_large`, `invalid_task_id`, `bad_wait_ms`, `bad_task_arguments`
+`result_too_large`, `invalid_task_id`, `bad_wait_ms`, `bad_task_arguments`,
+`revision_mismatch`, `stale_revision`, `stale_cursor`
 
 **Починить предмет** — агент правит исходники:
 
@@ -808,8 +817,15 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 
 **Нужен человек** — действует человек над средой:
 
-`provider_unavailable`, `ambiguous_source_format`, `rollback_failed`,
-`rollback_incomplete`, `invalid_state`, `task_backend_failed`
+`ambiguous_source_format`, `rollback_failed`, `rollback_incomplete`,
+`invalid_state`
+
+**Исход берётся из `detailCode`** — код сам по себе его не определяет:
+
+`provider_unavailable`, `task_backend_failed` — оба покрывают несколько
+исходов, разбор ниже. Умолчание при неизвестном `detailCode` — «нужен
+человек»: оно останавливает агента и заставляет назвать причину, тогда как
+ошибочное «повторить» уводит его в холостой цикл.
 
 **Пойти иначе** — маршрут не работает, альтернатива есть:
 
@@ -822,13 +838,27 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 
 ### Что видно из раскладки
 
-**Половина словаря — «исправить вызов».** Пятнадцать кодов из сорока двух
+**Почти половина словаря — «исправить вызов».** Восемнадцать кодов из сорока
+двух
 означают «аргументы не те». Это нормально: большинство отказов происходит до
 работы. Но значит и обратное — по одному исходу агент не поймёт, **что именно**
 исправить, и `detailCode` тут не украшение, а необходимость.
 
 **«Починить предмет» всего два.** Ожидалось больше: это исход, ради которого
 агент идёт в `check`. Подозрение проверено — разбор `provider_unavailable` ниже.
+
+**Устаревшая метка — не преходящее состояние.** Три кода пришлось вынести из
+«повторить как есть»: `revision_mismatch`, `stale_revision`, `stale_cursor`.
+Соблазн понятен — все три звучат как «кто-то опередил, подожди и повтори». Но
+повтор здесь означает повтор **с той же меткой**, а она уже никогда не сойдётся:
+ревизия ушла вперёд, и тот же `ifRev` будет отвергнут всегда. Агент, которому
+сказали «повторить как есть», зациклится. Чинится же ровно аргумент: взять
+свежий `previewApply` и его `ifRev`, а для курсора — начать обход заново. Это
+«исправить вызов», и `detailCode` называет, какую именно метку обновлять.
+
+Отсюда и поправка к разбору таймаута выше: забор делает повтор **безопасным**,
+но не делает его **достаточным**. После таймаута повтор упрётся в
+`revision_mismatch`, и это не тупик, а указание перейти к свежему preview.
 
 **Тупик — это «остановись и сообщи», а не одна отмена.** Разбор по коду свёл
 туда три случая помимо `cancelled`. `task_protocol_failed` приходит на
@@ -869,13 +899,14 @@ Unica. `provider_failed` — ветка `_` в `map_runner_code`, то есть 
 сломанный исходник. Виноват `provider_unavailable` — **233 места в 30 файлах**,
 и один код называет пять несовместимых вещей:
 
-| Что на самом деле | Пример сообщения | Исход |
-| --- | --- | --- |
-| Исходник сломан | `Configuration.xml is not UTF-8`, `Form.xml is not UTF-8`, `Rights.xml is not UTF-8` (девять файлов), `external source set has no valid top-level owner descriptors`, ошибки разбора XML | починить предмет |
-| Поставщика нет | справка не установлена, поставщик диагностик не стартовал | нужен человек |
-| Вызов неверен | `external inventory requested for a configuration source set` | исправить вызов |
-| Предмет не влезает | `external owner inventory exceeds N bytes` | пойти иначе |
-| Внутренний сбой | `support-state cache is poisoned` | повторить как есть |
+| `detailCode` | Что на самом деле | Пример сообщения | Исход |
+| --- | --- | --- | --- |
+| `source_unreadable` | Исходник сломан | `Configuration.xml is not UTF-8`, `Form.xml is not UTF-8`, `Rights.xml is not UTF-8` (девять файлов), `external source set has no valid top-level owner descriptors`, ошибки разбора XML | починить предмет |
+| `provider_absent` | Поставщика нет | справка не установлена, поставщик диагностик не стартовал | нужен человек |
+| `wrong_source_kind` | Вызов неверен | `external inventory requested for a configuration source set` | исправить вызов |
+| `inventory_too_large` | Предмет не влезает | `external owner inventory exceeds N bytes` | пойти иначе |
+| `cache_poisoned` | Внутренний сбой | `support-state cache is poisoned` | повторить как есть |
+| отсутствует | не классифицировано | — | нужен человек (умолчание) |
 
 Читатель, получив этот код, не может выбрать действие — а именно ради выбора
 действия исходы и вводятся. Это самое сильное свидетельство в пользу `detailCode`
@@ -893,6 +924,18 @@ Unica. `provider_failed` — ветка `_` в `map_runner_code`, то есть 
 `ProtocolMismatch`, `CoreMismatch`, `Unauthorized` (нужен человек),
 `InvalidRequest`, `StoreFailed`, `DurabilityUncertain` (тупик). Три исхода под
 одним именем, и по той же причине: широкая ветка `_` в отображении.
+
+| `detailCode` | Код демона | Исход |
+| --- | --- | --- |
+| `backend_busy` | `Overloaded`, `TaskCapacity`, `OwnerCapacity`, `WorkspaceCapacity` | повторить как есть |
+| `backend_incompatible` | `ProtocolMismatch`, `CoreMismatch`, `Unauthorized` | нужен человек |
+| `backend_broken` | `InvalidRequest`, `StoreFailed`, `DurabilityUncertain` | тупик |
+| отсутствует | не классифицировано | нужен человек (умолчание) |
+
+Умолчание одно на оба кода и выбрано не из осторожности вообще, а из цены
+ошибки: неверное «нужен человек» стоит одной лишней фразы пользователю, а
+неверное «повторить» — холостого цикла, который на сборке базы измеряется
+минутами и удержанными блокировками.
 
 Значит схлопывание не случайность одного места, а **свойство границы**: там,
 где чужой типизированный код сводится к нашему через `_`, смысл теряется
