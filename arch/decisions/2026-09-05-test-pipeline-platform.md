@@ -1,9 +1,13 @@
 ---
 id: DEC.2026-09-05.TEST-PIPELINE-PLATFORM
-status: planned
+status: active
 governs: process
-realized: null
-supersedes: []
+realized:
+  - tests/ci/test_gate_profiles.py::test_every_gate_has_a_nextest_profile_that_admits_its_sizes
+  - tests/ci/test_size_guard.py::test_pr_gate_and_medium_deadline_share_one_expression
+  - tests/ci/test_python_sizes.py::test_runner_admits_only_the_requested_sizes
+  - tests/ci/test_collect_results.py::test_planned_test_without_a_result_becomes_skipped_with_the_runner_outcome
+supersedes: [DEC.2026-09-04.PUBLISHED-RUN-SHOWS-EVERY-TEST]
 superseded-by: null
 establishes: []
 design: docs/design/2026-09-04-test-pipeline-platform-design.md

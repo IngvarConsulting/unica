@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-09-04.PUBLISHED-RUN-SHOWS-EVERY-TEST
-status: planned
+status: superseded
 governs: process
 realized: null
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-09-05.TEST-PIPELINE-PLATFORM
 establishes: []
 design: docs/design/2026-09-04-observability-pages-allure-design.md
 ---
