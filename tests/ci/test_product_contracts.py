@@ -1426,7 +1426,10 @@ class ProductContractTests(unittest.TestCase):
         # packaging fails on every later pull request once it drifts. A tag-shaped
         # literal is wrong anywhere in the file, however quoted, and this also
         # catches suffixed forms such as v1.2.3-rc1 by matching their prefix.
-        tag_literals = sorted(set(re.findall(r"v\d+\.\d+\.\d+", release)))
+        # The version comment beside a commit hash documents an action pin, not
+        # a release tag: Dependabot moves it with the hash, and nothing reads it.
+        without_pins = re.sub(r"@[0-9a-f]{40} # v\d+\.\d+\.\d+", "", release)
+        tag_literals = sorted(set(re.findall(r"v\d+\.\d+\.\d+", without_pins)))
         # An unprefixed literal is only wrong inside the step that derives the
         # tag, including in an intermediate variable it reads. The file elsewhere
         # pins other tools by bare version, so this cannot be a whole-file rule.
