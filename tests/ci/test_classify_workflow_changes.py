@@ -102,6 +102,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/Cargo.toml",
             "rust-toolchain.toml",
             ".config/nextest.toml",
+            ".config/python-sizes.toml",
         ):
             with self.subTest(path=path):
                 self.assert_classification(
@@ -257,6 +258,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "tests/ci/test_resolve_line.py",
             "scripts/ci/size-filters.py",
             "tests/ci/test_size_guard.py",
+            "tests/ci/test_python_sizes.py",
             "tests/ci/test_research_policy.py",
             "tests/ci/test_allure_results.py",
             "tests/ci/test_collect_results.py",
