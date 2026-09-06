@@ -1,7 +1,8 @@
 """Страж состава: ворота, профили nextest и размеры наборов согласованы.
 
-Отбора по размеру пока нет — каждый профиль гоняет всё. Когда размеры будут
-расставлены, этот страж меняется осознанно, вместе с выражениями профилей.
+Отбор объявлен профилями: `pr` пропускает только `small`, очередь, `main` и
+релиз гоняют всё, `large` пуст везде, кроме Windows. Меняется этот страж
+осознанно, вместе с выражениями профилей.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.config = tomllib.loads((REPO_ROOT / ".config" / "nextest.toml").read_text(encoding="utf-8"))
         self.run_tests = load_run_tests()
 
-    def test_every_gate_has_a_nextest_profile_that_selects_everything(self) -> None:
+    def test_every_gate_has_a_nextest_profile_that_admits_its_sizes(self) -> None:
         profiles = self.config["profile"]
 
         for gate in GATES:
@@ -41,7 +42,7 @@ class GateProfileCompositionTests(unittest.TestCase):
                 else:
                     self.assertEqual(profiles[gate].get("default-filter"), "all()")
         self.assertEqual(set(self.run_tests.PROFILES), {"all", "large", *GATES})
-        # Ночной ярус пуст до расстановки размеров и честно гоняет ноль.
+        # Ночной ярус пуст на ubuntu и macOS: их набор целиком идёт в `main`.
         self.assertEqual(profiles["large"].get("default-filter"), "none()")
         # Ночью Windows гоняет всё: переопределение по платформе в профиле large.
         self.assertEqual(profiles["large"]["overrides"], [{"platform": "cfg(windows)", "default-filter": "all()"}])
@@ -65,7 +66,8 @@ class GateProfileCompositionTests(unittest.TestCase):
             with self.subTest(suite=suite):
                 self.assertIn(size, sizes)
                 self.assertTrue((REPO_ROOT / suite).is_dir())
-        # Площадка без отбора: `pr` принимает только `small`, и пока это все наборы.
+        # Размер набора — `small`; `medium` внутри набора объявляет манифест
+        # `.config/python-sizes.toml`, и `pr` его не гоняет.
         self.assertEqual({size for _, size, _ in self.run_tests.PYTHON_SUITES}, {"small"})
 
 
