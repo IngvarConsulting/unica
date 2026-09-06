@@ -279,6 +279,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         outputs = classification(rust_changed=True, release_required=True)
         results = {
             **source_results(),
+            "test-rust-platforms": "success",
             **PACKAGE_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
@@ -289,7 +290,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertIn("Contour: `rust`", summary)
         self.assertIn("Rust changed: `true`", summary)
         self.assertIn("Platform changed: `false`", summary)
-        self.assertIn("| `test-rust-platforms` | `skipped` | `skipped` |", summary)
+        self.assertIn("| `test-rust-platforms` | `success` | `success` |", summary)
         self.assertIn("Skipped jobs", summary)
 
 
