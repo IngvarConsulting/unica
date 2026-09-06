@@ -23,6 +23,20 @@ MARK = REPO_ROOT / "docs" / "visual-kit" / "logos" / "unica-mark-blue.svg"
 # Визуальный набор кладётся рядом с сайтом, а не ссылкой на репозиторий:
 # ссылка на файл в гите ведёт на просмотрщик, а не на сам PDF.
 VISUAL_KIT = REPO_ROOT / "docs" / "visual-kit" / "unica-visual-kit.pdf"
+# Карточка для мессенджеров и соцсетей: без неё ссылка на сайт уходит в
+# Telegram голой строкой. Баннер 1200×628 из кита подходит по пропорции.
+SOCIAL_CARD = REPO_ROOT / "docs" / "visual-kit" / "ads" / "unica-ad-1200x628.png"
+ASSETS = (
+    (MARK, MARK.name),
+    (VISUAL_KIT, VISUAL_KIT.name),
+    (SOCIAL_CARD, "unica-social-card.png"),
+)
+
+
+def copy_assets(out: Path) -> None:
+    (out / "assets").mkdir(parents=True, exist_ok=True)
+    for source, name in ASSETS:
+        shutil.copy2(source, out / "assets" / name)
 STYLESHEET = PAGES / "site.css"
 SCRIPT = PAGES / "site.js"
 # Стили и скрипт лежат отдельными файлами, чтобы их правили в одном месте, но
@@ -134,7 +148,7 @@ def main() -> int:
         )
     status.update(generated)
     out = args.out
-    (out / "assets").mkdir(parents=True, exist_ok=True)
+    copy_assets(out)
 
     written = []
     for template in sorted(args.pages.glob("*.html")):
@@ -144,8 +158,6 @@ def main() -> int:
         written.append(template.name)
 
     (out / "status.json").write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    for asset in (MARK, VISUAL_KIT):
-        shutil.copy2(asset, out / "assets" / asset.name)
     print("written: " + ", ".join(written))
     return 0
 

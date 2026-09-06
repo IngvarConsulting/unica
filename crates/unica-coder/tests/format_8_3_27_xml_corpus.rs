@@ -30,7 +30,7 @@ struct MutatorRegistryEntry {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ExecutableCase {
+pub(crate) struct ExecutableCase {
     id: &'static str,
     tool: &'static str,
     branch: &'static str,
@@ -316,7 +316,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
     },
 ];
 
-static EXECUTABLE_CASES: &[ExecutableCase] = &[
+pub(crate) static EXECUTABLE_CASES: &[ExecutableCase] = &[
     ExecutableCase {
         id: "cf-edit-root-property",
         tool: "unica.cf.edit",
@@ -3019,16 +3019,16 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CorpusManifest {
-    schema_version: u32,
-    profile: String,
-    empty_directory_paths: Vec<String>,
-    cases: Vec<CorpusCase>,
+pub(crate) struct CorpusManifest {
+    pub(crate) schema_version: u32,
+    pub(crate) profile: String,
+    pub(crate) empty_directory_paths: Vec<String>,
+    pub(crate) cases: Vec<CorpusCase>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CorpusCase {
+pub(crate) struct CorpusCase {
     id: String,
     workspace_path: String,
     pre_snapshot_path: String,
@@ -3886,7 +3886,9 @@ fn sort_manifest(manifest: &mut CorpusManifest) {
     manifest.cases.sort_by(|left, right| left.id.cmp(&right.id));
 }
 
-fn generate_corpus(output: &Path) -> Result<CorpusManifest, String> {
+// Исследование `research_xml_corpus` собирает этот файл модулем и зовёт отсюда.
+#[allow(dead_code)]
+pub(crate) fn generate_corpus(output: &Path) -> Result<CorpusManifest, String> {
     if !output.exists() {
         fs::create_dir(output).map_err(|error| {
             format!("cannot create corpus target {}: {error}", output.display())
@@ -4024,7 +4026,8 @@ fn configured_output_directory_from(
     validate_output_directory(raw, repo_root, home_root)
 }
 
-fn configured_output_directory() -> Result<PathBuf, String> {
+#[allow(dead_code)]
+pub(crate) fn configured_output_directory() -> Result<PathBuf, String> {
     let raw = std::env::var("UNICA_XML_CORPUS_DIR").ok();
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir
@@ -5760,16 +5763,4 @@ fn corpus_owner_version_uses_the_raw_lexical_attribute() {
 
     assert_eq!(owner_type.as_deref(), Some("Configuration"));
     assert_eq!(version.as_deref(), Some("2.&#50;0"));
-}
-
-#[test]
-#[ignore = "writes an explicit developer-selected public-tool XML corpus"]
-fn generate_platform_xml_corpus() {
-    let output = configured_output_directory().expect("safe UNICA_XML_CORPUS_DIR");
-
-    let manifest = generate_corpus(&output).expect("generate complete public-tool XML corpus");
-
-    assert_eq!(manifest.schema_version, 2);
-    assert_eq!(manifest.profile, "1c-8.3.27-export-2.20");
-    assert_eq!(manifest.cases.len(), EXECUTABLE_CASES.len());
 }

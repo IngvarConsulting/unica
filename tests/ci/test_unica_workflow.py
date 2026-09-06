@@ -9,6 +9,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml"
+NIGHTLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-nightly.yml"
+PAGES_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-pages.yml"
 PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-unica-marketplace.yml"
 LEGACY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-legacy-migration.yml"
 
@@ -126,16 +128,22 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def release_text(self) -> str:
         return RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
+    def nightly_text(self) -> str:
+        return NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
+
+    def pages_text(self) -> str:
+        return PAGES_WORKFLOW.read_text(encoding="utf-8")
+
     def publish_text(self) -> str:
         return PUBLISH_WORKFLOW.read_text(encoding="utf-8")
 
     def test_source_gate_checks_the_full_rust_and_python_workspace(self) -> None:
         text = self.release_text()
 
-        self.assertIn("cargo clippy --workspace --all-targets --all-features -- -D warnings", text)
+        self.assertIn("cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings", text)
         # Наборы гоняет шов; сами команды закреплены тестом `test_run_tests`.
-        self.assertIn("python3 scripts/ci/run-tests.py --profile all --ecosystem rust --results", text)
-        self.assertIn("python scripts/ci/run-tests.py --profile all --ecosystem python --results", text)
+        self.assertIn('python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results', text)
+        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --results', text)
         self.assertNotIn("cargo test --workspace", text)
         self.assertNotIn("unittest discover", text)
         self.assertIn("python -m py_compile scripts/dev/*.py tests/dev/*.py", text)
@@ -155,10 +163,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("python scripts/ci/evaluate-ci-gate.py", gate)
         for upstream in (
             "classify-changes",
-            "verify-source",
-            "test-rust-primary",
+            "guards",
+            "test-python",
             "test-rust-platforms",
-            "test-search-integration",
             "build-tools",
             "package-thin",
             "probe-thin-bootstrap",
@@ -273,47 +280,40 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # test forever. The workflows have far more shell than this.
         self.assertGreater(scanned, 50)
 
-    def test_rust_jobs_route_primary_and_platform_contours(self) -> None:
+    def test_rust_jobs_run_the_full_matrix_for_any_rust_change(self) -> None:
         text = self.release_text()
-        source = job_block(text, "verify-source")
-        primary = job_block(text, "test-rust-primary")
+        source = job_block(text, "test-python")
         platforms = job_block(text, "test-rust-platforms")
-        search_integration = job_block(text, "test-search-integration")
 
         self.assertNotIn("cargo test", source)
-        self.assertIn("search_integration_changed == 'true'", search_integration)
-        self.assertIn("ci_changed == 'true'", search_integration)
-        self.assertIn("--test v13_search_integration -- --ignored", search_integration)
         self.assertNotIn("dtolnay/rust-toolchain", source)
-        self.assertIn("runs-on: macos-14", primary)
-        self.assertIn("rust_changed == 'true'", primary)
-        self.assertIn("platform_changed == 'false'", primary)
         # windows-latest снят с матрицы до разбора нестабильности раннера;
         # список закреплён целиком, поэтому вернуть его молча не получится.
-        self.assertIn("runner: [ubuntu-latest, macos-14]", platforms)
+        # Список раннеров считает classify-changes: Windows — только в ночном ярусе large.
+        self.assertIn("runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}", platforms)
         self.assertIn("platform_changed == 'true'", platforms)
         self.assertIn("toolchain_changed == 'true'", platforms)
         self.assertIn("ci_changed == 'true'", platforms)
-        # Formatting does not depend on the build target, so one runner settles
-        # it. The lint does: `#[cfg]` decides which items exist, so it runs on
-        # every runner of this matrix.
-        self.assertEqual(1, platforms.count("if: matrix.runner == 'macos-14'"))
+        # Форматирование от цели не зависит — оно в `guards`. Линт зависит:
+        # `#[cfg]` решает, какие элементы существуют, поэтому clippy идёт на
+        # каждом раннере матрицы, а его находки — в Code Scanning.
+        self.assertNotIn("cargo fmt", platforms)
+        self.assertIn("cargo fmt --all -- --check", job_block(text, "guards"))
+        self.assertIn("| clippy-sarif | tee clippy.sarif | sarif-fmt", platforms)
+        self.assertIn("category: clippy-${{ matrix.runner }}", platforms)
+        self.assertIn("needs: [classify-changes, guards]", platforms)
+        # Любая правка Rust — полная матрица; отдельной джобы на одном раннере нет.
+        self.assertIn("rust_changed == 'true'", platforms)
+        self.assertNotIn("test-rust-primary:", text)
+        # Команда линта закреплена дословно: `-D warnings` красит джобу, JSON
+        # идёт в SARIF, и убрать одно из двух молча не выйдет.
         self.assertIn(
-            "      - if: matrix.runner == 'macos-14'\n"
-            "        run: cargo fmt --all -- --check\n"
-            "      - run: cargo clippy --workspace --all-targets --all-features"
-            " -- -D warnings\n",
+            "      - run: |\n"
+            "          set -o pipefail\n"
+            "          cargo clippy --workspace --all-targets --all-features"
+            " --message-format=json -- -D warnings \\\n"
+            "            | clippy-sarif | tee clippy.sarif | sarif-fmt\n",
             platforms,
-        )
-
-    def test_search_integration_checkout_does_not_persist_credentials(self) -> None:
-        integration = job_block(self.release_text(), "test-search-integration")
-
-        self.assertIn(
-            "      - uses: actions/checkout@v7\n"
-            "        with:\n"
-            "          persist-credentials: false",
-            integration,
         )
 
     def test_package_contour_and_pr_smoke_do_not_publish_release_assets(self) -> None:
@@ -407,7 +407,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_javascript_actions_use_node24_compatible_majors(self) -> None:
         release = self.release_text()
         publish = self.publish_text()
-        combined = release + publish
+        combined = release + publish + self.nightly_text() + self.pages_text()
 
         self.assertIn("actions/checkout@v7", combined)
         self.assertIn("actions/setup-python@v7", release)
@@ -415,6 +415,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("actions/upload-artifact@v7", release)
         self.assertIn("actions/download-artifact@v8", release)
         self.assertIn("softprops/action-gh-release@v3", release)
+        self.assertIn("github/codeql-action/upload-sarif@v4", release)
         for stale in (
             "actions/checkout@v4",
             "actions/setup-python@v5",
@@ -422,6 +423,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "actions/upload-artifact@v4",
             "actions/download-artifact@v4",
             "softprops/action-gh-release@v2",
+            "github/codeql-action/upload-sarif@v3",
         ):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, combined)
@@ -432,8 +434,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         expected_release_timeouts = {
             "classify-changes": 10,
-            "verify-source": 90,
-            "test-rust-primary": 60,
+            "guards": 15,
+            "test-python": 90,
             "test-rust-platforms": 60,
             "build-tools": 90,
             "package-thin": 30,
@@ -460,10 +462,87 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 self.assertIn(f"timeout-minutes: {minutes}", job_block(publish, job_id))
 
     def test_registry_guards_run_in_the_source_contour(self) -> None:
-        verify = job_block(self.release_text(), "verify-source")
+        """Стражи реестра идут в `guards` первыми, наборы Python — в `test-python` за ними."""
+        text = self.release_text()
+        guards = job_block(text, "guards")
+        python = job_block(text, "test-python")
 
-        self.assertIn("python scripts/ci/run-tests.py --profile all --ecosystem python --results", verify)
-        self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", verify)
+        self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", guards)
+        self.assertIn("python scripts/arch/registry.py --check", guards)
+        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --results', python)
+        self.assertIn("needs: [classify-changes, guards]", python)
+
+    def test_gate_profile_follows_the_event_not_the_job(self) -> None:
+        """Ворота → профиль: pull request — `pr`, push в ветку — `main`, тег — `release`."""
+        text = self.release_text()
+
+        self.assertIn(
+            "GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'merge_group' && 'queue' || "
+            "github.event_name == 'workflow_dispatch' && inputs.profile || "
+            "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}",
+            text,
+        )
+        # Очередь слияния: конвейер отвечает на merge_group, иначе очередь ждёт вечно.
+        self.assertIn("  merge_group:\n    types: [checks_requested]", text)
+        self.assertNotIn("run-tests.py --profile all", text)
+
+    def test_line_rides_in_the_signature_and_tags_resolve_to_a_release_line(self) -> None:
+        """Линия прогона — из resolve-line.py, в подписи результатов и плана."""
+        text = self.release_text()
+        classify = job_block(text, "classify-changes")
+
+        self.assertIn('python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA"', classify)
+        self.assertIn("line: ${{ steps.line.outputs.line }}", classify)
+        self.assertEqual(3, text.count('--line "$RUN_LINE"'))
+        self.assertEqual(2, text.count("RUN_LINE: ${{ needs.classify-changes.outputs.line }}"))
+        # План едет каталогом вместе с подписью, а не одним файлом.
+        self.assertNotIn("path: .build/results/plan.json", text)
+
+    def test_nightly_dispatches_the_manual_contour_with_the_large_profile(self) -> None:
+        """Ночь перечисляет и запускает ручной контур сборки на линии; Windows — только там."""
+        nightly = self.nightly_text()
+        release = self.release_text()
+        classify = job_block(release, "classify-changes")
+        platforms = job_block(release, "test-rust-platforms")
+
+        self.assertIn("schedule:", nightly)
+        self.assertIn("actions: write", nightly)
+        self.assertIn("--dispatch --follow .build/large", nightly)
+        self.assertIn("name: results-nightly", nightly)
+        self.assertNotIn("ref:", nightly)
+        self.assertIn("options: [main, large]", release)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.profile", release)
+        self.assertIn("runners: ${{ steps.runners.outputs.runners }}", classify)
+        self.assertIn('runners=["ubuntu-latest", "macos-14", "windows-latest"]', classify)
+        self.assertIn("runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}", platforms)
+        self.assertIn("shell: bash", platforms)
+        self.assertIn("uses: actions/setup-python@v7", platforms)
+        # Консоль Windows — cp1252; сбой Windows виден, но упаковку ночи не блокирует.
+        self.assertIn('PYTHONUTF8: "1"', platforms)
+        self.assertIn("continue-on-error: ${{ matrix.runner == 'windows-latest' }}", platforms)
+        self.assertFalse((REPO_ROOT / ".github" / "workflows" / "unica-large.yml").exists())
+
+    def test_pages_take_results_from_red_runs_and_from_the_nightly(self) -> None:
+        """Красный прогон — тоже результат; ночь и тег — тоже источники."""
+        text = self.pages_text()
+
+        self.assertIn('workflows: ["Build Unica Codex Plugin", "Unica Nightly"]', text)
+        self.assertIn('branches: [main, "release-v*", "v*"]', text)
+        self.assertIn("github.event.workflow_run.conclusion == 'failure'", text)
+        self.assertIn("github.event.workflow_run.event == 'schedule'", text)
+        self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", text)
+
+    def test_guards_ship_findings_to_code_scanning_not_the_gate(self) -> None:
+        """Находка линтера — не исход теста: SARIF в Code Scanning, гейт не краснеет."""
+        guards = job_block(self.release_text(), "guards")
+
+        self.assertIn("tool: zizmor@1.30.0", guards)
+        self.assertIn("zizmor --format sarif --no-exit-codes .github/workflows > zizmor.sarif", guards)
+        self.assertIn("uses: github/codeql-action/upload-sarif@v4", guards)
+        self.assertIn("category: zizmor", guards)
+        self.assertIn("security-events: write", guards)
+        # Токен pull request из форка писать в Code Scanning не вправе.
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", guards)
 
     def test_platform_build_uses_exact_cargo_cache_and_reports_outcome(self) -> None:
         text = self.release_text()

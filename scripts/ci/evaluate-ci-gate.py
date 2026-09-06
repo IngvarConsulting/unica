@@ -24,7 +24,8 @@ CLASSIFICATION_OUTPUTS = (
 )
 ALWAYS_JOBS = (
     "classify-changes",
-    "verify-source",
+    "guards",
+    "test-python",
 )
 PACKAGE_JOBS = (
     "build-tools",
@@ -101,32 +102,31 @@ def expected_results(
     # Push в main или релизную линию — ворота линии: полный набор тестов без
     # упаковки. Отсюда сайт собирает опубликованный отчёт.
     is_branch = event_name == "push" and ref.startswith("refs/heads/")
+    # Очередь слияния — ворота будущего main: полный набор без отбора и без
+    # упаковки, как push в ветку.
+    is_queue = event_name == "merge_group"
     is_manual = event_name == "workflow_dispatch"
     is_pr = event_name == "pull_request"
-    if not (is_tag or is_branch or is_manual or is_pr):
-        invalid["event"] = (f"{event_name}:{ref}", "pull_request, branch push, tag push, or workflow_dispatch")
+    if not (is_tag or is_branch or is_queue or is_manual or is_pr):
+        invalid["event"] = (f"{event_name}:{ref}", "pull_request, merge_group, branch push, tag push, or workflow_dispatch")
 
-    if (is_tag or is_branch or is_manual) and not all(values.values()):
+    if (is_tag or is_branch or is_queue or is_manual) and not all(values.values()):
         invalid["classification"] = (
             ", ".join(name for name, enabled in values.items() if not enabled) or "invalid",
-            "all contours enabled for tag, branch push or workflow_dispatch",
+            "all contours enabled for tag, branch push, merge_group or workflow_dispatch",
         )
 
-    full_matrix = values["platform_changed"] or values["toolchain_changed"] or values["ci_changed"]
-    primary_rust = values["rust_changed"] and not full_matrix
+    # Любая правка Rust — полная матрица: одного раннера класс `#[cfg]` не видит.
+    full_matrix = (
+        values["rust_changed"] or values["platform_changed"] or values["toolchain_changed"] or values["ci_changed"]
+    )
     # Сборка пакета и холодные старты сняты с pull request до пересборки системы
     # тестирования: прослеживаемости они не давали, а гейт красили. Тег и ручной
     # запуск их сохраняют — выпуск обязан собираться. Push в ветку упаковку тоже
     # не гоняет: это ворота тестов, а упаковка — дело тега.
     package_pipeline = (values["release_required"] or values["ci_changed"]) and (is_tag or is_manual)
 
-    expected["test-rust-primary"] = "success" if primary_rust else "skipped"
     expected["test-rust-platforms"] = "success" if full_matrix else "skipped"
-    expected["test-search-integration"] = (
-        "success"
-        if values["search_integration_changed"] or values["ci_changed"]
-        else "skipped"
-    )
     expected.update({job: "success" if package_pipeline else "skipped" for job in PACKAGE_JOBS})
     expected[ASSESSMENT_JOB] = (
         "success" if values["assessment_required"] and (is_tag or is_manual) else "skipped"
@@ -143,6 +143,8 @@ def expected_results(
         contour = "full"
     elif is_branch:
         contour = "branch"
+    elif is_queue:
+        contour = "queue"
     elif not is_pr:
         contour = "invalid"
     elif all(values.values()) or values["ci_changed"]:

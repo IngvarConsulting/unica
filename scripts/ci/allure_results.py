@@ -18,9 +18,12 @@ import os
 import re
 import subprocess
 import time
+import tomllib
 import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+NEXTEST_TOML = Path(__file__).resolve().parents[2] / ".config" / "nextest.toml"
 
 # Причина `#[ignore]` — конструкция языка, а не наше имя: nextest её не отдаёт
 # ни в JUnit, ни в списке, а в атрибуте она есть всегда.
@@ -30,6 +33,9 @@ IGNORE_ATTRIBUTE = re.compile(
 # Паника из assert — дефект продукта; любая другая — поломка самого теста.
 # JUnit от nextest этого не различает, различаем по тексту.
 ASSERTION = re.compile(r"assertion|assert_eq|assert_ne|left == right|left != right", re.I)
+# Неудачные попытки при повторах: `flaky*` — итог прошёл, `rerun*` — итог упал.
+# Так пишет nextest (соглашение Surefire), и так же читает его JUnit сам.
+RETRIED_ATTEMPTS = ("flakyFailure", "flakyError", "rerunFailure", "rerunError")
 
 
 def now_ms() -> int:
@@ -93,18 +99,19 @@ def write(out: Path, entry: dict) -> Path:
     return path
 
 
-def write_run(out: Path, *, profile: str, runner: str, ecosystem: str) -> Path:
+def write_run(out: Path, *, profile: str, runner: str, ecosystem: str, line: str | None = None, sha: str | None = None) -> Path:
     """Подпись прогона: кто, когда и на чём собрал эти результаты.
 
     Сайт читает её оттуда, а не из события: у прогона по расписанию
-    `head_branch` всегда `main`, даже когда он проверяет релизную линию.
+    `head_branch` всегда `main`, даже когда он проверяет релизную линию, —
+    поэтому линию и её вершину передают явно, а окружение — запасной путь.
     """
     env = os.environ.get
     repository = env("GITHUB_REPOSITORY", "")
     run_id = env("GITHUB_RUN_ID", "")
     signature = {
-        "sha": env("GITHUB_SHA", ""),
-        "ref": env("GITHUB_REF_NAME", ""),
+        "sha": sha or env("GITHUB_SHA", ""),
+        "ref": line or env("GITHUB_REF_NAME", ""),
         "run_id": run_id,
         "run_attempt": env("GITHUB_RUN_ATTEMPT", ""),
         "run_url": f"https://github.com/{repository}/actions/runs/{run_id}" if repository and run_id else "",
@@ -146,6 +153,10 @@ def nextest_list(root: Path, profile: str) -> list[dict]:
     entries = []
     for suite in listed["rust-suites"].values():
         for name, case in suite["testcases"].items():
+            # Не выбранный воротами тест — не в этом плане: его результат в
+            # отчёте линии даёт другой профиль, а не пропуск от этого.
+            if case.get("filter-match", {}).get("status", "matches") != "matches":
+                continue
             entries.append({"binary": suite["binary-id"], "name": name, "ignored": bool(case.get("ignored"))})
     return entries
 
@@ -157,6 +168,46 @@ def write_plan(out: Path, entries: list[dict]) -> Path:
     return path
 
 
+class MediumMatcher:
+    """Размер теста по выражению `medium` из `.config/nextest.toml`.
+
+    Выражение объявляет размер вне теста: `kind(test)` — интеграционные
+    цели, `test(/…/)` — модули по пути. Здесь оно читается, чтобы отчёт нёс
+    метку `size` тем же правилом, каким ворота отбирают тесты.
+    """
+
+    def __init__(self, expression: str):
+        self.integration = "kind(test)" in expression
+        self.patterns = [re.compile(found) for found in re.findall(r"test\(/(.*?)/\)", expression)]
+
+    @classmethod
+    def from_toml(cls, path: Path = NEXTEST_TOML) -> "MediumMatcher":
+        try:
+            config = tomllib.loads(path.read_text(encoding="utf-8"))
+            overrides = config["profile"]["default"].get("overrides", [])
+            expression = next(o["filter"] for o in overrides if "slow-timeout" in o)
+        except (OSError, KeyError, StopIteration):
+            expression = ""
+        return cls(expression)
+
+    def size(self, binary: str, name: str) -> str:
+        if self.integration and "::" in binary and "bin/" not in binary:
+            return "medium"
+        if any(pattern.search(name) for pattern in self.patterns):
+            return "medium"
+        return "small"
+
+
+_MEDIUM: MediumMatcher | None = None
+
+
+def size_of(binary: str, name: str) -> str:
+    global _MEDIUM
+    if _MEDIUM is None:
+        _MEDIUM = MediumMatcher.from_toml()
+    return _MEDIUM.size(binary, name)
+
+
 def rust_labels(binary: str, name: str, profile: str) -> dict[str, str]:
     module = name.rsplit("::", 1)[0] if "::" in name else binary
     return {
@@ -166,7 +217,20 @@ def rust_labels(binary: str, name: str, profile: str) -> dict[str, str]:
         "suite": binary,
         "subSuite": module,
         "profile": profile,
+        "size": size_of(binary, name),
     }
+
+
+def failure_outcome(node: ET.Element) -> tuple[str, str, str]:
+    """Статус, сообщение и трейс одной неудачной попытки из узла JUnit."""
+    body = (node.text or "").strip()
+    err = node.find("system-err")
+    stderr = ((err.text or "") if err is not None else "").strip()
+    # Первая содержательная строка — сообщение; всё остальное — трейс.
+    message = body.splitlines()[0] if body else (node.get("message") or "тест упал")
+    trace = "\n".join(part for part in (body, stderr) if part)
+    status = "failed" if ASSERTION.search(trace or message) else "broken"
+    return status, message, trace
 
 
 def junit_records(
@@ -176,7 +240,9 @@ def junit_records(
 
     Статус и трейс — из JUnit; причина `#[ignore]` — из атрибута; полное имя
     — двоичный файл и путь теста. Паника из assert — `failed`, прочая —
-    `broken`; отключённый — `skipped` с причиной автора.
+    `broken`; отключённый — `skipped` с причиной автора. Каждая неудачная
+    попытка при повторах — своя запись с тем же именем и параметром: Allure
+    складывает их повторами последней, и график повторов их видит.
     """
     root = ET.parse(junit).getroot()
     finished = stop if stop is not None else now_ms()
@@ -199,15 +265,32 @@ def junit_records(
                 message = f"отключён автором: {reason}" if reason else (skipped.get("message") or "пропущен")
             elif failure is not None or error is not None:
                 node = failure if failure is not None else error
-                body = (node.text or "").strip()
                 err = case.find("system-err")
-                stderr = ((err.text or "") if err is not None else "").strip()
-                # Первая содержательная строка — сообщение; всё остальное — трейс.
-                message = body.splitlines()[0] if body else (node.get("message") or "тест упал")
-                trace = "\n".join(part for part in (body, stderr) if part)
-                status = "failed" if ASSERTION.search(trace or message) else "broken"
+                if err is not None and node.find("system-err") is None:
+                    node.append(err)
+                status, message, trace = failure_outcome(node)
             else:
                 status = "passed"
+            attempts = [node for node in case if node.tag in RETRIED_ATTEMPTS]
+            for index, node in enumerate(attempts):
+                attempt_status, attempt_message, attempt_trace = failure_outcome(node)
+                attempt_seconds = float(node.get("time", "0") or 0)
+                # Попытки идут до итоговой: каждая заканчивается раньше её начала.
+                attempt_stop = start - (len(attempts) - index)
+                entries.append(
+                    record(
+                        name=name,
+                        full_name=full_name,
+                        status=attempt_status,
+                        runner=runner,
+                        labels=rust_labels(binary, name, profile),
+                        tags=(profile, "retry"),
+                        message=attempt_message,
+                        trace=attempt_trace,
+                        start=attempt_stop - int(attempt_seconds * 1000),
+                        stop=attempt_stop,
+                    )
+                )
             entries.append(
                 record(
                     name=name,

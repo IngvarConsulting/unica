@@ -74,6 +74,18 @@
   ready(function () {
     apply(current());
 
+    // Навигация на телефоне прокручивается вбок. Тающий край показываем
+    // только когда пункты действительно не поместились: класс ставится по
+    // замеру и снимается при повороте экрана.
+    var nav = document.querySelector("header nav");
+    if (nav) {
+      var hint = function () {
+        nav.classList.toggle("is-scrollable", nav.scrollWidth > nav.clientWidth + 1);
+      };
+      hint();
+      window.addEventListener("resize", hint);
+    }
+
     var button = document.querySelector(".theme");
     if (button) {
       button.addEventListener("click", function () {
@@ -89,7 +101,7 @@
     // подсказка без единого слова. Тем, кто просил меньше движения, её не
     // показываем.
     var still = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)");
-    var scrollable = document.querySelectorAll(".table-wrap, .addr");
+    var scrollable = document.querySelectorAll(".table-wrap, .addr, .diagram-wrap");
     if (scrollable.length && window.IntersectionObserver && !(still && still.matches)) {
       // Кадры считаем сами: `scrollTo({behavior:"smooth"})` молча ничего не
       // делает там, где сглаживание отключено, и подсказка бы не показалась.

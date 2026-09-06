@@ -3,7 +3,9 @@ id: INV.REGISTRY.CHECK-EXISTS
 status: active
 governs: process
 decision: DEC.2026-08-18.REGISTRY-SHAPE
-check: tests/arch/test_registry.py::test_every_rule_names_a_check_that_exists
+check:
+  - tests/arch/test_registry.py::test_every_rule_names_a_check_that_exists
+  - tests/arch/test_registry.py::test_every_rust_evidence_is_compiled_from_a_crate_root
 scope: [docs]
 ---
 
@@ -12,6 +14,9 @@ scope: [docs]
 Инвариант и контракт обязаны назвать проверку в форме `путь::имя`: путь
 существует в дереве, а имя разрешается в запускаемый Python test или Rust-функцию с
 прикреплённым `#[test]` / `#[...::test]`, а не в helper, комментарий или литерал.
+Для Rust-файла существование означает достижимость: компилятор доходит до него
+от корня цели Cargo объявлениями модулей, атрибутом `path` или `include!` с
+литералом; файл вне этого графа не собирается, и тест в нём не исполняется.
 `realized` отдельно разрешает точный символ реализации. Контракт вдобавок называет
 существующего производителя. Обещание, данное названному потребителю и никем не
 проверяемое, — намерение, а не контракт; версия, которую нечем измерить,

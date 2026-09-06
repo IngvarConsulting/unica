@@ -47,7 +47,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         """The donor index and its review records ship with nothing.
 
         They live outside `plugins/unica/`, so a change to them must not claim
-        the plugin content contour. `verify-source` runs unconditionally and
+        the plugin content contour. `test-python` runs unconditionally and
         still covers the attribution and provenance contracts.
         """
         self.assert_classification(
@@ -102,6 +102,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/Cargo.toml",
             "rust-toolchain.toml",
             ".config/nextest.toml",
+            ".config/python-sizes.toml",
         ):
             with self.subTest(path=path):
                 self.assert_classification(
@@ -139,8 +140,6 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/src/infrastructure/workspace_services.rs",
             "crates/unica-coder/src/interfaces/mcp.rs",
             "crates/unica-coder/src/infrastructure/platform/source_revision_fence.rs",
-            "crates/unica-coder/tests/issue_89_workspace_service.rs",
-            "crates/unica-coder/tests/platform/issue_89_workspace_service.rs",
         ):
             with self.subTest(path=path):
                 platform_changed = (
@@ -250,6 +249,15 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "scripts/ci/allure_results.py",
             "scripts/ci/collect-results.py",
             "tests/ci/test_run_tests.py",
+            "tests/ci/test_gate_profiles.py",
+            "scripts/ci/nightly-lines.py",
+            "scripts/ci/resolve-line.py",
+            "tests/ci/test_nightly_lines.py",
+            "tests/ci/test_resolve_line.py",
+            "scripts/ci/size-filters.py",
+            "tests/ci/test_size_guard.py",
+            "tests/ci/test_python_sizes.py",
+            "tests/ci/test_research_policy.py",
             "tests/ci/test_allure_results.py",
             "tests/ci/test_collect_results.py",
         ):

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tomllib
 import traceback
 import unittest
 from pathlib import Path
@@ -27,6 +28,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
 
 
+class Sizes:
+    """Размер теста по манифесту `.config/python-sizes.toml`.
+
+    Запись манифеста — `модуль`, `модуль.Класс` или `модуль.Класс.тест`;
+    побеждает самая длинная подходящая. Без записи размер — размер набора.
+    """
+
+    def __init__(self, medium: list[str], default: str = "small"):
+        self.medium = sorted(medium, key=len, reverse=True)
+        self.default = default
+
+    @classmethod
+    def load(cls, path: Path | None, default: str = "small") -> "Sizes":
+        if path is None or not path.is_file():
+            return cls([], default)
+        config = tomllib.loads(path.read_text(encoding="utf-8"))
+        return cls(list(config.get("medium", {}).get("entries", [])), default)
+
+    def size_of(self, test_id: str) -> str:
+        for entry in self.medium:
+            if test_id == entry or test_id.startswith(entry + "."):
+                return "medium"
+        return self.default
+
+
 class AllureResult(unittest.TextTestResult):
     """Пишет запись в момент завершения теста; текстовый вывод не трогает."""
 
@@ -34,6 +60,7 @@ class AllureResult(unittest.TextTestResult):
     runner_name = "local"
     profile = "all"
     suite_name = ""
+    sizes = Sizes([])
 
     def startTest(self, test):
         super().startTest(test)
@@ -59,6 +86,7 @@ class AllureResult(unittest.TextTestResult):
                     "suite": self.suite_name,
                     "subSuite": cls.__qualname__,
                     "profile": self.profile,
+                    "size": self.sizes.size_of(test.id()),
                 },
                 tags=(self.profile,),
                 message=message,
@@ -100,10 +128,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--results", type=Path, default=None, help="каталог allure-results")
     parser.add_argument("--runner", default="local")
     parser.add_argument("--profile", default="all")
+    parser.add_argument("--size", default="small", help="размер набора: умолчание для тестов без записи в манифесте")
+    parser.add_argument("--sizes", type=Path, default=None, help="манифест размеров .config/python-sizes.toml")
+    parser.add_argument("--admit", default="", help="какие размеры гонять, через запятую; пусто — все")
     parser.add_argument("--plan-only", action="store_true", help="перечислить тесты и выйти")
     args = parser.parse_args(argv)
 
+    sizes = Sizes.load(args.sizes, args.size)
+    admitted = {size.strip() for size in args.admit.split(",") if size.strip()}
     suite = unittest.defaultTestLoader.discover(args.start_directory)
+    # Не допущенный воротами тест — не в этом плане: его результат в отчёте
+    # линии даёт другой профиль, а не пропуск от этого.
+    if admitted:
+        suite = unittest.TestSuite(case for case in iter_cases(suite) if sizes.size_of(case.id()) in admitted)
     if args.plan_only:
         for case in iter_cases(suite):
             print(case.id())
@@ -113,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     AllureResult.runner_name = args.runner
     AllureResult.profile = args.profile
     AllureResult.suite_name = args.start_directory
+    AllureResult.sizes = sizes
     options = {"resultclass": AllureResult, "verbosity": 1}
     if args.durations is not None:
         options["durations"] = args.durations

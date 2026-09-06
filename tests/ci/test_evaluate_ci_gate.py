@@ -28,7 +28,7 @@ OUTPUT_NAMES = (
     "release_required",
     "assessment_required",
 )
-ALWAYS_SUCCESS = {"classify-changes": "success", "verify-source": "success"}
+ALWAYS_SUCCESS = {"classify-changes": "success", "guards": "success", "test-python": "success"}
 PACKAGE_SUCCESS = {
     "build-tools": "success",
     "package-thin": "success",
@@ -49,9 +49,7 @@ def classification(**enabled: bool) -> dict[str, str]:
 def source_results() -> dict[str, str]:
     return {
         **ALWAYS_SUCCESS,
-        "test-rust-primary": "skipped",
         "test-rust-platforms": "skipped",
-        "test-search-integration": "skipped",
         "build-tools": "skipped",
         "package-thin": "skipped",
         "p0-release-proof": "skipped",
@@ -97,21 +95,22 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertEqual("source", evaluation.contour)
         self.assertEqual(set(results) - set(ALWAYS_SUCCESS), set(evaluation.skipped_jobs))
 
-    def test_platform_independent_rust_uses_primary_macos_without_package_pipeline(self) -> None:
+    def test_rust_only_change_runs_the_full_matrix_without_package_pipeline(self) -> None:
+        """Любая правка Rust — обе платформы: одного раннера класс `#[cfg]` не видит."""
         module = load_gate_module()
         outputs = classification(rust_changed=True, release_required=True)
         results = {
             **source_results(),
-            "test-rust-primary": "success",
+            "test-rust-platforms": "success",
         }
 
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("rust", evaluation.contour)
-        self.assertEqual("skipped", evaluation.expected["test-rust-platforms"])
+        self.assertEqual("success", evaluation.expected["test-rust-platforms"])
 
-    def test_platform_rust_uses_full_matrix_instead_of_primary_job(self) -> None:
+    def test_platform_change_runs_the_full_matrix(self) -> None:
         module = load_gate_module()
         outputs = classification(rust_changed=True, platform_changed=True, release_required=True)
         results = {
@@ -123,7 +122,6 @@ class EvaluateCiGateTests(unittest.TestCase):
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("platform", evaluation.contour)
-        self.assertEqual("skipped", evaluation.expected["test-rust-primary"])
 
     def test_long_assessment_runs_outside_pull_request_only(self) -> None:
         """Оценка на BSP осталась у ручного запуска и тега.
@@ -136,7 +134,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         manual_results = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
             **P0_SUCCESS,
@@ -153,7 +150,6 @@ class EvaluateCiGateTests(unittest.TestCase):
             {
                 **source_results(),
                 "test-rust-platforms": "success",
-                "test-search-integration": "success",
             },
         )
 
@@ -168,7 +164,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         results = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
         }
 
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
@@ -177,7 +172,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertEqual("full", evaluation.contour)
         self.assertEqual(
             {
-                "test-rust-primary",
                 "build-tools",
                 "package-thin",
                 "probe-thin-bootstrap",
@@ -188,30 +182,12 @@ class EvaluateCiGateTests(unittest.TestCase):
             set(evaluation.skipped_jobs),
         )
 
-    def test_ci_change_requires_the_search_integration_job(self) -> None:
-        module = load_gate_module()
-        outputs = classification(ci_changed=True)
-        results = {
-            **source_results(),
-            "test-rust-platforms": "success",
-            "test-search-integration": "success",
-        }
-
-        evaluation = module.evaluate_gate(
-            "pull_request", "refs/pull/155/merge", outputs, results
-        )
-
-        self.assertTrue(evaluation.ok)
-        self.assertEqual("full", evaluation.contour)
-        self.assertEqual("success", evaluation.expected["test-search-integration"])
-
     def test_manual_full_contour_runs_probe_but_tag_publishes_instead(self) -> None:
         module = load_gate_module()
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
         manual = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
             **P0_SUCCESS,
@@ -240,7 +216,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         results = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
             **P0_SUCCESS,
@@ -280,9 +255,8 @@ class EvaluateCiGateTests(unittest.TestCase):
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
         results = {
             **source_results(),
-            "verify-source": "cancelled",
+            "test-python": "cancelled",
             "test-rust-platforms": "failure",
-            "test-search-integration": "success",
             # Снятый с pull request контур, который всё-таки отработал, — тоже
             # расхождение: гейт обязан заметить и лишнюю работу.
             "build-tools": "success",
@@ -293,7 +267,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertFalse(evaluation.ok)
         self.assertEqual(
             {
-                "verify-source": ("cancelled", "success"),
+                "test-python": ("cancelled", "success"),
                 "test-rust-platforms": ("failure", "success"),
                 "build-tools": ("success", "skipped"),
             },
@@ -305,7 +279,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         outputs = classification(rust_changed=True, release_required=True)
         results = {
             **source_results(),
-            "test-rust-primary": "success",
+            "test-rust-platforms": "success",
             **PACKAGE_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
@@ -316,7 +290,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertIn("Contour: `rust`", summary)
         self.assertIn("Rust changed: `true`", summary)
         self.assertIn("Platform changed: `false`", summary)
-        self.assertIn("| `test-rust-platforms` | `skipped` | `skipped` |", summary)
+        self.assertIn("| `test-rust-platforms` | `success` | `success` |", summary)
         self.assertIn("Skipped jobs", summary)
 
 
@@ -329,13 +303,28 @@ class BranchPushGateTests(unittest.TestCase):
         results = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
         }
 
         evaluation = module.evaluate_gate("push", "refs/heads/main", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("branch", evaluation.contour)
+        for job in (*PACKAGE_SUCCESS, *ASSESSMENT_SUCCESS, *P0_SUCCESS, "probe-thin-bootstrap"):
+            self.assertEqual("skipped", evaluation.expected[job], job)
+
+    def test_merge_group_is_the_queue_gate_full_tests_no_package_pipeline(self) -> None:
+        """Очередь слияния гоняет всё, как push в ветку; упаковка остаётся тегу."""
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {
+            **source_results(),
+            "test-rust-platforms": "success",
+        }
+
+        evaluation = module.evaluate_gate("merge_group", "refs/heads/gh-readonly-queue/main/pr-738-abc", outputs, results)
+
+        self.assertTrue(evaluation.ok)
+        self.assertEqual("queue", evaluation.contour)
         for job in (*PACKAGE_SUCCESS, *ASSESSMENT_SUCCESS, *P0_SUCCESS, "probe-thin-bootstrap"):
             self.assertEqual("skipped", evaluation.expected[job], job)
 

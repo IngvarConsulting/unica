@@ -15,10 +15,12 @@ from __future__ import annotations
 import ast
 import importlib.util
 import hashlib
+import os
 import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -206,6 +208,365 @@ def evidence_reference_error(
         qualifier = " an executable test" if require_executable else ""
         return f"{owner}: {path_text} does not declare{qualifier} {name}"
     return None
+
+
+_ATTRIBUTE_PATH = re.compile(r'\Apath\s*=\s*"(?P<path>[^"]+)"\Z')
+_ATTRIBUTE_CFG = re.compile(r"\Acfg\((?P<predicate>.*)\)\Z", re.S)
+_ATTRIBUTE_CFG_ATTR = re.compile(r"\Acfg_attr\((?P<arguments>.*)\)\Z", re.S)
+_CFG_TOKEN = re.compile(
+    r'\s*(?:(?P<word>[A-Za-z_][A-Za-z0-9_]*)|(?P<string>"(?:[^"\\]|\\.)*")|(?P<punct>[(),=]))'
+)
+
+
+def _cargo_manifest(path: Path) -> dict:
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def _declared_features(manifest: dict) -> frozenset[str]:
+    """Feature names the manifest defines, with the implicit ones of optional dependencies."""
+    names = set(manifest.get("features", {}))
+    tables = [
+        manifest.get(key, {})
+        for key in ("dependencies", "dev-dependencies", "build-dependencies")
+    ]
+    for target in manifest.get("target", {}).values():
+        tables.extend(
+            target.get(key, {})
+            for key in ("dependencies", "dev-dependencies", "build-dependencies")
+        )
+    for table in tables:
+        names.update(
+            name
+            for name, spec in table.items()
+            if isinstance(spec, dict) and spec.get("optional")
+        )
+    return frozenset(names)
+
+
+def _workspace_crates(root: Path) -> list[Path]:
+    """Crate directories the Cargo workspace at `root` builds."""
+    manifest = _cargo_manifest(root / "Cargo.toml")
+    members = manifest.get("workspace", {}).get("members")
+    if members is None:
+        return [root] if "package" in manifest else []
+    crates = [root] if "package" in manifest else []
+    crates.extend(
+        candidate
+        for member in members
+        for candidate in sorted(root.glob(member))
+        if (candidate / "Cargo.toml").is_file()
+    )
+    return crates
+
+
+def _crate_roots(crate: Path) -> set[Path]:
+    """Root files of every target: explicit `Cargo.toml` paths and auto-discovered ones."""
+    manifest = _cargo_manifest(crate / "Cargo.toml")
+    package = manifest.get("package", {})
+    roots: set[Path] = set()
+
+    def add(relative: object) -> None:
+        if isinstance(relative, str) and (crate / relative).is_file():
+            roots.add((crate / relative).resolve())
+
+    add(manifest.get("lib", {}).get("path", "src/lib.rs"))
+    build = package.get("build", "build.rs")
+    if build is not False:
+        add(build)
+    for kind, directory, auto in (
+        ("bin", "src/bin", "autobins"),
+        ("test", "tests", "autotests"),
+        ("bench", "benches", "autobenches"),
+        ("example", "examples", "autoexamples"),
+    ):
+        for target in manifest.get(kind, []):
+            add(target.get("path"))
+        if not package.get(auto, True):
+            continue
+        if kind == "bin":
+            add("src/main.rs")
+        for pattern in ("*.rs", "*/main.rs"):
+            roots.update(path.resolve() for path in (crate / directory).glob(pattern))
+    return roots
+
+
+def _cfg_tokens(text: str) -> list[str] | None:
+    tokens: list[str] = []
+    text = text.strip()
+    position = 0
+    while position < len(text):
+        match = _CFG_TOKEN.match(text, position)
+        if match is None:
+            return None
+        tokens.append(match.group(match.lastgroup))
+        position = match.end()
+    return tokens
+
+
+def _cfg_parse(
+    tokens: list[str], index: int, features: frozenset[str]
+) -> tuple[bool | None, int]:
+    """Three-valued: True and False are settled, None depends on the configuration.
+
+    A platform, `test`, a declared feature or an unknown name may hold in some
+    configuration of the matrix, so it stays undecided. `any()`, `false` and a
+    feature the manifest never declares hold nowhere, and `all`, `any` and
+    `not` propagate that.
+    """
+    token = tokens[index]
+    if token in {"all", "any", "not"} and tokens[index + 1] == "(":
+        verdicts: list[bool | None] = []
+        index += 2
+        while tokens[index] != ")":
+            verdict, index = _cfg_parse(tokens, index, features)
+            verdicts.append(verdict)
+            if tokens[index] == ",":
+                index += 1
+        index += 1
+        if token == "not":
+            if len(verdicts) != 1:
+                raise ValueError("not() takes exactly one predicate")
+            return (None if verdicts[0] is None else not verdicts[0]), index
+        if token == "all":
+            if False in verdicts:
+                return False, index
+            return (True if all(verdict is True for verdict in verdicts) else None), index
+        if True in verdicts:
+            return True, index
+        return (False if all(verdict is False for verdict in verdicts) else None), index
+    if not (token[0].isalpha() or token[0] == "_"):
+        raise ValueError(f"unexpected token {token!r}")
+    if index + 2 < len(tokens) and tokens[index + 1] == "=" and tokens[index + 2].startswith('"'):
+        value = tokens[index + 2][1:-1]
+        return (None if token != "feature" or value in features else False), index + 3
+    if token == "true":
+        return True, index + 1
+    if token == "false":
+        return False, index + 1
+    return None, index + 1
+
+
+def _cfg_verdict(predicate: str, features: frozenset[str]) -> bool | None:
+    tokens = _cfg_tokens(predicate)
+    if not tokens:
+        return None
+    try:
+        verdict, index = _cfg_parse(tokens, 0, features)
+    except (ValueError, IndexError):
+        return None
+    return verdict if index == len(tokens) else None
+
+
+def _attached_attributes(source: bytes, node) -> list[str]:
+    """Texts of the outer attributes attached to `node`, outermost first."""
+    found: list[str] = []
+    sibling = node.prev_named_sibling
+    while sibling is not None:
+        if sibling.type not in {"attribute_item", "line_comment", "block_comment"}:
+            break
+        if sibling.type == "attribute_item":
+            attribute = next(
+                (child for child in sibling.named_children if child.type == "attribute"),
+                None,
+            )
+            if attribute is not None:
+                found.append(source[attribute.start_byte : attribute.end_byte].decode("utf-8"))
+        sibling = sibling.prev_named_sibling
+    found.reverse()
+    return found
+
+
+def _cfg_gate(attributes: list[str], features: frozenset[str]) -> bool | None:
+    """Conjunction of every `cfg(...)` among `attributes`; True when there is none."""
+    verdicts = [
+        _cfg_verdict(match.group("predicate"), features)
+        for match in map(_ATTRIBUTE_CFG.match, attributes)
+        if match is not None
+    ]
+    if False in verdicts:
+        return False
+    return True if all(verdict is True for verdict in verdicts) else None
+
+
+def _module_path_candidates(
+    attributes: list[str], features: frozenset[str]
+) -> tuple[str | None, list[str]]:
+    """The unconditional `path` and every `cfg_attr` path whose predicate may hold."""
+    explicit: str | None = None
+    conditional: list[str] = []
+    for attribute in attributes:
+        plain = _ATTRIBUTE_PATH.match(attribute)
+        if plain is not None:
+            explicit = plain.group("path")
+            continue
+        wrapped = _ATTRIBUTE_CFG_ATTR.match(attribute)
+        if wrapped is None:
+            continue
+        tokens = _cfg_tokens(wrapped.group("arguments"))
+        if not tokens:
+            continue
+        try:
+            verdict, index = _cfg_parse(tokens, 0, features)
+        except (ValueError, IndexError):
+            continue
+        if verdict is False:
+            continue
+        for position in range(index, len(tokens) - 2):
+            if (
+                tokens[position] == "path"
+                and tokens[position + 1] == "="
+                and tokens[position + 2].startswith('"')
+            ):
+                conditional.append(tokens[position + 2][1:-1])
+    return explicit, conditional
+
+
+def _included_literal(source: bytes, node) -> str | None:
+    """The path of an `include!("...")` with one plain literal; composed forms are skipped."""
+    macro = node.child_by_field_name("macro")
+    if macro is None or source[macro.start_byte : macro.end_byte] != b"include":
+        return None
+    tokens = next(
+        (child for child in node.named_children if child.type == "token_tree"), None
+    )
+    if tokens is None or len(tokens.named_children) != 1:
+        return None
+    literal = tokens.named_children[0]
+    if literal.type != "string_literal":
+        return None
+    content = next(
+        (child for child in literal.named_children if child.type == "string_content"),
+        None,
+    )
+    if content is None:
+        return None
+    return source[content.start_byte : content.end_byte].decode("utf-8")
+
+
+def _module_directory(file: Path, *, is_root: bool) -> Path:
+    """Where a file's `mod name;` children live: mod-rs files own their directory."""
+    if is_root or file.name == "mod.rs":
+        return file.parent
+    return file.parent / file.stem
+
+
+def rust_sources_reached(root: Path) -> set[Path]:
+    """Every `.rs` file some configuration compiles, starting from the target roots.
+
+    An edge is a `mod name;` declaration — honouring `path`, `cfg_attr` paths
+    and the directory nesting of inline `mod name { ... }` blocks — or an
+    `include!("...")` with one literal. Conditional compilation removes an item
+    before its file is resolved, so an edge or a file behind a `cfg` predicate
+    that holds in no configuration is not followed; a predicate the check
+    cannot settle keeps the edge. A file no edge reaches keeps its `#[test]`
+    attributes and bodies, yet no target compiles it, so nothing in it ever
+    runs.
+    """
+    parser = Parser(Language(tree_sitter_rust.language()))
+    reached: set[Path] = set()
+    seen: set[Path] = set()
+    pending: list[tuple[Path, Path, frozenset[str]]] = []
+    for crate in _workspace_crates(root):
+        features = _declared_features(_cargo_manifest(crate / "Cargo.toml"))
+        pending.extend(
+            (crate_root, _module_directory(crate_root, is_root=True), features)
+            for crate_root in _crate_roots(crate)
+        )
+    while pending:
+        file, module_directory, features = pending.pop()
+        if file in seen or not file.is_file():
+            continue
+        seen.add(file)
+        source = file.read_bytes()
+        tree_root = parser.parse(source).root_node
+        inner = [
+            source[attribute.start_byte : attribute.end_byte].decode("utf-8")
+            for item in tree_root.named_children
+            if item.type == "inner_attribute_item"
+            for attribute in item.named_children
+            if attribute.type == "attribute"
+        ]
+        if _cfg_gate(inner, features) is False:
+            continue
+        reached.add(file)
+        stack = [(child, module_directory, 0) for child in tree_root.children]
+        while stack:
+            node, directory, depth = stack.pop()
+            attributes = (
+                _attached_attributes(source, node)
+                if node.prev_named_sibling is not None
+                else []
+            )
+            if attributes and _cfg_gate(attributes, features) is False:
+                continue
+            if node.type == "mod_item":
+                name_node = node.child_by_field_name("name")
+                body = node.child_by_field_name("body")
+                if name_node is None:
+                    continue
+                name = source[name_node.start_byte : name_node.end_byte].decode("utf-8")
+                if body is not None:
+                    stack.extend(
+                        (child, directory / name, depth + 1) for child in body.children
+                    )
+                    continue
+                explicit, conditional = _module_path_candidates(attributes, features)
+                base = file.parent if depth == 0 else directory
+                candidates = (
+                    [base / explicit]
+                    if explicit is not None
+                    else [directory / f"{name}.rs", directory / name / "mod.rs"]
+                )
+                candidates.extend(base / path for path in conditional)
+                for candidate in candidates:
+                    if candidate.is_file():
+                        target = candidate.resolve()
+                        pending.append(
+                            (target, _module_directory(target, is_root=False), features)
+                        )
+                continue
+            if node.type == "macro_invocation":
+                included = _included_literal(source, node)
+                if included is not None:
+                    pending.append(((file.parent / included).resolve(), directory, features))
+            stack.extend((child, directory, depth) for child in node.children)
+    return reached
+
+
+def repository_files(repo_root: Path, *pathspecs: str) -> list[Path]:
+    """Files git tracks or would track under `pathspecs`; ignored files never enter.
+
+    `Path.rglob` also returns what the desktop drops into a checkout: `.DS_Store`,
+    editor swap files, a locally built binary. One such file breaks a text scan on
+    a developer machine while CI, whose checkout carries none of them, stays
+    green. A file git ignores is not part of the repository, so it is not part
+    of a scan; an untracked file git would accept still is, exactly as with
+    `rglob`. A tracked file deleted from the working tree is still listed, so
+    callers keep their `is_file()` guard.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *pathspecs],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    ).stdout.split(b"\0")
+    return sorted(repo_root / os.fsdecode(raw_path) for raw_path in listed if raw_path)
+
+
+def archive_digests(repo_root: Path, archive: Path) -> dict[str, str]:
+    """SHA-256 of every archive file, keyed by its archive-relative path.
+
+    The manifest itself is the expectation, not a member of the archive.
+    """
+    manifest = archive / "MANIFEST.sha256"
+    return {
+        path.relative_to(archive).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in repository_files(repo_root, archive.relative_to(repo_root).as_posix())
+        if path.is_file() and path != manifest
+    }
 
 
 def contract_record(props: dict) -> REGISTRY.Record:
@@ -666,6 +1027,165 @@ class ReferenceTests(unittest.TestCase):
                     offenders.append(error)
         self.assertEqual(offenders, [])
 
+    def test_every_rust_evidence_is_compiled_from_a_crate_root(self) -> None:
+        """A Rust check the compiler never reaches is prose with `#[test]` on it.
+
+        `mod` declarations, not the file system, decide what a crate builds. A
+        file dropped from its `mod` list keeps every attribute and body the
+        textual resolution looks for, yet no target compiles it, so a record
+        citing it names a test that has not run since the declaration went
+        away. The same holds for `realized` on a decision.
+        """
+        reached = rust_sources_reached(REPO_ROOT)
+        offenders = []
+        for record in REGISTRY.records():
+            prop = "realized" if record.kind == "decision" else "check"
+            for evidence in REGISTRY.evidence_names(record.props.get(prop)):
+                relative = Path(evidence.partition("::")[0])
+                if relative.suffix != ".rs":
+                    continue
+                if (REPO_ROOT / relative).resolve() not in reached:
+                    offenders.append(
+                        f"{record.relative}: {relative.as_posix()} is not reached "
+                        "from any crate root"
+                    )
+        self.assertEqual(offenders, [])
+
+    def test_rust_module_graph_follows_declarations_paths_includes_and_cargo_targets(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            crate = root / "crates" / "demo"
+            crate.mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/*"]\n', encoding="utf-8"
+            )
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n\n'
+                '[[test]]\nname = "declared"\npath = "tests/declared/entry.rs"\n',
+                encoding="utf-8",
+            )
+            sources = {
+                "src/lib.rs": (
+                    "#[cfg(test)]\nmod tests;\n"
+                    '#[path = "custom/renamed.rs"]\nmod renamed;\n'
+                    "mod inline { mod nested; }\n"
+                ),
+                "src/tests.rs": "#[test]\nfn reached() {}\n",
+                "src/custom/renamed.rs": "mod deeper;\n",
+                "src/custom/renamed/deeper.rs": "",
+                "src/inline/nested.rs": "",
+                "src/main.rs": "fn main() {}\n",
+                "src/bin/tool.rs": "fn main() {}\n",
+                "src/orphan.rs": "#[test]\nfn never_compiled() {}\n",
+                "tests/auto.rs": 'include!("shared/body.rs");\n',
+                "tests/shared/body.rs": "#[test]\nfn included() {}\n",
+                "tests/shared/quoted.rs": (
+                    'const FIXTURE: &str = r#"include!("shared/quoted.rs");"#;\n'
+                ),
+                "tests/declared/entry.rs": "mod helper;\n",
+                "tests/declared/helper.rs": "",
+                "benches/speed.rs": "",
+            }
+            for relative, text in sources.items():
+                path = crate / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+
+            reached = {
+                path.relative_to(crate).as_posix() for path in rust_sources_reached(root)
+            }
+
+            self.assertEqual(
+                reached,
+                set(sources) - {"src/orphan.rs", "tests/shared/quoted.rs"},
+            )
+
+    def test_rust_module_graph_drops_declarations_behind_a_false_cfg(self) -> None:
+        """`#[cfg]` removes an item before its file is resolved: a false gate is no edge.
+
+        A predicate the check cannot decide — a platform, `test`, a feature the
+        manifest declares — keeps the edge, because some configuration of the
+        matrix compiles it. A predicate false in every configuration — `any()`,
+        `false`, a feature the manifest never declares, or a conjunction with
+        one of them — drops the edge, on a module, an inline block, an
+        `include!` and a file's own inner attribute alike. A `cfg_attr` path
+        adds a candidate file unless its predicate is false.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            crate = root / "crates" / "demo"
+            crate.mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/*"]\n', encoding="utf-8"
+            )
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n\n'
+                "[features]\ndeclared = []\n",
+                encoding="utf-8",
+            )
+            sources = {
+                "src/lib.rs": (
+                    "#[cfg(any())]\nmod disabled;\n"
+                    "#[cfg(false)]\nmod literal_false;\n"
+                    '#[cfg(feature = "absent")]\nmod feature_absent;\n'
+                    '#[cfg(feature = "declared")]\nmod feature_declared;\n'
+                    "#[cfg(test)]\n#[cfg(any())]\nmod conjunction;\n"
+                    '#[cfg(all(unix, not(target_os = "macos")))]\nmod platform;\n'
+                    "#[cfg(not(any()))]\nmod double_negation;\n"
+                    "#[cfg(test)]\nmod tests;\n"
+                    "mod inner_disabled;\n"
+                    "#[cfg(any())]\nmod gated_block { mod inside; }\n"
+                    '#[cfg_attr(windows, path = "alternate/windows.rs")]\nmod alternate;\n'
+                    '#[cfg_attr(any(), path = "alternate/never.rs")]\nmod fallback;\n'
+                ),
+                "src/disabled.rs": "#[test]\nfn never() {}\n",
+                "src/literal_false.rs": "",
+                "src/feature_absent.rs": "",
+                "src/feature_declared.rs": "",
+                "src/conjunction.rs": "",
+                "src/platform.rs": "",
+                "src/double_negation.rs": "",
+                "src/tests.rs": "#[test]\nfn compiled() {}\n",
+                "src/inner_disabled.rs": "#![cfg(any())]\n#[test]\nfn never() {}\n",
+                "src/gated_block/inside.rs": "",
+                "src/alternate.rs": "",
+                "src/alternate/windows.rs": "",
+                "src/alternate/never.rs": "",
+                "src/fallback.rs": "",
+                "tests/auto.rs": (
+                    '#[cfg(any())]\ninclude!("shared/dropped.rs");\n'
+                    'include!("shared/kept.rs");\n'
+                ),
+                "tests/shared/dropped.rs": "#[test]\nfn never() {}\n",
+                "tests/shared/kept.rs": "",
+            }
+            for relative, text in sources.items():
+                path = crate / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+
+            reached = {
+                path.relative_to(crate).as_posix() for path in rust_sources_reached(root)
+            }
+
+            self.assertEqual(
+                reached,
+                {
+                    "src/lib.rs",
+                    "src/feature_declared.rs",
+                    "src/platform.rs",
+                    "src/double_negation.rs",
+                    "src/tests.rs",
+                    "src/alternate.rs",
+                    "src/alternate/windows.rs",
+                    "src/fallback.rs",
+                    "tests/auto.rs",
+                    "tests/shared/kept.rs",
+                },
+            )
+
     def test_evidence_reference_requires_an_exact_python_or_rust_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -945,13 +1465,37 @@ class LayerBoundaryTests(unittest.TestCase):
             self.assertEqual(separator, "  ", f"malformed archive manifest line: {line!r}")
             expected[relative] = digest
 
-        actual = {
-            path.relative_to(ARCHIVE).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in ARCHIVE.rglob("*")
-            if path.is_file() and path != manifest
-        }
+        actual = archive_digests(REPO_ROOT, ARCHIVE)
         self.assertEqual(set(actual), set(expected), "archive file set differs from its manifest")
         self.assertEqual(actual, expected, "archive bytes differ from their frozen digests")
+
+    def test_archive_digests_skip_what_git_ignores(self) -> None:
+        """Finder's `.DS_Store` in the archive is not drift; an unstaged file still is.
+
+        The freeze covers what git tracks or would track. An ignored file
+        cannot reach a commit, so it cannot change the archive anyone
+        receives, while a file dropped into the archive without `git add`
+        is still reported before it is staged.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "docs" / "arch-v1"
+            archive.mkdir(parents=True)
+            (root / ".gitignore").write_text(".DS_Store\n", encoding="utf-8")
+            (archive / "MANIFEST.sha256").write_text("", encoding="utf-8")
+            (archive / "frozen.md").write_bytes(b"frozen\n")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            (archive / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1\xa8\xff")
+            (archive / "unstaged.md").write_bytes(b"drift\n")
+
+            self.assertEqual(
+                archive_digests(root, archive),
+                {
+                    "frozen.md": hashlib.sha256(b"frozen\n").hexdigest(),
+                    "unstaged.md": hashlib.sha256(b"drift\n").hexdigest(),
+                },
+            )
 
     def test_v2_process_policy_changes_are_explicit_and_compatible(self) -> None:
         agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
