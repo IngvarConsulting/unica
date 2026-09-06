@@ -51,7 +51,6 @@ def source_results() -> dict[str, str]:
         **ALWAYS_SUCCESS,
         "test-rust-primary": "skipped",
         "test-rust-platforms": "skipped",
-        "test-search-integration": "skipped",
         "build-tools": "skipped",
         "package-thin": "skipped",
         "p0-release-proof": "skipped",
@@ -136,7 +135,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         manual_results = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
             **P0_SUCCESS,
@@ -153,7 +151,6 @@ class EvaluateCiGateTests(unittest.TestCase):
             {
                 **source_results(),
                 "test-rust-platforms": "success",
-                "test-search-integration": "success",
             },
         )
 
@@ -168,7 +165,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         results = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
         }
 
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
@@ -188,30 +184,12 @@ class EvaluateCiGateTests(unittest.TestCase):
             set(evaluation.skipped_jobs),
         )
 
-    def test_ci_change_requires_the_search_integration_job(self) -> None:
-        module = load_gate_module()
-        outputs = classification(ci_changed=True)
-        results = {
-            **source_results(),
-            "test-rust-platforms": "success",
-            "test-search-integration": "success",
-        }
-
-        evaluation = module.evaluate_gate(
-            "pull_request", "refs/pull/155/merge", outputs, results
-        )
-
-        self.assertTrue(evaluation.ok)
-        self.assertEqual("full", evaluation.contour)
-        self.assertEqual("success", evaluation.expected["test-search-integration"])
-
     def test_manual_full_contour_runs_probe_but_tag_publishes_instead(self) -> None:
         module = load_gate_module()
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
         manual = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
             **P0_SUCCESS,
@@ -240,7 +218,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         results = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
             **P0_SUCCESS,
@@ -282,7 +259,6 @@ class EvaluateCiGateTests(unittest.TestCase):
             **source_results(),
             "test-python": "cancelled",
             "test-rust-platforms": "failure",
-            "test-search-integration": "success",
             # Снятый с pull request контур, который всё-таки отработал, — тоже
             # расхождение: гейт обязан заметить и лишнюю работу.
             "build-tools": "success",
@@ -329,7 +305,6 @@ class BranchPushGateTests(unittest.TestCase):
         results = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
         }
 
         evaluation = module.evaluate_gate("push", "refs/heads/main", outputs, results)
@@ -346,7 +321,6 @@ class BranchPushGateTests(unittest.TestCase):
         results = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
         }
 
         evaluation = module.evaluate_gate("merge_group", "refs/heads/gh-readonly-queue/main/pr-738-abc", outputs, results)

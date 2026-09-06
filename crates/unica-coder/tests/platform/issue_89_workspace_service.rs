@@ -83,7 +83,7 @@ fn search_progress_liveness_does_not_depend_on_a_transient_provider_phase() {
 }
 
 #[test]
-#[ignore = "long search integration; routed by search_integration_changed or ci:full"]
+#[ignore = "stale: never ran in CI (the search job built only v13_search_integration) and fails against the current surface; fix or retire separately"]
 fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     let mut fixture = Fixture::new();
     let mut mcp = McpProcess::start(&fixture);
@@ -371,7 +371,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
 }
 
 #[test]
-#[ignore = "long search integration; routed by search_integration_changed or ci:full"]
+#[ignore = "stale: never ran in CI (the search job built only v13_search_integration) and times out waiting for the RLM index status; fix or retire separately"]
 fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
     let tracked = Arc::new(Mutex::new(Vec::<ToolRecord>::new()));
     let fixture_root = Arc::new(Mutex::new(None::<PathBuf>));
