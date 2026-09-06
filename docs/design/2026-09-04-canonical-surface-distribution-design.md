@@ -731,10 +731,14 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 `fn …code(&self) -> &'static str`, отображающие варианты ошибки. Карты и есть
 словарь.
 
-**Словарь собран целиком: 42 различимых кода.** Девять карт дают 35; разбор
-границы добавляет 10 литералов, из них 7 новых; конструкторы ошибок чтения
-(`ViewError::new`) дают ещё 8, пересекающихся с предыдущими. Объявленная
-пятёрка занижает словарь примерно в восемь раз.
+**Словарь собран целиком: 45 различимых кодов.** Мера шла в два приёма.
+Разбор текста дал 42: девять карт, литералы на границе, конструкторы ошибок
+чтения. Затем словарь перевели в тип `RefusalCode`, конструкторы отказа стали
+принимать только его — и компилятор перечислил канал целиком, поправив счёт до
+45. Разбор текста промахнулся в обе стороны: шесть кодов он не увидел (они за
+локальными обёртками `reject`), три насчитал лишних (они в адаптерном канале
+v0.12, а не в `diagnostics[]`). Объявленная пятёрка занижала словарь в девять
+раз.
 
 Сверх карт добавились `unsupported_operation`, `unsupported_source`,
 `stale_revision`, `unsupported_cursor`, `provider_deadline`,
@@ -784,20 +788,36 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
   цированный отказ раннера с `retryable: false`, то есть тупик, а не повтор;
 - **`provider_deadline` и `deadline_exceeded`** — оба живы.
 
-Сорок два кода — много для закрытого набора, на котором агент ветвится.
-Группировкой станет исход: шесть значений поверх сорока двух кодов, и тогда
+Сорок пять кодов — много для закрытого набора, на котором агент ветвится.
+Группировкой станет исход: шесть значений поверх сорока пяти кодов, и тогда
 различие кодов остаётся для человека и `detailCode`, а ветвление идёт по
 исходу.
 
-### Сорок два кода по шести исходам
+### Сорок пять кодов по шести исходам
 
 Все пометки суждения сняты: семь спорных назначений разобраны по коду ниже.
 
+**Счёт исправлен переводом словаря в тип.** Списки ниже сначала содержали 42
+кода, измеренных по картам `fn …code()`. Мера была не той: она считала карты, а
+не канал. Когда конструкторы отказа стали принимать только `RefusalCode`,
+компилятор перечислил канал целиком и счёт сошёлся на **45**.
+
+Шесть кодов уходили на провод, не будучи объявленными, — они прятались за
+локальными обёртками `reject` и за конструкторами, до которых извлекатель не
+доставал: `invalid_result`, `provider_limit_exceeded`, `resource_absent`,
+`target_kind_unsupported`, `unsupported_section`, `unsupported_scope`.
+
+Три объявленных, наоборот, на провод не попадают: `concurrent_modification`,
+`not_a_role` и `rollback_failed` живут в адаптерном канале v0.12, где код уходит
+в текст `errors[]`, а не в `diagnostics[]`. Их из словаря убрали.
+
+Это и есть довод против скрипта-извлекателя: он не увидел бы ни тех, ни других.
+
 **Повторить как есть** — преходящее, никто не действует:
 
-`concurrent_change`, `concurrent_modification`, `source_selection_changed`,
-`deadline_exceeded`, `provider_deadline`, `dependency_unavailable`,
-`task_transport_failed`, `task_session_closed`
+`concurrent_change`, `source_selection_changed`, `deadline_exceeded`,
+`provider_deadline`, `dependency_unavailable`, `task_transport_failed`,
+`task_session_closed`
 
 Условие приёма в этот исход одно: **тот же самый вызов может позже пройти.**
 Оно отсеивает коды, несущие устаревшую метку, — их разбор ниже.
@@ -805,10 +825,12 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 **Исправить вызов** — агент правит аргументы:
 
 `bad_value`, `not_found`, `source_set_unknown`, `target_not_found`,
-`not_a_role`, `containment_denied`, `invalid_cursor`, `unsupported_cursor`,
+`containment_denied`, `invalid_cursor`, `unsupported_cursor`,
 `unsupported_source`, `unsupported_filter`, `incomparable_nodes`,
 `result_too_large`, `invalid_task_id`, `bad_wait_ms`, `bad_task_arguments`,
-`revision_mismatch`, `stale_revision`, `stale_cursor`
+`revision_mismatch`, `stale_revision`, `stale_cursor`,
+`provider_limit_exceeded`, `resource_absent`, `target_kind_unsupported`,
+`unsupported_section`, `unsupported_scope`
 
 **Починить предмет** — агент правит исходники:
 
@@ -817,8 +839,7 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 
 **Нужен человек** — действует человек над средой:
 
-`ambiguous_source_format`, `rollback_failed`, `rollback_incomplete`,
-`invalid_state`
+`ambiguous_source_format`, `rollback_incomplete`, `invalid_state`
 
 **Исход берётся из `detailCode`** — код сам по себе его не определяет:
 
@@ -834,12 +855,14 @@ dryRun: true}` отвечает полем `requiresPlatform`, то есть с�
 
 **Тупик** — остановись и сообщи:
 
-`cancelled`, `task_protocol_failed`, `task_projection_failed`, `provider_failed`
+`cancelled`, `task_protocol_failed`, `task_projection_failed`,
+`provider_failed`, `invalid_result` — ответ раннера непригоден: пустой файл,
+отсутствующий файл, нечитаемый JSON
 
 ### Что видно из раскладки
 
-**Почти половина словаря — «исправить вызов».** Восемнадцать кодов из сорока
-двух
+**Почти половина словаря — «исправить вызов».** Двадцать два кода из сорока
+пяти
 означают «аргументы не те». Это нормально: большинство отказов происходит до
 работы. Но значит и обратное — по одному исходу агент не поймёт, **что именно**
 исправить, и `detailCode` тут не украшение, а необходимость.
