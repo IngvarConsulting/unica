@@ -49,7 +49,6 @@ def classification(**enabled: bool) -> dict[str, str]:
 def source_results() -> dict[str, str]:
     return {
         **ALWAYS_SUCCESS,
-        "test-rust-primary": "skipped",
         "test-rust-platforms": "skipped",
         "build-tools": "skipped",
         "package-thin": "skipped",
@@ -96,21 +95,22 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertEqual("source", evaluation.contour)
         self.assertEqual(set(results) - set(ALWAYS_SUCCESS), set(evaluation.skipped_jobs))
 
-    def test_platform_independent_rust_uses_primary_macos_without_package_pipeline(self) -> None:
+    def test_rust_only_change_runs_the_full_matrix_without_package_pipeline(self) -> None:
+        """Любая правка Rust — обе платформы: одного раннера класс `#[cfg]` не видит."""
         module = load_gate_module()
         outputs = classification(rust_changed=True, release_required=True)
         results = {
             **source_results(),
-            "test-rust-primary": "success",
+            "test-rust-platforms": "success",
         }
 
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("rust", evaluation.contour)
-        self.assertEqual("skipped", evaluation.expected["test-rust-platforms"])
+        self.assertEqual("success", evaluation.expected["test-rust-platforms"])
 
-    def test_platform_rust_uses_full_matrix_instead_of_primary_job(self) -> None:
+    def test_platform_change_runs_the_full_matrix(self) -> None:
         module = load_gate_module()
         outputs = classification(rust_changed=True, platform_changed=True, release_required=True)
         results = {
@@ -122,7 +122,6 @@ class EvaluateCiGateTests(unittest.TestCase):
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("platform", evaluation.contour)
-        self.assertEqual("skipped", evaluation.expected["test-rust-primary"])
 
     def test_long_assessment_runs_outside_pull_request_only(self) -> None:
         """Оценка на BSP осталась у ручного запуска и тега.
@@ -173,7 +172,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertEqual("full", evaluation.contour)
         self.assertEqual(
             {
-                "test-rust-primary",
                 "build-tools",
                 "package-thin",
                 "probe-thin-bootstrap",
@@ -281,7 +279,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         outputs = classification(rust_changed=True, release_required=True)
         results = {
             **source_results(),
-            "test-rust-primary": "success",
             **PACKAGE_SUCCESS,
             "probe-thin-bootstrap": "success",
         }

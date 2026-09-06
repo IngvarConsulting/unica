@@ -116,15 +116,16 @@ def expected_results(
             "all contours enabled for tag, branch push, merge_group or workflow_dispatch",
         )
 
-    full_matrix = values["platform_changed"] or values["toolchain_changed"] or values["ci_changed"]
-    primary_rust = values["rust_changed"] and not full_matrix
+    # Любая правка Rust — полная матрица: одного раннера класс `#[cfg]` не видит.
+    full_matrix = (
+        values["rust_changed"] or values["platform_changed"] or values["toolchain_changed"] or values["ci_changed"]
+    )
     # Сборка пакета и холодные старты сняты с pull request до пересборки системы
     # тестирования: прослеживаемости они не давали, а гейт красили. Тег и ручной
     # запуск их сохраняют — выпуск обязан собираться. Push в ветку упаковку тоже
     # не гоняет: это ворота тестов, а упаковка — дело тега.
     package_pipeline = (values["release_required"] or values["ci_changed"]) and (is_tag or is_manual)
 
-    expected["test-rust-primary"] = "success" if primary_rust else "skipped"
     expected["test-rust-platforms"] = "success" if full_matrix else "skipped"
     expected.update({job: "success" if package_pipeline else "skipped" for job in PACKAGE_JOBS})
     expected[ASSESSMENT_JOB] = (

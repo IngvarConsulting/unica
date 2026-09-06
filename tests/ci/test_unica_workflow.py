@@ -169,7 +169,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "classify-changes",
             "guards",
             "test-python",
-            "test-rust-primary",
             "test-rust-platforms",
             "build-tools",
             "package-thin",
@@ -285,17 +284,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # test forever. The workflows have far more shell than this.
         self.assertGreater(scanned, 50)
 
-    def test_rust_jobs_route_primary_and_platform_contours(self) -> None:
+    def test_rust_jobs_run_the_full_matrix_for_any_rust_change(self) -> None:
         text = self.release_text()
         source = job_block(text, "test-python")
-        primary = job_block(text, "test-rust-primary")
         platforms = job_block(text, "test-rust-platforms")
 
         self.assertNotIn("cargo test", source)
         self.assertNotIn("dtolnay/rust-toolchain", source)
-        self.assertIn("runs-on: macos-14", primary)
-        self.assertIn("rust_changed == 'true'", primary)
-        self.assertIn("platform_changed == 'false'", primary)
         # windows-latest снят с матрицы до разбора нестабильности раннера;
         # список закреплён целиком, поэтому вернуть его молча не получится.
         self.assertIn("runner: [ubuntu-latest, macos-14]", platforms)
@@ -306,12 +301,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # `#[cfg]` решает, какие элементы существуют, поэтому clippy идёт на
         # каждом раннере матрицы, а его находки — в Code Scanning.
         self.assertNotIn("cargo fmt", platforms)
-        self.assertNotIn("cargo fmt", primary)
         self.assertIn("cargo fmt --all -- --check", job_block(text, "guards"))
-        for block, category in ((platforms, "clippy-${{ matrix.runner }}"), (primary, "clippy-macos-14-primary")):
-            self.assertIn("| clippy-sarif | tee clippy.sarif | sarif-fmt", block)
-            self.assertIn(f"category: {category}", block)
-            self.assertIn("needs: [classify-changes, guards]", block)
+        self.assertIn("| clippy-sarif | tee clippy.sarif | sarif-fmt", platforms)
+        self.assertIn("category: clippy-${{ matrix.runner }}", platforms)
+        self.assertIn("needs: [classify-changes, guards]", platforms)
+        # Любая правка Rust — полная матрица; отдельной джобы на одном раннере нет.
+        self.assertIn("rust_changed == 'true'", platforms)
+        self.assertNotIn("test-rust-primary:", text)
         # Команда линта закреплена дословно: `-D warnings` красит джобу, JSON
         # идёт в SARIF, и убрать одно из двух молча не выйдет.
         self.assertIn(
@@ -443,7 +439,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "classify-changes": 10,
             "guards": 15,
             "test-python": 90,
-            "test-rust-primary": 60,
             "test-rust-platforms": 60,
             "build-tools": 90,
             "package-thin": 30,
@@ -500,8 +495,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn('python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA"', classify)
         self.assertIn("line: ${{ steps.line.outputs.line }}", classify)
-        self.assertEqual(5, text.count('--line "$RUN_LINE"'))
-        self.assertEqual(3, text.count("RUN_LINE: ${{ needs.classify-changes.outputs.line }}"))
+        self.assertEqual(3, text.count('--line "$RUN_LINE"'))
+        self.assertEqual(2, text.count("RUN_LINE: ${{ needs.classify-changes.outputs.line }}"))
         # План едет каталогом вместе с подписью, а не одним файлом.
         self.assertNotIn("path: .build/results/plan.json", text)
 
