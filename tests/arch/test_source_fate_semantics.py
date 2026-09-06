@@ -202,6 +202,42 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
         self.assertNotIn("ReaderMigrationMode", source)
         self.assertNotIn("BRIDGED_SELECTORS", source)
 
+    def test_snapshot_records_retire_with_the_snapshot_provider(self) -> None:
+        """Поставщик снимков ушёл вместе с читателями, а его правила — с ним.
+
+        Третья партия сняла объявление модуля, но файл остался в дереве, и
+        шесть правил называли проверками тесты, которых сборка не видела.
+        Файла больше нет, а правила переведены в `superseded` на тот же
+        приёмочный прогон, что и остальные правила снятых читателей.
+        """
+        corpus_check = (
+            "tests/ci/test_acceptance_scenarios.py"
+            "::test_every_wire_answers_its_frozen_classes"
+        )
+        for rule in (
+            "INV.PERF.SOURCE-CANCELLATION",
+            "INV.PERF.SOURCE-RESOURCE-LIMITS",
+            "INV.PERF.SOURCE-SNAPSHOT-BYTE-BUDGET",
+            "INV.PERF.SOURCE-SNAPSHOT-CAPACITY",
+            "INV.PERF.SOURCE-SNAPSHOT-TTL",
+            "INV.SOURCE.SNAPSHOT-BINDING",
+        ):
+            with self.subTest(rule=rule):
+                self.assertEqual(check(rule), corpus_check)
+                self.assertIn("status: superseded", record(rule))
+                self.assertIn(
+                    "decision: DEC.2026-09-05.SOURCE-SNAPSHOT-PROVIDER-RETIRED",
+                    record(rule),
+                )
+        infrastructure = (
+            REPO_ROOT / "crates" / "unica-coder" / "src" / "infrastructure"
+        )
+        self.assertFalse((infrastructure / "platform_xml_resources.rs").exists())
+        self.assertNotIn(
+            "platform_xml_resources",
+            (infrastructure / "mod.rs").read_text(encoding="utf-8"),
+        )
+
     def test_broad_source_records_name_complete_behavior_checks(self) -> None:
         """Широкая запись называет весь набор проверок, а не одну за всех.
 
