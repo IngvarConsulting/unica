@@ -236,6 +236,18 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+      # В PR-джобе тесты идут полминуты, а компиляция — от пяти до восьми
+      # минут; кэшируются только зависимости, крейты workspace собираются
+      # каждый раз. Пишут кэш push в ветку и ручной запуск: их область
+      # читают все прогоны. Pull request и очередь только читают — их
+      # области никто другой не увидит, а десять гигабайт кэша общие.
+      # Джоба тестов артефактов релиза не собирает, а область кэша pull
+      # request читают только его же прогоны — отравить релиз через неё нельзя.
+      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] джоба тестов артефактов релиза не собирает, область кэша pull request читают только его прогоны
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+          cache-on-failure: true
       # `python3` есть не на каждом раннере: на Windows его даёт setup-python.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

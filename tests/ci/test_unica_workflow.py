@@ -525,6 +525,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn('runners=["ubuntu-latest", "macos-14", "windows-latest"]', classify)
         self.assertIn("runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}", platforms)
         self.assertIn("shell: bash", platforms)
+        # Кэш зависимостей пишут push в ветку и ручной запуск; pull request и очередь читают.
+        self.assertRegex(platforms, pinned("Swatinem/rust-cache", "v2"))
+        self.assertIn(
+            "save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}",
+            platforms,
+        )
         self.assertRegex(platforms, pinned("actions/setup-python", "v7"))
         # Консоль Windows — cp1252; сбой Windows виден, но упаковку ночи не блокирует.
         self.assertIn('PYTHONUTF8: "1"', platforms)
