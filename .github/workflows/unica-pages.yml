@@ -17,7 +17,7 @@ name: Unica Pages
 on:
   push:
     branches: [main, "release-v*"]
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers] условие джобы build принимает только push, расписание и ручной запуск этого же репозитория
     workflows: ["Build Unica Codex Plugin", "Unica Nightly"]
     types: [completed]
     # Фильтр смотрит на `head_branch` прогона-источника: у push в ветку это
@@ -56,26 +56,28 @@ jobs:
       actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
+    env:
       # Отчёт собирает скачанный бинарь, и попадает он на публичный сайт.
       # Тег релиза можно переставить, поэтому принимаем не «файл по адресу», а
       # известный файл: сверенный архив 2.35.1 и ничего другого.
+      ALLURE_VERSION: "2.35.1"
+      ALLURE_SHA256: b40c6f1f82f8b945d8b1454beb1e641f196004241e8720299aee862218bdaca6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Бинарь зовётся по своему пути: PATH прогона не расширяется.
       - name: Поставить Allure CLI
-        env:
-          ALLURE_VERSION: "2.35.1"
-          ALLURE_SHA256: b40c6f1f82f8b945d8b1454beb1e641f196004241e8720299aee862218bdaca6
         run: |
           set -eu
           curl -fsSL -o allure.tgz \
             "https://github.com/allure-framework/allure2/releases/download/$ALLURE_VERSION/allure-$ALLURE_VERSION.tgz"
           echo "$ALLURE_SHA256  allure.tgz" | sha256sum -c -
           tar -xzf allure.tgz
-          echo "$PWD/allure-$ALLURE_VERSION/bin" >> "$GITHUB_PATH"
 
       # Линии перечисляет то же правило, что и на странице: main плюс открытые
       # релизные линии. Линия прогона-источника получает свежие результаты,
@@ -87,7 +89,7 @@ jobs:
       # плана без результата дописывается `skipped` с причиной «раннер не
       # дошёл» и не исчезает из истории.
       - if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
@@ -135,6 +137,7 @@ jobs:
           done < .build/lines.txt
           python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" --out .build/bootstrap.json
           python scripts/ci/build-site.py --status .build/bootstrap.json --out .build/site \
+            --allure-command "$GITHUB_WORKSPACE/allure-$ALLURE_VERSION/bin/allure" \
             --site "$SITE" --run-sha "$RUN_SHA" --run-url "$RUN_URL" --run-at "$RUN_AT" \
             "${args[@]}"
 
@@ -158,7 +161,7 @@ jobs:
             --out .build/status.json
           python scripts/ci/build-site.py --pages-only --status .build/status.json --out .build/site
 
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: .build/site
 
@@ -175,4 +178,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

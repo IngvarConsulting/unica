@@ -124,6 +124,15 @@ def parse_workflow_jobs(workflow: str) -> dict[str, ParsedJob]:
     return jobs
 
 
+def pinned(action: str, major: str) -> str:
+    """Действие закреплено хешем коммита, а версия названа комментарием рядом.
+
+    Dependabot двигает хеш вместе с комментарием, поэтому тест держит только
+    мажорную версию: минорный сдвиг проходит, смена мажора требует правки.
+    """
+    return rf"uses: {re.escape(action)}@[0-9a-f]{{40}} # {re.escape(major)}(\.\d+)*\b"
+
+
 class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def release_text(self) -> str:
         return RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -409,13 +418,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         publish = self.publish_text()
         combined = release + publish + self.nightly_text() + self.pages_text()
 
-        self.assertIn("actions/checkout@v7", combined)
-        self.assertIn("actions/setup-python@v7", release)
-        self.assertIn("actions/cache@v5", release)
-        self.assertIn("actions/upload-artifact@v7", release)
-        self.assertIn("actions/download-artifact@v8", release)
-        self.assertIn("softprops/action-gh-release@v3", release)
-        self.assertIn("github/codeql-action/upload-sarif@v4", release)
+        self.assertRegex(combined, pinned("actions/checkout", "v7"))
+        self.assertRegex(release, pinned("actions/setup-python", "v7"))
+        self.assertRegex(release, pinned("actions/cache", "v5"))
+        self.assertRegex(release, pinned("actions/upload-artifact", "v7"))
+        self.assertRegex(release, pinned("actions/download-artifact", "v8"))
+        self.assertRegex(release, pinned("softprops/action-gh-release", "v3"))
+        self.assertRegex(release, pinned("github/codeql-action/upload-sarif", "v4"))
         for stale in (
             "actions/checkout@v4",
             "actions/setup-python@v5",
@@ -516,7 +525,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn('runners=["ubuntu-latest", "macos-14", "windows-latest"]', classify)
         self.assertIn("runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}", platforms)
         self.assertIn("shell: bash", platforms)
-        self.assertIn("uses: actions/setup-python@v7", platforms)
+        self.assertRegex(platforms, pinned("actions/setup-python", "v7"))
         # Консоль Windows — cp1252; сбой Windows виден, но упаковку ночи не блокирует.
         self.assertIn('PYTHONUTF8: "1"', platforms)
         self.assertIn("continue-on-error: ${{ matrix.runner == 'windows-latest' }}", platforms)
@@ -537,8 +546,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         guards = job_block(self.release_text(), "guards")
 
         self.assertIn("tool: zizmor@1.30.0", guards)
-        self.assertIn("zizmor --format sarif --no-exit-codes .github/workflows > zizmor.sarif", guards)
-        self.assertIn("uses: github/codeql-action/upload-sarif@v4", guards)
+        self.assertIn("zizmor --config .github/zizmor.yml --format sarif --no-exit-codes .github/workflows > zizmor.sarif", guards)
+        self.assertRegex(guards, pinned("github/codeql-action/upload-sarif", "v4"))
         self.assertIn("category: zizmor", guards)
         self.assertIn("security-events: write", guards)
         # Токен pull request из форка писать в Code Scanning не вправе.
@@ -551,7 +560,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("id: rust-toolchain", build)
         self.assertIn("id: cargo-cache", build)
         self.assertIn("continue-on-error: true", build)
-        self.assertIn("uses: actions/cache@v5", build)
+        self.assertRegex(build, pinned("actions/cache", "v5"))
         self.assertIn("path: .build/tool-work/${{ matrix.target }}/cargo-target", build)
         self.assertIn(
             "key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ "
@@ -721,7 +730,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertNotIn("publish-assessment-pages", publish)
         self.assertIn("needs: build-tools", publish)
-        self.assertIn("softprops/action-gh-release@v3", publish)
+        self.assertRegex(publish, pinned("softprops/action-gh-release", "v3"))
         self.assertIn("unica-runtime-*.tar.gz", publish)
         self.assertIn("unica-runtime-*.json", publish)
         self.assertNotIn("install-unica", publish)
@@ -823,6 +832,15 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("plugin remove unica@unica --json", text)
         self.assertEqual(text.count("plugin add unica@unica --json"), 3)
         self.assertIn("verify --plugin-root $pluginRoot", text)
+
+
+def pinned(action: str, major: str) -> str:
+    """Действие закреплено хешем коммита, а версия названа комментарием рядом.
+
+    Dependabot двигает хеш вместе с комментарием, поэтому тест держит только
+    мажорную версию: минорный сдвиг проходит, смена мажора требует правки.
+    """
+    return rf"uses: {re.escape(action)}@[0-9a-f]{{40}} # {re.escape(major)}(\.\d+)*\b"
 
 
 class ArtifactSplitPublicationTests(unittest.TestCase):
@@ -955,6 +973,15 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         self.assertEqual(smoke_positions, sorted(smoke_positions))
         self.assertIn("matrix.target == 'linux-x64'", smoke.body)
         self.assertIn('prefetch --plugin-root .build/thin/plugins/unica', smoke.body)
+
+
+def pinned(action: str, major: str) -> str:
+    """Действие закреплено хешем коммита, а версия названа комментарием рядом.
+
+    Dependabot двигает хеш вместе с комментарием, поэтому тест держит только
+    мажорную версию: минорный сдвиг проходит, смена мажора требует правки.
+    """
+    return rf"uses: {re.escape(action)}@[0-9a-f]{{40}} # {re.escape(major)}(\.\d+)*\b"
 
 
 class PrereleaseNeverReachesConsumersTests(unittest.TestCase):

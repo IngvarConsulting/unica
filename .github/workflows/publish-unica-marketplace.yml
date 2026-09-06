@@ -8,7 +8,7 @@ name: Publish Unica Marketplace
 # workflow resumes a partial publication instead of corrupting it.
 
 on:
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers] условие джобы gate принимает только успешный push-прогон тега этого же репозитория
     workflows: ["Build Unica Codex Plugin"]
     types: [completed]
   workflow_dispatch:
@@ -100,10 +100,11 @@ jobs:
         run: |
           release_tag="$(sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' payload/plugins/unica/runtime-manifest.json | head -n 1)"
           case "$release_tag" in v[0-9A-Za-z._-]*) ;; *) exit 65 ;; esac
-          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
       - name: Require the payload to come from its own tag's successful build
+        env:
+          RELEASE_TAG: ${{ steps.identity.outputs.release_tag }}
         run: |
           set -euo pipefail
           # A dispatch caller could name any run holding a compatible artifact.
@@ -121,6 +122,8 @@ jobs:
           gh api "repos/IngvarConsulting/unica/git/ref/tags/${RELEASE_TAG}" --silent
       - name: Push the staged payload without changing the stable catalog
         id: push
+        env:
+          RELEASE_TAG: ${{ steps.identity.outputs.release_tag }}
         run: |
           set -euo pipefail
           gh repo clone IngvarConsulting/unica-marketplace marketplace
