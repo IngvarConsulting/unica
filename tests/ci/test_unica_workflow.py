@@ -517,6 +517,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}", platforms)
         self.assertIn("shell: bash", platforms)
         self.assertIn("uses: actions/setup-python@v7", platforms)
+        # Консоль Windows — cp1252; сбой Windows виден, но упаковку ночи не блокирует.
+        self.assertIn('PYTHONUTF8: "1"', platforms)
+        self.assertIn("continue-on-error: ${{ matrix.runner == 'windows-latest' }}", platforms)
         self.assertFalse((REPO_ROOT / ".github" / "workflows" / "unica-large.yml").exists())
 
     def test_pages_take_results_from_red_runs_and_from_the_nightly(self) -> None:

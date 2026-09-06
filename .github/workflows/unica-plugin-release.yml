@@ -194,6 +194,12 @@ jobs:
     needs: [classify-changes, guards]
     env:
       RUN_LINE: ${{ needs.classify-changes.outputs.line }}
+      # Консоль Windows — cp1252: без этого Python не выведет кириллицу
+      # скриптов площадки и упадёт на первом же `print`.
+      PYTHONUTF8: "1"
+    # Windows идёт только в ночном ярусе, и его сбой обязан быть виден, но
+    # не должен блокировать упаковку и пробу того же прогона.
+    continue-on-error: ${{ matrix.runner == 'windows-latest' }}
     # Любая правка Rust идёт на обеих платформах: `#[cfg]` решает, какие
     # элементы существуют, и один раннер этого класса не видит. Прежняя
     # экономия — один раннер для rust-only pull request — снята: под
