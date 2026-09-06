@@ -2,6 +2,7 @@ use crate::application::v13::view::ViewError;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::module_projection::EventProjection;
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::logical_tree::{LogicalReader, LogicalTreeRoute};
 use serde_json::{json, Map, Value};
 
@@ -138,14 +139,14 @@ fn project_form(
     let first = &suffix[0];
     let mut values = form_child_values(payload, first.kind()).ok_or_else(|| {
         ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             format!("form has no {} collection", first.kind().as_str()),
         )
     })?;
     if first.name().is_none() {
         if suffix.len() != 1 {
             return Err(ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 "form collection did not consume the complete suffix",
             ));
         }
@@ -154,7 +155,7 @@ fn project_form(
     let mut kind = first.kind();
     let mut item = select_named(values, first.name().unwrap()).ok_or_else(|| {
         ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             format!(
                 "form {} `{}` was not found",
                 first.kind().as_str(),
@@ -166,7 +167,7 @@ fn project_form(
         kind = segment.kind();
         values = form_nested_values(item, kind).ok_or_else(|| {
             ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 format!("form node has no {} collection", kind.as_str()),
             )
         })?;
@@ -174,7 +175,7 @@ fn project_form(
         let Some(name) = segment.name() else {
             if !terminal {
                 return Err(ViewError::new(
-                    "not_found",
+                    RefusalCode::NotFound,
                     "form collection did not consume the complete suffix",
                 ));
             }
@@ -182,7 +183,7 @@ fn project_form(
         };
         item = select_named(values, name).ok_or_else(|| {
             ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 format!("form {} `{name}` was not found", kind.as_str()),
             )
         })?;
@@ -205,15 +206,15 @@ fn project_semantic_form_event(
         .expect("the semantic event route has an Event suffix");
     if event.name().is_none() {
         let address_text = address.to_string();
-        let owner_at = address_text
-            .strip_suffix(".Event")
-            .ok_or_else(|| ViewError::new("not_found", "event collection owner is invalid"))?;
+        let owner_at = address_text.strip_suffix(".Event").ok_or_else(|| {
+            ViewError::new(RefusalCode::NotFound, "event collection owner is invalid")
+        })?;
         let items = form_owner_events(owner_at, events)
             .map(crate::infrastructure::v13_read::event_node_value)
             .collect::<Vec<_>>();
         if items.is_empty() {
             return Err(ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 "form owner has no applicable events",
             ));
         }
@@ -234,7 +235,7 @@ fn project_semantic_form_event(
         .map(NodeViewData::Node)
         .ok_or_else(|| {
             ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 format!(
                     "form Event `{}` was not found",
                     event.name().unwrap_or_default()
@@ -364,11 +365,11 @@ fn project_dcs(
     }
     let datasets = payload
         .get("dataSets")
-        .ok_or_else(|| ViewError::new("not_found", "DCS has no datasets"))?;
+        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "DCS has no datasets"))?;
     let Some(dataset_name) = dataset_segment.name() else {
         if suffix.len() != 1 {
             return Err(ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 "DCS dataset collection cannot have a child suffix",
             ));
         }
@@ -379,7 +380,7 @@ fn project_dcs(
     };
     let dataset = select_named(datasets, dataset_name).ok_or_else(|| {
         ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             format!("DCS dataset `{dataset_name}` was not found"),
         )
     })?;
@@ -400,7 +401,7 @@ fn project_dcs(
     }
     let [detail] = &suffix[1..] else {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "DCS projection did not consume the complete suffix",
         ));
     };
@@ -412,7 +413,7 @@ fn project_dcs(
     }
     .ok_or_else(|| {
         ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             format!("DCS dataset has no {} projection", detail.kind().as_str()),
         )
     })?;
@@ -430,7 +431,7 @@ fn project_dcs(
     let name = detail.name().unwrap();
     let item = select_named(selected, name).ok_or_else(|| {
         ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             format!("DCS {} `{name}` was not found", detail.kind().as_str()),
         )
     })?;
@@ -457,15 +458,18 @@ fn project_mxl(
     }
     let area_segment = &suffix[0];
     if area_segment.kind() != NodeKind::Area {
-        return Err(ViewError::new("not_found", "MXL projection starts at Area"));
+        return Err(ViewError::new(
+            RefusalCode::NotFound,
+            "MXL projection starts at Area",
+        ));
     }
     let areas = payload
         .get("areas")
-        .ok_or_else(|| ViewError::new("not_found", "MXL has no named areas"))?;
+        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "MXL has no named areas"))?;
     let Some(area_name) = area_segment.name() else {
         if suffix.len() != 1 {
             return Err(ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 "MXL area collection cannot have a child suffix",
             ));
         }
@@ -475,7 +479,10 @@ fn project_mxl(
         )));
     };
     let area = select_named(areas, area_name).ok_or_else(|| {
-        ViewError::new("not_found", format!("MXL area `{area_name}` was not found"))
+        ViewError::new(
+            RefusalCode::NotFound,
+            format!("MXL area `{area_name}` was not found"),
+        )
     })?;
     if suffix.len() == 1 {
         let mut node = node_from_value(LogicalReader::Mxl, address, NodeKind::Area, area);
@@ -493,19 +500,19 @@ fn project_mxl(
     }
     let [parameter] = &suffix[1..] else {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "MXL projection did not consume the complete suffix",
         ));
     };
     if parameter.kind() != NodeKind::Parameter {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "MXL area has only Parameter child nodes",
         ));
     }
     let params = area
         .get("params")
-        .ok_or_else(|| ViewError::new("not_found", "MXL area has no parameters"))?;
+        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "MXL area has no parameters"))?;
     let Some(name) = parameter.name() else {
         return Ok(NodeViewData::Collection(CollectionView::new(
             NodeView::new(address.to_string(), "Parameter", "Parameter", Map::new()),
@@ -531,7 +538,7 @@ fn project_mxl(
         .any(|value| value.as_str() == Some(name))
     {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             format!("MXL area parameter `{name}` was not found"),
         ));
     }
@@ -550,7 +557,7 @@ fn project_configuration(
 ) -> Result<NodeViewData, ViewError> {
     if !suffix.is_empty() {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "configuration projection does not accept an address suffix",
         ));
     }
@@ -620,7 +627,7 @@ pub(super) fn project_registered_metadata_branch(
         .segments()
         .last()
         .map(AddressSegment::kind)
-        .ok_or_else(|| ViewError::new("not_found", "metadata branch kind is missing"))?;
+        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "metadata branch kind is missing"))?;
     let items = payload
         .get("registeredObjects")
         .and_then(Value::as_array)
@@ -652,7 +659,7 @@ pub(super) fn project_registered_metadata_branch(
 fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(), ViewError> {
     let object = payload.as_object().ok_or_else(|| {
         ViewError::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "typed reader returned a non-object root payload",
         )
     })?;
@@ -761,7 +768,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
         ],
         LogicalReader::Module => {
             return Err(ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "module projection bypassed its Task 13 adapter",
             ));
         }
@@ -782,7 +789,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             && !EXPLICITLY_DISCARDED_PROVIDER_KEYS.contains(&key.as_str())
     }) {
         return Err(ViewError::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             format!("typed {reader:?} reader returned unknown field `{key}`"),
         ));
     }
@@ -800,14 +807,14 @@ pub(super) fn project_known_suffix(
         let terminal = index + 1 == suffix.len();
         let selected = select_kind_value(reader, current, segment.kind()).ok_or_else(|| {
             ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 format!("typed reader has no {} projection", segment.kind().as_str()),
             )
         })?;
         if let Some(name) = segment.name() {
             current = select_named(selected, name).ok_or_else(|| {
                 ViewError::new(
-                    "not_found",
+                    RefusalCode::NotFound,
                     format!(
                         "typed reader has no {} named {name}",
                         segment.kind().as_str()
@@ -836,7 +843,7 @@ pub(super) fn project_known_suffix(
         }
     }
     Err(ViewError::new(
-        "not_found",
+        RefusalCode::NotFound,
         "typed reader did not resolve the complete logical address",
     ))
 }
@@ -928,7 +935,7 @@ fn project_metadata(
     let first = &suffix[0];
     let collection = metadata_collection(payload, first.kind()).ok_or_else(|| {
         ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             format!("metadata has no {} collection", first.kind().as_str()),
         )
     })?;
@@ -943,11 +950,17 @@ fn project_metadata(
             metadata_items(address, first.kind(), collection),
         )));
     }
-    let name = first
-        .name()
-        .ok_or_else(|| ViewError::new("not_found", "metadata collection name is required"))?;
+    let name = first.name().ok_or_else(|| {
+        ViewError::new(
+            RefusalCode::NotFound,
+            "metadata collection name is required",
+        )
+    })?;
     let mut item = select_named(collection, name).ok_or_else(|| {
-        ViewError::new("not_found", format!("metadata node `{name}` was not found"))
+        ViewError::new(
+            RefusalCode::NotFound,
+            format!("metadata node `{name}` was not found"),
+        )
     })?;
     let mut kind = first.kind();
     for segment in &suffix[1..] {
@@ -957,11 +970,16 @@ fn project_metadata(
         } else {
             None
         }
-        .ok_or_else(|| ViewError::new("not_found", "metadata child collection was not found"))?;
+        .ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::NotFound,
+                "metadata child collection was not found",
+            )
+        })?;
         if let Some(name) = segment.name() {
             item = select_named(next, name).ok_or_else(|| {
                 ViewError::new(
-                    "not_found",
+                    RefusalCode::NotFound,
                     format!("metadata child `{name}` was not found"),
                 )
             })?;
@@ -1089,7 +1107,7 @@ fn project_subsystem_interface(
 ) -> Result<NodeViewData, ViewError> {
     if !matches!(suffix.first(), Some(segment) if segment.kind() == NodeKind::Interface) {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "subsystem interface projection is missing",
         ));
     }
@@ -1097,12 +1115,15 @@ fn project_subsystem_interface(
         .get("commandInterface")
         .filter(|value| !value.is_null())
         .ok_or_else(|| {
-            ViewError::new("not_found", "subsystem has no command interface document")
+            ViewError::new(
+                RefusalCode::NotFound,
+                "subsystem has no command interface document",
+            )
         })?;
     let commands = interface_commands(interface);
     if suffix.len() > 2 {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "subsystem interface projection did not consume the complete suffix",
         ));
     }
@@ -1154,12 +1175,12 @@ fn project_subsystem_interface(
             })
             .ok_or_else(|| {
                 ViewError::new(
-                    "not_found",
+                    RefusalCode::NotFound,
                     format!("interface command `{name}` was not found"),
                 )
             }),
         _ => Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "interface projection was not found",
         )),
     }
@@ -1259,7 +1280,9 @@ fn project_xdto(
         let namespace = payload
             .get("targetNamespace")
             .and_then(Value::as_str)
-            .ok_or_else(|| ViewError::new("not_found", "XDTO target namespace is absent"))?;
+            .ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "XDTO target namespace is absent")
+            })?;
         return Ok(NodeViewData::Node(NodeView::new(
             address.to_string(),
             "Namespace",
@@ -1275,7 +1298,7 @@ fn project_xdto(
         NodeKind::Property => payload.get("globalProperties"),
         _ => None,
     }
-    .ok_or_else(|| ViewError::new("not_found", "XDTO projection was not found"))?;
+    .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "XDTO projection was not found"))?;
     if segment.name().is_none() {
         return Ok(NodeViewData::Collection(CollectionView::new(
             NodeView::new(
@@ -1288,8 +1311,12 @@ fn project_xdto(
         )));
     }
     let name = segment.name().unwrap();
-    let item = select_named(selected, name)
-        .ok_or_else(|| ViewError::new("not_found", format!("XDTO node `{name}` was not found")))?;
+    let item = select_named(selected, name).ok_or_else(|| {
+        ViewError::new(
+            RefusalCode::NotFound,
+            format!("XDTO node `{name}` was not found"),
+        )
+    })?;
     if suffix.len() == 1 {
         let mut props = reader_node_props(LogicalReader::Xdto, segment.kind(), item);
         if let Some(base) = item.get("base") {
@@ -1312,13 +1339,13 @@ fn project_xdto(
     let property = &suffix[1];
     if suffix.len() != 2 {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "XDTO property projection did not consume the complete suffix",
         ));
     }
     let properties = item
         .get("properties")
-        .ok_or_else(|| ViewError::new("not_found", "XDTO type has no properties"))?;
+        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "XDTO type has no properties"))?;
     if property.name().is_none() {
         return Ok(NodeViewData::Collection(CollectionView::new(
             NodeView::new(address.to_string(), "Property", "Properties", Map::new()),
@@ -1328,7 +1355,7 @@ fn project_xdto(
     let property_name = property.name().unwrap();
     let property = select_named(properties, property_name).ok_or_else(|| {
         ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             format!("XDTO property `{property_name}` was not found"),
         )
     })?;

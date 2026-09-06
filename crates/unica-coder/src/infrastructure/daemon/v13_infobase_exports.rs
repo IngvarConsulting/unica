@@ -6,6 +6,7 @@ use super::protocol::InvocationRequest;
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
+use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::{
     bundled_tool_version, resolve_bundled_tool, BundledTool,
@@ -111,14 +112,20 @@ impl PreparedInfobaseExport {
         let args = arguments
             .get("args")
             .and_then(Value::as_object)
-            .ok_or_else(|| reject(operation, "bad_value", "run args must be an object"))?;
+            .ok_or_else(|| {
+                reject(
+                    operation,
+                    RefusalCode::BadValue,
+                    "run args must be an object",
+                )
+            })?;
         let dry_run = arguments
             .get("dryRun")
             .and_then(Value::as_bool)
             .ok_or_else(|| {
                 reject(
                     operation,
-                    "bad_value",
+                    RefusalCode::BadValue,
                     format!(
                         "{} requires dryRun: true to preview or dryRun: false with ifRev to apply",
                         operation.name()
@@ -131,7 +138,7 @@ impl PreparedInfobaseExport {
             Some(_) => {
                 return Err(reject(
                     operation,
-                    "bad_value",
+                    RefusalCode::BadValue,
                     format!("{} ifRev must be non-empty text", operation.name()),
                 ))
             }
@@ -139,7 +146,7 @@ impl PreparedInfobaseExport {
         if dry_run && if_rev.is_some() {
             return Err(reject(
                 operation,
-                "bad_value",
+                RefusalCode::BadValue,
                 format!(
                     "{} preview does not accept ifRev; apply the revision returned by this preview",
                     operation.name()
@@ -149,7 +156,7 @@ impl PreparedInfobaseExport {
         if !dry_run && if_rev.is_none() {
             return Err(reject(
                 operation,
-                "bad_value",
+                RefusalCode::BadValue,
                 format!(
                     "{} apply requires ifRev from a prior dryRun preview",
                     operation.name()
@@ -161,7 +168,7 @@ impl PreparedInfobaseExport {
             discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
                 reject(
                     operation,
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     format!("workspace discovery failed: {error}"),
                 )
             })?;
@@ -199,7 +206,7 @@ fn parse_export_arguments(
     if let Some(unknown) = args.keys().find(|key| !allowed.contains(&key.as_str())) {
         return Err(reject(
             operation,
-            "bad_value",
+            RefusalCode::BadValue,
             format!("{} does not accept argument `{unknown}`", operation.name()),
         ));
     }
@@ -209,7 +216,7 @@ fn parse_export_arguments(
             _ => {
                 return Err(reject(
                     operation,
-                    "bad_value",
+                    RefusalCode::BadValue,
                     "infobase.configuration.export state must be `working` or `database`",
                 ))
             }
@@ -222,7 +229,7 @@ fn parse_export_arguments(
         Some(_) => {
             return Err(reject(
                 operation,
-                "bad_value",
+                RefusalCode::BadValue,
                 "infobase.configuration.export extension must be a non-empty 1C identifier",
             ))
         }
@@ -234,14 +241,14 @@ fn parse_export_arguments(
         .ok_or_else(|| {
             reject(
                 operation,
-                "bad_value",
+                RefusalCode::BadValue,
                 format!("{} output must be non-empty text", operation.name()),
             )
         })?;
     let output_relative = closed_workspace_relative_path(output).map_err(|message| {
         reject(
             operation,
-            "bad_value",
+            RefusalCode::BadValue,
             format!("{} output {message}", operation.name()),
         )
     })?;
@@ -249,7 +256,7 @@ fn parse_export_arguments(
     if output_relative.extension().and_then(|value| value.to_str()) != Some(expected_suffix) {
         return Err(reject(
             operation,
-            "bad_value",
+            RefusalCode::BadValue,
             format!(
                 "{} output must end in .{expected_suffix}{}",
                 operation.name(),
@@ -273,7 +280,7 @@ fn parse_export_arguments(
     };
     let output = WorkspacePathPolicy::new(&root_context)
         .resolve_write(&output_relative)
-        .map_err(|error| reject(operation, "bad_value", error))?;
+        .map_err(|error| reject(operation, RefusalCode::BadValue, error))?;
     Ok(ExportArguments {
         state,
         extension,
@@ -325,7 +332,7 @@ fn capture_inputs(prepared: &PreparedInfobaseExport) -> Result<StableInputs, Dom
     let root = &prepared.context.workspace_root;
     let config_sha256 =
         digest_required_workspace_file(root, Path::new(CONFIG_NAME)).map_err(|error| {
-            let mut result = reject(prepared.operation, "invalid_state", error);
+            let mut result = reject(prepared.operation, RefusalCode::InvalidState, error);
             result.next.push(json!({
                 "tool": "unica.view",
                 "args": {},
@@ -334,10 +341,10 @@ fn capture_inputs(prepared: &PreparedInfobaseExport) -> Result<StableInputs, Dom
             result
         })?;
     let local_config_sha256 = digest_optional_workspace_file(root, Path::new(LOCAL_CONFIG_NAME))
-        .map_err(|error| reject(prepared.operation, "invalid_state", error))?
+        .map_err(|error| reject(prepared.operation, RefusalCode::InvalidState, error))?
         .map(|(digest, _)| digest);
     let output = digest_optional_workspace_file(root, &prepared.arguments.output_relative)
-        .map_err(|error| reject(prepared.operation, "bad_value", error))?;
+        .map_err(|error| reject(prepared.operation, RefusalCode::BadValue, error))?;
     Ok(StableInputs {
         config_sha256,
         local_config_sha256,
@@ -431,18 +438,30 @@ fn execute_with_runner(
         None => {
             return reject(
                 prepared.operation,
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "Unica plugin root could not be located for the bundled v8-runner",
             )
         }
     };
     let tool = match resolve_bundled_tool(&plugin_root, "v8-runner", true) {
         Ok(tool) => tool,
-        Err(error) => return reject(prepared.operation, "provider_unavailable", redactor(&error)),
+        Err(error) => {
+            return reject(
+                prepared.operation,
+                RefusalCode::ProviderUnavailable,
+                redactor(&error),
+            )
+        }
     };
     let runner_version = match bundled_tool_version(&plugin_root, "v8-runner") {
         Ok(version) => version,
-        Err(error) => return reject(prepared.operation, "provider_unavailable", redactor(&error)),
+        Err(error) => {
+            return reject(
+                prepared.operation,
+                RefusalCode::ProviderUnavailable,
+                redactor(&error),
+            )
+        }
     };
     execute_with_resolved_runner(prepared, runner, cancellation, &tool, &runner_version)
 }
@@ -457,7 +476,7 @@ fn execute_with_resolved_runner(
     if cancellation.is_cancelled() {
         return reject(
             prepared.operation,
-            "cancelled",
+            RefusalCode::Cancelled,
             format!("{} cancelled before preflight", prepared.operation.name()),
         );
     }
@@ -480,7 +499,7 @@ fn execute_with_resolved_runner(
     if before != after {
         return reject(
             prepared.operation,
-            "concurrent_change",
+            RefusalCode::ConcurrentChange,
             format!(
                 "{} inputs changed during preview; run dryRun: true again",
                 prepared.operation.name()
@@ -515,7 +534,7 @@ fn execute_with_resolved_runner(
     if prepared.if_rev.as_deref() != Some(revision.as_str()) {
         return reject(
             prepared.operation,
-            "revision_mismatch",
+            RefusalCode::RevisionMismatch,
             format!(
                 "{} plan or environment changed after preview; run dryRun: true again",
                 prepared.operation.name()
@@ -525,7 +544,7 @@ fn execute_with_resolved_runner(
     if cancellation.is_cancelled() {
         return reject(
             prepared.operation,
-            "cancelled",
+            RefusalCode::Cancelled,
             format!(
                 "{} cancelled before provider launch",
                 prepared.operation.name()
@@ -547,18 +566,18 @@ fn execute_with_resolved_runner(
         Ok(Some(_)) => {
             return reject(
                 prepared.operation,
-                "invalid_result",
+                RefusalCode::InvalidResult,
                 "v8-runner reported publication but the exported file is empty",
             )
         }
         Ok(None) => {
             return reject(
                 prepared.operation,
-                "invalid_result",
+                RefusalCode::InvalidResult,
                 "v8-runner reported publication but the exported file is missing",
             )
         }
-        Err(error) => return reject(prepared.operation, "invalid_result", error),
+        Err(error) => return reject(prepared.operation, RefusalCode::InvalidResult, error),
     };
     let mut result = DomainResult::success(format!(
         "{} exported and independently verified",
@@ -647,7 +666,7 @@ fn invoke_runner(
         Err(error) => {
             return Err(reject(
                 prepared.operation,
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 format!("failed to start bundled v8-runner: {}", redactor(&error)),
             ))
         }
@@ -661,33 +680,37 @@ fn parse_runner_output(
     dry_run: bool,
 ) -> Result<Value, DomainResult> {
     if output.cancelled {
-        return Err(reject(operation, "cancelled", "v8-runner was cancelled"));
+        return Err(reject(
+            operation,
+            RefusalCode::Cancelled,
+            "v8-runner was cancelled",
+        ));
     }
     if output.timed_out {
         return Err(reject(
             operation,
-            "deadline_exceeded",
+            RefusalCode::DeadlineExceeded,
             "v8-runner exceeded its execution deadline",
         ));
     }
     if output.stdout_truncated || output.stdout_had_invalid_utf8 {
         return Err(reject(
             operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             "v8-runner returned an unreadable or oversized JSON result",
         ));
     }
     let envelope: Value = serde_json::from_str(&output.stdout).map_err(|_| {
         reject(
             operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             "v8-runner returned an invalid JSON result",
         )
     })?;
     if envelope["command"] != operation.name() {
         return Err(reject(
             operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             "v8-runner returned a result for a different operation",
         ));
     }
@@ -698,7 +721,7 @@ fn parse_runner_output(
         {
             return Err(reject(
                 operation,
-                "invalid_result",
+                RefusalCode::InvalidResult,
                 "failed v8-runner preview did not prove that no provider was dispatched",
             ));
         }
@@ -714,15 +737,15 @@ fn parse_runner_output(
     Ok(envelope)
 }
 
-fn map_runner_code(code: &str) -> &'static str {
+fn map_runner_code(code: &str) -> RefusalCode {
     match code {
         "environment_unavailable" | "platform_error" | "provider_unavailable" => {
-            "provider_unavailable"
+            RefusalCode::ProviderUnavailable
         }
-        "workspace_busy" | "concurrent_change" => "concurrent_change",
-        "validation_error" | "invalid_argument" | "invalid_output" => "bad_value",
-        "timeout" | "deadline_exceeded" => "deadline_exceeded",
-        _ => "provider_failed",
+        "workspace_busy" | "concurrent_change" => RefusalCode::ConcurrentChange,
+        "validation_error" | "invalid_argument" | "invalid_output" => RefusalCode::BadValue,
+        "timeout" | "deadline_exceeded" => RefusalCode::DeadlineExceeded,
+        _ => RefusalCode::ProviderFailed,
     }
 }
 
@@ -752,7 +775,7 @@ fn validate_preview(
     {
         return Err(reject(
             prepared.operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             "v8-runner preview did not satisfy the non-executing export contract",
         ));
     }
@@ -762,7 +785,7 @@ fn validate_preview(
         .ok_or_else(|| {
             reject(
                 prepared.operation,
-                "invalid_result",
+                RefusalCode::InvalidResult,
                 "v8-runner preview omitted the selected provider",
             )
         })?
@@ -774,7 +797,7 @@ fn validate_preview(
         .ok_or_else(|| {
             reject(
                 prepared.operation,
-                "invalid_result",
+                RefusalCode::InvalidResult,
                 "v8-runner preview omitted a bounded provider-selection reason",
             )
         })?
@@ -785,7 +808,7 @@ fn validate_preview(
         .ok_or_else(|| {
             reject(
                 prepared.operation,
-                "invalid_result",
+                RefusalCode::InvalidResult,
                 "v8-runner preview returned an invalid provider candidate set",
             )
         })?;
@@ -817,7 +840,7 @@ fn validate_preview(
     if selection_provider != Some(provider.as_str()) || !candidates_valid || !selected_ready {
         return Err(reject(
             prepared.operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             "v8-runner preview returned an inconsistent provider selection",
         ));
     }
@@ -826,7 +849,7 @@ fn validate_preview(
         .ok_or_else(|| {
             reject(
                 prepared.operation,
-                "invalid_result",
+                RefusalCode::InvalidResult,
                 "v8-runner preview omitted the resolved output",
             )
         })?
@@ -834,21 +857,21 @@ fn validate_preview(
     let runner_output = normalize_path_identity(Path::new(&output)).map_err(|error| {
         reject(
             prepared.operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             format!("v8-runner preview returned an invalid output path: {error}"),
         )
     })?;
     let expected_output = normalize_path_identity(&prepared.arguments.output).map_err(|error| {
         reject(
             prepared.operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             format!("failed to resolve planned output: {error}"),
         )
     })?;
     if runner_output != expected_output {
         return Err(reject(
             prepared.operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             "v8-runner preview resolved a different output target",
         ));
     }
@@ -889,35 +912,35 @@ fn validate_apply(
     {
         return Err(reject(
             prepared.operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             "v8-runner apply result does not match the previewed export contract",
         ));
     }
     let Some(output) = data["output"].as_str() else {
         return Err(reject(
             prepared.operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             "v8-runner apply result omitted the published output",
         ));
     };
     let applied_output = normalize_path_identity(Path::new(output)).map_err(|error| {
         reject(
             prepared.operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             format!("v8-runner apply returned an invalid output path: {error}"),
         )
     })?;
     let expected_output = normalize_path_identity(&prepared.arguments.output).map_err(|error| {
         reject(
             prepared.operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             format!("failed to resolve the expected output: {error}"),
         )
     })?;
     if applied_output != expected_output || output != preview.output {
         return Err(reject(
             prepared.operation,
-            "invalid_result",
+            RefusalCode::InvalidResult,
             "v8-runner apply published a different output than the previewed target",
         ));
     }
@@ -1018,7 +1041,7 @@ fn path_text(path: &Path) -> String {
 
 fn reject(
     operation: ExportOperation,
-    code: &'static str,
+    code: RefusalCode,
     message: impl Into<String>,
 ) -> DomainResult {
     DomainResult::canonical_rejection(Some(operation.name().to_string()), code, message)

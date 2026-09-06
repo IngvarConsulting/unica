@@ -18,6 +18,7 @@ use crate::domain::diagnostics::{
 use crate::domain::events::DomainEvent;
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::progress::ProgressSink;
+use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::code_intelligence::{BslAnalyzerProvider, GitGrepProvider, RlmProvider};
 use crate::infrastructure::diagnostics::BslAnalyzerDiagnosticProvider;
@@ -945,7 +946,7 @@ pub(crate) fn canonical_v13_docs_search(
             Some(crate::domain::documentation::SourceKind::ConfigurationDocumentation) => {
                 return crate::domain::invocation::DomainResult::canonical_rejection(
                     None,
-                    "unsupported_source",
+                    RefusalCode::UnsupportedSource,
                     "docs source `configuration-documentation` is not available until its workspace reader uses the actor-owned nofollow and cancellation boundary",
                 )
             }
@@ -953,7 +954,7 @@ pub(crate) fn canonical_v13_docs_search(
             None => {
                 return crate::domain::invocation::DomainResult::canonical_rejection(
                     None,
-                    "unsupported_source",
+                    RefusalCode::UnsupportedSource,
                     format!(
                         "docs source `{source}` is unsupported; allowed: platform-help, development-standard, configuration-documentation"
                     ),
@@ -964,7 +965,7 @@ pub(crate) fn canonical_v13_docs_search(
     if query.trim().is_empty() {
         return crate::domain::invocation::DomainResult::canonical_rejection(
             None,
-            "bad_value",
+            RefusalCode::BadValue,
             "docs query must be non-blank",
         );
     }
@@ -997,7 +998,7 @@ pub(crate) fn canonical_v13_docs_search(
         // as for every other unavailable engine.
         Err(error) => crate::domain::invocation::DomainResult::canonical_rejection(
             None,
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             error,
         ),
     }

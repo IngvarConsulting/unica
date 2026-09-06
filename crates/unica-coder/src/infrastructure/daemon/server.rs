@@ -1,4 +1,5 @@
 use super::identity::{CoreIdentity, DaemonProtocolIdentity, DaemonStateDirectory};
+use crate::domain::refusal::RefusalCode;
 #[path = "invocation_service.rs"]
 mod invocation_service;
 #[cfg(test)]
@@ -355,7 +356,7 @@ impl DaemonInvocationRuntime {
             }
             Err(summary) => Err(DomainResult::canonical_rejection(
                 None,
-                "bad_value",
+                RefusalCode::BadValue,
                 summary,
             )),
         };
@@ -542,7 +543,7 @@ impl V5CanonicalInvocationRuntime {
             .restrict_to_frontend_budget(Duration::from_millis(request.response_budget_ms()));
         if let Err(summary) = validate_hidden_v13_request(&request) {
             return Err(V5CanonicalPrepareError::Rejected(Box::new(
-                DomainResult::canonical_rejection(None, "bad_value", summary),
+                DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary),
             )));
         }
         if let Some(result) =

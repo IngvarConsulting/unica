@@ -14,6 +14,7 @@ use crate::domain::platform_profile::{
     ModuleCapability, ModuleRole, ModuleSourceLayout, PlatformProfile,
 };
 use crate::domain::project_sources::SourceSetKind;
+use crate::domain::refusal::RefusalCode;
 #[cfg(test)]
 use crate::domain::source_target::SourceTarget;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
@@ -205,11 +206,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     fn read_checkpoint(&self) -> Result<(), ViewError> {
         if self.cancellation.is_cancelled() {
-            return Err(ViewError::new("cancelled", "logical read was cancelled"));
+            return Err(ViewError::new(
+                RefusalCode::Cancelled,
+                "logical read was cancelled",
+            ));
         }
         if self.deadline.remaining().is_zero() {
             return Err(ViewError::new(
-                "provider_deadline",
+                RefusalCode::ProviderDeadline,
                 "logical read operation deadline elapsed",
             ));
         }
@@ -277,7 +281,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         .flatten(),
                 };
                 let mut cache = self.typed_payloads.lock().map_err(|_| {
-                    ViewError::new("provider_unavailable", "typed payload cache is poisoned")
+                    ViewError::new(
+                        RefusalCode::ProviderUnavailable,
+                        "typed payload cache is poisoned",
+                    )
                 })?;
                 if let Some(payload) = cache.get(&key) {
                     return Ok(payload.as_ref().clone());
@@ -307,21 +314,30 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return self
                 .read
                 .form_payload(route.reader_metadata_path().ok_or_else(|| {
-                    ViewError::new("provider_unavailable", "form route has no typed target")
+                    ViewError::new(
+                        RefusalCode::ProviderUnavailable,
+                        "form route has no typed target",
+                    )
                 })?);
         }
         if route.reader() == LogicalReader::Dcs {
             return self
                 .read
                 .dcs_payload(route.reader_metadata_path().ok_or_else(|| {
-                    ViewError::new("provider_unavailable", "DCS route has no typed target")
+                    ViewError::new(
+                        RefusalCode::ProviderUnavailable,
+                        "DCS route has no typed target",
+                    )
                 })?);
         }
         if route.reader() == LogicalReader::Role {
             return self
                 .read
                 .role_payload(route.reader_metadata_path().ok_or_else(|| {
-                    ViewError::new("provider_unavailable", "role route has no typed target")
+                    ViewError::new(
+                        RefusalCode::ProviderUnavailable,
+                        "role route has no typed target",
+                    )
                 })?);
         }
         if matches!(
@@ -332,7 +348,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 .read
                 .subsystem_payload(route.reader_metadata_path().ok_or_else(|| {
                     ViewError::new(
-                        "provider_unavailable",
+                        RefusalCode::ProviderUnavailable,
                         "subsystem route has no typed target",
                     )
                 })?);
@@ -341,19 +357,25 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return self
                 .read
                 .mxl_payload(route.reader_metadata_path().ok_or_else(|| {
-                    ViewError::new("provider_unavailable", "MXL route has no typed target")
+                    ViewError::new(
+                        RefusalCode::ProviderUnavailable,
+                        "MXL route has no typed target",
+                    )
                 })?);
         }
         if route.reader() == LogicalReader::Xdto {
             return self.read.xdto_payload(
                 route.reader_metadata_path().ok_or_else(|| {
-                    ViewError::new("provider_unavailable", "XDTO route has no typed target")
+                    ViewError::new(
+                        RefusalCode::ProviderUnavailable,
+                        "XDTO route has no typed target",
+                    )
                 })?,
                 named_segment(route.at(), NodeKind::Type),
             );
         }
         Err(ViewError::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "logical reader requires its dedicated retained adapter",
         ))
     }
@@ -364,7 +386,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Result<Arc<Value>, ViewError> {
         if admitted.source_set_identity != self.read.source_set_identity() {
             return Err(ViewError::new(
-                "stale_cursor",
+                RefusalCode::StaleCursor,
                 "configuration payload belongs to another source identity",
             ));
         }
@@ -373,7 +395,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
             revision: admitted.revision.clone(),
         };
         let mut cache = self.configuration_payloads.lock().map_err(|_| {
-            ViewError::new("provider_unavailable", "configuration cache is poisoned")
+            ViewError::new(
+                RefusalCode::ProviderUnavailable,
+                "configuration cache is poisoned",
+            )
         })?;
         if let Some(payload) = cache.get(&key) {
             return Ok(Arc::clone(payload));
@@ -405,7 +430,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ));
         }
         let target = route.reader_metadata_path().ok_or_else(|| {
-            ViewError::new("not_found", "metadata address has no typed reader target")
+            ViewError::new(
+                RefusalCode::NotFound,
+                "metadata address has no typed reader target",
+            )
         })?;
         self.ensure_owner_registered(target, admitted)?;
         if let Some(payload) = self.read.external_metadata_payload(target)? {
@@ -431,7 +459,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     PLATFORM_XML_8_3_27_FORMAT_2_20,
                     &format!("{}.{}.{}", target.as_str(), kind.as_str(), child.name),
                 )
-                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+                .map_err(|error| {
+                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                })?;
                 self.verify_registered_owner(&child, admitted)?;
             }
         }
@@ -445,7 +475,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         insert_serialized(&mut payload, "declarations", &local.declarations)?;
         insert_serialized(&mut payload, "relations", &local.relations)?;
         let collections = serde_json::to_value(&local.collections)
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
         payload.insert("collections".to_string(), collections);
         Ok(Value::Object(payload))
     }
@@ -470,7 +500,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             {
                 let Some(name) = child.get("name").and_then(Value::as_str) else {
                     return Err(ViewError::new(
-                        "provider_unavailable",
+                        RefusalCode::ProviderUnavailable,
                         format!("registered {field} entry has no name"),
                     ));
                 };
@@ -478,7 +508,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     PLATFORM_XML_8_3_27_FORMAT_2_20,
                     &format!("{}.{}.{name}", target.as_str(), kind.as_str()),
                 )
-                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+                .map_err(|error| {
+                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                })?;
                 self.verify_registered_owner(&child, admitted)?;
             }
         }
@@ -493,7 +525,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let parts = target.as_str().split('.').collect::<Vec<_>>();
         let [owner_kind, owner_name, ..] = parts.as_slice() else {
             return Err(ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 "metadata owner has no canonical kind and name",
             ));
         };
@@ -512,17 +544,25 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .flatten()
         {
             let kind = item.get("kind").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::new("provider_unavailable", "registered owner has no kind")
+                ViewError::new(
+                    RefusalCode::ProviderUnavailable,
+                    "registered owner has no kind",
+                )
             })?;
             let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::new("provider_unavailable", "registered owner has no name")
+                ViewError::new(
+                    RefusalCode::ProviderUnavailable,
+                    "registered owner has no name",
+                )
             })?;
             if kind == NodeKind::WebSocketClient.as_str() {
                 continue;
             }
             let owner =
                 MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-                    .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+                    .map_err(|error| {
+                        ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                    })?;
             self.verify_registered_owner(&owner, admitted)?;
         }
         Ok(())
@@ -546,7 +586,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             });
         registered.then_some(()).ok_or_else(|| {
             ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 format!("metadata owner `{owner_kind}.{owner_name}` is not registered"),
             )
         })
@@ -565,7 +605,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self.verify_module_owner(&module_at, capability, admitted)?;
         if capability.role() == ModuleRole::WebSocketClient {
             return Err(ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "WebSocketClient source layout is not specified for platform profile 8.3.27",
             ));
         }
@@ -583,7 +623,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .map_err(|error| ViewError::new(error.code(), error.to_string()))?
             else {
                 return Err(ViewError::new(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     "module event did not resolve to a Platform source",
                 ));
             };
@@ -607,10 +647,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
             revision: admitted.revision.clone(),
             module_at: module_at.to_string(),
         };
-        let mut cache = self
-            .module_projections
-            .lock()
-            .map_err(|_| ViewError::new("provider_unavailable", "module cache is poisoned"))?;
+        let mut cache = self.module_projections.lock().map_err(|_| {
+            ViewError::new(RefusalCode::ProviderUnavailable, "module cache is poisoned")
+        })?;
         if let Some(projection) = cache.get(&key) {
             return Ok(Arc::clone(projection));
         }
@@ -622,10 +661,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 .rsplit_once('.')
                 .map(|(owner, _)| owner)
                 .ok_or_else(|| {
-                    ViewError::new("provider_unavailable", "common module owner is invalid")
+                    ViewError::new(
+                        RefusalCode::ProviderUnavailable,
+                        "common module owner is invalid",
+                    )
                 })?;
-            let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, owner)
-                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+            let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, owner).map_err(
+                |error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()),
+            )?;
             let descriptor = self.read.metadata_descriptor(&owner)?;
             Some(common_module_properties(&descriptor)?)
         } else {
@@ -652,7 +695,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     _ => PlatformEventWriteCapability::Proven,
                 },
             })
-            .map_err(|error| ViewError::new("provider_unavailable", error))?,
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?,
         );
         cache.insert(key, Arc::clone(&projection));
         Ok(projection)
@@ -671,7 +714,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
         ) {
             return Err(ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 "external source sets have no configuration runtime module branch",
             ));
         }
@@ -683,7 +726,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
             self.ensure_owner_registered_parts(
                 NodeKind::WebSocketClient.as_str(),
                 owner.name().ok_or_else(|| {
-                    ViewError::new("not_found", "WebSocketClient owner name is absent")
+                    ViewError::new(
+                        RefusalCode::NotFound,
+                        "WebSocketClient owner name is absent",
+                    )
                 })?,
                 admitted,
             )?;
@@ -708,21 +754,23 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 SourceSetKind::Configuration | SourceSetKind::Extension => Ok(()),
                 SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
                     Err(ViewError::new(
-                        "not_found",
+                        RefusalCode::NotFound,
                         "external source sets have no configuration runtime modules",
                     ))
                 }
             };
         }
         if capability.role() == ModuleRole::WebSocketClient {
-            let owner = module_at
-                .segments()
-                .first()
-                .ok_or_else(|| ViewError::new("not_found", "WebSocketClient owner is absent"))?;
+            let owner = module_at.segments().first().ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "WebSocketClient owner is absent")
+            })?;
             return self.ensure_owner_registered_parts(
                 NodeKind::WebSocketClient.as_str(),
                 owner.name().ok_or_else(|| {
-                    ViewError::new("not_found", "WebSocketClient owner name is absent")
+                    ViewError::new(
+                        RefusalCode::NotFound,
+                        "WebSocketClient owner name is absent",
+                    )
                 })?,
                 admitted,
             );
@@ -756,7 +804,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if self
             .verified_owners
             .lock()
-            .map_err(|_| ViewError::new("provider_unavailable", "owner cache is poisoned"))?
+            .map_err(|_| {
+                ViewError::new(RefusalCode::ProviderUnavailable, "owner cache is poisoned")
+            })?
             .contains(&key)
         {
             return Ok(());
@@ -765,7 +815,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let parts = target.as_str().split('.').collect::<Vec<_>>();
         if parts.len() < 2 || parts.len() % 2 != 0 {
             return Err(ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "physical metadata owner must contain complete kind/name pairs",
             ));
         }
@@ -775,7 +825,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
             let end = pair_count * 2;
             let current_text = parts[..end].join(".");
             let current = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &current_text)
-                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+                .map_err(|error| {
+                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                })?;
             if let Some((parent_address, parent_evidence)) = &parent {
                 let child_kind = parts[end - 2];
                 let child_name = parts[end - 1];
@@ -785,7 +837,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     child: current_text.clone(),
                 };
                 let mut edges = self.verified_owner_edges.lock().map_err(|_| {
-                    ViewError::new("provider_unavailable", "owner edge cache is poisoned")
+                    ViewError::new(
+                        RefusalCode::ProviderUnavailable,
+                        "owner edge cache is poisoned",
+                    )
                 })?;
                 if !edges.contains(&edge_key) {
                     let registered = parent_evidence
@@ -793,7 +848,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         .any(|(kind, name)| kind == child_kind && name == child_name);
                     if !registered {
                         return Err(ViewError::new(
-                            "not_found",
+                            RefusalCode::NotFound,
                             format!(
                                 "metadata owner `{}` does not register `{child_kind}.{child_name}`",
                                 parent_address.as_str()
@@ -806,7 +861,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             if pair_count == 1 && parts[0] == NodeKind::WebSocketClient.as_str() {
                 if parts.len() != 2 {
                     return Err(ViewError::new(
-                        "not_found",
+                        RefusalCode::NotFound,
                         "WebSocketClient has no specified nested export owners",
                     ));
                 }
@@ -817,16 +872,16 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 // inline `ChildObjects` registration already proven above.
                 if end != parts.len() {
                     return Err(ViewError::new(
-                        "not_found",
+                        RefusalCode::NotFound,
                         "metadata command has no nested physical owners",
                     ));
                 }
                 break;
             }
             let evidence = self.owner_evidence(&current, admitted).map_err(|error| {
-                if error.code() == "not_found" {
+                if error.code() == RefusalCode::NotFound {
                     ViewError::new(
-                        "provider_unavailable",
+                        RefusalCode::ProviderUnavailable,
                         format!(
                             "registered metadata owner `{}` has no descriptor",
                             current.as_str()
@@ -840,7 +895,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 || evidence.artifact_name() != Some(parts[end - 1])
             {
                 return Err(ViewError::new(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     format!(
                         "metadata descriptor identity does not match `{}`",
                         current.as_str()
@@ -851,7 +906,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         }
         self.verified_owners
             .lock()
-            .map_err(|_| ViewError::new("provider_unavailable", "owner cache is poisoned"))?
+            .map_err(|_| {
+                ViewError::new(RefusalCode::ProviderUnavailable, "owner cache is poisoned")
+            })?
             .insert(key);
         Ok(())
     }
@@ -869,7 +926,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
             owner: target.as_str().to_string(),
         };
         let mut cache = self.owner_evidence.lock().map_err(|_| {
-            ViewError::new("provider_unavailable", "owner evidence cache is poisoned")
+            ViewError::new(
+                RefusalCode::ProviderUnavailable,
+                "owner evidence cache is poisoned",
+            )
         })?;
         if let Some(evidence) = cache.get(&key) {
             return Ok(Arc::clone(evidence));
@@ -893,10 +953,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
             },
             owner: target.as_str().to_string(),
         };
-        let mut cache = self
-            .form_data
-            .lock()
-            .map_err(|_| ViewError::new("provider_unavailable", "form cache is poisoned"))?;
+        let mut cache = self.form_data.lock().map_err(|_| {
+            ViewError::new(RefusalCode::ProviderUnavailable, "form cache is poisoned")
+        })?;
         if let Some(data) = cache.get(&key) {
             return Ok(Arc::clone(data));
         }
@@ -915,13 +974,17 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .rsplit_once(".Module.Form")
             .map(|(form, _)| form)
             .ok_or_else(|| {
-                ViewError::new("provider_unavailable", "form module address is invalid")
+                ViewError::new(
+                    RefusalCode::ProviderUnavailable,
+                    "form module address is invalid",
+                )
             })?;
         let form = QualifiedAddress::parse(form_at)
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
         let metadata_path =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path())
-                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path()).map_err(
+                |error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()),
+            )?;
         let data = self.form_data(&metadata_path, admitted)?;
         Ok(form_semantic_inputs(form_at, &FormEventEvidence::from_info(&data)).bindings)
     }
@@ -932,18 +995,23 @@ impl<'a> LogicalViewReadAuthority<'a> {
         admitted: &ViewSourceSnapshot,
     ) -> Result<NodeViewData, ViewError> {
         let target = route.reader_metadata_path().ok_or_else(|| {
-            ViewError::new("provider_unavailable", "form route has no typed target")
+            ViewError::new(
+                RefusalCode::ProviderUnavailable,
+                "form route has no typed target",
+            )
         })?;
         self.verify_registered_owner(target, admitted)?;
         let data = self.form_data(target, admitted)?;
         let form_at =
             QualifiedAddress::parse(&format!("{}:{}", route.at().source_set(), target.as_str()))
-                .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+                .map_err(|error| {
+                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                })?;
         let module_at = QualifiedAddress::parse(&format!("{form_at}.Module.Form"))
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
         let capability = self.profile.module_capability(&module_at).ok_or_else(|| {
             ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "form module capability is absent from the platform profile",
             )
         })?;
@@ -956,7 +1024,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .map_err(|error| ViewError::new(error.code(), error.to_string()))?;
         let payload = serde_json::to_value(data.as_ref()).map_err(|error| {
             ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 format!("form payload serialization failed: {error}"),
             )
         })?;
@@ -970,12 +1038,12 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
         if at.source_set() != self.read.source_set() {
             return Err(ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 "logical address belongs to another actor-owned source set",
             ));
         }
         route_logical_address(at, self.profile)
-            .map_err(|error| ViewError::new("not_found", error.to_string()))?;
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         Ok(ViewSourceSnapshot {
             source_set_identity: self.read.source_set_identity().to_string(),
             revision: self.exact_revision()?,
@@ -991,12 +1059,12 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             || admitted.revision != self.exact_revision()?
         {
             return Err(ViewError::new(
-                "stale_cursor",
+                RefusalCode::StaleCursor,
                 "source revision changed before canonical address resolution",
             ));
         }
         let route = route_logical_address(at, self.profile)
-            .map_err(|error| ViewError::new("not_found", error.to_string()))?;
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if route.reader() != LogicalReader::Role {
             return Ok(at.clone());
         }
@@ -1006,23 +1074,23 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         review_run_after_canonical_role_read();
         if admitted.revision != self.exact_revision()? {
             return Err(ViewError::new(
-                "stale_cursor",
+                RefusalCode::StaleCursor,
                 "source revision changed during canonical address resolution",
             ));
         }
         QualifiedAddress::parse(projected.at())
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
     fn identity_export_path(&self, at: &QualifiedAddress) -> Result<Option<String>, ViewError> {
         if at.source_set() != self.read.source_set() {
             return Err(ViewError::new(
-                "not_found",
+                RefusalCode::NotFound,
                 "logical address belongs to another actor-owned source set",
             ));
         }
         let route = route_logical_address(at, self.profile)
-            .map_err(|error| ViewError::new("not_found", error.to_string()))?;
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if route.reader() == LogicalReader::Configuration {
             return Ok(matches!(
                 self.read.source_set_kind(),
@@ -1035,7 +1103,10 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 return Ok(None);
             }
             let capability = route.module().ok_or_else(|| {
-                ViewError::new("provider_unavailable", "module capability is missing")
+                ViewError::new(
+                    RefusalCode::ProviderUnavailable,
+                    "module capability is missing",
+                )
             })?;
             let (module_at, _) = module_prefix(at, self.profile, capability)?;
             let target = module_source_address(&module_at, capability)?;
@@ -1092,12 +1163,12 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             || admitted.revision != self.exact_revision()?
         {
             return Err(ViewError::new(
-                "stale_cursor",
+                RefusalCode::StaleCursor,
                 "source revision changed before the typed read",
             ));
         }
         let route = route_logical_address(at, self.profile)
-            .map_err(|error| ViewError::new("not_found", error.to_string()))?;
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         let module_filter = validate_view_filter(&route, filter)?;
         let projected = if route.reader() == LogicalReader::Module {
             self.module_view(&route, admitted, &module_filter)?
@@ -1115,7 +1186,9 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 .segments()
                 .last()
                 .map(AddressSegment::kind)
-                .ok_or_else(|| ViewError::new("not_found", "metadata branch kind is absent"))?;
+                .ok_or_else(|| {
+                    ViewError::new(RefusalCode::NotFound, "metadata branch kind is absent")
+                })?;
             if branch_kind != NodeKind::WebSocketClient {
                 for item in payload
                     .get("registeredObjects")
@@ -1128,7 +1201,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 {
                     let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
                         ViewError::new(
-                            "provider_unavailable",
+                            RefusalCode::ProviderUnavailable,
                             "registered metadata owner has no name",
                         )
                     })?;
@@ -1136,7 +1209,9 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                         PLATFORM_XML_8_3_27_FORMAT_2_20,
                         &format!("{}.{name}", branch_kind.as_str()),
                     )
-                    .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+                    .map_err(|error| {
+                        ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                    })?;
                     self.verify_registered_owner(&owner, admitted)?;
                 }
             }
@@ -1155,7 +1230,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         self.read_checkpoint()?;
         if admitted.revision != self.exact_revision()? {
             return Err(ViewError::new(
-                "stale_cursor",
+                RefusalCode::StaleCursor,
                 "source revision changed during the typed read",
             ));
         }
@@ -1194,7 +1269,7 @@ impl LogicalViewReadAuthority<'_> {
                 template.name().unwrap_or_default()
             ),
         )
-        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
         let mut projected = projected;
         for (kind, count) in self.template_body_branches(&child)? {
             if count > 0 {
@@ -1237,11 +1312,11 @@ impl LogicalViewReadAuthority<'_> {
             Ok(MetadataChildProfile::Template(_)) => Vec::new(),
             Ok(MetadataChildProfile::Form | MetadataChildProfile::Command) => {
                 return Err(ViewError::new(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     "template registry points to a non-template descriptor",
                 ));
             }
-            Err(error) if error.code() == "not_found" => Vec::new(),
+            Err(error) if error.code() == RefusalCode::NotFound => Vec::new(),
             Err(error) => return Err(error),
         })
     }
@@ -1272,7 +1347,10 @@ impl LogicalViewReadAuthority<'_> {
             self.ensure_owner_registered_parts(
                 NodeKind::WebSocketClient.as_str(),
                 owner.name().ok_or_else(|| {
-                    ViewError::new("not_found", "WebSocketClient owner name is absent")
+                    ViewError::new(
+                        RefusalCode::NotFound,
+                        "WebSocketClient owner name is absent",
+                    )
                 })?,
                 admitted,
             )?;
@@ -1293,14 +1371,14 @@ fn module_branch_owner(branch: &QualifiedAddress) -> Result<Option<MetadataAddre
     };
     if last.kind() != NodeKind::Module || last.name().is_some() {
         return Err(ViewError::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "module branch has no canonical terminal",
         ));
     }
     let logical = render_segments(&segments[..segments.len() - 1]);
     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
         .map(Some)
-        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
+        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
 }
 
 fn identity_only_metadata_payload(kind: &str, name: &str) -> Value {
@@ -1336,7 +1414,7 @@ fn module_branch_owner_address(
     }
     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parent.logical_path())
         .map(Some)
-        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
+        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
 }
 
 fn module_owner_address(
@@ -1346,20 +1424,23 @@ fn module_owner_address(
     let segments = module_at.segments();
     if capability.role() == ModuleRole::Common {
         return MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &module_at.logical_path())
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()));
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()));
     }
-    let terminal = segments
-        .last()
-        .ok_or_else(|| ViewError::new("provider_unavailable", "module address has no terminal"))?;
+    let terminal = segments.last().ok_or_else(|| {
+        ViewError::new(
+            RefusalCode::ProviderUnavailable,
+            "module address has no terminal",
+        )
+    })?;
     if terminal.kind() != NodeKind::Module || terminal.name().is_none() {
         return Err(ViewError::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "module address has no named module terminal",
         ));
     }
     let logical = render_segments(&segments[..segments.len() - 1]);
     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
-        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
+        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
 }
 
 pub(crate) fn module_branch_for_parent(
@@ -1386,7 +1467,7 @@ pub(crate) fn project_module_branch(
     let children = profile.module_children(branch);
     if children.is_empty() {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "module branch has no platform capabilities",
         ));
     }
@@ -1406,7 +1487,7 @@ pub(crate) fn project_module_branch(
                     ("role".to_string(), json!(capability.role().as_str())),
                 ]),
             ))
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(NodeViewData::Collection(CollectionView::new(
@@ -1430,7 +1511,7 @@ fn validate_view_filter(
             Ok(ModuleViewFilter::default())
         } else {
             Err(ViewError::new(
-                "bad_value",
+                RefusalCode::BadValue,
                 "this logical projection does not support a filter",
             ))
         };
@@ -1440,7 +1521,7 @@ fn validate_view_filter(
             Ok(ModuleViewFilter::default())
         } else {
             Err(ViewError::new(
-                "bad_value",
+                RefusalCode::BadValue,
                 "module capability collections do not support a filter",
             ))
         };
@@ -1451,11 +1532,14 @@ fn validate_view_filter(
             "sections" => {}
             "context" => {
                 let context = value.as_str().ok_or_else(|| {
-                    ViewError::new("bad_value", "module filter.context must be a string")
+                    ViewError::new(
+                        RefusalCode::BadValue,
+                        "module filter.context must be a string",
+                    )
                 })?;
                 if !MODULE_CONTEXTS.contains(&context) {
                     return Err(ViewError::new(
-                        "bad_value",
+                        RefusalCode::BadValue,
                         format!("unsupported module execution context `{context}`"),
                     ));
                 }
@@ -1463,12 +1547,15 @@ fn validate_view_filter(
             }
             "public" => {
                 result.public = Some(value.as_bool().ok_or_else(|| {
-                    ViewError::new("bad_value", "module filter.public must be boolean")
+                    ViewError::new(
+                        RefusalCode::BadValue,
+                        "module filter.public must be boolean",
+                    )
                 })?);
             }
             _ => {
                 return Err(ViewError::new(
-                    "bad_value",
+                    RefusalCode::BadValue,
                     format!("unsupported module filter `{key}`"),
                 ));
             }
@@ -1479,7 +1566,12 @@ fn validate_view_filter(
         .and_then(|capability| {
             module_prefix(route.at(), PlatformProfile::v8_3_27(), capability).ok()
         })
-        .ok_or_else(|| ViewError::new("provider_unavailable", "module prefix is unavailable"))?;
+        .ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::ProviderUnavailable,
+                "module prefix is unavailable",
+            )
+        })?;
     let suffix = &route.at().segments()[prefix_len..];
     if result.context.is_some()
         && !matches!(
@@ -1488,7 +1580,7 @@ fn validate_view_filter(
         )
     {
         return Err(ViewError::new(
-            "bad_value",
+            RefusalCode::BadValue,
             "module filter.context is supported only for Body and Method projections",
         ));
     }
@@ -1499,7 +1591,7 @@ fn validate_view_filter(
         )
     {
         return Err(ViewError::new(
-            "bad_value",
+            RefusalCode::BadValue,
             "module filter.public is supported only for Method projections",
         ));
     }
@@ -1512,7 +1604,7 @@ fn module_prefix(
     capability: ModuleCapability,
 ) -> Result<(QualifiedAddress, usize), ViewError> {
     shared_module_prefix(address, profile, capability)
-        .map_err(|error| ViewError::new("provider_unavailable", error))
+        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
 }
 
 fn render_segments(segments: &[AddressSegment]) -> String {
@@ -1531,23 +1623,23 @@ fn module_source_address(
     capability: ModuleCapability,
 ) -> Result<MetadataAddress, ViewError> {
     shared_module_source_address(module_at, capability)
-        .map_err(|error| ViewError::new("provider_unavailable", error))
+        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
 }
 
 fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, ViewError> {
     let text = std::str::from_utf8(bytes).map_err(|_| {
         ViewError::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "common module descriptor is not UTF-8",
         )
     })?;
     let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
     let root = document.root_element();
     let boolean = |name| -> Result<bool, ViewError> {
         let raw = xml_descendant_text(root, name).ok_or_else(|| {
             ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 format!("common module descriptor has no {name} property"),
             )
         })?;
@@ -1555,7 +1647,7 @@ fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, View
             "true" => Ok(true),
             "false" => Ok(false),
             _ => Err(ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 format!("common module {name} property is not boolean"),
             )),
         }
@@ -1571,7 +1663,7 @@ fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, View
         return_values_reuse: xml_descendant_text(root, "ReturnValuesReuse")
             .ok_or_else(|| {
                 ViewError::new(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     "common module descriptor has no ReturnValuesReuse property",
                 )
             })?
@@ -1614,10 +1706,12 @@ fn module_projection_view(
     if suffix.is_empty() {
         let summary = projections.summary();
         let props = serde_json::to_value(&summary.props)
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?
             .as_object()
             .cloned()
-            .ok_or_else(|| ViewError::new("provider_unavailable", "module props are invalid"))?;
+            .ok_or_else(|| {
+                ViewError::new(RefusalCode::ProviderUnavailable, "module props are invalid")
+            })?;
         let branches = summary
             .branches
             .iter()
@@ -1635,7 +1729,7 @@ fn module_projection_view(
         ) && suffix.len() > 1)
     {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "module projection did not consume the complete suffix",
         ));
     }
@@ -1656,14 +1750,19 @@ fn module_projection_view(
             .find(|method| method.name == name && module_method_matches_filter(method, filter))
             .map(method_node)
             .map(NodeViewData::Node)
-            .ok_or_else(|| ViewError::new("not_found", format!("method `{name}` was not found"))),
+            .ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::NotFound,
+                    format!("method `{name}` was not found"),
+                )
+            }),
         (NodeKind::Method, Some(name), Some(detail))
             if detail.name().is_none() && detail.kind() == NodeKind::Body =>
         {
             let method = find_method(projections, name)?;
             if !module_method_matches_filter(method, filter) {
                 return Err(ViewError::new(
-                    "not_found",
+                    RefusalCode::NotFound,
                     format!("method `{name}` does not match the requested filter"),
                 ));
             }
@@ -1715,7 +1814,7 @@ fn module_projection_view(
                         })
                         .and_then(|name| projections.region(name))
                 })
-                .map_err(|error| ViewError::new("not_found", error.to_string()))?;
+                .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
             Ok(NodeViewData::Node(region_node(requested, region)))
         }
         (NodeKind::Interface, None, None) => module_collection(
@@ -1754,7 +1853,10 @@ fn module_projection_view(
                 ))
             })
             .ok_or_else(|| {
-                ViewError::new("not_found", format!("interface `{name}` was not found"))
+                ViewError::new(
+                    RefusalCode::NotFound,
+                    format!("interface `{name}` was not found"),
+                )
             }),
         (NodeKind::Event, None, None) => module_collection(
             requested,
@@ -1767,7 +1869,12 @@ fn module_projection_view(
             .find(|event| event.event_id == name)
             .map(event_node)
             .map(NodeViewData::Node)
-            .ok_or_else(|| ViewError::new("not_found", format!("event `{name}` was not found"))),
+            .ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::NotFound,
+                    format!("event `{name}` was not found"),
+                )
+            }),
         (NodeKind::Compilation, None, None) => module_collection(
             requested,
             NodeKind::Compilation,
@@ -1788,7 +1895,7 @@ fn module_projection_view(
                 .collect(),
         ),
         _ => Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "module projection suffix is not available",
         )),
     }
@@ -1872,7 +1979,12 @@ fn find_method<'a>(
         .methods()
         .iter()
         .find(|method| method.name == name)
-        .ok_or_else(|| ViewError::new("not_found", format!("method `{name}` was not found")))
+        .ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::NotFound,
+                format!("method `{name}` was not found"),
+            )
+        })
 }
 
 fn method_node(method: &MethodProjection) -> NodeView {
@@ -1982,7 +2094,7 @@ fn insert_serialized<T: serde::Serialize>(
     payload.insert(
         key.to_string(),
         serde_json::to_value(value)
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?,
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?,
     );
     Ok(())
 }

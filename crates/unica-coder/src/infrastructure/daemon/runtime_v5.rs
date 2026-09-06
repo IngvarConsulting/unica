@@ -45,6 +45,7 @@ use crate::application::receipt_ledger::{
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::receipt_ledger::canonical_staged_transfer_certificate;
 use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
@@ -2787,7 +2788,7 @@ impl V5InvocationExecutor {
             V5CanonicalPrepareError::Rejected(Box::new(
                 crate::domain::invocation::DomainResult::canonical_rejection(
                     None,
-                    "bad_value",
+                    RefusalCode::BadValue,
                     error,
                 ),
             ))
@@ -4375,7 +4376,7 @@ impl V5ReceiptRuntime {
                             result: Box::new(
                                 crate::domain::invocation::DomainResult::canonical_rejection(
                                     None,
-                                    "bad_value",
+                                    RefusalCode::BadValue,
                                     "scenario validation rejected invocation",
                                 ),
                             ),
@@ -4423,7 +4424,7 @@ impl V5ReceiptRuntime {
                                 result: Box::new(
                                     crate::domain::invocation::DomainResult::canonical_rejection(
                                         None,
-                                        "bad_value",
+                                        RefusalCode::BadValue,
                                         "scenario workspace admission rejected invocation",
                                     ),
                                 ),
@@ -4827,7 +4828,7 @@ impl V5ReceiptRuntime {
                             result: Box::new(
                                 crate::domain::invocation::DomainResult::canonical_rejection(
                                     None,
-                                    "bad_value",
+                                    RefusalCode::BadValue,
                                     "scenario prepare rejected invocation",
                                 ),
                             ),
@@ -4994,7 +4995,7 @@ impl V5ReceiptRuntime {
                                 result: Box::new(
                                     crate::domain::invocation::DomainResult::canonical_rejection(
                                         None,
-                                        "bad_value",
+                                        RefusalCode::BadValue,
                                         "scenario prepare rejected invocation",
                                     ),
                                 ),
@@ -5051,7 +5052,7 @@ impl V5ReceiptRuntime {
                                 result: Box::new(
                                     crate::domain::invocation::DomainResult::canonical_rejection(
                                         None,
-                                        "bad_value",
+                                        RefusalCode::BadValue,
                                         "scenario prepare rejected invocation",
                                     ),
                                 ),
@@ -5078,7 +5079,7 @@ impl V5ReceiptRuntime {
                                 result: Box::new(
                                     crate::domain::invocation::DomainResult::canonical_rejection(
                                         None,
-                                        "bad_value",
+                                        RefusalCode::BadValue,
                                         "scenario prepare rejected invocation",
                                     ),
                                 ),
@@ -5125,7 +5126,7 @@ impl V5ReceiptRuntime {
                             result: Box::new(
                                 crate::domain::invocation::DomainResult::canonical_rejection(
                                     None,
-                                    "bad_value",
+                                    RefusalCode::BadValue,
                                     "scenario prepare rejected invocation",
                                 ),
                             ),

@@ -1,3 +1,4 @@
+use crate::domain::refusal::RefusalCode;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::fmt;
@@ -196,12 +197,31 @@ impl DomainResult {
         }
     }
 
-    pub(crate) fn canonical_rejection(
+    /// Отказ со свободным кодом — только для стенда
+    /// `receipt-ledger-test-support`, который проигрывает протокол демона v5.
+    /// Этот протокол в продукт не входит, и его коды в канонический словарь
+    /// не объявляются. На поверхности код приходит типом:
+    /// см. [`Self::canonical_rejection`].
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn scenario_rejection(
         at: Option<String>,
-        code: impl Into<String>,
+        code: &str,
         message: impl Into<String>,
     ) -> Self {
-        let code = code.into();
+        let message = message.into();
+        let mut result = Self::success(message.clone());
+        result.ok = false;
+        result.at = at;
+        result.diagnostics = vec![serde_json::json!({"code": code, "message": message})];
+        result
+    }
+
+    pub(crate) fn canonical_rejection(
+        at: Option<String>,
+        code: RefusalCode,
+        message: impl Into<String>,
+    ) -> Self {
+        let code = code.as_str();
         let message = message.into();
         let mut result = Self::success(message.clone());
         result.ok = false;

@@ -7,6 +7,7 @@ use crate::domain::module_projection::{
     ModuleProjectionSet, ModuleProperties, RegionProjection,
 };
 use crate::domain::platform_profile::{ModuleCapability, ModuleRole, PlatformProfile};
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::bsl_outline::parse_bsl_syntax;
 use crate::infrastructure::native_operations::form_event_registry::{
     form_event_catalog_8_3_27, module_event_catalog_8_3_27, validate_property_event_binding,
@@ -243,8 +244,8 @@ impl DirectiveRuleError {
         }
     }
 
-    pub(crate) const fn code(&self) -> &'static str {
-        "provider_unavailable"
+    pub(crate) const fn code(&self) -> RefusalCode {
+        RefusalCode::ProviderUnavailable
     }
 }
 

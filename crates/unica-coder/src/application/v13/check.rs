@@ -1,4 +1,5 @@
 use crate::domain::address::QualifiedAddress;
+use crate::domain::refusal::RefusalCode;
 use serde::Serialize;
 use std::fmt;
 
@@ -148,10 +149,10 @@ pub(crate) enum CheckError {
 }
 
 impl CheckError {
-    pub(crate) const fn code(&self) -> &'static str {
+    pub(crate) const fn code(&self) -> RefusalCode {
         match self {
-            Self::BadValue { .. } => "bad_value",
-            Self::DependencyUnavailable => "dependency_unavailable",
+            Self::BadValue { .. } => RefusalCode::BadValue,
+            Self::DependencyUnavailable => RefusalCode::DependencyUnavailable,
         }
     }
 }
@@ -458,7 +459,7 @@ mod tests {
             NativeCheckOutcome::unavailable("validator engine is not installed"),
         )
         .unwrap_err();
-        assert_eq!(error.code(), "dependency_unavailable");
+        assert_eq!(error.code().as_str(), "dependency_unavailable");
         assert!(!error.to_string().contains("engine"));
     }
 }

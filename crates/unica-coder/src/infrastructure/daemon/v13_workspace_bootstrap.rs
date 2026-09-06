@@ -7,6 +7,7 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::DomainResult;
 use crate::domain::project_health::evaluate_project_health;
 use crate::domain::project_sources::{ProjectSourceMap, SourceFormat, SourceSetKind};
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::project_health::inspect_project_health;
 use crate::infrastructure::project_sources::discover_project_source_map_controlled;
@@ -34,7 +35,7 @@ pub(super) fn execute_view_bootstrap(
     if !request.arguments().is_empty() {
         let mut result = DomainResult::canonical_rejection(
             None,
-            "bad_value",
+            RefusalCode::BadValue,
             "view filter, limit, and cursor require logical argument `at`; call unica.view with an empty object to inspect the workspace",
         );
         result.next.push(next_action(
@@ -50,7 +51,7 @@ pub(super) fn execute_view_bootstrap(
         Err(error) => {
             return Some(DomainResult::canonical_rejection(
                 None,
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 format!("workspace discovery failed: {error}"),
             ))
         }
@@ -67,7 +68,7 @@ pub(super) fn execute_view_bootstrap(
             Err(error) if config_present => {
                 let mut result = DomainResult::canonical_rejection(
                     None,
-                    "invalid_state",
+                    RefusalCode::InvalidState,
                     format!("v8project.yaml is present but invalid: {error}"),
                 );
                 result.data = Some(object([
@@ -85,7 +86,7 @@ pub(super) fn execute_view_bootstrap(
             Err(error) => {
                 return Some(DomainResult::canonical_rejection(
                     None,
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     format!("workspace source discovery failed: {error}"),
                 ))
             }
@@ -95,7 +96,7 @@ pub(super) fn execute_view_bootstrap(
         Err(error) => {
             let mut result = DomainResult::canonical_rejection(
                 None,
-                "invalid_state",
+                RefusalCode::InvalidState,
                 format!("infobase target configuration is invalid: {error}"),
             );
             result.data = Some(object([
