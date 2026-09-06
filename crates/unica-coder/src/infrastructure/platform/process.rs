@@ -1104,6 +1104,46 @@ impl Drop for ManagedChild {
     }
 }
 
+/// Снять флаг наследования со стандартных дескрипторов этого процесса.
+///
+/// Хост создаёт stdio для Unica наследуемыми — иначе он не смог бы передать
+/// их при запуске. На Windows `CreateProcessW` копирует ребёнку каждый
+/// наследуемый дескриптор родителя, а не только те три, что назначены ему
+/// как stdio. Так отсоединённый демон со `Stdio::null()` уносил с собой
+/// копии труб MCP-хоста и держал их до собственного выхода: после выхода
+/// сервера хост не видел EOF на stdout ещё четверть часа простоя демона.
+///
+/// `Stdio::inherit()` детей от этого не страдает: std дублирует дескриптор
+/// для ребёнка заново и уже с наследованием. На Unix дескрипторы и так
+/// закрываются при exec, поэтому там это пустая операция.
+#[cfg(windows)]
+pub(super) fn detach_std_handles_from_inheritance() {
+    use windows_sys::Win32::Foundation::{
+        SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: `GetStdHandle` takes a constant and returns a handle the
+        // process already owns, null, or `INVALID_HANDLE_VALUE`.
+        let handle = unsafe { GetStdHandle(id) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            continue;
+        }
+        // SAFETY: the handle stays live for the whole process; clearing the
+        // inherit flag changes no I/O. A failure keeps the old behaviour and
+        // is not worth refusing to start for.
+        unsafe {
+            SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub(super) fn detach_std_handles_from_inheritance() {}
+
 impl ManagedStartupChild {
     pub(crate) fn spawn_configured(mut process: Command) -> Result<Self, String> {
         let process_tree = ProcessTree::prepare_detachable(&mut process).map_err(process_error)?;
@@ -2510,6 +2550,25 @@ mod tests {
                 thread::sleep(Duration::from_secs(10));
             }
             "process_tree_child" => thread::sleep(Duration::from_secs(10)),
+            "exit_leaving_detached_grandchild" => {
+                super::detach_std_handles_from_inheritance();
+                let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
+                let grandchild = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "infrastructure::platform::process::tests::managed_child_test_helper",
+                        "--nocapture",
+                    ])
+                    .env(HELPER_ENV, "process_tree_child")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap();
+                std::fs::write(pid_file, format!("{}\n", grandchild.id())).unwrap();
+                print!("grandchild-detached");
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            }
             #[cfg(unix)]
             "graceful_runner_with_external_process_group" => {
                 use std::os::unix::process::CommandExt;
@@ -3301,6 +3360,55 @@ mod tests {
     fn runtime_process_tree_handle_waits_for_windows_job_object_descendants() {
         assert_windows_runtime_process_tree_semantics_for_test()
             .expect("retain and terminate Windows runtime Job Object");
+    }
+
+    #[test]
+    fn detached_null_stdio_grandchild_never_holds_the_parent_stdout_pipe() {
+        // Регрессия дыма упакованного MCP на Windows: отсоединённый демон со
+        // `Stdio::null()` уносил копии труб хоста, и хост не видел EOF на
+        // stdout после выхода сервера, пока демон не выйдет сам.
+        let pid_file = std::env::temp_dir().join(format!(
+            "unica-detached-grandchild-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _pid_file_cleanup = FileCleanupGuard(pid_file.clone());
+        let mut grandchild_cleanup = ProcessCleanupGuard(Vec::new());
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "exit_leaving_detached_grandchild")
+            .env(HELPER_PID_FILE_ENV, &pid_file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let started = Instant::now();
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        let eof_after = started.elapsed();
+        let status = child.wait().unwrap();
+        if let Some(pid) = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+        {
+            grandchild_cleanup.0.push(pid);
+        }
+
+        assert!(status.success(), "{status}");
+        assert!(output.contains("grandchild-detached"), "{output}");
+        assert!(
+            eof_after < Duration::from_secs(5),
+            "stdout EOF waited for the detached grandchild: {eof_after:?}"
+        );
     }
 
     #[test]
