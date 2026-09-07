@@ -1275,7 +1275,6 @@ mod tests {
     fn daemon_invocation_receipt_deadline_is_single_and_never_replenished() {
         crate::application::invocation::tests::canonical_handoff_boundary_is_direct_before_7000_and_durable_at_or_before_deadline();
         crate::application::invocation::tests::every_known_long_reason_materializes_before_execution_and_invalid_preparation_is_direct();
-        super::server::actor_capacity_tests::daemon_receipt_deadline_is_not_replenished_after_delayed_prepare();
         server_captures_one_invocation_deadline_before_delayed_prepare_and_response_write();
         backpressured_response_uses_the_original_session_margin_without_reset();
     }

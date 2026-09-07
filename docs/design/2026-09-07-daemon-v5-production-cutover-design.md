@@ -386,6 +386,35 @@ production-владельца — тест на живом рантайме
 identity становится production v5 — process-тест двух несовместимых
 identity теряет предмет.
 
+**Шаг E1 — тесты `server.rs` сняты с обвязки v3.** Тридцать один тест на
+`DaemonInvocationRuntime` (исполнитель v3) переведён под теми же именами
+на две обвязки v5: Direct-путь — общий `V5CanonicalInvocationRuntime`
+(`direct_v5`: bind → prepare → execute в потоке теста, ровно тот путь,
+которым daemon идёт до cutoff; известно-долгий класс — не Direct-исход),
+Task-путь — живой рантайм v5 в потоке (`LiveV5Daemon`: тест держит
+канонический рантайм через `with_canonical_runtime_for_test` и наблюдает
+реестры actor и capability, submit/get/wait/cancel идут по проводу v5).
+У канонического рантайма появились тестовые ручки: реестр actor с
+политикой (`with_workspace_actors_for_test`), сервис runtime-джобов
+(`with_runtime_service_for_test` — в production он и у v3 не подключался),
+захват срока по часам рантайма. Свидетельства реестра сохранили имена:
+общая доставка между worktree (`realized`
+EXACT-SHARED-DELIVERY-SLICE), обязательства долгой работы
+(`daemon_exact_long_work_ownership_contract` — три подпроцессных
+обязательства на live-рантайме), реестр actor
+(`daemon_workspace_actor_admission…`: ёмкость доказывается удержанием
+bound-invocation, а не Task), финальность выбора источников
+(`restart_request_does_not_claim_noncooperative_actor…` — у v5 отмена
+только просьба к идущей попытке: actor остаётся у неё до возврата, что и
+утверждает правило). Ушли только помощники v3: `submit_at_receipt`,
+`ownership_contract_runtime`, `DelayedPrepareService`
+(`daemon_receipt_deadline_is_not_replenished_after_delayed_prepare` звал
+лишь тест v3 из `mod.rs`), `UnavailableCancelStore`. До шагов E2/E3 в
+`server.rs` остаются `typed_executor_errors_map_to_closed_protocol_codes…`
+(таблица кодов v3) и `working_task_recovery_is_resume_unsupported…`
+(восстановление хранилища v3, проверка
+`INV.APP.RETAINED-SOURCE-SELECTION-FINALITY` переадресуется решением E).
+
 ## Открытые вопросы
 
 - Cutoff до `Begun`: production deadline owner покрывает prepare и execute;

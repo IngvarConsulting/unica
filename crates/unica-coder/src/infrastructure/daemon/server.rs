@@ -290,12 +290,6 @@ impl DaemonInvocationRuntime {
         }
     }
 
-    #[cfg(test)]
-    fn with_runtime_service_for_test(mut self, service: Arc<RuntimeJobService>) -> Self {
-        self.runtime_service = Some(service);
-        self
-    }
-
     fn capture_response_deadline(&self) -> InvocationResponseDeadline {
         self.executor.capture_response_deadline()
     }
@@ -491,6 +485,8 @@ pub(super) struct V5CanonicalInvocationRuntime {
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
     runtime_resources: Arc<RuntimeResourceOwner>,
+    #[cfg(test)]
+    runtime_service: Option<Arc<RuntimeJobService>>,
 }
 
 #[derive(Debug)]
@@ -525,14 +521,48 @@ pub(super) enum V5PreparedCanonicalInvocation {
 
 impl V5CanonicalInvocationRuntime {
     pub(super) fn new(service: Arc<dyn CanonicalInvocationService>, clock: Arc<dyn Clock>) -> Self {
+        Self::with_workspace_actors(service, clock, WorkspaceActorRegistry::default())
+    }
+
+    fn with_workspace_actors(
+        service: Arc<dyn CanonicalInvocationService>,
+        clock: Arc<dyn Clock>,
+        workspace_actors: WorkspaceActorRegistry,
+    ) -> Self {
         Self {
             service,
             clock,
-            workspace_actors: WorkspaceActorRegistry::default(),
+            workspace_actors,
             deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
             provider_hosts: Arc::new(ProviderHostOwner::default()),
             runtime_resources: Arc::new(RuntimeResourceOwner::default()),
+            #[cfg(test)]
+            runtime_service: None,
         }
+    }
+
+    /// The same runtime over a registry with a test policy: capacity or
+    /// warm-set limits the production registry would never expose.
+    #[cfg(test)]
+    pub(super) fn with_workspace_actors_for_test(
+        service: Arc<dyn CanonicalInvocationService>,
+        clock: Arc<dyn Clock>,
+        workspace_actors: WorkspaceActorRegistry,
+    ) -> Self {
+        Self::with_workspace_actors(service, clock, workspace_actors)
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_runtime_service_for_test(mut self, service: Arc<RuntimeJobService>) -> Self {
+        self.runtime_service = Some(service);
+        self
+    }
+
+    /// One fresh daemon-side deadline of this runtime's clock: what `bind`
+    /// captures for every request, exposed to tests that bind by hand.
+    #[cfg(test)]
+    pub(super) fn capture_response_deadline_for_test(&self) -> InvocationResponseDeadline {
+        InvocationResponseDeadline::capture(Arc::clone(&self.clock))
     }
 
     pub(super) fn bind(
@@ -570,13 +600,17 @@ impl V5CanonicalInvocationRuntime {
                 });
             }
         }
+        #[cfg(test)]
+        let runtime_service = self.runtime_service.clone();
+        #[cfg(not(test))]
+        let runtime_service = None;
         let invocation = bind_workspace_invocation(
             &request,
             &self.workspace_actors,
             Arc::clone(&self.deliveries),
             Arc::clone(&self.provider_hosts),
             Arc::clone(&self.runtime_resources),
-            None,
+            runtime_service,
             response_deadline,
         )
         .map_err(|error| match error {
@@ -705,6 +739,8 @@ pub(crate) struct DaemonServerConfig {
     startup_pause: Option<Arc<HandshakePause>>,
     #[cfg(test)]
     handshake_pause: Option<Arc<HandshakePause>>,
+    #[cfg(test)]
+    canonical_runtime: Option<Arc<V5CanonicalInvocationRuntime>>,
 }
 
 impl DaemonServerConfig {
@@ -741,11 +777,29 @@ impl DaemonServerConfig {
             startup_pause: None,
             #[cfg(test)]
             handshake_pause: None,
+            #[cfg(test)]
+            canonical_runtime: None,
         }
     }
 
     pub(super) fn invocation_service_for_v5(&self) -> Arc<dyn CanonicalInvocationService> {
         Arc::clone(&self.invocation_service)
+    }
+
+    /// A canonical runtime the test already holds: the live daemon binds
+    /// through it, and the test observes its actor and capability registries.
+    #[cfg(test)]
+    pub(super) fn with_canonical_runtime_for_test(
+        mut self,
+        runtime: Arc<V5CanonicalInvocationRuntime>,
+    ) -> Self {
+        self.canonical_runtime = Some(runtime);
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn canonical_runtime_for_v5(&self) -> Option<Arc<V5CanonicalInvocationRuntime>> {
+        self.canonical_runtime.clone()
     }
 
     pub(super) fn invocation_clock_for_v5(&self) -> Arc<dyn Clock> {
@@ -1400,12 +1454,17 @@ fn serialize_response_bounded(
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
+    use super::super::client_v5::V5DaemonProcessOwner;
+    use super::super::identity::DaemonStateDirectory;
+    use super::super::protocol_v5::{
+        V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
+    };
     use super::*;
     use crate::application::invocation_store::{
-        NewInvocationRecord, SafeFailureReason, SafeStatusMessage, StoredInvocationRecord,
-        TaskTransition, ToolIdentity,
+        NewInvocationRecord, SafeFailureReason, SafeStatusMessage, ToolIdentity,
     };
     use crate::application::operation_descriptors::KnownLongReason;
+    use crate::application::receipt_ledger::{ReceiptTerminalOutcome, V5ToolIdentity};
     use crate::application::shared_work::{
         ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey, ProviderHostKey,
     };
@@ -1437,20 +1496,42 @@ pub(crate) mod actor_capacity_tests {
         LOGICAL_READ_NOW.with(|current| *current.borrow_mut() = Some(now));
     }
 
-    fn bootstrap_runtime(task_root: &std::path::Path) -> DaemonInvocationRuntime {
-        let (store, _) =
-            FileInvocationStore::open(task_root, Arc::new(SystemEpochMillisClock)).unwrap();
-        DaemonInvocationRuntime::new(
-            Arc::new(store),
-            Arc::new(
-                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
-            ),
-            Arc::new(TokioClock),
-        )
+    fn canonical_v13_service() -> Arc<dyn CanonicalInvocationService> {
+        Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default())
+    }
+
+    fn bootstrap_runtime() -> V5CanonicalInvocationRuntime {
+        V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock))
+    }
+
+    /// One canonical Direct call on the shared v5 runtime: bind, prepare and
+    /// execute in the calling thread, exactly the path the daemon takes before
+    /// its cutoff. A known-long class is a Task, never a Direct outcome.
+    fn direct_v5(
+        runtime: &V5CanonicalInvocationRuntime,
+        request: InvocationRequest,
+    ) -> Result<DomainResult, V5CanonicalPrepareError> {
+        let bound = match runtime.bind(request) {
+            Ok(bound) => bound,
+            Err(V5CanonicalPrepareError::Direct(result))
+            | Err(V5CanonicalPrepareError::Rejected(result)) => return Ok(*result),
+            Err(error) => return Err(error),
+        };
+        let prepared = match bound.prepare() {
+            Ok(prepared) => prepared,
+            Err(result) => return Ok(*result),
+        };
+        assert!(
+            !matches!(prepared.execution_class(), ExecutionClass::KnownLong(_)),
+            "a known-long class is handed off to a Task, not answered directly"
+        );
+        Ok(prepared
+            .execute(CancellationToken::new())
+            .unwrap_or_else(|_| failed_domain_result("canonical execution failed")))
     }
 
     fn submit_bootstrap(
-        runtime: &DaemonInvocationRuntime,
+        runtime: &V5CanonicalInvocationRuntime,
         workspace: &std::path::Path,
         arguments: serde_json::Value,
     ) -> DomainResult {
@@ -1461,25 +1542,212 @@ pub(crate) mod actor_capacity_tests {
             7_000,
         )
         .unwrap();
-        match runtime
-            .submit(request, runtime.capture_response_deadline())
-            .unwrap()
-        {
-            InvocationResponse::Direct(result) => result,
-            InvocationResponse::Task(_) => panic!("workspace bootstrap must finish directly"),
+        direct_v5(runtime, request).expect("workspace bootstrap must finish directly")
+    }
+
+    const LIVE_V5_IDLE_GRACE: Duration = Duration::from_millis(400);
+    const LIVE_V5_OPERATION_TIMEOUT: Duration = Duration::from_secs(20);
+    const LIVE_V5_WAIT_MS: u64 = 7_000;
+
+    fn v5_tool(tool: ToolIdentity) -> V5ToolIdentity {
+        match tool {
+            ToolIdentity::View => V5ToolIdentity::View,
+            ToolIdentity::Apply => V5ToolIdentity::Apply,
+            ToolIdentity::Find => V5ToolIdentity::Find,
+            ToolIdentity::Search => V5ToolIdentity::Search,
+            ToolIdentity::Check => V5ToolIdentity::Check,
+            ToolIdentity::Diff => V5ToolIdentity::Diff,
+            ToolIdentity::Run => V5ToolIdentity::Run,
+            ToolIdentity::Docs => V5ToolIdentity::Docs,
+        }
+    }
+
+    /// What one submission over the wire came back as.
+    #[derive(Debug)]
+    enum V5Submission {
+        Direct(Box<DomainResult>),
+        Task(crate::domain::invocation::TaskId),
+    }
+
+    /// A live v5 daemon in a thread over a canonical runtime the test holds:
+    /// Task work goes through the wire exactly as production submits it, and
+    /// the test still observes the actor and capability registries.
+    struct LiveV5Daemon {
+        _state: tempfile::TempDir,
+        state_root: std::path::PathBuf,
+        canonical: Arc<V5CanonicalInvocationRuntime>,
+        thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+    }
+
+    impl LiveV5Daemon {
+        fn start(service: Arc<dyn CanonicalInvocationService>) -> Self {
+            let canonical = Arc::new(V5CanonicalInvocationRuntime::new(
+                Arc::clone(&service),
+                Arc::new(TokioClock),
+            ));
+            Self::over(canonical, service)
+        }
+
+        fn over(
+            canonical: Arc<V5CanonicalInvocationRuntime>,
+            service: Arc<dyn CanonicalInvocationService>,
+        ) -> Self {
+            let state = tempfile::tempdir().unwrap();
+            let state_root = std::fs::canonicalize(state.path()).unwrap();
+            let config = DaemonServerConfig::new(
+                state_root.clone(),
+                CoreIdentity::production_v5(),
+                LIVE_V5_IDLE_GRACE,
+            )
+            .with_invocation_service(service)
+            .with_canonical_runtime_for_test(Arc::clone(&canonical));
+            let thread = std::thread::spawn(move || super::super::runtime_v5::run_daemon(config));
+            Self {
+                _state: state,
+                state_root,
+                canonical,
+                thread: Some(thread),
+            }
+        }
+
+        fn runtime(&self) -> &V5CanonicalInvocationRuntime {
+            &self.canonical
+        }
+
+        /// The owner lease that keeps the daemon alive for the test.
+        fn owner(&self) -> V5DaemonProcessOwner {
+            let identity = CoreIdentity::production_v5();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let state = DaemonStateDirectory::open(&self.state_root, &identity).unwrap();
+                if let Some(record) = state.read_v5_endpoint_record().unwrap() {
+                    return V5DaemonProcessOwner::connect_before(record, deadline)
+                        .expect("connect the live v5 daemon");
+                }
+                assert!(Instant::now() < deadline, "v5 endpoint was not published");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn submit(
+            &self,
+            owner: &V5DaemonProcessOwner,
+            request: &InvocationRequest,
+        ) -> V5Submission {
+            let invocation = V5InvocationRequest::new(
+                crate::domain::invocation::InvocationId::new(),
+                crate::domain::invocation::TaskId::new(),
+                v5_tool(request.tool()),
+                request.arguments().clone(),
+                request.workspace_hint().to_owned(),
+                request.response_budget_ms(),
+            )
+            .unwrap();
+            let deadline = Instant::now() + LIVE_V5_OPERATION_TIMEOUT;
+            let mut peer = owner.connect_peer_before(deadline).expect("peer session");
+            match peer
+                .submit_invocation_before(invocation, deadline)
+                .expect("submit over the wire")
+            {
+                V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Direct { receipt },
+                } => match receipt.terminal() {
+                    ReceiptTerminalOutcome::Completed { result } => {
+                        V5Submission::Direct(result.clone())
+                    }
+                    other => panic!("direct receipt without a completed result: {other:?}"),
+                },
+                V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task { snapshot },
+                } => V5Submission::Task(snapshot.task_id()),
+                V5ServerResponse::Error { code } => panic!("submission refused: {code:?}"),
+                other => panic!("unexpected submit response {other:?}"),
+            }
+        }
+
+        fn task_id(
+            &self,
+            owner: &V5DaemonProcessOwner,
+            request: &InvocationRequest,
+        ) -> crate::domain::invocation::TaskId {
+            match self.submit(owner, request) {
+                V5Submission::Task(task_id) => task_id,
+                other => panic!("expected durable task: {other:?}"),
+            }
+        }
+
+        fn get(
+            &self,
+            owner: &V5DaemonProcessOwner,
+            task_id: crate::domain::invocation::TaskId,
+        ) -> V5DaemonTaskSnapshot {
+            let deadline = Instant::now() + LIVE_V5_OPERATION_TIMEOUT;
+            let mut peer = owner.connect_peer_before(deadline).expect("peer session");
+            peer.get_task_before(task_id, deadline).expect("get task")
+        }
+
+        fn cancel(
+            &self,
+            owner: &V5DaemonProcessOwner,
+            task_id: crate::domain::invocation::TaskId,
+        ) -> V5DaemonTaskSnapshot {
+            let deadline = Instant::now() + LIVE_V5_OPERATION_TIMEOUT;
+            let mut peer = owner.connect_peer_before(deadline).expect("peer session");
+            peer.cancel_task_before(task_id, deadline)
+                .expect("cancel task")
+        }
+
+        /// Waits for a terminal snapshot within `total`, one bounded wire wait
+        /// at a time.
+        fn wait_terminal(
+            &self,
+            owner: &V5DaemonProcessOwner,
+            task_id: crate::domain::invocation::TaskId,
+            total: Duration,
+        ) -> V5DaemonTaskSnapshot {
+            let settle_by = Instant::now() + total;
+            loop {
+                let deadline = Instant::now() + LIVE_V5_OPERATION_TIMEOUT;
+                let mut peer = owner.connect_peer_before(deadline).expect("peer session");
+                let snapshot = peer
+                    .wait_task_before(task_id, LIVE_V5_WAIT_MS, deadline)
+                    .expect("wait task");
+                if matches!(
+                    snapshot.status(),
+                    InvocationStatus::Completed
+                        | InvocationStatus::Failed
+                        | InvocationStatus::Cancelled
+                ) {
+                    return snapshot;
+                }
+                assert!(
+                    Instant::now() < settle_by,
+                    "the Task did not settle in {total:?}: {snapshot:?}"
+                );
+            }
+        }
+
+        /// Ends the daemon: the owner lease goes first, then the idle grace.
+        fn finish(mut self, owner: V5DaemonProcessOwner) {
+            drop(owner);
+            self.thread
+                .take()
+                .expect("a running daemon")
+                .join()
+                .expect("join the v5 daemon thread")
+                .expect("the v5 daemon exits on its idle grace");
         }
     }
 
     #[test]
     fn infobase_export_is_task_admitted_without_platform_xml_source_sets() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(
             workspace.path().join("v8project.yaml"),
             "format: DESIGNER\ninfobase:\n  connection: 'File=base'\n",
         )
         .unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
         let request = InvocationRequest::new(
             ToolIdentity::Run,
             serde_json::json!({
@@ -1492,23 +1760,27 @@ pub(crate) mod actor_capacity_tests {
         )
         .unwrap();
 
-        let response = runtime
-            .submit(request, runtime.capture_response_deadline())
-            .expect("runtime export admission");
-
-        assert!(matches!(response, InvocationResponse::Task(_)));
+        let bound = runtime.bind(request).expect("export admission");
+        assert!(matches!(
+            bound,
+            V5ActorBoundCanonicalInvocation::InfobaseExport { .. }
+        ));
+        let prepared = bound.prepare().expect("export preparation");
+        assert!(matches!(
+            prepared.execution_class(),
+            ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+        ));
     }
 
     #[test]
     fn canonical_view_bootstrap_recognizes_an_infobase_only_workspace() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(
             workspace.path().join("v8project.yaml"),
             "format: DESIGNER\ninfobase:\n  connection: 'File=base'\n",
         )
         .unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -1546,9 +1818,8 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     pub(crate) fn canonical_view_without_at_bootstraps_an_empty_workspace() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
         let before = crate::test_support::tree_snapshot(workspace.path());
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
@@ -1574,7 +1845,6 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     pub(crate) fn canonical_view_bootstrap_separates_source_and_repository_readiness() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -1588,7 +1858,7 @@ pub(crate) mod actor_capacity_tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -1604,7 +1874,6 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     fn canonical_view_bootstrap_reports_autodetected_sources_and_config_recipe() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -1613,7 +1882,7 @@ pub(crate) mod actor_capacity_tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -1631,7 +1900,6 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     fn canonical_view_bootstrap_does_not_offer_actor_calls_for_edt_sources() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(workspace.path().join("src/Configuration")).unwrap();
         std::fs::write(
@@ -1649,7 +1917,7 @@ pub(crate) mod actor_capacity_tests {
             "<mdclass:Configuration/>",
         )
         .unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -1666,7 +1934,6 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     fn canonical_view_bootstrap_does_not_offer_an_unparseable_logical_address() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -1680,7 +1947,7 @@ pub(crate) mod actor_capacity_tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -1700,7 +1967,6 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     fn canonical_view_bootstrap_does_not_fabricate_one_format_for_mixed_autodiscovery() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(workspace.path().join("src/Configuration")).unwrap();
         std::fs::write(
@@ -1719,7 +1985,7 @@ pub(crate) mod actor_capacity_tests {
             "<MetaDataObject/>",
         )
         .unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -1734,10 +2000,9 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     fn canonical_view_bootstrap_does_not_hide_an_invalid_project_config() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(workspace.path().join("v8project.yaml"), "source-set: [").unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -1749,10 +2014,9 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     fn canonical_view_bootstrap_classifies_wrong_kind_project_config_as_invalid() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         std::fs::create_dir(workspace.path().join("v8project.yaml")).unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -1767,7 +2031,6 @@ pub(crate) mod actor_capacity_tests {
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let outcome = create_file_link_fixture_for_test(
             "missing-v8project.yaml",
@@ -1777,7 +2040,7 @@ pub(crate) mod actor_capacity_tests {
         if outcome != FileLinkFixtureOutcome::Created {
             return;
         }
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -1788,14 +2051,13 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     fn canonical_view_bootstrap_repairs_a_valid_config_without_source_sets() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(
             workspace.path().join("v8project.yaml"),
             "workPath: .work\nformat: DESIGNER\n",
         )
         .unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -1818,7 +2080,6 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     fn canonical_view_bootstrap_does_not_equate_git_presence_with_repository_readiness() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -1838,7 +2099,7 @@ pub(crate) mod actor_capacity_tests {
             .status()
             .unwrap();
         assert!(git.success());
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -1851,7 +2112,6 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     fn canonical_invalid_view_address_points_back_to_bootstrap() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -1865,7 +2125,7 @@ pub(crate) mod actor_capacity_tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
-        let runtime = bootstrap_runtime(task_root.path());
+        let runtime = bootstrap_runtime();
 
         let result = submit_bootstrap(
             &runtime,
@@ -4183,7 +4443,6 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     pub(crate) fn provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -4197,10 +4456,7 @@ struct ActorLogicalReadLease {"#,
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
             ),
@@ -4224,7 +4480,7 @@ struct ActorLogicalReadLease {"#,
                 Arc::clone(&runtime.runtime_resources),
                 None,
             ),
-            runtime.capture_response_deadline(),
+            runtime.capture_response_deadline_for_test(),
             SourceSetKind::Extension,
             SourceFormat::Edt,
             SourceProfile::TestPlatform8_3_28Format2_20,
@@ -4316,18 +4572,13 @@ struct ActorLogicalReadLease {"#,
             "Процедура Проверка()\n    UniqueSearchNeedle = Истина;\nКонецПроцедуры\n",
         )
         .unwrap();
-        let (store, _) =
-            FileInvocationStore::open(state_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
         let config = DaemonServerConfig::new(
             std::fs::canonicalize(state_root.path()).unwrap(),
-            CoreIdentity::production_v3(),
+            CoreIdentity::production(),
             Duration::from_millis(50),
         );
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
-            config.invocation_service,
-            Arc::new(TokioClock),
-        );
+        let runtime =
+            V5CanonicalInvocationRuntime::new(config.invocation_service, Arc::new(TokioClock));
         let workspace_hint = std::fs::canonicalize(workspace.path())
             .unwrap()
             .to_string_lossy()
@@ -4335,17 +4586,12 @@ struct ActorLogicalReadLease {"#,
         let call = |tool, arguments| {
             let request =
                 InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap();
-            let response = runtime
-                .submit(request, runtime.capture_response_deadline())
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "production v3 daemon must accept {} invocation: {error:?}",
-                        tool.catalog_name()
-                    )
-                });
-            let InvocationResponse::Direct(result) = response else {
-                panic!("useful canonical mode should complete directly")
-            };
+            let result = direct_v5(&runtime, request).unwrap_or_else(|error| {
+                panic!(
+                    "production daemon must accept {} invocation: {error:?}",
+                    tool.catalog_name()
+                )
+            });
             result
         };
         let cases = [
@@ -4666,18 +4912,13 @@ struct ActorLogicalReadLease {"#,
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>Bare</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
         )
         .unwrap();
-        let (store, _) =
-            FileInvocationStore::open(state_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
         let config = DaemonServerConfig::new(
             std::fs::canonicalize(state_root.path()).unwrap(),
-            CoreIdentity::production_v3(),
+            CoreIdentity::production(),
             Duration::from_millis(50),
         );
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
-            config.invocation_service,
-            Arc::new(TokioClock),
-        );
+        let runtime =
+            V5CanonicalInvocationRuntime::new(config.invocation_service, Arc::new(TokioClock));
         let workspace_hint = std::fs::canonicalize(workspace.path())
             .unwrap()
             .to_string_lossy()
@@ -4685,13 +4926,7 @@ struct ActorLogicalReadLease {"#,
         let call = |tool, arguments| {
             let request =
                 InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap();
-            let InvocationResponse::Direct(result) = runtime
-                .submit(request, runtime.capture_response_deadline())
-                .unwrap()
-            else {
-                panic!("refusal probes must complete directly")
-            };
-            result
+            direct_v5(&runtime, request).unwrap()
         };
 
         let refusals = [
@@ -4947,7 +5182,6 @@ struct ActorLogicalReadLease {"#,
     #[test]
     pub(crate) fn subsequent_daemon_invocation_after_same_root_kind_change_gets_new_actor_identity()
     {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -4967,10 +5201,7 @@ struct ActorLogicalReadLease {"#,
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
             ),
@@ -4993,7 +5224,7 @@ struct ActorLogicalReadLease {"#,
                 Arc::clone(&runtime.provider_hosts),
                 Arc::clone(&runtime.runtime_resources),
                 None,
-                runtime.capture_response_deadline(),
+                runtime.capture_response_deadline_for_test(),
             )
             .unwrap()
         };
@@ -5036,12 +5267,8 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     pub(crate) fn view_find_admitted_snapshot_may_finish_after_map_change() {
-        let task_root = tempfile::tempdir().unwrap();
         let (workspace, source) = source_selection_read_fixture();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
             ),
@@ -5066,7 +5293,7 @@ struct ActorLogicalReadLease {"#,
                 Arc::clone(&runtime.provider_hosts),
                 Arc::clone(&runtime.runtime_resources),
                 None,
-                runtime.capture_response_deadline(),
+                runtime.capture_response_deadline_for_test(),
             )
             .unwrap()
         };
@@ -5114,7 +5341,6 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     pub(crate) fn semantically_equivalent_map_edit_reuses_actor_identity() {
-        let task_root = tempfile::tempdir().unwrap();
         let (workspace, _) = source_selection_read_fixture();
         let dependency = workspace.path().join("dep");
         std::fs::create_dir_all(&dependency).unwrap();
@@ -5134,10 +5360,7 @@ struct ActorLogicalReadLease {"#,
             ),
         )
         .unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
             ),
@@ -5160,7 +5383,7 @@ struct ActorLogicalReadLease {"#,
                 Arc::clone(&runtime.provider_hosts),
                 Arc::clone(&runtime.runtime_resources),
                 None,
-                runtime.capture_response_deadline(),
+                runtime.capture_response_deadline_for_test(),
             )
             .unwrap()
         };
@@ -5189,7 +5412,6 @@ struct ActorLogicalReadLease {"#,
     #[test]
     fn unpublished_apply_execution_rejects_success_changed_and_revision_without_actor_publication()
     {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -5203,10 +5425,7 @@ struct ActorLogicalReadLease {"#,
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
             ),
@@ -5233,7 +5452,7 @@ struct ActorLogicalReadLease {"#,
                 Arc::clone(&runtime.provider_hosts),
                 Arc::clone(&runtime.runtime_resources),
                 None,
-                runtime.capture_response_deadline(),
+                runtime.capture_response_deadline_for_test(),
             )
             .unwrap()
         };
@@ -5263,7 +5482,6 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn non_apply_execution_rejects_prepared_apply_before_actor_publication() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(source.join("Documents")).unwrap();
@@ -5280,10 +5498,7 @@ struct ActorLogicalReadLease {"#,
         let descriptor = source.join("Documents/Order.xml");
         let preimage = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Order</Name><Synonym/><Comment/></Properties><ChildObjects/></Document></MetaDataObject>"#;
         std::fs::write(&descriptor, preimage).unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
             ),
@@ -5305,7 +5520,7 @@ struct ActorLogicalReadLease {"#,
             Arc::clone(&runtime.provider_hosts),
             Arc::clone(&runtime.runtime_resources),
             None,
-            runtime.capture_response_deadline(),
+            runtime.capture_response_deadline_for_test(),
         )
         .unwrap()
         .begin_execution(&cancellation)
@@ -5352,7 +5567,6 @@ struct ActorLogicalReadLease {"#,
     /// invalidation lists, so no second call is needed to learn what moved.
     #[test]
     fn canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(source.join("Documents")).unwrap();
@@ -5372,10 +5586,7 @@ struct ActorLogicalReadLease {"#,
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Document uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Order</Name><Synonym/><Comment/></Properties><ChildObjects/></Document></MetaDataObject>"#,
         )
         .unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
             ),
@@ -5394,12 +5605,7 @@ struct ActorLogicalReadLease {"#,
                 7_000,
             )
             .unwrap();
-            let response = runtime
-                .submit(request, runtime.capture_response_deadline())
-                .unwrap();
-            let InvocationResponse::Direct(result) = response else {
-                panic!("bounded object removal must complete directly")
-            };
+            let result = direct_v5(&runtime, request).unwrap();
             assert!(result.ok, "object.remove failed: {result:?}");
             result
         };
@@ -5432,7 +5638,6 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn public_metadata_apply_keeps_dry_run_and_real_plans_identical_for_four_supported_ops() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(source.join("Documents")).unwrap();
@@ -5452,10 +5657,7 @@ struct ActorLogicalReadLease {"#,
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Document uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Order</Name><Synonym/><Comment/></Properties><ChildObjects/></Document></MetaDataObject>"#,
         )
         .unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
             ),
@@ -5470,13 +5672,7 @@ struct ActorLogicalReadLease {"#,
                 7_000,
             )
             .unwrap();
-            let response = runtime
-                .submit(request, runtime.capture_response_deadline())
-                .unwrap();
-            let InvocationResponse::Direct(result) = response else {
-                panic!("bounded metadata apply must complete directly")
-            };
-            result
+            direct_v5(&runtime, request).unwrap()
         };
         let apply_pair = |operation: serde_json::Value| {
             let before = std::fs::read(&descriptor).unwrap();
@@ -5610,7 +5806,6 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     pub(crate) fn v13_daemon_rejects_unproved_edt_invalid_or_empty_platform_fallback() {
-        let task_root = tempfile::tempdir().unwrap();
         let empty = tempfile::tempdir().unwrap();
         let edt = tempfile::tempdir().unwrap();
         let invalid = tempfile::tempdir().unwrap();
@@ -5637,10 +5832,7 @@ struct ActorLogicalReadLease {"#,
         .unwrap();
         std::fs::write(invalid_source.join(".project"), "edt marker").unwrap();
 
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
             ),
@@ -5666,7 +5858,7 @@ struct ActorLogicalReadLease {"#,
                 Arc::clone(&runtime.provider_hosts),
                 Arc::clone(&runtime.runtime_resources),
                 None,
-                runtime.capture_response_deadline(),
+                runtime.capture_response_deadline_for_test(),
             )
             .is_ok()
             {
@@ -5682,16 +5874,6 @@ struct ActorLogicalReadLease {"#,
 
     struct ManualInvocationClock(Mutex<Instant>);
 
-    impl ManualInvocationClock {
-        fn new(now: Instant) -> Self {
-            Self(Mutex::new(now))
-        }
-
-        fn advance(&self, duration: Duration) {
-            *self.0.lock().unwrap() += duration;
-        }
-    }
-
     impl Clock for ManualInvocationClock {
         fn now(&self) -> Instant {
             *self.0.lock().unwrap()
@@ -5700,7 +5882,6 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     pub(crate) fn hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         let sibling = workspace.path().join("dep");
@@ -5726,10 +5907,7 @@ struct ActorLogicalReadLease {"#,
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
         )
         .unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
             ),
@@ -5751,7 +5929,7 @@ struct ActorLogicalReadLease {"#,
             Arc::clone(&runtime.provider_hosts),
             Arc::clone(&runtime.runtime_resources),
             None,
-            runtime.capture_response_deadline(),
+            runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
         let sibling_binding = invocation
@@ -5846,7 +6024,7 @@ struct ActorLogicalReadLease {"#,
             Arc::clone(&runtime.provider_hosts),
             Arc::clone(&runtime.runtime_resources),
             None,
-            runtime.capture_response_deadline(),
+            runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
         let find_execution = find_invocation
@@ -5899,7 +6077,7 @@ struct ActorLogicalReadLease {"#,
             Arc::clone(&runtime.provider_hosts),
             Arc::clone(&runtime.runtime_resources),
             None,
-            runtime.capture_response_deadline(),
+            runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
         let find_execution = find_invocation
@@ -5927,7 +6105,7 @@ struct ActorLogicalReadLease {"#,
             Arc::clone(&runtime.provider_hosts),
             Arc::clone(&runtime.runtime_resources),
             None,
-            runtime.capture_response_deadline(),
+            runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
         set_logical_read_now(started + Duration::from_secs(9));
@@ -5956,7 +6134,6 @@ struct ActorLogicalReadLease {"#,
         Arc<crate::infrastructure::source_revision::SourceRevisionService>,
         usize,
     ) {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -5970,10 +6147,7 @@ struct ActorLogicalReadLease {"#,
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
             ),
@@ -5995,7 +6169,7 @@ struct ActorLogicalReadLease {"#,
             Arc::clone(&runtime.provider_hosts),
             Arc::clone(&runtime.runtime_resources),
             None,
-            runtime.capture_response_deadline(),
+            runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
         let revisions = invocation
@@ -6171,12 +6345,6 @@ struct ActorLogicalReadLease {"#,
         release: Mutex<mpsc::Receiver<()>>,
     }
 
-    struct DelayedPrepareService {
-        clock: Arc<ManualInvocationClock>,
-        delay: Duration,
-        executions: Arc<AtomicUsize>,
-    }
-
     struct CountingPrepareService {
         preparations: Arc<AtomicUsize>,
     }
@@ -6220,49 +6388,6 @@ struct ActorLogicalReadLease {"#,
         first_execution: AtomicBool,
         mark_dirty: Mutex<mpsc::Receiver<()>>,
         dirty_done: mpsc::Sender<()>,
-    }
-
-    struct UnavailableCancelStore {
-        inner: FileInvocationStore,
-    }
-
-    impl InvocationStore for UnavailableCancelStore {
-        fn create(
-            &self,
-            record: NewInvocationRecord,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            self.inner.create(record)
-        }
-
-        fn create_working(
-            &self,
-            record: NewInvocationRecord,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            self.inner.create_working(record)
-        }
-
-        fn get(
-            &self,
-            task_id: crate::domain::invocation::TaskId,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            self.inner.get(task_id)
-        }
-
-        fn update(
-            &self,
-            task_id: crate::domain::invocation::TaskId,
-            transition: TaskTransition,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            self.inner.update(task_id, transition)
-        }
-
-        fn cancel(
-            &self,
-            _task_id: crate::domain::invocation::TaskId,
-            _status_message: SafeStatusMessage,
-        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-            Err(InvocationStoreError::ActorUnavailable)
-        }
     }
 
     impl CanonicalInvocationService for BlockingService {
@@ -6324,25 +6449,6 @@ struct ActorLogicalReadLease {"#,
             Ok(DomainResult::success(
                 "non-cooperative staged actor result must stay hidden",
             ))
-        }
-    }
-
-    impl CanonicalInvocationService for DelayedPrepareService {
-        fn prepare(
-            &self,
-            _invocation: &ActorBoundInvocation,
-        ) -> Result<ExecutionClass, Box<DomainResult>> {
-            self.clock.advance(self.delay);
-            Ok(ExecutionClass::InlineCandidate)
-        }
-
-        fn execute(
-            &self,
-            _invocation: &ActorBoundExecution,
-            _cancellation: CancellationToken,
-        ) -> Result<DomainResult, InvocationFailure> {
-            self.executions.fetch_add(1, Ordering::SeqCst);
-            Ok(DomainResult::success("deadline-bound prepare result"))
         }
     }
 
@@ -6730,23 +6836,7 @@ struct ActorLogicalReadLease {"#,
         Arc<(Mutex<bool>, Condvar)>,
     );
 
-    const OWNERSHIP_CONTRACT_RECONCILIATION_BUDGET: Duration = Duration::from_secs(15);
     const OWNERSHIP_CONTRACT_WAIT_MS: u64 = 15_000;
-
-    fn ownership_contract_runtime(
-        store: Arc<dyn InvocationStore>,
-        service: Arc<dyn CanonicalInvocationService>,
-    ) -> DaemonInvocationRuntime {
-        // These fixtures assert capability and actor ownership, not the production
-        // fail-stop deadline. Keep a loaded Windows runner from turning scheduler
-        // delay into an unrelated RestartRequested result.
-        DaemonInvocationRuntime::new_with_reconciliation_budget_for_test(
-            store,
-            service,
-            Arc::new(TokioClock),
-            OWNERSHIP_CONTRACT_RECONCILIATION_BUDGET,
-        )
-    }
 
     fn shared_capability_service(kind: LongCapabilityKind) -> SharedCapabilityFixture {
         let producers = Arc::new(AtomicUsize::new(0));
@@ -6766,103 +6856,6 @@ struct ActorLogicalReadLease {"#,
             joined_wait,
             release,
         )
-    }
-
-    pub(crate) fn daemon_receipt_deadline_is_not_replenished_after_delayed_prepare() {
-        for delay in [Duration::from_millis(110), Duration::from_millis(226)] {
-            let task_root = tempfile::tempdir().unwrap();
-            let workspace = tempfile::tempdir().unwrap();
-            let (store, _) =
-                FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock))
-                    .unwrap();
-            let clock = Arc::new(ManualInvocationClock::new(Instant::now()));
-            let executions = Arc::new(AtomicUsize::new(0));
-            let runtime = DaemonInvocationRuntime::new(
-                Arc::new(store),
-                Arc::new(DelayedPrepareService {
-                    clock: Arc::clone(&clock),
-                    delay,
-                    executions: Arc::clone(&executions),
-                }),
-                clock,
-            );
-            let response = submit_at_receipt(
-                &runtime,
-                InvocationRequest::new(
-                    ToolIdentity::Run,
-                    serde_json::json!({"op": "infobase.build", "args": {}}),
-                    std::fs::canonicalize(workspace.path())
-                        .unwrap()
-                        .to_string_lossy(),
-                    100,
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            let task_id = task_id(response);
-            let terminal = runtime.wait(task_id, 7_000).unwrap();
-            assert_eq!(terminal.status, InvocationStatus::Completed);
-            assert_eq!(
-                terminal.result.unwrap().summary,
-                "deadline-bound prepare result"
-            );
-            assert_eq!(executions.load(Ordering::SeqCst), 1);
-        }
-
-        let task_root = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let started = Instant::now();
-        let clock = Arc::new(ManualInvocationClock::new(started));
-        let executions = Arc::new(AtomicUsize::new(0));
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
-            Arc::new(DelayedPrepareService {
-                clock: Arc::clone(&clock),
-                delay: Duration::from_millis(226),
-                executions: Arc::clone(&executions),
-            }),
-            clock.clone(),
-        );
-        let invalid = submit_at_receipt(
-            &runtime,
-            InvocationRequest::new(
-                ToolIdentity::Run,
-                serde_json::json!({"unknown": true}),
-                std::fs::canonicalize(workspace.path())
-                    .unwrap()
-                    .to_string_lossy(),
-                100,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert!(matches!(
-            invalid,
-            InvocationResponse::Direct(result)
-                if !result.ok && result.summary.contains("unknown argument")
-        ));
-        assert_eq!(clock.now(), started);
-        assert_eq!(executions.load(Ordering::SeqCst), 0);
-    }
-
-    fn task_id(response: InvocationResponse) -> crate::domain::invocation::TaskId {
-        match response {
-            InvocationResponse::Task(snapshot) => snapshot.task_id,
-            other => panic!("expected durable task: {other:?}"),
-        }
-    }
-
-    fn submit_at_receipt(
-        runtime: &DaemonInvocationRuntime,
-        request: InvocationRequest,
-    ) -> Result<InvocationResponse, DaemonInvocationError> {
-        ensure_platform_xml_workspace(request.workspace_hint());
-        let response_deadline = runtime
-            .capture_response_deadline()
-            .restrict_to_frontend_budget(Duration::from_millis(request.response_budget_ms()));
-        runtime.submit(request, response_deadline)
     }
 
     fn ensure_platform_xml_workspace(workspace_hint: &str) {
@@ -6885,7 +6878,6 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn daemon_shared_delivery_releases_request_admission_before_wait_and_shares_across_worktrees() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace_parent = tempfile::tempdir().unwrap();
         let roots = (0..2)
             .map(|index| {
@@ -6893,11 +6885,11 @@ struct ActorLogicalReadLease {"#,
                     .path()
                     .join(format!("delivery-workspace-{index}"));
                 std::fs::create_dir(&root).unwrap();
-                std::fs::canonicalize(root).unwrap()
+                let root = std::fs::canonicalize(root).unwrap();
+                ensure_platform_xml_workspace(&root.to_string_lossy());
+                root
             })
             .collect::<Vec<_>>();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
         let producers = Arc::new(AtomicUsize::new(0));
         let (producer_entered, producer_wait) = mpsc::channel();
         let (joined, joined_wait) = mpsc::channel();
@@ -6917,22 +6909,23 @@ struct ActorLogicalReadLease {"#,
             joined,
             release: Arc::clone(&release),
         });
-        let runtime = DaemonInvocationRuntime::new(Arc::new(store), service, Arc::new(TokioClock));
+        let daemon = LiveV5Daemon::start(service);
+        let owner = daemon.owner();
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
                 serde_json::json!({"op": "infobase.build", "args": {}}),
                 root.to_string_lossy(),
-                0,
+                7_000,
             )
             .unwrap()
         };
 
-        let first = task_id(submit_at_receipt(&runtime, request(&roots[0])).unwrap());
+        let first = daemon.task_id(&owner, &request(&roots[0]));
         producer_wait
             .recv_timeout(Duration::from_secs(10))
             .expect("first task entered delivery producer");
-        let second = task_id(submit_at_receipt(&runtime, request(&roots[1])).unwrap());
+        let second = daemon.task_id(&owner, &request(&roots[1]));
         let first_desk = joined_wait
             .recv_timeout(Duration::from_secs(10))
             .expect("first task joined delivery");
@@ -6946,14 +6939,21 @@ struct ActorLogicalReadLease {"#,
         );
         assert_eq!(
             first_desk,
-            Arc::as_ptr(&runtime.deliveries) as usize,
+            Arc::as_ptr(&daemon.runtime().deliveries) as usize,
             "actor bindings retain the daemon-owned DeliveryDesk"
         );
-        assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 2);
+        assert_eq!(
+            daemon
+                .runtime()
+                .workspace_actors
+                .live_len_for_test()
+                .unwrap(),
+            2
+        );
         assert_eq!(producers.load(Ordering::SeqCst), 1);
         for task_id in [first, second] {
             assert_eq!(
-                runtime.get(task_id).unwrap().status,
+                daemon.get(&owner, task_id).status(),
                 InvocationStatus::Working
             );
         }
@@ -6965,14 +6965,19 @@ struct ActorLogicalReadLease {"#,
         *released.lock().unwrap() = true;
         wake.notify_all();
         for task_id in [first, second] {
-            let terminal = runtime.wait(task_id, 7_000).unwrap();
-            assert_eq!(terminal.status, InvocationStatus::Completed);
+            let terminal = daemon.wait_terminal(
+                &owner,
+                task_id,
+                Duration::from_millis(OWNERSHIP_CONTRACT_WAIT_MS),
+            );
+            assert_eq!(terminal.status(), InvocationStatus::Completed);
             assert_eq!(
-                terminal.result.unwrap().summary,
+                terminal.completed_result().unwrap().summary,
                 "shared daemon delivery ready"
             );
         }
         assert_eq!(producers.load(Ordering::SeqCst), 1);
+        daemon.finish(owner);
     }
 
     #[test]
@@ -7009,7 +7014,6 @@ struct ActorLogicalReadLease {"#,
                 lease_id: runtime_lease.id,
             },
         ] {
-            let task_root = tempfile::tempdir().unwrap();
             let workspace_parent = tempfile::tempdir().unwrap();
             let roots = if matches!(kind, LongCapabilityKind::Index) {
                 let root = workspace_parent.path().join("index-workspace");
@@ -7027,32 +7031,37 @@ struct ActorLogicalReadLease {"#,
                     })
                     .collect::<Vec<_>>()
             };
-            let (store, _) =
-                FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock))
-                    .unwrap();
+            for root in &roots {
+                ensure_platform_xml_workspace(&root.to_string_lossy());
+            }
             let (service, producers, producer_wait, joined_wait, release) =
                 shared_capability_service(kind.clone());
-            let runtime = ownership_contract_runtime(Arc::new(store), service);
-            let runtime = if matches!(kind, LongCapabilityKind::Runtime { .. }) {
-                runtime.with_runtime_service_for_test(Arc::clone(&runtime_service))
+            let canonical = V5CanonicalInvocationRuntime::new(
+                Arc::clone(&service) as Arc<dyn CanonicalInvocationService>,
+                Arc::new(TokioClock),
+            );
+            let canonical = if matches!(kind, LongCapabilityKind::Runtime { .. }) {
+                canonical.with_runtime_service_for_test(Arc::clone(&runtime_service))
             } else {
-                runtime
+                canonical
             };
+            let daemon = LiveV5Daemon::over(Arc::new(canonical), service);
+            let owner = daemon.owner();
             let request = |root: &std::path::Path| {
                 InvocationRequest::new(
                     ToolIdentity::Run,
                     serde_json::json!({"op": "infobase.build", "args": {}}),
                     root.to_string_lossy(),
-                    0,
+                    7_000,
                 )
                 .unwrap()
             };
 
-            let first = task_id(submit_at_receipt(&runtime, request(&roots[0])).unwrap());
+            let first = daemon.task_id(&owner, &request(&roots[0]));
             producer_wait
                 .recv_timeout(Duration::from_secs(10))
                 .expect("first task entered long-work producer");
-            let second = task_id(submit_at_receipt(&runtime, request(&roots[1])).unwrap());
+            let second = daemon.task_id(&owner, &request(&roots[1]));
             let first_key = joined_wait
                 .recv_timeout(Duration::from_secs(10))
                 .expect("first task joined long work");
@@ -7064,12 +7073,16 @@ struct ActorLogicalReadLease {"#,
             assert_eq!(producers.load(Ordering::SeqCst), 1);
             for task_id in [first, second] {
                 assert_eq!(
-                    runtime.get(task_id).unwrap().status,
+                    daemon.get(&owner, task_id).status(),
                     InvocationStatus::Working
                 );
             }
             assert_eq!(
-                runtime.workspace_actors.live_len_for_test().unwrap(),
+                daemon
+                    .runtime()
+                    .workspace_actors
+                    .live_len_for_test()
+                    .unwrap(),
                 if matches!(kind, LongCapabilityKind::Index) {
                     1
                 } else {
@@ -7079,15 +7092,23 @@ struct ActorLogicalReadLease {"#,
             let (released, wake) = &*release;
             *released.lock().unwrap() = true;
             wake.notify_all();
-            let first_result = runtime
-                .wait(first, OWNERSHIP_CONTRACT_WAIT_MS)
-                .unwrap()
-                .result
+            let first_result = daemon
+                .wait_terminal(
+                    &owner,
+                    first,
+                    Duration::from_millis(OWNERSHIP_CONTRACT_WAIT_MS),
+                )
+                .completed_result()
+                .cloned()
                 .unwrap();
-            let second_result = runtime
-                .wait(second, OWNERSHIP_CONTRACT_WAIT_MS)
-                .unwrap()
-                .result
+            let second_result = daemon
+                .wait_terminal(
+                    &owner,
+                    second,
+                    Duration::from_millis(OWNERSHIP_CONTRACT_WAIT_MS),
+                )
+                .completed_result()
+                .cloned()
                 .unwrap();
             if matches!(kind, LongCapabilityKind::Index) {
                 assert_eq!(first_result.summary, "index");
@@ -7096,41 +7117,42 @@ struct ActorLogicalReadLease {"#,
                 assert_eq!(first_result.summary, "root-0");
                 assert_eq!(second_result.summary, "root-1");
             }
+            daemon.finish(owner);
         }
     }
 
     #[test]
     fn daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication() {
         // Distinct actor identities intentionally cannot join one Index key.
-        let task_root = tempfile::tempdir().unwrap();
         let workspace_parent = tempfile::tempdir().unwrap();
         let roots = (0..2)
             .map(|index| {
                 let root = workspace_parent.path().join(format!("index-root-{index}"));
                 std::fs::create_dir(&root).unwrap();
                 std::fs::write(root.join("marker.txt"), format!("root-{index}")).unwrap();
-                std::fs::canonicalize(root).unwrap()
+                let root = std::fs::canonicalize(root).unwrap();
+                ensure_platform_xml_workspace(&root.to_string_lossy());
+                root
             })
             .collect::<Vec<_>>();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
         let (service, producers, producer_wait, joined_wait, release) =
             shared_capability_service(LongCapabilityKind::Index);
-        let runtime = ownership_contract_runtime(Arc::new(store), service);
+        let daemon = LiveV5Daemon::start(service);
+        let owner = daemon.owner();
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
                 serde_json::json!({"op": "infobase.build", "args": {}}),
                 root.to_string_lossy(),
-                0,
+                7_000,
             )
             .unwrap()
         };
-        let first = task_id(submit_at_receipt(&runtime, request(&roots[0])).unwrap());
+        let first = daemon.task_id(&owner, &request(&roots[0]));
         producer_wait
             .recv_timeout(Duration::from_secs(10))
             .expect("first index producer");
-        let second = task_id(submit_at_receipt(&runtime, request(&roots[1])).unwrap());
+        let second = daemon.task_id(&owner, &request(&roots[1]));
         producer_wait
             .recv_timeout(Duration::from_secs(10))
             .expect("second index producer");
@@ -7142,20 +7164,29 @@ struct ActorLogicalReadLease {"#,
         *released.lock().unwrap() = true;
         wake.notify_all();
         assert_eq!(
-            runtime
-                .wait(first, OWNERSHIP_CONTRACT_WAIT_MS)
-                .unwrap()
-                .status,
+            daemon
+                .wait_terminal(
+                    &owner,
+                    first,
+                    Duration::from_millis(OWNERSHIP_CONTRACT_WAIT_MS)
+                )
+                .status(),
             InvocationStatus::Completed
         );
         assert_eq!(
-            runtime.wait(second, 7_000).unwrap().status,
+            daemon
+                .wait_terminal(
+                    &owner,
+                    second,
+                    Duration::from_millis(OWNERSHIP_CONTRACT_WAIT_MS)
+                )
+                .status(),
             InvocationStatus::Completed
         );
+        daemon.finish(owner);
 
         // A new trusted source revision starts a new producer, and the result
         // staged under the prior revision cannot cross the actor publication fence.
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(workspace.path().join("marker.txt"), "old").unwrap();
         std::fs::write(
@@ -7164,8 +7195,7 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
         let root = std::fs::canonicalize(workspace.path()).unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        ensure_platform_xml_workspace(&root.to_string_lossy());
         let producers = Arc::new(AtomicUsize::new(0));
         let (producer_entered, producer_wait) = mpsc::channel();
         let (joined, joined_wait) = mpsc::channel();
@@ -7181,15 +7211,16 @@ struct ActorLogicalReadLease {"#,
             mark_dirty: Mutex::new(dirty_request),
             dirty_done,
         });
-        let runtime = ownership_contract_runtime(Arc::new(store), service);
-        let first = task_id(submit_at_receipt(&runtime, request(&root)).unwrap());
+        let daemon = LiveV5Daemon::start(service);
+        let owner = daemon.owner();
+        let first = daemon.task_id(&owner, &request(&root));
         producer_wait.recv_timeout(Duration::from_secs(10)).unwrap();
         let old_key = joined_wait.recv_timeout(Duration::from_secs(10)).unwrap();
         std::fs::write(root.join("marker.txt"), "new").unwrap();
         std::fs::write(root.join("Module.bsl"), "Procedure New()\nEndProcedure").unwrap();
         mark_dirty.send(()).unwrap();
         dirty_wait.recv_timeout(Duration::from_secs(10)).unwrap();
-        let second = task_id(submit_at_receipt(&runtime, request(&root)).unwrap());
+        let second = daemon.task_id(&owner, &request(&root));
         producer_wait.recv_timeout(Duration::from_secs(10)).unwrap();
         let new_key = joined_wait.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_ne!(old_key, new_key);
@@ -7198,58 +7229,72 @@ struct ActorLogicalReadLease {"#,
         *released.lock().unwrap() = true;
         wake.notify_all();
         assert_eq!(
-            runtime
-                .wait(first, OWNERSHIP_CONTRACT_WAIT_MS)
-                .unwrap()
-                .status,
+            daemon
+                .wait_terminal(
+                    &owner,
+                    first,
+                    Duration::from_millis(OWNERSHIP_CONTRACT_WAIT_MS)
+                )
+                .status(),
             InvocationStatus::Failed
         );
-        let second = runtime.wait(second, OWNERSHIP_CONTRACT_WAIT_MS).unwrap();
-        assert_eq!(second.status, InvocationStatus::Completed);
-        assert_eq!(second.result.unwrap().summary, "new");
+        let second = daemon.wait_terminal(
+            &owner,
+            second,
+            Duration::from_millis(OWNERSHIP_CONTRACT_WAIT_MS),
+        );
+        assert_eq!(second.status(), InvocationStatus::Completed);
+        assert_eq!(second.completed_result().unwrap().summary, "new");
+        daemon.finish(owner);
     }
 
     #[test]
     fn daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication() {
-        let task_root = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let root = parent.path().join("workspace");
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("marker.txt"), "old").unwrap();
         let root = std::fs::canonicalize(root).unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        ensure_platform_xml_workspace(&root.to_string_lossy());
         let (service, _, producer_wait, joined_wait, release) =
             shared_capability_service(LongCapabilityKind::Index);
-        let runtime = ownership_contract_runtime(Arc::new(store), service);
+        let daemon = LiveV5Daemon::start(service);
+        let owner = daemon.owner();
         let request = || {
             InvocationRequest::new(
                 ToolIdentity::Run,
                 serde_json::json!({"op": "infobase.build", "args": {}}),
                 root.to_string_lossy(),
-                0,
+                7_000,
             )
             .unwrap()
         };
-        let first = task_id(submit_at_receipt(&runtime, request()).unwrap());
+        let first = daemon.task_id(&owner, &request());
         producer_wait.recv_timeout(Duration::from_secs(10)).unwrap();
         joined_wait.recv_timeout(Duration::from_secs(10)).unwrap();
         let moved = parent.path().join("workspace-old");
         std::fs::rename(&root, moved).unwrap();
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("marker.txt"), "replacement").unwrap();
-        let rejected = submit_at_receipt(&runtime, request()).unwrap();
-        assert!(matches!(rejected, InvocationResponse::Direct(result) if !result.ok));
+        ensure_platform_xml_workspace(&root.to_string_lossy());
+        let V5Submission::Direct(rejected) = daemon.submit(&owner, &request()) else {
+            panic!("a replaced actor root must be refused before reuse");
+        };
+        assert!(!rejected.ok, "replaced root was admitted: {rejected:?}");
         let (released, wake) = &*release;
         *released.lock().unwrap() = true;
         wake.notify_all();
         assert_eq!(
-            runtime
-                .wait(first, OWNERSHIP_CONTRACT_WAIT_MS)
-                .unwrap()
-                .status,
+            daemon
+                .wait_terminal(
+                    &owner,
+                    first,
+                    Duration::from_millis(OWNERSHIP_CONTRACT_WAIT_MS)
+                )
+                .status(),
             InvocationStatus::Failed
         );
+        daemon.finish(owner);
     }
 
     fn run_long_work_contract_obligation(test_name: &str) {
@@ -7303,56 +7348,55 @@ struct ActorLogicalReadLease {"#,
     }
 
     fn live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace_parent = tempfile::tempdir().unwrap();
         let roots = (0..3)
             .map(|index| {
                 let root = workspace_parent.path().join(format!("workspace-{index}"));
                 std::fs::create_dir(&root).unwrap();
-                std::fs::canonicalize(root).unwrap()
+                let root = std::fs::canonicalize(root).unwrap();
+                ensure_platform_xml_workspace(&root.to_string_lossy());
+                root
             })
             .collect::<Vec<_>>();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
         let (entered, _entered_wait) = mpsc::channel();
-        let runtime = DaemonInvocationRuntime {
-            executor: Arc::new(InvocationExecutor::new(
-                Arc::new(store),
-                Arc::new(TokioClock),
-            )),
-            service: Arc::new(BlockingService { entered }),
-            workspace_actors: WorkspaceActorRegistry::with_capacity_for_test(2),
-            deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
-            provider_hosts: Arc::new(ProviderHostOwner::default()),
-            runtime_resources: Arc::new(RuntimeResourceOwner::default()),
-            runtime_service: None,
-        };
+        let runtime = V5CanonicalInvocationRuntime::with_workspace_actors_for_test(
+            Arc::new(BlockingService { entered }),
+            Arc::new(TokioClock),
+            WorkspaceActorRegistry::with_capacity_for_test(2),
+        );
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
                 serde_json::json!({"op": "infobase.build", "args": {}}),
                 root.to_string_lossy(),
-                0,
+                7_000,
             )
             .unwrap()
         };
 
-        let first = task_id(submit_at_receipt(&runtime, request(&roots[0])).unwrap());
-        let second = task_id(submit_at_receipt(&runtime, request(&roots[1])).unwrap());
-        let alias = task_id(submit_at_receipt(&runtime, request(&roots[0].join("."))).unwrap());
-        // A returned task snapshot is the durable admission point. Its actor lease is already
-        // retained before the background worker is scheduled, so capacity evidence must not
+        // A bound invocation is the durable admission point: its actor lease is
+        // retained before any worker is scheduled, so capacity evidence must not
         // depend on runner scheduling.
-        let rejected = submit_at_receipt(&runtime, request(&roots[2])).unwrap_err();
-        assert_eq!(rejected.protocol_code(), DaemonErrorCode::WorkspaceCapacity);
+        let first = runtime
+            .bind(request(&roots[0]))
+            .expect("first root admitted");
+        let second = runtime
+            .bind(request(&roots[1]))
+            .expect("second root admitted");
+        let alias = runtime
+            .bind(request(&roots[0].join(".")))
+            .expect("an alias of a live root reuses its actor");
+        let rejected = runtime
+            .bind(request(&roots[2]))
+            .err()
+            .expect("a distinct third root is refused");
+        assert!(matches!(
+            rejected,
+            V5CanonicalPrepareError::WorkspaceCapacity
+        ));
         assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 2);
 
-        for task_id in [first, second, alias] {
-            assert_eq!(
-                runtime.cancel(task_id).unwrap().status,
-                crate::domain::invocation::InvocationStatus::Cancelled
-            );
-        }
+        drop((first, second, alias));
     }
 
     fn concurrent_same_identity_admission_creates_one_actor() {
@@ -7396,69 +7440,62 @@ struct ActorLogicalReadLease {"#,
     }
 
     fn poisoned_registry_is_a_closed_internal_error_and_admits_nothing() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        ensure_platform_xml_workspace(&root.to_string_lossy());
         let (entered, _entered_wait) = mpsc::channel();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(BlockingService { entered }),
             Arc::new(TokioClock),
         );
         runtime.workspace_actors.poison_for_test();
 
-        let error = submit_at_receipt(
-            &runtime,
-            InvocationRequest::new(
-                ToolIdentity::Run,
-                serde_json::json!({"op": "infobase.build", "args": {}}),
-                std::fs::canonicalize(workspace.path())
-                    .unwrap()
-                    .to_string_lossy(),
-                0,
+        let error = runtime
+            .bind(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({"op": "infobase.build", "args": {}}),
+                    root.to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.protocol_code(),
-            DaemonErrorCode::WorkspaceRegistryFailed
-        );
+            .err()
+            .expect("a poisoned registry admits nothing");
+        assert!(matches!(
+            error,
+            V5CanonicalPrepareError::WorkspaceRegistryFailed
+        ));
     }
 
     fn sequential_direct_admissions_release_actor_capabilities_and_prune_dead_entries() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspaces = tempfile::tempdir().unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(store),
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(RejectingAfterActorAdmissionService),
             Arc::new(TokioClock),
         );
+        let request = |workspace: &std::path::Path| {
+            let root = std::fs::canonicalize(workspace).unwrap();
+            ensure_platform_xml_workspace(&root.to_string_lossy());
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({"op": "infobase.build", "args": {}}),
+                root.to_string_lossy(),
+                7_000,
+            )
+            .unwrap()
+        };
 
         // Sequential completed workspaces stay bounded by the warm set: the
         // most recent few actors survive for the next call, nothing beyond.
         for index in 0..80 {
             let workspace = workspaces.path().join(format!("workspace-{index}"));
             std::fs::create_dir(&workspace).unwrap();
-            let response = submit_at_receipt(
-                &runtime,
-                InvocationRequest::new(
-                    ToolIdentity::Run,
-                    serde_json::json!({"op": "infobase.build", "args": {}}),
-                    std::fs::canonicalize(&workspace).unwrap().to_string_lossy(),
-                    0,
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            assert!(matches!(
-                response,
-                InvocationResponse::Direct(result)
-                    if !result.ok && result.summary == "test rejection after actor admission"
-            ));
+            let result = direct_v5(&runtime, request(&workspace)).unwrap();
+            assert!(
+                !result.ok && result.summary == "test rejection after actor admission",
+                "unexpected outcome: {result:?}"
+            );
             assert!(
                 runtime.workspace_actors.entry_len_for_test().unwrap()
                     <= crate::infrastructure::workspace_actor::WARM_WORKSPACE_ACTORS
@@ -7471,39 +7508,18 @@ struct ActorLogicalReadLease {"#,
 
         // With the warm TTL elapsed every completed workspace releases its
         // actor capability and the registry prunes the dead entry.
-        let expired_task_root = tempfile::tempdir().unwrap();
-        let (store, _) =
-            FileInvocationStore::open(expired_task_root.path(), Arc::new(SystemEpochMillisClock))
-                .unwrap();
-        let runtime = DaemonInvocationRuntime {
-            executor: Arc::new(InvocationExecutor::new(
-                Arc::new(store),
-                Arc::new(TokioClock),
-            )),
-            service: Arc::new(RejectingAfterActorAdmissionService),
-            workspace_actors: WorkspaceActorRegistry::with_warm_policy_for_test(
+        let runtime = V5CanonicalInvocationRuntime::with_workspace_actors_for_test(
+            Arc::new(RejectingAfterActorAdmissionService),
+            Arc::new(TokioClock),
+            WorkspaceActorRegistry::with_warm_policy_for_test(
                 crate::infrastructure::workspace_actor::WARM_WORKSPACE_ACTORS,
                 Duration::ZERO,
             ),
-            deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
-            provider_hosts: Arc::new(ProviderHostOwner::default()),
-            runtime_resources: Arc::new(RuntimeResourceOwner::default()),
-            runtime_service: None,
-        };
+        );
         for index in 0..20 {
             let workspace = workspaces.path().join(format!("expired-{index}"));
             std::fs::create_dir(&workspace).unwrap();
-            submit_at_receipt(
-                &runtime,
-                InvocationRequest::new(
-                    ToolIdentity::Run,
-                    serde_json::json!({"op": "infobase.build", "args": {}}),
-                    std::fs::canonicalize(&workspace).unwrap().to_string_lossy(),
-                    0,
-                )
-                .unwrap(),
-            )
-            .unwrap();
+            direct_v5(&runtime, request(&workspace)).unwrap();
             runtime.workspace_actors.evict_idle_warm_actors().unwrap();
             assert!(runtime.workspace_actors.live_len_for_test().unwrap() <= 1);
         }
@@ -7512,57 +7528,104 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     pub(crate) fn restart_request_does_not_claim_noncooperative_actor_released_in_process() {
-        let task_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        ensure_platform_xml_workspace(&root.to_string_lossy());
         let (entered, entered_wait) = mpsc::channel();
         let (release, release_wait) = mpsc::channel();
-        // Trigger fail-stop at the cancel boundary itself. A shortened reconciliation budget
-        // also bounds the preceding create_working store call and makes this a scheduler-speed
-        // test instead of a process-owned resource-lifetime test.
-        let runtime = DaemonInvocationRuntime::new(
-            Arc::new(UnavailableCancelStore { inner: store }),
-            Arc::new(NonCooperativeActorService {
-                entered,
-                release: Mutex::new(release_wait),
-            }),
+        let service: Arc<dyn CanonicalInvocationService> = Arc::new(NonCooperativeActorService {
+            entered,
+            release: Mutex::new(release_wait),
+        });
+        // A zero warm TTL: once an execution returns its actor, nothing but
+        // the warm set could keep it, and an eviction pass shows the truth.
+        let canonical = V5CanonicalInvocationRuntime::with_workspace_actors_for_test(
+            Arc::clone(&service),
             Arc::new(TokioClock),
+            WorkspaceActorRegistry::with_warm_policy_for_test(
+                crate::infrastructure::workspace_actor::WARM_WORKSPACE_ACTORS,
+                Duration::ZERO,
+            ),
         );
+        let daemon = LiveV5Daemon::over(Arc::new(canonical), service);
+        let owner = daemon.owner();
         let request = InvocationRequest::new(
             ToolIdentity::Run,
             serde_json::json!({"op": "infobase.build", "args": {}}),
-            std::fs::canonicalize(workspace.path())
-                .unwrap()
-                .to_string_lossy(),
-            0,
+            root.to_string_lossy(),
+            7_000,
         )
         .unwrap();
-        let task_id = task_id(submit_at_receipt(&runtime, request).unwrap());
+        let task_id = daemon.task_id(&owner, &request);
         entered_wait.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 1);
-
-        assert!(matches!(
-            runtime.cancel(task_id),
-            Err(DaemonInvocationError::Executor(
-                InvocationExecutorError::RestartRequested
-            ))
-        ));
-        assert!(runtime.restart_requested());
         assert_eq!(
-            runtime.workspace_actors.live_len_for_test().unwrap(),
+            daemon
+                .runtime()
+                .workspace_actors
+                .live_len_for_test()
+                .unwrap(),
+            1
+        );
+
+        // Cancellation is a request to the executing attempt, never a claim on
+        // its actor: a non-cooperative execution keeps the actor until it
+        // returns, and only then is the capability released in process.
+        let cancelled = daemon.cancel(&owner, task_id);
+        assert_ne!(cancelled.status(), InvocationStatus::Completed);
+        daemon
+            .runtime()
+            .workspace_actors
+            .evict_idle_warm_actors()
+            .unwrap();
+        assert_eq!(
+            daemon
+                .runtime()
+                .workspace_actors
+                .live_len_for_test()
+                .unwrap(),
             1,
-            "the executing ActorBoundExecution still owns the actor until process death"
+            "the executing ActorBoundExecution still owns the actor until it returns"
         );
 
         release.send(()).unwrap();
+        let terminal = daemon.wait_terminal(&owner, task_id, Duration::from_secs(10));
+        assert_ne!(
+            terminal.status(),
+            InvocationStatus::Working,
+            "a returned non-cooperative execution settles the Task: {terminal:?}"
+        );
+        assert!(
+            terminal.completed_result().is_none(),
+            "a cancelled attempt publishes no staged result: {terminal:?}"
+        );
         let deadline = Instant::now() + Duration::from_secs(10);
-        while runtime.workspace_actors.live_len_for_test().unwrap() != 0
-            && Instant::now() < deadline
-        {
+        loop {
+            daemon
+                .runtime()
+                .workspace_actors
+                .evict_idle_warm_actors()
+                .unwrap();
+            if daemon
+                .runtime()
+                .workspace_actors
+                .live_len_for_test()
+                .unwrap()
+                == 0
+                || Instant::now() >= deadline
+            {
+                break;
+            }
             std::thread::yield_now();
         }
-        assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 0);
+        assert_eq!(
+            daemon
+                .runtime()
+                .workspace_actors
+                .live_len_for_test()
+                .unwrap(),
+            0
+        );
+        daemon.finish(owner);
     }
 
     #[test]

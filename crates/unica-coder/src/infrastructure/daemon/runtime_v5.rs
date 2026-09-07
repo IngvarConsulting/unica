@@ -2894,14 +2894,19 @@ impl V5TaskProjectionReachability {
 }
 
 struct V5InvocationExecutor {
-    invocation_runtime: V5CanonicalInvocationRuntime,
+    invocation_runtime: Arc<V5CanonicalInvocationRuntime>,
 }
 
 impl V5InvocationExecutor {
     fn new(invocation_service: Arc<dyn CanonicalInvocationService>, clock: Arc<dyn Clock>) -> Self {
-        Self {
-            invocation_runtime: V5CanonicalInvocationRuntime::new(invocation_service, clock),
-        }
+        Self::over(Arc::new(V5CanonicalInvocationRuntime::new(
+            invocation_service,
+            clock,
+        )))
+    }
+
+    fn over(invocation_runtime: Arc<V5CanonicalInvocationRuntime>) -> Self {
+        Self { invocation_runtime }
     }
 
     fn bind(
@@ -3065,10 +3070,19 @@ impl V5ReceiptRuntime {
             epoch_clock,
             #[cfg(feature = "receipt-ledger-test-support")]
             initial_receipt_observation,
-            invocation_executor: V5InvocationExecutor::new(
-                config.invocation_service_for_v5(),
-                config.invocation_clock_for_v5(),
-            ),
+            invocation_executor: {
+                #[cfg(test)]
+                let preset = config.canonical_runtime_for_v5();
+                #[cfg(not(test))]
+                let preset: Option<Arc<V5CanonicalInvocationRuntime>> = None;
+                match preset {
+                    Some(runtime) => V5InvocationExecutor::over(runtime),
+                    None => V5InvocationExecutor::new(
+                        config.invocation_service_for_v5(),
+                        config.invocation_clock_for_v5(),
+                    ),
+                }
+            },
             task_projection,
             active_task_cancellations: Arc::new(V5ActiveTaskCancellations::default()),
             task_execution_threads: Mutex::new(Vec::new()),
